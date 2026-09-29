@@ -1,0 +1,909 @@
+"""Validation of the settings sheet (SPEC 5): raw tab rows in, a typed Settings out.
+
+Each tab arrives as a list of {column: text}. validate_tab() checks one tab on its own;
+validate_all() adds the checks between tabs, each attributed to the tab that holds the
+reference (a signal naming a missing angle is a Signals error). Any error rejects the
+whole tab: settings_sync then keeps the previous version of that tab in force.
+
+Row numbers are sheet rows counting the header, so the first data row is row 2.
+Errors are written for Harry, in American English.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import difflib
+import math
+import re
+import typing
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import date, time
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
+from us_outbound.settings.defaults import COLUMNS, US_STATES
+from us_outbound.settings.model import (
+    ACTIONS,
+    COPY_STATUSES,
+    MAILBOX_STATUSES,
+    SOURCE_FIELDS,
+    SOURCE_KEYS,
+    TABS,
+    TEST_STATUSES,
+    TEXT_SOURCES,
+    Angle,
+    CopyRow,
+    DateRange,
+    General,
+    Industry,
+    Mailbox,
+    Override,
+    Role,
+    SendWindow,
+    Settings,
+    Signal,
+    State,
+    Test,
+)
+
+HEADER_ROW = 1
+FIRST_DATA_ROW = 2
+OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
+MAY_BE_EMPTY = frozenset({"Overrides", "Tests"})  # an empty tab anywhere else is almost surely a mistake
+NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
+MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
+CLAUDE_CAP_USD = 10.0  # SPEC 1.1
+SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
+CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
+COPY_STEPS = (1, 2, 3, 4)
+# Variables a copy row may use (SPEC 10, plus the lead's first name and company).
+COPY_VARIABLES = frozenset(
+    {"first_name", "company", "opener", "proof", "place", "ask", "price_line", "demo_line", "legal_overlay", "signature"}
+)
+OPENER_PLACEHOLDERS = frozenset({"evidence"})  # SPEC 5: "Saw your benefits page mentions {evidence}"
+# The sheet row whose key names each tab's rows; settings_sync versions rows by it.
+KEY_COLUMNS: dict[str, tuple[str, ...]] = {
+    "General": ("key",),
+    "Signals": ("signal",),
+    "Angles": ("angle",),
+    "Industries": ("industry",),
+    "States": ("state",),
+    "Roles": ("role",),
+    "Copy": ("copy_version", "step"),
+    "Mailboxes": ("address",),
+    "Overrides": ("domain", "field"),
+    "Tests": ("test_id",),
+}
+# General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
+_GENERAL_REQUIRED_TEXT = frozenset(
+    {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
+     "hubspot_pipeline", "claude_model"}
+)
+
+_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_FULL_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
+_DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
+_CHANNEL = re.compile(r"#[a-z0-9][a-z0-9_-]*")
+_SLACK_USER = re.compile(r"[UW][A-Z0-9_]+")
+_NAICS = re.compile(r"\d{2,6}")
+_FIELD = re.compile(r"[a-z_][a-z0-9_]*")
+_VARIABLE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
+_SINGLE_BRACE = re.compile(r"(?<!\{)\{([^{}]*)\}(?!\})")
+
+
+@dataclass(frozen=True)
+class RowError:
+    tab: str
+    row: int  # sheet row, header included: the first data row is 2; tab-level errors use 1
+    column: str
+    message: str
+    label: str = ""  # the row's key, so the error still points at the right row if rows move
+
+    def __str__(self) -> str:
+        where = f"{self.tab} row {self.row}"
+        if self.label:
+            where += f" ({self.label})"
+        if self.column:
+            where += f", {self.column}"
+        return f"{where}: {self.message}"
+
+
+# -- cell parsers (raise ValueError with a message for Harry) ---------------------
+
+
+def _hint(value: str, choices: Iterable[str]) -> str:
+    close = difflib.get_close_matches(value, list(choices), n=1, cutoff=0.6)
+    return f" (did you mean {close[0]}?)" if close else ""
+
+
+def parse_bool(text: str) -> bool:
+    t = text.strip().lower()
+    if t in ("yes", "true"):
+        return True
+    if t in ("no", "false"):
+        return False
+    raise ValueError(f"must be yes or no, not {text!r}")
+
+
+def parse_int(text: str) -> int:
+    t = text.strip()
+    if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+", t):
+        t = t.replace(",", "")
+    if not re.fullmatch(r"[+-]?\d+", t):
+        raise ValueError(f"must be a whole number, not {text!r}")
+    return int(t)
+
+
+def parse_float(text: str) -> float:
+    try:
+        v = float(text.strip())
+    except ValueError:
+        raise ValueError(f"must be a number, not {text!r}") from None
+    if not math.isfinite(v):
+        raise ValueError(f"must be a number, not {text!r}")
+    return v
+
+
+def parse_date(text: str) -> date:
+    t = text.strip()
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
+            raise ValueError
+        return date.fromisoformat(t)
+    except ValueError:
+        raise ValueError(f"must be a date written YYYY-MM-DD, not {text!r}") from None
+
+
+def split_list(text: str, seps: str = ";") -> tuple[str, ...]:
+    parts = re.split("[" + re.escape(seps) + "]", text)
+    return tuple(p for p in (" ".join(x.split()) for x in parts) if p)
+
+
+def one_of(allowed: Iterable[str]) -> Callable[[str], str]:
+    """A parser accepting any of allowed, case-insensitively, returning its canonical spelling."""
+    allowed = tuple(allowed)
+
+    def parse(text: str) -> str:
+        for a in allowed:
+            if text.strip().casefold() == a.casefold():
+                return a
+        return _fail(f"must be one of {', '.join(allowed)}, not {text!r}{_hint(text.strip(), allowed)}")
+
+    return parse
+
+
+def _fail(message: str) -> Any:
+    raise ValueError(message)
+
+
+def _day(name: str) -> int:
+    n = name.strip().lower()
+    if n in _DAYS:
+        return _DAYS.index(n)
+    if n in _FULL_DAYS:
+        return _FULL_DAYS.index(n)
+    raise ValueError(f"unknown day {name.strip()!r}")
+
+
+def _parse_days(text: str) -> tuple[int, ...]:
+    days: set[int] = set()
+    for part in split_list(text, ","):
+        m = re.fullmatch(r"(.+?)\s*[-–—]\s*(.+)", part)
+        if m:
+            lo, hi = _day(m[1]), _day(m[2])
+            if lo > hi:
+                raise ValueError(f"day range {part!r} runs backward")
+            days.update(range(lo, hi + 1))
+        else:
+            days.add(_day(part))
+    if not days:
+        raise ValueError("names no days")
+    return tuple(sorted(days))
+
+
+def _parse_time(text: str) -> time:
+    h, _, m = text.partition(":")
+    try:
+        return time(int(h), int(m))
+    except ValueError:
+        raise ValueError(f"{text!r} is not a time of day") from None
+
+
+def parse_send_window(text: str) -> SendWindow:
+    """"Mon–Fri 09:00–16:00 America/New_York"; a hyphen works as well as an en dash."""
+    m = re.fullmatch(
+        r"\s*(?P<days>.+?)\s+(?P<start>\d{1,2}:\d{2})\s*[-–—]\s*(?P<end>\d{1,2}:\d{2})\s+(?P<tz>\S+)\s*", text
+    )
+    if not m:
+        raise ValueError(f"must look like 'Mon–Fri 09:00–16:00 America/New_York', not {text!r}")
+    days = _parse_days(m["days"])
+    start, end = _parse_time(m["start"]), _parse_time(m["end"])
+    if start >= end:
+        raise ValueError("the start time must be before the end time")
+    try:
+        ZoneInfo(m["tz"])
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError(f"unknown time zone {m['tz']!r}; use a name like America/New_York") from None
+    return SendWindow(days, start, end, m["tz"])
+
+
+def parse_blackout_dates(text: str) -> tuple[DateRange, ...]:
+    """"2026-11-23..2026-11-27, 2026-12-18..2027-01-04"; a single date is a one-day range."""
+    out = []
+    for part in split_list(text, ",;"):
+        a, sep, b = part.partition("..")
+        start = parse_date(a)
+        end = parse_date(b) if sep else start
+        if end < start:
+            raise ValueError(f"{part!r} ends before it starts")
+        out.append(DateRange(start, end))
+    return tuple(out)
+
+
+def parse_size_range(text: str) -> str:
+    """"10-49" (hyphen or en dash) -> "10-49"."""
+    m = re.fullmatch(r"\s*(\d+)\s*[-–]\s*(\d+)\s*", text)
+    if not m:
+        raise ValueError(f"size ranges are written like 10-49, not {text!r}")
+    lo, hi = int(m[1]), int(m[2])
+    if lo > hi:
+        raise ValueError(f"size range {text.strip()!r} runs backward")
+    return f"{lo}-{hi}"
+
+
+def _span(size_range: str) -> tuple[int, int]:
+    lo, _, hi = size_range.partition("-")
+    return int(lo), int(hi)
+
+
+def parse_fallback_order(text: str) -> dict[str, int]:
+    """"10-49:2; 50-249:3" -> {"10-49": 2, "50-249": 3}. Rank 1 is the first choice, so ranks start at 2."""
+    out: dict[str, int] = {}
+    for part in split_list(text, ";,"):
+        rng, colon, rank = part.partition(":")
+        if not colon:
+            raise ValueError(f"write each fallback as range:rank, like 50-249:3, not {part!r}")
+        key = parse_size_range(rng)
+        n = parse_int(rank)
+        if n < 2:
+            raise ValueError(f"fallback rank for {key} must be 2 or more (1 is the first choice)")
+        if key in out:
+            raise ValueError(f"{key} is listed twice")
+        out[key] = n
+    return out
+
+
+def _parse_sources(text: str) -> tuple[str, ...]:
+    out: list[str] = []
+    for s in split_list(text, ",;"):
+        key = s.lower()
+        if key not in SOURCE_KEYS:
+            raise ValueError(f"unknown source {s!r}{_hint(key, SOURCE_KEYS)}; sources are {', '.join(SOURCE_KEYS)}")
+        if key not in out:
+            out.append(key)
+    if not out:
+        raise ValueError("names no source")
+    return tuple(out)
+
+
+def _https(text: str) -> str:
+    if not re.fullmatch(r"https://\S+\.\S+", text):
+        raise ValueError(f"must be a full https:// link, not {text!r}")
+    return text
+
+
+def _email(text: str) -> str:
+    t = text.strip().lower()
+    if not _EMAIL.fullmatch(t):
+        raise ValueError(f"{text!r} is not an email address")
+    return t
+
+
+# -- rows ------------------------------------------------------------------------
+
+
+def _cell(row: Mapping[str, Any], col: str) -> str:
+    v = row.get(col)
+    return "" if v is None else str(v).strip()
+
+
+def natural_key(tab: str, row: Mapping[str, Any]) -> str:
+    """The key settings_sync versions a row by: the General key, or the row's natural key."""
+    return "|".join(_cell(row, c) for c in KEY_COLUMNS[tab])
+
+
+def _label(tab: str, row: Mapping[str, Any]) -> str:
+    if tab == "Copy":
+        return f"{_cell(row, 'copy_version')} step {_cell(row, 'step')}".strip()
+    return " ".join(_cell(row, c) for c in KEY_COLUMNS[tab]).strip()
+
+
+class _Row:
+    """One sheet row under validation. Parse failures become RowErrors against its row number."""
+
+    def __init__(self, tab: str, number: int, raw: Mapping[str, Any], errors: list[RowError]):
+        self.tab, self.number, self.raw, self.errors = tab, number, raw, errors
+        self.label = _label(tab, raw)
+        self.ok = True
+
+    def text(self, col: str) -> str:
+        return _cell(self.raw, col)
+
+    def fail(self, col: str, message: str) -> None:
+        self.ok = False
+        self.errors.append(RowError(self.tab, self.number, col, message, self.label))
+
+    def parse(self, col: str, fn: Callable[[str], Any], *, required: bool = True, default: Any = None) -> Any:
+        t = self.text(col)
+        if not t:
+            if required:
+                self.fail(col, "is required")
+            return default
+        try:
+            return fn(t)
+        except ValueError as exc:  # ConditionError is a ValueError
+            self.fail(col, str(exc))
+            return default
+
+
+def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[RowError]) -> list[_Row] | None:
+    """Tab-level checks; None when the tab cannot be read row by row."""
+    if rows is None:
+        errors.append(RowError(tab, HEADER_ROW, "", f"the sheet has no {tab} tab"))
+        return None
+    rows = list(rows)
+    if not rows:
+        if tab not in MAY_BE_EMPTY:
+            errors.append(RowError(tab, HEADER_ROW, "", f"the {tab} tab has no rows"))
+        return []
+    present = set().union(*(set(r) for r in rows))
+    missing = [c for c in COLUMNS[tab] if c not in present and c not in OPTIONAL_COLUMNS]
+    if missing:
+        noun = "columns are" if len(missing) > 1 else "column is"
+        errors.append(RowError(tab, HEADER_ROW, ", ".join(missing), f"the {noun} missing from the header row"))
+        return None
+    return [_Row(tab, i + FIRST_DATA_ROW, r, errors) for i, r in enumerate(rows)]
+
+
+def _unique(r: _Row, col: str, value: Any, seen: dict[Any, int], what: str = "") -> bool:
+    if value is None:
+        return True
+    if value in seen:
+        r.fail(col, f"{what or 'this'} is already on row {seen[value]}")
+        return False
+    seen[value] = r.number
+    return True
+
+
+# -- General -----------------------------------------------------------------------
+
+_GENERAL_TYPES: dict[str, Any] = typing.get_type_hints(General)
+
+
+def _converter(hint: Any) -> Callable[[str], Any]:
+    if hint is bool:
+        return parse_bool
+    if hint is int:
+        return parse_int
+    if hint is float:
+        return parse_float
+    if hint is str:
+        return str
+    if hint == tuple[str, ...]:
+        return lambda t: split_list(t, ",")
+    if hint is SendWindow:
+        return parse_send_window
+    if hint == tuple[DateRange, ...]:
+        return parse_blackout_dates
+    raise TypeError(f"no sheet converter for General type {hint!r}")
+
+
+def _blank_value(hint: Any) -> Any:
+    """What a blank cell means for a General key; None means the value is required."""
+    if hint is str:
+        return ""
+    if hint in (tuple[str, ...], tuple[DateRange, ...]):
+        return ()
+    return None
+
+
+def _check_general_value(key: str, value: Any) -> None:
+    hint = _GENERAL_TYPES[key]
+    if hint in (int, float) and value < 0:
+        raise ValueError("must not be negative")
+    if key == "control_share" and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.15")
+    if key == "escalation_hours" and value < 1:
+        raise ValueError("must be at least 1")
+    if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
+        raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
+    if key == "escalation_email":
+        _email(value)
+    if key == "claude_model" and not re.fullmatch(r"claude-[a-z0-9.-]+", value):
+        raise ValueError(f"must be a Claude model id like claude-haiku-4-5, not {value!r}")
+    if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
+        raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
+    if key in ("booking_link", "booking_page", "privacy_url") and value:
+        _https(value)
+    if key == "approver_slack_ids":
+        bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
+        if bad:
+            raise ValueError(f"{', '.join(bad)} is not a Slack user id (they look like U01ABCDEF)")
+
+
+def _general(rows: list[_Row]) -> General:
+    values: dict[str, Any] = {}
+    where: dict[str, _Row] = {}
+    for r in rows:
+        key = r.text("key")
+        if not key:
+            if r.text("value"):
+                r.fail("key", "is required")
+            continue  # a note-only row
+        if key not in _GENERAL_TYPES:
+            r.fail("key", f"unknown key {key!r}{_hint(key, _GENERAL_TYPES)}")
+            continue
+        if key in where:
+            r.fail("key", f"{key} is already on row {where[key].number}")
+            continue
+        where[key] = r
+        hint = _GENERAL_TYPES[key]
+        blank = _blank_value(hint)
+        required = blank is None or key in _GENERAL_REQUIRED_TEXT
+        v = r.parse("value", _converter(hint), required=required, default=blank)
+        if not r.ok:
+            continue
+        try:
+            _check_general_value(key, v)
+        except ValueError as exc:
+            r.fail("value", str(exc))
+            continue
+        values[key] = v
+
+    def err(key: str, message: str) -> None:
+        r = where.get(key)
+        if r is not None:
+            r.fail("value", message)
+        elif rows:
+            rows[0].errors.append(RowError("General", HEADER_ROW, "value", f"{key}: {message}"))
+
+    g = General(**values)
+    if g.standard_threshold > g.priority_threshold:
+        err("standard_threshold", f"must not be above priority_threshold ({g.priority_threshold})")
+    if g.live_sending:
+        missing = [k for k in ("postal_address", "privacy_url", "approver_slack_ids") if not getattr(g, k)]
+        if missing:
+            err("live_sending", f"cannot be yes while {', '.join(missing)} is blank")
+    return g
+
+
+# -- the other tabs -----------------------------------------------------------------
+
+
+def _check_opener(r: _Row, col: str) -> str:
+    opener = r.text(col)
+    for name in _SINGLE_BRACE.findall(opener):
+        if name.strip() not in OPENER_PLACEHOLDERS:
+            r.fail(col, f"unknown placeholder {{{name}}}; openers can use {{evidence}}")
+    if _VARIABLE.search(opener):
+        r.fail(col, "openers take one placeholder, {evidence}, in single braces")
+    return opener
+
+
+def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
+    out: list[tuple[Signal, int]] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        name = r.parse("signal", str)
+        _unique(r, "signal", name.casefold() if name else None, seen, f"signal {name!r}")
+        sources = r.parse("source", _parse_sources)
+        looks_for = r.parse("looks_for", str)
+        action = r.parse("action", one_of(ACTIONS))
+        weight = r.parse("weight", parse_int, required=action == "Score", default=0)
+        max_weight = r.parse("max_weight", parse_int, required=False)
+        if max_weight is not None and weight is not None and max_weight < weight:
+            r.fail("max_weight", f"must be at least the weight ({weight})")
+        days = r.parse("counts_for_days", parse_int)
+        if days is not None and days < 1:
+            r.fail("counts_for_days", "must be at least 1")
+        active = r.parse("active", parse_bool)
+        opener = _check_opener(r, "opener")
+        context_rule = r.text("context_rule")
+
+        terms: tuple[str, ...] = ()
+        condition = None
+        context: dict[str, tuple[str, ...]] = {}
+        if sources and looks_for:
+            condition = try_parse_condition(looks_for)
+            if condition is not None:
+                known = frozenset().union(*(SOURCE_FIELDS[s] for s in sources))
+                for f in sorted(condition.fields - known):
+                    r.fail("looks_for", f"{f} is not a field of {', '.join(sources)}{_hint(f, known)}")
+                if context_rule:
+                    r.fail("context_rule", "applies only to a list of terms, not to a condition")
+            elif not any(s in TEXT_SOURCES for s in sources):
+                try:
+                    parse_condition(looks_for)
+                except ConditionError as exc:
+                    r.fail("looks_for", f"{', '.join(sources)} need a condition like people_leader_count >= 1 ({exc})")
+            else:
+                terms = parse_terms(looks_for)
+                if not terms:
+                    r.fail("looks_for", "lists no terms")
+                elif context_rule:
+                    try:
+                        context = parse_context_rule(context_rule, terms)
+                    except ConditionError as exc:
+                        r.fail("context_rule", str(exc))
+        if r.ok:
+            out.append((
+                Signal(
+                    signal=name, sources=sources, looks_for=looks_for, weight=weight, action=action,
+                    counts_for_days=days, active=active, context_rule=context_rule, max_weight=max_weight,
+                    suggests_angle=r.text("suggests_angle"), opener=opener, note=r.text("note"),
+                    terms=terms, condition=condition, context=context,
+                ),
+                r.number,
+            ))
+    return out
+
+
+def _angles(rows: list[_Row]) -> list[tuple[Angle, int]]:
+    out: list[tuple[Angle, int]] = []
+    names: dict[str, int] = {}
+    orders: dict[int, int] = {}
+    for r in rows:
+        name = r.parse("angle", str)
+        _unique(r, "angle", name.casefold() if name else None, names, f"angle {name!r}")
+        order = r.parse("order", parse_int)
+        if order is not None and order < 1:
+            r.fail("order", "must be 1 or more")
+        _unique(r, "order", order, orders, f"order {order}")
+        active = r.parse("active", parse_bool)
+        argument = r.parse("argument", str)
+        opener = r.parse("default_opener", str, required=bool(active), default="")
+        landing = r.parse("landing_page_override", _https, required=False, default="")
+        if name == CONTROL_ANGLE and active is False:
+            r.fail("active", f"{CONTROL_ANGLE} must stay active: Control-tier accounts always get it")
+        if r.ok:
+            out.append((Angle(name, order, argument, opener, active, landing), r.number))
+    if rows and CONTROL_ANGLE.casefold() not in names:
+        rows[0].errors.append(
+            RowError("Angles", HEADER_ROW, "angle", f"the {CONTROL_ANGLE} angle is missing; Control-tier accounts always get it")
+        )
+    return out
+
+
+def _naics(text: str) -> tuple[str, ...]:
+    codes = split_list(text, ";,")
+    bad = [c for c in codes if not _NAICS.fullmatch(c)]
+    if bad:
+        raise ValueError(f"NAICS codes are 2 to 6 digits: {', '.join(bad)}")
+    return codes
+
+
+def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
+    out: list[tuple[Industry, int]] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        label = r.parse("industry", str)
+        _unique(r, "industry", label.casefold() if label else None, seen, f"industry {label!r}")
+        group = r.parse("industry_group", str)
+        active = r.parse("active", parse_bool)
+        naics = r.parse("naics_prefixes", _naics, required=False, default=())
+        exclude = r.parse("exclude_naics", _naics, required=False, default=())
+        keywords = split_list(r.text("apollo_keywords"), ";")
+        landing = r.parse("landing_page_url", _https, required=False, default="")
+        priority = r.parse("priority", parse_int, required=False, default=Industry.priority)
+        if priority is not None and priority < 1:
+            r.fail("priority", "must be 1 or more")
+        if r.ok:
+            out.append((
+                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority),
+                r.number,
+            ))
+    return out
+
+
+def _usps(text: str) -> str:
+    code = text.strip().upper()
+    if code not in US_STATES:
+        raise ValueError(f"{text!r} is not a USPS state code like NY")
+    return code
+
+
+def _states(rows: list[_Row]) -> list[tuple[State, int]]:
+    out: list[tuple[State, int]] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        code = r.parse("state", _usps)
+        _unique(r, "state", code, seen, code or "")
+        active = r.parse("active", parse_bool)
+        if active and code in NEVER_ACTIVE_STATES:
+            r.fail("active", f"{code} is never contacted (SPEC 1.3)")
+        if r.ok:
+            out.append((State(code, active, r.text("note")), r.number))
+    return out
+
+
+def _roles(rows: list[_Row]) -> list[tuple[Role, int]]:
+    out: list[tuple[Role, int]] = []
+    names: dict[str, int] = {}
+    titles_seen: dict[str, tuple[str, int]] = {}
+    first_seen: list[tuple[str, str, int]] = []  # (range, role, row)
+    ranks_seen: dict[tuple[str, int], tuple[str, int]] = {}
+    for r in rows:
+        role = r.parse("role", str)
+        _unique(r, "role", role.casefold() if role else None, names, f"role {role!r}")
+        titles = r.parse("titles", lambda t: split_list(t, ";") or _fail("lists no titles"))
+        for t in titles or ():
+            other = titles_seen.get(t.casefold())
+            if other and other[0] != role:
+                r.fail("titles", f"{t!r} is also a title of {other[0]} (row {other[1]})")
+            else:
+                titles_seen[t.casefold()] = (role, r.number)
+        first = r.parse(
+            "first_choice_for_size", lambda t: tuple(parse_size_range(x) for x in split_list(t, ";,")),
+            required=False, default=(),
+        )
+        fallback = r.parse("fallback_order", parse_fallback_order, required=False, default={})
+        for rng in first or ():
+            if rng in (fallback or {}):
+                r.fail("fallback_order", f"{rng} is already this role's first choice")
+            lo, hi = _span(rng)
+            for other_rng, other_role, other_row in first_seen:
+                olo, ohi = _span(other_rng)
+                if lo <= ohi and olo <= hi:
+                    r.fail("first_choice_for_size", f"{rng} overlaps {other_role}'s first choice {other_rng} (row {other_row})")
+            first_seen.append((rng, role, r.number))
+        for rng, rank in (fallback or {}).items():
+            other = ranks_seen.get((rng, rank))
+            if other:
+                r.fail("fallback_order", f"{rng}:{rank} is also {other[0]}'s rank (row {other[1]})")
+            ranks_seen[(rng, rank)] = (role, r.number)
+        if r.ok:
+            out.append((Role(role, titles, first, fallback), r.number))
+    return out
+
+
+def _check_copy_text(r: _Row, col: str) -> None:
+    text = r.text(col)
+    for name in _VARIABLE.findall(text):
+        if name not in COPY_VARIABLES:
+            r.fail(col, f"unknown variable {{{{{name}}}}}{_hint(name, COPY_VARIABLES)}")
+    for name in _SINGLE_BRACE.findall(text):
+        r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
+
+
+def _step(text: str) -> int:
+    n = parse_int(text)
+    if n not in COPY_STEPS:
+        raise ValueError(f"must be one of {', '.join(map(str, COPY_STEPS))}")
+    return n
+
+
+def _copy(rows: list[_Row]) -> list[tuple[CopyRow, int]]:
+    out: list[tuple[CopyRow, int]] = []
+    seen: dict[tuple[str, int], int] = {}
+    version_angle: dict[str, tuple[str, int]] = {}
+    for r in rows:
+        version = r.parse("copy_version", str)
+        angle = r.parse("angle", str)
+        step = r.parse("step", _step)
+        if version and step is not None:
+            _unique(r, "step", (version, step), seen, f"{version} step {step}")
+        subject = r.parse("subject", str, required=step == 1, default="")
+        body = r.parse("body", str)
+        status = r.parse("status", one_of(COPY_STATUSES))
+        approved_by = r.text("approved_by")
+        if status == "approved" and not approved_by:
+            r.fail("approved_by", "is required once a row is approved")
+        _check_copy_text(r, "subject")
+        _check_copy_text(r, "body")
+        if version and angle:
+            first = version_angle.setdefault(version, (angle, r.number))
+            if first[0] != angle:
+                r.fail("angle", f"{version} is already the {first[0]} angle on row {first[1]}")
+        if r.ok:
+            out.append((CopyRow(version, angle, step, subject, body, status, approved_by, r.text("sources")), r.number))
+    return out
+
+
+def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
+    out: list[tuple[Mailbox, int]] = []
+    seen: dict[str, int] = {}
+    ids: dict[str, int] = {}
+    for r in rows:
+        address = r.parse("address", _email)
+        _unique(r, "address", address, seen, address or "")
+        own_domain = address.partition("@")[2] if address else ""
+        if own_domain == SPILL_DOMAIN:
+            r.fail("address", f"{SPILL_DOMAIN} never sends cold email (SPEC 1.2)")
+        domain = r.text("domain").lower() or own_domain
+        if own_domain and domain != own_domain:
+            r.fail("domain", f"must be the address's domain, {own_domain}")
+        owner = r.parse("owner_name", str)
+        status = r.parse("status", one_of(MAILBOX_STATUSES))
+        cap = r.parse("daily_cap", parse_int)
+        if cap is not None and not 0 <= cap <= MAX_DAILY_CAP:
+            r.fail("daily_cap", f"must be between 0 and {MAX_DAILY_CAP} (SPEC 13)")
+        added_on = r.parse("added_on", parse_date, required=False)
+        retire_after = r.parse("retire_after", parse_date, required=False)
+        account_id = r.text("instantly_account_id")
+        if account_id:
+            _unique(r, "instantly_account_id", account_id, ids, account_id)
+        if r.ok:
+            out.append((
+                Mailbox(
+                    address=address, domain=domain, owner_name=owner, status=status, daily_cap=cap,
+                    instantly_account_id=account_id, provider=r.text("provider"), owner_role=r.text("owner_role"),
+                    signature=r.text("signature"), added_on=added_on, retire_after=retire_after,
+                ),
+                r.number,
+            ))
+    return out
+
+
+def _override_domain(text: str) -> str:
+    d = text.strip().lower()
+    if d.startswith("www.") or not _DOMAIN.fullmatch(d):
+        raise ValueError(f"must be a root domain like acme.com, not {text!r}")
+    return d
+
+
+def _overrides(rows: list[_Row]) -> list[tuple[Override, int]]:
+    out: list[tuple[Override, int]] = []
+    seen: dict[tuple[str, str], int] = {}
+    for r in rows:
+        domain = r.parse("domain", _override_domain)
+        field = r.parse("field", lambda t: t if _FIELD.fullmatch(t) else _fail(f"{t!r} is not a field name like hq_state"))
+        if domain and field:
+            _unique(r, "field", (domain, field), seen, f"{domain} {field}")
+        if r.ok:
+            out.append((Override(domain, field, r.text("value"), r.text("note")), r.number))
+    return out
+
+
+def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
+    out: list[tuple[Test, int]] = []
+    seen: dict[str, int] = {}
+    running: int | None = None
+    for r in rows:
+        test_id = r.parse("test_id", str)
+        _unique(r, "test_id", test_id, seen, f"test {test_id!r}")
+        hypothesis = r.parse("hypothesis", str)
+        a = r.parse("version_a", str)
+        b = r.parse("version_b", str)
+        if a and b and a == b:
+            r.fail("version_b", "must differ from version_a")
+        n = r.parse("accounts_per_version", parse_int)
+        if n is not None and n < 1:
+            r.fail("accounts_per_version", "must be 1 or more")
+        status = r.parse("status", one_of(TEST_STATUSES))
+        is_running = status == "running"
+        start = r.parse("start_date", parse_date, required=is_running)
+        read = r.parse("read_date", parse_date, required=is_running)
+        rule = r.parse("decision_rule", str, required=is_running, default="")
+        if start and read and read <= start:
+            r.fail("read_date", "must be after start_date")
+        if is_running:
+            if running is not None:
+                r.fail("status", f"only one test runs at a time; row {running} is already running")
+            else:
+                running = r.number
+        if r.ok:
+            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result")), r.number))
+    return out
+
+
+_VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
+    "General": _general,
+    "Signals": _signals,
+    "Angles": _angles,
+    "Industries": _industries,
+    "States": _states,
+    "Roles": _roles,
+    "Copy": _copy,
+    "Mailboxes": _mailboxes,
+    "Overrides": _overrides,
+    "Tests": _tests,
+}
+
+
+def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None) -> tuple[Any, list[RowError]]:
+    if tab not in _VALIDATORS:
+        raise ValueError(f"unknown settings tab {tab!r}")
+    errors: list[RowError] = []
+    prepared = _prepare(tab, rows, errors)
+    if prepared is None:
+        return (General() if tab == "General" else []), errors
+    return _VALIDATORS[tab](prepared), errors
+
+
+def validate_tab(tab: str, rows: Iterable[Mapping[str, Any]] | None) -> tuple[Any, list[RowError]]:
+    """One tab on its own: (General, errors) for General, else (tuple of the tab's rows, errors)."""
+    value, errors = _validate(tab, rows)
+    if tab == "General":
+        return value, errors
+    return tuple(obj for obj, _ in value), errors
+
+
+# -- all tabs --------------------------------------------------------------------
+
+
+def _names(rows: Iterable[Mapping[str, Any]] | None, col: str) -> dict[str, str]:
+    """casefolded name -> name as written, for every row that names one (valid or not)."""
+    return {n.casefold(): n for n in (_cell(r, col) for r in rows or ()) if n}
+
+
+def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tuple[Settings | None, dict[str, list[RowError]]]:
+    """Every tab, then the references between them. Settings only when there are no errors at all."""
+    raw = {tab: (list(tabs[tab]) if tabs.get(tab) is not None else None) for tab in TABS}
+    values: dict[str, Any] = {}
+    errors: dict[str, list[RowError]] = {}
+    for tab in TABS:
+        values[tab], errors[tab] = _validate(tab, raw[tab])
+
+    # References are checked against every name on the referenced tab, valid row or not, so
+    # one bad Angles row does not also fail the signals that name it.
+    angles = _names(raw["Angles"], "angle")
+    signals = []
+    for s, row in values["Signals"]:
+        if s.suggests_angle:
+            canonical = angles.get(s.suggests_angle.casefold())
+            if canonical is None:
+                errors["Signals"].append(RowError(
+                    "Signals", row, "suggests_angle",
+                    f"{s.suggests_angle!r} is not on the Angles tab{_hint(s.suggests_angle, angles.values())}", s.signal,
+                ))
+                continue
+            s = dataclasses.replace(s, suggests_angle=canonical)
+        signals.append((s, row))
+    values["Signals"] = signals
+
+    copy_rows = []
+    for c, row in values["Copy"]:
+        canonical = angles.get(c.angle.casefold())
+        if canonical is None:
+            errors["Copy"].append(RowError(
+                "Copy", row, "angle", f"{c.angle!r} is not on the Angles tab{_hint(c.angle, angles.values())}",
+                f"{c.copy_version} step {c.step}",
+            ))
+            continue
+        copy_rows.append((dataclasses.replace(c, angle=canonical), row))
+    values["Copy"] = copy_rows
+
+    versions = {_cell(r, "copy_version") for r in raw["Copy"] or ()}
+    approved = {
+        (_cell(r, "copy_version"), _cell(r, "step"))
+        for r in raw["Copy"] or ()
+        if _cell(r, "status").lower() == "approved"
+    }
+    for t, row in values["Tests"]:
+        for col, version in (("version_a", t.version_a), ("version_b", t.version_b)):
+            if version not in versions:
+                errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
+            elif t.status == "running":
+                missing = [str(s) for s in COPY_STEPS if (version, str(s)) not in approved]
+                if missing:
+                    errors["Tests"].append(RowError(
+                        "Tests", row, col, f"a running test needs {version} approved for steps {', '.join(missing)}", t.test_id,
+                    ))
+
+    if any(errors.values()):
+        return None, errors
+    settings = Settings(
+        general=values["General"],
+        **{
+            field: tuple(obj for obj, _ in values[tab])
+            for field, tab in (
+                ("signals", "Signals"), ("angles", "Angles"), ("industries", "Industries"), ("states", "States"),
+                ("roles", "Roles"), ("copy", "Copy"), ("mailboxes", "Mailboxes"), ("overrides", "Overrides"),
+                ("tests", "Tests"),
+            )
+        },
+    )
+    return settings, errors
