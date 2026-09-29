@@ -83,10 +83,6 @@ class Public(HttpClient):
     def _head(self, url: str, op: Op) -> Response | None:
         """HEAD through the guard, returning the raw Response so the Location header is visible.
 
-        HttpClient.request returns only the body, so this mirrors it (authorize, then send).
-        FOUNDATION: switch to request(raw=True) once HttpClient supports it, and the
-        transport must not follow redirects on HEAD.
+        RequestsTransport never follows redirects on HEAD, so the Location is the first hop.
         """
-        if not self.guard.authorize(self.system, op):
-            return None
-        return self.transport.send("HEAD", url, headers=self.headers())
+        return self.request("HEAD", url, op, raw=True)

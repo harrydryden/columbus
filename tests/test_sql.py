@@ -98,7 +98,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     },
     ("events", "approval"): {"approved", "edited", "skipped"},
     ("settings", "tab"): set(TABS),
-    ("heartbeats", "status"): {"ok", "error", "skipped"},
+    ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
     ("hitl_items", "kind"): {"reply_approval", "hand_check", "manual_merge", "kill_rule"},
     ("hitl_items", "status"): {"open", "handled", "escalated"},

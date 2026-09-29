@@ -256,8 +256,16 @@ class BigQueryStore(Store):
         key = TABLE_KEYS[table]
         if key is None:
             raise ValueError(f"{table} is append-only")
-        if not rows:
-            return 0
+        # One MERGE per column set: a MERGE over the union of columns would set a column
+        # that a row leaves out to NULL (MemoryStore keeps it), so rows are grouped.
+        groups: dict[tuple[str, ...], list[dict]] = {}
+        for r in rows:
+            groups.setdefault(tuple(sorted(r)), []).append(r)
+        for group in groups.values():
+            self._merge(table, key, group)
+        return len(rows)
+
+    def _merge(self, table: str, key: tuple[str, ...], rows: list[dict]) -> None:
         # The staging table lives in the same dataset and expires within the hour.
         stage = f"_stage_{table}_{uuid.uuid4().hex[:12]}"
         self._run(
@@ -280,7 +288,6 @@ class BigQueryStore(Store):
             )
         finally:
             self.client.delete_table(f"{self.project}.{self.dataset}.{stage}", not_found_ok=True)
-        return len(rows)
 
     def select(self, table, where=None):
         self._authorize("select", table, write=False)

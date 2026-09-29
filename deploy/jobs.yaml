@@ -1,0 +1,152 @@
+# The US Outbound jobs (SPEC 9): one Cloud Run Job each, plus a Cloud Scheduler job when
+# it has a schedule. deploy/deploy.sh reads this file through `us-outbound deploy plan`.
+#
+# schedule:  cron in Europe/London (SPEC 9: "All times are UK time"); Cloud Scheduler
+#            runs it with --time-zone=Europe/London. Empty: no scheduler (run on demand).
+# args:      the container's arguments. --live only on jobs that write anything outside
+#            BigQuery (Slack #us-outbound, the sheet, HubSpot, Instantly). A job with --live
+#            is still dry until live_sending = yes in the sheet (SPEC 0.3).
+# disabled:  true for jobs of a later phase (SPEC 14); deploy.sh creates nothing for them
+#            and pauses their scheduler if one exists.
+# timeout:   the Cloud Run task timeout; keep it at 3600s or less (ops/heartbeat.py treats
+#            a run as dead after 60 minutes). Jobs never retry (max-retries 0).
+#
+# Keep to this flat shape (a list of `key: value` items, inline [lists]); no YAML library
+# is used to read it.
+
+jobs:
+  - name: settings_sync
+    schedule: "0 2 * * *"
+    args: [run, settings_sync, --live]
+    timeout: 900s
+    disabled: false
+    phase: 0
+
+  - name: source_universe
+    schedule: "0 3 1 * *"
+    args: [run, source_universe]
+    timeout: 3600s
+    disabled: true
+    phase: 1
+
+  - name: apollo_signals
+    schedule: "30 3 * * 1"
+    args: [run, apollo_signals]
+    timeout: 3600s
+    disabled: true
+    phase: 1
+
+  - name: site_visits
+    schedule: "0 6 * * *"
+    args: [run, site_visits]
+    timeout: 1800s
+    disabled: true
+    phase: 1
+
+  - name: public_signals
+    schedule: "0 4 * * 1"
+    args: [run, public_signals]
+    timeout: 3600s
+    disabled: true
+    phase: 1
+
+  - name: verify_in_clay
+    schedule: "30 4 * * 1-5"
+    args: [run, verify_in_clay]
+    timeout: 3600s
+    disabled: true
+    phase: 1
+
+  # score runs after settings_sync, verify_in_clay and site_visits (SPEC 9), inside those
+  # jobs; this Cloud Run Job is for `gcloud run jobs execute us-outbound-score` by hand.
+  - name: score
+    schedule: ""
+    args: [run, score, --live]
+    timeout: 1800s
+    disabled: false
+    phase: 1
+
+  - name: pick_contacts
+    schedule: "30 5 * * 1-5"
+    args: [run, pick_contacts]
+    timeout: 3600s
+    disabled: true
+    phase: 2
+
+  - name: enrol
+    schedule: "0 12 * * 1-5"
+    args: [run, enrol, --live]
+    timeout: 1800s
+    disabled: true
+    phase: 2
+
+  - name: poll_replies
+    schedule: "*/15 * * * *"
+    args: [run, poll_replies, --live]
+    timeout: 600s
+    disabled: true
+    phase: 2
+
+  - name: poll_approvals
+    schedule: "*/5 * * * *"
+    args: [run, poll_approvals, --live]
+    timeout: 240s
+    disabled: true
+    phase: 2
+
+  - name: hubspot_readback
+    schedule: "*/15 * * * *"
+    args: [run, hubspot_readback, --live]
+    timeout: 600s
+    disabled: true
+    phase: 2
+
+  - name: sync_outcomes
+    schedule: "0 1 * * *"
+    args: [run, sync_outcomes, --live]
+    timeout: 1800s
+    disabled: true
+    phase: 2
+
+  - name: mailbox_health
+    schedule: "0 7 * * *"
+    args: [run, mailbox_health, --live]
+    timeout: 600s
+    disabled: false
+    phase: 0
+
+  - name: kill_rules
+    schedule: "0 * * * *"
+    args: [run, kill_rules, --live]
+    timeout: 600s
+    disabled: true
+    phase: 3
+
+  - name: daily_post
+    schedule: "0 9 * * *"
+    args: [run, daily_post, --live]
+    timeout: 600s
+    disabled: true
+    phase: 3
+
+  - name: monday_readout
+    schedule: "0 9 * * 1"
+    args: [run, monday_readout, --live]
+    timeout: 1200s
+    disabled: true
+    phase: 3
+
+  # Build additions (README "Deviations").
+  - name: heartbeat_check
+    schedule: "5 * * * *"
+    args: [run, heartbeat_check, --live]
+    timeout: 300s
+    disabled: false
+    phase: 0
+
+  - name: suppression_load
+    schedule: "30 1 * * *"
+    args: [run, suppression_load]
+    timeout: 1800s
+    disabled: false
+    phase: 0

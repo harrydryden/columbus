@@ -239,6 +239,10 @@ def test_unsubscribe_and_gdpr_delete_shapes():
     assert req.url == f"{BASE}/communication-preferences/v4/statuses/jane%2Bx%40acme.com/unsubscribe-all"
     assert req.params == {"channel": "EMAIL"}
 
+    with pytest.raises(GuardViolation):  # only the erase job may GDPR-delete
+        hs.gdpr_delete_contact("jane@acme.com")
+    assert len(t.requests) == 1
+    hs.guard.configure(job="erase")
     hs.gdpr_delete_contact("jane@acme.com")
     req = t.requests[1]
     assert (req.url, req.json) == (

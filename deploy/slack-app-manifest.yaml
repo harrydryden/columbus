@@ -1,0 +1,30 @@
+# Slack app for US Outbound (SPEC 3, 11, 14 phase 0). Create it at api.slack.com/apps →
+# "From an app manifest", install it to the workspace, invite the bot to #us-outbound and
+# #us-outbound-dev, and put the bot token (xoxb-…) in Secret Manager as
+# us-outbound-slack-bot-token. There is no public endpoint (SPEC 2): no events, no
+# interactivity, no slash commands. The jobs post with chat:write and poll thread
+# replies for approvals (poll_approvals, every 5 minutes).
+_metadata:
+  major_version: 1
+  minor_version: 1
+display_information:
+  name: US Outbound
+  description: Alerts, approvals and readouts for Spill's US outbound engine.
+  background_color: "#1d1c1d"
+features:
+  bot_user:
+    display_name: US Outbound
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write        # alerts, the daily post, the Monday readout, thread confirmations
+      - channels:history  # read Harry's thread replies (approvals) in public channels
+      - groups:history    # ... and in private channels
+      - channels:read     # resolve #us-outbound to its id
+      - groups:read       # ... when the channel is private
+      - users:read        # names for approver ids in confirmations
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS `{project}.us_outbound.heartbeats` (
   job STRING,
   started_at TIMESTAMP,
   finished_at TIMESTAMP OPTIONS (description = "NULL while the run is going (or if it died)."),
-  status STRING OPTIONS (description = "One of: ok, error, skipped."),
+  status STRING OPTIONS (description = "One of: running, ok, error, skipped. running is written at start; finished_at is NULL until the run ends."),
   dry_run BOOL,
   detail STRING OPTIONS (description = "JSON text: the job's summary."),
   error STRING

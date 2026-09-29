@@ -57,8 +57,10 @@ class RequestsTransport:
         delay = self.backoff
         for attempt in range(1, self.attempts + 1):
             try:
+                # HEAD is only used to see one redirect (Public.resolve_redirect), so never follow it.
                 r = self._session.request(
-                    method, url, headers=headers, params=params, json=json, data=data, timeout=timeout
+                    method, url, headers=headers, params=params, json=json, data=data, timeout=timeout,
+                    allow_redirects=method.upper() != "HEAD",
                 )
             except (requests.ConnectionError, requests.Timeout):
                 if attempt == self.attempts:
@@ -108,14 +110,21 @@ class HttpClient:
         dry_result: Any = None,
         base_url: str | None = None,
         headers: dict[str, str] | None = None,
+        raw: bool = False,
     ) -> Any:
-        """Authorize op, then send. Returns dry_result without sending when dry-run skips a write."""
+        """Authorize op, then send. Returns dry_result without sending when dry-run skips a write.
+
+        raw=True returns the whole Response (status, body, headers) and leaves the status
+        to the caller, who then raises for errors itself.
+        """
         if not self.guard.authorize(self.system, op):
             return dry_result
         url = path if path.startswith("http") else (base_url or self.base_url) + path
         resp = self.transport.send(
             method, url, headers=headers or self.headers(), params=params, json=json, data=data
         )
+        if raw:
+            return resp
         if resp.status >= 400:
             raise ApiError(self.system, resp.status, resp.body, url)
         return resp.body
