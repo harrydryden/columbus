@@ -1,0 +1,375 @@
+"""The guardrails of SPEC section 1, enforced at the single point every client call passes.
+
+Every outbound call (HTTP, BigQuery, Claude) is described as an Op and handed to
+Guard.authorize() before it is made. authorize() either:
+
+  * raises GuardViolation: the call would break a guardrail, in any mode; or
+  * returns False: the call is a write that dry-run must not make (the caller skips it); or
+  * returns True: make the call.
+
+Dry-run (SPEC 0.3): compute, log and write to BigQuery, but send nothing. Nothing is
+written to HubSpot, Instantly or the settings sheet, and nothing to Slack except the dev
+channel. Live needs both the --live flag and live_sending = yes; the caller works that out
+and passes `live`.
+
+Every call is recorded in Guard.calls so tests can inspect them all.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from typing import Any, Mapping
+
+from us_outbound.logs import log, redact
+
+US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
+SETTINGS_SHEET_TITLE = "US Outbound – Settings"
+BQ_DATASET = "us_outbound"
+
+# HubSpot write allowlist (SPEC 1.2).
+HUBSPOT_PROPERTY_GROUP = "us_outbound"
+HUBSPOT_COMPANY_PROPS = frozenset(
+    {"us_outbound_account_id", "us_outbound_tier", "us_outbound_industry_group", "us_outbound_top_signals"}
+)
+HUBSPOT_CONTACT_PROPS = frozenset({"us_outbound_angle", "us_outbound_reply_class"})
+HUBSPOT_SIX_PROPS = HUBSPOT_COMPANY_PROPS | HUBSPOT_CONTACT_PROPS
+HUBSPOT_EMPTY_ONLY = frozenset({"hubspot_owner_id", "lifecyclestage", "hs_lead_status"})
+# Identity fields a new warm record needs; only on create.
+HUBSPOT_COMPANY_CREATE_FIELDS = frozenset({"name", "domain"})
+HUBSPOT_CONTACT_CREATE_FIELDS = frozenset({"email", "firstname", "lastname", "jobtitle"})
+WARM_REPLY_CLASSES = frozenset({"positive", "referral"})
+
+APOLLO_READ_ACTIONS = frozenset(
+    {
+        "organizations.search",
+        "organizations.enrich",
+        "organizations.bulk_enrich",
+        "organizations.job_postings",
+        "people.search",
+        "people.match",
+        "people.bulk_match",
+        "website_visitors.search",
+        "website_visitors.domain_aggregates",
+        "usage.credits",
+        "auth.health",
+    }
+)
+
+PUBLIC_HOSTS = frozenset(
+    {
+        "boards-api.greenhouse.io",
+        "api.lever.co",
+        "api.ashbyhq.com",
+        "apply.workable.com",
+        "www.irs.gov",
+        "irs.gov",
+        "layoffs.fyi",
+        "raw.githubusercontent.com",
+        "github.com",
+        "storage.googleapis.com",
+    }
+)
+
+
+class GuardViolation(Exception):
+    """A call would break a SPEC guardrail. Never caught to carry on."""
+
+
+@dataclass(frozen=True)
+class Op:
+    """One outbound call, described by what it does rather than how.
+
+    action: a dotted verb, e.g. "company.create", "lead.add", "chat.postMessage".
+    target: the container it touches: a campaign name, table, channel, sheet id, host.
+    write:  True if it changes anything outside this process (except BigQuery reads).
+    detail: what the guard needs to judge it (property names, account ids, ...).
+    """
+
+    action: str
+    target: str = ""
+    write: bool = False
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CallRecord:
+    system: str
+    action: str
+    target: str
+    write: bool
+    sent: bool
+    live: bool
+    detail: Mapping[str, Any]
+    at: datetime
+
+
+@dataclass(frozen=True)
+class Boundaries:
+    """The containers this system may touch. Built from settings and the environment."""
+
+    registry_addresses: frozenset[str] = frozenset()  # lower-case mailbox addresses
+    registry_account_ids: frozenset[str] = frozenset()  # Instantly account ids
+    registry_owners: frozenset[str] = frozenset()  # mailbox owner names
+    hubspot_pipeline_id: str = ""
+    hubspot_deal_stage_id: str = ""
+    clay_function_ids: frozenset[str] = frozenset()  # the two US Outbound functions
+    settings_sheet_id: str = ""
+    alert_channel: str = "#us-outbound"
+    dev_channel: str = "#us-outbound-dev"
+    bq_dataset: str = BQ_DATASET
+
+    @property
+    def registry_accounts(self) -> frozenset[str]:
+        return self.registry_addresses | self.registry_account_ids
+
+
+class Guard:
+    def __init__(self, live: bool = False, bounds: Boundaries | None = None):
+        self.live = live
+        self.bounds = bounds or Boundaries()
+        self.calls: list[CallRecord] = []
+
+    def configure(self, *, live: bool | None = None, bounds: Boundaries | None = None) -> None:
+        if live is not None:
+            self.live = live
+        if bounds is not None:
+            self.bounds = bounds
+
+    # -- the one entry point -------------------------------------------------
+
+    def authorize(self, system: str, op: Op) -> bool:
+        check = getattr(self, f"_check_{system}", None)
+        if check is None:
+            raise GuardViolation(f"unknown system {system!r}")
+        try:
+            send = check(op)
+        except GuardViolation as exc:
+            self._record(system, op, sent=False)
+            log("guard_violation", system=system, action=op.action, target=op.target, reason=str(exc))
+            raise
+        if send is None:
+            send = True
+        self._record(system, op, sent=send)
+        return send
+
+    def writes(self, system: str | None = None, sent: bool | None = None) -> list[CallRecord]:
+        return [
+            c
+            for c in self.calls
+            if c.write and (system is None or c.system == system) and (sent is None or c.sent == sent)
+        ]
+
+    def _record(self, system: str, op: Op, sent: bool) -> None:
+        rec = CallRecord(
+            system=system,
+            action=op.action,
+            target=op.target,
+            write=op.write,
+            sent=sent,
+            live=self.live,
+            detail=redact(dict(op.detail)),
+            at=datetime.now(UTC),
+        )
+        self.calls.append(rec)
+        log(
+            "call",
+            system=system,
+            action=op.action,
+            target=op.target,
+            write=op.write,
+            sent=sent,
+            live=self.live,
+            accounts=sorted(op.detail.get("accounts", ())) if system == "instantly" else None,
+        )
+
+    def _live_only(self, op: Op) -> bool:
+        """Writes to HubSpot, Instantly and the sheet happen only when live."""
+        return self.live if op.write else True
+
+    # -- per-system policy ---------------------------------------------------
+
+    def _check_apollo(self, op: Op) -> bool:
+        if op.write:
+            raise GuardViolation("Apollo is read only (SPEC 1.2)")
+        if op.action not in APOLLO_READ_ACTIONS:
+            raise GuardViolation(f"Apollo action {op.action!r} is not an allowed read")
+        return True
+
+    def _check_clay(self, op: Op) -> bool:
+        if op.action == "function.run":
+            if op.target not in self.bounds.clay_function_ids:
+                raise GuardViolation(
+                    f"Clay function {op.target!r} is not one of the US Outbound functions (SPEC 1.2, 8)"
+                )
+            return True  # Clay verification runs in dry-run too; budgets are checked by the caller.
+        if op.action in {"function.get", "function.list", "workspace.get", "run.get"} and not op.write:
+            return True
+        raise GuardViolation(f"Clay action {op.action!r} is not allowed from Python")
+
+    def _check_instantly(self, op: Op) -> bool:
+        b = self.bounds
+        a = op.action
+        accounts = {str(x).lower() for x in op.detail.get("accounts", ())}
+
+        def need_registry_accounts() -> None:
+            if not accounts:
+                raise GuardViolation(f"Instantly {a} must be filtered by registry account ids (SPEC 1.2)")
+            outside = accounts - {x.lower() for x in b.registry_accounts}
+            if outside:
+                raise GuardViolation(f"Instantly {a} touches accounts outside the registry: {sorted(outside)}")
+
+        def need_us_campaign() -> None:
+            if not op.target.startswith(US_CAMPAIGN_PREFIX):
+                raise GuardViolation(f"Instantly {a} targets campaign {op.target!r}, not a US Outbound campaign")
+
+        if not op.write:
+            if a in {"email.list", "email.get", "account.list", "account.get", "account.vitals", "warmup.analytics"}:
+                need_registry_accounts()
+            elif a in {"lead.list", "lead.get", "campaign.get", "campaign.analytics", "campaign.steps_analytics"}:
+                need_us_campaign()
+            elif a == "campaign.list":
+                if not str(op.detail.get("search", "")).startswith(US_CAMPAIGN_PREFIX.strip()):
+                    raise GuardViolation("Instantly campaign.list must search for 'US Outbound'")
+            elif a in {"email.unread_count", "custom_variable.limit"}:
+                need_registry_accounts()
+            else:
+                raise GuardViolation(f"Instantly read {a!r} is not allowed")
+            return True
+
+        if a == "campaign.create":
+            need_us_campaign()
+            owner = op.target[len(US_CAMPAIGN_PREFIX):]
+            if owner not in b.registry_owners:
+                raise GuardViolation(f"no registry owner {owner!r} for campaign {op.target!r}")
+            need_registry_accounts()
+        elif a in {"campaign.update", "campaign.pause", "campaign.activate"}:
+            need_us_campaign()
+            if "accounts" in op.detail:
+                need_registry_accounts()
+        elif a in {"lead.add", "lead.delete", "lead.update", "lead.stop"}:
+            need_us_campaign()
+        elif a in {"email.reply", "email.forward"}:
+            need_registry_accounts()
+        elif a in {"account.warmup_enable", "account.warmup_disable", "account.pause", "account.resume"}:
+            need_registry_accounts()
+        elif a == "blocklist.add":
+            if not op.detail.get("entries"):
+                raise GuardViolation("blocklist.add needs entries")
+        else:
+            raise GuardViolation(f"Instantly write {a!r} is not allowed (never change workspace settings)")
+        return self._live_only(op)
+
+    def _check_hubspot(self, op: Op) -> bool:
+        if not op.write:
+            return True
+        a = op.action
+        props = set(op.detail.get("properties", ()))
+        current = op.detail.get("current", {}) or {}
+
+        def empty_only_ok() -> None:
+            for p in props & HUBSPOT_EMPTY_ONLY:
+                if current.get(p) not in (None, ""):
+                    raise GuardViolation(f"HubSpot {p} may only be set when empty (SPEC 1.2)")
+
+        def need_warm() -> None:
+            if op.detail.get("reply_class") not in WARM_REPLY_CLASSES:
+                raise GuardViolation("HubSpot records are created only for positive or referral replies (SPEC 1.2)")
+
+        if a == "company.create":
+            need_warm()
+            extra = props - HUBSPOT_COMPANY_PROPS - HUBSPOT_EMPTY_ONLY - HUBSPOT_COMPANY_CREATE_FIELDS
+            if extra:
+                raise GuardViolation(f"HubSpot company.create may not set {sorted(extra)}")
+        elif a == "company.update":
+            extra = props - HUBSPOT_COMPANY_PROPS - HUBSPOT_EMPTY_ONLY
+            if extra:
+                raise GuardViolation(f"HubSpot company.update may not set {sorted(extra)}")
+            empty_only_ok()
+        elif a == "contact.create":
+            need_warm()
+            extra = props - HUBSPOT_CONTACT_PROPS - HUBSPOT_EMPTY_ONLY - HUBSPOT_CONTACT_CREATE_FIELDS
+            if extra:
+                raise GuardViolation(f"HubSpot contact.create may not set {sorted(extra)}")
+        elif a == "contact.update":
+            extra = props - HUBSPOT_CONTACT_PROPS - HUBSPOT_EMPTY_ONLY
+            if extra:
+                raise GuardViolation(f"HubSpot contact.update may not set {sorted(extra)}")
+            empty_only_ok()
+        elif a in {"note.create", "task.create", "association.create"}:
+            pass
+        elif a == "deal.create":
+            b = self.bounds
+            if not b.hubspot_pipeline_id or op.detail.get("pipeline") != b.hubspot_pipeline_id:
+                raise GuardViolation("HubSpot deals go only in the Spill 3.0 pipeline (SPEC 1.2)")
+            if not b.hubspot_deal_stage_id or op.detail.get("dealstage") != b.hubspot_deal_stage_id:
+                raise GuardViolation("HubSpot deals start only at the first Spill 3.0 stage (SPEC 11)")
+            if not str(op.detail.get("dealname", "")).startswith(US_CAMPAIGN_PREFIX):
+                raise GuardViolation("HubSpot deal names start 'US Outbound – ' (SPEC 11)")
+            extra = props - {"dealname", "pipeline", "dealstage", "hubspot_owner_id"}
+            if extra:
+                raise GuardViolation(f"HubSpot deal.create may not set {sorted(extra)}")
+        elif a == "property_group.create":
+            if op.target != HUBSPOT_PROPERTY_GROUP:
+                raise GuardViolation("the only HubSpot property group we create is 'US Outbound'")
+        elif a == "property.create":
+            if op.target not in HUBSPOT_SIX_PROPS:
+                raise GuardViolation(f"HubSpot property {op.target!r} is not one of the six us_outbound_* properties")
+        elif a == "communication.unsubscribe":
+            pass  # SPEC 11 routing: opted out in HubSpot when the contact exists there
+        elif a == "contact.gdpr_delete":
+            if not op.detail.get("erasure_request"):
+                raise GuardViolation("HubSpot GDPR delete only runs from the erase command (SPEC 6)")
+        else:
+            raise GuardViolation(f"HubSpot write {a!r} is not allowed")
+        return self._live_only(op)
+
+    def _check_slack(self, op: Op) -> bool:
+        if not op.write:
+            return True
+        b = self.bounds
+        if op.action not in {"chat.postMessage", "chat.update", "reactions.add"}:
+            raise GuardViolation(f"Slack write {op.action!r} is not allowed")
+        if op.target not in {b.alert_channel, b.dev_channel}:
+            raise GuardViolation(f"Slack channel {op.target!r} is not a US Outbound channel")
+        if not self.live and op.target != b.dev_channel:
+            return False  # dry-run: nothing to Slack except the dev channel
+        return True
+
+    def _check_sheets(self, op: Op) -> bool:
+        if op.action == "spreadsheet.create":
+            if op.detail.get("title") != SETTINGS_SHEET_TITLE:
+                raise GuardViolation("the only sheet we create is 'US Outbound – Settings'")
+            return self._live_only(replace(op, write=True))
+        if op.target != self.bounds.settings_sheet_id or not op.target:
+            raise GuardViolation(f"sheet {op.target!r} is not the settings sheet")
+        return self._live_only(op)
+
+    def _check_bq(self, op: Op) -> bool:
+        if not op.write:
+            return True
+        dataset = op.target.split(".")[-2] if op.target.count(".") >= 1 else ""
+        if dataset != self.bounds.bq_dataset:
+            raise GuardViolation(f"BigQuery writes go only to dataset {self.bounds.bq_dataset} (SPEC 1.2), not {op.target!r}")
+        return True  # dry-run still writes to BigQuery (SPEC 0.3)
+
+    def _check_claude(self, op: Op) -> bool:
+        if op.write or op.action != "messages.create":
+            raise GuardViolation(f"Claude action {op.action!r} is not allowed")
+        return True
+
+    def _check_public(self, op: Op) -> bool:
+        if op.write:
+            raise GuardViolation("public sources are read only")
+        if op.action == "resolve_redirect":
+            return True  # HEAD on a prospect's own domain to follow one redirect (SPEC 13 data cleaning)
+        if op.action != "get":
+            raise GuardViolation("public sources are read with GET only")
+        if op.target not in PUBLIC_HOSTS:
+            raise GuardViolation(f"public host {op.target!r} is not an allowed source")
+        return True
+
+    def _check_secrets(self, op: Op) -> bool:
+        if op.write or op.action != "access":
+            raise GuardViolation("Secret Manager is read only from the jobs")
+        return True
