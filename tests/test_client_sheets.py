@@ -85,11 +85,14 @@ def test_update_cell_finds_row():
     assert put.json == {"range": "'Mailboxes'!C4", "majorDimension": "ROWS", "values": [["Active"]]}
 
     assert sheets.update_cell(SHEET, "Mailboxes", {"address": "nobody@meetspill.org"}, "status", "Active") is False
+    # An address typed with capitals on the sheet still matches the lower-cased registry address.
+    assert sheets.update_cell(SHEET, "Mailboxes", {"address": "Hannah@MeetSpill.org"}, "status", "Paused") is True
+    assert t.writes()[-1].json["range"] == "'Mailboxes'!C2"
     with pytest.raises(ValueError):
         sheets.update_cell(SHEET, "Mailboxes", {"domain": "meetspill.org"}, "status", "Paused")
     with pytest.raises(ValueError):
         sheets.update_cell(SHEET, "Mailboxes", {"address": "sam@meetspill.org"}, "colour", "red")
-    assert len(t.writes()) == 1
+    assert len(t.writes()) == 2
 
 
 def test_create_settings_sheet():

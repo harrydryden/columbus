@@ -23,6 +23,7 @@ class SentRequest:
     params: dict[str, Any] | None
     json: Any
     data: Any
+    idempotent: bool = True
 
 
 @dataclass
@@ -50,8 +51,10 @@ class FakeTransport:
         self.routes.append(_Route(method.upper(), url_part, status, body, fn, headers))
         return self
 
-    def send(self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0) -> Response:
-        req = SentRequest(method.upper(), url, dict(headers), params, json, data)
+    def send(
+        self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0, idempotent=True
+    ) -> Response:
+        req = SentRequest(method.upper(), url, dict(headers), params, json, data, idempotent)
         self.requests.append(req)
         for r in reversed(self.routes):
             if r.method == req.method and r.url_part in url:

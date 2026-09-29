@@ -18,8 +18,6 @@ from us_outbound.clients.guard import SETTINGS_SHEET_TITLE, Op
 from us_outbound.clients.http import HttpClient
 from us_outbound.logs import log
 
-SCOPES = ("https://www.googleapis.com/auth/spreadsheets",)
-
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
 
@@ -133,7 +131,10 @@ class Sheets(HttpClient):
         )
 
     def update_cell(self, sheet_id: str, tab: str, match: Mapping[str, str], column: str, value: str) -> bool:
-        """Set one cell in the row whose `match` columns equal the given text.
+        """Set one cell in the row whose `match` columns equal the given text, ignoring case.
+
+        The match values are identifiers (addresses, test ids, keys), which validation
+        lower-cases or compares without case, so "Hannah@meetspill.org" on the sheet matches.
 
         Returns False if no row matches, True if one does (in dry-run the write is then
         skipped). More than one matching row raises ValueError rather than guess.
@@ -150,7 +151,8 @@ class Sheets(HttpClient):
             i = headers.index(col)
             return str(row[i]).strip() if i < len(row) and row[i] is not None else ""
 
-        hits = [n for n, row in enumerate(values[1:], start=2) if all(cell(row, k) == str(v).strip() for k, v in match.items())]
+        want = {k: str(v).strip().casefold() for k, v in match.items()}
+        hits = [n for n, row in enumerate(values[1:], start=2) if all(cell(row, k).casefold() == v for k, v in want.items())]
         if not hits:
             return False
         if len(hits) > 1:

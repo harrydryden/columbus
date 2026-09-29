@@ -3,7 +3,7 @@
 -- force has effective_to NULL. key is the General key, or the row's natural key on other
 -- tabs; values is the raw sheet row as a JSON object of column to text.
 CREATE TABLE IF NOT EXISTS `{project}.us_outbound.settings` (
-  tab STRING NOT NULL OPTIONS (description = "One of: General, Signals, Angles, Industries, States, Roles, Copy, Mailboxes, Overrides, Tests."),
+  tab STRING NOT NULL OPTIONS (description = "One of: General, Signals, Angles, Industries, States, Roles, Copy, Mailboxes, Overrides, Tests, _order. An _order row keeps one tab's keys in sheet order (key = the tab)."),
   `key` STRING NOT NULL OPTIONS (description = "The General key, or the row's natural key (settings.validate.KEY_COLUMNS, joined with |)."),
   `values` STRING OPTIONS (description = "JSON text: the raw sheet row, column to text."),
   effective_from TIMESTAMP NOT NULL,

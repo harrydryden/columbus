@@ -183,14 +183,6 @@ def test_unbuilt_jobs_exit_non_zero(job, message, capsys):
     assert h.contexts == []
 
 
-def test_a_listed_job_whose_module_is_missing_says_its_phase(monkeypatch, capsys):
-    monkeypatch.setitem(cli.JOBS, "enrol", "us_outbound.enrol.not_there_yet:run")
-    h = Harness()
-    assert h.run("run", "enrol", "--live") == 2
-    assert "enrol: not built yet (phase 2)" in capsys.readouterr().err
-    assert "enrol" not in cli.built_jobs()
-
-
 def failing_job(ctx):
     raise RuntimeError("HubSpot is down")
 
@@ -202,6 +194,32 @@ def test_a_failing_job_exits_one_and_leaves_an_error_heartbeat(capsys, monkeypat
     [beat] = h.beats("suppression_load")
     assert beat["status"] == "error" and "HubSpot is down" in beat["error"]
     assert "RuntimeError" in capsys.readouterr().err
+
+
+def key_error_job(ctx):
+    return {}["id"]
+
+
+def bad_input_job(ctx):
+    raise ValueError("bad input")
+
+
+def test_a_bug_exits_one_with_its_traceback_and_bad_input_exits_two(capsys, monkeypatch):
+    h = Harness()
+    monkeypatch.setitem(cli.JOBS, "suppression_load", "tests.test_cli:key_error_job")
+    assert h.run("run", "suppression_load") == 1
+    err = capsys.readouterr().err
+    assert "Traceback" in err and "KeyError" in err
+    monkeypatch.setitem(cli.JOBS, "suppression_load", "tests.test_cli:bad_input_job")
+    assert h.run("run", "suppression_load") == 2
+    err = capsys.readouterr().err
+    assert "bad input" in err and "Traceback" not in err
+
+
+def test_a_broken_job_import_surfaces_as_an_error(capsys, monkeypatch):
+    monkeypatch.setitem(cli.JOBS, "enrol", "us_outbound.enrol.not_there_yet:run")
+    assert Harness().run("run", "enrol", "--live") == 1
+    assert "ModuleNotFoundError" in capsys.readouterr().err
 
 
 def test_unusable_settings_refuse_and_leave_a_heartbeat(capsys):

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -39,6 +39,7 @@ from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, STEP_DAYS, instantl
 from us_outbound.context import UK, Context, boundaries_for
 from us_outbound.logs import log
 from us_outbound.settings.model import Mailbox, Settings
+from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
 
 TAB = "Mailboxes"
 ACTIVE, WARMING, PAUSED, RETIRED = "Active", "Warming", "Paused", "Retired"
@@ -47,15 +48,10 @@ WARM_SCORE = 90  # PHASE0-CONFIRM: Instantly's warmup/health score (0-100) that 
 RETIRE_WAIT_DAYS = 30  # SPEC 9, 13: removed 30 days after retire, never within 30 days of last use
 DEFAULT_CAP = 30  # SPEC 13
 MAX_CAP = 30
-SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
 SIGNATURE = "{owner}\nSpill\nspill.chat/us"  # SPEC 5 default signature
 # Each step's subject and body are the lead's rendered custom variables (SPEC 9).
 CAMPAIGN_STEPS: tuple[dict[str, str], ...] = tuple(
     {"subject": f"{{{{s{i}_subject}}}}", "body": f"{{{{s{i}_body}}}}"} for i in range(1, len(STEP_DAYS) + 1)
-)
-MAILBOX_COLUMNS = (
-    "address", "instantly_account_id", "domain", "provider", "owner_name", "owner_role", "signature",
-    "status", "daily_cap", "added_on", "retire_after",
 )
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
 _TAG = re.compile(r"<[^>]+>")
@@ -271,7 +267,7 @@ def mailbox_add(
     if not m:
         raise MailboxError(f"{address!r} is not an email address")
     own_domain = m.group(1)
-    if own_domain == SPILL_DOMAIN:
+    if is_spill_domain(own_domain):
         raise MailboxError(f"{SPILL_DOMAIN} never sends cold email (SPEC 1.2)")
     if domain and domain.strip().lower() != own_domain:
         raise MailboxError(f"--domain must be the address's domain, {own_domain}")
@@ -323,8 +319,8 @@ def mailbox_pause(ctx: Context, address: str, *, settings: Settings | None = Non
     if m.status == RETIRED:
         raise MailboxError(f"{m.address} is retired")
     sheet_id = _sheet_id(ctx)
-    if m.status != PAUSED:
-        ctx.clients.sheets.update_cell(sheet_id, TAB, {"address": m.address}, "status", PAUSED)
+    if m.status != PAUSED and not ctx.clients.sheets.update_cell(sheet_id, TAB, {"address": m.address}, "status", PAUSED):
+        raise MailboxError(f"{m.address}: no row with that address on the Mailboxes tab")  # before Instantly is touched
     paused = dataclasses.replace(m, status=PAUSED)
     campaign = _sync_campaign(ctx, _with(settings, paused), m.owner_name)
     summary = {
@@ -344,8 +340,10 @@ def mailbox_retire(ctx: Context, address: str) -> dict:
         raise MailboxError(f"{m.address} is already retired")
     summary = mailbox_pause(ctx, m.address)
     retire_after = m.retire_after or (ctx.today_uk() + timedelta(days=RETIRE_WAIT_DAYS))
-    if m.retire_after is None:
-        ctx.clients.sheets.update_cell(_sheet_id(ctx), TAB, {"address": m.address}, "retire_after", retire_after.isoformat())
+    if m.retire_after is None and not ctx.clients.sheets.update_cell(
+        _sheet_id(ctx), TAB, {"address": m.address}, "retire_after", retire_after.isoformat()
+    ):
+        raise MailboxError(f"{m.address}: no row with that address on the Mailboxes tab")
     summary = {**summary, "retire_after": retire_after.isoformat()}
     log("mailbox_retire", **summary)
     return summary
@@ -361,11 +359,6 @@ def last_use(ctx: Context, address: str) -> datetime | None:
     times += [_ts(c.get("last_step_at")) for c in ctx.store.select("contacts", {"mailbox": a})]
     times = [t for t in times if t is not None]
     return max(times) if times else None
-
-
-def vitals_and_placement(ctx: Context, addresses: Sequence[str]) -> dict:
-    """Phase 2 fills this: Instantly vitals, seed-inbox placement and sends against cap (SPEC 9, 13)."""
-    return {}
 
 
 def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str:
@@ -385,6 +378,7 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
         ("warmup_turned_on", "Warmup turned back on"),
         ("waiting_to_retire", "Waiting to retire (sent in the last 30 days)"),
         ("not_found", "Not found in Instantly"),
+        ("no_sheet_row", "Not changed: no row with that address on the Mailboxes tab"),
     ):
         if out.get(key):
             lines.append(f"{label}: {', '.join(out[key])}")
@@ -410,7 +404,7 @@ def mailbox_health(ctx: Context) -> dict:
     warmups = inst.warmup_status([m.address for m in registry])
     out: dict[str, Any] = {
         "dry_run": ctx.dry_run, "mailboxes": len(registry), "promoted": [], "retired": [],
-        "warmup_turned_on": [], "waiting_to_retire": [], "not_found": [],
+        "warmup_turned_on": [], "waiting_to_retire": [], "not_found": [], "no_sheet_row": [],
     }
     rows: list[dict] = []
     changes: list[tuple[Mailbox, str]] = []
@@ -442,8 +436,10 @@ def mailbox_health(ctx: Context) -> dict:
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new_settings = settings
     for m, status in changes:
-        if sheet_id:
-            ctx.clients.sheets.update_cell(sheet_id, TAB, {"address": m.address}, "status", status)
+        if sheet_id and not ctx.clients.sheets.update_cell(sheet_id, TAB, {"address": m.address}, "status", status):
+            out["no_sheet_row"].append(m.address)  # the change is not made; the summary says so
+            out["promoted" if status == ACTIVE else "retired"].remove(m.address)
+            continue
         new_settings = _with(new_settings, dataclasses.replace(m, status=status))
     out["campaign_actions"] = {
         campaign_name(owner): _sync_campaign(ctx, new_settings, owner)
@@ -451,7 +447,6 @@ def mailbox_health(ctx: Context) -> dict:
         if owner in new_settings.owners()
     }
     out["campaigns"] = ensure_campaigns(ctx, settings=new_settings)
-    out["vitals"] = vitals_and_placement(ctx, [m.address for m in registry])
     ctx.clients.slack.post(settings.general.alert_channel, _summary_text(ctx, rows, out))
     log("mailbox_health", **{k: v for k, v in out.items() if k != "campaigns"})
     return out

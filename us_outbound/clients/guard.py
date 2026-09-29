@@ -118,6 +118,7 @@ class Boundaries:
     settings_sheet_id: str = ""
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
+    escalation_email: str = ""  # the only address an Instantly forward may go to (SPEC 11)
     bq_dataset: str = BQ_DATASET
 
     @property
@@ -253,8 +254,13 @@ class Guard:
                 need_registry_accounts()
         elif a in {"lead.add", "lead.delete", "lead.update", "lead.stop"}:
             need_us_campaign()
-        elif a in {"email.reply", "email.forward"}:
+        elif a == "email.reply":
             need_registry_accounts()
+        elif a == "email.forward":
+            need_registry_accounts()
+            to = {str(x).strip().lower() for x in op.detail.get("to", ())}
+            if not to or not b.escalation_email or to != {b.escalation_email.strip().lower()}:
+                raise GuardViolation("Instantly forwards go only to escalation_email (SPEC 11)")
         elif a in {"account.warmup_enable", "account.warmup_disable", "account.pause", "account.resume"}:
             need_registry_accounts()
         elif a == "blocklist.add":
@@ -272,8 +278,10 @@ class Guard:
         current = op.detail.get("current", {}) or {}
 
         def empty_only_ok() -> None:
-            for p in props & HUBSPOT_EMPTY_ONLY:
-                if current.get(p) not in (None, ""):
+            for p in sorted(props & HUBSPOT_EMPTY_ONLY):
+                if p not in current:
+                    raise GuardViolation(f"HubSpot {p} may only be set when empty; current value not supplied (SPEC 1.2)")
+                if current[p] not in (None, ""):
                     raise GuardViolation(f"HubSpot {p} may only be set when empty (SPEC 1.2)")
 
         def need_warm() -> None:

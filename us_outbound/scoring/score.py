@@ -39,7 +39,7 @@ from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
 from us_outbound.settings.conditions import find_terms
-from us_outbound.settings.model import Settings, Signal
+from us_outbound.settings.model import AGED_FACTS, Settings, Signal
 
 TEXT_FACTS = frozenset({"benefit", "mental_health_provision", "culture_statement", "posting_text", "page_text"})
 UNREAD_STATUSES = frozenset({"blocked", "error"})
@@ -237,6 +237,18 @@ def _weight(signal: Signal, distinct: int) -> int:
     return max(total, -abs(signal.max_weight))  # a negative weight's max_weight caps its size
 
 
+def aged_value(fact: str, event: Mapping[str, Any], today: date) -> Any:
+    """A fact's value as of today: an AGED_FACTS day count plus the days since it was observed."""
+    value = event.get("value")
+    if fact not in AGED_FACTS:
+        return value
+    n, age = tiers.as_number(value), age_days(event, today)
+    if n is None or age is None:
+        return value
+    aged = n + max(0, age)
+    return int(aged) if aged.is_integer() else aged
+
+
 def _match_condition(
     signal: Signal,
     events: list[Mapping[str, Any]],
@@ -250,7 +262,7 @@ def _match_condition(
     for e in reversed(_newest_first(events)):
         if e.get("fact") and e.get("fact") not in TEXT_FACTS:
             latest[e["fact"]] = e
-    values: dict[str, Any] = {f: e.get("value") for f, e in latest.items()}
+    values: dict[str, Any] = {f: aged_value(f, e, today) for f, e in latest.items()}
     virtual: dict[str, Any] = {}
     if {"calendar", "irs_bmf"} & set(signal.sources):
         virtual = calendar_facts(all_events, today)
@@ -272,7 +284,7 @@ def _match_condition(
             quote = _quote(e.get("quote"))
             evidence.append(
                 Evidence(
-                    quote or f"{f} = {_fmt(e.get('value'))}",
+                    quote or f"{f} = {_fmt(values[f])}",
                     quote=quote,
                     url=str(e.get("source_url") or ""),
                     source=str(e.get("source") or ""),

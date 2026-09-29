@@ -251,6 +251,20 @@ def test_condition_uses_latest_fresh_value_per_field():
     assert match_signal(NEW_LEADER, facts, TODAY) is None
 
 
+def test_day_count_facts_are_aged_to_today():
+    """days_since_* and days_in_title are stored as of observed_at; scoring adds the days since."""
+    assert match_signal(FUNDING, [fact("clay_funding", "days_since_funding", 500, 100)], TODAY) is None  # 600 today
+    m = match_signal(FUNDING, [fact("clay_funding", "days_since_funding", 500, 10)], TODAY)
+    assert m is not None and m.weight_applied == 20
+    assert [e.text for e in m.evidence] == ["days_since_funding = 510"]
+    assert match_signal(NEW_LEADER, [fact("apollo_people", "people_leader_days_in_title", 85, 10)], TODAY) is None
+    # Other fields are not aged, and a hand-set override is used as it reads.
+    assert match_signal(LEADER, [fact("apollo_people", "people_leader_count", 1, 300)], TODAY) is not None
+    over = match_signal(FUNDING, [fact("clay_funding", "days_since_funding", 900, 10)], TODAY,
+                        overrides={"days_since_funding": 30})
+    assert over is not None and over.evidence[0].text == "days_since_funding = 30"
+
+
 def test_condition_across_two_sources():
     facts = [fact("apollo_jobs", "open_people_roles", 1), fact("apollo_people", "people_leader_count", 0)]
     m = match_signal(FIRST_HIRE, facts, TODAY)

@@ -10,8 +10,12 @@ A job reports a skip by returning {"skipped": True, "reason": ...} or raising Sk
 Errors are re-raised after the row is written, so the CLI exits non-zero.
 
 check_heartbeats(ctx) is the heartbeat_check job (hourly, beside kill_rules). A job is
-missed when its last healthy run (ok, skipped, or still running) is older than
-EXPECTED[job]; weekday jobs count only weekday time (UK), so a weekend is not a miss.
+missed when it last showed it is alive longer ago than EXPECTED[job]; weekday jobs count
+only weekday time (UK), so a weekend is not a miss. Alive means a run that finished ok,
+or was skipped for a reason of its own (a blackout date). A "running" row is no evidence:
+a run killed by its task timeout stays "running" for ever, and the runs skipped behind it
+("previous run still going") are no evidence either. The one exception is a job's only
+run so far, still within OVERLAP_MINUTES of its start.
 It posts one Slack message when a job is newly missed, and repeats the list at the
 09:00 UK check each day while anything is still missed.
 
@@ -34,6 +38,7 @@ TABLE = "heartbeats"
 RUNNING, OK, ERROR, SKIPPED = "running", "ok", "error", "skipped"
 ERROR_LIMIT = 1000  # characters of error text kept on the row
 OVERLAP_MINUTES = 60  # a "running" row younger than this blocks a second run (Cloud Run task timeouts are <= 60 min)
+OVERLAP_REASON = "previous run still going"  # a skip behind a running (or dead) run: no sign of life
 NEW_MISS_WINDOW = 75  # minutes: a job overdue by less than this at an hourly check is "newly missed"
 REMINDER_HOUR_UK = 9  # the daily repeat of the missed list, beside the daily post
 
@@ -65,7 +70,8 @@ WEEKDAY_JOBS = frozenset({"verify_in_clay", "pick_contacts", "enrol"})
 OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 
 LATEST_SQL = (
-    "SELECT job, run_id, status, started_at, finished_at, error, last_ok_at FROM `{dataset}.v_heartbeats`"
+    "SELECT job, run_id, status, started_at, finished_at, error, last_ok_at, last_alive_at, runs"
+    " FROM `{dataset}.v_heartbeats`"
 )
 
 
@@ -107,7 +113,7 @@ def run_job(ctx: Context, fn: Callable[[Context], Any]) -> dict:
     # Only scheduled jobs are locked: an operator command (stop above all) always runs.
     other = _still_running(store, job, ctx.run_id, now) if job in EXPECTED else None
     if other is not None:
-        detail = {"skipped": True, "reason": "previous run still going", "other_run_id": other.get("run_id")}
+        detail = {"skipped": True, "reason": OVERLAP_REASON, "other_run_id": other.get("run_id")}
         store.upsert(TABLE, [{**row, "finished_at": now, "status": SKIPPED, "detail": detail, "error": None}])
         log("job_skipped", job=job, run_id=ctx.run_id, reason=detail["reason"])
         return detail
@@ -138,23 +144,41 @@ def run_job(ctx: Context, fn: Callable[[Context], Any]) -> dict:
 # -- the heartbeat check ---------------------------------------------------------
 
 
+def _shows_alive(row: Mapping[str, Any]) -> bool:
+    """An ok run, or a skip for a reason other than an overlap (see the module docstring)."""
+    if row.get("status") == OK:
+        return True
+    if row.get("status") != SKIPPED:
+        return False
+    detail = row.get("detail")
+    reason = detail.get("reason") if isinstance(detail, Mapping) else None
+    return reason != OVERLAP_REASON
+
+
 def _latest_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict]:
     """What v_heartbeats returns, computed in Python (MemoryStore has no views)."""
     latest: dict[str, dict] = {}
     last_ok: dict[str, datetime] = {}
+    last_alive: dict[str, datetime] = {}
+    runs: dict[str, int] = {}
     for r in rows:
         job = r.get("job")
         if not job:
             continue
+        runs[job] = runs.get(job, 0) + 1
         started = _ts(r.get("started_at"))
         old = latest.get(job)
         if old is None or (started, str(r.get("run_id"))) > (_ts(old.get("started_at")), str(old.get("run_id"))):
             latest[job] = dict(r)
-        if r.get("status") == OK:
-            at = _ts(r.get("finished_at")) or started
-            if at and (job not in last_ok or at > last_ok[job]):
-                last_ok[job] = at
-    return [{**r, "last_ok_at": last_ok.get(job)} for job, r in latest.items()]
+        at = _ts(r.get("finished_at")) or started
+        if at and r.get("status") == OK and (job not in last_ok or at > last_ok[job]):
+            last_ok[job] = at
+        if at and _shows_alive(r) and (job not in last_alive or at > last_alive[job]):
+            last_alive[job] = at
+    return [
+        {**r, "last_ok_at": last_ok.get(job), "last_alive_at": last_alive.get(job), "runs": runs[job]}
+        for job, r in latest.items()
+    ]
 
 
 def latest_runs(store: Store) -> dict[str, dict]:
@@ -182,13 +206,16 @@ def _weekday_minutes(start: datetime, end: datetime) -> float:
     return total
 
 
-def _last_healthy(run: Mapping[str, Any]) -> datetime | None:
-    """When the job last showed it is alive: its last ok run, or its latest run if skipped or running."""
-    times = [_ts(run.get("last_ok_at"))]
-    if run.get("status") in (SKIPPED, RUNNING, OK):
-        times.append(_ts(run.get("finished_at")) or _ts(run.get("started_at")))
-    times = [t for t in times if t is not None]
-    return max(times) if times else None
+def _last_healthy(run: Mapping[str, Any], now: datetime) -> datetime | None:
+    """When the job last showed it is alive (last_alive_at), or when its only run started if still going."""
+    times = [t for t in (_ts(run.get("last_alive_at")), _ts(run.get("last_ok_at"))) if t is not None]
+    if times:
+        return max(times)
+    started = _ts(run.get("started_at"))
+    first = (run.get("runs") or 1) <= 1
+    if first and run.get("status") == RUNNING and started and now - started < timedelta(minutes=OVERLAP_MINUTES):
+        return started  # the job's first run, still going
+    return None
 
 
 def overdue_minutes(job: str, run: Mapping[str, Any] | None, now: datetime) -> float | None:
@@ -199,7 +226,7 @@ def overdue_minutes(job: str, run: Mapping[str, Any] | None, now: datetime) -> f
     """
     if not run:
         return None
-    last = _last_healthy(run)
+    last = _last_healthy(run, now)
     if last is None:
         return float("inf")
     elapsed = _weekday_minutes(last, now) if job in WEEKDAY_JOBS else (now - last).total_seconds() / 60
@@ -218,7 +245,7 @@ def scheduled_jobs() -> list[str]:
 
 
 def _describe(job: str, run: Mapping[str, Any], now: datetime) -> str:
-    last = _last_healthy(run)
+    last = _last_healthy(run, now)
     when = f"last healthy run {last.astimezone(UK):%a %d %b %H:%M} UK" if last else "no healthy run on record"
     line = f"• {job}: {when} (expected at least every {_span(EXPECTED[job])})"
     if run.get("status") == ERROR and run.get("error"):

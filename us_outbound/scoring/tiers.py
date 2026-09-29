@@ -209,9 +209,13 @@ def hard_exclusion(
     ca_wa = as_number(facts.get("ca_wa_share"))
     if ca_wa is not None and ca_wa > STATE_SHARE_LIMIT:
         return f"{_pct(ca_wa)} of US staff are in CA or WA (over 20%)"
+    # SPEC 9: "in CA or WA (or in FL, until it is switched on)": while FL is off it joins
+    # the same restricted share.
     fl = as_number(facts.get("fl_share"))
-    if fl is not None and fl > STATE_SHARE_LIMIT and "FL" not in active:
-        return f"{_pct(fl)} of US staff are in FL, which is not active (over 20%)"
+    if fl is not None and "FL" not in active:
+        combined = round((ca_wa or 0.0) + fl, 9)
+        if combined > STATE_SHARE_LIMIT:
+            return f"{_pct(combined)} of US staff are in CA, WA or FL, which is not active (over 20%)"
 
     us_people = as_number(facts.get("us_headcount"))
     if us_people is None:
@@ -255,13 +259,8 @@ def tier(
     matches: list[Match],
     exclusion: str | None,
     settings: Settings,
-    is_control_candidate: bool = True,
 ) -> tuple[str, str]:
-    """(tier, tier_reason) by SPEC 9's first-rule-wins order.
-
-    is_control_candidate: False keeps a below-Standard account out of Control (it is Held
-    instead). score_account always passes True in v1.
-    """
+    """(tier, tier_reason) by SPEC 9's first-rule-wins order; below standard_threshold is Control."""
     if exclusion:
         return EXCLUDED, f"{EXCLUDED}: {exclusion}"
     excludes = [m for m in matches if m.signal.action == "Exclude"]
@@ -275,8 +274,6 @@ def tier(
         name = PRIORITY
     elif score >= g.standard_threshold:
         name = STANDARD
-    elif is_control_candidate:
-        name = CONTROL
     else:
-        return HELD, f"{HELD}: score {score} is below {g.standard_threshold} and the account is not a Control candidate"
+        name = CONTROL
     return name, f"{name}: {score_parts(matches, score)}"

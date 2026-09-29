@@ -12,7 +12,7 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      suppressed or a partner, whose industry is on, with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before.
-  4. In queue order (queue.ordered), control_share from Control and the rest from Priority
+  4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its copy version (the running test's hash split, else the approved version for
      its angle), its four rendered steps (any copy-rule violation skips it), and a HubSpot
@@ -35,27 +35,15 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
+from us_outbound.clean.people import state_code
 from us_outbound.clients.bq import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ET, UK, Context
 from us_outbound.enrol import queue, render
 from us_outbound.logs import hash_email, log
+from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import Mailbox, Settings
-
-try:
-    from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
-except ImportError:  # TODO: clean/domains.py is written concurrently; drop this fallback once it has landed.
-    _PERSONAL = frozenset(
-        {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "ymail.com",
-         "aol.com", "icloud.com", "me.com", "mac.com", "protonmail.com", "proton.me", "gmx.com", "zoho.com"}
-    )
-    _GENERIC = frozenset({"info", "hr", "hello", "contact", "admin", "office", "team", "jobs", "careers", "sales", "support"})
-
-    def is_personal_domain(domain: str | None) -> bool:
-        return (domain or "").strip().lower().rsplit("@", 1)[-1] in _PERSONAL
-
-    def is_generic_mailbox(local_part: str | None) -> bool:
-        return (local_part or "").strip().lower().split("@", 1)[0] in _GENERIC
 
 
 JOB = "enrol"
@@ -207,14 +195,18 @@ class Candidate:
 
 
 def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
-    """(suppressed domains, suppressed email hashes) in force now. A suppressed alias suppresses its root."""
+    """(suppressed domains, suppressed email hashes) in force now. A suppressed alias suppresses its root.
+
+    A row with an email hash suppresses only that email; its domain is only recorded
+    (suppression.py). A domain row has no email hash.
+    """
     domains: set[str] = set()
     hashes: set[str] = set()
     for r in ctx.store.select("suppression"):
         expires = _ts(r.get("expires_at"))
         if expires is not None and expires <= ctx.now:
             continue
-        if r.get("domain"):
+        if r.get("domain") and not r.get("email_sha256"):
             domains.add(_lower(r["domain"]))
         if r.get("email_sha256"):
             hashes.add(_lower(r["email_sha256"]))
@@ -253,10 +245,10 @@ def contact_block(contact: Mapping[str, Any], domains: set[str], hashes: set[str
     status = _lower(contact.get("email_status"))
     if status not in SENDABLE_EMAIL_STATUSES:
         return f"email status {status or 'unknown'}"
-    state = str(contact.get("person_state") or "").strip().upper()
-    if not state:
+    state = state_code(str(contact.get("person_state") or ""))
+    if state is None:  # blank, or not a US state ("Ontario", "London")
         return "contact state unknown"
-    if state in NEVER_STATES:
+    if state in NEVER_STATES:  # "CA", "California", "Calif.", "WA", "Washington"
         return "contact in CA or WA"
     domain = email.rsplit("@", 1)[1]
     if is_personal_domain(domain):
@@ -365,10 +357,6 @@ def account_opener(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str]:
     """
     angle = ctx.settings.angle(str(account.get("angle") or ""))
     default = angle.default_opener if angle else ""
-    try:
-        from us_outbound.scoring.score import score_account
-    except ImportError:  # scoring is built separately; until it lands, the angle's default opener
-        return default, ""
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
     r = score_account(account, events, ctx.settings, ctx.today_uk())
     opener = r.opener if r.angle == account.get("angle") and r.opener else default
@@ -614,8 +602,8 @@ def run(ctx: Context) -> dict:
     n = max(0, n - done_today)
     r = _Run(skipped=skipped)
 
-    # As queue.select: control_share from Control, the rest from Priority then Standard, and a
-    # shortfall in either (too few, or skipped on the way) filled from the other.
+    # control_share from Control, the rest from Priority then Standard, and a shortfall in
+    # either (too few, or skipped on the way) filled from the other (SPEC 9; queue.py docstring).
     in_order = sorted(cands, key=lambda c: queue.order_key(c.account, s))
     n_control = sum(c.account.get("tier") == queue.CONTROL for c in in_order)
     control = iter([c for c in in_order if c.account.get("tier") == queue.CONTROL])

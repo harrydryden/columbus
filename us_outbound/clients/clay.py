@@ -87,6 +87,7 @@ def _as_obj(obj: Any, what: str) -> dict:
 class Clay(HttpClient):
     system = "clay"
     base_url = DEFAULT_BASE_URL
+    paid_reads = frozenset({"function.run"})
 
     def __init__(
         self,

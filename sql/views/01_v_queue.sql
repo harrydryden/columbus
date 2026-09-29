@@ -26,9 +26,11 @@ WITH industries AS (
   QUALIFY ROW_NUMBER() OVER (PARTITION BY `key` ORDER BY effective_from DESC) = 1
 ),
 active_suppression AS (
+  -- Domain rows only: a row with an email hash suppresses just that email (suppression.py).
   SELECT LOWER(TRIM(domain)) AS domain
   FROM `{project}.us_outbound.suppression`
   WHERE domain IS NOT NULL
+    AND email_sha256 IS NULL
     AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP())
 ),
 suppressed_domains AS (

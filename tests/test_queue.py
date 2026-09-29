@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import random
 import uuid
-from datetime import UTC, date, datetime
+from datetime import date
 
 from us_outbound.enrol import queue
 from tests.test_render import HANNAH, HARRY_M, HARRY_T, SAM, make_settings
@@ -85,13 +85,6 @@ def test_is_blackout():
     assert queue.is_blackout(date(2027, 1, 4), S)
 
 
-def test_in_send_window_is_eastern_time():
-    assert queue.in_send_window(datetime(2026, 10, 27, 13, 0, tzinfo=UTC), S)  # 09:00 EDT
-    assert not queue.in_send_window(datetime(2026, 10, 27, 12, 59, tzinfo=UTC), S)
-    assert not queue.in_send_window(datetime(2026, 10, 27, 20, 0, tzinfo=UTC), S)  # 16:00 EDT, end exclusive
-    assert not queue.in_send_window(datetime(2026, 10, 31, 15, 0, tzinfo=UTC), S)  # Saturday
-
-
 # -- selection ------------------------------------------------------------------------------
 
 
@@ -112,29 +105,6 @@ def test_control_share_rounds_half_up():
     assert queue.control_count(10, one_pct, 5) == 1  # at least one from 4 a day
 
 
-def test_select_takes_control_share_then_priority_then_standard():
-    rows = [row(i, "Control") for i in range(10)] + [row(100 + i, "Priority", 60) for i in range(10)]
-    rows += [row(200 + i, "Standard", 30) for i in range(40)] + [row(300, "Held", 90), row(301, "Excluded", 90)]
-    picked = queue.select(rows, 30, S)
-    tiers = [r["tier"] for r in picked]
-    assert len(picked) == 30 and tiers.count("Control") == 5
-    assert tiers[:10] == ["Priority"] * 10 and tiers[10:25] == ["Standard"] * 15
-    assert "Held" not in tiers and "Excluded" not in tiers
-
-
-def test_short_control_is_filled_from_priority_and_standard():
-    rows = [row(1, "Control")] + [row(100 + i, "Standard") for i in range(40)]
-    picked = queue.select(rows, 30, S)
-    assert len(picked) == 30 and [r["tier"] for r in picked].count("Control") == 1
-
-
-def test_short_priority_and_standard_are_filled_from_control():
-    rows = [row(i, "Control") for i in range(10)] + [row(100 + i, "Priority", 60) for i in range(2)]
-    picked = queue.select(rows, 3, S)  # 15% of 3 rounds to no Control, but only 2 others wait
-    assert [r["tier"] for r in picked] == ["Priority", "Priority", "Control"]
-    assert len(queue.select(rows, 30, S)) == 12
-
-
 def test_order_is_score_then_size_band_then_industry_priority():
     rows = [
         row(1, "Standard", 30, "10-19"),
@@ -145,7 +115,7 @@ def test_order_is_score_then_size_band_then_industry_priority():
         row(6, "Priority", 50, "10-19"),
         row(7, "Standard", 30, "20-49", "Not on the tab"),  # priority 99
     ]
-    ids = [r["account_id"] for r in queue.ordered(rows, S)]
+    ids = [r["account_id"] for r in sorted(rows, key=lambda r: queue.order_key(r, S))]
     assert ids == ["a006", "a005", "a004", "a003", "a007", "a002", "a001"]
 
 

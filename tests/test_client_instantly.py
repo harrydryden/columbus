@@ -389,6 +389,17 @@ def test_forward_with_the_original_thread():
     assert post.json["body"]["text"] == "Waiting 24 hours.\nSlack: link"
 
 
+def test_forward_goes_only_to_escalation_email():
+    inst, t, _ = make(live=True)
+    t.route("GET", "/emails/e1", body={"id": "e1", "eaccount": HANNAH, "subject": "Re: hello"})
+    for to in ("someone@other.com", ["harry@spill.chat", "someone@other.com"]):
+        with pytest.raises(GuardViolation, match="escalation_email"):
+            inst.forward(HANNAH, "e1", to, "Waiting 24 hours.")
+    assert t.requests == []  # refused before even reading the email
+    inst.forward(HANNAH, "e1", "Harry@Spill.chat", "Waiting 24 hours.")
+    assert len(t.writes()) == 1
+
+
 def test_blocklist_add_emails_only():
     inst, t, _ = make(live=True)
     inst.blocklist_add(["Jane@Acme.example", "jane@acme.example", "bob@acme.example"])

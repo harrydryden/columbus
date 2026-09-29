@@ -15,6 +15,7 @@ from tests.fakes import TEST_SHEET_ID, FakeTransport, make_context
 from us_outbound.clients.guard import Op
 from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, instantly_schedule
 from us_outbound.registry import mailboxes as reg
+from us_outbound.settings.defaults import COLUMNS
 from us_outbound.settings.model import General, Mailbox, Settings
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)  # Tuesday
@@ -41,7 +42,7 @@ MAILBOXES = (
     mailbox(HARRY2, "Harry Dryden"),
 )
 SETTINGS = Settings(general=GENERAL, mailboxes=MAILBOXES)
-MAILBOX_HEADERS = list(reg.MAILBOX_COLUMNS)
+MAILBOX_HEADERS = list(COLUMNS["Mailboxes"])
 
 
 # -- fakes -----------------------------------------------------------------------------------
@@ -290,6 +291,8 @@ def test_mailbox_add_refusals():
     ctx, t, inst, sheets = setup()
     with pytest.raises(reg.MailboxError, match="spill.chat never sends"):
         reg.mailbox_add(ctx, "harry@spill.chat", owner="Harry Dryden")
+    with pytest.raises(reg.MailboxError, match="spill.chat never sends"):
+        reg.mailbox_add(ctx, "harry@mail.spill.chat", owner="Harry Dryden")
     with pytest.raises(reg.MailboxError, match="already on the Mailboxes tab"):
         reg.mailbox_add(ctx, HANNAH.upper(), owner="Hannah Spalding")
     with pytest.raises(reg.MailboxError, match="not connected in Instantly"):
@@ -313,6 +316,16 @@ def test_mailbox_pause_takes_it_off_the_sending_list():
     assert inst.by_name(C_EU)["status"] == 1
     assert not [r for r in t.requests if f"/{inst.by_name(C_EU)['id']}" in r.url]
     assert not [r for r in t.requests if "warmup" in r.url and r.method == "POST" and "disable" in r.url]
+
+
+def test_mailbox_pause_refuses_when_the_sheet_has_no_row_for_it():
+    ctx, t, inst, sheets = setup()
+    inst.standard(C_HARRY, [HARRY, HARRY2], 60)
+    sheets.tabs["Mailboxes"] = [r for r in sheets.tabs["Mailboxes"] if r["address"] != HARRY]
+    with pytest.raises(reg.MailboxError, match="no row with that address"):
+        reg.mailbox_pause(ctx, HARRY)
+    assert instantly_writes(t) == []
+    assert inst.by_name(C_HARRY)["email_list"] == [HARRY, HARRY2]
 
 
 def test_mailbox_retire_pauses_and_sets_the_wait():

@@ -32,7 +32,7 @@ def excluded(acct: dict | None = None, facts: dict | None = None, settings=SETTI
 
 def test_a_clean_account_is_not_excluded():
     assert excluded() is None
-    assert excluded(facts={"ca_wa_share": 0.20, "fl_share": 0.1, "us_headcount": 5, "hubspot_customer": False}) is None
+    assert excluded(facts={"ca_wa_share": 0.10, "fl_share": 0.1, "us_headcount": 5, "hubspot_customer": False}) is None
 
 
 # -- partners ----------------------------------------------------------------------
@@ -106,9 +106,18 @@ def test_ca_or_wa_share_over_20_percent():
 
 
 def test_fl_share_counts_only_while_fl_is_off():
-    assert excluded(facts={"fl_share": 0.3}) == "30% of US staff are in FL, which is not active (over 20%)"
+    assert excluded(facts={"fl_share": 0.3}) == "30% of US staff are in CA, WA or FL, which is not active (over 20%)"
     fl_on = make_settings(states=(*SPEC_STATES[:7], State("FL", True)))
     assert excluded({"hq_state": "FL"}, {"fl_share": 0.3}, settings=fl_on) is None
+
+
+def test_fl_joins_the_ca_wa_share_while_it_is_off():
+    """SPEC 9: "more than 20% ... in CA or WA (or in FL, until it is switched on)"."""
+    both = {"ca_wa_share": 0.15, "fl_share": 0.10}
+    assert excluded(facts=both) == "25% of US staff are in CA, WA or FL, which is not active (over 20%)"
+    assert excluded(facts={"ca_wa_share": 0.10, "fl_share": 0.10}) is None  # exactly 20%
+    fl_on = make_settings(states=(*SPEC_STATES[:7], State("FL", True)))
+    assert excluded({"hq_state": "FL"}, both, settings=fl_on) is None
 
 
 def test_hq_state_rules():
@@ -145,7 +154,6 @@ def test_thresholds():
     assert tier(49, [], None, SETTINGS)[0] == "Standard"
     assert tier(20, [], None, SETTINGS)[0] == "Standard"
     assert tier(19, [], None, SETTINGS) == ("Control", "Control: no scoring signals found")
-    assert tier(19, [], None, SETTINGS, is_control_candidate=False)[0] == "Held"
 
 
 def test_hold_via_vendor_named_beats_a_high_score():

@@ -15,7 +15,7 @@ class HeadTransport:
         self.status, self.headers, self.error = status, headers or {}, error
         self.requests: list[SentRequest] = []
 
-    def send(self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0):
+    def send(self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0, idempotent=True):
         self.requests.append(SentRequest(method, url, dict(headers), params, json, data))
         if self.error:
             raise self.error
@@ -60,7 +60,12 @@ def test_get_http_errors_raise():
         public.get("https://api.lever.co/v0/postings/acme?mode=json")
 
 
-@pytest.mark.parametrize("url", ["ftp://www.irs.gov/file.csv", "www.irs.gov/file.csv", "https:///nohost"])
+@pytest.mark.parametrize("url", [
+    "ftp://www.irs.gov/file.csv", "www.irs.gov/file.csv", "https:///nohost",
+    # requests would connect to evil.example, while the host after "@" is allowlisted
+    "https://evil.example\\@boards-api.greenhouse.io/v1/boards/x/jobs",
+    "https://boards-api.greenhouse.io /v1/boards/x/jobs",
+])
 def test_non_http_urls_rejected(url):
     public, t, _ = make()
     with pytest.raises(ValueError):

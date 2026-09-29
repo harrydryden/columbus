@@ -643,10 +643,15 @@ class Instantly(HttpClient):
         PHASE0-CONFIRM: POST /emails/forward is in the v2 OpenAPI; confirm it works on our plan.
         """
         [acct] = self._registry("email.forward", [eaccount], write=True, target=eaccount)
-        original = self._owned_email(acct, email_id)
         recipients = _lower_all([to] if isinstance(to, str) else to)
         if not recipients:
             raise ValueError("forward needs a recipient")
+        op = Op("email.forward", target=acct, write=True, detail={"accounts": [acct], "to": recipients, "id": email_id})
+        escalation = self.guard.bounds.escalation_email.strip().lower()
+        if not escalation or set(recipients) != {escalation}:
+            self.guard.authorize(self.system, op)  # refuses before any request (even reading the email)
+            raise GuardViolation("Instantly forwards go only to escalation_email (SPEC 11)")
+        original = self._owned_email(acct, email_id)
         payload = {
             "eaccount": acct,
             "reply_to_uuid": email_id,
@@ -655,7 +660,6 @@ class Instantly(HttpClient):
             "body": {"text": note, "html": text_to_html(note)},
             "include_original_body": True,
         }
-        op = Op("email.forward", target=acct, write=True, detail={"accounts": [acct], "to": recipients, "id": email_id})
         return self.request("POST", "/emails/forward", op, json=payload, dry_result={"id": None, "dry_run": True})
 
     # -- blocklist -------------------------------------------------------------

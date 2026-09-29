@@ -26,6 +26,10 @@ def split_url(url: str) -> tuple[str, str, str, str]:
     netloc = rest
     for ch in "/?#":
         netloc = netloc.split(ch, 1)[0]
+    # urllib3 (under requests) also ends the authority at a backslash, so "evil.example\@allowed.host"
+    # would pass the guard as allowed.host but connect to evil.example. Refuse such URLs.
+    if "\\" in netloc or any(c.isspace() for c in netloc):
+        raise ValueError(f"URL authority has a backslash or whitespace: {url!r}")
     host = netloc.rsplit("@", 1)[-1]
     host = host.split("]")[0].lstrip("[") if host.startswith("[") else host.split(":", 1)[0]
     host = host.lower().rstrip(".")

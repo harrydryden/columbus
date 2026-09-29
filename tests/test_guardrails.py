@@ -56,6 +56,7 @@ PIPELINE, FIRST_STAGE = "pipe-spill3", "stage-first"
 CLAY_FUNCTIONS = ("fn-us-accounts", "fn-us-contacts")
 SHEET = "sheet-test"
 ALERT, DEV = "#us-outbound", "#us-outbound-dev"
+ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
 PROJECT = "test-project"
 
 BOUNDS = Boundaries(
@@ -67,6 +68,7 @@ BOUNDS = Boundaries(
     settings_sheet_id=SHEET,
     alert_channel=ALERT,
     dev_channel=DEV,
+    escalation_email=ESCALATION,
 )
 
 # -- SPEC 1.2 restated as data (deliberately not imported from guard.py) ----------------------
@@ -132,6 +134,8 @@ def spec_violation(rec: CallRecord) -> str | None:
             return None
         if a in {"lead.add", "lead.delete", "lead.update", "lead.stop"}:
             return None if t.startswith(PREFIX) else f"Instantly {a} on {t!r}"
+        if a == "email.forward" and set(d.get("to") or ()) != set(redact([ESCALATION])):
+            return "Instantly forward to someone other than escalation_email"
         if a in {"email.reply", "email.forward", "account.warmup_enable", "account.pause", "account.resume"}:
             return None if in_registry else f"Instantly {a} from outside the registry"
         if a == "blocklist.add":
@@ -695,6 +699,8 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "instantly accounts outside the registry": lambda w: w.clients["Instantly"].list_accounts(["anna@spill.eu"]),
     "instantly warmup outside the registry": lambda w: w.clients["Instantly"].enable_warmup(["anna@spill.eu"]),
     "instantly reply from outside the registry": lambda w: w.clients["Instantly"].reply("anna@spill.eu", "E1", "Re", "Hi"),
+    "instantly forward outside Spill": lambda w: w.clients["Instantly"].forward(
+        "hannah@meetspill.org", "E1", "someone@other.com", "Waiting 24 hours."),
     "instantly workspace settings": lambda w: w.clients["Instantly"].request(
         "PATCH", "/workspaces/current", Op("workspace.update", target="workspace", write=True)),
     # Slack: only #us-outbound and #us-outbound-dev.

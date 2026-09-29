@@ -473,6 +473,8 @@ def _general(rows: list[_Row]) -> General:
     g = General(**values)
     if g.standard_threshold > g.priority_threshold:
         err("standard_threshold", f"must not be above priority_threshold ({g.priority_threshold})")
+    if g.dev_channel.lstrip("#").lower() == g.alert_channel.lstrip("#").lower():
+        err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
     if g.live_sending:
         missing = [k for k in ("postal_address", "privacy_url", "approver_slack_ids") if not getattr(g, k)]
         if missing:
@@ -712,6 +714,12 @@ def _copy(rows: list[_Row]) -> list[tuple[CopyRow, int]]:
     return out
 
 
+def is_spill_domain(domain: str) -> bool:
+    """spill.chat or any subdomain of it: none of them sends cold email (SPEC 1.2)."""
+    d = domain.strip().lower().rstrip(".")
+    return d == SPILL_DOMAIN or d.endswith("." + SPILL_DOMAIN)
+
+
 def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
     out: list[tuple[Mailbox, int]] = []
     seen: dict[str, int] = {}
@@ -720,7 +728,7 @@ def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
         address = r.parse("address", _email)
         _unique(r, "address", address, seen, address or "")
         own_domain = address.partition("@")[2] if address else ""
-        if own_domain == SPILL_DOMAIN:
+        if is_spill_domain(own_domain):
             r.fail("address", f"{SPILL_DOMAIN} never sends cold email (SPEC 1.2)")
         domain = r.text("domain").lower() or own_domain
         if own_domain and domain != own_domain:

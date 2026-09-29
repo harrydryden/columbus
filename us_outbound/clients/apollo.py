@@ -111,6 +111,7 @@ def _yyyymmdd(value: date | datetime | str) -> str:
 class Apollo(HttpClient):
     system = "apollo"
     base_url = "https://api.apollo.io/api/v1"
+    paid_reads = frozenset({"organizations.search", "organizations.enrich", "people.bulk_match"})
 
     def headers(self) -> dict[str, str]:
         return {

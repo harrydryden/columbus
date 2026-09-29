@@ -23,11 +23,10 @@ from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime, timedelta
+from collections.abc import Iterable, Mapping
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.settings.model import Settings
@@ -104,13 +103,6 @@ def working_days_left(today: date, settings: Settings) -> int:
     return n
 
 
-def in_send_window(now_et: datetime, settings: Settings) -> bool:
-    """True inside the send window (Mon–Fri 09:00–16:00 America/New_York by default), end exclusive."""
-    w = settings.general.send_window
-    local = now_et.astimezone(ZoneInfo(w.tz)) if now_et.tzinfo else now_et
-    return local.weekday() in w.days and w.start <= local.time() < w.end
-
-
 # -- order and selection ----------------------------------------------------------------------
 
 
@@ -138,10 +130,6 @@ def order_key(row: Mapping[str, Any], settings: Settings) -> tuple:
     )
 
 
-def ordered(rows: Iterable[Mapping[str, Any]], settings: Settings) -> list[Mapping[str, Any]]:
-    return sorted(rows, key=lambda r: order_key(r, settings))
-
-
 def control_count(n: int, settings: Settings, control_available: int) -> int:
     """control_share of n, rounded half up; at least 1 once n >= 4; never more than there are."""
     if n <= 0 or control_available <= 0:
@@ -150,18 +138,6 @@ def control_count(n: int, settings: Settings, control_available: int) -> int:
     if n >= MIN_N_FOR_CONTROL:
         want = max(want, 1)
     return min(want, control_available, n)
-
-
-def select(queue_rows: Sequence[Mapping[str, Any]], n: int, settings: Settings) -> list[Mapping[str, Any]]:
-    """Today's n accounts: control_share from Control, the rest from Priority then Standard.
-
-    A shortfall in either is filled from the other, so a day never leaves capacity unused
-    while verified accounts wait (the verified queue is itself one of the SPEC 9 terms).
-    """
-    control = ordered((r for r in queue_rows if r.get("tier") == CONTROL), settings)
-    main = ordered((r for r in queue_rows if r.get("tier") in QUEUE_TIERS and r.get("tier") != CONTROL), settings)
-    picked = main[: max(0, n - control_count(n, settings, len(control)))]
-    return picked + control[: max(0, n - len(picked))]
 
 
 # -- test versions (SPEC 9, 12) ----------------------------------------------------------------

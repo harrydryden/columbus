@@ -263,6 +263,14 @@ def test_missing_general_keys_take_model_defaults(tabs):
     assert settings.general.score_cap == 100
 
 
+def test_a_missing_blackout_dates_row_keeps_the_spec_blackouts(tabs):
+    tabs["General"] = [r for r in tabs["General"] if r["key"] != "blackout_dates"]
+    settings, _ = validate_all(tabs)
+    assert [(d.start, d.end) for d in settings.general.blackout_dates] == [
+        (date(2026, 11, 23), date(2026, 11, 27)), (date(2026, 12, 18), date(2027, 1, 4)),
+    ]
+
+
 def test_live_sending_needs_address_privacy_and_approver(tabs):
     n, row = _row(tabs, "General", key="live_sending")
     row["value"] = "yes"
@@ -285,6 +293,13 @@ def test_thresholds_in_order(tabs):
     _row(tabs, "General", key="standard_threshold")[1]["value"] = "60"
     e = _one(tabs, "General", "value")
     assert e.label == "standard_threshold"
+
+
+def test_dev_channel_must_differ_from_alert_channel(tabs):
+    n, row = _row(tabs, "General", key="dev_channel")
+    row["value"] = "#us-outbound"
+    e = _one(tabs, "General", "value")
+    assert e.row == n and "must differ from alert_channel" in e.message
 
 
 # -- other tabs ---------------------------------------------------------------------
@@ -375,6 +390,9 @@ def test_mailboxes(tabs):
         assert e.row == n and fragment in e.message, (field, e.message)
     _row(tabs, "Mailboxes", address="sam@meetspill.org")[1].update(address="sam@spill.chat", domain="spill.chat")
     assert "never sends cold email" in _one(tabs, "Mailboxes", "address").message
+    t = copy.deepcopy(BASE)
+    _row(t, "Mailboxes", address="sam@meetspill.org")[1].update(address="sam@us.spill.chat", domain="us.spill.chat")
+    assert "never sends cold email" in _one(t, "Mailboxes", "address").message
 
 
 def test_mailbox_address_is_lower_cased_and_domain_derived(tabs):

@@ -84,7 +84,8 @@ Files added beyond the SPEC 13 tree:
 
 Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_aliases`,
 `partners`. `suppression` gains `expires_at` (only Suppress-signal domains expire) and
-`contacts` gains `last_step_at` (for retention). General keys added by the build:
+`contacts` gains `last_step_at` (for retention). `settings` also holds one `_order` row per
+tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
 Clay function ids, and the credits-per-account estimates.
 

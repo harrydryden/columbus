@@ -22,6 +22,7 @@ from tests.test_render import (
     copy_rows,
     make_settings,
 )
+from us_outbound import suppression
 from us_outbound.enrol import enrol, queue
 from us_outbound.logs import hash_email
 
@@ -348,14 +349,45 @@ def test_earlier_live_runs_today_count_against_the_number():
     assert out["already_enrolled_today"] == 2 and out["number"] == 1 and out["prepared"] == 1
 
 
-def test_control_share_and_queue_order():
-    accts = [account(account_id=f"p{i}", domain=f"p{i}.com", tier="Priority", score=60 + i) for i in range(30)]
-    accts += [account(account_id=f"c{i}", domain=f"c{i}.com", tier="Control", score=0, angle="General") for i in range(10)]
+def queue_of(tiers: dict[str, int], **settings) -> tuple:
+    """A context whose verified queue holds this many accounts per tier, and the leads enrol posts."""
+    accts = []
+    for tier, n in tiers.items():
+        for i in range(n):
+            accts.append(account(account_id=f"{tier}{i}", domain=f"{tier.lower()}{i}.com", tier=tier,
+                                 score={"Priority": 60, "Standard": 30, "Control": 0}[tier] + i,
+                                 angle="Upgrade the EAP" if tier != "Control" else "General"))
     cons = [contact(contact_id=f"k-{a['account_id']}", account_id=a["account_id"], email=f"x@{a['domain']}") for a in accts]
-    ctx, _ = make(accounts=accts, contacts=cons)
+    ctx, _ = make(accounts=accts, contacts=cons, settings=make_settings(**settings) if settings else None)
+    posted: list[dict] = []
+    add_leads = ctx.clients.instantly.add_leads
+    ctx.clients.instantly.add_leads = lambda campaign, leads: posted.extend(leads) or add_leads(campaign, leads)
+    return ctx, posted
+
+
+def tiers_of(posted: list[dict]) -> list[str]:
+    """Each posted lead's tier, read back from its domain ("x@control3.com" -> "Control")."""
+    return [lead["email"].split("@")[1].split(".")[0].rstrip("0123456789").capitalize() for lead in posted]
+
+
+def test_control_share_and_queue_order():
+    ctx, posted = queue_of({"Priority": 30, "Control": 10})
     out = enrol.run(ctx)
     assert out["number"] == 30 and out["prepared"] == 30
     assert out["by_owner"] == {"Harry Dryden": 15, "Hannah Spalding": 8, "Sam Jackson": 7}
+    assert tiers_of(posted).count("Control") == 5  # 15% of 30, rounded half up
+
+
+def test_a_short_control_tier_is_filled_from_standard():
+    ctx, posted = queue_of({"Control": 1, "Standard": 40})
+    assert enrol.run(ctx)["prepared"] == 30
+    assert tiers_of(posted).count("Control") == 1 and len(posted) == 30
+
+
+def test_short_priority_and_standard_are_filled_from_control():
+    ctx, posted = queue_of({"Control": 10, "Priority": 2}, daily_enrol_cap=3)
+    assert enrol.run(ctx)["prepared"] == 3  # 15% of 3 rounds to no Control, but only 2 others wait
+    assert sorted(tiers_of(posted)) == ["Control", "Priority", "Priority"]
 
 
 # -- candidates ---------------------------------------------------------------------------------------
@@ -366,6 +398,8 @@ def test_recipient_rules():
     accts, cons = [], []
     cases = {
         "ca": dict(person_state="CA"), "wa": dict(person_state="wa"), "nostate": dict(person_state=""),
+        "california": dict(person_state="California"), "washington": dict(person_state="Washington"),
+        "ontario": dict(person_state="Ontario"),
         "gmail": dict(email="jane@gmail.com"), "info": dict(email="info@acme{}.com"),
         "invalid": dict(email_status="invalid"), "notfound": dict(email_status="not_found"),
         "flagged": dict(suppressed=True), "enrolled": dict(enrolment_month="2026-09"),
@@ -383,9 +417,26 @@ def test_recipient_rules():
     out = enrol.run(ctx)
     assert out["candidates"] == 0 and out["prepared"] == 0
     assert out["skipped"] == {
-        "contact in CA or WA": 2, "contact state unknown": 1, "personal email domain": 1, "shared mailbox": 1,
+        "contact in CA or WA": 4, "contact state unknown": 2, "personal email domain": 1, "shared mailbox": 1,
         "email status invalid": 1, "email status not_found": 1, "contact suppressed": 2, "contact already enrolled": 1,
     }
+
+
+def test_an_email_suppression_row_suppresses_only_that_email():
+    """A row with an email hash records its domain but suppresses only that email (suppression.py)."""
+    cons = [
+        contact(contact_id="k-jane", email="jane@acmecreative.com", created_at="2026-10-01"),
+        contact(contact_id="k-john", email="john@acmecreative.com", created_at="2026-10-02"),
+    ]
+    ctx, _ = make(accounts=[account()], contacts=cons)
+    suppression.add(ctx.store, email="jane@acmecreative.com", domain="acmecreative.com", reason="unsubscribe",
+                    source="test", now=NOW)
+    domains, hashes = enrol.suppressed(ctx)
+    assert "acmecreative.com" not in domains and hash_email("jane@acmecreative.com") in hashes
+    assert enrol.contact_block(cons[0], domains, hashes) == "contact suppressed"
+    assert enrol.contact_block(cons[1], domains, hashes) is None
+    out = enrol.run(ctx)
+    assert out["candidates"] == 1 and out["prepared"] == 1
 
 
 def test_account_filters():

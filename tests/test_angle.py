@@ -108,6 +108,25 @@ def test_growing_team_from_funding_with_a_quote():
     assert choose_angle("Standard", ms, settings) == AngleChoice("Growing team", "Congratulations on your Series A.", "")
 
 
+def test_a_condition_with_no_quote_never_fills_an_opener():
+    """"days_since_funding = 100" must not reach the email: the angle's default opener is used."""
+    funding = dataclasses.replace(FUNDING, opener="Congratulations on {evidence}.")
+    settings = make_settings((funding,))
+    ms = matches([fact("apollo_org", "days_since_funding", 100)], settings)
+    assert choose_angle("Standard", ms, settings) == AngleChoice(
+        "Growing team", "It looks like your team is growing fast.", ""
+    )
+    r = score_account(account(), [fact("apollo_org", "days_since_funding", 45)], settings, TODAY)
+    assert "days_since_funding" not in r.opener
+
+
+def test_an_opener_with_no_placeholder_is_used_as_written():
+    funding = dataclasses.replace(FUNDING, opener="Congratulations on the recent raise. ")
+    settings = make_settings((funding,))
+    ms = matches([fact("apollo_org", "days_since_funding", 100)], settings)
+    assert choose_angle("Standard", ms, settings).opener == "Congratulations on the recent raise."
+
+
 def test_legal_teams_overlay():
     assert legal_overlay("Legal Teams") == LEGAL_OVERLAY
     assert LEGAL_OVERLAY == "The bar's Lawyer Assistance Program covers attorneys. Who covers paralegals and staff?"

@@ -29,11 +29,11 @@ def posts(t: FakeTransport) -> list[dict]:
     return [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
 
 
-def beat(store, job, started, status="ok", finished=None, dry_run=True, run_id=None, error=None):
+def beat(store, job, started, status="ok", finished=None, dry_run=True, run_id=None, error=None, detail=None):
     store.upsert("heartbeats", [{
         "run_id": run_id or f"{job}-{started.isoformat()}", "job": job, "started_at": started,
         "finished_at": finished if finished is not None else started + timedelta(minutes=1),
-        "status": status, "dry_run": dry_run, "detail": None, "error": error,
+        "status": status, "dry_run": dry_run, "detail": detail, "error": error,
     }])
 
 
@@ -93,7 +93,7 @@ def test_a_second_run_while_one_is_going_is_skipped():
     ctx.store.tables["heartbeats"][0]["finished_at"] = None
     ran = []
     out = hb.run_job(ctx, lambda c: ran.append(1) or {})
-    assert not ran and out["reason"] == "previous run still going" and out["other_run_id"] == "r0"
+    assert not ran and out["reason"] == hb.OVERLAP_REASON == "previous run still going" and out["other_run_id"] == "r0"
     # A run that died more than an hour ago no longer blocks.
     ctx.store.tables["heartbeats"][0]["started_at"] = MON_NOON - timedelta(minutes=61)
     ctx2 = ctx_at(MON_NOON, job="poll_approvals", store=ctx.store)
@@ -153,11 +153,61 @@ def test_error_runs_count_as_missed_after_the_last_ok_run():
     assert hb.check_heartbeats(ctx, jobs=["mailbox_health"]) == []
 
 
-def test_skipped_and_running_runs_are_healthy():
+def test_a_skip_for_its_own_reason_and_a_first_run_still_going_are_healthy():
     ctx = ctx_at(MON_NOON, job="heartbeat_check")
-    beat(ctx.store, "settings_sync", MON_NOON - timedelta(hours=2), status="skipped")
+    beat(ctx.store, "settings_sync", MON_NOON - timedelta(hours=2), status="skipped",
+         detail={"skipped": True, "reason": "blackout date"})
     beat(ctx.store, "kill_rules", MON_NOON - timedelta(minutes=10), status="running")
     assert hb.check_heartbeats(ctx, jobs=["settings_sync", "kill_rules"]) == []
+
+
+def test_an_overlap_skip_alone_is_no_sign_of_life():
+    ctx = ctx_at(MON_NOON, job="heartbeat_check")
+    beat(ctx.store, "settings_sync", MON_NOON - timedelta(hours=30), run_id="ok")
+    beat(ctx.store, "settings_sync", MON_NOON - timedelta(hours=2), status="skipped", run_id="skip",
+         detail={"skipped": True, "reason": hb.OVERLAP_REASON, "other_run_id": "x"})
+    assert hb.check_heartbeats(ctx, jobs=["settings_sync"]) == ["settings_sync"]
+
+
+def test_a_job_killed_every_run_is_missed():
+    """Last ok two days ago; since then each hourly run is killed (stays "running") and the
+    15-minute runs between are skipped behind it. Only the lock frees itself; the job is missed."""
+    ctx = ctx_at(MON_NOON, job="heartbeat_check")
+    beat(ctx.store, "poll_replies", MON_NOON - timedelta(days=2), run_id="last-ok")
+    start = MON_NOON - timedelta(days=2) + timedelta(minutes=15)
+    i = 0
+    while start < MON_NOON:
+        if i % 4 == 0:
+            ctx.store.upsert("heartbeats", [{
+                "run_id": f"killed-{i}", "job": "poll_replies", "started_at": start, "finished_at": None,
+                "status": "running", "dry_run": True, "detail": None, "error": None,
+            }])
+        else:
+            beat(ctx.store, "poll_replies", start, status="skipped", finished=start, run_id=f"skip-{i}",
+                 detail={"skipped": True, "reason": hb.OVERLAP_REASON, "other_run_id": f"killed-{i - i % 4}"})
+        start += timedelta(minutes=15)
+        i += 1
+    assert hb.latest_runs(ctx.store)["poll_replies"]["status"] in {"running", "skipped"}
+    assert hb.check_heartbeats(ctx, jobs=["poll_replies"]) == ["poll_replies"]
+
+
+def test_a_job_that_never_succeeds_is_missed_even_while_a_run_is_fresh():
+    """Every run is killed and none ever finished ok: a fresh "running" row is no excuse."""
+    ctx = ctx_at(MON_NOON, job="heartbeat_check")
+    for hours in (3, 2, 1):
+        beat(ctx.store, "kill_rules", MON_NOON - timedelta(hours=hours), status="running", run_id=f"k{hours}")
+    beat(ctx.store, "kill_rules", MON_NOON - timedelta(minutes=5), status="running", run_id="k0")
+    for r in ctx.store.tables["heartbeats"]:
+        r["finished_at"] = None
+    assert hb.check_heartbeats(ctx, jobs=["kill_rules"]) == ["kill_rules"]
+
+
+def test_a_first_run_killed_long_ago_is_missed():
+    ctx = ctx_at(MON_NOON, job="heartbeat_check")
+    beat(ctx.store, "kill_rules", MON_NOON - timedelta(hours=3), status="running", finished=None)
+    ctx.store.tables["heartbeats"][-1]["finished_at"] = None
+    assert hb.check_heartbeats(ctx, jobs=["kill_rules"]) == ["kill_rules"]
+
 
 
 def test_weekday_jobs_do_not_miss_over_the_weekend():

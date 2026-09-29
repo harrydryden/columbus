@@ -97,7 +97,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "other",
     },
     ("events", "approval"): {"approved", "edited", "skipped"},
-    ("settings", "tab"): set(TABS),
+    ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
     ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
     ("hitl_items", "kind"): {"reply_approval", "hand_check", "manual_merge", "kill_rule"},
@@ -345,6 +345,12 @@ def test_v_queue_orders_for_enrollment(views):
     ranks = dict(re.findall(r"WHEN '(\d+-\d+)' THEN (\d)", sql))
     assert ranks == {"20-49": "1", "50-99": "1", "100-249": "2", "10-19": "3"}
     assert "expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP()" in sql
+    assert "email_sha256 IS NULL" in sql  # an email row suppresses only that email, not its domain
+
+
+def test_v_heartbeats_ignores_overlap_skips(views):
+    sql = views["v_heartbeats"][1].sql("bigquery")
+    assert "last_alive_at" in sql and "'previous run still going'" in sql
 
 
 # -- ops/ddl.py ---------------------------------------------------------------------

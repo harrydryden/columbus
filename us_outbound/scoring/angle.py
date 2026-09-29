@@ -3,7 +3,11 @@
   * Angle: the first ACTIVE angle, in Angles-tab order, that any matched signal suggests.
     Control accounts always get General; with no suggestion the angle is General too.
   * Opener: the opener template of the signal that set the angle, filled with its
-    evidence. If that signal has no opener, the angle's default_opener.
+    evidence. If that signal has no opener, the angle's default_opener. A template with a
+    placeholder is filled only from evidence that reads as prose: a matched term or a
+    fact's quote. A bare condition ("days_since_funding = 45") or an override never reaches
+    the email; the angle's default_opener is used instead. A template with no placeholder
+    is used as written.
   * Legal Teams also gets an overlay line, returned separately (copy variable {{legal_overlay}}).
 
 When several matched signals suggest the chosen angle, the one with the largest
@@ -100,7 +104,12 @@ def choose_angle(tier: str, matches: list[Match], settings: Settings, industry_g
         if a.angle.casefold() not in suggested:
             continue
         setter = angle_setter(a.angle, matches)
-        if setter and setter.signal.opener.strip() and setter.evidence:
-            return AngleChoice(a.angle, fill_opener(setter.signal.opener, setter.evidence[0]), overlay)
+        if setter and setter.signal.opener.strip():
+            template = setter.signal.opener
+            if not _PLACEHOLDER.search(template):
+                return AngleChoice(a.angle, template.strip(), overlay)
+            ev = next((e for e in setter.evidence if e.term or e.quote), None)
+            if ev is not None:
+                return AngleChoice(a.angle, fill_opener(template, ev), overlay)
         return AngleChoice(a.angle, a.default_opener, overlay)
     return AngleChoice(GENERAL, _default_opener(settings, GENERAL), overlay)

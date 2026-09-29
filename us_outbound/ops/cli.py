@@ -22,15 +22,15 @@ Dry-run is the default everywhere. Two kinds of live:
 Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
 
-Exit codes: 0 done; 1 unexpected error; 2 refused (not built, bad input, unusable settings);
-3 blocked by a guardrail (GuardViolation).
+Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError
+or JSON/Unicode decoding error, which are bugs rather than bad input); 2 refused (not built,
+bad input, unusable settings); 3 blocked by a guardrail (GuardViolation).
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
-import importlib.util
 import json
 import os
 import re
@@ -79,8 +79,6 @@ JOBS: dict[str, str] = {
     "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
 }
-# The SPEC 14 phase each job is delivered in (for jobs whose module is not there yet).
-JOB_PHASE: dict[str, int] = {"enrol": 2}
 JOBS_FILE = Path(__file__).resolve().parents[2] / "deploy" / "jobs.yaml"
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 TEST_WINDOW_DAYS = 21  # SPEC 12: human replies within 21 days of step 1
@@ -99,16 +97,9 @@ def _is_target(target: str) -> bool:
     return ":" in target and not target.startswith("not built")
 
 
-def _module_exists(module: str) -> bool:
-    try:
-        return importlib.util.find_spec(module) is not None
-    except ModuleNotFoundError:
-        return False
-
-
 def built_jobs() -> list[str]:
-    """Jobs whose module is in the tree (a job listed with a target may still be a later phase)."""
-    return [j for j, t in JOBS.items() if _is_target(t) and _module_exists(t.split(":", 1)[0])]
+    """Jobs listed with a module:function target."""
+    return [j for j, t in JOBS.items() if _is_target(t)]
 
 
 def resolve_job(name: str) -> Callable[[Context], Any]:
@@ -119,12 +110,7 @@ def resolve_job(name: str) -> Callable[[Context], Any]:
     if not _is_target(target):
         raise Refused(f"{name}: {target}")
     module, _, attr = target.partition(":")
-    try:
-        fn = getattr(importlib.import_module(module), attr)
-    except (ImportError, AttributeError):
-        phase = JOB_PHASE.get(name)
-        raise Refused(f"{name}: not built yet" + (f" (phase {phase})" if phase is not None else f" ({target} is missing)")) from None
-    return fn
+    return getattr(importlib.import_module(module), attr)  # a broken import is a bug: it surfaces with its traceback
 
 
 # -- helpers ----------------------------------------------------------------------------
@@ -412,9 +398,10 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     if missing:
         raise Refused("copy is not approved in the synced settings for: " + ", ".join(missing))
     sheets = ctx.clients.sheets
-    if not row.get("start_date", "").strip():
-        sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, "start_date", start)
-    sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, "status", "running")
+    writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
+    for column, value in [*writes, ("status", "running")]:
+        if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
+            raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
     return {"dry_run": ctx.dry_run, "test_id": test_id, "status": "running", "start_date": start,
             "read_date": read_date, "changed": ctx.live}
 
@@ -707,7 +694,8 @@ def main(argv: list[str] | None = None, *, context_factory: Factory | None = Non
         from us_outbound.crm.hubspot_writes import PropertyClash
         from us_outbound.registry.mailboxes import MailboxError
 
-        if isinstance(exc, (MailboxError, PropertyClash, ValueError, LookupError)):
+        bug = isinstance(exc, (KeyError, IndexError, UnicodeError, json.JSONDecodeError))
+        if not bug and isinstance(exc, (MailboxError, PropertyClash, ValueError, LookupError)):
             print(f"us-outbound {args.command}: {redact(str(exc))}", file=sys.stderr)
             return 2
         print(redact(traceback.format_exc()), file=sys.stderr)

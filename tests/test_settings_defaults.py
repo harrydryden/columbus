@@ -2,12 +2,12 @@
 
 import dataclasses
 import re
-from datetime import date, time
+from datetime import time
 
 import pytest
 
 from us_outbound.settings.defaults import COLUMNS, US_STATES, default_tabs
-from us_outbound.settings.model import TABS, DateRange, General, SendWindow
+from us_outbound.settings.model import TABS, General, SendWindow
 from us_outbound.settings.validate import COPY_VARIABLES, validate_all
 
 
@@ -41,15 +41,8 @@ def test_general_has_every_model_key_once(tabs, settings):
     keys = [r["key"] for r in tabs["General"]]
     assert sorted(keys) == sorted(f.name for f in dataclasses.fields(General))
     assert len(keys) == len(set(keys))
-    # Every value reads back as the model default, except the SPEC blackout dates.
-    expected = dataclasses.replace(
-        General(),
-        blackout_dates=(
-            DateRange(date(2026, 11, 23), date(2026, 11, 27)),
-            DateRange(date(2026, 12, 18), date(2027, 1, 4)),
-        ),
-    )
-    assert settings.general == expected
+    # Every value reads back as the model default: a key missing from the tab takes the same value.
+    assert settings.general == General()
 
 
 def test_general_spec_values(tabs, settings):

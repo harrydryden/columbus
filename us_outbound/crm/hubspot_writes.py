@@ -20,7 +20,6 @@ from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.model import TIERS
 
-GROUP_LABEL = "US Outbound"
 # SPEC 11 classification classes, in plain English for the dropdown.
 REPLY_CLASSES: dict[str, str] = {
     "positive": "Positive",

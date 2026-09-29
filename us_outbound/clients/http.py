@@ -12,7 +12,11 @@ from urllib.parse import urlparse
 
 from us_outbound.clients.guard import Guard, Op
 
-RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})  # resent only when the request is idempotent
+RATE_LIMITED = 429  # the server refused the request unprocessed, so any request may be resent
+# Headers that carry a key. requests re-sends custom ones (X-Api-Key, clay-api-key) to the host
+# a redirect names, so a request carrying any of them never follows a redirect.
+CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key", "clay-api-key"})
 
 
 @dataclass
@@ -33,6 +37,7 @@ class Transport(Protocol):
         json: Any = None,
         data: Any = None,
         timeout: float = 30.0,
+        idempotent: bool = True,
     ) -> Response: ...
 
 
@@ -43,7 +48,13 @@ class ApiError(Exception):
 
 
 class RequestsTransport:
-    """requests-based transport with retries on 429 and 5xx, honouring Retry-After."""
+    """requests-based transport with retries, honouring Retry-After.
+
+    A request that never reached the server (connect timeout) or was refused with 429 is
+    retried whatever it is. A timeout, dropped connection or 5xx can come after the server
+    acted, so only an idempotent request is resent then; a write that may have happened is
+    left to the caller, which can re-read state before trying again.
+    """
 
     def __init__(self, attempts: int = 4, backoff: float = 2.0):
         import requests
@@ -51,24 +62,30 @@ class RequestsTransport:
         self._session = requests.Session()
         self.attempts, self.backoff = attempts, backoff
 
-    def send(self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0) -> Response:
+    def send(
+        self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0, idempotent=True
+    ) -> Response:
         import requests
 
+        retry = RETRY_STATUSES if idempotent else {RATE_LIMITED}
+        # HEAD is only used to see one redirect (Public.resolve_redirect), so never follow it;
+        # and never let a redirect carry a key to another host.
+        follow = method.upper() != "HEAD" and not any(k.lower() in CREDENTIAL_HEADERS for k in headers)
         delay = self.backoff
         for attempt in range(1, self.attempts + 1):
             try:
-                # HEAD is only used to see one redirect (Public.resolve_redirect), so never follow it.
                 r = self._session.request(
                     method, url, headers=headers, params=params, json=json, data=data, timeout=timeout,
-                    allow_redirects=method.upper() != "HEAD",
+                    allow_redirects=follow,
                 )
-            except (requests.ConnectionError, requests.Timeout):
-                if attempt == self.attempts:
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                # ConnectTimeout subclasses both: nothing was sent, so it is always safe to resend.
+                if attempt == self.attempts or not (idempotent or isinstance(exc, requests.ConnectTimeout)):
                     raise
                 time.sleep(delay)
                 delay *= 2
                 continue
-            if r.status_code in RETRY_STATUSES and attempt < self.attempts:
+            if r.status_code in retry and attempt < self.attempts:
                 wait = r.headers.get("Retry-After")
                 time.sleep(float(wait) if wait and wait.replace(".", "", 1).isdigit() else delay)
                 delay *= 2
@@ -89,6 +106,9 @@ class HttpClient:
 
     system: ClassVar[str]
     base_url: ClassVar[str]
+    # Read actions that spend credits: never resent after a timeout or 5xx, since a second
+    # charge would miss the credit ledger (SPEC 1.5).
+    paid_reads: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, guard: Guard, transport: Transport, token: str = ""):
         self.guard = guard
@@ -121,10 +141,23 @@ class HttpClient:
             return dry_result
         url = path if path.startswith("http") else (base_url or self.base_url) + path
         resp = self.transport.send(
-            method, url, headers=headers or self.headers(), params=params, json=json, data=data
+            method, url, headers=headers or self.headers(), params=params, json=json, data=data,
+            idempotent=is_idempotent(method, op, self.paid_reads),
         )
         if raw:
             return resp
-        if resp.status >= 400:
+        if resp.status >= 300:  # a redirect is never followed with a key, so it is not a success
             raise ApiError(self.system, resp.status, resp.body, url)
         return resp.body
+
+
+def is_idempotent(method: str, op: Op, paid_reads: frozenset[str] = frozenset()) -> bool:
+    """Whether sending this request twice does no harm: not a POST that writes, not a paid read.
+
+    GET, PUT, PATCH (which sets fields here) and DELETE are safe to repeat, as are the POSTs
+    that only read (HubSpot search, Instantly lists). A POST write (a reply, a create, a lead
+    add, an append) is not.
+    """
+    if op.action in paid_reads:
+        return False
+    return not (op.write and method.upper() == "POST")
