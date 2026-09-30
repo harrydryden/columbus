@@ -2,12 +2,12 @@
 
   * "One test record flows end to end in dry-run": settings_sync -> an account and its facts
     -> score -> a contact -> enrol, every job run by the CLI (`us-outbound dry-run <job>`)
-    with bootstrap.build_context and ops.heartbeat.run_job, as Cloud Run runs them.
+    with bootstrap.build_context and ops.heartbeat.run_job, as the Railway scheduler runs them.
   * "Changing a weight in the sheet changes a test account's score after the next sync."
   * "A bad row in the sheet is rejected, with a Slack message."
 
 Only the outside world is faked: the Sheets, Slack, HubSpot and Instantly APIs answer on a
-FakeTransport, and BigQuery is a MemoryStore. The Sheets API serves default_tabs() with the
+FakeTransport, and the Postgres database is a MemoryStore. The Sheets API serves default_tabs() with the
 phase-0 fills (ids, postal address, privacy link, approved copy, Active mailboxes).
 
 The flow runs on Tue 29 Sep 2026: outside Q4, so the test account's raw score (100) is not
@@ -40,7 +40,8 @@ from us_outbound.settings.validate import validate_all
 
 NOW = datetime(2026, 9, 29, 11, 0, tzinfo=UTC)  # 12:00 UK, 07:00 ET: enrol's slot (SPEC 9)
 SHEET_ID = "sheet-e2e"
-ENV = {"US_OUTBOUND_PROJECT": "test-project", "US_OUTBOUND_SETTINGS_SHEET_ID": SHEET_ID}
+# What the Railway service has (docs/railway-setup.md); the store and credentials are injected below.
+ENV = {"DATABASE_URL": "postgresql://us_outbound@db.test:5432/railway", "US_OUTBOUND_SETTINGS_SHEET_ID": SHEET_ID}
 CREDS = SimpleNamespace(valid=True, token="test-token")  # google-auth credentials stand-in
 
 HUBSPOT, INSTANTLY, SLACK = "https://api.hubapi.com", "https://api.instantly.ai", "https://slack.com/api/"
@@ -175,7 +176,7 @@ class World:
             t.route("POST", f"/crm/v3/objects/{obj}/search", {"results": []})
 
     def __call__(self, job: str, live_flag: bool, operator: bool = False):
-        secrets = Secrets(Guard(), ENV["US_OUTBOUND_PROJECT"], fetch=lambda name: f"test-{name}")
+        secrets = Secrets(Guard(), fetch=lambda name: f"test-{name}")
         ctx = bootstrap.build_context(job, live_flag, operator=operator, env=ENV, store=self.store,
                                       transport=self.transport, secrets=secrets, google_credentials=CREDS)
         secrets.guard = ctx.guard
@@ -298,7 +299,7 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
     assert refused and all(c.action == "lead.add" and c.target == campaign and not c.sent for c in refused)
 
 
-def test_enrol_in_dry_run_writes_nothing_outside_bigquery(flow):
+def test_enrol_in_dry_run_writes_nothing_outside_the_database(flow):
     e = flow["enrol"]
     reqs = e["requests"]
     assert [r for r in reqs if r.url.startswith(INSTANTLY) and r.method != "GET"] == []

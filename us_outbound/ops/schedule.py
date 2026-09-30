@@ -1,0 +1,65 @@
+"""The job schedule (SPEC 9): which jobs the scheduler starts, when, and how.
+
+All times are UK time (SPEC 9): every cron is five fields read in Europe/London local
+time, so the clock changes are handled (see ops/scheduler.py). A job with an empty cron
+has no schedule of its own; it runs only when started by hand (`us-outbound run <job>`).
+
+live:     the scheduler adds --live. Only jobs that write outside the database (Slack
+          #us-outbound, the sheet, HubSpot, Instantly) have it, and a job run with --live
+          is still dry until live_sending = yes in the settings sheet (SPEC 0.3).
+enabled:  False for jobs of a later phase (SPEC 14); the scheduler never starts them.
+timeout:  minutes before the scheduler kills a run. Keep it at 60 or less: ops/heartbeat.py
+          treats a "running" row older than 60 minutes as dead.
+phase:    the SPEC 14 phase the job belongs to.
+
+This table replaced deploy/jobs.yaml (Cloud Run Jobs and Cloud Scheduler) when the jobs
+moved to one Railway worker (Harry, 30 Sep 2026; docs/railway-setup.md).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ScheduledJob:
+    name: str
+    cron: str  # minute hour day-of-month month day-of-week, UK time; "" = on demand only
+    live: bool
+    enabled: bool
+    timeout_minutes: int
+    phase: int
+
+
+SCHEDULE: tuple[ScheduledJob, ...] = (
+    ScheduledJob("settings_sync", "0 2 * * *", live=True, enabled=True, timeout_minutes=15, phase=0),
+    ScheduledJob("source_universe", "0 3 1 * *", live=False, enabled=False, timeout_minutes=60, phase=1),
+    ScheduledJob("apollo_signals", "30 3 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
+    ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
+    ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
+    ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),
+    # score runs inside settings_sync, verify_in_clay and site_visits (SPEC 9); by hand: `us-outbound rescore`.
+    ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
+    ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=2),
+    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=False, timeout_minutes=30, phase=2),
+    ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=False, timeout_minutes=10, phase=2),
+    ScheduledJob("poll_approvals", "*/5 * * * *", live=True, enabled=False, timeout_minutes=4, phase=2),
+    ScheduledJob("hubspot_readback", "*/15 * * * *", live=True, enabled=False, timeout_minutes=10, phase=2),
+    ScheduledJob("sync_outcomes", "0 1 * * *", live=True, enabled=False, timeout_minutes=30, phase=2),
+    ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
+    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
+    ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
+    ScheduledJob("monday_readout", "0 9 * * 1", live=True, enabled=False, timeout_minutes=20, phase=3),
+    # Build additions (README "Deviations").
+    ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
+    ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
+)
+
+
+def by_name() -> dict[str, ScheduledJob]:
+    return {j.name: j for j in SCHEDULE}
+
+
+def enabled_names() -> list[str]:
+    """The jobs the scheduler starts: enabled and with a schedule (what heartbeat_check expects)."""
+    return [j.name for j in SCHEDULE if j.enabled and j.cron]

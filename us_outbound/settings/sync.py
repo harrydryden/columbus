@@ -1,4 +1,4 @@
-"""settings_sync (SPEC 5, 9): the settings sheet into BigQuery settings, validated and versioned.
+"""settings_sync (SPEC 5, 9): the settings sheet into the database's settings table, validated and versioned.
 
 Nightly at 02:00 UK and on demand:
   1. Read every tab of "US Outbound – Settings".

@@ -1,13 +1,13 @@
 """The guardrails of SPEC section 1, enforced at the single point every client call passes.
 
-Every outbound call (HTTP, BigQuery, Claude) is described as an Op and handed to
+Every outbound call (HTTP, the database, Claude) is described as an Op and handed to
 Guard.authorize() before it is made. authorize() either:
 
   * raises GuardViolation: the call would break a guardrail, in any mode; or
   * returns False: the call is a write that dry-run must not make (the caller skips it); or
   * returns True: make the call.
 
-Dry-run (SPEC 0.3): compute, log and write to BigQuery, but send nothing. Nothing is
+Dry-run (SPEC 0.3): compute, log and write to the database, but send nothing. Nothing is
 written to HubSpot, Instantly or the settings sheet, and nothing to Slack except the dev
 channel. Live needs both the --live flag and live_sending = yes; the caller works that out
 and passes `live`.
@@ -83,7 +83,7 @@ class Op:
 
     action: a dotted verb, e.g. "company.create", "lead.add", "chat.postMessage".
     target: the container it touches: a campaign name, table, channel, sheet id, host.
-    write:  True if it changes anything outside this process (except BigQuery reads).
+    write:  True if it changes anything outside this process (except database reads).
     detail: what the guard needs to judge it (property names, account ids, ...).
     """
 
@@ -363,7 +363,7 @@ class Guard:
         dataset = op.target.split(".")[-2] if op.target.count(".") >= 1 else ""
         if dataset != self.bounds.db_schema:
             raise GuardViolation(f"Database writes go only to schema {self.bounds.db_schema} (SPEC 1.2), not {op.target!r}")
-        return True  # dry-run still writes to BigQuery (SPEC 0.3)
+        return True  # dry-run still writes to the database (SPEC 0.3)
 
     def _check_claude(self, op: Op) -> bool:
         if op.write or op.action != "messages.create":
@@ -383,5 +383,5 @@ class Guard:
 
     def _check_secrets(self, op: Op) -> bool:
         if op.write or op.action != "access":
-            raise GuardViolation("Secret Manager is read only from the jobs")
+            raise GuardViolation("secrets are read only from the jobs")
         return True

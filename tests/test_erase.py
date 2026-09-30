@@ -1,4 +1,4 @@
-"""erase --email (SPEC 6): BigQuery rows go, the suppression hash stays; HubSpot and Instantly only when live."""
+"""erase --email (SPEC 6): database rows go, the suppression hash stays; HubSpot and Instantly only when live."""
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import C_HANNAH, SETTINGS, FakeInstantly
@@ -40,7 +40,7 @@ def setup(live: bool):
     return ctx, t, inst, lead
 
 
-def test_erase_in_dry_run_clears_bigquery_but_sends_nothing():
+def test_erase_in_dry_run_clears_the_database_but_sends_nothing():
     ctx, t, inst, lead = setup(live=False)
     report = erase(ctx, JANE)
     s = ctx.store
@@ -53,7 +53,7 @@ def test_erase_in_dry_run_clears_bigquery_but_sends_nothing():
     [supp] = s.tables["suppression"]
     assert supp["email_sha256"] == SHA and supp["reason"] == "erasure" and supp["domain"] is None
     assert is_suppressed(s, email=JANE, now=ctx.now)
-    assert report["bigquery"]["contacts_deleted"] == 2
+    assert report["database"]["contacts_deleted"] == 2
     assert ctx.guard.writes("hubspot", sent=True) == [] and ctx.guard.writes("instantly", sent=True) == []
     assert [r for r in t.requests if r.method == "DELETE" or "gdpr" in r.url] == []
     assert lead["id"] in inst.leads
@@ -79,5 +79,5 @@ def test_erase_twice_is_harmless():
     ctx, t, inst, lead = setup(live=False)
     erase(ctx, JANE)
     again = erase(ctx, JANE)
-    assert again["bigquery"]["contacts_deleted"] == 0 and again["bigquery"]["suppression"] == "already suppressed"
+    assert again["database"]["contacts_deleted"] == 0 and again["database"]["suppression"] == "already suppressed"
     assert len(ctx.store.tables["suppression"]) == 1

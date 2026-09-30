@@ -9,9 +9,11 @@ SPEC 13 commands:
   dry-run <job>                       run a job in dry-run whatever the flags
   erase --email <address>             an erasure request (SPEC 6)
   test start|read <test_id>           start the copy test, or read it (SPEC 12)
-Build support: run <job> [--live] (the Cloud Run entrypoint), mailbox check (mailbox_health
-by hand), settings sync|bootstrap, bq apply, hubspot setup|ids, campaigns ensure [--fix],
-suppression load, deploy plan.
+Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
+Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
+(mailbox_health by hand), settings sync|bootstrap, db apply, hubspot setup|ids,
+campaigns ensure [--fix], suppression load. On Railway, run a command inside the worker
+with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
 
 Dry-run is the default everywhere. Two kinds of live:
   * jobs (run, rescore, settings sync, suppression load) and start: --live AND
@@ -24,7 +26,8 @@ under operator_stop / operator_start, which is the enrollment pause enrol checks
 
 Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError
 or JSON/Unicode decoding error, which are bugs rather than bad input); 2 refused (not built,
-bad input, unusable settings); 3 blocked by a guardrail (GuardViolation).
+bad input, unusable settings); 3 blocked by a guardrail (GuardViolation); 143 stopped by
+SIGTERM while a job ran (the scheduler's timeout, or a redeploy; the heartbeat says error).
 """
 
 from __future__ import annotations
@@ -34,11 +37,13 @@ import importlib
 import json
 import os
 import re
+import signal
 import sys
+import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from us_outbound.clients.db import new_id
@@ -79,7 +84,6 @@ JOBS: dict[str, str] = {
     "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
 }
-JOBS_FILE = Path(__file__).resolve().parents[2] / "deploy" / "jobs.yaml"
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 TEST_WINDOW_DAYS = 21  # SPEC 12: human replies within 21 days of step 1
 
@@ -88,6 +92,14 @@ Factory = Callable[..., Context]
 
 class Refused(Exception):
     """The command cannot go ahead as asked (exit code 2)."""
+
+
+class Terminated(BaseException):
+    """SIGTERM reached a running job: the scheduler's timeout, or a redeploy (exit code 143).
+
+    A BaseException, so no `except Exception` inside a job swallows it. run_job records the
+    run as an error, so its heartbeat is not left "running" to block the next run.
+    """
 
 
 # -- the job registry -------------------------------------------------------------------
@@ -121,7 +133,7 @@ def _print(value: Any) -> None:
 
 
 def _operator() -> str:
-    return os.environ.get("USER") or os.environ.get("CLOUD_RUN_EXECUTION") or "unknown"
+    return os.environ.get("USER") or os.environ.get("RAILWAY_SERVICE_NAME") or "unknown"
 
 
 def _dry_note(ctx: Context, what: str) -> None:
@@ -153,8 +165,27 @@ def _job(name: str, live_flag: bool, factory: Factory) -> int:
         raise
     if live_flag and ctx.dry_run:
         print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
-    _print(run_job(ctx, fn))
+    with _sigterm_ends_the_run():
+        summary = run_job(ctx, fn)
+    _print(summary)
     return 0
+
+
+def _terminated(signum: int, frame: Any) -> None:
+    raise Terminated("stopped by SIGTERM (the scheduler's timeout, or a redeploy)")
+
+
+@contextmanager
+def _sigterm_ends_the_run() -> Iterator[None]:
+    """While a job runs, SIGTERM raises Terminated; the previous handler comes back after."""
+    if threading.current_thread() is not threading.main_thread():
+        yield  # signal handlers can only be set on the main thread
+        return
+    previous = signal.signal(signal.SIGTERM, _terminated)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 # -- commands ---------------------------------------------------------------------------
@@ -326,7 +357,7 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
     _print(run_job(ctx, fn))
     _dry_note(ctx, "the sheet and Instantly were not changed.")
     if ctx.live:
-        print("The sheet is changed; the next settings_sync brings it into BigQuery (or run `us-outbound settings sync`).")
+        print("The sheet is changed; the next settings_sync brings it into the database (or run `us-outbound settings sync`).")
     return 0
 
 
@@ -501,24 +532,26 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     summary = run_job(ctx, lambda c: {"sheet_id": create_sheet(c, force=args.force), "dry_run": c.dry_run})
     _print(summary)
     if summary.get("sheet_id"):
-        print("Set US_OUTBOUND_SETTINGS_SHEET_ID to this id (and in deploy), share the sheet with the jobs' "
-              "service account as Editor, then run `us-outbound settings sync`.")
+        print("Set US_OUTBOUND_SETTINGS_SHEET_ID to this id in the Railway service's variables, share the sheet "
+              "with the Sheets service account as Editor, then run `us-outbound settings sync`.")
     else:
         _dry_note(ctx, "no sheet was created.")
     return 0
 
 
-def cmd_bq(args: argparse.Namespace, factory: Factory) -> int:
+def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
+    """The DDL in sql/ (ops/ddl.py): printed in dry-run; run against DATABASE_URL with --live."""
+    from us_outbound.clients.guard import Guard
     from us_outbound.ops import ddl
 
-    argv = []
-    if args.project:
-        argv += ["--project", args.project]
-    if args.location:
-        argv += ["--location", args.location]
-    if args.live or args.execute:
-        argv.append("--execute")
-    return ddl.main(argv)
+    dsn = bootstrap.database_url(os.environ) if args.live else (os.environ.get(bootstrap.DATABASE_VAR) or "").strip()
+    statements = ddl.apply(Guard(job="db_apply"), dsn, dry_run=not args.live)
+    if args.live:
+        print(f"Applied {len(statements)} statements to schema us_outbound (tables and indexes IF NOT EXISTS, views OR REPLACE).")
+    else:
+        print(";\n\n".join(s.rstrip().rstrip(";") for s in statements) + ";")
+        print(f"Dry-run: {len(statements)} statements printed, nothing run. Add --live to run them.", file=sys.stderr)
+    return 0
 
 
 def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
@@ -550,57 +583,25 @@ def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
     return _job("suppression_load", args.live, factory)
 
 
-def _scalar(text: str) -> Any:
-    t = text.strip()
-    if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'":
-        return t[1:-1]
-    if t.startswith("[") and t.endswith("]"):
-        return [_scalar(x) for x in t[1:-1].split(",") if x.strip()]
-    if t in ("true", "false"):
-        return t == "true"
-    if re.fullmatch(r"-?\d+", t):
-        return int(t)
-    return t
 
+def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
+    """The job table with each enabled job's next run (UK time)."""
+    from us_outbound.ops import scheduler
 
-def _strip_comment(line: str) -> str:
-    quote = ""
-    for i, ch in enumerate(line):
-        if quote:
-            quote = "" if ch == quote else quote
-        elif ch in "\"'":
-            quote = ch
-        elif ch == "#" and (i == 0 or line[i - 1].isspace()):
-            return line[:i].rstrip()
-    return line.rstrip()
-
-
-def read_jobs_file(path: Path = JOBS_FILE) -> list[dict]:
-    """deploy/jobs.yaml, which keeps to a flat list of `key: value` maps so no YAML library is needed."""
-    jobs: list[dict] = []
-    for n, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = _strip_comment(raw)
-        if not line.strip() or line.strip() == "jobs:":
-            continue
-        body = line.strip()
-        if body.startswith("- "):
-            jobs.append({})
-            body = body[2:]
-        if not jobs or ":" not in body:
-            raise ValueError(f"{path.name} line {n}: expected `key: value` inside a `- name:` item")
-        key, _, value = body.partition(":")
-        jobs[-1][key.strip()] = _scalar(value)
-    return jobs
-
-
-def cmd_deploy(args: argparse.Namespace, factory: Factory) -> int:
-    """One tab-separated line per job for deploy/deploy.sh: name, schedule, disabled, args, timeout, memory."""
-    for j in read_jobs_file(Path(args.file) if args.file else JOBS_FILE):
-        print("\t".join([
-            j["name"], j.get("schedule") or "-", "true" if j.get("disabled") else "false",
-            ",".join(str(a) for a in j.get("args") or []), str(j.get("timeout") or "600s"), str(j.get("memory") or "512Mi"),
-        ]))
+    for line in scheduler.describe():
+        print(line)
+    print(f"At most {scheduler.max_parallel_from_env()} jobs run at once ({scheduler.MAX_PARALLEL_VAR}). "
+          "A --live job is still dry until live_sending = yes in the settings sheet.")
     return 0
+
+
+def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
+    """The always-on worker (ops/scheduler.py): starts every job on its schedule until SIGTERM."""
+    from us_outbound.ops import scheduler
+
+    if args.list:
+        return cmd_schedule(args, factory)
+    return scheduler.Scheduler(max_parallel=scheduler.max_parallel_from_env()).run()
 
 
 # -- parser and entrypoint ----------------------------------------------------------------
@@ -634,7 +635,7 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("job")
     dr.set_defaults(fn=cmd_dry_run)
 
-    rn = sub.add_parser("run", parents=[live], help="run a job (the Cloud Run entrypoint)")
+    rn = sub.add_parser("run", parents=[live], help="run a job (what the scheduler starts)")
     rn.add_argument("job")
     rn.set_defaults(fn=cmd_run)
 
@@ -652,12 +653,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
     st.set_defaults(fn=cmd_settings)
 
-    bq = sub.add_parser("bq", parents=[live], help="BigQuery DDL")
-    bq.add_argument("action", choices=["apply"])
-    bq.add_argument("--execute", action="store_true", help="same as --live")
-    bq.add_argument("--project")
-    bq.add_argument("--location")
-    bq.set_defaults(fn=cmd_bq)
+    db = sub.add_parser("db", parents=[live], help="create the tables and views in DATABASE_URL (prints them unless --live)")
+    db.add_argument("action", choices=["apply"])
+    db.set_defaults(fn=cmd_db)
 
     hs = sub.add_parser("hubspot", parents=[live], help="the six properties, and the ids for the General tab")
     hs.add_argument("action", choices=["setup", "ids"])
@@ -672,10 +670,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["load"])
     sp.set_defaults(fn=cmd_suppression)
 
-    dp = sub.add_parser("deploy", help="the job list for deploy/deploy.sh")
-    dp.add_argument("action", choices=["plan"])
-    dp.add_argument("--file")
-    dp.set_defaults(fn=cmd_deploy)
+    sub.add_parser("schedule", help="the job table and each job's next run (UK time)").set_defaults(fn=cmd_schedule)
+    sc = sub.add_parser("scheduler", help="the always-on worker: start every job on its schedule")
+    sc.add_argument("--list", action="store_true", help="print the job table instead (same as `schedule`)")
+    sc.set_defaults(fn=cmd_scheduler)
     return p
 
 
@@ -690,6 +688,9 @@ def main(argv: list[str] | None = None, *, context_factory: Factory | None = Non
     except GuardViolation as exc:
         print(f"us-outbound {args.command}: blocked by a guardrail (SPEC 1): {redact(str(exc))}", file=sys.stderr)
         return 3
+    except Terminated as exc:
+        print(f"us-outbound {args.command}: {exc}", file=sys.stderr)
+        return 128 + signal.SIGTERM
     except Exception as exc:
         from us_outbound.crm.hubspot_writes import PropertyClash
         from us_outbound.registry.mailboxes import MailboxError

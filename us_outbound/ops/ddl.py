@@ -1,49 +1,56 @@
-"""The BigQuery DDL and views for dataset us_outbound (SPEC 6), and the command that applies them.
+"""The DDL and views for schema us_outbound in the Postgres database (SPEC 6), and apply().
 
-sql/ddl/NN_<table>.sql creates the dataset and then one table per file; sql/views/NN_<view>.sql
-creates the views, numbered so a view comes after the views it reads. Each file holds one
-statement with the placeholders {project} and {location}; the dataset is always us_outbound.
+sql/ddl/NN_<table>.sql creates the schema and then one table per file, with its indexes and
+comments; sql/views/NN_<view>.sql creates the views, numbered so a view comes after the
+views it reads. A file holds one or more statements, each ending in a semicolon.
 
-apply() checks every statement before it runs any (SPEC 1.2: write only to us_outbound):
-  * it creates a backticked `{project}.us_outbound[.name]`: the dataset or a table only
-    IF NOT EXISTS (never OR REPLACE, which would drop data), a view either way;
-  * every backticked name, and any dotted name of three parts, is in `{project}.us_outbound`;
-  * it is one statement.
-Comments and string literals are ignored by the checks. Each statement then passes
-guard.authorize("db", Op("ddl", target="us_outbound.<name>", write=True)) before it runs.
-Dry-run (the default) returns the rendered statements and runs nothing.
+statements() checks every statement before any runs (SPEC 1.2, for the database: write
+only to schema us_outbound). A statement must be one of
+    CREATE SCHEMA IF NOT EXISTS us_outbound
+    CREATE TABLE IF NOT EXISTS us_outbound.<table> (...)
+    CREATE [UNIQUE] INDEX IF NOT EXISTS <name> ON us_outbound.<table> (...)
+    CREATE OR REPLACE VIEW us_outbound.<view> AS ...
+    COMMENT ON SCHEMA | TABLE | VIEW | COLUMN us_outbound[.<object>[.<column>]] IS '...'
+Every name after FROM, JOIN or REFERENCES must be us_outbound.<name>, a CTE of the
+statement, or an unqualified function call such as unnest(...); unqualified table names are
+refused. Any other dotted name must start with us_outbound or with an alias the statement
+declares with AS. The check reads FROM literally, so views use date_part() rather than
+EXTRACT(... FROM ...). Comments and string literals are ignored; escape strings (E'...') and
+dollar quoting are refused, since the check cannot read them.
 
-    python -m us_outbound.ops.ddl --project spill-warehouse-test --location EU [--execute]
+apply() runs every statement in one transaction, each after
+guard.authorize("db", Op("ddl", target="us_outbound.<object>", write=True)). Tables and
+indexes are IF NOT EXISTS and views OR REPLACE, so applying again changes nothing.
+Dry-run (the default) returns the statements and connects to nothing.
 """
 
 from __future__ import annotations
 
-import argparse
-import os
 import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from us_outbound.clients.db import Store
 from us_outbound.clients.guard import DB_SCHEMA, Guard, GuardViolation, Op
 from us_outbound.logs import log
 
 SQL_DIR = Path(__file__).resolve().parents[2] / "sql"
-DEFAULT_LOCATION = "EU"  # the location of the project's existing datasets (docs/phase0-facts.md)
-DATASET_TARGET = f"{DB_SCHEMA}.dataset"  # guard target for the CREATE SCHEMA statement
+SCHEMA_TARGET = f"{DB_SCHEMA}.schema"  # the guard target of CREATE SCHEMA and COMMENT ON SCHEMA
 
-PROJECT_RE = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")  # a GCP project id
-LOCATION_RE = re.compile(r"[A-Za-z]+(?:-[A-Za-z0-9]+)*")  # EU, US, europe-west2
-PLACEHOLDER_RE = re.compile(r"\{[a-z_]+\}")
-NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-CREATE_RE = re.compile(
-    r"\s*CREATE\s+(?P<replace>OR\s+REPLACE\s+)?(?P<kind>SCHEMA|TABLE|VIEW)\s+"
-    r"(?P<ifne>IF\s+NOT\s+EXISTS\s+)?`(?P<name>[^`]+)`",
-    re.IGNORECASE,
-)
-# A name or dotted chain of names, each backticked or bare: `p.ds.t`, `p`.`ds`.t, a.col, col.
-# Matching single names too keeps the scan from starting inside a backticked name.
-CHAIN_RE = re.compile(r"(?:`[^`]*`|[A-Za-z_]\w*)(?:\s*\.\s*(?:`[^`]*`|[A-Za-z_]\w*))*")
+IDENT = r'(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*)'
+NAME = rf"{IDENT}(?:\s*\.\s*{IDENT})*"
+FORMS = {
+    "schema": re.compile(rf"CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+(?P<name>{NAME})$", re.I),
+    "table": re.compile(rf"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(?P<name>{NAME})\s*\(", re.I),
+    "index": re.compile(rf"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+{IDENT}\s+ON\s+(?P<name>{NAME})\s*\(", re.I),
+    "view": re.compile(rf"CREATE\s+OR\s+REPLACE\s+VIEW\s+(?P<name>{NAME})\s+AS\s", re.I),
+    "comment": re.compile(rf"COMMENT\s+ON\s+(?P<on>SCHEMA|TABLE|VIEW|COLUMN)\s+(?P<name>{NAME})\s+IS\s+''$", re.I),
+}
+REFERENCE_RE = re.compile(rf"\b(?P<kw>FROM|JOIN|REFERENCES)\s+(?:(?:LATERAL|ONLY)\s+)?(?P<name>{NAME})(?P<call>\s*\()?", re.I)
+CTE_RE = re.compile(rf"(?:\bWITH(?:\s+RECURSIVE)?|,)\s*(?P<name>{IDENT})\s*(?:\([^()]*\)\s*)?AS\s*(?:NOT\s+)?(?:MATERIALIZED\s+)?\(", re.I)
+ALIAS_RE = re.compile(rf"\bAS\s+(?P<name>{IDENT})", re.I)
+NAME_RE = re.compile(NAME)
+SPECIAL_RE = re.compile(r"""--|/\*|['"$;]""")
 
 
 def files(root: Path = SQL_DIR) -> list[Path]:
@@ -51,172 +58,167 @@ def files(root: Path = SQL_DIR) -> list[Path]:
     return sorted((root / "ddl").glob("*.sql")) + sorted((root / "views").glob("*.sql"))
 
 
-def render(sql: str, project: str, location: str) -> str:
-    """Fill {project} and {location}; one statement, without its trailing semicolon."""
-    if not PROJECT_RE.fullmatch(project):
-        raise ValueError(f"not a GCP project id: {project!r}")
-    if not LOCATION_RE.fullmatch(location):
-        raise ValueError(f"not a BigQuery location: {location!r}")
-    out = sql.replace("{project}", project).replace("{location}", location).strip()
-    left = PLACEHOLDER_RE.findall(out)
-    if left:
-        raise ValueError(f"unknown placeholders {sorted(set(left))}; only {{project}} and {{location}} are filled")
-    return out[:-1].rstrip() if out.endswith(";") else out
+def _segments(sql: str) -> Iterator[tuple[str, str]]:
+    """sql in pieces of kind code, end (a semicolon), comment, string or name (a quoted name)."""
+    i, n = 0, len(sql)
+    while i < n:
+        m = SPECIAL_RE.search(sql, i)
+        if m is None:
+            yield "code", sql[i:]
+            return
+        if m.start() > i:
+            yield "code", sql[i : m.start()]
+        i, tok = m.start(), m.group()
+        if tok == ";":
+            yield "end", tok
+            i += 1
+        elif tok == "$":
+            raise GuardViolation("dollar quoting and $ parameters are not allowed in DDL")
+        elif tok == "--":
+            j = sql.find("\n", i)
+            j = n if j < 0 else j
+            yield "comment", sql[i:j]
+            i = j
+        elif tok == "/*":
+            j = sql.find("*/", i + 2)
+            if j < 0:
+                raise GuardViolation("cannot check a statement with an unterminated comment")
+            yield "comment", sql[i : j + 2]
+            i = j + 2
+        else:  # ' starts a string, " a quoted name; a doubled quote stands for itself
+            if tok == "'" and re.search(r"(?<![\w$])[Ee]$", sql[:i]):
+                raise GuardViolation("escape strings (E'...') are not allowed in DDL")
+            j = i + 1
+            while (j := sql.find(tok, j)) >= 0 and sql.startswith(tok * 2, j):
+                j += 2
+            if j < 0:
+                raise GuardViolation("cannot check a statement with an unterminated string or quoted name")
+            yield ("string" if tok == "'" else "name"), sql[i : j + 1]
+            i = j + 1
 
 
 def _code_only(sql: str) -> str:
-    """sql with comments dropped and string literals emptied; backticked names kept."""
-    out: list[str] = []
-    i, n = 0, len(sql)
+    """sql with comments dropped and string literals emptied; quoted names kept."""
+    blank = {"comment": " ", "string": "''"}
+    return "".join(blank.get(kind, text) for kind, text in _segments(sql))
 
-    def unterminated(what: str) -> GuardViolation:
-        return GuardViolation(f"cannot check a statement with an unterminated {what}")
 
-    while i < n:
-        c = sql[i]
-        if c == "`":
-            j = sql.find("`", i + 1)
-            if j < 0:
-                raise unterminated("backticked name")
-            out.append(sql[i : j + 1])
-            i = j + 1
-        elif sql.startswith("--", i) or c == "#":
-            j = sql.find("\n", i)
-            out.append(" ")
-            i = n if j < 0 else j
-        elif sql.startswith("/*", i):
-            j = sql.find("*/", i + 2)
-            if j < 0:
-                raise unterminated("comment")
-            out.append(" ")
-            i = j + 2
-        elif c in "'\"":
-            quote = sql[i : i + 3] if sql[i : i + 3] in ("'''", '"""') else c
-            j = i + len(quote)
-            while j < n and not sql.startswith(quote, j):
-                j += 2 if sql[j] == "\\" else 1
-            if j >= n:
-                raise unterminated("string")
-            out.append("''")
-            i = j + len(quote)
+def split(sql: str) -> list[str]:
+    """The statements of one file, without their semicolons. A comment goes with the statement after it."""
+    out, cur = [], []
+    for kind, text in _segments(sql):
+        if kind == "end":
+            out.append("".join(cur).strip())
+            cur = []
         else:
-            out.append(c)
-            i += 1
-    return "".join(out)
+            cur.append(text)
+    out.append("".join(cur).strip())
+    return [s for s in out if _code_only(s).strip()]
 
 
-def _parts(chain: str) -> list[str]:
-    parts: list[str] = []
-    for seg in re.findall(r"`[^`]*`|[A-Za-z_]\w*", chain):
-        parts += seg.strip("`").split(".") if seg.startswith("`") else [seg]
-    return parts
+def _parts(name: str) -> list[str]:
+    """us_outbound . "Accounts" -> ["us_outbound", "Accounts"]; unquoted names fold to lower case."""
+    return [p[1:-1].replace('""', '"') if p.startswith('"') else p.lower() for p in re.findall(IDENT, name)]
 
 
-def _in_dataset(parts: list[str], project: str) -> bool:
-    return len(parts) >= 2 and parts[0] == project and parts[1] == DB_SCHEMA
+def _in_schema(parts: list[str], what: str) -> str:
+    if len(parts) != 2 or parts[0] != DB_SCHEMA:
+        raise GuardViolation(f"{what} {'.'.join(parts)!r}, not a {DB_SCHEMA}.<name> object (SPEC 1.2)")
+    return f"{DB_SCHEMA}.{parts[1]}"
 
 
-def check_statement(sql: str, project: str) -> str:
-    """The guard target ("us_outbound.<name>") of one rendered statement, or GuardViolation."""
-    code = _code_only(sql)
-    if ";" in code.rstrip().rstrip(";"):
-        raise GuardViolation("one statement per DDL file")
-    m = CREATE_RE.match(code)
-    if not m:
-        raise GuardViolation("DDL may only CREATE the dataset, a table or a view, named in backticks")
-    kind, name = m["kind"].upper(), m["name"]
-    parts = name.split(".")
-    if not _in_dataset(parts, project):
-        raise GuardViolation(f"DDL creates {name!r}, outside `{project}.{DB_SCHEMA}` (SPEC 1.2)")
-    if kind == "SCHEMA":
-        if len(parts) != 2 or m["replace"] or not m["ifne"]:
-            raise GuardViolation(f"the dataset is created with CREATE SCHEMA IF NOT EXISTS `{project}.{DB_SCHEMA}`")
-        target = DATASET_TARGET
+def check_statement(sql: str) -> str:
+    """The guard target ("us_outbound.<object>") of one statement, or GuardViolation."""
+    code = _code_only(sql).strip().removesuffix(";").rstrip()
+    if ";" in code:
+        raise GuardViolation("one statement at a time")
+    form, m = next(((f, m) for f, rx in FORMS.items() if (m := rx.match(code))), ("", None))
+    if m is None:
+        raise GuardViolation(f"not an allowed DDL statement: {code[:80]!r}")
+    parts = _parts(m["name"])
+    on = (m.groupdict().get("on") or "").upper()
+    if form == "schema" or on == "SCHEMA":
+        if parts != [DB_SCHEMA]:
+            raise GuardViolation(f"the only schema is {DB_SCHEMA}, not {'.'.join(parts)!r} (SPEC 1.2)")
+        target = SCHEMA_TARGET
+    elif on == "COLUMN":
+        if len(parts) != 3:
+            raise GuardViolation(f"COMMENT ON COLUMN names {DB_SCHEMA}.<table>.<column>, not {'.'.join(parts)!r}")
+        target = _in_schema(parts[:2], "COMMENT ON COLUMN")
     else:
-        if len(parts) != 3 or not NAME_RE.fullmatch(parts[2]):
-            raise GuardViolation(f"not a {kind.lower()} name in {DB_SCHEMA}: {name!r}")
-        if kind == "TABLE" and (m["replace"] or not m["ifne"]):
-            raise GuardViolation(f"tables are created only IF NOT EXISTS, never replaced: {name!r}")
-        if m["replace"] and m["ifne"]:
-            raise GuardViolation("OR REPLACE and IF NOT EXISTS cannot be used together")
-        target = f"{DB_SCHEMA}.{parts[2]}"
-    for chain in CHAIN_RE.findall(code):
-        segs = re.findall(r"`[^`]*`|[A-Za-z_]\w*", chain)
-        chain_parts = _parts(chain)
-        names_object = len(chain_parts) >= 3 or any(s.startswith("`") and "." in s for s in segs)
-        if names_object and not _in_dataset(chain_parts, project):
-            raise GuardViolation(f"statement for {target} references {chain!r}, outside `{project}.{DB_SCHEMA}` (SPEC 1.2)")
+        target = _in_schema(parts, f"{form} statement on")
+
+    ctes = {_parts(c["name"])[0] for c in CTE_RE.finditer(code)}
+    for ref in REFERENCE_RE.finditer(code):
+        if code[: ref.start()].rstrip().upper().endswith("DISTINCT"):
+            continue  # IS [NOT] DISTINCT FROM
+        ref_parts = _parts(ref["name"])
+        if len(ref_parts) == 1 and (ref_parts[0] in ctes or (ref["call"] and ref["kw"].upper() != "REFERENCES")):
+            continue  # a CTE, or a function in FROM such as unnest(...)
+        _in_schema(ref_parts, f"statement for {target} reads")
+    aliases = ctes | {_parts(a["name"])[0] for a in ALIAS_RE.finditer(code)}
+    for name in NAME_RE.findall(code):
+        name_parts = _parts(name)
+        if len(name_parts) > 1 and name_parts[0] != DB_SCHEMA and name_parts[0] not in aliases:
+            raise GuardViolation(f"statement for {target} names {name!r}, outside {DB_SCHEMA} (SPEC 1.2)")
     return target
 
 
-def apply(
-    store_or_client: Any,
-    project: str,
-    location: str = DEFAULT_LOCATION,
-    dry_run: bool = True,
-    *,
-    guard: Guard | None = None,
-    root: Path = SQL_DIR,
-) -> list[str]:
-    """Render and check every statement; run them in order unless dry_run. Returns the statements.
-
-    store_or_client is a BigQueryStore (its client and guard are used) or a
-    google.cloud.bigquery Client; it is not touched in dry-run, so None is fine there.
-    """
+def _checked(root: Path) -> list[tuple[str, str, str]]:
     paths = files(root)
     if not paths:
         raise FileNotFoundError(f"no DDL files under {root}")
-    statements = [render(p.read_text(encoding="utf-8"), project, location) for p in paths]
-    targets = [check_statement(s, project) for s in statements]  # all checked before any runs
-    names = [f"{p.parent.name}/{p.name}" for p in paths]
+    out = [(f"{p.parent.name}/{p.name}", s) for p in paths for s in split(p.read_text(encoding="utf-8"))]
+    return [(name, s, check_statement(s)) for name, s in out]
+
+
+def statements(root: Path = SQL_DIR) -> list[tuple[str, str]]:
+    """(file, statement) for every statement in apply order: tables, then views. All are checked first."""
+    return [(name, s) for name, s, _ in _checked(root)]
+
+
+def apply(
+    guard: Guard,
+    dsn: str,
+    *,
+    dry_run: bool = True,
+    connect: Callable[[], Any] | None = None,
+    root: Path = SQL_DIR,
+) -> list[str]:
+    """Check every statement, then run them in one transaction unless dry_run. Returns the statements.
+
+    connect: a zero-argument callable returning a psycopg connection, used instead of
+    psycopg.connect(dsn) (tests). Nothing connects before the guard authorizes the first
+    statement; if any statement fails or is refused, the transaction is rolled back.
+    """
+    todo = _checked(root)
+    targets = sorted({t for _, _, t in todo})
     if dry_run:
-        log("ddl_apply", dry_run=True, project=project, location=location, statements=len(statements), targets=targets)
-        return statements
-
-    if isinstance(store_or_client, Store):
-        client = getattr(store_or_client, "client", None)
-        if client is None:
-            raise TypeError(f"{type(store_or_client).__name__} cannot run DDL; pass a BigQueryStore or a BigQuery client")
-        guard = guard or store_or_client.guard
-    else:
-        client = store_or_client
-    if client is None:
-        raise TypeError("apply needs a BigQueryStore or a BigQuery client unless dry_run")
-    guard = guard or Guard()
-
+        log("ddl_apply", dry_run=True, statements=len(todo), targets=targets)
+        return [s for _, s, _ in todo]
+    if not dsn and connect is None:
+        raise ValueError("ddl.apply needs a database URL unless dry_run")
+    conn = None
     ran = 0
-    for name, sql, target in zip(names, statements, targets):
-        if not guard.authorize("db", Op("ddl", target=target, write=True, detail={"file": name})):
-            log("ddl_statement_skipped", target=target, file=name)
-            continue
-        client.query(sql, location=location).result()
-        ran += 1
-        log("ddl_statement", target=target, file=name)
-    log("ddl_apply", dry_run=False, project=project, location=location, statements=ran, targets=targets)
-    return statements
+    try:
+        for name, sql, target in todo:
+            if not guard.authorize("db", Op("ddl", target=target, write=True, detail={"file": name})):
+                log("ddl_statement_skipped", target=target, file=name)
+                continue
+            if conn is None:
+                conn = connect() if connect is not None else _psycopg_connect(dsn)
+            conn.execute(sql)
+            ran += 1
+        if conn is not None:
+            conn.commit()
+    finally:
+        if conn is not None:
+            conn.close()  # uncommitted work is rolled back
+    log("ddl_apply", dry_run=False, statements=ran, targets=targets)
+    return [s for _, s, _ in todo]
 
 
-def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(
-        prog="python -m us_outbound.ops.ddl",
-        description="Create the us_outbound dataset, tables and views (SPEC 6). Dry-run unless --execute.",
-    )
-    p.add_argument("--project", default=os.environ.get("US_OUTBOUND_PROJECT") or os.environ.get("GOOGLE_CLOUD_PROJECT"))
-    p.add_argument("--location", default=os.environ.get("US_OUTBOUND_BQ_LOCATION", DEFAULT_LOCATION))
-    p.add_argument("--execute", action="store_true", help="run the statements; without it they are only printed")
-    args = p.parse_args(argv)
-    if not args.project:
-        p.error("--project is required (or set US_OUTBOUND_PROJECT)")
-    target = None
-    if args.execute:
-        from us_outbound.clients.db import BigQueryStore
+def _psycopg_connect(dsn: str) -> Any:
+    import psycopg
 
-        target = BigQueryStore(Guard(), args.project, args.location)
-    statements = apply(target, args.project, args.location, dry_run=not args.execute)
-    if not args.execute:
-        print(";\n\n".join(statements) + ";")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    return psycopg.connect(dsn)  # not autocommit: the statements run in one transaction

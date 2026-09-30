@@ -47,17 +47,29 @@ Status key:
 | Harry's user id | Confirmed | `U098X453UAG` (the only approver) |
 | Bot app | Open | To be created from `deploy/slack-app-manifest.yaml` |
 
-## Google Cloud / BigQuery
+## Infrastructure: Railway, and one Google service account
 
-**Decision (Harry, 30 Sep):** the system runs in its own Google Cloud project, "Columbus" (id `columbus-510209`, number 548271199497, in the spill.chat organization), separate from the warehouse project `spill-warehouse-test`. SPEC 3 said "Spill's existing Google Cloud project". A separate project keeps the outbound system's service account, secrets and costs apart from the warehouse. The jobs never read the warehouse datasets.
+**Decision (Harry, 30 Sep 2026):** everything Google Cloud was to do moves to Railway, where Spill already has a paid account:
+
+| What | Railway | Replaces |
+| :- | :- | :- |
+| Compute | One always-on worker service. It is built from the `Dockerfile` and runs `us-outbound scheduler`, which starts every job on the `ops/schedule.py` table | Cloud Run Jobs and Cloud Scheduler (SPEC 3) |
+| Database | Railway PostgreSQL, schema `us_outbound` | BigQuery dataset `us_outbound` (SPEC 3, 6) |
+| Secrets | Sealed service variables | Secret Manager (SPEC 1.7) |
+| Images | Built by Railway from the repository | Artifact Registry |
+
+An earlier decision the same day put the system in its own Google Cloud project, Columbus (`columbus-510209`, number 548271199497, in the spill.chat organization). That project now holds only a service account. The service account reads and writes the settings sheet through the Sheets API. It needs no billing. The jobs never read the warehouse project `spill-warehouse-test`.
 
 | Fact | Status | Value |
 | :- | :- | :- |
-| Project | Created | `columbus-510209` (display name Columbus), in the spill.chat organization. Check that it is linked to Spill's billing account |
-| Dataset location | Decided | **EU**, like the warehouse's 24 datasets (SPEC 6) |
-| Region for Cloud Run, Scheduler, secrets and registry | Default | `europe-west2` (London) |
-| Dataset us_outbound | Not created yet | Created by `us-outbound bq apply` |
-| Service account | Not created yet | `us-outbound@columbus-510209.iam.gserviceaccount.com`, created by `deploy/setup.sh`. The settings sheet is shared with it |
+| Railway project | Not created yet | "Columbus", in Spill's workspace (docs/railway-setup.md) |
+| Region (data residency) | Decided | **EU West (Amsterdam)**, `europe-west4-drams3a`, for the worker and Postgres |
+| Database | Not created yet | Railway PostgreSQL; tables created by `us-outbound db apply --live` |
+| Secrets | Not added yet | Sealed variables on the us-outbound service: the six keys, the Sheets key, the sheet id and `DATABASE_URL` (`${{Postgres.DATABASE_URL}}`) |
+| Google project | Created | `columbus-510209` (Columbus). Only the Google Sheets API is enabled. No billing is needed |
+| Sheets service account | Not created yet | `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com`, with no project roles. The settings sheet is shared with it as Editor. Its JSON key goes in `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON`. The spill.chat organization may block key creation (railway-setup.md, step d) |
+| Railway config as code | Checked 30 Sep | `railway.json` and `railway.toml` are deprecated. New services cannot use them, and they stop being read on 1 Dec 2026. The Dockerfile holds the start command; the dashboard settings are listed in railway-setup.md |
+| Sealed variables | Checked 30 Sep | They are not passed to `railway run` or `railway shell`. Commands run inside the worker with `railway ssh -- us-outbound …` |
 
 ## Website (Webflow site 60b75255186ee4cfc87b1cc0)
 
@@ -70,4 +82,4 @@ Status key:
 ## Not reachable from here
 
 - **Instantly:** there is no connector and no key in this session. Still to check: the plan, email and uploaded-contact caps and current use, whether the emails, reply, forward and accounts endpoints exist, the custom-variable length limit, same-address follow-ups, and the warmup status of the four mailboxes.
-- **Secrets:** they will live in Secret Manager. None exist yet.
+- **Secrets:** they will live in sealed Railway variables. None exist yet.

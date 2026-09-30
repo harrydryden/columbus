@@ -10,15 +10,22 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
 3. **Footer and Article 14 text.** Please approve or edit `templates/copy/footer.txt` and `templates/copy/article14.txt` (SPEC 14: "For Harry to approve"). The notice names Apollo and Clay as sources for every contact, and gives the lawful basis as legitimate interests.
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
-4. **Instantly.** We have no connector or key in this session. Please add the API key to Secret Manager. The plan facts in SPEC 14 are still unconfirmed: plan tier, email and contact caps and current use, and whether the emails, reply, forward and accounts endpoints exist.
-5. **Google Cloud.** Which project and region should hold Cloud Run, Scheduler, Secret Manager and Artifact Registry? BigQuery `us_outbound` will go in EU, next to the existing datasets.
-   *Answered (Harry, 30 Sep): a separate project, Columbus (id `columbus-510209`). Region defaults to europe-west2 (London); BigQuery in EU.*
-6. **Small Google Cloud costs (SPEC 1.1: no new paid services).**
-   - Cloud Scheduler is $0.10 per job per month beyond 3 free jobs. There are about 15 jobs by phase 3, so about $1.20 a month.
-   - Secret Manager is about $0.06 per secret per month beyond 6 free. We have 7 secrets, so about $0.06 a month.
-   - Artifact Registry is free up to 0.5 GB.
+4. **Instantly.** We have no connector or key in this session. Please add the API key to the sealed Railway variable `US_OUTBOUND_INSTANTLY_API_KEY` (docs/railway-setup.md, step c). The plan facts in SPEC 14 are still unconfirmed: plan tier, email and contact caps and current use, and whether the emails, reply, forward and accounts endpoints exist.
+5. **Where the system runs.** Which project and region should hold Cloud Run, Scheduler, Secret Manager and Artifact Registry?
+   *Answered (Harry, 30 Sep): Railway, on Spill's existing paid plan, in EU West (Amsterdam).*
+   - One always-on worker runs the scheduler, which replaces Cloud Run Jobs and Cloud Scheduler.
+   - Railway Postgres replaces BigQuery.
+   - Sealed variables replace Secret Manager.
+   - The Google project Columbus (`columbus-510209`) keeps only a Sheets service account.
 
-   Do you approve these costs?
+   This departs from SPEC 1.7, 3 and 6; see docs/railway-setup.md.
+6. **Google Cloud costs.** *No longer apply (30 Sep):* there is no Cloud Scheduler, Secret Manager or Artifact Registry, and the Sheets API is free with no billing account. Railway usage is about $3–5 a month on Spill's existing plan (docs/railway-setup.md, step g). New questions from the move:
+   - **6a. Postgres backups.** Does Spill's Railway plan include volume backups, and do you want them? [Daily and Weekly on, if available; billed as volume storage]
+   - **6b. Railway workspace.** Which Railway workspace should hold the project "Columbus", and who besides you should be a member? Members can open the non-sealed variables and the logs. [Spill's main workspace; you as Admin]
+   - **6c. Service-account keys.** If the spill.chat organization blocks key creation (`iam.disableServiceAccountKeyCreation`), may an organization admin lift it for `columbus-510209` only, while the key is made? [yes, then restore it] If not, the jobs need another way into the sheet, and the code has to change.
+   - **6d. Railway as a processor.** Prospect names and emails are stored in Railway's EU region. Should Railway go through Spill's DPA review before real data lands there (phase 1)? [yes, before phase 1]
+   - **6e. Config in code.** Railway's `railway.json` and `railway.toml` are deprecated, so the worker's settings are checked by hand from a list in railway-setup.md. Do you want Railway's replacement, `.railway/railway.ts`? It needs Node and the Railway CLI to apply. [no; the dashboard and the list]
+   - **6f. If the worker stops.** heartbeat_check runs inside the worker, so it cannot report that the worker is down. Railway's project webhooks can post deployment crashes to a Slack incoming webhook for #us-outbound-dev. This needs an incoming webhook in Slack (a separate app, or one added to ours). Shall I set it up? [yes, in phase 0]
 7. **Clay.**
    - What are the plan tier and the monthly credit pool? `clay_monthly_credits` stays 0 until you tell me, so no Clay calls happen.
    - Is the Routines (function) API enabled for the workspace, with "API & CLI" ticked on the two functions? If not, we use the CSV fallback in SPEC 8.
@@ -95,16 +102,16 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 ### Enrollment and sending
 
 46. The running test takes version_a's angle accounts. Control fills any shortfall in Priority and Standard, and the other way round. [yes]
-47. Weekly hand-check: enrollment waits until this week's hand-check item is marked handled, and pulled accounts are skipped. How do you want to approve it: a Slack thread reply, or the sheet? [a handled item in BigQuery; the Slack approval flow comes with phase 2]
+47. Weekly hand-check: enrollment waits until this week's hand-check item is marked handled, and pulled accounts are skipped. How do you want to approve it: a Slack thread reply, or the sheet? [a handled item in the database; the Slack approval flow comes with phase 2]
 48. Your two addresses share one campaign. Leads use your first Active mailbox's signature. [yes]
 49. While `hubspot_owner_id` is blank, the HubSpot re-check excludes any account that has an owner. [fails closed]
 50. `mailbox add` joins the campaign only once the mailbox is Active. SPEC's campaign table sends from Active addresses only. [Active only]
 51. A mailbox is warm at a warmup or health score of 90 or more, or after 21 days of warmup. [90, in code] (PHASE0-CONFIRM)
-52. `unenrol --month` removes that month's Instantly leads but leaves BigQuery status unchanged. [unchanged]
+52. `unenrol --month` removes that month's Instantly leads but leaves their status in the database unchanged. [unchanged]
 53. `stop` and `start` are recorded as heartbeat rows. `start` refuses while any campaign has drifted. [yes]
 54. Operator commands that never reach a prospect (stop, mailbox, erase, setup) are live with `--live` alone. Jobs and `start` also need `live_sending = yes`. [as described]
 55. Lead imports skip anyone already in any Instantly campaign, the EU ones included, and spend no Instantly verification credits. [yes]
-56. The Instantly blocklist gets email addresses only, because a domain entry would also block EU campaigns. Domain suppression stays in BigQuery. [emails only]
+56. The Instantly blocklist gets email addresses only, because a domain entry would also block EU campaigns. Domain suppression stays in the database. [emails only]
 
 ### Instantly, Apollo and HubSpot details (PHASE0-CONFIRM)
 
@@ -117,5 +124,5 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 61. `contacts.enrolment_month` is STRING "YYYY-MM". v_signal_value flags a signal after 200 accounts with step 1 delivered. Site-visit events are logged for enrolled accounts only, as SPEC says. [yes]
 62. Raw tables (including raw_clay_contacts, which holds names and emails) have no retention rule, but erase covers them. Should they follow the 12-month contacts rule? [kept]
-63. `erase` GDPR-deletes the HubSpot contact whoever created it, lists a manual Clay step, and deletes BigQuery rows even in dry-run. [yes]
+63. `erase` GDPR-deletes the HubSpot contact whoever created it, lists a manual Clay step, and deletes database rows even in dry-run. [yes]
 64. heartbeat_check alerts once when a job is newly missed and repeats at 09:00 UK. `test read` before the read date is labelled an early look. [yes]

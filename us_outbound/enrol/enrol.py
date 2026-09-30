@@ -21,7 +21,7 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      custom variables.
 
 Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is marked
-enrolled. HubSpot exclusions found on the way are still written to BigQuery (SPEC 0.3).
+enrolled. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
 contact records its enrollment month, angle, copy version, test, mailbox, campaign and lead id.
 Sent events come later, from sync_outcomes.
@@ -393,7 +393,7 @@ def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str
 
 
 def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: str) -> None:
-    """Tier Excluded now, and a hubspot fact so the next rescore keeps it excluded (BigQuery, so dry-run too)."""
+    """Tier Excluded now, and a hubspot fact so the next rescore keeps it excluded (the database, so dry-run too)."""
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
     ctx.store.insert(

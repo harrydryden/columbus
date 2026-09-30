@@ -8,7 +8,8 @@ the allowed containers" (SPEC 1.2 isolation, 1.8 tracking, 0.3 dry-run).
       pair with a call the guard authorized. A client method missing from EXERCISES fails.
   (b) Each disallowed write raises GuardViolation before any request is made.
   (c) Static: only clients/http.py imports an HTTP library; only clients/db.py and ops/ddl.py
-      import BigQuery; only clients/claude.py imports anthropic.
+      import psycopg; nothing imports google.cloud; only clients/sheets.py and ops/bootstrap.py
+      import google-auth; only clients/claude.py imports anthropic.
   (d) The same exercise in dry-run makes no write request to HubSpot, Instantly or the sheet,
       and Slack posts only to the dev channel.
 """
@@ -16,6 +17,7 @@ the allowed containers" (SPEC 1.2 isolation, 1.8 tracking, 0.3 dry-run).
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib
 import inspect
 import pkgutil
@@ -33,7 +35,7 @@ import pytest
 import us_outbound.clients
 from tests.fakes import FakeTransport
 from us_outbound.clients.apollo import Apollo
-from us_outbound.clients.db import BigQueryStore, MemoryStore
+from us_outbound.clients.db import MemoryStore, PostgresStore
 from us_outbound.clients.claude import Claude
 from us_outbound.clients.clay import Clay
 from us_outbound.clients.guard import Boundaries, CallRecord, Guard, GuardViolation, Op
@@ -57,7 +59,6 @@ CLAY_FUNCTIONS = ("fn-us-accounts", "fn-us-contacts")
 SHEET = "sheet-test"
 ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
-PROJECT = "test-project"
 
 BOUNDS = Boundaries(
     registry_addresses=frozenset(ADDRESSES),
@@ -84,7 +85,7 @@ HS_WARM = {"positive", "referral"}
 HS_FREE_WRITES = {"note.create", "task.create", "association.create", "communication.unsubscribe"}
 SLACK_WRITES = {"chat.postMessage", "chat.update"}
 SETTINGS_TITLE = "US Outbound – Settings"
-DB_SCHEMA = "us_outbound"
+DB_SCHEMA = "us_outbound"  # the database: schema us_outbound only (SPEC 1.2)
 REGISTRY = set(redact(sorted(ADDRESSES)))  # CallRecord details carry hashed addresses (logs.redact)
 REDACTED_EMAIL = re.compile(r"^email:[0-9a-f]{16}$")
 
@@ -187,7 +188,7 @@ def spec_violation(rec: CallRecord) -> str | None:
             return None if d.get("title") == SETTINGS_TITLE else f"created sheet {d.get('title')!r}"
         return None if t == SHEET else f"write to sheet {t!r}"
     if s == "db":
-        return None if t.split(".")[0] == DB_SCHEMA else f"BigQuery write to {t!r}"
+        return None if t.split(".")[0] == DB_SCHEMA else f"database write to {t!r}"
     return f"{s} is never written to (SPEC 1.2)"  # apollo, clay, public, claude, secrets
 
 
@@ -222,35 +223,59 @@ class PairingTransport(FakeTransport):
         return resp
 
 
-class FakeBigQuery:
-    """Stands in for google.cloud.bigquery.Client; each call must follow an authorized bq call."""
+class FakePostgres:
+    """Stands in for a psycopg connection; each statement must follow an authorized db call.
+
+    calls holds (sql text, params) per statement, and one entry per row of an executemany.
+    """
+
+    READS = {"SELECT", "WITH", "SET"}
 
     def __init__(self, guard: Guard):
         self.guard = guard
-        self.calls: list[tuple[str, str]] = []
-        self.loads: dict[str, list[dict]] = {}
-        self.unauthorized: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, Any]] = []
+        self.unauthorized: list[str] = []
+        self.connects = 0
+        self.closed = False
+        self.autocommit = False
+        self.row_factory = None
+        self.rowcount = 0
 
-    def _check(self, kind: str, text: str, write: bool) -> None:
-        last = self.guard.calls[-1] if self.guard.calls else None
-        if last is None or last.system != "db" or not last.sent or (write and not last.write):
-            self.unauthorized.append((kind, text))
-        self.calls.append((kind, text))
-
-    def query(self, sql, job_config=None, **_):
-        self._check("query", sql, sql.split(None, 1)[0].upper() not in {"SELECT", "WITH"})
+    def connect(self) -> FakePostgres:
+        self.connects += 1
+        self.closed = False
         return self
 
-    def result(self):
+    def _record(self, query: Any, params: Any) -> None:
+        text = query.as_string(None) if hasattr(query, "as_string") else str(query)
+        last = self.guard.calls[-1] if self.guard.calls else None
+        write = text.split(None, 1)[0].upper() not in self.READS
+        if last is None or last.system != "db" or not last.sent or (write and not last.write):
+            self.unauthorized.append(text)
+        self.calls.append((text, params))
+
+    def execute(self, query, params=None, **_):
+        self._record(query, params)
+        return self
+
+    def executemany(self, query, rows):
+        for row in rows:
+            self._record(query, row)
+
+    def cursor(self):
+        return contextlib.nullcontext(self)
+
+    def transaction(self):
+        return contextlib.nullcontext()
+
+    def fetchall(self):
         return []
 
-    def load_table_from_json(self, rows, dest, job_config=None):
-        self._check("load", dest, True)
-        self.loads[dest] = list(rows)
-        return self
+    def fetchone(self):
+        return {"n": 0}
 
-    def delete_table(self, name, not_found_ok=False):
-        self._check("delete_table", name, True)
+    def close(self):
+        self.closed = True
 
 
 class FakeSDK:
@@ -339,7 +364,7 @@ def install_routes(t: FakeTransport) -> None:
 class World:
     guard: PairingGuard
     transport: PairingTransport
-    bq: FakeBigQuery
+    pg: FakePostgres
     sdk: FakeSDK
     tmp: Path
     clients: dict[str, Any]
@@ -358,7 +383,7 @@ def make_world(live: bool, tmp: Path) -> World:
     guard = PairingGuard(live)
     t = PairingTransport(guard=guard)
     install_routes(t)
-    bq = FakeBigQuery(guard)
+    pg = FakePostgres(guard)
     sdk = FakeSDK(guard)
     memory = MemoryStore(guard)
     memory.query_handlers["v_queue"] = lambda store, params: []
@@ -372,9 +397,9 @@ def make_world(live: bool, tmp: Path) -> World:
         "Public": Public(guard, t),
         "Claude": Claude(guard, memory, api_key=None, model="claude-haiku-4-5", monthly_cap_usd=10.0, sdk=sdk),
         "MemoryStore": memory,
-        "BigQueryStore": BigQueryStore(guard, PROJECT, "EU", client=bq),
+        "PostgresStore": PostgresStore(guard, "postgresql://fake", connect=pg.connect),
     }
-    return World(guard, t, bq, sdk, tmp, clients)
+    return World(guard, t, pg, sdk, tmp, clients)
 
 
 # -- every public client method, with plausible arguments ---------------------------------------
@@ -395,7 +420,8 @@ def _store_exercises() -> dict[str, Ex]:
         "get": lambda s, w: s.get("accounts", account_id="acc-1"),
         "update": lambda s, w: s.update("accounts", {"account_id": "acc-1"}, {"score": 55}),
         "delete": lambda s, w: s.delete("signal_events", {"account_id": "acc-1", "source": "scoring"}),
-        "query": lambda s, w: s.query(f"SELECT * FROM `{PROJECT}.us_outbound.v_queue`"),
+        "query": lambda s, w: s.query("SELECT * FROM us_outbound.v_queue"),
+        "close": lambda s, w: s.close(),
     }
 
 
@@ -495,11 +521,11 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "estimate_usd": lambda c, w: c.estimate_usd("Classify the reply.", "Sounds good", SCHEMA, 256),
     },
     "MemoryStore": _store_exercises(),
-    "BigQueryStore": _store_exercises(),
+    "PostgresStore": _store_exercises(),
 }
 
 CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Clay, Public, Claude,
-                                                MemoryStore, BigQueryStore)}
+                                                MemoryStore, PostgresStore)}
 # HttpClient's own plumbing: request() is the guarded path every method above goes through
 # (the negative cases call it directly), and headers() builds auth headers.
 PLUMBING = frozenset({"request", "headers"})
@@ -615,26 +641,33 @@ def test_instantly_touches_only_us_campaigns_and_registry_accounts(live_world):
         assert body.get("open_tracking") in (None, False) and body.get("link_tracking") in (None, False)
 
 
-def test_bigquery_writes_only_to_us_outbound(live_world):
-    bq = live_world.bq
-    assert bq.calls and bq.unauthorized == []
-    for kind, text in bq.calls:
-        names = re.findall(r"`([^`]+)`", text) if kind == "query" else [text]
-        for name in names:
-            parts = name.split(".")
-            assert len(parts) == 3 and parts[0] == PROJECT and parts[1] == DB_SCHEMA, f"{kind} touches {name}"
+WRITE_TARGET = re.compile(r'^(?:INSERT INTO|UPDATE|DELETE FROM) "([^"]+)"\."([^"]+)"')
 
 
-def test_bigquery_upsert_merges_each_column_set_separately(live_world):
-    """A MERGE over the union of columns would NULL a column a row leaves out (foundation fix)."""
-    bq = live_world.bq
-    merges = [t for k, t in bq.calls if k == "query" and t.startswith("MERGE") and ".accounts`" in t.split(" USING")[0]]
-    assert len(merges) == 2
-    for sql in merges:
-        stage = re.search(r"USING `([^`]+)`", sql).group(1)
-        cols = {c for row in bq.loads[stage] for c in row}
-        m = re.search(r"UPDATE SET (.*?) WHEN NOT MATCHED", sql)
-        assert {s.split(" = ")[0].strip() for s in m.group(1).split(",")} == cols - {"account_id"}
+def test_db_writes_only_to_us_outbound(live_world):
+    pg = live_world.pg
+    assert pg.calls and pg.unauthorized == []
+    writes = [text for text, _ in pg.calls if text.split(None, 1)[0].upper() in {"INSERT", "UPDATE", "DELETE"}]
+    assert writes
+    for text in writes:
+        m = WRITE_TARGET.match(text)
+        assert m and m.group(1) == DB_SCHEMA, f"a write outside {DB_SCHEMA}: {text[:80]}"
+    for text, _ in pg.calls:
+        for schema, _name in re.findall(r'"([^"]+)"\."([^"]+)"', text):
+            assert schema == DB_SCHEMA, f"a statement names schema {schema!r}: {text[:80]}"
+
+
+def test_db_upsert_sets_only_each_rows_columns(live_world):
+    """One statement per column set: a row sets only the columns it carries (MemoryStore keeps the rest)."""
+    upserts = [(text, params) for text, params in live_world.pg.calls
+               if text.startswith('INSERT INTO "us_outbound"."accounts"') and "ON CONFLICT" in text]
+    assert [len(params) for _, params in upserts] == [len(r) for r in ACCOUNT_ROWS]
+    for (text, _), row in zip(upserts, ACCOUNT_ROWS):
+        cols = re.search(r"\(([^)]*)\) VALUES", text).group(1)
+        assert {c.strip().strip('"') for c in cols.split(",")} == set(row)
+        assert 'ON CONFLICT ("account_id") DO UPDATE SET' in text
+        sets = text.split("DO UPDATE SET", 1)[1]
+        assert {s.split("=")[0].strip().strip('"') for s in sets.split(",")} == set(row) - {"account_id"}
 
 
 def test_claude_is_called_only_after_the_guard(live_world):
@@ -725,12 +758,15 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "public unlisted host": lambda w: w.clients["Public"].get("https://evil.example/jobs"),
     "public POST": lambda w: w.clients["Public"].request(
         "POST", "https://boards-api.greenhouse.io/x", Op("post", target="boards-api.greenhouse.io", write=True)),
-    # BigQuery: dataset us_outbound only, and query() is read only.
-    "bq memory store in another dataset": lambda w: _other_store(MemoryStore)(w.guard).insert("accounts", [{"account_id": "x"}]),
-    "bq store in another dataset": lambda w: _other_store(BigQueryStore)(w.guard, PROJECT, "EU", client=w.bq).insert(
-        "accounts", [{"account_id": "x"}]),
-    "bq unknown table": lambda w: w.clients["MemoryStore"].insert("hubspot_contacts", [{"id": "x"}]),
-    "bq DML through query": lambda w: w.clients["BigQueryStore"].query(f"DELETE FROM `{PROJECT}.us_outbound.accounts` WHERE TRUE"),
+    # The database: schema us_outbound only, and query() is read only.
+    "db memory store in another schema": lambda w: _other_store(MemoryStore)(w.guard).insert("accounts", [{"account_id": "x"}]),
+    "db store in another schema": lambda w: _other_store(PostgresStore)(
+        w.guard, "postgresql://fake", connect=w.pg.connect).insert("accounts", [{"account_id": "x"}]),
+    "db store update in another schema": lambda w: _other_store(PostgresStore)(
+        w.guard, "postgresql://fake", connect=w.pg.connect).update("accounts", {"account_id": "x"}, {"tier": "Held"}),
+    "db unknown table": lambda w: w.clients["PostgresStore"].insert("hubspot_contacts", [{"id": "x"}]),
+    "db memory unknown table": lambda w: w.clients["MemoryStore"].insert("hubspot_contacts", [{"id": "x"}]),
+    "db DML through query": lambda w: w.clients["PostgresStore"].query("DELETE FROM us_outbound.accounts WHERE TRUE"),
 }
 
 
@@ -740,7 +776,7 @@ def test_disallowed_call_raises_before_any_request(case, tmp_path):
     with pytest.raises(GuardViolation):
         NEGATIVE[case](w)
     assert w.transport.requests == [], f"{case}: a request went out before the guard refused"
-    assert w.bq.calls == [] and w.sdk.calls == []
+    assert w.pg.calls == [] and w.pg.connects == 0 and w.sdk.calls == []
     assert all(not c.sent for c in w.guard.calls if c.write), f"{case}: a write was recorded as sent"
     assert all(rows == [] for rows in w.clients["MemoryStore"].tables.values())
 
@@ -757,11 +793,13 @@ IMPORT_RULES: list[tuple[str, set[str]]] = [
     ("aiohttp", set()),
     ("socket", set()),
     ("smtplib", set()),  # spill.chat never sends email itself (SPEC 1.4)
-    ("google.cloud.bigquery", {"us_outbound/clients/db.py", "us_outbound/ops/ddl.py"}),
+    ("psycopg", {"us_outbound/clients/db.py", "us_outbound/ops/ddl.py"}),
     ("anthropic", {"us_outbound/clients/claude.py"}),
-    # Credentials only, never data calls: Secret Manager reads keys; google-auth refreshes the Sheets token.
-    ("google.cloud.secretmanager", {"us_outbound/context.py"}),
+    # Everything Google Cloud did moved to Railway (Harry, 30 Sep): no Google Cloud library at all.
+    ("google.cloud", set()),
+    # Credentials only, never data calls: google-auth signs the Sheets token from the service-account JSON.
     ("google.auth", {"us_outbound/clients/sheets.py", "us_outbound/ops/bootstrap.py"}),
+    ("google.oauth2", {"us_outbound/clients/sheets.py", "us_outbound/ops/bootstrap.py"}),
 ]
 
 
@@ -823,7 +861,7 @@ def test_dry_run_slack_posts_only_to_the_dev_channel(dry_world):
     assert refused and {c.target for c in refused} == {ALERT}
 
 
-def test_dry_run_still_writes_bigquery(dry_world):
-    """SPEC 0.3: dry-run computes, logs and writes to BigQuery."""
+def test_dry_run_still_writes_the_database(dry_world):
+    """SPEC 0.3: dry-run computes, logs and writes to the database."""
     assert dry_world.guard.writes("db", sent=True)
-    assert dry_world.bq.calls and dry_world.bq.unauthorized == []
+    assert dry_world.pg.calls and dry_world.pg.unauthorized == []

@@ -1,9 +1,9 @@
 # Slack app for US Outbound (SPEC 3, 11, 14 phase 0). Create it at api.slack.com/apps →
 # "From an app manifest", install it to the workspace, invite the bot to #us-outbound and
-# #us-outbound-dev, and put the bot token (xoxb-…) in Secret Manager as
-# us-outbound-slack-bot-token. There is no public endpoint (SPEC 2): no events, no
-# interactivity, no slash commands. The jobs post with chat:write and poll thread
-# replies for approvals (poll_approvals, every 5 minutes).
+# #us-outbound-dev, and put the bot token (xoxb-…) in the sealed Railway variable
+# US_OUTBOUND_SLACK_BOT_TOKEN (docs/railway-setup.md). There is no public endpoint
+# (SPEC 2): no events, no interactivity, no slash commands. The jobs post with chat:write
+# and poll thread replies for approvals (poll_approvals, every 5 minutes).
 _metadata:
   major_version: 1
   minor_version: 1

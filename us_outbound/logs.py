@@ -1,7 +1,7 @@
 """Structured logging with the secrets rules applied (SPEC 1.7).
 
 Logs carry hashed emails, never raw addresses, and at most 200 characters of any
-email body. Every log line is one JSON object on stdout, which Cloud Logging picks up.
+email body. Every log line is one JSON object on stdout, which Railway's log view picks up.
 """
 
 from __future__ import annotations

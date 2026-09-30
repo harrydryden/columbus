@@ -79,12 +79,15 @@ class Harness:
         (["test", "read", "t1-eap-opener"], {"action": "read", "test_id": "t1-eap-opener"}),
         (["settings", "sync"], {"command": "settings", "action": "sync"}),
         (["settings", "bootstrap", "--live"], {"action": "bootstrap", "live": True, "force": False}),
-        (["bq", "apply", "--project", "spill-warehouse-test"], {"action": "apply", "project": "spill-warehouse-test"}),
+        (["db", "apply"], {"command": "db", "action": "apply", "live": False}),
+        (["db", "apply", "--live"], {"action": "apply", "live": True}),
         (["hubspot", "setup", "--live"], {"action": "setup", "live": True}),
         (["hubspot", "ids"], {"action": "ids"}),
         (["campaigns", "ensure", "--fix"], {"action": "ensure", "fix": True}),
         (["suppression", "load"], {"action": "load"}),
-        (["deploy", "plan"], {"action": "plan"}),
+        (["schedule"], {"command": "schedule"}),
+        (["scheduler"], {"command": "scheduler", "list": False}),
+        (["scheduler", "--list"], {"command": "scheduler", "list": True}),
     ],
 )
 def test_every_command_parses(argv, expected):
@@ -114,33 +117,64 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 
-def test_jobs_yaml_matches_the_registry_and_spec9_schedules():
-    jobs = {j["name"]: j for j in cli.read_jobs_file()}
-    assert set(jobs) == set(cli.JOBS)
-    crons = {
-        "settings_sync": "0 2 * * *", "source_universe": "0 3 1 * *", "apollo_signals": "30 3 * * 1",
-        "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
-        "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
-        "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "0 1 * * *",
-        "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
-        "monday_readout": "0 9 * * 1",
-    }
-    for name, cron in crons.items():
-        assert jobs[name]["schedule"] == cron, name
-    for name, j in jobs.items():
-        assert j["args"][:2] == ["run", name]
-        assert j["disabled"] is (cli.JOBS[name].startswith("not built") or name == "enrol"), name
-        assert int(str(j["timeout"]).rstrip("s")) <= hb.OVERLAP_MINUTES * 60
-    assert "--live" in jobs["enrol"]["args"] and "--live" not in jobs["source_universe"]["args"]
+def test_the_google_cloud_commands_are_gone():
+    for argv in (["bq", "apply"], ["deploy", "plan"]):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(argv)
 
 
-def test_deploy_plan_prints_one_line_per_job(capsys):
-    assert cli.main(["deploy", "plan"]) == 0
-    lines = capsys.readouterr().out.strip().splitlines()
-    assert len(lines) == len(cli.JOBS)
-    fields = dict((line.split("\t")[0], line.split("\t")) for line in lines)
-    assert fields["enrol"] == ["enrol", "0 12 * * 1-5", "true", "run,enrol,--live", "1800s", "512Mi"]
-    assert fields["score"][1] == "-"
+def test_schedule_lists_every_job_with_its_next_run(capsys):
+    assert cli.main(["schedule"]) == 0
+    out = capsys.readouterr().out
+    lines = {line.split()[0]: line for line in out.splitlines() if line.split() and line.split()[0] in cli.JOBS}
+    assert set(lines) == set(cli.JOBS)
+    assert "0 2 * * *" in lines["settings_sync"] and "--live" in lines["settings_sync"]
+    assert "disabled until phase 2" in lines["enrol"] and "on demand only" in lines["score"]
+    assert re.search(r"(BST|GMT)$", lines["heartbeat_check"])
+    assert "live_sending = yes" in out
+    assert cli.main(["scheduler", "--list"]) == 0
+    assert capsys.readouterr().out == out
+
+
+
+def test_db_apply_prints_the_statements_unless_live(capsys, monkeypatch):
+    from us_outbound.ops import ddl
+
+    calls = []
+
+    def fake_apply(guard, dsn, *, dry_run=True, connect=None):
+        calls.append((guard, dsn, dry_run))
+        return ["CREATE SCHEMA IF NOT EXISTS us_outbound", "CREATE TABLE IF NOT EXISTS us_outbound.accounts (a text);"]
+
+    monkeypatch.setattr(ddl, "apply", fake_apply)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert cli.main(["db", "apply"]) == 0  # dry-run needs no database
+    out = capsys.readouterr()
+    assert out.out.strip() == ("CREATE SCHEMA IF NOT EXISTS us_outbound;\n\n"
+                               "CREATE TABLE IF NOT EXISTS us_outbound.accounts (a text);")
+    assert "nothing run" in out.err and calls[-1][1:] == ("", True)
+
+    assert cli.main(["db", "apply", "--live"]) == 2  # live needs DATABASE_URL
+    assert "set DATABASE_URL" in capsys.readouterr().err and len(calls) == 1
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://us_outbound@db.test:5432/railway")
+    assert cli.main(["db", "apply", "--live"]) == 0
+    guard, dsn, dry_run = calls[-1]
+    assert (dsn, dry_run) == ("postgresql://us_outbound@db.test:5432/railway", False)
+    assert isinstance(guard, Guard) and guard.job == "db_apply"
+    assert "Applied 2 statements" in capsys.readouterr().out
+
+
+def test_scheduler_command_reads_the_parallel_limit(monkeypatch, capsys):
+    from us_outbound.ops import scheduler
+
+    seen = []
+    monkeypatch.setattr(scheduler.Scheduler, "run", lambda self: seen.append(self.max_parallel) or 0)
+    monkeypatch.setenv("US_OUTBOUND_MAX_PARALLEL", "3")
+    assert cli.main(["scheduler"]) == 0 and seen == [3]
+    monkeypatch.setenv("US_OUTBOUND_MAX_PARALLEL", "none")
+    assert cli.main(["scheduler"]) == 2
+    assert "US_OUTBOUND_MAX_PARALLEL" in capsys.readouterr().err
 
 
 # -- dry-run and live ------------------------------------------------------------------------------
@@ -202,6 +236,27 @@ def key_error_job(ctx):
 
 def bad_input_job(ctx):
     raise ValueError("bad input")
+
+
+def sigterm_job(ctx):
+    import os
+    import signal
+
+    os.kill(os.getpid(), signal.SIGTERM)  # what the scheduler sends at a timeout
+    raise AssertionError("not reached: the handler raises first")
+
+
+def test_sigterm_during_a_job_leaves_an_error_heartbeat_not_a_running_one(capsys, monkeypatch):
+    import signal
+
+    h = Harness()
+    before = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setitem(cli.JOBS, "suppression_load", "tests.test_cli:sigterm_job")
+    assert h.run("run", "suppression_load") == 143
+    [beat] = h.beats("suppression_load")
+    assert beat["status"] == "error" and "Terminated: stopped by SIGTERM" in beat["error"]
+    assert "stopped by SIGTERM" in capsys.readouterr().err
+    assert signal.getsignal(signal.SIGTERM) is before  # put back after the run
 
 
 def test_a_bug_exits_one_with_its_traceback_and_bad_input_exits_two(capsys, monkeypatch):
@@ -389,7 +444,7 @@ def test_test_read_reports_reply_rate_per_version(capsys):
 # -- bootstrap ---------------------------------------------------------------------------------------------
 
 
-ENV = {"US_OUTBOUND_PROJECT": "spill-warehouse-test", "US_OUTBOUND_SETTINGS_SHEET_ID": "sheet-1"}
+ENV = {"DATABASE_URL": "postgresql://us_outbound@db.test:5432/railway", "US_OUTBOUND_SETTINGS_SHEET_ID": "sheet-1"}
 
 
 def _build(job, live_flag, settings, operator=False, env=ENV):
@@ -414,7 +469,7 @@ def test_build_context_refuses_unusable_settings_except_for_sync():
         _build("mailbox_health", False, None)
     ctx = _build("settings_sync", True, None)
     assert ctx.settings.general == General() and ctx.dry_run  # defaults: live_sending is no
-    with pytest.raises(bootstrap.ConfigError, match="US_OUTBOUND_PROJECT"):
+    with pytest.raises(bootstrap.ConfigError, match="DATABASE_URL"):
         _build("status", False, SETTINGS, env={})
 
 
@@ -422,8 +477,8 @@ def test_no_http_library_outside_the_http_client():
     from pathlib import Path
 
     root = Path(cli.__file__).resolve().parents[1]
-    mine = ["ops/cli.py", "ops/heartbeat.py", "ops/erase.py", "ops/bootstrap.py", "registry/mailboxes.py",
-            "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
+    mine = ["ops/cli.py", "ops/heartbeat.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
+            "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
     for rel in mine:
         text = (root / rel).read_text()
         assert not re.search(r"^\s*(import|from)\s+(requests|httpx|urllib)", text, re.M), rel

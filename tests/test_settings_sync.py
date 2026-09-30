@@ -1,4 +1,4 @@
-"""settings_sync: versioning in BigQuery settings, bad tabs kept back, one Slack alert, rescore."""
+"""settings_sync: versioning in the database settings table, bad tabs kept back, one Slack alert, rescore."""
 
 import copy
 import dataclasses

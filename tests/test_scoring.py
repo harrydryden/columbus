@@ -558,7 +558,7 @@ def test_tier_share_alert_in_dry_run_goes_to_the_dev_channel():
     assert post.json["text"].startswith("[dry-run → #us-outbound] Tier mix check:")
 
 
-def test_rescore_writes_only_to_bigquery_us_outbound():
+def test_rescore_writes_only_to_the_us_outbound_schema():
     ctx = make_context(make_settings(), now=NOW)
     _seed(ctx.store)
     rescore(ctx)

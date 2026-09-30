@@ -8,38 +8,42 @@
 --                  Industries tab. An industry label not on the tab is kept.
 --   verified:      Clay has checked it; only verified accounts may be emailed (SPEC 2:
 --                  every account passes through Clay before it can be emailed).
--- Order: tier_rank, then rank_in_tier (score desc, size_band_rank, industry_priority,
--- first_seen, account_id). A view's ORDER BY is not kept by queries on it, so readers
--- order by tier_rank, rank_in_tier themselves.
-CREATE OR REPLACE VIEW `{project}.us_outbound.v_queue`
-OPTIONS (
-  description = "Accounts waiting to be enrolled (status verified or queued; tier Priority, Standard or Control; not suppressed), in enrollment order: tier, score, size band (20-99 first), industry priority (SPEC 9)."
-)
-AS
-WITH industries AS (
-  SELECT
-    `key` AS industry,
-    SAFE_CAST(TRIM(JSON_VALUE(`values`, '$.priority')) AS INT64) AS priority,
-    LOWER(TRIM(JSON_VALUE(`values`, '$.active'))) IN ('yes', 'true') AS active
-  FROM `{project}.us_outbound.settings`
+-- Order: tier_rank, then rank_in_tier (score desc with no score last, size_band_rank,
+-- industry_priority, first_seen, account_id). A view's ORDER BY is not kept by queries on
+-- it, so readers order by tier_rank, rank_in_tier themselves.
+-- Settings values are sheet text: priority counts only when it is a whole number.
+CREATE OR REPLACE VIEW us_outbound.v_queue AS
+WITH industries_raw AS (
+  SELECT DISTINCT ON ("key")
+    "key" AS industry,
+    trim("values" ->> 'priority') AS priority,
+    lower(trim("values" ->> 'active')) IN ('yes', 'true') AS active
+  FROM us_outbound.settings
   WHERE tab = 'Industries' AND effective_to IS NULL
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY `key` ORDER BY effective_from DESC) = 1
+  ORDER BY "key", effective_from DESC
+),
+industries AS (
+  SELECT
+    industry,
+    CASE WHEN priority ~ '^[+-]?[0-9]{1,9}$' THEN priority::integer END AS priority,
+    active
+  FROM industries_raw
 ),
 active_suppression AS (
   -- Domain rows only: a row with an email hash suppresses just that email (suppression.py).
-  SELECT LOWER(TRIM(domain)) AS domain
-  FROM `{project}.us_outbound.suppression`
+  SELECT lower(trim(domain)) AS domain
+  FROM us_outbound.suppression
   WHERE domain IS NOT NULL
     AND email_sha256 IS NULL
-    AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP())
+    AND (expires_at IS NULL OR expires_at > now())
 ),
 suppressed_domains AS (
   SELECT domain FROM active_suppression
-  UNION DISTINCT
-  SELECT LOWER(al.root_domain)
+  UNION
+  SELECT lower(al.root_domain)
   FROM active_suppression AS s
-  JOIN `{project}.us_outbound.domain_aliases` AS al
-    ON LOWER(al.alias) = s.domain
+  JOIN us_outbound.domain_aliases AS al
+    ON lower(al.alias) = s.domain
   WHERE al.root_domain IS NOT NULL
 ),
 queue AS (
@@ -74,24 +78,25 @@ queue AS (
       ELSE 4
     END AS size_band_rank,
     COALESCE(i.priority, 99) AS industry_priority
-  FROM `{project}.us_outbound.accounts` AS a
+  FROM us_outbound.accounts AS a
   LEFT JOIN industries AS i
     ON i.industry = a.industry
   WHERE a.status IN ('verified', 'queued')
     AND a.tier IN ('Priority', 'Standard', 'Control')
     AND COALESCE(i.active, TRUE)
     AND NOT EXISTS (
-      SELECT 1 FROM suppressed_domains AS sd WHERE sd.domain = LOWER(a.domain)
+      SELECT 1 FROM suppressed_domains AS sd WHERE sd.domain = lower(a.domain)
     )
     AND NOT EXISTS (
-      SELECT 1 FROM `{project}.us_outbound.partners` AS p WHERE LOWER(p.domain) = LOWER(a.domain)
+      SELECT 1 FROM us_outbound.partners AS p WHERE lower(p.domain) = lower(a.domain)
     )
 )
 SELECT
-  *,
-  ROW_NUMBER() OVER (
-    PARTITION BY tier
-    ORDER BY score DESC, size_band_rank, industry_priority, first_seen, account_id
+  q.*,
+  row_number() OVER (
+    PARTITION BY q.tier
+    ORDER BY q.score DESC NULLS LAST, q.size_band_rank, q.industry_priority, q.first_seen, q.account_id
   ) AS rank_in_tier
-FROM queue
-ORDER BY tier_rank, rank_in_tier;
+FROM queue AS q
+ORDER BY q.tier_rank, rank_in_tier;
+COMMENT ON VIEW us_outbound.v_queue IS 'Accounts waiting to be enrolled (status verified or queued; tier Priority, Standard or Control; not suppressed), in enrollment order: tier, score, size band (20-99 first), industry priority (SPEC 9).';

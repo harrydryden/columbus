@@ -1,23 +1,31 @@
-"""BigQuery dataset us_outbound: the system of record (SPEC 6).
+"""The database, schema us_outbound in Railway Postgres: the system of record (SPEC 6).
 
-Jobs talk to a Store. BigQueryStore is the real one; MemoryStore backs the tests and
-local dry-runs. Both take and return plain dicts of Python values: JSON columns are
-encoded and decoded here, so no job ever handles JSON text.
+Jobs talk to a Store. PostgresStore is the real one; MemoryStore backs the tests and
+local dry-runs. Both take and return plain dicts of Python values: JSON columns (jsonb)
+take and return Python objects, and timestamps come back as aware UTC datetimes, so no
+job ever handles JSON text or a naive time. The tables are created by ops/ddl.py from
+sql/ddl; TABLE_KEYS and JSON_COLUMNS here are what that DDL must match (tests/test_sql.py).
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
-from datetime import date, datetime
+from itertools import groupby
 from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.sql import SQL, Composable, Identifier, Placeholder
+from psycopg.types.json import Jsonb
 
 from us_outbound.clients.guard import DB_SCHEMA, Guard, GuardViolation, Op
 
-# Primary keys used by upsert. None means append-only.
+# Primary keys used by upsert (ON CONFLICT). None means append-only.
 TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "accounts": ("account_id",),
     "contacts": ("contact_id",),
@@ -39,7 +47,7 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "raw_layoffs": None,
 }
 
-# Columns stored as JSON text in BigQuery (STRING columns holding JSON).
+# Columns stored as jsonb.
 JSON_COLUMNS: dict[str, frozenset[str]] = {
     "signal_events": frozenset({"value"}),
     "settings": frozenset({"values"}),
@@ -55,6 +63,7 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL
+COLUMN_RE = re.compile(r"[a-z_][a-z0-9_]*")
 
 
 def new_id() -> str:
@@ -94,11 +103,17 @@ class Store(ABC):
 
     @abstractmethod
     def query(self, sql: str, params: dict[str, Any] | None = None) -> list[dict]:
-        """Read-only SQL against the dataset (views). Tests register handlers on MemoryStore."""
+        """Read-only SQL against the schema (views), params bound to %(name)s placeholders.
+
+        Tests register handlers on MemoryStore.
+        """
 
     def get(self, table: str, **key: Any) -> dict | None:
         rows = self.select(table, key)
         return rows[0] if rows else None
+
+    def close(self) -> None:
+        """Release the connection, if the store holds one; the next call opens a new one."""
 
 
 # -- in-memory ---------------------------------------------------------------
@@ -119,7 +134,7 @@ def _matches(row: dict, where: Where | None) -> bool:
 
 
 class MemoryStore(Store):
-    """Dict-of-lists store with BigQuery's write rules enforced by the same guard."""
+    """Dict-of-lists store with the database's write rules enforced by the same guard."""
 
     def __init__(self, guard: Guard):
         super().__init__(guard)
@@ -176,167 +191,168 @@ class MemoryStore(Store):
         raise NotImplementedError(f"MemoryStore has no handler for query: {sql[:80]}")
 
 
-# -- BigQuery ----------------------------------------------------------------
+# -- Postgres ----------------------------------------------------------------
 
 
-def _to_bq(table: str, row: dict) -> dict:
-    out = {}
-    js = JSON_COLUMNS.get(table, frozenset())
-    for k, v in row.items():
-        if k in js and v is not None:
-            v = json.dumps(v, default=str)
-        elif isinstance(v, (datetime, date)):
-            v = v.isoformat()
-        out[k] = v
-    return out
+def _column(col: Any) -> str:
+    if not isinstance(col, str) or not COLUMN_RE.fullmatch(col):
+        raise ValueError(f"bad column {col!r}")
+    return col
 
 
-def _from_bq(table: str, row: dict) -> dict:
-    js = JSON_COLUMNS.get(table, frozenset())
-    return {k: (json.loads(v) if k in js and isinstance(v, str) else v) for k, v in row.items()}
+def _dumps(obj: Any) -> str:
+    return json.dumps(obj, default=str)  # a datetime inside a payload is stored as its text
 
 
-class BigQueryStore(Store):
-    def __init__(self, guard: Guard, project: str, location: str, client: Any = None):
+class PostgresStore(Store):
+    """Schema us_outbound in the Postgres database at dsn.
+
+    One connection, opened on first use, in autocommit with the session time zone UTC.
+    Each method is one statement or one transaction. Table and column names are quoted
+    identifiers, never text from the data; values are always bound parameters.
+    """
+
+    def __init__(self, guard: Guard, dsn: str, *, connect: Callable[[], Any] | None = None):
+        """connect: a zero-argument callable returning a psycopg connection, used instead of
+        psycopg.connect(dsn) (tests). The dsn carries the password: never log it."""
         super().__init__(guard)
-        from google.cloud import bigquery
+        self.dsn = dsn
+        self._connect = connect
+        self._conn: Any = None
 
-        self.bigquery = bigquery
-        self.project = project
-        self.client = client or bigquery.Client(project=project, location=location)
+    def _connection(self) -> Any:
+        if self._conn is None or self._conn.closed:
+            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn)
+            conn.autocommit = True
+            conn.row_factory = dict_row
+            conn.execute("SET TIME ZONE 'UTC'")  # timestamptz values load as UTC datetimes
+            self._conn = conn
+        return self._conn
 
-    def _ref(self, table: str) -> str:
-        return f"`{self.project}.{self.schema}.{table}`"
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
-    def _param(self, name: str, value: Any):
-        bq = self.bigquery
-        if isinstance(value, (list, tuple, set, frozenset)):
-            values = list(value)
-            typ = _scalar_type(values[0]) if values else "STRING"
-            return bq.ArrayQueryParameter(name, typ, values)
-        return bq.ScalarQueryParameter(name, _scalar_type(value), value)
+    def _table(self, table: str) -> Identifier:
+        return Identifier(self.schema, table)
 
-    def _where(self, where: Where | None, params: list) -> str:
-        parts = []
-        for i, (col, want) in enumerate((where or {}).items()):
-            if not col.isidentifier():
-                raise ValueError(f"bad column {col!r}")
+    def _value(self, table: str, col: str, v: Any) -> Any:
+        if v is not None and col in JSON_COLUMNS.get(table, ()):
+            return Jsonb(v, dumps=_dumps)
+        return v
+
+    def _where(self, table: str, where: Where | None) -> tuple[Composable, list]:
+        """MemoryStore's where semantics: equality, IN a list (an empty list matches nothing), IS NULL."""
+        parts: list[Composable] = []
+        params: list = []
+        for col, want in (where or {}).items():
+            ident = Identifier(_column(col))
             if callable(want):
-                raise ValueError("BigQueryStore does not take callable filters; use query()")
+                raise ValueError("PostgresStore does not take callable filters; use query()")
             if want is None:
-                parts.append(f"{col} IS NULL")
-            elif isinstance(want, (list, tuple, set, frozenset)) and not want:
-                parts.append("FALSE")  # IN an empty list; an empty ARRAY<STRING> would not fit a non-string column
+                parts.append(SQL("{} IS NULL").format(ident))
             elif isinstance(want, (list, tuple, set, frozenset)):
-                parts.append(f"{col} IN UNNEST(@w{i})")
-                params.append(self._param(f"w{i}", want))
+                terms: list[Composable] = []
+                values = [self._value(table, col, v) for v in want if v is not None]
+                if values:
+                    terms.append(SQL("{} = ANY(%s)").format(ident))
+                    params.append(values)
+                if any(v is None for v in want):
+                    terms.append(SQL("{} IS NULL").format(ident))
+                parts.append(SQL("({})").format(SQL(" OR ").join(terms)) if terms else SQL("FALSE"))
             else:
-                parts.append(f"{col} = @w{i}")
-                params.append(self._param(f"w{i}", want))
-        return " AND ".join(parts) or "TRUE"
+                parts.append(SQL("{} = %s").format(ident))
+                params.append(self._value(table, col, want))
+        return (SQL(" AND ").join(parts) if parts else SQL("TRUE")), params
 
-    def _run(self, sql: str, params: list | None = None) -> Any:
-        cfg = self.bigquery.QueryJobConfig(query_parameters=params or [])
-        return self.client.query(sql, job_config=cfg).result()
+    def _insert_sql(self, table: str, cols: list[str]) -> Composable:
+        return SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            self._table(table),
+            SQL(", ").join(Identifier(_column(c)) for c in cols),
+            SQL(", ").join([Placeholder()] * len(cols)),
+        )
+
+    def _row(self, table: str, cols: list[str], row: dict) -> list:
+        return [self._value(table, c, row.get(c)) for c in cols]
 
     def insert(self, table, rows):
-        rows = [_to_bq(table, dict(r)) for r in rows]
+        rows = [dict(r) for r in rows]
         self._authorize("insert", table, write=True)
         if not rows:
             return 0
-        cfg = self.bigquery.LoadJobConfig(
-            source_format=self.bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            write_disposition=self.bigquery.WriteDisposition.WRITE_APPEND,
-        )
-        dest = f"{self.project}.{self.schema}.{table}"
-        self.client.load_table_from_json(rows, dest, job_config=cfg).result()
+        cols = sorted({c for r in rows for c in r})  # a column a row leaves out is NULL, as in MemoryStore
+        query = self._insert_sql(table, cols)
+        conn = self._connection()
+        with conn.transaction(), conn.cursor() as cur:
+            cur.executemany(query, [self._row(table, cols, r) for r in rows])
         return len(rows)
 
     def upsert(self, table, rows):
-        rows = [_to_bq(table, dict(r)) for r in rows]
+        rows = [dict(r) for r in rows]
         self._authorize("upsert", table, write=True)
         key = TABLE_KEYS[table]
         if key is None:
             raise ValueError(f"{table} is append-only")
-        # One MERGE per column set: a MERGE over the union of columns would set a column
-        # that a row leaves out to NULL (MemoryStore keeps it), so rows are grouped.
-        groups: dict[tuple[str, ...], list[dict]] = {}
-        for r in rows:
-            groups.setdefault(tuple(sorted(r)), []).append(r)
-        for group in groups.values():
-            self._merge(table, key, group)
+        if not rows:
+            return 0
+        # A row sets only the columns it carries (MemoryStore keeps the rest), so each run of
+        # rows with the same columns gets its own statement, in the rows' order.
+        batches = [
+            (self._upsert_sql(table, key, cols), [self._row(table, cols, r) for r in run])
+            for cols, run in groupby(rows, key=lambda r: sorted(set(r) | set(key)))
+        ]
+        conn = self._connection()
+        with conn.transaction(), conn.cursor() as cur:
+            for query, params in batches:
+                cur.executemany(query, params)
         return len(rows)
 
-    def _merge(self, table: str, key: tuple[str, ...], rows: list[dict]) -> None:
-        # The staging table lives in the same dataset and expires within the hour.
-        stage = f"_stage_{table}_{uuid.uuid4().hex[:12]}"
-        self._run(
-            f"CREATE TABLE `{self.project}.{self.schema}.{stage}` LIKE {self._ref(table)} "
-            f"OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR))"
+    def _upsert_sql(self, table: str, key: tuple[str, ...], cols: list[str]) -> Composable:
+        sets = [SQL("{0} = EXCLUDED.{0}").format(Identifier(c)) for c in cols if c not in key]
+        action = SQL("DO UPDATE SET {}").format(SQL(", ").join(sets)) if sets else SQL("DO NOTHING")
+        # suppression's key is UNIQUE NULLS NOT DISTINCT (sql/ddl), so a NULL part still conflicts.
+        return SQL("{} ON CONFLICT ({}) {}").format(
+            self._insert_sql(table, cols), SQL(", ").join(Identifier(c) for c in key), action
         )
-        try:
-            cfg = self.bigquery.LoadJobConfig(
-                source_format=self.bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-                write_disposition=self.bigquery.WriteDisposition.WRITE_APPEND,
-            )
-            self.client.load_table_from_json(rows, f"{self.project}.{self.schema}.{stage}", job_config=cfg).result()
-            cols = sorted({c for r in rows for c in r})
-            on = " AND ".join(f"T.{c} IS NOT DISTINCT FROM S.{c}" for c in key)
-            sets = ", ".join(f"{c} = S.{c}" for c in cols if c not in key)
-            self._run(
-                f"MERGE {self._ref(table)} T USING `{self.project}.{self.schema}.{stage}` S ON {on} "
-                + (f"WHEN MATCHED THEN UPDATE SET {sets} " if sets else "")
-                + f"WHEN NOT MATCHED THEN INSERT ({', '.join(cols)}) VALUES ({', '.join('S.' + c for c in cols)})"
-            )
-        finally:
-            self.client.delete_table(f"{self.project}.{self.schema}.{stage}", not_found_ok=True)
 
     def select(self, table, where=None):
         self._authorize("select", table, write=False)
-        params: list = []
-        sql = f"SELECT * FROM {self._ref(table)} WHERE {self._where(where, params)}"
-        return [_from_bq(table, dict(r.items())) for r in self._run(sql, params)]
+        cond, params = self._where(table, where)
+        query = SQL("SELECT * FROM {} WHERE {}").format(self._table(table), cond)
+        return self._connection().execute(query, params).fetchall()
 
     def update(self, table, where, values):
         self._authorize("update", table, write=True)
-        params: list = []
-        cond = self._where(where, params)
-        sets = []
-        for i, (col, v) in enumerate(_to_bq(table, values).items()):
-            if not col.isidentifier():
-                raise ValueError(f"bad column {col!r}")
-            if v is None:  # an untyped NULL fits any column; a NULL parameter would be a STRING
-                sets.append(f"{col} = NULL")
-                continue
-            sets.append(f"{col} = @s{i}")
-            params.append(self._param(f"s{i}", v))
-        job = self._run(f"UPDATE {self._ref(table)} SET {', '.join(sets)} WHERE {cond}", params)
-        return getattr(job, "num_dml_affected_rows", 0) or 0
+        cond, params = self._where(table, where)
+        if not values:  # nothing to set: count the matches, as MemoryStore does
+            query = SQL("SELECT count(*) AS n FROM {} WHERE {}").format(self._table(table), cond)
+            return self._connection().execute(query, params).fetchone()["n"]
+        sets = SQL(", ").join(SQL("{} = %s").format(Identifier(_column(c))) for c in values)
+        query = SQL("UPDATE {} SET {} WHERE {}").format(self._table(table), sets, cond)
+        set_params = [self._value(table, c, v) for c, v in values.items()]
+        return self._connection().execute(query, set_params + params).rowcount
 
     def delete(self, table, where):
         self._authorize("delete", table, write=True)
-        params: list = []
-        job = self._run(f"DELETE FROM {self._ref(table)} WHERE {self._where(where, params)}", params)
-        return getattr(job, "num_dml_affected_rows", 0) or 0
+        cond, params = self._where(table, where)
+        query = SQL("DELETE FROM {} WHERE {}").format(self._table(table), cond)
+        return self._connection().execute(query, params).rowcount
 
     def query(self, sql, params=None):
+        """SELECT or WITH only, run in a READ ONLY transaction, so a data-modifying CTE fails too.
+
+        It goes over the extended protocol (binary results), which takes one statement, so no
+        COMMIT inside the text can end the READ ONLY transaction early.
+        """
         head = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
         if head not in {"SELECT", "WITH"}:
             raise GuardViolation("Store.query is read only; use insert/upsert/update/delete")
         self.guard.authorize("db", Op("query", target=f"{self.schema}.query", write=False))
-        qp = [self._param(k, v) for k, v in (params or {}).items()]
-        return [dict(r.items()) for r in self._run(sql, qp)]
-
-
-def _scalar_type(v: Any) -> str:
-    if isinstance(v, bool):
-        return "BOOL"
-    if isinstance(v, int):
-        return "INT64"
-    if isinstance(v, float):
-        return "FLOAT64"
-    if isinstance(v, datetime):
-        return "TIMESTAMP"
-    if isinstance(v, date):
-        return "DATE"
-    return "STRING"
+        conn = self._connection()
+        try:
+            with conn.transaction():
+                conn.execute("SET TRANSACTION READ ONLY")
+                return conn.execute(sql, params, binary=True).fetchall()
+        except psycopg.errors.ReadOnlySqlTransaction as exc:
+            raise GuardViolation("Store.query is read only; it may not change data") from exc
