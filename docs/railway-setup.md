@@ -27,8 +27,10 @@ variables.
    question A6b).
 3. On the canvas choose **+ New → Database → PostgreSQL**. Keep the name **Postgres**,
    because the variable in step c refers to it by name. Open its **Settings** and check
-   that the region is EU West (Amsterdam). Change it now if not: moving the region later
-   means migrating its volume, with downtime.
+   that the region, and its volume's region, are EU West (Amsterdam). Railway cannot move
+   a volume between regions, and a Postgres service cannot drop its volume. So if either is
+   wrong, delete the service and its volume, fix the preferred region (step 1) and add the
+   database again.
 4. Leave the database private. Do not add Public Access (a TCP proxy): the worker reaches
    the database over Railway's private network, and SPEC 2 allows no public endpoint.
 5. Backups: in the Postgres service, open the **Backups** tab and turn on **Daily** (kept 6
@@ -125,21 +127,17 @@ In the Google Cloud console, select the project **Columbus (`columbus-510209`)**
 
 ## e. Create the tables
 
-Install the Railway CLI (`brew install railway`, or `npm i -g @railway/cli`). Then, in this
-repository:
+The worker's **pre-deploy command** creates them. In the worker's **Settings → Deploy**, set
+**Pre-deploy Command** to `us-outbound db apply --live`, with a **Pre-deploy Timeout** of
+300 seconds. Railway runs it in the built image, with the service's variables and the
+private network, before every deploy. If it fails, that deploy stops and the running one
+stays up. Running it again changes nothing: tables and indexes are `IF NOT EXISTS`, and
+views are `OR REPLACE`. The deploy log shows `Applied 149 statements to schema us_outbound`.
 
-```
-railway login
-railway link                                       # Spill's workspace → Columbus → production → us-outbound
-railway ssh -- us-outbound db apply                # dry-run: prints the SQL, runs nothing
-railway ssh -- us-outbound db apply --live         # creates schema us_outbound, its tables and views
-```
-
-`railway ssh` asks you to register an SSH key the first time. Running `db apply --live`
-again changes nothing: tables and indexes are `IF NOT EXISTS`, and views are `OR REPLACE`.
-The dry-run needs no database, so `.venv/bin/us-outbound db apply` also works on a laptop.
-Until this step is done, the scheduler's jobs log errors. That is expected, and nothing is
-sent.
+To run it by hand instead, use the Railway CLI (`npm i -g @railway/cli`, then `railway login`
+and `railway link`): `railway ssh -- us-outbound db apply` prints the SQL, and adding
+`--live` runs it. The dry-run needs no database, so `.venv/bin/us-outbound db apply` also
+works on a laptop.
 
 ## f. First dry-run checks
 
