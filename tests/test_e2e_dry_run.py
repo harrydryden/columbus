@@ -111,7 +111,7 @@ PHASE0_GENERAL = {
     "hubspot_owner_id": "owner-harry",
     "clay_accounts_function_id": "fn-us-accounts",
     "clay_contacts_function_id": "fn-us-contacts",
-    "clay_monthly_credits": "2000",
+    "clay_weekly_credits": "500",
     "clay_credits_per_account": "5",
     "approver_slack_ids": "U_HARRY",
     "postal_address": "Spill Group Ltd, 1 Example Street, London EC1A 1AA, UK",

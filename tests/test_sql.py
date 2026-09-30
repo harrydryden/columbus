@@ -46,7 +46,7 @@ SPEC_COLUMNS: dict[str, set[str]] = {
     "settings": {"tab", "key", "values", "effective_from", "effective_to", "synced_at"},
 }
 # Columns the build adds to SPEC 6 tables.
-BUILD_ADDITIONS: dict[str, set[str]] = {"contacts": {"last_step_at"}, "suppression": {"expires_at"}}
+BUILD_ADDITIONS: dict[str, set[str]] = {"contacts": {"last_step_at", "enrolled_at"}, "suppression": {"expires_at"}}
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
     "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"},
@@ -62,8 +62,9 @@ RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_con
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
 
 VIEWS = {"v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
-         "v_credits_month", "v_heartbeats"}
+         "v_budgets", "v_heartbeats"}
 SPEC_VIEWS = VIEWS - {"v_account_outcomes"}
+RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became weekly; dropped if it exists
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
@@ -215,8 +216,22 @@ def test_statements_come_in_file_order_and_hold_no_semicolon():
 
 def test_every_statement_parses_as_an_allowed_kind(parsed):
     for name, _, e in parsed:
-        ok = (isinstance(e, exp.Create) and e.kind in {"SCHEMA", "TABLE", "INDEX", "VIEW"}) or isinstance(e, exp.Comment)
+        ok = (
+            (isinstance(e, exp.Create) and e.kind in {"SCHEMA", "TABLE", "INDEX", "VIEW"})
+            or isinstance(e, exp.Comment)
+            or (isinstance(e, exp.Alter) and all(isinstance(a, exp.ColumnDef) for a in e.args.get("actions") or []))
+            or (isinstance(e, exp.Drop) and e.kind == "VIEW" and e.args.get("exists") and not e.args.get("cascade"))
+        )
         assert ok, f"{name}: {type(e).__name__}"
+
+
+def test_an_added_column_is_also_in_its_create_table(parsed, tables):
+    """ALTER ... ADD COLUMN IF NOT EXISTS only brings an older database up to its CREATE TABLE."""
+    for name, _, e in parsed:
+        if isinstance(e, exp.Alter):
+            table = e.this.name
+            for col in e.args.get("actions") or []:
+                assert col.name in tables[table].columns, f"{name}: {table}.{col.name} is not in its CREATE TABLE"
 
 
 def test_the_schema_comes_first(parsed):
@@ -512,7 +527,7 @@ def test_apply_runs_every_statement_in_one_transaction_through_the_guard():
     targets = [c.target for c in calls]
     assert targets[0] == "us_outbound.schema"
     objects = {f"us_outbound.{t}" for t in TABLE_KEYS} | {f"us_outbound.{v}" for v in VIEWS}
-    assert set(targets) == objects | {"us_outbound.schema"}
+    assert set(targets) == objects | {"us_outbound.schema"} | {f"us_outbound.{v}" for v in RETIRED_VIEWS}
 
 
 def test_apply_checks_every_file_before_running_any(tmp_path):

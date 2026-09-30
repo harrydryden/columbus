@@ -90,7 +90,7 @@ BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2
 def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), **general) -> Settings:
     g = General(
         postal_address=POSTAL, privacy_url=PRIVACY, hubspot_owner_id="owner-harry",
-        clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
+        clay_weekly_credits=500.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
     )
     return Settings(
         general=dataclasses.replace(g, **general), angles=ANGLES, industries=INDUSTRIES, copy=tuple(copy),

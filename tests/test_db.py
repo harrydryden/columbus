@@ -24,12 +24,13 @@ from psycopg.rows import dict_row
 
 from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
+from us_outbound import budget
 from us_outbound.ops import ddl, erase, heartbeat
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
 SCHEMA = "us_outbound"
 VIEWS = ("v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
-         "v_credits_month", "v_heartbeats")
+         "v_budgets", "v_heartbeats")
 T0 = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 
 
@@ -123,9 +124,9 @@ def test_a_second_apply_changes_nothing(db, dsn, store):
 def test_every_view_selects_on_empty_tables(store):
     for view in VIEWS:
         rows = store.query(f"SELECT * FROM {SCHEMA}.{view}")
-        if view == "v_credits_month":
-            assert [(r["system"], r["used"], r["budget"], r["entries"]) for r in rows] == [
-                ("apollo", 0.0, None, 0), ("claude", 0.0, None, 0), ("clay", 0.0, None, 0)]
+        if view == "v_budgets":
+            assert [(r["system"], r["period"], r["used"], r["budget"], r["entries"]) for r in rows] == [
+                ("apollo", "week", 0.0, None, 0), ("claude", "month", 0.0, None, 0), ("clay", "week", 0.0, None, 0)]
         else:
             assert rows == [], view
 
@@ -146,10 +147,11 @@ def fixture_rows(store) -> datetime:
     """A small realistic world; returns now (UTC). Times are relative to now so today and this month hold."""
     now = datetime.now(UTC)
     month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    week = budget.week_start(now)  # Monday 00:00 UK time
     old = now - timedelta(days=30)
     store.upsert("settings", [
-        settings_row("General", "clay_monthly_credits", {"key": "clay_monthly_credits", "value": "2,000"}),
-        settings_row("General", "apollo_monthly_credits", {"key": "apollo_monthly_credits", "value": "500"}),
+        settings_row("General", "clay_weekly_credits", {"key": "clay_weekly_credits", "value": "2,000"}),
+        settings_row("General", "apollo_weekly_credits", {"key": "apollo_weekly_credits", "value": "500"}),
         settings_row("General", "claude_monthly_cap_usd", {"key": "claude_monthly_cap_usd", "value": "$10"}),
         # An older version of the cap, no longer in force.
         settings_row("General", "claude_monthly_cap_usd", {"value": "5"}, at=T0 - timedelta(days=9), effective_to=T0),
@@ -207,11 +209,12 @@ def fixture_rows(store) -> datetime:
          "observed_at": now - timedelta(days=26)},
     ])
     store.insert("credit_ledger", [
-        {"entry_id": "c1", "system": "clay", "credits": 10.0, "usd": 0.0, "occurred_at": month + timedelta(minutes=1)},
-        {"entry_id": "c2", "system": "clay", "credits": 5.0, "occurred_at": month + timedelta(minutes=2)},
-        {"entry_id": "c3", "system": "apollo", "credits": 3.0, "occurred_at": month + timedelta(minutes=3)},
+        {"entry_id": "c1", "system": "clay", "credits": 10.0, "usd": 0.0, "occurred_at": week + timedelta(minutes=1)},
+        {"entry_id": "c2", "system": "clay", "credits": 5.0, "occurred_at": week + timedelta(minutes=2)},
+        {"entry_id": "c3", "system": "apollo", "credits": 3.0, "occurred_at": week + timedelta(minutes=3)},
         {"entry_id": "c4", "system": "claude", "usd": 0.25, "occurred_at": month + timedelta(minutes=4)},
-        {"entry_id": "c5", "system": "clay", "credits": 100.0, "occurred_at": month - timedelta(days=1)},  # last month
+        {"entry_id": "c5", "system": "clay", "credits": 100.0, "occurred_at": week - timedelta(minutes=1)},  # last week
+        {"entry_id": "c6", "system": "claude", "usd": 3.0, "occurred_at": month - timedelta(minutes=1)},  # last month
     ])
     store.insert("heartbeats", [
         {"run_id": "h1", "job": "enrol", "status": "ok", "dry_run": True, "started_at": now - timedelta(hours=3),
@@ -241,12 +244,14 @@ def test_v_queue_on_a_fixture(store, fixture_rows):
                         "rank_in_tier", "verified", "sender", "angle"}
 
 
-def test_v_credits_month_on_a_fixture(store, fixture_rows):
+def test_v_budgets_on_a_fixture(store, fixture_rows):
     now = fixture_rows
-    rows = {r["system"]: r for r in store.query(f"SELECT * FROM {SCHEMA}.v_credits_month")}
+    rows = {r["system"]: r for r in store.query(f"SELECT * FROM {SCHEMA}.v_budgets")}
     assert set(rows) == {"clay", "apollo", "claude"}
     clay, apollo, claude = rows["clay"], rows["apollo"], rows["claude"]
-    assert clay["month_start"] == now.date().replace(day=1)
+    # Apollo and Clay by the UK week (Monday 00:00), the same week budget.py counts; Claude by the UTC month.
+    assert clay["period"] == apollo["period"] == "week" and clay["period_start"] == budget.week_start(now)
+    assert claude["period"] == "month" and claude["period_start"] == now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     assert (clay["used"], clay["budget"], clay["remaining"], clay["entries"]) == (15.0, 2000.0, 1985.0, 2)
     assert clay["share_used"] == pytest.approx(0.0075)
     assert (apollo["used"], apollo["budget"], apollo["remaining"]) == (3.0, 500.0, 497.0)

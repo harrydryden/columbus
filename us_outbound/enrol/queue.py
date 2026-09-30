@@ -1,11 +1,14 @@
 """Today's enrollment number, the order accounts are taken in, test versions and senders.
 
-SPEC 9 "Daily enrolment number": the smallest of
-  * daily_enrol_cap;
-  * the sum of the Active mailboxes' daily caps ÷ 4 (four steps per lead);
-  * the remaining Clay budget ÷ working days left in the month ÷ credits per account;
-  * the same calculation for Apollo;
-  * the size of the verified queue.
+Today's number is the smallest of (weekly budgets and targets, Harry 30 Sep 2026):
+  * the weekly target: what is left of weekly_enrol_cap ÷ the send days left in the week
+    (budget.weekly_target_today; weeks run Monday to Sunday, UK time);
+  * sending capacity: each sender's free slots today, from the follow-ups already due
+    (enrol/capacity.py), summed over senders;
+  * ready accounts: verified accounts with a sendable contact.
+SPEC 9 also listed the Clay and Apollo budgets here. The enrol job spends neither, so they
+are applied where credits are spent (source_universe, verify_in_clay, pick_contacts); when
+they bind, it shows up here as too few ready accounts, and ops/limits.py says so.
 Of that number, control_share comes from the Control tier; the rest from Priority, then
 Standard, ordered by score, then size band (20 to 99 first), then industry priority. A
 shortfall in either is filled from the other, so capacity is never left idle while verified
@@ -15,23 +18,20 @@ SPEC 9 "Test assignment": the version is hash(account_id + test_id) % 2, so an a
 version never changes and both contacts at an account get the same one.
 
 SPEC 9 "Sender continuity": a sender is assigned at first enrollment and kept for life.
-New accounts go to the sender with the most free capacity that day. A paused sender's
-accounts wait rather than move to someone else.
+New accounts go to the sender with the most free capacity that day. A paused or full
+sender's accounts wait rather than move to someone else.
 """
 
 from __future__ import annotations
 
 import hashlib
-import math
-from collections.abc import Iterable, Mapping
-from datetime import date, timedelta
+from collections.abc import Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.settings.model import Settings
 
-STEPS_PER_LEAD = 4
 MIN_N_FOR_CONTROL = 4  # from 4 a day, at least one Control account when there are any
 QUEUE_TIERS = ("Priority", "Standard", "Control")
 CONTROL = "Control"
@@ -39,68 +39,19 @@ TIER_RANK = {"Priority": 0, "Standard": 1, "Control": 2}
 # SPEC 9: size band 20 to 99 first; then 100-249, then 10-19 (as v_queue orders them).
 SIZE_BAND_RANK = {"20-49": 0, "50-99": 0, "100-249": 1, "10-19": 2}
 DEFAULT_INDUSTRY_PRIORITY = 99
-_EPS = 1e-9
+# The terms of today's number, in the order ties are reported.
+TERMS = ("weekly_target", "sending_capacity", "ready_accounts")
 
 
 # -- the daily number ---------------------------------------------------------------------
 
 
-def _budget_term(remaining: float, days: int, per_account: float) -> int | None:
-    """floor(remaining ÷ days ÷ per_account); None when credits per account is unknown (0)."""
-    if not per_account or per_account <= 0:
-        return None
-    if days <= 0:
-        return 0
-    return max(0, math.floor(remaining / days / per_account + _EPS))
-
-
-def daily_number(
-    settings: Settings,
-    *,
-    active_mailbox_caps: Iterable[int],
-    clay_remaining: float,
-    clay_per_account: float,
-    apollo_remaining: float,
-    apollo_per_account: float,
-    working_days_left: int,
-    verified_queue_size: int,
-) -> tuple[int, dict[str, Any]]:
-    """(today's number, the terms behind it). A budget term with credits per account 0 is left out, and said so."""
-    terms: dict[str, int | None] = {
-        "daily_enrol_cap": settings.general.daily_enrol_cap,
-        "mailbox_capacity": sum(int(c or 0) for c in active_mailbox_caps) // STEPS_PER_LEAD,
-        "clay_budget": _budget_term(clay_remaining, working_days_left, clay_per_account),
-        "apollo_budget": _budget_term(apollo_remaining, working_days_left, apollo_per_account),
-        "verified_queue": verified_queue_size,
-    }
-    known = {k: v for k, v in terms.items() if v is not None}
-    n = max(0, min(known.values()))
-    binding = min(known, key=lambda k: known[k])
-    reasons: dict[str, Any] = {
-        **terms,
-        "binding": binding,
-        "working_days_left": working_days_left,
-        "clay_remaining": clay_remaining,
-        "apollo_remaining": apollo_remaining,
-        "left_out": [f"{k}: credits per account unknown" for k, v in terms.items() if v is None],
-    }
-    return n, reasons
-
-
-def is_blackout(day: date, settings: Settings) -> bool:
-    return any(day in r for r in settings.general.blackout_dates)
-
-
-def working_days_left(today: date, settings: Settings) -> int:
-    """Send days (Mon–Fri by send_window) from today to the month's end, inclusive, less blackout dates."""
-    days = set(settings.general.send_window.days)
-    first_next = date(today.year + today.month // 12, today.month % 12 + 1, 1)
-    n, d = 0, today
-    while d < first_next:
-        if d.weekday() in days and not is_blackout(d, settings):
-            n += 1
-        d += timedelta(days=1)
-    return n
+def daily_number(*, weekly_target: int, sending_capacity: int, ready_accounts: int) -> tuple[int, dict[str, Any]]:
+    """(today's number, its terms and the one that binds)."""
+    terms = {"weekly_target": weekly_target, "sending_capacity": sending_capacity, "ready_accounts": ready_accounts}
+    n = max(0, min(terms.values()))
+    binding = min(TERMS, key=lambda k: (terms[k], TERMS.index(k)))
+    return n, {**terms, "binding": binding}
 
 
 # -- order and selection ----------------------------------------------------------------------
@@ -159,27 +110,30 @@ def campaign_name(owner: str) -> str:
     return US_CAMPAIGN_PREFIX + owner
 
 
-def free_capacity(settings: Settings, today_load: Mapping[str, int]) -> dict[str, int]:
-    """Per owner with an Active mailbox: their Active daily caps ÷ 4, less the accounts given them today."""
-    caps: dict[str, int] = {}
-    for m in settings.mailboxes:
-        if m.status == "Active":
-            caps[m.owner_name] = caps.get(m.owner_name, 0) + int(m.daily_cap or 0)
-    return {owner: cap // STEPS_PER_LEAD - int(today_load.get(owner, 0)) for owner, cap in caps.items()}
-
-
-def assign_sender(account: Mapping[str, Any], settings: Settings, today_load: Mapping[str, int]) -> str | None:
+def assign_sender(
+    account: Mapping[str, Any], settings: Settings, free: Mapping[str, int], pace: Mapping[str, int] | None = None
+) -> str | None:
     """The account's sender; None means wait.
 
-    An account with a sender keeps it; if that sender has no Active mailbox (paused, or
-    gone), the account waits (SPEC 9 "Pause and retire"). A new account goes to the owner
-    with the most free capacity today, ties by name. The day's total is bounded by
-    daily_number, so an owner at zero free capacity can still be chosen when every owner is.
+    free is each owner's new leads left today (enrol/capacity.py, less those given out this
+    run), pace each owner's steady daily rate. An account with a sender keeps it; if that
+    sender has no Active mailbox (paused, or gone) or no free slot today, the account waits
+    (SPEC 9 "Pause and retire"). A new account goes to the owner with the largest share of
+    today's pace left, so owners fill in proportion (Harry's two mailboxes take twice
+    Hannah's share); ties go to the most free, then by name. It waits when every owner is full.
     """
     existing = str(account.get("sender") or "").strip()
     if existing:
-        return existing if settings.mailboxes_for(existing, "Active") else None
-    free = free_capacity(settings, today_load)
-    if not free:
+        if not settings.mailboxes_for(existing, "Active") or free.get(existing, 0) <= 0:
+            return None
+        return existing
+    open_ = {o: k for o, k in free.items() if k > 0 and settings.mailboxes_for(o, "Active")}
+    if not open_:
         return None
-    return min(free, key=lambda owner: (-free[owner], owner))
+    pace = pace or {}
+
+    def share(owner: str) -> float:
+        p = pace.get(owner) or 0
+        return open_[owner] / p if p > 0 else float(open_[owner])
+
+    return min(open_, key=lambda owner: (-share(owner), -open_[owner], owner))

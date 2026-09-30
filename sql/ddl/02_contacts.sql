@@ -1,4 +1,4 @@
--- contacts: one row per person (SPEC 6), plus last_step_at (added by the build).
+-- contacts: one row per person (SPEC 6), plus last_step_at and enrolled_at (added by the build).
 -- Retention (SPEC 6): "Contacts who never replied: deleted 12 months after their last
 -- step." The retention job does this from last_step_at; erase --email deletes on request.
 CREATE TABLE IF NOT EXISTS us_outbound.contacts (
@@ -25,8 +25,11 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   suppressed_reason text,
   created_at timestamptz,
   last_step_at timestamptz,
+  enrolled_at timestamptz,
   PRIMARY KEY (contact_id)
 );
+-- For databases created before enrolled_at existed.
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS enrolled_at timestamptz;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
@@ -39,3 +42,4 @@ COMMENT ON COLUMN us_outbound.contacts.enrolment_month IS 'YYYY-MM of first enro
 COMMENT ON COLUMN us_outbound.contacts.mailbox IS 'The sender''s address that sent step 1.';
 COMMENT ON COLUMN us_outbound.contacts.instantly_campaign IS 'The sender''s campaign, named ''US Outbound – '' plus the owner name (SPEC 9).';
 COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent (build addition, for retention).';
+COMMENT ON COLUMN us_outbound.contacts.enrolled_at IS 'When the lead was added to its sender''s campaign (build addition). The send forecast dates each lead''s later steps from it, and the weekly target counts it.';

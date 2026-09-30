@@ -26,12 +26,12 @@ def test_read_tabs_batch_get():
     sheets, t, _ = make(live=False)  # reads run in dry-run too
     t.route("GET", "values:batchGet", body={"valueRanges": [
         {"range": "'General'!A1:Z3", "values": [[" key ", "value", ""], ["live_sending", "no"], [], ["", "  "],
-                                               ["daily_enrol_cap", "30", "stray"]]},
+                                               ["weekly_enrol_cap", "150", "stray"]]},
         {"range": "'States'!A1:Z1"},
     ]})
     got = sheets.read_tabs(SHEET, ["General", "States"])
     assert got == {
-        "General": [{"key": "live_sending", "value": "no"}, {"key": "daily_enrol_cap", "value": "30"}],
+        "General": [{"key": "live_sending", "value": "no"}, {"key": "weekly_enrol_cap", "value": "150"}],
         "States": [],
     }
     req = t.requests[0]

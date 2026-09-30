@@ -209,7 +209,7 @@ def test_several_errors_on_one_row_are_all_reported(tabs):
 
 def test_general_unknown_and_duplicate_keys(tabs):
     tabs["General"].append({"key": "live_sendng", "value": "no", "note": ""})
-    tabs["General"].append({"key": "daily_enrol_cap", "value": "20", "note": ""})
+    tabs["General"].append({"key": "weekly_enrol_cap", "value": "20", "note": ""})
     errs = _errors(tabs, "General")
     by_row = {e.row: e for e in errs}
     n = len(tabs["General"]) + 1
@@ -218,9 +218,18 @@ def test_general_unknown_and_duplicate_keys(tabs):
     assert all(e.column == "key" for e in errs)
 
 
+def test_the_monthly_and_daily_keys_say_what_replaced_them(tabs):
+    for old, new in (("daily_enrol_cap", "weekly_enrol_cap"), ("clay_monthly_credits", "clay_weekly_credits"),
+                     ("apollo_monthly_credits", "apollo_weekly_credits")):
+        t = copy.deepcopy(BASE)
+        t["General"].append({"key": old, "value": "30", "note": ""})
+        e = _one(t, "General", "key")
+        assert f"'{old}' is now '{new}'" in e.message and "Monday to Sunday" in e.message
+
+
 def test_general_types(tabs):
     for key, value, fragment in [
-        ("daily_enrol_cap", "thirty", "whole number"),
+        ("weekly_enrol_cap", "thirty", "whole number"),
         ("control_share", "15%", "number"),
         ("control_share", "1.5", "between 0 and 1"),
         ("live_sending", "maybe", "yes or no"),
@@ -248,13 +257,13 @@ def test_general_conversions(tabs):
     _row(tabs, "General", key="approver_slack_ids")[1]["value"] = "U01HARRY, U02OTHER"
     _row(tabs, "General", key="live_sending")[1]["value"] = "No"
     _row(tabs, "General", key="send_window")[1]["value"] = "Mon-Thu 08:30-15:00 America/Chicago"
-    _row(tabs, "General", key="apollo_monthly_credits")[1]["value"] = "1,500"
+    _row(tabs, "General", key="apollo_weekly_credits")[1]["value"] = "1,500"
     settings, _ = validate_all(tabs)
     g = settings.general
     assert g.approver_slack_ids == ("U01HARRY", "U02OTHER")
     assert g.live_sending is False
     assert g.send_window == SendWindow((0, 1, 2, 3), time(8, 30), time(15), "America/Chicago")
-    assert g.apollo_monthly_credits == 1500
+    assert g.apollo_weekly_credits == 1500
 
 
 def test_missing_general_keys_take_model_defaults(tabs):
@@ -465,7 +474,7 @@ def test_missing_and_empty_tabs(tabs):
 
 def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
-    assert not errors and general.daily_enrol_cap == 30
+    assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
     assert not errors and len(signals) == 16
     bad = [dict(BASE["States"][0], active="sometimes")]

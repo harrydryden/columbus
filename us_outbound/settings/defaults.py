@@ -53,18 +53,18 @@ HARRY_TO_FILL = "Harry to fill"
 
 _GENERAL: list[tuple[str, str, str]] = [
     ("live_sending", "no", "Live needs yes here and the --live flag. Stays no until Harry signs off (SPEC 0.3)."),
-    ("daily_enrol_cap", "30", "Most new accounts enrolled in a working day (SPEC 9)."),
+    ("weekly_enrol_cap", "150", "Most new accounts enrolled in a week (Monday to Sunday, UK time). Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
     ("priority_threshold", "50", "Score at or above this is Priority."),
     ("standard_threshold", "20", "Score at or above this is Standard; below it is Control."),
     ("score_cap", "100", "Cap on an account's total score."),
     (
-        "clay_monthly_credits",
+        "clay_weekly_credits",
         "0",
-        "SPEC: a quarter of the Clay pool, until credits per account are measured. "
-        "0 (no Clay spend) until Harry confirms the pool in phase 0.",
+        "Clay credits the jobs may spend each week (Monday to Sunday, UK time). "
+        "0 means no Clay calls; Harry sets it once the Clay pool is known.",
     ),
-    ("apollo_monthly_credits", "1500", "Monthly Apollo credit budget."),
+    ("apollo_weekly_credits", "500", "Apollo credits the jobs may spend each week (Monday to Sunday, UK time)."),
     ("apollo_floor", "5000", "New verification stops when Apollo credits fall below this."),
     (
         "approver_slack_ids",

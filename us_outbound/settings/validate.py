@@ -381,6 +381,12 @@ def _unique(r: _Row, col: str, value: Any, seen: dict[Any, int], what: str = "")
 # -- General -----------------------------------------------------------------------
 
 _GENERAL_TYPES: dict[str, Any] = typing.get_type_hints(General)
+# SPEC keys replaced when budgets and targets became weekly (Harry, 30 Sep 2026).
+RENAMED_GENERAL = {
+    "daily_enrol_cap": "weekly_enrol_cap",
+    "clay_monthly_credits": "clay_weekly_credits",
+    "apollo_monthly_credits": "apollo_weekly_credits",
+}
 
 
 def _converter(hint: Any) -> Callable[[str], Any]:
@@ -443,6 +449,9 @@ def _general(rows: list[_Row]) -> General:
             if r.text("value"):
                 r.fail("key", "is required")
             continue  # a note-only row
+        if key in RENAMED_GENERAL:
+            r.fail("key", f"{key!r} is now {RENAMED_GENERAL[key]!r}: budgets and targets are weekly, Monday to Sunday, UK time")
+            continue
         if key not in _GENERAL_TYPES:
             r.fail("key", f"unknown key {key!r}{_hint(key, _GENERAL_TYPES)}")
             continue

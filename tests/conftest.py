@@ -16,7 +16,7 @@ TEST_IDS = {
     "postal_address": "Spill Group Ltd, 1 Example Street, London, EC1A 1AA, UK",
     "privacy_url": "https://www.spill.chat/us/privacy",
     "approver_slack_ids": ("U_HARRY",),
-    "clay_monthly_credits": 2000.0,
+    "clay_weekly_credits": 500.0,
     "clay_credits_per_account": 5.0,
 }
 

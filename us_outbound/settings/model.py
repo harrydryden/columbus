@@ -84,13 +84,13 @@ class General:
     """The General tab. Defaults are SPEC 5's; keys marked (build) were added by the build."""
 
     live_sending: bool = False
-    daily_enrol_cap: int = 30
+    weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
     control_share: float = 0.15
     priority_threshold: int = 50
     standard_threshold: int = 20
     score_cap: int = 100
-    clay_monthly_credits: float = 0.0  # SPEC: a quarter of the Clay pool; 0 until Harry confirms the pool
-    apollo_monthly_credits: int = 1500
+    clay_weekly_credits: float = 0.0  # (build) budgets are weekly (Harry, 30 Sep 2026); 0 = no Clay calls until Harry sets it
+    apollo_weekly_credits: int = 500  # (build) Harry, 30 Sep 2026: 500 a week
     apollo_floor: int = 5000
     approver_slack_ids: tuple[str, ...] = ()
     escalation_email: str = "harry@spill.chat"

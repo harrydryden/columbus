@@ -27,7 +27,7 @@ Status key:
 | Existing functions | Confirmed | Work Email `t_0tk0v4lhJ895hhhhTHJ`, Company Latest Funding `t_0tk0v4ehpQ6WaeuCoQf`, Website Technology Stack `t_0tk0v4lEmZDggj3wRwB`, Website Traffic `t_0tk0v4lJQkpANSDTxf9` |
 | "US Outbound" folder and functions | Open | Not created yet |
 | Functions callable programmatically | Partly | Yes through Clay's MCP (a run needs a subroutine id, task id and field mapping). A REST endpoint the Python jobs can call with an API key is not yet confirmed, so `clients/clay.py` marks it PHASE0-CONFIRM and keeps the CSV fallback |
-| Plan tier, monthly credits and actions, spend limits | Open | Not exposed. `clay_monthly_credits` stays 0 (no Clay calls) until Harry gives the pool |
+| Plan tier, monthly credits and actions, spend limits | Open | Not exposed. `clay_weekly_credits` stays 0 (no Clay calls) until Harry sets the weekly budget |
 
 ## Apollo (team 6a85cc72550d280018aa9e9f)
 

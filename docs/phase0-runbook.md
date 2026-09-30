@@ -31,7 +31,7 @@ prospect; see README "Dry-run and live".
 
 | Fact | Who | Status / how |
 | :- | :- | :- |
-| Clay tier, monthly credits and actions; functions creatable and callable through the API; spend limits | Harry | Open. Set `clay_monthly_credits` on the General tab once known (0 means no Clay calls). |
+| Clay tier, monthly credits and actions; functions creatable and callable through the API; spend limits | Harry | Open. Set `clay_weekly_credits` on the General tab once known (0 means no Clay calls; budgets run Monday to Sunday, UK time). |
 | Instantly plan; email and uploaded-contact caps and what other campaigns use; emails, reply and accounts endpoints included | Harry | Open (no Instantly access from the build). |
 | HubSpot tier and remaining custom-property allowance; "Spill 3.0" pipeline and stage ids | Harry / jobs | Ids confirmed (phase0-facts.md); `us-outbound hubspot ids` prints them again. Allowance open. |
 | Apollo: when credits lapse; visitor discovery through the API | Harry | Credits lapse 2027-08-21. Discovery: one approved call to confirm. |

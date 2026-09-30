@@ -10,7 +10,12 @@ only to schema us_outbound). A statement must be one of
     CREATE TABLE IF NOT EXISTS us_outbound.<table> (...)
     CREATE [UNIQUE] INDEX IF NOT EXISTS <name> ON us_outbound.<table> (...)
     CREATE OR REPLACE VIEW us_outbound.<view> AS ...
+    ALTER TABLE us_outbound.<table> ADD COLUMN IF NOT EXISTS <column> <type>
+    DROP VIEW IF EXISTS us_outbound.<view>
     COMMENT ON SCHEMA | TABLE | VIEW | COLUMN us_outbound[.<object>[.<column>]] IS '...'
+The ALTER form only adds a column to a table created before it (no default, nothing
+dropped); the DROP form removes a view that was replaced, and without CASCADE, so a view
+another view reads cannot go. Neither can touch stored rows.
 Every name after FROM, JOIN or REFERENCES must be us_outbound.<name>, a CTE of the
 statement, or an unqualified function call such as unnest(...); unqualified table names are
 refused. Any other dotted name must start with us_outbound or with an alias the statement
@@ -44,6 +49,10 @@ FORMS = {
     "table": re.compile(rf"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(?P<name>{NAME})\s*\(", re.I),
     "index": re.compile(rf"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+{IDENT}\s+ON\s+(?P<name>{NAME})\s*\(", re.I),
     "view": re.compile(rf"CREATE\s+OR\s+REPLACE\s+VIEW\s+(?P<name>{NAME})\s+AS\s", re.I),
+    "add_column": re.compile(
+        rf"ALTER\s+TABLE\s+(?P<name>{NAME})\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+{IDENT}\s+[A-Za-z][A-Za-z ]*(?:\[\])?$", re.I
+    ),
+    "drop_view": re.compile(rf"DROP\s+VIEW\s+IF\s+EXISTS\s+(?P<name>{NAME})$", re.I),
     "comment": re.compile(rf"COMMENT\s+ON\s+(?P<on>SCHEMA|TABLE|VIEW|COLUMN)\s+(?P<name>{NAME})\s+IS\s+''$", re.I),
 }
 REFERENCE_RE = re.compile(rf"\b(?P<kw>FROM|JOIN|REFERENCES)\s+(?:(?:LATERAL|ONLY)\s+)?(?P<name>{NAME})(?P<call>\s*\()?", re.I)

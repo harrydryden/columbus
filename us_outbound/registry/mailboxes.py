@@ -361,6 +361,13 @@ def last_use(ctx: Context, address: str) -> datetime | None:
     return max(times) if times else None
 
 
+def _lower_limit(row: Mapping[str, Any]) -> bool:
+    try:
+        return row.get("instantly_daily_limit") is not None and int(row["instantly_daily_limit"]) < int(row.get("daily_cap") or 0)
+    except (TypeError, ValueError):
+        return False
+
+
 def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str:
     today = ctx.today_uk()
     lines = [f"Mailbox health, {today:%a %d %b}" + (" (dry-run: nothing changed)" if ctx.dry_run else "")]
@@ -371,6 +378,8 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
             f"• {r['address']} ({r['owner']}): {r['status']}, {warm}"
             + (f", score {score}" if score is not None else "")
             + ("" if r.get("found") else ", not found in Instantly")
+            + (f", Instantly limits it to {r['instantly_daily_limit']} a day (sheet cap {r['daily_cap']}; the lower is used)"
+               if _lower_limit(r) else "")
         )
     for key, label in (
         ("promoted", "Promoted to Active"),
@@ -408,12 +417,17 @@ def mailbox_health(ctx: Context) -> dict:
     }
     rows: list[dict] = []
     changes: list[tuple[Mailbox, str]] = []
+    # Instantly's own per-account daily limit, which caps a mailbox below its sheet daily_cap
+    # when it is lower (enrol/capacity.py reads it from this job's latest summary).
+    out["instantly_daily_limits"] = {}
     for m in registry:
         w = warmups.get(m.address.lower(), {})
+        if w.get("found") and w.get("daily_limit") is not None:
+            out["instantly_daily_limits"][m.address.lower()] = w["daily_limit"]
         rows.append({
             "address": m.address, "owner": m.owner_name, "status": m.status, "found": bool(w.get("found")),
             "warmup_enabled": bool(w.get("warmup_enabled")), "warmup_score": w.get("warmup_score"),
-            "account_status": w.get("status"),
+            "account_status": w.get("status"), "daily_cap": m.daily_cap, "instantly_daily_limit": w.get("daily_limit"),
         })
         if not w.get("found"):
             out["not_found"].append(m.address)

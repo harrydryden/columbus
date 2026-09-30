@@ -52,12 +52,14 @@ def test_general_spec_values(tabs, settings):
     assert raw["approver_slack_ids"] == raw["postal_address"] == raw["privacy_url"] == ""
     assert raw["claude_model"] == "claude-haiku-4-5"
     notes = {r["key"]: r["note"] for r in tabs["General"]}
-    assert "quarter of the Clay pool" in notes["clay_monthly_credits"]
+    assert "Monday to Sunday" in notes["clay_weekly_credits"] and "0 means no Clay calls" in notes["clay_weekly_credits"]
+    assert "Monday to Sunday" in notes["weekly_enrol_cap"] and "Monday to Sunday" in notes["apollo_weekly_credits"]
     g = settings.general
     assert g.live_sending is False
     assert g.send_window == SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
-    assert (g.daily_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (30, 0.15, 50, 20)
-    assert (g.apollo_monthly_credits, g.apollo_floor, g.escalation_hours) == (1500, 5000, 24)
+    # Weekly budgets and targets (Harry, 30 Sep 2026): SPEC's 30 a day is 150 a week.
+    assert (g.weekly_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (150, 0.15, 50, 20)
+    assert (g.apollo_weekly_credits, g.clay_weekly_credits, g.apollo_floor, g.escalation_hours) == (500, 0.0, 5000, 24)
     assert g.claude_monthly_cap_usd == 10.0
 
 

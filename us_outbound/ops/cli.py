@@ -234,6 +234,23 @@ def _status_heartbeats(store: Any, now: datetime) -> None:
             print(f"  {'':<18} error: {str(run['error'])[:160]}")
 
 
+def _status_limits(ctx: Context) -> None:
+    """This week's budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
+    from us_outbound import limits
+    from us_outbound.enrol import enrol
+
+    try:
+        ready, _ = enrol.candidates(ctx, frozenset())
+        lim = limits.today(ctx, ctx.now_et().date(), ready_accounts=len(ready))
+    except Exception as exc:  # status still prints what it can
+        print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
+        return
+    print("This week (Monday to Sunday, UK time):")
+    print(f"  {lim.explanation}")
+    for line in lim.detail:
+        print(f"  {line}")
+
+
 def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     try:
         ctx = factory("status", False)
@@ -259,6 +276,7 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     print("Mailboxes:")
     for m in s.mailboxes:
         print(f"  {m.address:<28} {m.owner_name:<18} {m.status:<8} cap {m.daily_cap}")
+    _status_limits(ctx)
     try:
         campaigns = ctx.clients.instantly.list_campaigns()
         from us_outbound.clients.instantly import CAMPAIGN_STATUS

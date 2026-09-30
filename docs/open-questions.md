@@ -27,7 +27,7 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
    - **6e. Config in code.** Railway's `railway.json` and `railway.toml` are deprecated, so the worker's settings are checked by hand from a list in railway-setup.md. Do you want Railway's replacement, `.railway/railway.ts`? It needs Node and the Railway CLI to apply. [no; the dashboard and the list]
    - **6f. If the worker stops.** heartbeat_check runs inside the worker, so it cannot report that the worker is down. Railway's project webhooks can post deployment crashes to a Slack incoming webhook for #us-outbound-dev. This needs an incoming webhook in Slack (a separate app, or one added to ours). Shall I set it up? [yes, in phase 0]
 7. **Clay.**
-   - What are the plan tier and the monthly credit pool? `clay_monthly_credits` stays 0 until you tell me, so no Clay calls happen.
+   - What are the plan tier and the credit pool, and how many Clay credits a week should the jobs use? `clay_weekly_credits` stays 0 until you tell me, so no Clay calls happen.
    - Is the Routines (function) API enabled for the workspace, with "API & CLI" ticked on the two functions? If not, we use the CSV fallback in SPEC 8.
    - The "US Outbound" folder and its two functions are built in Clay's UI.
 8. **Settings sheet.** A sheet the service account creates is visible only to that account. Shall I create "US Outbound – Settings" in your Drive from the defaults, for you to share with the service account? Or would you rather create it yourself?
@@ -38,7 +38,7 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
     - confirm data starts arriving (`data_received` is false)
     - confirm the script is not on employee-facing pages
 11. **HubSpot service key.** Create it with the SPEC 13 scopes (phase0-runbook.md §5). HubSpot is retiring private apps, so a service key replaces the SPEC's private-app token.
-12. **Clay in dry-run.** Should Clay functions run while `live_sending = no`? Phase 1 verifies the queue before any send, so they need to. The default is yes: Clay runs within the monthly budget in dry-run too, because it sends nothing to prospects.
+12. **Clay in dry-run.** Should Clay functions run while `live_sending = no`? Phase 1 verifies the queue before any send, so they need to. The default is yes: Clay runs within the weekly budget in dry-run too, because it sends nothing to prospects.
 
 ## B. Decisions with a default in place
 
@@ -117,7 +117,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 57. Instantly has no America/New_York in its time-zone list, so campaigns use America/Detroit (same rules). Check that a created campaign shows Mon–Fri and steps on days 0, 3, 8 and 15.
 58. Instantly: confirm the custom-variable length limit (worst case for s1_body is about 1,500 characters), that newlines survive in text-only mode, that the forward endpoint and is_evergreen behave as expected, and that step 2–4 sends stay on the step-1 address.
-59. Apollo: `apollo_floor` and the monthly budget count lead credits. Visitor discovery uses organization search with website-visitor filters (1 credit to confirm). bulk_match never runs the email waterfall; misses go to Clay.
+59. Apollo: `apollo_floor` and the weekly budget (`apollo_weekly_credits`) count lead credits. Visitor discovery uses organization search with website-visitor filters (1 credit to confirm). bulk_match never runs the email waterfall; misses go to Clay.
 60. HubSpot: confirm the deal→company and contact→company association ids and the v4 unsubscribe-all endpoint. Suppression loads hard bounces only. Company match is on the primary domain and its www. form.
 
 ### Data and operations
