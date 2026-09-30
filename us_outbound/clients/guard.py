@@ -26,7 +26,7 @@ from us_outbound.logs import log, redact
 US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
 ERASE_JOB = "erase"  # the only job that may GDPR-delete in HubSpot (SPEC 6 erase --email)
 SETTINGS_SHEET_TITLE = "US Outbound – Settings"
-BQ_DATASET = "us_outbound"
+DB_SCHEMA = "us_outbound"
 
 # HubSpot write allowlist (SPEC 1.2).
 HUBSPOT_PROPERTY_GROUP = "us_outbound"
@@ -119,7 +119,7 @@ class Boundaries:
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
     escalation_email: str = ""  # the only address an Instantly forward may go to (SPEC 11)
-    bq_dataset: str = BQ_DATASET
+    db_schema: str = DB_SCHEMA
 
     @property
     def registry_accounts(self) -> frozenset[str]:
@@ -357,12 +357,12 @@ class Guard:
             raise GuardViolation(f"sheet {op.target!r} is not the settings sheet")
         return self._live_only(op)
 
-    def _check_bq(self, op: Op) -> bool:
+    def _check_db(self, op: Op) -> bool:
         if not op.write:
             return True
         dataset = op.target.split(".")[-2] if op.target.count(".") >= 1 else ""
-        if dataset != self.bounds.bq_dataset:
-            raise GuardViolation(f"BigQuery writes go only to dataset {self.bounds.bq_dataset} (SPEC 1.2), not {op.target!r}")
+        if dataset != self.bounds.db_schema:
+            raise GuardViolation(f"Database writes go only to schema {self.bounds.db_schema} (SPEC 1.2), not {op.target!r}")
         return True  # dry-run still writes to BigQuery (SPEC 0.3)
 
     def _check_claude(self, op: Op) -> bool:

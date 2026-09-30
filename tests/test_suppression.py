@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound import suppression
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.logs import hash_email
 from us_outbound.settings.model import General, Settings

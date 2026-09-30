@@ -41,7 +41,7 @@ INSTANTLY_CONFIRM = (
 
 def _raw_contact_keys(ctx: Context, email: str) -> list[str]:
     try:
-        rows = ctx.store.query(RAW_CONTACTS_SQL.format(dataset=ctx.store.dataset), {"email": email})
+        rows = ctx.store.query(RAW_CONTACTS_SQL.format(dataset=ctx.store.schema), {"email": email})
     except NotImplementedError:  # MemoryStore without a handler: scan the table
         rows = [r for r in ctx.store.select("raw_clay_contacts") if email in str(r.get("payload") or "").lower()]
     return sorted({str(r["key"]) for r in rows if r.get("key") is not None})
@@ -50,7 +50,7 @@ def _raw_contact_keys(ctx: Context, email: str) -> list[str]:
 def _contacts_by_email(ctx: Context, email: str) -> list[dict]:
     """Contacts whose email matches however it was cased or spaced when stored."""
     try:
-        rows = ctx.store.query(CONTACTS_SQL.format(dataset=ctx.store.dataset), {"email": email})
+        rows = ctx.store.query(CONTACTS_SQL.format(dataset=ctx.store.schema), {"email": email})
     except NotImplementedError:  # MemoryStore without a handler: scan the table
         rows = [c for c in ctx.store.select("contacts") if normalise_email(str(c.get("email") or "")) == email]
     return rows

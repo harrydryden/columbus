@@ -10,7 +10,7 @@ import pytest
 
 import us_outbound.scoring
 from tests.fakes import TEST_SHEET_ID, make_context
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.settings import sync
 from us_outbound.settings.defaults import COLUMNS, default_tabs
@@ -125,11 +125,11 @@ def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
 def test_unchanged_second_sync_writes_nothing(ctx):
     sync.run(ctx)
     before = copy.deepcopy(ctx.store.tables["settings"])
-    bq_writes = len(ctx.guard.writes("bq"))
+    bq_writes = len(ctx.guard.writes("db"))
     ctx.now = T2
     summary = sync.run(ctx)
     assert ctx.store.tables["settings"] == before
-    assert len(ctx.guard.writes("bq")) == bq_writes
+    assert len(ctx.guard.writes("db")) == bq_writes
     assert summary["rows_opened"] == summary["rows_closed"] == 0
     assert {v["status"] for v in summary["tabs"].values()} == {"unchanged"}
 

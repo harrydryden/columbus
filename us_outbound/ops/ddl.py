@@ -10,7 +10,7 @@ apply() checks every statement before it runs any (SPEC 1.2: write only to us_ou
   * every backticked name, and any dotted name of three parts, is in `{project}.us_outbound`;
   * it is one statement.
 Comments and string literals are ignored by the checks. Each statement then passes
-guard.authorize("bq", Op("ddl", target="us_outbound.<name>", write=True)) before it runs.
+guard.authorize("db", Op("ddl", target="us_outbound.<name>", write=True)) before it runs.
 Dry-run (the default) returns the rendered statements and runs nothing.
 
     python -m us_outbound.ops.ddl --project spill-warehouse-test --location EU [--execute]
@@ -24,13 +24,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-from us_outbound.clients.bq import Store
-from us_outbound.clients.guard import BQ_DATASET, Guard, GuardViolation, Op
+from us_outbound.clients.db import Store
+from us_outbound.clients.guard import DB_SCHEMA, Guard, GuardViolation, Op
 from us_outbound.logs import log
 
 SQL_DIR = Path(__file__).resolve().parents[2] / "sql"
 DEFAULT_LOCATION = "EU"  # the location of the project's existing datasets (docs/phase0-facts.md)
-DATASET_TARGET = f"{BQ_DATASET}.dataset"  # guard target for the CREATE SCHEMA statement
+DATASET_TARGET = f"{DB_SCHEMA}.dataset"  # guard target for the CREATE SCHEMA statement
 
 PROJECT_RE = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")  # a GCP project id
 LOCATION_RE = re.compile(r"[A-Za-z]+(?:-[A-Za-z0-9]+)*")  # EU, US, europe-west2
@@ -113,7 +113,7 @@ def _parts(chain: str) -> list[str]:
 
 
 def _in_dataset(parts: list[str], project: str) -> bool:
-    return len(parts) >= 2 and parts[0] == project and parts[1] == BQ_DATASET
+    return len(parts) >= 2 and parts[0] == project and parts[1] == DB_SCHEMA
 
 
 def check_statement(sql: str, project: str) -> str:
@@ -127,25 +127,25 @@ def check_statement(sql: str, project: str) -> str:
     kind, name = m["kind"].upper(), m["name"]
     parts = name.split(".")
     if not _in_dataset(parts, project):
-        raise GuardViolation(f"DDL creates {name!r}, outside `{project}.{BQ_DATASET}` (SPEC 1.2)")
+        raise GuardViolation(f"DDL creates {name!r}, outside `{project}.{DB_SCHEMA}` (SPEC 1.2)")
     if kind == "SCHEMA":
         if len(parts) != 2 or m["replace"] or not m["ifne"]:
-            raise GuardViolation(f"the dataset is created with CREATE SCHEMA IF NOT EXISTS `{project}.{BQ_DATASET}`")
+            raise GuardViolation(f"the dataset is created with CREATE SCHEMA IF NOT EXISTS `{project}.{DB_SCHEMA}`")
         target = DATASET_TARGET
     else:
         if len(parts) != 3 or not NAME_RE.fullmatch(parts[2]):
-            raise GuardViolation(f"not a {kind.lower()} name in {BQ_DATASET}: {name!r}")
+            raise GuardViolation(f"not a {kind.lower()} name in {DB_SCHEMA}: {name!r}")
         if kind == "TABLE" and (m["replace"] or not m["ifne"]):
             raise GuardViolation(f"tables are created only IF NOT EXISTS, never replaced: {name!r}")
         if m["replace"] and m["ifne"]:
             raise GuardViolation("OR REPLACE and IF NOT EXISTS cannot be used together")
-        target = f"{BQ_DATASET}.{parts[2]}"
+        target = f"{DB_SCHEMA}.{parts[2]}"
     for chain in CHAIN_RE.findall(code):
         segs = re.findall(r"`[^`]*`|[A-Za-z_]\w*", chain)
         chain_parts = _parts(chain)
         names_object = len(chain_parts) >= 3 or any(s.startswith("`") and "." in s for s in segs)
         if names_object and not _in_dataset(chain_parts, project):
-            raise GuardViolation(f"statement for {target} references {chain!r}, outside `{project}.{BQ_DATASET}` (SPEC 1.2)")
+            raise GuardViolation(f"statement for {target} references {chain!r}, outside `{project}.{DB_SCHEMA}` (SPEC 1.2)")
     return target
 
 
@@ -186,7 +186,7 @@ def apply(
 
     ran = 0
     for name, sql, target in zip(names, statements, targets):
-        if not guard.authorize("bq", Op("ddl", target=target, write=True, detail={"file": name})):
+        if not guard.authorize("db", Op("ddl", target=target, write=True, detail={"file": name})):
             log("ddl_statement_skipped", target=target, file=name)
             continue
         client.query(sql, location=location).result()
@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         p.error("--project is required (or set US_OUTBOUND_PROJECT)")
     target = None
     if args.execute:
-        from us_outbound.clients.bq import BigQueryStore
+        from us_outbound.clients.db import BigQueryStore
 
         target = BigQueryStore(Guard(), args.project, args.location)
     statements = apply(target, args.project, args.location, dry_run=not args.execute)

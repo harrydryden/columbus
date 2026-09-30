@@ -16,7 +16,7 @@ from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.context import Context
 from us_outbound.logs import hash_email, log, normalise_email
 

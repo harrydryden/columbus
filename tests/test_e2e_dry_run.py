@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from tests.fakes import FakeTransport
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.context import Secrets
 from us_outbound.enrol import copy_rules

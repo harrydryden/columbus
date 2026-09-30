@@ -21,7 +21,7 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Guard
 from us_outbound.clients.http import Transport
 from us_outbound.context import Clients, Context, Secrets, boundaries_for, effective_live
@@ -94,7 +94,7 @@ def build_context(
 
     guard = Guard(live=False, job=job)
     if store is None:
-        from us_outbound.clients.bq import BigQueryStore
+        from us_outbound.clients.db import BigQueryStore
 
         store = BigQueryStore(guard, project, location)
     store.guard = guard

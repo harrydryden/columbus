@@ -37,7 +37,7 @@ from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
 from us_outbound.clean.people import state_code
-from us_outbound.clients.bq import Store, new_id
+from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ET, UK, Context
 from us_outbound.enrol import queue, render

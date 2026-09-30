@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from us_outbound.clients.bq import MemoryStore, Store
+from us_outbound.clients.db import MemoryStore, Store
 from us_outbound.clients.guard import Guard
 from us_outbound.clients.http import Response
 from us_outbound.context import Clients, Context, Secrets, boundaries_for

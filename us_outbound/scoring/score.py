@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.bq import new_id
+from us_outbound.clients.db import new_id
 from us_outbound.context import UK, Context
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles

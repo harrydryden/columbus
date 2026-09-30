@@ -16,7 +16,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
-from us_outbound.clients.bq import JSON_COLUMNS, TABLE_KEYS, BigQueryStore, MemoryStore
+from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, BigQueryStore, MemoryStore
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.ops import ddl
 from us_outbound.settings.model import SIZE_BANDS, TABS, TIERS
@@ -457,7 +457,7 @@ def test_apply_runs_every_statement_in_order_through_the_guard():
     guard, client = Guard(), FakeClient()
     statements = ddl.apply(client, PROJECT, LOCATION, dry_run=False, guard=guard)
     assert client.queries == [(s, LOCATION) for s in statements]
-    calls = [c for c in guard.calls if c.system == "bq"]
+    calls = [c for c in guard.calls if c.system == "db"]
     assert len(calls) == len(statements)
     assert all(c.action == "ddl" and c.write and c.sent for c in calls)
     targets = [c.target for c in calls]
@@ -493,7 +493,7 @@ def test_apply_checks_every_file_before_running_any(tmp_path):
 
 
 def test_apply_stops_when_the_guard_refuses():
-    guard, client = Guard(bounds=Boundaries(bq_dataset="somewhere_else")), FakeClient()
+    guard, client = Guard(bounds=Boundaries(db_schema="somewhere_else")), FakeClient()
     with pytest.raises(GuardViolation):
         ddl.apply(client, PROJECT, LOCATION, dry_run=False, guard=guard)
     assert client.queries == []

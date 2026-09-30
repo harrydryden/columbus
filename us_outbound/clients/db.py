@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable
 from datetime import date, datetime
 from typing import Any
 
-from us_outbound.clients.guard import BQ_DATASET, Guard, GuardViolation, Op
+from us_outbound.clients.guard import DB_SCHEMA, Guard, GuardViolation, Op
 
 # Primary keys used by upsert. None means append-only.
 TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
@@ -67,14 +67,14 @@ def _check_table(table: str) -> None:
 
 
 class Store(ABC):
-    dataset = BQ_DATASET
+    schema = DB_SCHEMA
 
     def __init__(self, guard: Guard):
         self.guard = guard
 
     def _authorize(self, action: str, table: str, write: bool) -> None:
         _check_table(table)
-        self.guard.authorize("bq", Op(action, target=f"{self.dataset}.{table}", write=write))
+        self.guard.authorize("db", Op(action, target=f"{self.schema}.{table}", write=write))
 
     @abstractmethod
     def insert(self, table: str, rows: Iterable[dict]) -> int: ...
@@ -206,7 +206,7 @@ class BigQueryStore(Store):
         self.client = client or bigquery.Client(project=project, location=location)
 
     def _ref(self, table: str) -> str:
-        return f"`{self.project}.{self.dataset}.{table}`"
+        return f"`{self.project}.{self.schema}.{table}`"
 
     def _param(self, name: str, value: Any):
         bq = self.bigquery
@@ -248,7 +248,7 @@ class BigQueryStore(Store):
             source_format=self.bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
             write_disposition=self.bigquery.WriteDisposition.WRITE_APPEND,
         )
-        dest = f"{self.project}.{self.dataset}.{table}"
+        dest = f"{self.project}.{self.schema}.{table}"
         self.client.load_table_from_json(rows, dest, job_config=cfg).result()
         return len(rows)
 
@@ -271,7 +271,7 @@ class BigQueryStore(Store):
         # The staging table lives in the same dataset and expires within the hour.
         stage = f"_stage_{table}_{uuid.uuid4().hex[:12]}"
         self._run(
-            f"CREATE TABLE `{self.project}.{self.dataset}.{stage}` LIKE {self._ref(table)} "
+            f"CREATE TABLE `{self.project}.{self.schema}.{stage}` LIKE {self._ref(table)} "
             f"OPTIONS (expiration_timestamp = TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR))"
         )
         try:
@@ -279,17 +279,17 @@ class BigQueryStore(Store):
                 source_format=self.bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
                 write_disposition=self.bigquery.WriteDisposition.WRITE_APPEND,
             )
-            self.client.load_table_from_json(rows, f"{self.project}.{self.dataset}.{stage}", job_config=cfg).result()
+            self.client.load_table_from_json(rows, f"{self.project}.{self.schema}.{stage}", job_config=cfg).result()
             cols = sorted({c for r in rows for c in r})
             on = " AND ".join(f"T.{c} IS NOT DISTINCT FROM S.{c}" for c in key)
             sets = ", ".join(f"{c} = S.{c}" for c in cols if c not in key)
             self._run(
-                f"MERGE {self._ref(table)} T USING `{self.project}.{self.dataset}.{stage}` S ON {on} "
+                f"MERGE {self._ref(table)} T USING `{self.project}.{self.schema}.{stage}` S ON {on} "
                 + (f"WHEN MATCHED THEN UPDATE SET {sets} " if sets else "")
                 + f"WHEN NOT MATCHED THEN INSERT ({', '.join(cols)}) VALUES ({', '.join('S.' + c for c in cols)})"
             )
         finally:
-            self.client.delete_table(f"{self.project}.{self.dataset}.{stage}", not_found_ok=True)
+            self.client.delete_table(f"{self.project}.{self.schema}.{stage}", not_found_ok=True)
 
     def select(self, table, where=None):
         self._authorize("select", table, write=False)
@@ -323,7 +323,7 @@ class BigQueryStore(Store):
         head = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
         if head not in {"SELECT", "WITH"}:
             raise GuardViolation("Store.query is read only; use insert/upsert/update/delete")
-        self.guard.authorize("bq", Op("query", target=f"{self.dataset}.query", write=False))
+        self.guard.authorize("db", Op("query", target=f"{self.schema}.query", write=False))
         qp = [self._param(k, v) for k, v in (params or {}).items()]
         return [dict(r.items()) for r in self._run(sql, qp)]
 

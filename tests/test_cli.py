@@ -10,7 +10,7 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2, SAM, SETTINGS, FakeInstantly, StubSheets, slack_routes
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
 from us_outbound.ops import heartbeat as hb

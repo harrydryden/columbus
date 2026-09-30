@@ -1,6 +1,6 @@
 """BigQueryStore's SQL: parameters BigQuery can assign to any column type."""
 
-from us_outbound.clients.bq import BigQueryStore
+from us_outbound.clients.db import BigQueryStore
 from us_outbound.clients.guard import Guard
 
 

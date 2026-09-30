@@ -14,7 +14,7 @@ from functools import cached_property
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Boundaries, Guard
 from us_outbound.clients.http import Transport
 from us_outbound.settings.model import Settings

@@ -26,7 +26,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.logs import log

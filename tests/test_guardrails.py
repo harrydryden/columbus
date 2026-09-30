@@ -7,7 +7,7 @@ the allowed containers" (SPEC 1.2 isolation, 1.8 tracking, 0.3 dry-run).
       restates SPEC 1.2 as data independently of guard.py, and every non-GET request must
       pair with a call the guard authorized. A client method missing from EXERCISES fails.
   (b) Each disallowed write raises GuardViolation before any request is made.
-  (c) Static: only clients/http.py imports an HTTP library; only clients/bq.py and ops/ddl.py
+  (c) Static: only clients/http.py imports an HTTP library; only clients/db.py and ops/ddl.py
       import BigQuery; only clients/claude.py imports anthropic.
   (d) The same exercise in dry-run makes no write request to HubSpot, Instantly or the sheet,
       and Slack posts only to the dev channel.
@@ -33,7 +33,7 @@ import pytest
 import us_outbound.clients
 from tests.fakes import FakeTransport
 from us_outbound.clients.apollo import Apollo
-from us_outbound.clients.bq import BigQueryStore, MemoryStore
+from us_outbound.clients.db import BigQueryStore, MemoryStore
 from us_outbound.clients.claude import Claude
 from us_outbound.clients.clay import Clay
 from us_outbound.clients.guard import Boundaries, CallRecord, Guard, GuardViolation, Op
@@ -84,7 +84,7 @@ HS_WARM = {"positive", "referral"}
 HS_FREE_WRITES = {"note.create", "task.create", "association.create", "communication.unsubscribe"}
 SLACK_WRITES = {"chat.postMessage", "chat.update"}
 SETTINGS_TITLE = "US Outbound – Settings"
-BQ_DATASET = "us_outbound"
+DB_SCHEMA = "us_outbound"
 REGISTRY = set(redact(sorted(ADDRESSES)))  # CallRecord details carry hashed addresses (logs.redact)
 REDACTED_EMAIL = re.compile(r"^email:[0-9a-f]{16}$")
 
@@ -186,8 +186,8 @@ def spec_violation(rec: CallRecord) -> str | None:
         if a == "spreadsheet.create":
             return None if d.get("title") == SETTINGS_TITLE else f"created sheet {d.get('title')!r}"
         return None if t == SHEET else f"write to sheet {t!r}"
-    if s == "bq":
-        return None if t.split(".")[0] == BQ_DATASET else f"BigQuery write to {t!r}"
+    if s == "db":
+        return None if t.split(".")[0] == DB_SCHEMA else f"BigQuery write to {t!r}"
     return f"{s} is never written to (SPEC 1.2)"  # apollo, clay, public, claude, secrets
 
 
@@ -233,7 +233,7 @@ class FakeBigQuery:
 
     def _check(self, kind: str, text: str, write: bool) -> None:
         last = self.guard.calls[-1] if self.guard.calls else None
-        if last is None or last.system != "bq" or not last.sent or (write and not last.write):
+        if last is None or last.system != "db" or not last.sent or (write and not last.write):
             self.unauthorized.append((kind, text))
         self.calls.append((kind, text))
 
@@ -574,7 +574,7 @@ def test_live_writes_stay_inside_the_allowed_containers(live_world):
     problems = [(c.system, c.action, c.target, why) for c in w.guard.calls if (why := spec_violation(c))]
     assert problems == []
     sent = Counter(c.system for c in w.guard.calls if c.write and c.sent)
-    for system in ("hubspot", "instantly", "slack", "sheets", "bq"):
+    for system in ("hubspot", "instantly", "slack", "sheets", "db"):
         assert sent[system], f"the exercise made no {system} write, so it proves nothing about {system}"
     assert sent["apollo"] == 0 and sent["public"] == 0 and sent["claude"] == 0
 
@@ -622,7 +622,7 @@ def test_bigquery_writes_only_to_us_outbound(live_world):
         names = re.findall(r"`([^`]+)`", text) if kind == "query" else [text]
         for name in names:
             parts = name.split(".")
-            assert len(parts) == 3 and parts[0] == PROJECT and parts[1] == BQ_DATASET, f"{kind} touches {name}"
+            assert len(parts) == 3 and parts[0] == PROJECT and parts[1] == DB_SCHEMA, f"{kind} touches {name}"
 
 
 def test_bigquery_upsert_merges_each_column_set_separately(live_world):
@@ -647,10 +647,10 @@ def test_claude_is_called_only_after_the_guard(live_world):
 
 
 def _other_store(cls):
-    class OtherDataset(cls):
-        dataset = "spill_prod"
+    class OtherSchema(cls):
+        schema = "spill_prod"
 
-    return OtherDataset
+    return OtherSchema
 
 
 NEGATIVE: dict[str, Callable[[World], Any]] = {
@@ -757,7 +757,7 @@ IMPORT_RULES: list[tuple[str, set[str]]] = [
     ("aiohttp", set()),
     ("socket", set()),
     ("smtplib", set()),  # spill.chat never sends email itself (SPEC 1.4)
-    ("google.cloud.bigquery", {"us_outbound/clients/bq.py", "us_outbound/ops/ddl.py"}),
+    ("google.cloud.bigquery", {"us_outbound/clients/db.py", "us_outbound/ops/ddl.py"}),
     ("anthropic", {"us_outbound/clients/claude.py"}),
     # Credentials only, never data calls: Secret Manager reads keys; google-auth refreshes the Sheets token.
     ("google.cloud.secretmanager", {"us_outbound/context.py"}),
@@ -825,5 +825,5 @@ def test_dry_run_slack_posts_only_to_the_dev_channel(dry_world):
 
 def test_dry_run_still_writes_bigquery(dry_world):
     """SPEC 0.3: dry-run computes, logs and writes to BigQuery."""
-    assert dry_world.guard.writes("bq", sent=True)
+    assert dry_world.guard.writes("db", sent=True)
     assert dry_world.bq.calls and dry_world.bq.unauthorized == []

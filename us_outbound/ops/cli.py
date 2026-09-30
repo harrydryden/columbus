@@ -41,7 +41,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from us_outbound.clients.bq import new_id
+from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import log, redact

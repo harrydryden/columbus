@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import clip, log, redact
@@ -184,7 +184,7 @@ def _latest_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict]:
 def latest_runs(store: Store) -> dict[str, dict]:
     """job -> its latest heartbeat plus last_ok_at, from the v_heartbeats view."""
     try:
-        rows = store.query(LATEST_SQL.format(dataset=store.dataset))
+        rows = store.query(LATEST_SQL.format(dataset=store.schema))
     except NotImplementedError:  # MemoryStore without a view handler
         rows = _latest_from_rows(store.select(TABLE))
     return {r["job"]: dict(r) for r in rows if r.get("job")}
