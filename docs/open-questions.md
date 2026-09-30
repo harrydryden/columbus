@@ -37,7 +37,7 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
     - add "/us/book-demo" as high intent
     - confirm data starts arriving (`data_received` is false)
     - confirm the script is not on employee-facing pages
-11. **HubSpot private-app token.** Create it with the SPEC 13 scopes before 26 Oct.
+11. **HubSpot service key.** Create it with the SPEC 13 scopes (phase0-runbook.md §5). HubSpot is retiring private apps, so a service key replaces the SPEC's private-app token.
 12. **Clay in dry-run.** Should Clay functions run while `live_sending = no`? Phase 1 verifies the queue before any send, so they need to. The default is yes: Clay runs within the monthly budget in dry-run too, because it sends nothing to prospects.
 
 ## B. Decisions with a default in place

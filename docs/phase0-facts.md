@@ -17,7 +17,8 @@ Status key:
 | `us_outbound_*` properties | Confirmed absent | None exist on companies or contacts |
 | "US Outbound" property group | Open | Not visible through the tools; probably absent |
 | Hub tier and remaining custom-property allowance | Open | Not exposed. About 114 custom contact properties and 70 custom company properties exist |
-| Private-app token for the jobs | Open | To be created by Harry before 26 Oct, with the SPEC 13 scopes |
+| API credential for the jobs | Open | **A service key, not a private app.** HubSpot stops new legacy private apps in existing accounts on 26 Oct 2026, and names service keys (beta) as the replacement for system-to-system use. The key is sent as `Authorization: Bearer`, like a private-app token, so the client needs no change. Service keys don't support webhooks; the jobs poll, so none are needed. Scopes in phase0-runbook.md §5 |
+| API versions | Noted 30 Sep | HubSpot ends support for v1–v3 APIs in Sept 2027. The client uses CRM v3, communication preferences v4 and associations v4. v3 is fine for v1 (to 18 Dec 2026); moving to the new API versions is a phase 4 item |
 
 ## Clay (workspace "Spill", 1336346)
 

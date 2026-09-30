@@ -74,7 +74,7 @@ See `docs/phase0-runbook.md` for commands, and `docs/phase0-facts.md` for what h
    - Create the project Columbus in EU West (Amsterdam), with a Postgres database and the worker service from `harrydryden/columbus` (`main`).
    - `railway ssh -- us-outbound db apply --live` creates schema `us_outbound`.
 2. **Google:** in `columbus-510209`, enable the Google Sheets API only. Create the service account `us-outbound-sheets` and its JSON key. No billing is needed.
-3. **Keys:** put each key in its sealed Railway variable (`railway-setup.md`, step c): Apollo, Clay, Instantly, HubSpot (private app, SPEC 13 scopes), Slack, the Sheets key, and the Claude key with a $10 monthly limit.
+3. **Keys:** put each key in its sealed Railway variable (`railway-setup.md`, step c): Apollo, Clay, Instantly, HubSpot (service key, SPEC 13 scopes), Slack, the Sheets key, and the Claude key with a $10 monthly limit.
 4. **Settings sheet:** create "US Outbound – Settings" from the defaults and share it with the service account. The phase-0 ids go in the General tab:
    - pipeline `82002613`
    - stage `154381888`
