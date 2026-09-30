@@ -38,6 +38,7 @@ The Thanksgiving blackout (23–27 Nov) falls inside phase 3. Sends pause, but t
 | Suppression from HubSpot opt-outs and bounces | `suppression.py`, `us-outbound suppression load` |
 | Dry-run everywhere | `guard.py`. Live needs `--live` and `live_sending = yes`, also for the scheduler's `--live` jobs |
 | Footer, privacy link and legitimate-interests text for Harry to approve | `templates/copy/footer.txt`, `templates/copy/article14.txt` (drafts) |
+| All 108 industry pages on the Industries tab; a four-email sequence per industry on the Copy tab, checked and QA'd, for Harry to approve (Harry, 30 Sep 2026) | `settings/data/`, `us-outbound settings load`; the copy desk (`enrol/copy_desk.py`, `us-outbound copy check\|preview\|qa\|draft`); `templates/copy/style.md`, `facts.md` |
 
 To support phase 0, the build also includes the pieces the end-to-end dry run exercises:
 - data cleaning

@@ -26,6 +26,8 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - Setup takes hours, and there is no minimum team size.
 - A demo is short: about 20 minutes (SPEC 10's "20-minute walkthrough").
 - Spill is HIPAA compliant.
+- For law firms (SPEC 5's legal overlay): "The bar's Lawyer Assistance Program covers attorneys. Who covers
+  paralegals and staff?"
 - Pricing: only through {{price_line}} (the team-size price and the rolling 30-day contract), then
   "We don't lock you in." Never write a dollar figure yourself.
 - The one statistic allowed: 30% of employees use Spill.

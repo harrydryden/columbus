@@ -299,7 +299,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 - A Copy tab still in the old one-row-per-step layout is replaced. Its rows stay in the database's settings history, and until it is replaced the sync reads it as no copy and says so.
 - A Copy tab already in the new layout keeps every row as it is; only missing versions are added.
 
-**Phase 0 tests Instantly's custom-variable length limit.** The longest email 2 is about 2,500 characters of HTML with the footer. If Instantly's limit is lower, the fallback is to put the fixed parts of the footer in the campaign step.
+**Phase 0 tests Instantly's custom-variable length limit.** The longest email 2 is about 2,350 characters of HTML with the footer, and email 1 about 1,950 with the longest opener. If Instantly's limit is lower, the fallback is to put the fixed parts of the footer in the campaign step.
 
 ## How Harry can steer the system
 
