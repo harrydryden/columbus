@@ -1,13 +1,13 @@
 """The guardrails of SPEC section 1, enforced at the single point every client call passes.
 
-Every outbound call (HTTP, BigQuery, Claude) is described as an Op and handed to
+Every outbound call (HTTP, the database, Claude) is described as an Op and handed to
 Guard.authorize() before it is made. authorize() either:
 
   * raises GuardViolation: the call would break a guardrail, in any mode; or
   * returns False: the call is a write that dry-run must not make (the caller skips it); or
   * returns True: make the call.
 
-Dry-run (SPEC 0.3): compute, log and write to BigQuery, but send nothing. Nothing is
+Dry-run (SPEC 0.3): compute, log and write to the database, but send nothing. Nothing is
 written to HubSpot, Instantly or the settings sheet, and nothing to Slack except the dev
 channel. Live needs both the --live flag and live_sending = yes; the caller works that out
 and passes `live`.
@@ -26,7 +26,7 @@ from us_outbound.logs import log, redact
 US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
 ERASE_JOB = "erase"  # the only job that may GDPR-delete in HubSpot (SPEC 6 erase --email)
 SETTINGS_SHEET_TITLE = "US Outbound – Settings"
-BQ_DATASET = "us_outbound"
+DB_SCHEMA = "us_outbound"
 
 # HubSpot write allowlist (SPEC 1.2).
 HUBSPOT_PROPERTY_GROUP = "us_outbound"
@@ -83,7 +83,7 @@ class Op:
 
     action: a dotted verb, e.g. "company.create", "lead.add", "chat.postMessage".
     target: the container it touches: a campaign name, table, channel, sheet id, host.
-    write:  True if it changes anything outside this process (except BigQuery reads).
+    write:  True if it changes anything outside this process (except database reads).
     detail: what the guard needs to judge it (property names, account ids, ...).
     """
 
@@ -119,7 +119,7 @@ class Boundaries:
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
     escalation_email: str = ""  # the only address an Instantly forward may go to (SPEC 11)
-    bq_dataset: str = BQ_DATASET
+    db_schema: str = DB_SCHEMA
 
     @property
     def registry_accounts(self) -> frozenset[str]:
@@ -229,9 +229,11 @@ class Guard:
                 raise GuardViolation(f"Instantly {a} targets campaign {op.target!r}, not a US Outbound campaign")
 
         if not op.write:
-            if a in {"email.list", "email.get", "account.list", "account.get", "account.vitals", "warmup.analytics"}:
+            if a in {"email.list", "email.get", "account.list", "account.get", "account.vitals", "warmup.analytics",
+                     "account.analytics_daily"}:
                 need_registry_accounts()
-            elif a in {"lead.list", "lead.get", "campaign.get", "campaign.analytics", "campaign.steps_analytics"}:
+            elif a in {"lead.list", "lead.get", "campaign.get", "campaign.analytics", "campaign.steps_analytics",
+                       "campaign.sending_status"}:
                 need_us_campaign()
             elif a == "campaign.list":
                 if not str(op.detail.get("search", "")).startswith(US_CAMPAIGN_PREFIX.strip()):
@@ -263,6 +265,10 @@ class Guard:
                 raise GuardViolation("Instantly forwards go only to escalation_email (SPEC 11)")
         elif a in {"account.warmup_enable", "account.warmup_disable", "account.pause", "account.resume"}:
             need_registry_accounts()
+        elif a == "account.update_limit":
+            need_registry_accounts()  # only the daily limit, only on a registry account (Instantly.set_daily_limit)
+            if set(op.detail) - {"accounts", "daily_limit"}:
+                raise GuardViolation("Instantly account.update_limit may change only the daily limit")
         elif a == "blocklist.add":
             if not op.detail.get("entries"):
                 raise GuardViolation("blocklist.add needs entries")
@@ -357,13 +363,13 @@ class Guard:
             raise GuardViolation(f"sheet {op.target!r} is not the settings sheet")
         return self._live_only(op)
 
-    def _check_bq(self, op: Op) -> bool:
+    def _check_db(self, op: Op) -> bool:
         if not op.write:
             return True
         dataset = op.target.split(".")[-2] if op.target.count(".") >= 1 else ""
-        if dataset != self.bounds.bq_dataset:
-            raise GuardViolation(f"BigQuery writes go only to dataset {self.bounds.bq_dataset} (SPEC 1.2), not {op.target!r}")
-        return True  # dry-run still writes to BigQuery (SPEC 0.3)
+        if dataset != self.bounds.db_schema:
+            raise GuardViolation(f"Database writes go only to schema {self.bounds.db_schema} (SPEC 1.2), not {op.target!r}")
+        return True  # dry-run still writes to the database (SPEC 0.3)
 
     def _check_claude(self, op: Op) -> bool:
         if op.write or op.action != "messages.create":
@@ -383,5 +389,5 @@ class Guard:
 
     def _check_secrets(self, op: Op) -> bool:
         if op.write or op.action != "access":
-            raise GuardViolation("Secret Manager is read only from the jobs")
+            raise GuardViolation("secrets are read only from the jobs")
         return True

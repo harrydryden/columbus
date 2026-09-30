@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from functools import cached_property
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Boundaries, Guard
 from us_outbound.clients.http import Transport
 from us_outbound.settings.model import Settings
@@ -22,22 +23,37 @@ from us_outbound.settings.model import Settings
 UK = ZoneInfo("Europe/London")
 ET = ZoneInfo("America/New_York")
 
-# Secret Manager secret names (SPEC 13, Secrets).
+# The environment variable that holds each key (SPEC 13, Secrets). On Railway these are
+# sealed service variables (docs/railway-setup.md); they never go in the repo, logs or database.
 SECRET_NAMES = {
-    "apollo": "us-outbound-apollo-api-key",
-    "clay": "us-outbound-clay-api-key",
-    "instantly": "us-outbound-instantly-api-key",
-    "hubspot": "us-outbound-hubspot-token",
-    "slack": "us-outbound-slack-bot-token",
-    "claude": "us-outbound-claude-api-key",
+    "apollo": "US_OUTBOUND_APOLLO_API_KEY",
+    "clay": "US_OUTBOUND_CLAY_API_KEY",
+    "instantly": "US_OUTBOUND_INSTANTLY_API_KEY",
+    "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
+    "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",
+    "claude": "US_OUTBOUND_CLAUDE_API_KEY",
 }
 
 
-class Secrets:
-    """Reads keys from Google Secret Manager. Keys never go to the repo, logs or BigQuery."""
+class ConfigError(Exception):
+    """The environment is missing something the jobs need."""
 
-    def __init__(self, guard: Guard, project: str, fetch: Callable[[str], str] | None = None):
-        self.guard, self.project, self._fetch = guard, project, fetch
+
+class Secrets:
+    """Reads keys from environment variables (SPEC 1.7; Railway sealed variables, not Secret Manager).
+
+    env defaults to os.environ, read when a key is first needed; fetch(name) replaces it in
+    tests and receives the variable name. Values are stripped and cached; an error names
+    the variable, never a value.
+    """
+
+    def __init__(
+        self,
+        guard: Guard,
+        env: Mapping[str, str] | None = None,
+        fetch: Callable[[str], str] | None = None,
+    ):
+        self.guard, self._env, self._fetch = guard, env, fetch
         self._cache: dict[str, str] = {}
 
     def get(self, system: str) -> str:
@@ -46,15 +62,15 @@ class Secrets:
         name = SECRET_NAMES[system]
         if name not in self._cache:
             self.guard.authorize("secrets", Op("access", target=name))
-            self._cache[name] = (self._fetch or self._secret_manager)(name)
+            if self._fetch is not None:
+                value = self._fetch(name)
+            else:
+                value = (os.environ if self._env is None else self._env).get(name)
+            value = (value or "").strip()
+            if not value:
+                raise ConfigError(f"set {name} (a sealed variable on the Railway service; docs/railway-setup.md)")
+            self._cache[name] = value
         return self._cache[name]
-
-    def _secret_manager(self, name: str) -> str:
-        from google.cloud import secretmanager
-
-        client = secretmanager.SecretManagerServiceClient()
-        path = f"projects/{self.project}/secrets/{name}/versions/latest"
-        return client.access_secret_version(name=path).payload.data.decode().strip()
 
 
 def boundaries_for(settings: Settings, settings_sheet_id: str = "") -> Boundaries:
@@ -117,9 +133,15 @@ class Clients:
 
     @cached_property
     def slack(self):
-        from us_outbound.clients.slack import Slack
+        from us_outbound.clients.slack import Slack, SlackOff
 
-        return Slack(self.guard, self.transport, self.secrets.get("slack"))
+        try:
+            token = self.secrets.get("slack")
+        except ConfigError:
+            if self.guard.live:
+                raise
+            return SlackOff()  # dry-run without a token: posts go to the log
+        return Slack(self.guard, self.transport, token)
 
     @cached_property
     def sheets(self):

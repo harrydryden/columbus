@@ -52,12 +52,14 @@ def test_general_spec_values(tabs, settings):
     assert raw["approver_slack_ids"] == raw["postal_address"] == raw["privacy_url"] == ""
     assert raw["claude_model"] == "claude-haiku-4-5"
     notes = {r["key"]: r["note"] for r in tabs["General"]}
-    assert "quarter of the Clay pool" in notes["clay_monthly_credits"]
+    assert "calendar month" in notes["clay_monthly_credits"] and "0 means no Clay calls" in notes["clay_monthly_credits"]
+    assert "Monday to Sunday" in notes["weekly_enrol_cap"] and "calendar month" in notes["apollo_monthly_credits"]
     g = settings.general
     assert g.live_sending is False
     assert g.send_window == SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
-    assert (g.daily_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (30, 0.15, 50, 20)
-    assert (g.apollo_monthly_credits, g.apollo_floor, g.escalation_hours) == (1500, 5000, 24)
+    # Harry, 30 Sep 2026: a weekly enrolment target (SPEC's 30 a day is 150 a week), monthly credits.
+    assert (g.weekly_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (150, 0.15, 50, 20)
+    assert (g.apollo_monthly_credits, g.clay_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 2000.0, 5000, 24)
     assert g.claude_monthly_cap_usd == 10.0
 
 
@@ -84,7 +86,7 @@ SPEC_SIGNALS = [
 
 def test_every_spec_signal(settings):
     got = {s.signal: s for s in settings.signals}
-    assert list(got) == [row[0] for row in SPEC_SIGNALS]
+    assert list(got) == [row[0] for row in SPEC_SIGNALS] + ["Named by Harry"]  # the last is a build addition
     for name, weight, max_weight, action, angle, days in SPEC_SIGNALS:
         s = got[name]
         assert (s.weight, s.max_weight, s.action, s.suggests_angle, s.counts_for_days) == (
@@ -211,7 +213,7 @@ def test_first_test_is_planned(settings):
     assert (t.test_id, t.version_a, t.version_b, t.accounts_per_version, t.status) == (
         "t1-eap-opener", "eap-v1", "general-v1", 400, "planned",
     )
-    assert t.decision_rule.startswith("reply rate, human replies within 21 days of step 1")
+    assert t.decision_rule.startswith("reply rate, human replies within 28 days of step 1")
     assert "2×" in t.decision_rule
     assert t.start_date is None and t.read_date is None
     assert settings.running_test() is None

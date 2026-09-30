@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import anthropic
 import pytest
 
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.claude import BudgetExceeded, Claude, ClaudeError, PRICES, usage_cost_usd
 from us_outbound.clients.guard import Guard
 

@@ -164,7 +164,7 @@ def test_create_campaign_payload_and_left_paused():
     assert sched["timing"] == {"from": "09:00", "to": "16:00"}
     assert sched["days"] == {"0": False, "1": True, "2": True, "3": True, "4": True, "5": True, "6": False}
     [seq] = body["sequences"]
-    assert [s["delay"] for s in seq["steps"]] == [3, 5, 7, 0]
+    assert [s["delay"] for s in seq["steps"]] == [7, 7, 7, 0]
     assert all(s["type"] == "email" and s["delay_unit"] == "days" and len(s["variants"]) == 1 for s in seq["steps"])
     assert seq["steps"][0]["variants"][0] == {"subject": "{{s1_subject}}", "body": "{{s1_body}}"}
     assert not any("/activate" in u for u in urls(t))
@@ -420,7 +420,7 @@ def test_step_analytics_always_filtered_by_campaign():
 
 
 def test_schedule_days_and_step_delays():
-    assert step_delays() == [3, 5, 7, 0]
+    assert step_delays() == [7, 7, 7, 0]
     weekend = instantly_schedule(SendWindow((5, 6), time(10), time(12), "America/Chicago"))["schedules"][0]
     assert {k for k, v in weekend["days"].items() if v} == {"6", "0"}  # Saturday, Sunday
     assert weekend["timezone"] == "America/Chicago"

@@ -209,7 +209,7 @@ def test_several_errors_on_one_row_are_all_reported(tabs):
 
 def test_general_unknown_and_duplicate_keys(tabs):
     tabs["General"].append({"key": "live_sendng", "value": "no", "note": ""})
-    tabs["General"].append({"key": "daily_enrol_cap", "value": "20", "note": ""})
+    tabs["General"].append({"key": "weekly_enrol_cap", "value": "20", "note": ""})
     errs = _errors(tabs, "General")
     by_row = {e.row: e for e in errs}
     n = len(tabs["General"]) + 1
@@ -218,9 +218,19 @@ def test_general_unknown_and_duplicate_keys(tabs):
     assert all(e.column == "key" for e in errs)
 
 
+def test_renamed_keys_say_what_replaced_them(tabs):
+    for old, new, why in (("daily_enrol_cap", "weekly_enrol_cap", "Monday to Sunday"),
+                          ("clay_weekly_credits", "clay_monthly_credits", "monthly, like Clay's own"),
+                          ("apollo_weekly_credits", "apollo_monthly_credits", "monthly, like Apollo's own")):
+        t = copy.deepcopy(BASE)
+        t["General"].append({"key": old, "value": "30", "note": ""})
+        e = _one(t, "General", "key")
+        assert f"'{old}' is now '{new}'" in e.message and why in e.message
+
+
 def test_general_types(tabs):
     for key, value, fragment in [
-        ("daily_enrol_cap", "thirty", "whole number"),
+        ("weekly_enrol_cap", "thirty", "whole number"),
         ("control_share", "15%", "number"),
         ("control_share", "1.5", "between 0 and 1"),
         ("live_sending", "maybe", "yes or no"),
@@ -465,9 +475,9 @@ def test_missing_and_empty_tabs(tabs):
 
 def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
-    assert not errors and general.daily_enrol_cap == 30
+    assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
-    assert not errors and len(signals) == 16
+    assert not errors and len(signals) == 17
     bad = [dict(BASE["States"][0], active="sometimes")]
     states, errors = validate_tab("States", bad)
     assert states == () and errors == [RowError("States", 2, "active", "must be yes or no, not 'sometimes'", "AL")]

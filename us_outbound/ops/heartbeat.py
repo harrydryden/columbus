@@ -29,7 +29,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import clip, log, redact
@@ -37,7 +37,7 @@ from us_outbound.logs import clip, log, redact
 TABLE = "heartbeats"
 RUNNING, OK, ERROR, SKIPPED = "running", "ok", "error", "skipped"
 ERROR_LIMIT = 1000  # characters of error text kept on the row
-OVERLAP_MINUTES = 60  # a "running" row younger than this blocks a second run (Cloud Run task timeouts are <= 60 min)
+OVERLAP_MINUTES = 60  # a "running" row younger than this blocks a second run (scheduler timeouts are <= 60 min)
 OVERLAP_REASON = "previous run still going"  # a skip behind a running (or dead) run: no sign of life
 NEW_MISS_WINDOW = 75  # minutes: a job overdue by less than this at an hourly check is "newly missed"
 REMINDER_HOUR_UK = 9  # the daily repeat of the missed list, beside the daily post
@@ -71,7 +71,7 @@ OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 
 LATEST_SQL = (
     "SELECT job, run_id, status, started_at, finished_at, error, last_ok_at, last_alive_at, runs"
-    " FROM `{dataset}.v_heartbeats`"
+    " FROM {schema}.v_heartbeats"
 )
 
 
@@ -184,7 +184,7 @@ def _latest_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict]:
 def latest_runs(store: Store) -> dict[str, dict]:
     """job -> its latest heartbeat plus last_ok_at, from the v_heartbeats view."""
     try:
-        rows = store.query(LATEST_SQL.format(dataset=store.dataset))
+        rows = store.query(LATEST_SQL.format(schema=store.schema))
     except NotImplementedError:  # MemoryStore without a view handler
         rows = _latest_from_rows(store.select(TABLE))
     return {r["job"]: dict(r) for r in rows if r.get("job")}
@@ -234,13 +234,11 @@ def overdue_minutes(job: str, run: Mapping[str, Any] | None, now: datetime) -> f
 
 
 def scheduled_jobs() -> list[str]:
-    """The built jobs that deploy/jobs.yaml schedules (a job only run by hand is never expected)."""
-    from us_outbound.ops.cli import built_jobs, read_jobs_file
+    """The built jobs that ops/schedule.py runs (a job only run by hand is never expected)."""
+    from us_outbound.ops.cli import built_jobs
+    from us_outbound.ops.schedule import enabled_names
 
-    try:
-        enabled = {j["name"] for j in read_jobs_file() if not j.get("disabled") and j.get("schedule")}
-    except FileNotFoundError:
-        enabled = set(EXPECTED)
+    enabled = set(enabled_names())
     return [j for j in built_jobs() if j in EXPECTED and j in enabled]
 
 
@@ -285,7 +283,7 @@ def check_heartbeats(ctx: Context, jobs: Iterable[str] | None = None) -> list[st
     if new or reminder:
         lines = ["Missed heartbeats: these US Outbound jobs have not run when they should have."]
         lines += [_describe(j, runs[j], now) for j in missed]
-        lines.append("Check the job's logs in Cloud Run, or run `us-outbound status`.")
+        lines.append("Check the worker's logs in Railway, or run `us-outbound status`.")
         ctx.clients.slack.post(ctx.settings.general.alert_channel, "\n".join(lines))
     log("heartbeat_check", missed=missed, newly_missed=new, alerted=bool(new or reminder))
     return missed

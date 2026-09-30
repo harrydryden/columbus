@@ -2,12 +2,12 @@
 
   * "One test record flows end to end in dry-run": settings_sync -> an account and its facts
     -> score -> a contact -> enrol, every job run by the CLI (`us-outbound dry-run <job>`)
-    with bootstrap.build_context and ops.heartbeat.run_job, as Cloud Run runs them.
+    with bootstrap.build_context and ops.heartbeat.run_job, as the Railway scheduler runs them.
   * "Changing a weight in the sheet changes a test account's score after the next sync."
   * "A bad row in the sheet is rejected, with a Slack message."
 
 Only the outside world is faked: the Sheets, Slack, HubSpot and Instantly APIs answer on a
-FakeTransport, and BigQuery is a MemoryStore. The Sheets API serves default_tabs() with the
+FakeTransport, and the Postgres database is a MemoryStore. The Sheets API serves default_tabs() with the
 phase-0 fills (ids, postal address, privacy link, approved copy, Active mailboxes).
 
 The flow runs on Tue 29 Sep 2026: outside Q4, so the test account's raw score (100) is not
@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from tests.fakes import FakeTransport
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.context import Secrets
 from us_outbound.enrol import copy_rules
@@ -40,7 +40,8 @@ from us_outbound.settings.validate import validate_all
 
 NOW = datetime(2026, 9, 29, 11, 0, tzinfo=UTC)  # 12:00 UK, 07:00 ET: enrol's slot (SPEC 9)
 SHEET_ID = "sheet-e2e"
-ENV = {"US_OUTBOUND_PROJECT": "test-project", "US_OUTBOUND_SETTINGS_SHEET_ID": SHEET_ID}
+# What the Railway service has (docs/railway-setup.md); the store and credentials are injected below.
+ENV = {"DATABASE_URL": "postgresql://us_outbound@db.test:5432/railway", "US_OUTBOUND_SETTINGS_SHEET_ID": SHEET_ID}
 CREDS = SimpleNamespace(valid=True, token="test-token")  # google-auth credentials stand-in
 
 HUBSPOT, INSTANTLY, SLACK = "https://api.hubapi.com", "https://api.instantly.ai", "https://slack.com/api/"
@@ -175,7 +176,7 @@ class World:
             t.route("POST", f"/crm/v3/objects/{obj}/search", {"results": []})
 
     def __call__(self, job: str, live_flag: bool, operator: bool = False):
-        secrets = Secrets(Guard(), ENV["US_OUTBOUND_PROJECT"], fetch=lambda name: f"test-{name}")
+        secrets = Secrets(Guard(), fetch=lambda name: f"test-{name}")
         ctx = bootstrap.build_context(job, live_flag, operator=operator, env=ENV, store=self.store,
                                       transport=self.transport, secrets=secrets, google_credentials=CREDS)
         secrets.guard = ctx.guard
@@ -248,7 +249,7 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     s = flow["sync1"]
     detail = s["heartbeat"]["detail"]
     assert detail["rejected"] == [] and detail["unusable"] == [] and detail["alerted"] is False
-    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides"}
+    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides", "Focus", "Named accounts"}  # empty tabs
     assert [r for r in s["requests"] if r.method != "GET"] == []
     settings, errors = load_current(flow["world"].store)
     assert settings is not None and not any(errors.values())
@@ -298,7 +299,7 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
     assert refused and all(c.action == "lead.add" and c.target == campaign and not c.sent for c in refused)
 
 
-def test_enrol_in_dry_run_writes_nothing_outside_bigquery(flow):
+def test_enrol_in_dry_run_writes_nothing_outside_the_database(flow):
     e = flow["enrol"]
     reqs = e["requests"]
     assert [r for r in reqs if r.url.startswith(INSTANTLY) and r.method != "GET"] == []
@@ -329,7 +330,7 @@ def test_every_job_left_a_heartbeat(flow):
 
 def test_changing_a_weight_changes_the_score_after_the_next_sync(flow):
     detail = flow["sync2"]["heartbeat"]["detail"]
-    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 15}
+    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 16}
     assert detail["rescored"] is True
     before, after = flow["scored"], flow["reweighted"]
     assert before["score"] - after["score"] == 25

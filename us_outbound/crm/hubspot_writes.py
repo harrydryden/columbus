@@ -57,7 +57,7 @@ PROPERTY_SPECS: tuple[tuple[str, dict], ...] = (
         "companies",
         _spec(
             "us_outbound_account_id", "US Outbound account id",
-            "The account's id in the US Outbound system (BigQuery us_outbound.accounts). Set by the jobs.",
+            "The account's id in the US Outbound system (its database, us_outbound.accounts). Set by the jobs.",
             "string", "text", hasUniqueValue=True,
         ),
     ),

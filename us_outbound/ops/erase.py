@@ -1,6 +1,6 @@
-"""erase --email (SPEC 6 "Retention and erasure"): an erasure request across BigQuery, HubSpot, Instantly and Clay.
+"""erase --email (SPEC 6 "Retention and erasure"): an erasure request across the database, HubSpot, Instantly and Clay.
 
-BigQuery (in any mode; dry-run writes to BigQuery, SPEC 0.3):
+The database (in any mode; dry-run writes to the database, SPEC 0.3):
   * contacts rows with that email (by email_sha256 or email) are deleted;
   * their events keep their counts but lose reply_text; their hitl_items lose payload;
   * raw_clay_contacts rows holding the email are deleted;
@@ -23,11 +23,11 @@ from us_outbound.suppression import add as suppress
 
 ERASURE_REASON, ERASURE_SOURCE = "erasure", "erase"
 CONTACTS_SQL = (
-    "SELECT contact_id, instantly_campaign, instantly_lead_id FROM `{dataset}.contacts` "
-    "WHERE LOWER(TRIM(email)) = @email"
+    "SELECT contact_id, instantly_campaign, instantly_lead_id FROM {schema}.contacts "
+    "WHERE lower(trim(email)) = %(email)s"
 )
 RAW_CONTACTS_SQL = (
-    "SELECT `key` FROM `{dataset}.raw_clay_contacts` WHERE STRPOS(LOWER(payload), @email) > 0"
+    'SELECT "key" FROM {schema}.raw_clay_contacts WHERE strpos(lower(payload::text), %(email)s) > 0'
 )
 CLAY_STEP = (
     "Clay: in the \"US Outbound\" folder, delete every row holding the address (the tables of the "
@@ -41,7 +41,7 @@ INSTANTLY_CONFIRM = (
 
 def _raw_contact_keys(ctx: Context, email: str) -> list[str]:
     try:
-        rows = ctx.store.query(RAW_CONTACTS_SQL.format(dataset=ctx.store.dataset), {"email": email})
+        rows = ctx.store.query(RAW_CONTACTS_SQL.format(schema=ctx.store.schema), {"email": email})
     except NotImplementedError:  # MemoryStore without a handler: scan the table
         rows = [r for r in ctx.store.select("raw_clay_contacts") if email in str(r.get("payload") or "").lower()]
     return sorted({str(r["key"]) for r in rows if r.get("key") is not None})
@@ -50,13 +50,13 @@ def _raw_contact_keys(ctx: Context, email: str) -> list[str]:
 def _contacts_by_email(ctx: Context, email: str) -> list[dict]:
     """Contacts whose email matches however it was cased or spaced when stored."""
     try:
-        rows = ctx.store.query(CONTACTS_SQL.format(dataset=ctx.store.dataset), {"email": email})
+        rows = ctx.store.query(CONTACTS_SQL.format(schema=ctx.store.schema), {"email": email})
     except NotImplementedError:  # MemoryStore without a handler: scan the table
         rows = [c for c in ctx.store.select("contacts") if normalise_email(str(c.get("email") or "")) == email]
     return rows
 
 
-def _bigquery(ctx: Context, email: str, sha: str) -> dict:
+def _database(ctx: Context, email: str, sha: str) -> dict:
     store = ctx.store
     found = {c["contact_id"]: c for c in store.select("contacts", {"email_sha256": sha})}
     found.update({c["contact_id"]: c for c in _contacts_by_email(ctx, email)})
@@ -109,12 +109,12 @@ def erase(ctx: Context, email: str) -> dict:
     if "@" not in e:
         raise ValueError("erase needs an email address")
     sha = hash_email(e)
-    bq = _bigquery(ctx, e, sha)
-    known = bq.pop("_leads")
+    db = _database(ctx, e, sha)
+    known = db.pop("_leads")
     report: dict[str, Any] = {
         "email_sha256": sha,
         "dry_run": ctx.dry_run,
-        "bigquery": bq,
+        "database": db,
         "hubspot": _hubspot(ctx, e),
         "instantly": _instantly(ctx, e, known),
         "clay": {"deleted": False, "manual": True},

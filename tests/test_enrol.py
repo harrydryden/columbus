@@ -137,9 +137,12 @@ def test_live_posts_leads_only_to_us_outbound_campaigns_with_custom_variables():
     assert posts and all(r.url == f"{INSTANTLY}/leads/add" for r in posts)
     assert all(c.target.startswith("US Outbound – ") for c in ctx.guard.writes("instantly"))
     by_campaign = {r.json["campaign_id"]: r.json["leads"] for r in posts}
-    assert set(by_campaign) == {"c-harry", "c-hannah"}
+    assert set(by_campaign) == {"c-harry", "c-hannah", "c-sam"}
     emails = {CAMPAIGN_OWNER[cid]: sorted(lead["email"] for lead in leads) for cid, leads in by_campaign.items()}
-    assert emails == {"Harry Dryden": ["jane@acmecreative.com", "lee@loopstudio.com"], "Hannah Spalding": ["omar@brightfin.com"]}
+    # New accounts fill owners in proportion to capacity: Harry first (the most free slots),
+    # then Sam, whose share is fuller than Harry's after one; Omar's account keeps Hannah.
+    assert emails == {"Harry Dryden": ["jane@acmecreative.com"], "Sam Jackson": ["lee@loopstudio.com"],
+                      "Hannah Spalding": ["omar@brightfin.com"]}
     for leads in by_campaign.values():
         for lead in leads:
             cv = lead["custom_variables"]
@@ -198,7 +201,7 @@ def test_instantly_api_error_is_recorded_and_marks_nothing():
     ctx, _ = make(live=True, transport=t)
     t.route("POST", "/leads/add", {"error": "server"}, status=500)
     out = enrol.run(ctx)
-    assert out["enrolled"] == 0 and len(out["errors"]) == 2
+    assert out["enrolled"] == 0 and len(out["errors"]) == 3  # one per sender's campaign
     assert {a["status"] for a in ctx.store.select("accounts")} == {"verified"}
 
 
@@ -208,6 +211,7 @@ def test_missing_campaign_is_an_error_not_a_crash():
     t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding"}]})
     out = enrol.run(ctx)
     assert out["enrolled"] == 1 and any("US Outbound – Harry Dryden" in e for e in out["errors"])
+    assert any("US Outbound – Sam Jackson" in e for e in out["errors"])
     assert ctx.store.get("accounts", account_id="acc-1")["status"] == "verified"
 
 
@@ -319,34 +323,49 @@ def test_accounts_pulled_at_the_hand_check_are_not_enrolled():
 # -- the daily number -------------------------------------------------------------------------------
 
 
-def test_daily_cap_limits_the_day():
-    ctx, _ = make(settings=make_settings(daily_enrol_cap=1))
+def test_the_weekly_target_limits_the_day():
+    # Tuesday: four send days left (Tue–Fri), so a weekly target of 4 gives 1 today.
+    ctx, _ = make(settings=make_settings(weekly_enrol_cap=4))
     out = enrol.run(ctx)
     assert out["number"] == 1 and out["prepared"] == 1
-    assert out["number_terms"]["binding"] == "daily_enrol_cap"
+    assert out["number_terms"]["binding"] == "weekly_target"
+    assert out["limited_by"].startswith("Today: 1, limited by the weekly target")
+    assert "0 of 4 enrolled this week" in out["limits"][0] and "4 send days left" in out["limits"][0]
 
 
-def test_clay_spend_this_month_limits_the_day():
+def test_accounts_enrolled_earlier_this_week_count_against_the_target():
+    ctx, _ = make(settings=make_settings(weekly_enrol_cap=6))
+    monday = NOW - timedelta(days=1)
+    ctx.store.insert("accounts", [account(account_id=f"old-{i}", domain=f"old{i}.com", status="enrolled", sender="Sam Jackson")
+                                  for i in range(2)])
+    ctx.store.insert("contacts", [
+        contact(contact_id=f"old-c{i}", account_id=f"old-{i}", email=f"a@old{i}.com", enrolment_month="2026-10",
+                instantly_campaign="US Outbound – Sam Jackson", instantly_lead_id=f"l{i}", enrolled_at=monday)
+        for i in range(2)
+    ] + [  # last week's leads do not count
+        contact(contact_id="prev", account_id="old-0", email="b@old0.com", enrolment_month="2026-10",
+                instantly_campaign="US Outbound – Sam Jackson", instantly_lead_id="lp", enrolled_at=NOW - timedelta(days=8)),
+    ])
+    out = enrol.run(ctx)
+    assert out["number_terms"]["enrolled_this_week"] == 2
+    assert out["number"] == 1 and out["prepared"] == 1  # (6 − 2) ÷ 4 send days left
+
+
+def test_budgets_never_hold_back_accounts_already_verified():
+    """Clay and Apollo are spent before enrollment, so a spent week limits the queue, not the day."""
     ctx, _ = make()
     ctx.store.insert("credit_ledger", [
-        {"entry_id": "e1", "system": "clay", "credits": 1990.0, "occurred_at": NOW - timedelta(days=2)},
-        {"entry_id": "e2", "system": "clay", "credits": 5000.0, "occurred_at": datetime(2026, 9, 30, tzinfo=UTC)},
+        {"entry_id": "e1", "system": "clay", "credits": 2100.0, "occurred_at": NOW - timedelta(days=1)},
+        {"entry_id": "e2", "system": "clay", "credits": 5000.0, "occurred_at": datetime(2026, 9, 20, tzinfo=UTC)},  # September
+        {"entry_id": "e3", "system": "apollo", "credits": 120.0, "occurred_at": NOW - timedelta(hours=2)},
     ])
     out = enrol.run(ctx)
-    assert out["number"] == 0 and out["prepared"] == 0
-    assert out["number_terms"]["binding"] == "clay_budget" and out["number_terms"]["clay_remaining"] == 10.0
-
-
-def test_earlier_live_runs_today_count_against_the_number():
-    ctx, _ = make(settings=make_settings(daily_enrol_cap=3))
-    ctx.store.insert("heartbeats", [
-        {"run_id": "h1", "job": "enrol", "status": "ok", "dry_run": False, "started_at": NOW - timedelta(hours=1),
-         "detail": {"enrolled": 2, "by_owner": {"Harry Dryden": 2}}},
-        {"run_id": "h2", "job": "enrol", "status": "ok", "dry_run": True, "started_at": NOW - timedelta(hours=1),
-         "detail": {"enrolled": 0, "by_owner": {"Harry Dryden": 3}}},
-    ])
-    out = enrol.run(ctx)
-    assert out["already_enrolled_today"] == 2 and out["number"] == 1 and out["prepared"] == 1
+    assert out["prepared"] == 3 and out["number_terms"]["binding"] == "ready_accounts"
+    clay = out["number_terms"]["budgets"]["clay"]
+    assert (clay["budget"], clay["used"], clay["remaining"]) == (2000.0, 2100.0, -100.0)
+    assert any(line.startswith("Clay: 2,100 of 2,000 credits used this month (105%)") and line.endswith("none left this month.")
+               for line in out["limits"])
+    assert any(line.startswith("Apollo: 120 of 2,000 credits used this month (6%)") for line in out["limits"])
 
 
 def queue_of(tiers: dict[str, int], **settings) -> tuple:
@@ -371,21 +390,22 @@ def tiers_of(posted: list[dict]) -> list[str]:
 
 
 def test_control_share_and_queue_order():
-    ctx, posted = queue_of({"Priority": 30, "Control": 10})
+    ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120)  # 30 today
     out = enrol.run(ctx)
     assert out["number"] == 30 and out["prepared"] == 30
-    assert out["by_owner"] == {"Harry Dryden": 15, "Hannah Spalding": 8, "Sam Jackson": 7}
+    # In proportion to each owner's pace (cap ÷ 4, rounded up): Harry 15, Hannah 8, Sam 8.
+    assert out["by_owner"] == {"Harry Dryden": 14, "Hannah Spalding": 8, "Sam Jackson": 8}
     assert tiers_of(posted).count("Control") == 5  # 15% of 30, rounded half up
 
 
 def test_a_short_control_tier_is_filled_from_standard():
-    ctx, posted = queue_of({"Control": 1, "Standard": 40})
+    ctx, posted = queue_of({"Control": 1, "Standard": 40}, weekly_enrol_cap=120)
     assert enrol.run(ctx)["prepared"] == 30
     assert tiers_of(posted).count("Control") == 1 and len(posted) == 30
 
 
 def test_short_priority_and_standard_are_filled_from_control():
-    ctx, posted = queue_of({"Control": 10, "Priority": 2}, daily_enrol_cap=3)
+    ctx, posted = queue_of({"Control": 10, "Priority": 2}, weekly_enrol_cap=12)  # 12 ÷ 4 send days left
     assert enrol.run(ctx)["prepared"] == 3  # 15% of 3 rounds to no Control, but only 2 others wait
     assert sorted(tiers_of(posted)) == ["Control", "Priority", "Priority"]
 

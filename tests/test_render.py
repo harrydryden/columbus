@@ -87,14 +87,15 @@ FIRST_TEST = ABTest("t1-eap-opener", "EAP opener beats General", "eap-v1", "gene
 BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2026, 12, 18), date(2027, 1, 4)))
 
 
-def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), **general) -> Settings:
+def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(), named_accounts=(), **general) -> Settings:
     g = General(
         postal_address=POSTAL, privacy_url=PRIVACY, hubspot_owner_id="owner-harry",
         clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
     )
     return Settings(
         general=dataclasses.replace(g, **general), angles=ANGLES, industries=INDUSTRIES, copy=tuple(copy),
-        mailboxes=tuple(mailboxes), tests=tuple(tests), overrides=tuple(overrides),
+        mailboxes=tuple(mailboxes), tests=tuple(tests), overrides=tuple(overrides), focus=tuple(focus),
+        named_accounts=tuple(named_accounts),
     )
 
 

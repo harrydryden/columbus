@@ -28,6 +28,7 @@ from us_outbound.settings.model import (
     ACTIONS,
     COPY_STATUSES,
     MAILBOX_STATUSES,
+    OPTIONAL_TABS,
     SOURCE_FIELDS,
     SOURCE_KEYS,
     TABS,
@@ -36,9 +37,11 @@ from us_outbound.settings.model import (
     Angle,
     CopyRow,
     DateRange,
+    Focus,
     General,
     Industry,
     Mailbox,
+    NamedAccount,
     Override,
     Role,
     SendWindow,
@@ -51,7 +54,7 @@ from us_outbound.settings.model import (
 HEADER_ROW = 1
 FIRST_DATA_ROW = 2
 OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
-MAY_BE_EMPTY = frozenset({"Overrides", "Tests"})  # an empty tab anywhere else is almost surely a mistake
+MAY_BE_EMPTY = frozenset({"Overrides", "Tests", *OPTIONAL_TABS})  # an empty tab anywhere else is almost surely a mistake
 NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
 CLAUDE_CAP_USD = 10.0  # SPEC 1.1
@@ -75,6 +78,8 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     "Mailboxes": ("address",),
     "Overrides": ("domain", "field"),
     "Tests": ("test_id",),
+    "Focus": ("industry_group",),
+    "Named accounts": ("domain",),
 }
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
@@ -352,6 +357,8 @@ class _Row:
 def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[RowError]) -> list[_Row] | None:
     """Tab-level checks; None when the tab cannot be read row by row."""
     if rows is None:
+        if tab in OPTIONAL_TABS:
+            return []  # not added to the sheet yet: the same as an empty tab
         errors.append(RowError(tab, HEADER_ROW, "", f"the sheet has no {tab} tab"))
         return None
     rows = list(rows)
@@ -381,6 +388,13 @@ def _unique(r: _Row, col: str, value: Any, seen: dict[Any, int], what: str = "")
 # -- General -----------------------------------------------------------------------
 
 _GENERAL_TYPES: dict[str, Any] = typing.get_type_hints(General)
+# Keys that were renamed, and why (Harry, 30 Sep 2026): the enrolment target is weekly,
+# the credit budgets monthly, like Apollo's and Clay's own.
+RENAMED_GENERAL = {
+    "daily_enrol_cap": ("weekly_enrol_cap", "the enrolment target is weekly, Monday to Sunday, UK time"),
+    "clay_weekly_credits": ("clay_monthly_credits", "credit budgets are monthly, like Clay's own"),
+    "apollo_weekly_credits": ("apollo_monthly_credits", "credit budgets are monthly, like Apollo's own"),
+}
 
 
 def _converter(hint: Any) -> Callable[[str], Any]:
@@ -443,6 +457,10 @@ def _general(rows: list[_Row]) -> General:
             if r.text("value"):
                 r.fail("key", "is required")
             continue  # a note-only row
+        if key in RENAMED_GENERAL:
+            new, why = RENAMED_GENERAL[key]
+            r.fail("key", f"{key!r} is now {new!r}: {why}")
+            continue
         if key not in _GENERAL_TYPES:
             r.fail("key", f"unknown key {key!r}{_hint(key, _GENERAL_TYPES)}")
             continue
@@ -775,6 +793,52 @@ def _overrides(rows: list[_Row]) -> list[tuple[Override, int]]:
     return out
 
 
+def parse_share(text: str) -> float:
+    """"60%" or "0.6" -> 0.6. A bare number above 1 is refused: write it with a % sign."""
+    t = text.strip()
+    try:
+        value = float(t[:-1].strip()) / 100 if t.endswith("%") else float(t)
+    except ValueError:
+        raise ValueError(f"must be a share like 60% or 0.6, not {text!r}") from None
+    if not 0 <= value <= 1:
+        raise ValueError(f"must be between 0% and 100%, not {text!r} (write 60% or 0.6)")
+    return value
+
+
+def _focus(rows: list[_Row]) -> list[tuple[Focus, int]]:
+    out: list[tuple[Focus, int]] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        group = r.parse("industry_group", str)
+        _unique(r, "industry_group", group.casefold() if group else None, seen, f"industry group {group!r}")
+        share = r.parse("share", parse_share)
+        if r.ok:
+            out.append((Focus(group, share, r.text("note")), r.number))
+    total = sum(f.share for f, _ in out)
+    if out and total > 1 + 1e-9:
+        last = next(r for r in reversed(rows) if r.number == out[-1][1])
+        last.fail("share", f"the shares add up to {total:.0%}; together they may not pass 100%")
+        return []
+    return out
+
+
+def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
+    from us_outbound.clean.domains import is_personal_domain
+
+    out: list[tuple[NamedAccount, int]] = []
+    seen: dict[str, int] = {}
+    for r in rows:
+        domain = r.parse("domain", _override_domain)
+        if domain and is_personal_domain(domain):
+            r.fail("domain", f"{domain} is a personal email domain, not a company")
+        elif domain == SPILL_DOMAIN:
+            r.fail("domain", "spill.chat is Spill")
+        _unique(r, "domain", domain, seen, domain or "")
+        if r.ok:
+            out.append((NamedAccount(domain, r.text("name"), r.text("note")), r.number))
+    return out
+
+
 def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
@@ -818,6 +882,8 @@ _VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
     "Mailboxes": _mailboxes,
     "Overrides": _overrides,
     "Tests": _tests,
+    "Focus": _focus,
+    "Named accounts": _named_accounts,
 }
 
 
@@ -901,6 +967,24 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
                         "Tests", row, col, f"a running test needs {version} approved for steps {', '.join(missing)}", t.test_id,
                     ))
 
+    # A Focus row names an industry group on the Industries tab that has an active industry.
+    groups = _names(raw["Industries"], "industry_group")
+    active_groups = {i.industry_group.casefold() for i, _ in values["Industries"] if i.active}
+    focus_rows = []
+    for f, row in values["Focus"]:
+        canonical = groups.get(f.industry_group.casefold())
+        if canonical is None:
+            errors["Focus"].append(RowError("Focus", row, "industry_group",
+                                            f"{f.industry_group!r} is not an industry_group on the Industries tab"
+                                            f"{_hint(f.industry_group, groups.values())}", f.industry_group))
+            continue
+        if canonical.casefold() not in active_groups:
+            errors["Focus"].append(RowError("Focus", row, "industry_group",
+                                            f"{canonical!r} has no active industry on the Industries tab", f.industry_group))
+            continue
+        focus_rows.append((dataclasses.replace(f, industry_group=canonical), row))
+    values["Focus"] = focus_rows
+
     if any(errors.values()):
         return None, errors
     settings = Settings(
@@ -910,7 +994,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             for field, tab in (
                 ("signals", "Signals"), ("angles", "Angles"), ("industries", "Industries"), ("states", "States"),
                 ("roles", "Roles"), ("copy", "Copy"), ("mailboxes", "Mailboxes"), ("overrides", "Overrides"),
-                ("tests", "Tests"),
+                ("tests", "Tests"), ("focus", "Focus"), ("named_accounts", "Named accounts"),
             )
         },
     )

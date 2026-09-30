@@ -1,11 +1,10 @@
-"""Daily enrollment number, working days, selection order, test versions and senders (SPEC 9)."""
+"""Today's number, selection order, test versions and senders (SPEC 9; weekly targets, Harry 30 Sep 2026)."""
 
 from __future__ import annotations
 
 import dataclasses
 import random
 import uuid
-from datetime import date
 
 from us_outbound.enrol import queue
 from tests.test_render import HANNAH, HARRY_M, HARRY_T, SAM, make_settings
@@ -14,75 +13,33 @@ S = make_settings()
 
 
 def number(**kw):
-    args = dict(
-        active_mailbox_caps=[30, 30, 30, 30], clay_remaining=100_000.0, clay_per_account=5.0,
-        apollo_remaining=1500.0, apollo_per_account=1.0, working_days_left=20, verified_queue_size=500,
-    )
+    args = dict(weekly_target=30, sending_capacity=30, ready_accounts=500)
     args.update(kw)
-    return queue.daily_number(S, **args)
+    return queue.daily_number(**args)
 
 
 # -- daily number --------------------------------------------------------------------------
 
 
-def test_four_mailboxes_at_30_give_30_a_day():
+def test_the_smallest_term_is_the_number():
     n, why = number()
-    assert n == 30
-    assert why["mailbox_capacity"] == 30 and why["daily_enrol_cap"] == 30
-    assert why["clay_budget"] == 1000 and why["apollo_budget"] == 75
+    assert n == 30 and why["binding"] == "weekly_target"  # ties go to the first term
+    assert (why["weekly_target"], why["sending_capacity"], why["ready_accounts"]) == (30, 30, 500)
 
 
-def test_clay_budget_binds():
-    n, why = number(clay_remaining=2000.0, clay_per_account=5.0, working_days_left=20)
-    assert n == 20 and why["binding"] == "clay_budget"
+def test_sending_capacity_binds():
+    n, why = number(sending_capacity=12)
+    assert n == 12 and why["binding"] == "sending_capacity"
 
 
-def test_apollo_budget_binds_with_floor_division():
-    n, why = number(apollo_remaining=299.0, apollo_per_account=1.0, working_days_left=20)
-    assert n == 14 and why["binding"] == "apollo_budget"
-
-
-def test_verified_queue_binds():
-    n, why = number(verified_queue_size=7)
-    assert n == 7 and why["binding"] == "verified_queue"
-
-
-def test_unknown_credits_per_account_is_left_out_and_recorded():
-    n, why = number(clay_remaining=0.0, clay_per_account=0.0)
-    assert n == 30 and why["clay_budget"] is None
-    assert why["left_out"] == ["clay_budget: credits per account unknown"]
+def test_ready_accounts_bind():
+    n, why = number(ready_accounts=7)
+    assert n == 7 and why["binding"] == "ready_accounts"
 
 
 def test_never_negative():
-    n, _ = number(clay_remaining=-500.0)
+    n, _ = number(sending_capacity=-3)
     assert n == 0
-    n, _ = number(active_mailbox_caps=[])
-    assert n == 0
-    n, _ = number(working_days_left=0)
-    assert n == 0
-
-
-def test_capacity_counts_only_the_caps_given():
-    n, why = number(active_mailbox_caps=[30, 30])
-    assert n == 15 and why["binding"] == "mailbox_capacity"
-
-
-# -- calendar -------------------------------------------------------------------------------
-
-
-def test_working_days_exclude_weekends_and_the_thanksgiving_blackout():
-    assert queue.working_days_left(date(2026, 11, 2), S) == 16  # 21 weekdays less 23–27 Nov
-    no_blackout = make_settings(blackout_dates=())
-    assert queue.working_days_left(date(2026, 11, 2), no_blackout) == 21
-    assert queue.working_days_left(date(2026, 11, 30), S) == 1  # the last day counts
-    assert queue.working_days_left(date(2026, 11, 28), S) == 1  # Saturday: only Monday 30th is left
-    assert queue.working_days_left(date(2026, 12, 1), S) == 13  # 1–17 Dec, then the holiday blackout
-
-
-def test_is_blackout():
-    assert queue.is_blackout(date(2026, 11, 23), S) and queue.is_blackout(date(2026, 11, 27), S)
-    assert not queue.is_blackout(date(2026, 11, 28), S) and not queue.is_blackout(date(2026, 11, 20), S)
-    assert queue.is_blackout(date(2027, 1, 4), S)
 
 
 # -- selection ------------------------------------------------------------------------------
@@ -146,33 +103,45 @@ def test_campaign_name():
     assert queue.campaign_name("Hannah Spalding") == "US Outbound – Hannah Spalding"
 
 
-def test_new_accounts_go_to_the_most_free_capacity():
-    assert queue.free_capacity(S, {}) == {"Hannah Spalding": 7, "Harry Dryden": 15, "Sam Jackson": 7}
-    assert queue.assign_sender({"account_id": "x"}, S, {}) == "Harry Dryden"
-    assert queue.assign_sender({"account_id": "x"}, S, {"Harry Dryden": 10}) == "Hannah Spalding"  # 7 each, by name
-    assert queue.assign_sender({"account_id": "x"}, S, {"Harry Dryden": 10, "Hannah Spalding": 3}) == "Sam Jackson"
+FREE = {"Hannah Spalding": 7, "Harry Dryden": 15, "Sam Jackson": 7}
+CAPS = {"Hannah Spalding": 30, "Harry Dryden": 60, "Sam Jackson": 30}  # proportional, like each owner's pace
 
 
-def test_every_owner_full_still_assigns_the_least_loaded():
-    full = {"Harry Dryden": 15, "Hannah Spalding": 7, "Sam Jackson": 7}
-    assert queue.assign_sender({"account_id": "x"}, S, full) == "Hannah Spalding"
+def test_new_accounts_go_to_the_most_free_capacity_as_a_share():
+    assert queue.assign_sender({"account_id": "x"}, S, FREE, CAPS) == "Harry Dryden"  # 15/60 beats 7/30
+    assert queue.assign_sender({"account_id": "x"}, S, {**FREE, "Harry Dryden": 5}, CAPS) == "Hannah Spalding"  # ties by name
+    assert queue.assign_sender({"account_id": "x"}, S, {**FREE, "Harry Dryden": 5, "Hannah Spalding": 3}, CAPS) == "Sam Jackson"
+    assert queue.assign_sender({"account_id": "x"}, S, {"Harry Dryden": 20, "Sam Jackson": 11}, CAPS) == "Sam Jackson"  # 11/30 > 20/60
 
 
-def test_existing_sender_is_kept():
-    assert queue.assign_sender({"sender": "Sam Jackson"}, S, {"Sam Jackson": 50}) == "Sam Jackson"
+def test_owners_fill_in_proportion_to_their_capacity():
+    free, got = dict(CAPS), {o: 0 for o in CAPS}
+    for _ in range(40):
+        o = queue.assign_sender({"account_id": "x"}, S, free, CAPS)
+        free[o] -= 1
+        got[o] += 1
+    assert got == {"Harry Dryden": 20, "Hannah Spalding": 10, "Sam Jackson": 10}
+
+
+def test_every_owner_full_means_wait():
+    assert queue.assign_sender({"account_id": "x"}, S, {o: 0 for o in FREE}) is None
+
+
+def test_existing_sender_is_kept_while_they_have_a_free_slot():
+    assert queue.assign_sender({"sender": "Sam Jackson"}, S, {"Sam Jackson": 1}) == "Sam Jackson"
+    assert queue.assign_sender({"sender": "Sam Jackson"}, S, {"Sam Jackson": 0, "Harry Dryden": 9}) is None  # waits, never moves
 
 
 def test_paused_sender_means_wait():
     paused = make_settings(mailboxes=(HANNAH, HARRY_M, dataclasses.replace(SAM, status="Paused"), HARRY_T))
-    assert queue.assign_sender({"sender": "Sam Jackson"}, paused, {}) is None
-    assert "Sam Jackson" not in queue.free_capacity(paused, {})
-    assert queue.assign_sender({"sender": "Someone Gone"}, paused, {}) is None
+    assert queue.assign_sender({"sender": "Sam Jackson"}, paused, FREE) is None
+    assert queue.assign_sender({"account_id": "x"}, paused, {"Sam Jackson": 50, "Hannah Spalding": 1}) == "Hannah Spalding"
+    assert queue.assign_sender({"sender": "Someone Gone"}, paused, FREE) is None
 
 
 def test_harry_keeps_his_account_with_one_mailbox_paused():
     one = make_settings(mailboxes=(HANNAH, HARRY_M, SAM, dataclasses.replace(HARRY_T, status="Paused")))
-    assert queue.assign_sender({"sender": "Harry Dryden"}, one, {}) == "Harry Dryden"
-    assert queue.free_capacity(one, {})["Harry Dryden"] == 7
+    assert queue.assign_sender({"sender": "Harry Dryden"}, one, FREE) == "Harry Dryden"
 
 
 def test_no_active_mailbox_means_no_sender():

@@ -6,8 +6,9 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; no positive reply waiting longer than
      escalation_hours (SPEC 11); this week's hand-check approved (SPEC 11).
-  2. Today's number (queue.daily_number): Active mailbox caps, this month's Clay and Apollo
-     spend from credit_ledger against the General budgets, working days left, the queue.
+  2. Today's number (queue.daily_number): the weekly target's share for today, each
+     sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
+     accounts. The Clay and Apollo budgets are weekly and applied where credits are spent.
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
      suppressed or a partner, whose industry is on, with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
@@ -21,9 +22,10 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      custom variables.
 
 Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is marked
-enrolled. HubSpot exclusions found on the way are still written to BigQuery (SPEC 0.3).
+enrolled. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
-contact records its enrollment month, angle, copy version, test, mailbox, campaign and lead id.
+contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
+campaign and lead id.
 Sent events come later, from sync_outcomes.
 """
 
@@ -37,10 +39,11 @@ from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
 from us_outbound.clean.people import state_code
-from us_outbound.clients.bq import Store, new_id
+from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
-from us_outbound.context import ET, UK, Context
-from us_outbound.enrol import queue, render
+from us_outbound.context import UK, Context
+from us_outbound import budget, limits
+from us_outbound.enrol import focus, queue, render
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import Mailbox, Settings
@@ -148,41 +151,13 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
 def gate(ctx: Context, today: date) -> str | None:
     """Why the job does nothing today, or None."""
     s = ctx.settings
-    if queue.is_blackout(today, s):
+    if budget.is_blackout(today, s):
         return f"{today} is a blackout date"
     if today.weekday() not in s.general.send_window.days:
         return f"{today} is not a send day"
     if ctx.live and not s.general.live_sending:
         return "live_sending is no"
     return operator_pause(ctx) or reply_pause(ctx)
-
-
-# -- budgets and today's load ------------------------------------------------------------------
-
-
-def month_credits(store: Store, system: str, now: datetime) -> float:
-    """Credits recorded in credit_ledger this UTC calendar month (as v_credits_month counts them)."""
-    now = now.astimezone(UTC)
-    total = 0.0
-    for r in store.select("credit_ledger", {"system": system}):
-        t = _ts(r.get("occurred_at"))
-        if t is not None and (t.astimezone(UTC).year, t.astimezone(UTC).month) == (now.year, now.month):
-            total += float(r.get("credits") or 0)
-    return total
-
-
-def enrolled_today(ctx: Context, today: date) -> tuple[int, Counter[str]]:
-    """Accounts already enrolled today by earlier live runs (from their heartbeats), in total and per owner."""
-    total, load = 0, Counter()
-    for r in ctx.store.select("heartbeats", {"job": JOB, "status": "ok", "dry_run": False}):
-        t = _ts(r.get("started_at"))
-        detail = r.get("detail") if isinstance(r.get("detail"), Mapping) else {}
-        if t is None or t.astimezone(ET).date() != today:
-            continue
-        total += int(detail.get("enrolled") or 0)
-        for owner, k in (detail.get("by_owner") or {}).items():
-            load[owner] += int(k or 0)
-    return total, load
 
 
 # -- candidates --------------------------------------------------------------------------------
@@ -393,7 +368,7 @@ def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str
 
 
 def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: str) -> None:
-    """Tier Excluded now, and a hubspot fact so the next rescore keeps it excluded (BigQuery, so dry-run too)."""
+    """Tier Excluded now, and a hubspot fact so the next rescore keeps it excluded (the database, so dry-run too)."""
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
     ctx.store.insert(
@@ -432,15 +407,19 @@ def _default_opener(settings: Settings, angle: str) -> str:
 
 
 def prepare(
-    ctx: Context, cand: Candidate, load: Mapping[str, int], counts: Mapping[str, int], approved: Sequence[str]
+    ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], approved: Sequence[str],
+    pace: Mapping[str, int] | None = None,
 ) -> Prepared | Skip:
     s, g = ctx.settings, ctx.settings.general
     a, c = cand.account, cand.contact
-    owner = queue.assign_sender(a, s, load)
+    owner = queue.assign_sender(a, s, free, pace)
     if owner is None:
-        if a.get("sender"):
-            return Skip("sender paused", [f"{a['sender']} has no Active mailbox; the account waits for them"])
-        return Skip("no Active mailbox")
+        sender = str(a.get("sender") or "")
+        if sender and not s.mailboxes_for(sender, "Active"):
+            return Skip("sender paused", [f"{sender} has no Active mailbox; the account waits for them"])
+        if sender:
+            return Skip("sender full today", [f"{sender}'s inboxes are full with follow-ups today; the account waits for them"])
+        return Skip("no sending capacity")
     boxes: tuple[Mailbox, ...] = s.mailboxes_for(owner, "Active")
     mb = boxes[0]
 
@@ -505,19 +484,26 @@ class _Run:
 
 
 def _walk(
-    ctx: Context, lane: Iterator[Candidate], target: int, load: Counter[str], counts: Counter[str],
-    approved: Sequence[str], run: _Run,
+    ctx: Context, lane: Iterator[Candidate], target: int, free: Counter[str], counts: Counter[str],
+    approved: Sequence[str], run: _Run, pace: Mapping[str, int] | None = None,
+    quota: focus.Quota | None = None, held: list[Candidate] | None = None,
 ) -> list[Prepared]:
     """Prepare accounts in queue order until target are ready; skipped ones make way for the next.
 
-    lane is an iterator, so a second walk carries on where the first stopped.
+    lane is an iterator, so a second walk carries on where the first stopped. With a quota,
+    an account whose industry share is full today is held back (in held) instead, for the
+    fill at the end.
     """
     out: list[Prepared] = []
     while len(out) < target:
         cand = next(lane, None)
         if cand is None:
             break
-        p = prepare(ctx, cand, load, counts, approved)
+        if quota is not None and not quota.allows(cand.account):
+            if held is not None:
+                held.append(cand)
+            continue
+        p = prepare(ctx, cand, free, counts, approved, pace)
         if isinstance(p, Skip):
             run.skip(cand.account, p.reason, p.detail)
             if p.exclude_fact:
@@ -525,7 +511,9 @@ def _walk(
                 run.excluded.append({"account_id": cand.account["account_id"], "reason": p.detail[0]})
             continue
         out.append(p)
-        load[p.owner] += 1
+        free[p.owner] -= 1
+        if quota is not None:
+            quota.take(cand.account)
         if p.test_id:
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
@@ -548,6 +536,7 @@ def _created_ids(result: Mapping[str, Any], leads: Sequence[Mapping[str, Any]]) 
 
 
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
+    """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast)."""
     accounts, contacts = [], []
     for i, p in enumerate(items):
         if i not in ids:
@@ -559,6 +548,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
         contacts.append({
             "contact_id": p.contact["contact_id"],
             "enrolment_month": month,
+            "enrolled_at": ctx.now,
             "angle": p.copy_angle,
             "copy_version": p.copy_version,
             "test_id": p.test_id or None,
@@ -587,19 +577,10 @@ def run(ctx: Context) -> dict:
         return summary
 
     cands, skipped = candidates(ctx, pulled)
-    done_today, load = enrolled_today(ctx, today)
-    g = s.general
-    n, terms = queue.daily_number(
-        s,
-        active_mailbox_caps=[m.daily_cap for m in s.mailboxes if m.status == "Active"],
-        clay_remaining=g.clay_monthly_credits - month_credits(ctx.store, "clay", ctx.now),
-        clay_per_account=g.clay_credits_per_account,
-        apollo_remaining=g.apollo_monthly_credits - month_credits(ctx.store, "apollo", ctx.now),
-        apollo_per_account=g.apollo_credits_per_account,
-        working_days_left=queue.working_days_left(today, s),
-        verified_queue_size=len(cands),
-    )
-    n = max(0, n - done_today)
+    lim = limits.today(ctx, today, ready_accounts=len(cands))
+    n, terms = lim.number, lim.terms
+    free = Counter({owner: c.free for owner, c in lim.senders.items()})
+    pace = {owner: c.pace for owner, c in lim.senders.items()}
     r = _Run(skipped=skipped)
 
     # control_share from Control, the rest from Priority then Standard, and a shortfall in
@@ -609,9 +590,19 @@ def run(ctx: Context) -> dict:
     control = iter([c for c in in_order if c.account.get("tier") == queue.CONTROL])
     main = iter([c for c in in_order if c.account.get("tier") != queue.CONTROL])
     counts, approved = running_test_counts(ctx), approved_versions(s)
-    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), load, counts, approved, r)
-    prepared += _walk(ctx, main, n - len(prepared), load, counts, approved, r)
-    prepared += _walk(ctx, control, n - len(prepared), load, counts, approved, r)
+    # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
+    # accounts, the rest of the day in queue order whatever the group.
+    quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
+    held_main: list[Candidate] = []
+    held_control: list[Candidate] = []
+    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace, quota, held_control)
+    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace, quota, held_main)
+    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace, quota, held_control)
+    for held in (held_main, held_control):
+        fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace)
+        for p in fill:
+            quota.take(p.account)
+        prepared += fill
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:
@@ -644,7 +635,9 @@ def run(ctx: Context) -> dict:
         status="ok",
         number=n,
         number_terms=terms,
-        already_enrolled_today=done_today,
+        limited_by=lim.explanation,
+        limits=lim.lines,
+        focus=quota.describe() if quota.active else None,
         candidates=len(cands),
         prepared=len(prepared),
         enrolled=sum(enrolled.values()),

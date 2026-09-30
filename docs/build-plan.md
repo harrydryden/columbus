@@ -28,14 +28,15 @@ The Thanksgiving blackout (23–27 Nov) falls inside phase 3. Sends pause, but t
 | Deliverable (SPEC 14) | Where |
 | :- | :- |
 | Repository and clients | `us_outbound/clients/`. Every call goes through `guard.py` |
-| Secret Manager | `context.Secrets`, `deploy/setup.sh` (empty secrets; Harry adds the values) |
-| BigQuery DDL | `sql/ddl/`, `sql/views/`, `us-outbound bq apply` |
+| Secrets (SPEC: Secret Manager; now sealed Railway variables) | `context.Secrets` reads each key from its environment variable; Harry adds the values in Railway |
+| Database DDL (SPEC: BigQuery; now Railway Postgres) | `sql/ddl/`, `sql/views/`, `us-outbound db apply` |
+| Job schedule (SPEC: Cloud Run Jobs and Cloud Scheduler; now one Railway worker) | `ops/schedule.py` (the SPEC 9 table), `ops/scheduler.py` (`us-outbound scheduler`, the worker's default command) |
 | Settings sheet defaults and settings_sync with validation | `settings/defaults.py`, `settings/validate.py`, `settings/sync.py` |
 | HubSpot: the six properties | `crm/hubspot_writes.py`, `us-outbound hubspot setup` |
 | Instantly: three sender campaigns, created paused | `registry/mailboxes.py`, `us-outbound campaigns ensure` |
 | Mailboxes: warmup status | `registry/mailboxes.py` (mailbox_health) |
 | Suppression from HubSpot opt-outs and bounces | `suppression.py`, `us-outbound suppression load` |
-| Dry-run everywhere | `guard.py`. Live needs `--live` and `live_sending = yes` |
+| Dry-run everywhere | `guard.py`. Live needs `--live` and `live_sending = yes`, also for the scheduler's `--live` jobs |
 | Footer, privacy link and legitimate-interests text for Harry to approve | `templates/copy/footer.txt`, `templates/copy/article14.txt` (drafts) |
 
 To support phase 0, the build also includes the pieces the end-to-end dry run exercises:
@@ -58,27 +59,42 @@ The source modules (SPEC 7) and the reply and HubSpot-write jobs (SPEC 11) belon
 
 These run against fakes. The same checks are repeated against the real systems once the setup steps below are done.
 
+Infrastructure (Harry, 30 Sep 2026): everything Google Cloud did moves to Railway, on Spill's existing plan:
+- Postgres replaces BigQuery.
+- Sealed variables replace Secret Manager.
+- One always-on worker with its own scheduler replaces Cloud Run Jobs and Cloud Scheduler.
+
+Google keeps only a Sheets service account in `columbus-510209`. This departs from SPEC 1.7, 3 and 6; see [railway-setup.md](railway-setup.md).
+
 ### Setup steps (need Harry or access we don't have yet)
 
 See `docs/phase0-runbook.md` for commands, and `docs/phase0-facts.md` for what has already been confirmed.
 
-1. **Google Cloud:** confirm the project and region. Run `deploy/setup.sh` (service account, secrets, registry). Then `us-outbound bq apply --live` creates `us_outbound` in EU.
-2. **Secrets:** add the Apollo, Clay, Instantly, HubSpot (private app, SPEC 13 scopes) and Slack keys to Secret Manager. Create the Claude key with a $10 monthly limit.
-3. **Settings sheet:** create "US Outbound – Settings" from the defaults and share it with the service account. The phase-0 ids go in the General tab:
+1. **Railway:** follow `docs/railway-setup.md`.
+   - Create the project Columbus in EU West (Amsterdam), with a Postgres database and the worker service from `harrydryden/columbus` (`main`).
+   - `railway ssh -- us-outbound db apply --live` creates schema `us_outbound`.
+2. **Google:** in `columbus-510209`, enable the Google Sheets API only. Create the service account `us-outbound-sheets` and its JSON key. No billing is needed.
+3. **Keys:** put each key in its sealed Railway variable (`railway-setup.md`, step c): Apollo, Clay, Instantly, HubSpot (service key, SPEC 13 scopes), Slack, the Sheets key, and the Claude key with a $10 monthly limit.
+4. **Settings sheet:** create "US Outbound – Settings" from the defaults and share it with the service account. The phase-0 ids go in the General tab:
    - pipeline `82002613`
    - stage `154381888`
    - owner `82221891`
    - approver `U098X453UAG`
-4. **Slack:** create the app from `deploy/slack-app-manifest.yaml`, then #us-outbound and #us-outbound-dev, and invite the bot.
-5. **HubSpot:** `us-outbound hubspot setup --live` creates the property group and the six properties.
-6. **Instantly:**
+5. **Slack:** create the app from `deploy/slack-app-manifest.yaml`, then #us-outbound and #us-outbound-dev, and invite the bot.
+6. **HubSpot:** `us-outbound hubspot setup --live` creates the property group and the six properties.
+7. **Instantly:**
    - Confirm the plan facts.
    - `us-outbound mailbox …` / `campaigns ensure --live` sets up the registry and the three paused campaigns.
    - Test the custom-variable length limit, that follow-ups stay on the step-1 address, and whether a forward endpoint exists.
-7. **Clay:** create the "US Outbound" folder and the two functions (SPEC 8). Enable API access, set the budget, and try them on 20 hand-picked accounts.
-8. **Apollo tracker:** change "us/pricing" to "/us/pricing", add "/us/book-demo" as high intent, then confirm data arrives and the script is not on employee-facing pages.
-9. **Privacy:** publish the US privacy and opt-out page (the Webflow page is still a draft). Approve the footer and Article 14 text.
-10. **Suppression:** `us-outbound suppression load --live`.
-11. **Mailboxes:** check domain authentication (SPF, DKIM, DMARC p=none) for meetspill.org and tryspill.org.
+   - Confirm the step days (0, 7, 14, 21) and what the analytics and sending-status endpoints return.
+8. **Clay:** create the "US Outbound" folder and the two functions (SPEC 8). Enable API access, set the budget, and try them on 20 hand-picked accounts.
+9. **Apollo tracker:** change "us/pricing" to "/us/pricing", add "/us/book-demo" as high intent, then confirm data arrives and the script is not on employee-facing pages.
+10. **Privacy:** publish the US privacy and opt-out page (the Webflow page is still a draft). Approve the footer and Article 14 text.
+11. **Suppression:** `us-outbound suppression load --live`.
+12. **Mailboxes:** check domain authentication (SPF, DKIM, DMARC p=none) for meetspill.org and tryspill.org.
 
 Open decisions are in `docs/open-questions.md`.
+
+## Before phase 1: how accounts are found and enriched
+
+[pipeline.md](pipeline.md) sets out which vendor does which job, where the ICP lives, the order of the funnel and which value wins when sources disagree. Its eight proposed changes need Harry's answer before the phase 1 source modules are written.

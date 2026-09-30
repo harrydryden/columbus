@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from us_outbound.clients.bq import Store, new_id
+from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.guard import Guard, Op
 from us_outbound.logs import log
 

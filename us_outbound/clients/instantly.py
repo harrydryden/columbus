@@ -51,7 +51,14 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
 }
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
 
-STEP_DAYS = (0, 3, 8, 15)  # SPEC 9/10: four steps, one variant each
+# Four steps, one variant each (SPEC 9/10), a week apart (Harry, 30 Sep 2026; SPEC 10 had days
+# 0, 3, 8 and 15). Instantly counts delays in calendar days and moves a step due at the weekend
+# to Monday; a week apart, every step falls on the same weekday as the first, so none does
+# (docs/pipeline.md). The send forecast (enrol/capacity.py) reads the same days.
+STEP_DAYS = (0, 7, 14, 21)
+# A reply counts for a week after the last step: SPEC 12's 21 days of step 1 was a week after
+# its day-15 step. The readout views use the same number (sql/views; tests/test_sql.py checks).
+REPLY_WINDOW_DAYS = STEP_DAYS[-1] + 7
 
 # Settings time zones -> Instantly's schedule enum, which has no America/New_York;
 # America/Detroit is US Eastern with the same DST rules.
@@ -76,6 +83,13 @@ CUSTOM_VARIABLE_LIMIT: int | None = None
 
 ACCOUNT_STATUS = {1: "active", 2: "paused", 3: "maintenance", -1: "connection_error", -2: "soft_bounce_error", -3: "sending_error"}
 WARMUP_STATUS = {0: "paused", 1: "active", -1: "banned", -2: "spam_folder_unknown", -3: "permanent_suspension"}
+# GET /campaigns/{id}/sending-status: not_sending_status codes. 3 and 4 are documented;
+# PHASE0-CONFIRM: the full list, which phase 0 reads from a paused campaign.
+NOT_SENDING = {
+    3: "the campaign reached its daily limit",
+    4: "every sending account reached its daily limit",
+}
+AT_LIMIT_CODES = frozenset({3, 4})
 CAMPAIGN_STATUS = {
     0: "draft", 1: "active", 2: "paused", 3: "completed", 4: "running_subsequences",
     -99: "account_suspended", -1: "accounts_unhealthy", -2: "bounce_protect",
@@ -140,10 +154,10 @@ def instantly_schedule(window: SendWindow | None = None, name: str = "US Outboun
 
 
 def step_delays(step_days: Sequence[int] = STEP_DAYS) -> list[int]:
-    """Instantly's delay is the wait before the NEXT email: day 0, 3, 8, 15 -> 3, 5, 7, 0.
+    """Instantly's delay is the wait before the NEXT email: day 0, 7, 14, 21 -> 7, 7, 7, 0.
 
     PHASE0-CONFIRM: the OpenAPI text says "the delay value before sending the NEXT email";
-    phase 0 checks the created campaign shows steps on day 0, 3, 8 and 15.
+    phase 0 checks the created campaign shows steps on day 0, 7, 14 and 21.
     """
     days = list(step_days)
     return [days[i + 1] - days[i] for i in range(len(days) - 1)] + [0]
@@ -356,6 +370,48 @@ class Instantly(HttpClient):
                 json={"emails": chunk},
             )
 
+    def daily_sends(
+        self, emails: Iterable[str], *, start_date: date | str | None = None, end_date: date | str | None = None
+    ) -> dict[str, dict[str, dict]]:
+        """{email: {YYYY-MM-DD: {sent, bounced, new_leads_contacted, ...}}} for registry accounts only.
+
+        GET /accounts/analytics/daily, filtered to these emails (without the filter it covers the
+        whole workspace, so the filter is always sent). Rows for any other account are dropped.
+        PHASE0-CONFIRM: that `emails` is sent as a repeated query parameter, and the row fields
+        (date, email_account, sent).
+        """
+        accs = self._registry("account.analytics_daily", emails)
+        out: dict[str, dict[str, dict]] = {e: {} for e in accs}
+        for chunk in _chunks(accs, ACCOUNTS_PER_CALL):
+            chunk = list(chunk)
+            params: dict[str, Any] = {"emails": chunk}
+            if start_date:
+                params["start_date"] = str(start_date)[:10]
+            if end_date:
+                params["end_date"] = str(end_date)[:10]
+            body = self.request(
+                "GET", "/accounts/analytics/daily",
+                Op("account.analytics_daily", target="accounts", detail={"accounts": chunk}), params=params,
+            )
+            rows = body if isinstance(body, list) else list((body or {}).get("items") or [])
+            for r in rows:
+                email = str(r.get("email_account") or r.get("email") or "").strip().lower()
+                if email not in out:
+                    log("instantly_dropped", action="account.analytics_daily", reason="row for another account")
+                    continue
+                out[email][str(r.get("date") or "")[:10]] = r
+        return out
+
+    def set_daily_limit(self, email: str, daily_limit: int) -> None:
+        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap)."""
+        [acc] = self._registry("account.update_limit", [email], write=True)
+        limit = int(daily_limit)
+        self.request(
+            "PATCH", f"/accounts/{_segment(acc)}",
+            Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
+            json={"daily_limit": limit},
+        )
+
     # -- campaigns -------------------------------------------------------------
 
     def list_campaigns(self) -> list[dict]:
@@ -464,6 +520,23 @@ class Instantly(HttpClient):
         """Start or resume. Only the `start` command calls this, never create_campaign."""
         cid = self._campaign_id(name, "campaign.activate", True)
         self.request("POST", f"/campaigns/{_segment(cid)}/activate", Op("campaign.activate", target=name, write=True))
+
+    def sending_status(self, name: str) -> dict:
+        """Why the campaign is not sending, if it is not: {code, meaning, at_limit} (GET /campaigns/{id}/sending-status).
+
+        code None means Instantly reports nothing holding it back.
+        """
+        cid = self._campaign_id(name, "campaign.sending_status", False)
+        body = self.request(
+            "GET", f"/campaigns/{_segment(cid)}/sending-status", Op("campaign.sending_status", target=name, detail={"id": cid})
+        ) or {}
+        code = body.get("not_sending_status") if isinstance(body, dict) else None
+        try:
+            code = int(code) if code is not None else None
+        except (TypeError, ValueError):
+            code = None
+        meaning = NOT_SENDING.get(code, f"code {code} (see Instantly)") if code is not None else ""
+        return {"code": code, "meaning": meaning, "at_limit": code in AT_LIMIT_CODES}
 
     def step_analytics(self, name: str, *, start_date: date | str | None = None, end_date: date | str | None = None) -> list[dict]:
         """Per step and variant counts for this campaign only (campaign_id is always set)."""

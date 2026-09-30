@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from tests.fakes import FakeTransport, make_context
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.scoring import score as scoring
 from us_outbound.scoring.score import match_signal, rescore, score_account
 from us_outbound.settings.conditions import parse_condition, parse_context_rule, parse_terms, try_parse_condition
@@ -558,12 +558,12 @@ def test_tier_share_alert_in_dry_run_goes_to_the_dev_channel():
     assert post.json["text"].startswith("[dry-run → #us-outbound] Tier mix check:")
 
 
-def test_rescore_writes_only_to_bigquery_us_outbound():
+def test_rescore_writes_only_to_the_us_outbound_schema():
     ctx = make_context(make_settings(), now=NOW)
     _seed(ctx.store)
     rescore(ctx)
-    assert {c.system for c in ctx.guard.calls} == {"bq"}
-    assert all(c.target.startswith("us_outbound.") for c in ctx.guard.calls if c.system == "bq")
+    assert {c.system for c in ctx.guard.calls} == {"db"}
+    assert all(c.target.startswith("us_outbound.") for c in ctx.guard.calls if c.system == "db")
 
 
 @pytest.mark.parametrize("status", ["new", "queued", "verified", "enrolled", "engaged"])

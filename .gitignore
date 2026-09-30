@@ -9,3 +9,4 @@ build/
 *.key
 *.json.key
 service-account*.json
+columbus-510209-*.json

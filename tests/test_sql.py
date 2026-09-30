@@ -1,29 +1,27 @@
-"""SPEC 6: the BigQuery DDL and views in sql/, and ops/ddl.py, which applies them.
+"""SPEC 6: the Postgres DDL and views in sql/, and ops/ddl.py, which checks and applies them.
 
-Every statement is rendered, parsed with sqlglot (BigQuery dialect) and checked against
-the store's contract (clients/bq.py TABLE_KEYS, JSON_COLUMNS) and the SPEC 6 column lists.
-The views are qualified against the DDL, so a view naming a missing column fails here.
-Nothing touches BigQuery: apply() runs against a recording fake client.
+The DB-free layer: every statement is split out of its file, parsed with sqlglot (Postgres
+dialect) and checked against the store's contract (clients/db.py TABLE_KEYS, JSON_COLUMNS)
+and the SPEC 6 column lists. The views are qualified against the DDL, so a view naming a
+missing column fails here. apply() runs against a recording fake connection. The same
+statements run against a real Postgres in tests/test_db.py.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
-from us_outbound.clients.bq import JSON_COLUMNS, TABLE_KEYS, BigQueryStore, MemoryStore
+from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.ops import ddl
 from us_outbound.settings.model import SIZE_BANDS, TABS, TIERS
 
-PROJECT = "test-project"
-LOCATION = "EU"
-DATASET = "us_outbound"
+SCHEMA = "us_outbound"
 
 # SPEC 6 column lists, copied from SPEC.md.
 SPEC_COLUMNS: dict[str, set[str]] = {
@@ -48,7 +46,7 @@ SPEC_COLUMNS: dict[str, set[str]] = {
     "settings": {"tab", "key", "values", "effective_from", "effective_to", "synced_at"},
 }
 # Columns the build adds to SPEC 6 tables.
-BUILD_ADDITIONS: dict[str, set[str]] = {"contacts": {"last_step_at"}, "suppression": {"expires_at"}}
+BUILD_ADDITIONS: dict[str, set[str]] = {"contacts": {"last_step_at", "enrolled_at"}, "suppression": {"expires_at"}}
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
     "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"},
@@ -63,27 +61,28 @@ BUILD_TABLES: dict[str, set[str]] = {
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
 
-SPEC_VIEWS = {"v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health", "v_credits_month", "v_heartbeats"}
+VIEWS = {"v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
+         "v_budgets", "v_heartbeats"}
+SPEC_VIEWS = VIEWS - {"v_account_outcomes"}
+RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became weekly; dropped if it exists
 
-# Types by column name (the brief's rules); every other column is STRING, JSON columns included.
+# Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 INTS = {"employees", "us_employees", "founded_year", "score", "step"}
 FLOATS = {"clay_credits_used", "credits", "usd"}
 BOOLS = {"suppressed", "dry_run"}
 
-PARTITIONS = {
-    "events": "occurred_at",
-    "signal_events": "observed_at",
-    "heartbeats": "started_at",
-    "credit_ledger": "occurred_at",
-    **{t: "loaded_at" for t in RAW_TABLES},
+# Indexes the brief asks for (table -> leading columns); more are fine.
+INDEXES = {
+    ("contacts", "account_id"), ("signal_events", "account_id"), ("events", "account_id"),
+    ("events", "occurred_at"), ("signal_events", "observed_at"),
 }
 
-# Enum columns: their description lists exactly these values after "One of: ".
+# Enum columns: their comment lists exactly these values after "One of: ".
 ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "tier"): set(TIERS),
     ("accounts", "size_band"): set(SIZE_BANDS),
-    ("accounts", "source"): {"apollo", "irs", "site_visit"},
+    ("accounts", "source"): {"apollo", "irs", "site_visit", "named"},
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
@@ -105,81 +104,89 @@ ENUMS: dict[tuple[str, str], set[str]] = {
 }
 
 
-def expected_type(column: str) -> str:
+def expected_type(table: str, column: str) -> str:
+    if column in JSON_COLUMNS.get(table, ()):
+        return "JSONB"
     if column.endswith("_at") or column in TIMESTAMPS:
-        return "TIMESTAMP"
+        return "TIMESTAMPTZ"
     if column in INTS:
-        return "INT64"
+        return "INT"
     if column in FLOATS:
-        return "FLOAT64"
+        return "DOUBLE PRECISION"
     if column in BOOLS:
-        return "BOOL"
-    return "STRING"
+        return "BOOLEAN"
+    return "TEXT"
 
 
-# -- parsed files ----------------------------------------------------------------
-
-
-def _parse(path: Path) -> exp.Expression:
-    sql = ddl.render(path.read_text(encoding="utf-8"), PROJECT, LOCATION)
-    parsed = sqlglot.parse(sql, read="bigquery")
-    assert len(parsed) == 1, f"{path.name}: one statement per file"
-    return parsed[0]
+# -- parsed statements ----------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
-def parsed() -> list[tuple[Path, exp.Expression]]:
-    return [(p, _parse(p)) for p in ddl.files()]
-
-
-def _description(props: exp.Expression) -> str:
-    """The description in an OPTIONS list (column or statement level), "" if none."""
-    for prop in props.expressions:
-        if type(prop) is exp.Property and prop.name.lower() == "description":
-            return prop.args["value"].name
-    return ""
-
-
-def _column_description(cd: exp.ColumnDef) -> str:
-    for c in cd.args.get("constraints") or []:
-        if isinstance(c.kind, exp.Properties):
-            return _description(c.kind)
-    return ""
+def parsed() -> list[tuple[str, str, exp.Expression]]:
+    """(file, statement, parsed) for every statement, in apply order."""
+    out = []
+    for name, sql in ddl.statements():
+        trees = sqlglot.parse(sql, read="postgres")
+        assert len(trees) == 1, f"{name}: one statement per split"
+        out.append((name, sql, trees[0]))
+    return out
 
 
 class Table:
-    def __init__(self, path: Path, create: exp.Create):
-        self.path, self.create = path, create
+    def __init__(self, file: str, create: exp.Create):
+        self.file, self.create = file, create
         self.name = create.this.this.name
         self.columns = {cd.name: cd for cd in create.find_all(exp.ColumnDef)}
-        props = create.args["properties"].expressions
-        part = [p for p in props if isinstance(p, exp.PartitionedByProperty)]
-        clus = [p for p in props if isinstance(p, exp.ClusterProperty)]
-        self.partition = part[0].this.sql("bigquery") if part else None
-        self.cluster = [e.name for e in clus[0].expressions] if clus else []
-        self.description = _description(create.args["properties"])
+        cons = [c for c in create.this.expressions if not isinstance(c, exp.ColumnDef)]
+        self.primary_key = [tuple(c.name for c in k.expressions) for k in cons if isinstance(k, exp.PrimaryKey)]
+        self.unique = [(c.sql("postgres"), tuple(i.name for i in c.this.expressions))
+                       for c in cons if isinstance(c, exp.UniqueColumnConstraint)]
+        self.comments: dict[str, str] = {}  # "" for the table, else the column
+        self.indexes: list[tuple[str, ...]] = []
 
     def type(self, column: str) -> str:
-        return self.columns[column].args["kind"].sql("bigquery")
+        return self.columns[column].args["kind"].sql("postgres")
 
     def not_null(self, column: str) -> bool:
         return any(isinstance(c.kind, exp.NotNullColumnConstraint) for c in self.columns[column].args.get("constraints") or [])
 
 
+def _comment(e: exp.Comment) -> tuple[str, str, str]:
+    """(kind, table or view, column or "") of a COMMENT ON statement."""
+    kind, target = e.args["kind"].upper(), e.this
+    if kind == "COLUMN":
+        return kind, target.table, target.name
+    return kind, target.name, ""
+
+
 @pytest.fixture(scope="module")
 def tables(parsed) -> dict[str, Table]:
     out: dict[str, Table] = {}
-    for path, e in parsed:
+    for name, _, e in parsed:
         if isinstance(e, exp.Create) and e.kind == "TABLE":
-            t = Table(path, e)
-            assert t.name not in out, f"{t.name} is created by both {out[t.name].path.name} and {path.name}"
+            t = Table(name, e)
+            assert t.name not in out, f"{t.name} is created by both {out[t.name].file} and {name}"
             out[t.name] = t
+    for name, _, e in parsed:
+        if isinstance(e, exp.Create) and e.kind == "INDEX":
+            t = out[e.this.args["table"].name]
+            t.indexes.append(tuple(c.this.name for c in e.this.args["params"].args["columns"]))
+            assert e.args.get("exists"), f"{name}: CREATE INDEX IF NOT EXISTS"
+            assert name == t.file, f"{name} indexes {t.name}, which {t.file} creates"
+        elif isinstance(e, exp.Comment) and _comment(e)[0] in {"TABLE", "COLUMN"}:
+            _, table, column = _comment(e)
+            out[table].comments[column] = e.args["expression"].name
+            assert name == out[table].file, f"{name} comments on {table}, which {out[table].file} creates"
     return out
 
 
 @pytest.fixture(scope="module")
-def views(parsed) -> dict[str, tuple[Path, exp.Create]]:
-    return {e.this.name: (p, e) for p, e in parsed if isinstance(e, exp.Create) and e.kind == "VIEW"}
+def views(parsed) -> dict[str, tuple[str, exp.Create, str]]:
+    """view -> (file, CREATE VIEW, its COMMENT ON VIEW text)."""
+    out = {e.this.name: (name, e) for name, _, e in parsed if isinstance(e, exp.Create) and e.kind == "VIEW"}
+    comments = {_comment(e)[1]: e.args["expression"].name for _, _, e in parsed
+                if isinstance(e, exp.Comment) and _comment(e)[0] == "VIEW"}
+    return {v: (name, e, comments.get(v, "")) for v, (name, e) in out.items()}
 
 
 # -- files and order --------------------------------------------------------------
@@ -188,7 +195,7 @@ def views(parsed) -> dict[str, tuple[Path, exp.Create]]:
 def test_files_are_numbered_ddl_then_views():
     paths = ddl.files()
     names = [f"{p.parent.name}/{p.name}" for p in paths]
-    assert names[0] == "ddl/00_dataset.sql"
+    assert names[0] == "ddl/00_schema.sql"
     kinds = [p.parent.name for p in paths]
     assert kinds == sorted(kinds, key=["ddl", "views"].index), "ddl files before view files"
     for p in paths:
@@ -198,34 +205,66 @@ def test_files_are_numbered_ddl_then_views():
         assert len(numbers) == len(set(numbers)), f"duplicate numbers in sql/{kind}"
 
 
-def test_every_statement_parses_and_is_one_create(parsed):
-    for path, e in parsed:
-        assert isinstance(e, exp.Create), path.name
-        assert e.kind in {"SCHEMA", "TABLE", "VIEW"}, path.name
+def test_statements_come_in_file_order_and_hold_no_semicolon():
+    order = [f"{p.parent.name}/{p.name}" for p in ddl.files()]
+    names = [name for name, _ in ddl.statements() if name != ddl.REFRESH_FILE]
+    assert sorted(set(names), key=order.index) == order, "every file holds a statement"
+    assert names == sorted(names, key=order.index)
+    for _, sql in ddl.statements():
+        assert ";" not in ddl._code_only(sql)
 
 
-def test_dataset_is_created_in_the_location(parsed):
-    path, e = parsed[0]
-    assert e.kind == "SCHEMA" and e.args.get("exists")
-    sql = ddl.render(path.read_text(encoding="utf-8"), PROJECT, LOCATION)
-    assert f"`{PROJECT}.{DATASET}`" in sql
-    assert f'location = "{LOCATION}"' in sql
+def test_every_view_is_dropped_before_the_views_are_created_again():
+    """CREATE OR REPLACE VIEW cannot change a view's columns, so apply drops every view first,
+    dependents before what they read (the reverse of file order)."""
+    stmts = ddl.statements()
+    kinds = [("drop" if name == ddl.REFRESH_FILE else name.split("/")[0]) for name, _ in stmts]
+    assert kinds == sorted(kinds, key=["ddl", "drop", "views"].index)
+    drops = [sql.rsplit(".", 1)[1] for name, sql in stmts if name == ddl.REFRESH_FILE]
+    created = [ddl.check_statement(sql).split(".", 1)[1] for name, sql in stmts
+               if name.startswith("views/0") and ddl.FORMS["view"].match(ddl._code_only(sql).strip())]
+    assert drops == list(reversed(created)) and set(drops) == VIEWS
+
+
+def test_every_statement_parses_as_an_allowed_kind(parsed):
+    for name, _, e in parsed:
+        ok = (
+            (isinstance(e, exp.Create) and e.kind in {"SCHEMA", "TABLE", "INDEX", "VIEW"})
+            or isinstance(e, exp.Comment)
+            or (isinstance(e, exp.Alter) and all(isinstance(a, exp.ColumnDef) for a in e.args.get("actions") or []))
+            or (isinstance(e, exp.Drop) and e.kind == "VIEW" and e.args.get("exists") and not e.args.get("cascade"))
+        )
+        assert ok, f"{name}: {type(e).__name__}"
+
+
+def test_an_added_column_is_also_in_its_create_table(parsed, tables):
+    """ALTER ... ADD COLUMN IF NOT EXISTS only brings an older database up to its CREATE TABLE."""
+    for name, _, e in parsed:
+        if isinstance(e, exp.Alter):
+            table = e.this.name
+            for col in e.args.get("actions") or []:
+                assert col.name in tables[table].columns, f"{name}: {table}.{col.name} is not in its CREATE TABLE"
+
+
+def test_the_schema_comes_first(parsed):
+    name, _, e = parsed[0]
+    assert name == "ddl/00_schema.sql" and e.kind == "SCHEMA" and e.args.get("exists")
+    assert e.this.db == SCHEMA
 
 
 # -- tables ------------------------------------------------------------------------
 
 
 def test_every_store_table_has_exactly_one_ddl_file(tables):
-    assert set(tables) == set(TABLE_KEYS), "sql/ddl and clients/bq.py TABLE_KEYS must list the same tables"
+    assert set(tables) == set(TABLE_KEYS), "sql/ddl and clients/db.py TABLE_KEYS must list the same tables"
     for name, t in tables.items():
-        assert t.path.parent.name == "ddl"
-        assert t.path.name[3:] == f"{name}.sql", f"{t.path.name} should be named NN_{name}.sql"
+        assert t.file == f"ddl/{t.file[4:6]}_{name}.sql", f"{t.file} should be named ddl/NN_{name}.sql"
 
 
-def test_tables_are_created_if_not_exists_never_replaced(tables):
+def test_tables_are_created_if_not_exists(tables):
     for t in tables.values():
         assert t.create.args.get("exists"), f"{t.name}: CREATE TABLE IF NOT EXISTS"
-        assert not t.create.args.get("replace"), f"{t.name}: never CREATE OR REPLACE a table"
+        assert t.create.this.this.db == SCHEMA, t.name
 
 
 def test_spec6_columns_exactly(tables):
@@ -240,49 +279,55 @@ def test_build_tables_columns_exactly(tables):
         assert set(tables[name].columns) == RAW_COLUMNS, name
 
 
-def test_key_columns_present_and_required(tables):
+def test_keys_match_table_keys(tables):
+    """The upsert key is the primary key; suppression's has NULL parts, so it is UNIQUE NULLS NOT DISTINCT."""
     for name, key in TABLE_KEYS.items():
-        for col in key or ():
-            assert col in tables[name].columns, f"{name}.{col}"
-            # A suppression entry may be email-only or domain-only, so its key columns are nullable.
-            assert tables[name].not_null(col) == (name != "suppression"), f"{name}.{col} NOT NULL"
+        t = tables[name]
+        if key is None:
+            assert t.primary_key == [] and t.unique == [], f"{name} is append-only: no key"
+        elif name == "suppression":
+            assert t.primary_key == []
+            [(text, cols)] = t.unique
+            assert cols == key and "NULLS NOT DISTINCT" in text
+            assert not any(t.not_null(c) for c in key), "an entry may be email-only or domain-only"
+        else:
+            assert t.primary_key == [key], f"{name}: PRIMARY KEY {key}"
+            assert all(t.not_null(c) for c in key), f"{name}: key columns NOT NULL"
 
 
-def test_json_columns_are_string(tables):
-    for name, cols in JSON_COLUMNS.items():
-        for col in cols:
-            assert tables[name].type(col) == "STRING", f"{name}.{col} holds JSON text in a STRING"
+def test_json_columns_are_jsonb_and_only_they(tables):
+    for t in tables.values():
+        jsonb = {c for c in t.columns if t.type(c) == "JSONB"}
+        assert jsonb == set(JSON_COLUMNS.get(t.name, ())), t.name
 
 
 def test_column_types(tables):
     for t in tables.values():
         for col in t.columns:
-            assert t.type(col) == expected_type(col), f"{t.name}.{col}"
+            assert t.type(col) == expected_type(t.name, col), f"{t.name}.{col}"
 
 
-def test_partitioning_and_clustering(tables):
-    for t in tables.values():
-        want = PARTITIONS.get(t.name)
-        assert t.partition == (f"DATE({want})" if want else None), t.name
-        if "account_id" in t.columns:
-            assert "account_id" in t.cluster, f"{t.name} clusters by account_id"
+def test_indexes(tables):
+    have = {(t.name, idx[0]) for t in tables.values() for idx in t.indexes}
+    assert INDEXES <= have
 
 
 def test_enum_columns_list_their_values(tables):
     for (name, col), values in ENUMS.items():
-        desc = _column_description(tables[name].columns[col])
-        m = re.search(r"One of: ([^.(]+)", desc)
-        assert m, f"{name}.{col} description lists its values: {desc!r}"
+        text = tables[name].comments.get(col, "")
+        m = re.search(r"One of: ([^.(]+)", text)
+        assert m, f"{name}.{col} comment lists its values: {text!r}"
         assert {v.strip() for v in m.group(1).split(",")} == values, f"{name}.{col}"
 
 
-def test_tables_have_spec_descriptions(tables):
+def test_tables_have_spec_comments(tables):
     for t in tables.values():
-        assert "SPEC" in t.description, f"{t.name} has a table description citing SPEC"
+        assert "SPEC" in t.comments.get("", ""), f"{t.name} has COMMENT ON TABLE citing SPEC"
+        assert set(t.comments) - {""} <= set(t.columns), f"{t.name}: a comment on a missing column"
 
 
 def test_retention_is_noted_where_it_applies(tables):
-    text = {name: t.path.read_text(encoding="utf-8") for name, t in tables.items()}
+    text = {name: (ddl.SQL_DIR / t.file).read_text(encoding="utf-8") for name, t in tables.items()}
     assert "90 days" in text["events"] and "reply_text" in text["events"]
     assert "12 months" in text["contacts"] and "last_step_at" in text["contacts"]
     assert "12 months" in text["accounts"]
@@ -292,22 +337,19 @@ def test_retention_is_noted_where_it_applies(tables):
 # -- views -------------------------------------------------------------------------
 
 
-def test_the_six_spec_views_exist(views):
-    assert SPEC_VIEWS <= set(views)
-    for name, (path, e) in views.items():
-        assert path.parent.name == "views" and path.name[3:] == f"{name}.sql"
+def test_the_views_exist_with_spec_comments(views):
+    assert set(views) == VIEWS and SPEC_VIEWS <= set(views)
+    for name, (file, e, comment) in views.items():
+        assert file == f"views/{file[6:8]}_{name}.sql", file
         assert e.args.get("replace"), f"{name}: CREATE OR REPLACE VIEW"
-        assert "SPEC" in _description(e.args["properties"]), f"{name} has a description citing SPEC"
+        assert e.this.db == SCHEMA, name
+        assert "SPEC" in comment, f"{name} has COMMENT ON VIEW citing SPEC"
 
 
-def _schema(tables: dict[str, Table]) -> dict[str, dict[str, str]]:
-    return {name: {c: t.type(c) for c in t.columns} for name, t in tables.items()}
-
-
-def test_views_read_only_known_tables_and_columns(tables, views, parsed):
+def test_views_read_only_known_tables_and_columns(tables, parsed):
     """Qualify every view against the DDL (and earlier views): unknown tables or columns fail."""
-    schema = _schema(tables)
-    for path, e in parsed:
+    schema = {name: {c: t.type(c) for c in t.columns} for name, t in tables.items()}
+    for file, _, e in parsed:
         if not (isinstance(e, exp.Create) and e.kind == "VIEW"):
             continue
         name = e.this.name
@@ -317,26 +359,28 @@ def test_views_read_only_known_tables_and_columns(tables, views, parsed):
             if tbl.name in ctes and not tbl.db:
                 continue
             assert tbl.name in schema, f"{name} reads {tbl.name}, which is not created before it"
-        q = qualify(body, schema={PROJECT: {DATASET: schema}}, dialect="bigquery", validate_qualify_columns=True)
-        schema[name] = {c: "STRING" for c in q.named_selects}
+        q = qualify(body, schema={SCHEMA: schema}, dialect="postgres", validate_qualify_columns=True)
+        schema[name] = {c: "TEXT" for c in q.named_selects}
 
 
-def test_nothing_references_another_dataset(parsed):
-    for path, e in parsed:
-        sql = ddl.render(path.read_text(encoding="utf-8"), PROJECT, LOCATION)
-        if e.kind == "SCHEMA":
-            assert e.this.name == "" and e.this.db == f"{PROJECT}.{DATASET}", path.name
+def test_nothing_references_another_schema(parsed):
+    for file, sql, e in parsed:
+        assert ddl.check_statement(sql).startswith(f"{SCHEMA}."), file
+        if isinstance(e, exp.Create) and e.kind == "SCHEMA":
+            assert e.this.db == SCHEMA and not e.this.name
+            continue
+        if isinstance(e, exp.Comment) and e.args["kind"].upper() == "SCHEMA":
+            assert e.this.name == SCHEMA
             continue
         ctes = {c.alias_or_name for c in e.find_all(exp.CTE)}
         for tbl in e.find_all(exp.Table):
             if tbl.name in ctes and not tbl.db:
                 continue
-            assert (tbl.catalog, tbl.db) == (PROJECT, DATASET), f"{path.name} references {tbl.sql('bigquery')}"
-        assert ddl.check_statement(sql, PROJECT).startswith(f"{DATASET}.")
+            assert tbl.db == SCHEMA and not tbl.catalog, f"{file} references {tbl.sql('postgres')}"
 
 
 def test_v_queue_orders_for_enrollment(views):
-    sql = views["v_queue"][1].sql("bigquery")
+    sql = views["v_queue"][1].sql("postgres")
     for status in ("'verified'", "'queued'"):
         assert status in sql
     for tier in ("'Priority'", "'Standard'", "'Control'"):
@@ -344,163 +388,207 @@ def test_v_queue_orders_for_enrollment(views):
     # Size bands 20-49 and 50-99 first, then 100-249, then 10-19 (SPEC 9).
     ranks = dict(re.findall(r"WHEN '(\d+-\d+)' THEN (\d)", sql))
     assert ranks == {"20-49": "1", "50-99": "1", "100-249": "2", "10-19": "3"}
-    assert "expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP()" in sql
+    assert "expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP" in sql
     assert "email_sha256 IS NULL" in sql  # an email row suppresses only that email, not its domain
+    assert "score DESC NULLS LAST" in sql  # BigQuery's order: an account with no score comes last
 
 
 def test_v_heartbeats_ignores_overlap_skips(views):
-    sql = views["v_heartbeats"][1].sql("bigquery")
+    sql = views["v_heartbeats"][1].sql("postgres")
     assert "last_alive_at" in sql and "'previous run still going'" in sql
 
 
-# -- ops/ddl.py ---------------------------------------------------------------------
+# -- ops/ddl.py: split and check -----------------------------------------------------
 
 
-class FakeClient:
-    def __init__(self):
-        self.queries: list[tuple[str, str | None]] = []
-
-    def query(self, sql, location=None, **_):
-        self.queries.append((sql, location))
-        return self
-
-    def result(self):
-        return []
-
-
-class NoClient:
-    def query(self, *a, **k):
-        raise AssertionError("dry-run must not run anything")
+def test_split_keeps_semicolons_in_strings_names_and_comments():
+    text = (
+        "-- header; with a semicolon\n"
+        "CREATE SCHEMA IF NOT EXISTS us_outbound;\n"
+        "COMMENT ON SCHEMA us_outbound IS 'a; b ''c;''';\n"
+        '/* x; */ COMMENT ON COLUMN us_outbound.t."a;b" IS \'d\';\n'
+        "-- trailing comment only\n"
+    )
+    assert ddl.split(text) == [
+        "-- header; with a semicolon\nCREATE SCHEMA IF NOT EXISTS us_outbound",
+        "COMMENT ON SCHEMA us_outbound IS 'a; b ''c;'''",
+        '/* x; */ COMMENT ON COLUMN us_outbound.t."a;b" IS \'d\'',
+    ]
 
 
-def test_render_fills_placeholders_and_strips_semicolon():
-    out = ddl.render('CREATE SCHEMA IF NOT EXISTS `{project}.us_outbound` OPTIONS (location = "{location}");\n', "my-project", "europe-west2")
-    assert out == 'CREATE SCHEMA IF NOT EXISTS `my-project.us_outbound` OPTIONS (location = "europe-west2")'
-
-
-@pytest.mark.parametrize("project", ["Bad_Project", "abc", "x`; DROP TABLE y; --", "a" * 31, "ends-with-"])
-def test_render_rejects_bad_project(project):
-    with pytest.raises(ValueError):
-        ddl.render("SELECT 1", project, LOCATION)
-
-
-@pytest.mark.parametrize("location", ['EU"); DROP', "", "eu west"])
-def test_render_rejects_bad_location(location):
-    with pytest.raises(ValueError):
-        ddl.render("SELECT 1", PROJECT, location)
-
-
-def test_render_rejects_unknown_placeholders():
-    with pytest.raises(ValueError, match="dataset"):
-        ddl.render("CREATE TABLE IF NOT EXISTS `{project}.{dataset}.t` (a STRING)", PROJECT, LOCATION)
-
-
-P = PROJECT
+S = SCHEMA
 
 
 @pytest.mark.parametrize(
     "sql",
     [
-        f"CREATE TABLE IF NOT EXISTS `{P}.other.t` (a STRING)",
-        "CREATE TABLE IF NOT EXISTS `other-project.us_outbound.t` (a STRING)",
-        "CREATE TABLE IF NOT EXISTS other.t (a STRING)",
-        f"CREATE OR REPLACE TABLE `{P}.us_outbound.accounts` (a STRING)",
-        f"CREATE TABLE `{P}.us_outbound.accounts` (a STRING)",
-        f"CREATE SCHEMA IF NOT EXISTS `{P}.other`",
-        f"CREATE OR REPLACE SCHEMA `{P}.us_outbound`",
-        f"DROP TABLE `{P}.us_outbound.accounts`",
-        f"DELETE FROM `{P}.us_outbound.accounts` WHERE TRUE",
-        f"CREATE MATERIALIZED VIEW `{P}.us_outbound.v` AS SELECT 1",
-        f"CREATE TEMP TABLE `{P}.us_outbound.t` (a STRING)",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT * FROM `{P}.other.t`",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT * FROM `{P}`.`other`.`t`",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT * FROM `{P}`.other.t",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT * FROM `other.t`",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT * FROM proj.other.t",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT * FROM `other-project.us_outbound.accounts`",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT 1; DROP TABLE `{P}.us_outbound.accounts`",
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` AS SELECT 'unterminated",
-        f"CREATE OR REPLACE VIEW IF NOT EXISTS `{P}.us_outbound.v` AS SELECT 1",
+        "CREATE TABLE IF NOT EXISTS other.t (a text)",
+        "CREATE TABLE IF NOT EXISTS public.accounts (a text)",
+        "CREATE TABLE IF NOT EXISTS accounts (a text)",
+        'CREATE TABLE IF NOT EXISTS "other"."t" (a text)',
+        'CREATE TABLE IF NOT EXISTS "US_OUTBOUND".t (a text)',
+        f"CREATE TABLE {S}.accounts (a text)",
+        f"CREATE UNLOGGED TABLE IF NOT EXISTS {S}.t (a text)",
+        f"CREATE TEMP TABLE {S}.t (a text)",
+        f"CREATE TABLE IF NOT EXISTS {S}.t AS SELECT * FROM other.t",
+        f"CREATE TABLE IF NOT EXISTS {S}.t (LIKE other.t)",
+        f"CREATE TABLE IF NOT EXISTS {S}.t (a text REFERENCES other.t (a))",
+        f"CREATE TABLE IF NOT EXISTS {S}.t (a text REFERENCES t2 (a))",
+        f"CREATE TABLE IF NOT EXISTS {S}.t PARTITION OF other.t FOR VALUES IN (1)",
+        "CREATE SCHEMA IF NOT EXISTS other",
+        f"CREATE SCHEMA {S}",
+        f"CREATE SCHEMA IF NOT EXISTS {S} AUTHORIZATION someone",
+        "CREATE INDEX IF NOT EXISTS i ON other.t (a)",
+        "CREATE INDEX IF NOT EXISTS i ON accounts (a)",
+        f"CREATE INDEX i ON {S}.accounts (a)",
+        "COMMENT ON TABLE other.t IS 'x'",
+        "COMMENT ON COLUMN other.t.c IS 'x'",
+        f"COMMENT ON COLUMN {S}.t IS 'x'",
+        "COMMENT ON SCHEMA public IS 'x'",
+        f"DROP TABLE {S}.accounts",
+        f"TRUNCATE {S}.accounts",
+        f"DELETE FROM {S}.accounts",
+        f"INSERT INTO {S}.accounts (account_id) VALUES ('x')",
+        f"UPDATE {S}.accounts SET tier = 'x'",
+        f"ALTER TABLE {S}.accounts ADD COLUMN x text",
+        f"GRANT SELECT ON {S}.accounts TO someone",
+        f"CREATE MATERIALIZED VIEW {S}.v AS SELECT 1",
+        f"CREATE VIEW {S}.v AS SELECT 1",
+        "CREATE OR REPLACE VIEW other.v AS SELECT 1",
+        f"CREATE OR REPLACE FUNCTION {S}.f() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM other.t",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM accounts",
+        f'CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM "other".t',
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a JOIN other.t AS t ON t.x = a.x",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a, other.t AS t",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a WHERE a.x IN (SELECT x FROM other.t)",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT other.f(a.x) FROM {S}.a AS a",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM db.{S}.a",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM pg_catalog.pg_tables",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT 1; DROP TABLE {S}.accounts",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT 'unterminated",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT 1 /* unterminated",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT E'\\'' FROM other.t --'",
+        f"CREATE OR REPLACE VIEW {S}.v AS SELECT $$x$$ FROM other.t",
     ],
 )
 def test_check_statement_refuses(sql):
     with pytest.raises(GuardViolation):
-        ddl.check_statement(sql, PROJECT)
+        ddl.check_statement(sql)
 
 
 def test_check_statement_ignores_comments_and_strings():
     sql = (
-        f"-- this view once read `{P}.other.t`\n"
-        f"CREATE OR REPLACE VIEW `{P}.us_outbound.v` OPTIONS (description = \"not `{P}.other.t`; nor this\") AS\n"
-        f"/* `{P}.other.t` */ SELECT a.`key`, 'x.y.z' AS s FROM `{P}.us_outbound.settings` AS a"
+        "-- this view once read other.t\n"
+        f"CREATE OR REPLACE VIEW {S}.v AS\n"
+        "/* FROM other.t */ SELECT s.\"key\", 'x FROM other.t' AS s, a.b IS DISTINCT FROM a.c AS d\n"
+        f"FROM {S}.settings AS s JOIN {S}.accounts AS a ON a.x = s.x CROSS JOIN LATERAL unnest(a.y) AS u"
     )
-    assert ddl.check_statement(sql, PROJECT) == "us_outbound.v"
+    assert ddl.check_statement(sql) == "us_outbound.v"
 
 
 def test_check_statement_targets():
-    assert ddl.check_statement(f"CREATE SCHEMA IF NOT EXISTS `{P}.us_outbound`", P) == "us_outbound.dataset"
-    assert ddl.check_statement(f"CREATE TABLE IF NOT EXISTS `{P}.us_outbound.t` (a STRING)", P) == "us_outbound.t"
-    assert ddl.check_statement(f"CREATE VIEW `{P}.us_outbound.v` AS SELECT 1", P) == "us_outbound.v"
+    assert ddl.check_statement(f"CREATE SCHEMA IF NOT EXISTS {S}") == "us_outbound.schema"
+    assert ddl.check_statement(f"COMMENT ON SCHEMA {S} IS 'x'") == "us_outbound.schema"
+    assert ddl.check_statement(f"CREATE TABLE IF NOT EXISTS {S}.t (a text)") == "us_outbound.t"
+    assert ddl.check_statement(f'CREATE TABLE IF NOT EXISTS "{S}".t (a text);') == "us_outbound.t"
+    assert ddl.check_statement(f"CREATE UNIQUE INDEX IF NOT EXISTS t_a ON {S}.t (a)") == "us_outbound.t"
+    assert ddl.check_statement(f"COMMENT ON TABLE {S}.t IS 'x'") == "us_outbound.t"
+    assert ddl.check_statement(f"COMMENT ON COLUMN {S}.t.\"key\" IS 'x'") == "us_outbound.t"
+    assert ddl.check_statement(f"CREATE OR REPLACE VIEW {S}.v AS WITH w AS (SELECT 1 AS x) SELECT x FROM w") == "us_outbound.v"
 
 
-def test_apply_dry_run_returns_statements_and_runs_nothing():
+# -- ops/ddl.py: apply ---------------------------------------------------------------
+
+
+class FakeConnection:
+    """Records what apply() runs; stands in for a psycopg connection."""
+
+    def __init__(self, log: list):
+        self.log = log
+
+    def execute(self, sql, params=None):
+        self.log.append(("execute", sql))
+
+    def commit(self):
+        self.log.append(("commit", None))
+
+    def close(self):
+        self.log.append(("close", None))
+
+
+def no_connection():
+    raise AssertionError("must not connect")
+
+
+def test_apply_dry_run_returns_statements_and_connects_to_nothing():
     guard = Guard()
-    statements = ddl.apply(NoClient(), PROJECT, LOCATION, guard=guard)
-    assert len(statements) == len(ddl.files())
-    assert f"CREATE SCHEMA IF NOT EXISTS `{PROJECT}.us_outbound`" in statements[0]
-    assert all("{project}" not in s and "{location}" not in s for s in statements)
+    statements = ddl.apply(guard, "", connect=no_connection)
+    assert statements == [s for _, s in ddl.statements()]
+    assert statements[0].endswith(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
     assert guard.calls == []
-    assert ddl.apply(None, PROJECT, LOCATION) == statements  # dry-run needs no client
 
 
-def test_apply_runs_every_statement_in_order_through_the_guard():
-    guard, client = Guard(), FakeClient()
-    statements = ddl.apply(client, PROJECT, LOCATION, dry_run=False, guard=guard)
-    assert client.queries == [(s, LOCATION) for s in statements]
-    calls = [c for c in guard.calls if c.system == "bq"]
+def test_apply_runs_every_statement_in_one_transaction_through_the_guard():
+    guard, log = Guard(), []
+    statements = ddl.apply(guard, "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log))
+    assert log == [("execute", s) for s in statements] + [("commit", None), ("close", None)]
+    calls = [c for c in guard.calls if c.system == "db"]
     assert len(calls) == len(statements)
     assert all(c.action == "ddl" and c.write and c.sent for c in calls)
     targets = [c.target for c in calls]
-    assert targets[0] == "us_outbound.dataset"
-    assert set(targets[1 : 1 + len(TABLE_KEYS)]) == {f"us_outbound.{t}" for t in TABLE_KEYS}
-    assert {f"us_outbound.{v}" for v in SPEC_VIEWS} <= set(targets)
-
-
-def test_apply_uses_a_bigquery_stores_client_and_guard():
-    guard, client = Guard(), FakeClient()
-    store = BigQueryStore(guard, PROJECT, LOCATION, client=client)
-    ddl.apply(store, PROJECT, LOCATION, dry_run=False)
-    assert len(client.queries) == len(ddl.files())
-    assert len([c for c in guard.calls if c.action == "ddl"]) == len(ddl.files())
-
-
-def test_apply_refuses_the_memory_store():
-    with pytest.raises(TypeError):
-        ddl.apply(MemoryStore(Guard()), PROJECT, LOCATION, dry_run=False)
+    assert targets[0] == "us_outbound.schema"
+    objects = {f"us_outbound.{t}" for t in TABLE_KEYS} | {f"us_outbound.{v}" for v in VIEWS}
+    assert set(targets) == objects | {"us_outbound.schema"} | {f"us_outbound.{v}" for v in RETIRED_VIEWS}
 
 
 def test_apply_checks_every_file_before_running_any(tmp_path):
     (tmp_path / "ddl").mkdir()
     (tmp_path / "views").mkdir()
-    (tmp_path / "ddl" / "00_dataset.sql").write_text("CREATE SCHEMA IF NOT EXISTS `{project}.us_outbound`;\n")
+    (tmp_path / "ddl" / "00_schema.sql").write_text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};\n")
     (tmp_path / "views" / "00_v_bad.sql").write_text(
-        "CREATE OR REPLACE VIEW `{project}.us_outbound.v_bad` AS SELECT * FROM `{project}.crm.companies`;\n"
+        f"CREATE OR REPLACE VIEW {SCHEMA}.v_bad AS SELECT * FROM crm.companies;\n"
     )
-    client = FakeClient()
     with pytest.raises(GuardViolation, match="crm"):
-        ddl.apply(client, PROJECT, LOCATION, dry_run=False, guard=Guard(), root=tmp_path)
-    assert client.queries == []
+        ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=no_connection, root=tmp_path)
+    with pytest.raises(GuardViolation, match="crm"):
+        ddl.statements(tmp_path)
 
 
-def test_apply_stops_when_the_guard_refuses():
-    guard, client = Guard(bounds=Boundaries(bq_dataset="somewhere_else")), FakeClient()
+def test_apply_stops_when_the_guard_refuses_before_connecting():
+    guard = Guard(bounds=Boundaries(db_schema="somewhere_else"))
     with pytest.raises(GuardViolation):
-        ddl.apply(client, PROJECT, LOCATION, dry_run=False, guard=guard)
-    assert client.queries == []
+        ddl.apply(guard, "postgresql://unused", dry_run=False, connect=no_connection)
 
 
-def test_main_prints_the_statements_in_dry_run(capsys):
-    assert ddl.main(["--project", PROJECT, "--location", LOCATION]) == 0
-    out = capsys.readouterr().out
-    assert f"CREATE SCHEMA IF NOT EXISTS `{PROJECT}.us_outbound`" in out
-    assert f"CREATE OR REPLACE VIEW `{PROJECT}.us_outbound.v_heartbeats`" in out
+def test_apply_rolls_back_when_a_statement_fails():
+    log = []
+
+    class Failing(FakeConnection):
+        def execute(self, sql, params=None):
+            super().execute(sql)
+            if len(log) == 3:
+                raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=lambda: Failing(log))
+    assert ("commit", None) not in log and log[-1] == ("close", None)
+
+
+def test_apply_needs_a_database_url_unless_dry_run():
+    with pytest.raises(ValueError):
+        ddl.apply(Guard(), "", dry_run=False)
+
+
+def test_ddl_files_need_no_placeholders():
+    for p in ddl.files():
+        assert not re.search(r"\{[a-z_]+\}", ddl._code_only(p.read_text(encoding="utf-8"))), p.name
+
+
+def test_the_readout_reply_window_matches_the_sequence():
+    """Replies count for a week after the last step; the views and the client share the number."""
+    from us_outbound.clients.instantly import REPLY_WINDOW_DAYS, STEP_DAYS
+
+    assert REPLY_WINDOW_DAYS == STEP_DAYS[-1] + 7 == 28
+    text = (ddl.SQL_DIR / "views" / "00_v_account_outcomes.sql").read_text()
+    assert f"INTERVAL '{REPLY_WINDOW_DAYS} days'" in text and "INTERVAL '21 days'" not in text

@@ -20,7 +20,7 @@ from functools import lru_cache
 
 import tldextract
 
-from us_outbound.clients.bq import Store
+from us_outbound.clients.db import Store
 from us_outbound.logs import log
 
 MAX_ALIAS_HOPS = 5

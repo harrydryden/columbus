@@ -6,13 +6,20 @@ Jobs only ever see a Settings snapshot, never raw sheet text.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import Any
 
 from us_outbound.settings.conditions import Condition, ContextRules
 
-TABS = ("General", "Signals", "Angles", "Industries", "States", "Roles", "Copy", "Mailboxes", "Overrides", "Tests")
+TABS = (
+    "General", "Signals", "Angles", "Industries", "States", "Roles", "Copy", "Mailboxes", "Overrides", "Tests",
+    "Focus", "Named accounts",
+)
+# Tabs added after the sheet was first made (Harry, 30 Sep 2026): a sheet without them reads as
+# if they were empty, so settings_sync keeps working until they are added.
+OPTIONAL_TABS = frozenset({"Focus", "Named accounts"})
 
 # Source keys (SPEC 7). A signal row names one or more of these.
 SOURCE_KEYS = (
@@ -26,6 +33,7 @@ SOURCE_KEYS = (
     "irs_bmf",
     "layoffs",
     "calendar",
+    "named",
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
 TEXT_SOURCES = frozenset({"clay_careers", "job_posts"})
@@ -49,6 +57,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     ),
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
+    "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
 }
 # Fields that count days up to the moment they were read. A source stores each as of its
 # observed_at; scoring adds the days since then, so a fact read months ago still tells the truth.
@@ -84,13 +93,13 @@ class General:
     """The General tab. Defaults are SPEC 5's; keys marked (build) were added by the build."""
 
     live_sending: bool = False
-    daily_enrol_cap: int = 30
+    weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
     control_share: float = 0.15
     priority_threshold: int = 50
     standard_threshold: int = 20
     score_cap: int = 100
-    clay_monthly_credits: float = 0.0  # SPEC: a quarter of the Clay pool; 0 until Harry confirms the pool
-    apollo_monthly_credits: int = 1500
+    clay_monthly_credits: float = 2000.0  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week); 0 = no Clay calls
+    apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)
     apollo_floor: int = 5000
     approver_slack_ids: tuple[str, ...] = ()
     escalation_email: str = "harry@spill.chat"
@@ -243,6 +252,24 @@ class Test:
 
 
 @dataclass(frozen=True)
+class Focus:
+    """A row of the Focus tab: the share of each week's enrolment to give an industry group."""
+
+    industry_group: str
+    share: float  # 0 to 1
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class NamedAccount:
+    """A row of the Named accounts tab: a company Harry wants approached."""
+
+    domain: str
+    name: str = ""
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class Settings:
     general: General
     signals: tuple[Signal, ...] = ()
@@ -254,6 +281,8 @@ class Settings:
     mailboxes: tuple[Mailbox, ...] = ()
     overrides: tuple[Override, ...] = ()
     tests: tuple[Test, ...] = ()
+    focus: tuple[Focus, ...] = ()
+    named_accounts: tuple[NamedAccount, ...] = ()
     synced_at: datetime | None = None
     versions: dict[str, Any] = field(default_factory=dict)  # tab -> effective_from of the version in force
 
@@ -273,6 +302,14 @@ class Settings:
 
     def active_states(self) -> tuple[str, ...]:
         return tuple(s.state for s in self.states if s.active)
+
+    def industry_group_of(self, account: Mapping[str, Any]) -> str:
+        """The account's industry group: its own, else its label's on the Industries tab."""
+        group = str(account.get("industry_group") or "").strip()
+        if group:
+            return group
+        ind = self.industry(str(account.get("industry") or ""))
+        return ind.industry_group if ind else ""
 
     def mailboxes_for(self, owner: str, status: str | None = "Active") -> tuple[Mailbox, ...]:
         return tuple(m for m in self.mailboxes if m.owner_name == owner and (status is None or m.status == status))

@@ -1,4 +1,4 @@
-"""Test doubles: a recording HTTP transport and a context builder. No network, no GCP."""
+"""Test doubles: a recording HTTP transport and a context builder. No network, no database server."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from us_outbound.clients.bq import MemoryStore, Store
+from us_outbound.clients.db import MemoryStore, Store
 from us_outbound.clients.guard import Guard
 from us_outbound.clients.http import Response
 from us_outbound.context import Clients, Context, Secrets, boundaries_for
@@ -81,7 +81,7 @@ def make_context(
     transport = transport or FakeTransport()
     store = store or MemoryStore(guard)
     store.guard = guard
-    secrets = Secrets(guard, project="test", fetch=lambda name: f"test-{name}")
+    secrets = Secrets(guard, fetch=lambda name: f"test-{name}")  # name: the variable, e.g. US_OUTBOUND_HUBSPOT_TOKEN
     clients = Clients(
         guard, transport, secrets, store, settings, google_credentials=google_credentials, claude_sdk=claude_sdk
     )

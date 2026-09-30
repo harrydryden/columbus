@@ -14,7 +14,7 @@ from us_outbound.clean.domains import (
     record_alias,
     root_domain,
 )
-from us_outbound.clients.bq import MemoryStore
+from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
@@ -177,7 +177,7 @@ def test_record_alias_writes_domain_aliases(store):
     assert store.tables["domain_aliases"] == [
         {"alias": "oldname.com", "root_domain": "newname.com", "source": "redirect", "added_at": NOW}
     ]
-    writes = store.guard.writes("bq")
+    writes = store.guard.writes("db")
     assert writes and writes[-1].target == "us_outbound.domain_aliases"
     # The same alias again is a no-op.
     assert record_alias(store, "oldname.com", "newname.com", "redirect", NOW) is False

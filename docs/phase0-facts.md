@@ -17,7 +17,8 @@ Status key:
 | `us_outbound_*` properties | Confirmed absent | None exist on companies or contacts |
 | "US Outbound" property group | Open | Not visible through the tools; probably absent |
 | Hub tier and remaining custom-property allowance | Open | Not exposed. About 114 custom contact properties and 70 custom company properties exist |
-| Private-app token for the jobs | Open | To be created by Harry before 26 Oct, with the SPEC 13 scopes |
+| API credential for the jobs | Open | **A service key, not a private app.** HubSpot stops new legacy private apps in existing accounts on 26 Oct 2026, and names service keys (beta) as the replacement for system-to-system use. The key is sent as `Authorization: Bearer`, like a private-app token, so the client needs no change. Service keys don't support webhooks; the jobs poll, so none are needed. Scopes in phase0-runbook.md §5 |
+| API versions | Noted 30 Sep | HubSpot ends support for v1–v3 APIs in Sept 2027. The client uses CRM v3, communication preferences v4 and associations v4. v3 is fine for v1 (to 18 Dec 2026); moving to the new API versions is a phase 4 item |
 
 ## Clay (workspace "Spill", 1336346)
 
@@ -26,7 +27,7 @@ Status key:
 | Existing functions | Confirmed | Work Email `t_0tk0v4lhJ895hhhhTHJ`, Company Latest Funding `t_0tk0v4ehpQ6WaeuCoQf`, Website Technology Stack `t_0tk0v4lEmZDggj3wRwB`, Website Traffic `t_0tk0v4lJQkpANSDTxf9` |
 | "US Outbound" folder and functions | Open | Not created yet |
 | Functions callable programmatically | Partly | Yes through Clay's MCP (a run needs a subroutine id, task id and field mapping). A REST endpoint the Python jobs can call with an API key is not yet confirmed, so `clients/clay.py` marks it PHASE0-CONFIRM and keeps the CSV fallback |
-| Plan tier, monthly credits and actions, spend limits | Open | Not exposed. `clay_monthly_credits` stays 0 (no Clay calls) until Harry gives the pool |
+| Plan tier, monthly credits and actions, spend limits | Open | Not exposed. Harry set `clay_monthly_credits` to 2,000 a month (30 Sep) |
 
 ## Apollo (team 6a85cc72550d280018aa9e9f)
 
@@ -47,13 +48,29 @@ Status key:
 | Harry's user id | Confirmed | `U098X453UAG` (the only approver) |
 | Bot app | Open | To be created from `deploy/slack-app-manifest.yaml` |
 
-## Google Cloud / BigQuery (project spill-warehouse-test)
+## Infrastructure: Railway, and one Google service account
+
+**Decision (Harry, 30 Sep 2026):** everything Google Cloud was to do moves to Railway, where Spill already has a paid account:
+
+| What | Railway | Replaces |
+| :- | :- | :- |
+| Compute | One always-on worker service. It is built from the `Dockerfile` and runs `us-outbound scheduler`, which starts every job on the `ops/schedule.py` table | Cloud Run Jobs and Cloud Scheduler (SPEC 3) |
+| Database | Railway PostgreSQL, schema `us_outbound` | BigQuery dataset `us_outbound` (SPEC 3, 6) |
+| Secrets | Sealed service variables | Secret Manager (SPEC 1.7) |
+| Images | Built by Railway from the repository | Artifact Registry |
+
+An earlier decision the same day put the system in its own Google Cloud project, Columbus (`columbus-510209`, number 548271199497, in the spill.chat organization). That project now holds only a service account. The service account reads and writes the settings sheet through the Sheets API. It needs no billing. The jobs never read the warehouse project `spill-warehouse-test`.
 
 | Fact | Status | Value |
 | :- | :- | :- |
-| Location of existing datasets | Confirmed | All 24 named datasets are in **EU**, so us_outbound uses EU (SPEC 6: "same location as the project's existing datasets") |
-| Dataset us_outbound | Confirmed absent | Created by `us-outbound bq apply` |
-| Other GCP projects | Open | Can't be listed from here. Confirm the project for Cloud Run and Secret Manager |
+| Railway project | Not created yet | "Columbus", in Spill's workspace (docs/railway-setup.md) |
+| Region (data residency) | Decided | **EU West (Amsterdam)**, `europe-west4-drams3a`, for the worker and Postgres |
+| Database | Not created yet | Railway PostgreSQL; tables created by `us-outbound db apply --live` |
+| Secrets | Not added yet | Sealed variables on the us-outbound service: the six keys, the Sheets key, the sheet id and `DATABASE_URL` (`${{Postgres.DATABASE_URL}}`) |
+| Google project | Created | `columbus-510209` (Columbus). Only the Google Sheets API is enabled. No billing is needed |
+| Sheets service account | Not created yet | `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com`, with no project roles. The settings sheet is shared with it as Editor. Its JSON key goes in `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON`. The spill.chat organization may block key creation (railway-setup.md, step d) |
+| Railway config as code | Checked 30 Sep | `railway.json` and `railway.toml` are deprecated. New services cannot use them, and they stop being read on 1 Dec 2026. The Dockerfile holds the start command; the dashboard settings are listed in railway-setup.md |
+| Sealed variables | Checked 30 Sep | They are not passed to `railway run` or `railway shell`. Commands run inside the worker with `railway ssh -- us-outbound …` |
 
 ## Website (Webflow site 60b75255186ee4cfc87b1cc0)
 
@@ -66,4 +83,4 @@ Status key:
 ## Not reachable from here
 
 - **Instantly:** there is no connector and no key in this session. Still to check: the plan, email and uploaded-contact caps and current use, whether the emails, reply, forward and accounts endpoints exist, the custom-variable length limit, same-address follow-ups, and the warmup status of the four mailboxes.
-- **Secrets:** they will live in Secret Manager. None exist yet.
+- **Secrets:** they will live in sealed Railway variables. None exist yet.

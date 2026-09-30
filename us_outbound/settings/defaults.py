@@ -37,6 +37,9 @@ COLUMNS: dict[str, list[str]] = {
         "test_id", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "read_date",
         "decision_rule", "status", "result",
     ],
+    # Added 30 Sep 2026 (Harry); a sheet without them reads as if they were empty.
+    "Focus": ["industry_group", "share", "note"],
+    "Named accounts": ["domain", "name", "note"],
 }
 assert tuple(COLUMNS) == TABS
 
@@ -53,18 +56,23 @@ HARRY_TO_FILL = "Harry to fill"
 
 _GENERAL: list[tuple[str, str, str]] = [
     ("live_sending", "no", "Live needs yes here and the --live flag. Stays no until Harry signs off (SPEC 0.3)."),
-    ("daily_enrol_cap", "30", "Most new accounts enrolled in a working day (SPEC 9)."),
+    ("weekly_enrol_cap", "150", "Most new accounts enrolled in a week (Monday to Sunday, UK time). Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
     ("priority_threshold", "50", "Score at or above this is Priority."),
     ("standard_threshold", "20", "Score at or above this is Standard; below it is Control."),
     ("score_cap", "100", "Cap on an account's total score."),
     (
         "clay_monthly_credits",
-        "0",
-        "SPEC: a quarter of the Clay pool, until credits per account are measured. "
-        "0 (no Clay spend) until Harry confirms the pool in phase 0.",
+        "2000",
+        "Clay credits the jobs may spend each calendar month (UK time), about 500 a week. "
+        "Each weekday may use what is left ÷ the weekdays left. 0 means no Clay calls.",
     ),
-    ("apollo_monthly_credits", "1500", "Monthly Apollo credit budget."),
+    (
+        "apollo_monthly_credits",
+        "2000",
+        "Apollo credits the jobs may spend each calendar month (UK time), about 500 a week. "
+        "Each weekday may use what is left ÷ the weekdays left.",
+    ),
     ("apollo_floor", "5000", "New verification stops when Apollo credits fall below this."),
     (
         "approver_slack_ids",
@@ -202,6 +210,11 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str]] = [
         "Layoffs", "layoffs", "days_since_layoff <= 90",
         "", "0", "", "Suppress", "", "90",
         "Suppresses the domain for 90 days after a layoff. SPEC 5 default.",
+    ),
+    (
+        "Named by Harry", "named", "named = true",
+        "", "30", "", "Score", "", "365",
+        "Companies on the Named accounts tab (Harry, 30 Sep 2026). They pass every other check as usual.",
     ),
 ]
 
@@ -467,7 +480,7 @@ _FIRST_TEST = {
     "start_date": "",
     "read_date": "",
     "decision_rule": (
-        "reply rate, human replies within 21 days of step 1 ÷ accounts with step 1 delivered; "
+        "reply rate, human replies within 28 days of step 1 ÷ accounts with step 1 delivered; "
         "detects a 2× difference"
     ),
     "status": "planned",
@@ -516,6 +529,8 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
         ],
         "Overrides": [],
         "Tests": [dict(_FIRST_TEST)],
+        "Focus": [],
+        "Named accounts": [],
     }
     for tab, rows in tabs.items():
         for row in rows:
