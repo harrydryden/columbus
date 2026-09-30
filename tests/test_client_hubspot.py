@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from tests.fakes import FakeTransport
-from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
+from us_outbound.clients.guard import Boundaries, Guard, GuardViolation, Op
 from us_outbound.clients.hubspot import HubSpot
 
 BASE = "https://api.hubapi.com"
@@ -143,10 +143,31 @@ def test_update_company_reads_current_when_not_supplied():
 
 def test_update_contact_live_when_empty():
     hs, t, _ = make()
+    t.route("GET", "/crm/v3/objects/contacts/k1", body={"id": "k1", "properties": {"hs_lead_status": ""}})
     t.route("PATCH", "/crm/v3/objects/contacts/k1", body={"id": "k1"})
     props = {"hs_lead_status": "CONNECTED", "us_outbound_reply_class": "positive"}
     assert hs.update_contact("k1", props, current={"hs_lead_status": ""}) == {"id": "k1"}
-    assert [(r.method, r.json) for r in t.requests] == [("PATCH", {"properties": props})]
+    assert [(r.method, r.json) for r in t.requests] == [("GET", None), ("PATCH", {"properties": props})]
+
+
+def test_a_callers_empty_is_rechecked_before_the_patch():
+    """The caller saw an empty owner, but a rep has since assigned themselves: nothing is overwritten."""
+    hs, t, _ = make()
+    t.route("GET", "/crm/v3/objects/contacts/k1", body={"id": "k1", "properties": {"hubspot_owner_id": "999"}})
+    with pytest.raises(GuardViolation):
+        hs.update_contact("k1", {"hubspot_owner_id": "owner-harry"}, current={"hubspot_owner_id": ""})
+    assert [r.method for r in t.requests] == ["GET"]
+
+
+def test_the_guard_refuses_an_empty_only_write_without_its_current_value():
+    guard = Guard(live=True, bounds=BOUNDS)
+    op = Op("contact.update", target="contacts", write=True, detail={"properties": ["hubspot_owner_id"]})
+    with pytest.raises(GuardViolation, match="current value not supplied"):
+        guard.authorize("hubspot", op)
+    partial = Op("contact.update", target="contacts", write=True,
+                 detail={"properties": ["hubspot_owner_id", "lifecyclestage"], "current": {"lifecyclestage": ""}})
+    with pytest.raises(GuardViolation, match="hubspot_owner_id"):
+        guard.authorize("hubspot", partial)
 
 
 def test_associate_uses_v4_default():
@@ -239,6 +260,10 @@ def test_unsubscribe_and_gdpr_delete_shapes():
     assert req.url == f"{BASE}/communication-preferences/v4/statuses/jane%2Bx%40acme.com/unsubscribe-all"
     assert req.params == {"channel": "EMAIL"}
 
+    with pytest.raises(GuardViolation):  # only the erase job may GDPR-delete
+        hs.gdpr_delete_contact("jane@acme.com")
+    assert len(t.requests) == 1
+    hs.guard.configure(job="erase")
     hs.gdpr_delete_contact("jane@acme.com")
     req = t.requests[1]
     assert (req.url, req.json) == (

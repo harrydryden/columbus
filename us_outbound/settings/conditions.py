@@ -21,7 +21,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Union
 
-OPERATORS = ("=", "!=", ">", ">=", "<", "<=", "in", "contains")
 NEAR_CHARS = 60  # how close a context term must be to a match, either side
 
 Value = Union[int, float, str, bool, tuple]

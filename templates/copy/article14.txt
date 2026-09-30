@@ -1,0 +1,9 @@
+# DRAFT — for Harry to approve (SPEC 14 phase 0: "For Harry to approve: ... the legitimate-interests text").
+# The UK GDPR Article 14 notice step 1 carries: where the contact data came from, the lawful basis, and where the
+# privacy notice is (SPEC 10: "Step 1 also says where the contact data came from, as UK GDPR Article 14 requires").
+# It sits just above the footer and points at the footer's privacy link rather than repeating it, so step 1 keeps
+# exactly one link. Provider names are written without ".io" so no mail client turns them into a second link.
+# Lines starting with "#" are comments: render.py strips them. Placeholders in single braces:
+#   {company}  the account's clean name
+Where we got your details: we found your name, role and work email through Apollo and Clay, which provide business contact data, and read about {company} on its public website.
+We contact you on the basis of our legitimate interests in telling businesses about Spill. The privacy notice at the link below explains what we hold, how long we keep it and your rights, including to object.

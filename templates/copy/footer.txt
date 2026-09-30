@@ -1,0 +1,11 @@
+# DRAFT — for Harry to approve (SPEC 14 phase 0: "For Harry to approve: the footer text, the privacy page link").
+# The footer every step ends with (SPEC 10 "Sequence"; SPEC 13 CAN-SPAM; SPEC 15: include one short advertisement line).
+# Lines starting with "#" are comments: render.py strips them. Everything else is sent, line for line.
+# Placeholders in single braces are filled at render time:
+#   {sender}          the mailbox owner's name, then ", " and their role when the Mailboxes tab has one
+#   {postal_address}  General tab postal_address (a send is blocked while it is blank)
+#   {privacy_url}     General tab privacy_url, the privacy and opt-out page; the only link in step 1
+{sender}, Spill
+{postal_address}
+This is a marketing email from Spill.
+Reply STOP or use this link to opt out: {privacy_url}

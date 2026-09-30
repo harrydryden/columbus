@@ -23,6 +23,7 @@ class SentRequest:
     params: dict[str, Any] | None
     json: Any
     data: Any
+    idempotent: bool = True
 
 
 @dataclass
@@ -32,6 +33,7 @@ class _Route:
     status: int
     body: Any
     fn: Callable[[SentRequest], Any] | None
+    headers: dict[str, str] | None = None
 
 
 @dataclass
@@ -42,17 +44,22 @@ class FakeTransport:
     routes: list[_Route] = field(default_factory=list)
     default_body: Any = field(default_factory=dict)
 
-    def route(self, method: str, url_part: str, body: Any = None, status: int = 200, fn=None) -> "FakeTransport":
-        self.routes.append(_Route(method.upper(), url_part, status, body, fn))
+    def route(
+        self, method: str, url_part: str, body: Any = None, status: int = 200, fn=None,
+        headers: dict[str, str] | None = None,
+    ) -> "FakeTransport":
+        self.routes.append(_Route(method.upper(), url_part, status, body, fn, headers))
         return self
 
-    def send(self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0) -> Response:
-        req = SentRequest(method.upper(), url, dict(headers), params, json, data)
+    def send(
+        self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0, idempotent=True
+    ) -> Response:
+        req = SentRequest(method.upper(), url, dict(headers), params, json, data, idempotent)
         self.requests.append(req)
         for r in reversed(self.routes):
             if r.method == req.method and r.url_part in url:
                 body = r.fn(req) if r.fn else r.body
-                return Response(r.status, body if body is not None else {})
+                return Response(r.status, body if body is not None else {}, dict(r.headers or {}))
         return Response(200, self.default_body)
 
     def writes(self) -> list[SentRequest]:
@@ -70,7 +77,7 @@ def make_context(
     claude_sdk: Any = None,
     google_credentials: Any = None,
 ) -> Context:
-    guard = Guard(live=live, bounds=boundaries_for(settings, TEST_SHEET_ID))
+    guard = Guard(live=live, bounds=boundaries_for(settings, TEST_SHEET_ID), job=job)
     transport = transport or FakeTransport()
     store = store or MemoryStore(guard)
     store.guard = guard

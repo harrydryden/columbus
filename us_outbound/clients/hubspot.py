@@ -225,12 +225,20 @@ class HubSpot(HttpClient):
     # -- writes (guarded; dry-run returns dry_result) ----------------------------
 
     def _current_for(self, obj: str, record_id: str, properties: Mapping[str, Any], current: Mapping[str, Any] | None) -> dict:
-        """Existing values of the empty-only fields being set; reads any the caller did not supply."""
-        cur = dict(current or {})
-        missing = sorted((set(properties) & HUBSPOT_EMPTY_ONLY) - set(cur))
-        if missing:
-            cur.update({k: v for k, v in self._get(obj, record_id, missing).items() if k in missing})
-        return {k: cur.get(k) for k in set(properties) & HUBSPOT_EMPTY_ONLY}
+        """Existing values of the empty-only fields being set, read fresh from HubSpot just before the PATCH.
+
+        A caller's "empty" is never trusted (a search result can be stale, and someone may
+        have set the owner since). A caller's non-empty value is kept: it can only make the
+        guard refuse, so no read is needed.
+        """
+        wanted = sorted(set(properties) & HUBSPOT_EMPTY_ONLY)
+        if not wanted:
+            return {}
+        caller = dict(current or {})
+        if any(caller.get(k) not in (None, "") for k in wanted):
+            return {k: caller.get(k) for k in wanted}
+        fresh = self._get(obj, record_id, wanted)
+        return {k: fresh.get(k) for k in wanted}
 
     def _create(self, obj: str, properties: Mapping[str, Any], reply_class: str) -> dict | None:
         op = Op(

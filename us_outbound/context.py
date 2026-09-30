@@ -70,6 +70,7 @@ def boundaries_for(settings: Settings, settings_sheet_id: str = "") -> Boundarie
         settings_sheet_id=settings_sheet_id or os.environ.get("US_OUTBOUND_SETTINGS_SHEET_ID", ""),
         alert_channel=g.alert_channel,
         dev_channel=g.dev_channel,
+        escalation_email=g.escalation_email.strip().lower(),
     )
 
 

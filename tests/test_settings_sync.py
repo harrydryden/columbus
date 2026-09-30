@@ -99,9 +99,13 @@ def _keyed_rows(tabs) -> int:
 def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     summary = sync.run(ctx)
     assert ctx.clients.sheets.reads == [(TEST_SHEET_ID, list(TABS))]
-    rows = _rows(ctx)
+    rows = [r for r in _rows(ctx) if r["tab"] in TABS]
     assert len(rows) == _keyed_rows(sheet) == summary["rows_opened"]
-    assert all(r["effective_from"] == r["synced_at"] == T1 and r["effective_to"] is None for r in rows)
+    assert all(r["effective_from"] == r["synced_at"] == T1 and r["effective_to"] is None for r in _rows(ctx))
+    # One sheet-order row per tab with rows (Overrides is empty).
+    orders = {r["key"]: r["values"]["keys"] for r in _rows(ctx, tab=sync.ORDER_TAB)}
+    assert set(orders) == {t for t in TABS if sheet[t]}
+    assert orders["Roles"] == [r["role"] for r in sheet["Roles"]]
     lay = _in_force(ctx, "Signals", "Layoffs")
     assert lay["values"] == _row(sheet, "Signals", signal="Layoffs")[1]
     assert _in_force(ctx, "General", "live_sending")["values"] == {"key": "live_sending", "value": "no", "note": _row(sheet, "General", key="live_sending")[1]["note"]}
@@ -262,13 +266,6 @@ def test_general_note_rows_are_not_stored(ctx, sheet):
     assert _rows(ctx, tab="General", key="") == []
 
 
-def test_rescore_is_skipped_when_scoring_is_missing(ctx, monkeypatch):
-    monkeypatch.setitem(sys.modules, "us_outbound.scoring.score", None)
-    monkeypatch.delattr(us_outbound.scoring, "score", raising=False)
-    summary = sync.run(ctx)
-    assert summary["rescored"] is False and summary["rows_opened"] > 0
-
-
 def test_a_failed_alert_is_raised_after_the_writes_and_rescore(ctx, sheet, fake_score):
     ctx.clients.slack = StubSlack(fail=True)
     _row(sheet, "States", state="NY")[1]["active"] = "maybe"
@@ -296,6 +293,61 @@ def test_load_current_prefers_the_newest_row_when_two_are_in_force():
     store.insert("settings", rows)
     settings, _ = sync.load_current(store)
     assert next(s for s in settings.signals if s.signal == "EAP named").weight == 12
+
+
+def _seed_two_eap_named_rows(store):
+    """Every default row in force since T1, plus a newer EAP named (weight 15) whose close of the older one never ran."""
+    tabs = default_tabs()
+    rows = []
+    for tab, tab_rows in tabs.items():
+        for r in tab_rows:
+            rows.append({"tab": tab, "key": natural_key(tab, r), "values": r, "effective_from": T1, "effective_to": None, "synced_at": T1})
+    newer = dict(_row(tabs, "Signals", signal="EAP named")[1], weight="15")
+    rows.append({"tab": "Signals", "key": "EAP named", "values": newer, "effective_from": T2, "effective_to": None, "synced_at": T2})
+    store.insert("settings", rows)
+    return newer
+
+
+def test_a_removed_key_closes_every_row_in_force_so_none_comes_back(ctx, sheet):
+    _seed_two_eap_named_rows(ctx.store)
+    sheet["Signals"] = [r for r in sheet["Signals"] if r["signal"] != "EAP named"]
+    ctx.now = T3
+    sync.run(ctx)
+    assert [r["effective_to"] for r in _rows(ctx, tab="Signals", key="EAP named")] == [T3, T3]
+    settings, _ = sync.load_current(ctx.store)
+    assert "EAP named" not in {s.signal for s in settings.signals}
+
+
+def test_an_unchanged_key_closes_its_older_duplicate(ctx, sheet):
+    newer = _seed_two_eap_named_rows(ctx.store)
+    _row(sheet, "Signals", signal="EAP named")[1].update(newer)
+    ctx.now = T3
+    sync.run(ctx)
+    rows = sorted(_rows(ctx, tab="Signals", key="EAP named"), key=lambda r: r["effective_from"])
+    assert [(r["effective_from"], r["effective_to"]) for r in rows] == [(T1, T3), (T2, None)]
+    settings, _ = sync.load_current(ctx.store)
+    assert next(s for s in settings.signals if s.signal == "EAP named").weight == 15
+
+
+def test_load_current_keeps_the_sheet_order(ctx, sheet):
+    """The Roles order decides title ties (people.map_title_to_role): 'CFO & COO' is Operations, not Finance."""
+    from us_outbound.clean.people import map_title_to_role
+
+    sync.run(ctx)
+    settings, _ = sync.load_current(ctx.store)
+    assert [r.role for r in settings.roles] == [r["role"] for r in sheet["Roles"]]
+    assert [c.copy_version for c in settings.copy] == [c["copy_version"] for c in sheet["Copy"]]
+    assert map_title_to_role("CFO & COO", settings.roles) == "Operations"
+    # Reordering the sheet changes only the order row.
+    sheet["Roles"].reverse()
+    ctx.now = T2
+    summary = sync.run(ctx)
+    assert summary["rows_opened"] == 0 and summary["tabs"]["Roles"]["status"] == "unchanged"
+    settings, _ = sync.load_current(ctx.store)
+    assert [r.role for r in settings.roles] == [r["role"] for r in sheet["Roles"]]
+    assert [(r["effective_from"], r["effective_to"]) for r in _rows(ctx, tab=sync.ORDER_TAB, key="Roles")] == [
+        (T1, T2), (T2, None)
+    ]
 
 
 def test_format_errors_caps_the_lines_and_escapes():

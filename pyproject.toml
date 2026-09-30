@@ -9,7 +9,7 @@ dependencies = [
   "google-cloud-bigquery>=3.25",
   "google-cloud-secret-manager>=2.20",
   "anthropic>=1.0",
-  "tldextract>=5.1",
+  "tldextract>=5.3",
 ]
 
 [project.optional-dependencies]

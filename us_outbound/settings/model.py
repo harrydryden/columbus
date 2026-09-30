@@ -50,6 +50,9 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
 }
+# Fields that count days up to the moment they were read. A source stores each as of its
+# observed_at; scoring adds the days since then, so a fact read months ago still tells the truth.
+AGED_FACTS = frozenset({"days_since_funding", "people_leader_days_in_title", "days_since_layoff", "days_since_first_visit"})
 
 ACTIONS = ("Score", "Hold", "Exclude", "Suppress")
 TIERS = ("Priority", "Standard", "Control", "Held", "Excluded")
@@ -100,7 +103,10 @@ class General:
     postal_address: str = ""
     privacy_url: str = ""
     send_window: SendWindow = SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
-    blackout_dates: tuple[DateRange, ...] = ()
+    blackout_dates: tuple[DateRange, ...] = (  # SPEC 5; the same as the sheet default (defaults.py)
+        DateRange(date(2026, 11, 23), date(2026, 11, 27)),
+        DateRange(date(2026, 12, 18), date(2027, 1, 4)),
+    )
     recontact_person_months: int = 12
     recontact_account_months: int = 6
     stop_rule_accounts: int = 1500

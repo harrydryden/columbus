@@ -24,6 +24,7 @@ from typing import Any, Mapping
 from us_outbound.logs import log, redact
 
 US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
+ERASE_JOB = "erase"  # the only job that may GDPR-delete in HubSpot (SPEC 6 erase --email)
 SETTINGS_SHEET_TITLE = "US Outbound – Settings"
 BQ_DATASET = "us_outbound"
 
@@ -117,6 +118,7 @@ class Boundaries:
     settings_sheet_id: str = ""
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
+    escalation_email: str = ""  # the only address an Instantly forward may go to (SPEC 11)
     bq_dataset: str = BQ_DATASET
 
     @property
@@ -125,16 +127,19 @@ class Boundaries:
 
 
 class Guard:
-    def __init__(self, live: bool = False, bounds: Boundaries | None = None):
+    def __init__(self, live: bool = False, bounds: Boundaries | None = None, job: str = ""):
         self.live = live
         self.bounds = bounds or Boundaries()
+        self.job = job  # the job this process runs (Context.job); some writes belong to one job only
         self.calls: list[CallRecord] = []
 
-    def configure(self, *, live: bool | None = None, bounds: Boundaries | None = None) -> None:
+    def configure(self, *, live: bool | None = None, bounds: Boundaries | None = None, job: str | None = None) -> None:
         if live is not None:
             self.live = live
         if bounds is not None:
             self.bounds = bounds
+        if job is not None:
+            self.job = job
 
     # -- the one entry point -------------------------------------------------
 
@@ -249,8 +254,13 @@ class Guard:
                 need_registry_accounts()
         elif a in {"lead.add", "lead.delete", "lead.update", "lead.stop"}:
             need_us_campaign()
-        elif a in {"email.reply", "email.forward"}:
+        elif a == "email.reply":
             need_registry_accounts()
+        elif a == "email.forward":
+            need_registry_accounts()
+            to = {str(x).strip().lower() for x in op.detail.get("to", ())}
+            if not to or not b.escalation_email or to != {b.escalation_email.strip().lower()}:
+                raise GuardViolation("Instantly forwards go only to escalation_email (SPEC 11)")
         elif a in {"account.warmup_enable", "account.warmup_disable", "account.pause", "account.resume"}:
             need_registry_accounts()
         elif a == "blocklist.add":
@@ -268,8 +278,10 @@ class Guard:
         current = op.detail.get("current", {}) or {}
 
         def empty_only_ok() -> None:
-            for p in props & HUBSPOT_EMPTY_ONLY:
-                if current.get(p) not in (None, ""):
+            for p in sorted(props & HUBSPOT_EMPTY_ONLY):
+                if p not in current:
+                    raise GuardViolation(f"HubSpot {p} may only be set when empty; current value not supplied (SPEC 1.2)")
+                if current[p] not in (None, ""):
                     raise GuardViolation(f"HubSpot {p} may only be set when empty (SPEC 1.2)")
 
         def need_warm() -> None:
@@ -318,7 +330,7 @@ class Guard:
         elif a == "communication.unsubscribe":
             pass  # SPEC 11 routing: opted out in HubSpot when the contact exists there
         elif a == "contact.gdpr_delete":
-            if not op.detail.get("erasure_request"):
+            if not op.detail.get("erasure_request") or self.job != ERASE_JOB:
                 raise GuardViolation("HubSpot GDPR delete only runs from the erase command (SPEC 6)")
         else:
             raise GuardViolation(f"HubSpot write {a!r} is not allowed")
