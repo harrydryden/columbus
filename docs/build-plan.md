@@ -62,7 +62,7 @@ These run against fakes. The same checks are repeated against the real systems o
 
 See `docs/phase0-runbook.md` for commands, and `docs/phase0-facts.md` for what has already been confirmed.
 
-1. **Google Cloud:** confirm the project and region. Run `deploy/setup.sh` (service account, secrets, registry). Then `us-outbound bq apply --live` creates `us_outbound` in EU.
+1. **Google Cloud:** create the project `columbus` and link it to Spill's billing account. Run `deploy/setup.sh` (service account, secrets, registry). Then `us-outbound bq apply --live` creates `us_outbound` in EU.
 2. **Secrets:** add the Apollo, Clay, Instantly, HubSpot (private app, SPEC 13 scopes) and Slack keys to Secret Manager. Create the Claude key with a $10 monthly limit.
 3. **Settings sheet:** create "US Outbound – Settings" from the defaults and share it with the service account. The phase-0 ids go in the General tab:
    - pipeline `82002613`

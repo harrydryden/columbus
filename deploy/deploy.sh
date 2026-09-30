@@ -2,7 +2,7 @@
 # Build the image and create or update one Cloud Run Job per entry in deploy/jobs.yaml,
 # plus a Cloud Scheduler job for each one with a schedule (SPEC 3, 9, 13).
 #
-#   PROJECT=spill-warehouse-test REGION=europe-west2 SETTINGS_SHEET_ID=... deploy/deploy.sh
+#   PROJECT=columbus REGION=europe-west2 SETTINGS_SHEET_ID=... deploy/deploy.sh
 #
 # Cloud Run Jobs are not HTTP services: there is no public endpoint (SPEC 2). Cloud
 # Scheduler starts each job through the Cloud Run Admin API as the us-outbound service

@@ -47,13 +47,17 @@ Status key:
 | Harry's user id | Confirmed | `U098X453UAG` (the only approver) |
 | Bot app | Open | To be created from `deploy/slack-app-manifest.yaml` |
 
-## Google Cloud / BigQuery (project spill-warehouse-test)
+## Google Cloud / BigQuery
+
+**Decision (Harry, 30 Sep):** the system runs in its own Google Cloud project, `columbus`, separate from the warehouse project `spill-warehouse-test`. SPEC 3 said "Spill's existing Google Cloud project". A separate project keeps the outbound system's service account, secrets and costs apart from the warehouse. The jobs never read the warehouse datasets.
 
 | Fact | Status | Value |
 | :- | :- | :- |
-| Location of existing datasets | Confirmed | All 24 named datasets are in **EU**, so us_outbound uses EU (SPEC 6: "same location as the project's existing datasets") |
-| Dataset us_outbound | Confirmed absent | Created by `us-outbound bq apply` |
-| Other GCP projects | Open | Can't be listed from here. Confirm the project for Cloud Run and Secret Manager |
+| Project | Decided | `columbus`, linked to Spill's billing account. If the id is taken globally, only `PROJECT` / `US_OUTBOUND_PROJECT` change |
+| Dataset location | Decided | **EU**, like the warehouse's 24 datasets (SPEC 6) |
+| Region for Cloud Run, Scheduler, secrets and registry | Default | `europe-west2` (London) |
+| Dataset us_outbound | Not created yet | Created by `us-outbound bq apply` |
+| Service account | Not created yet | `us-outbound@columbus.iam.gserviceaccount.com`, created by `deploy/setup.sh`. The settings sheet is shared with it |
 
 ## Website (Webflow site 60b75255186ee4cfc87b1cc0)
 

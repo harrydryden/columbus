@@ -16,7 +16,7 @@ prospect; see README "Dry-run and live".
 | :- | :- | :- |
 | Local environment | Harry | `python -m venv .venv && .venv/bin/pip install -e '.[dev]' && .venv/bin/python -m pytest` |
 | Google credentials | Harry | `gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/spreadsheets` |
-| Environment | Harry | `export US_OUTBOUND_PROJECT=spill-warehouse-test US_OUTBOUND_BQ_LOCATION=EU` (EU: where the project's datasets are) |
+| Environment | Harry | `export US_OUTBOUND_PROJECT=columbus US_OUTBOUND_BQ_LOCATION=EU` (EU, like Spill's warehouse datasets) |
 | **[ASK HARRY] Cloud costs** | Harry | Cloud Scheduler is free for 3 jobs per billing account, then $0.10 per job a month (phase 0 schedules 4); Secret Manager is free for 6 secret versions, then $0.06 each a month (7 secrets); Artifact Registry is free to 0.5 GB. SPEC 1.1 allows no new spend without asking. |
 
 ## 1. Plan facts (SPEC 14 "Confirm plan facts")
@@ -34,8 +34,8 @@ prospect; see README "Dry-run and live".
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
 | BigQuery dataset and tables | jobs | `us-outbound bq apply` (prints the DDL), then `us-outbound bq apply --live` | `bq ls us_outbound` lists the tables and views |
-| Service account, roles, empty secrets, image repository | Harry | `DRY_RUN=1 PROJECT=spill-warehouse-test REGION=europe-west2 deploy/setup.sh`, then without `DRY_RUN` | The script ends with "Done" |
-| Secret values | Harry | For each secret: `printf '%s' "$VALUE" \| gcloud secrets versions add NAME --data-file=- --project spill-warehouse-test`. Never in the repo, a shell history file or BigQuery. | `gcloud secrets versions list NAME` shows one version |
+| Service account, roles, empty secrets, image repository | Harry | `DRY_RUN=1 PROJECT=columbus REGION=europe-west2 deploy/setup.sh`, then without `DRY_RUN` | The script ends with "Done" |
+| Secret values | Harry | For each secret: `printf '%s' "$VALUE" \| gcloud secrets versions add NAME --data-file=- --project columbus`. Never in the repo, a shell history file or BigQuery. | `gcloud secrets versions list NAME` shows one version |
 
 Secrets (SPEC 13): `us-outbound-apollo-api-key` (master key), `us-outbound-clay-api-key`,
 `us-outbound-instantly-api-key`, `us-outbound-hubspot-token`, `us-outbound-slack-bot-token`,
@@ -56,7 +56,7 @@ as the service account; leave it empty unless Harry decides otherwise).
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
 | Create "US Outbound – Settings" with the SPEC 5 defaults | jobs | `us-outbound settings bootstrap --live` (prints the new sheet id) | The sheet has ten tabs |
-| Point the jobs at it | Harry | `export US_OUTBOUND_SETTINGS_SHEET_ID=<id>`; share the sheet with `us-outbound@spill-warehouse-test.iam.gserviceaccount.com` as Editor | |
+| Point the jobs at it | Harry | `export US_OUTBOUND_SETTINGS_SHEET_ID=<id>`; share the sheet with `us-outbound@columbus.iam.gserviceaccount.com` as Editor | |
 | First sync | jobs | `us-outbound settings sync` (dry-run still writes BigQuery; errors go to `#us-outbound-dev`) | `us-outbound status` shows "Settings synced" |
 | HubSpot ids on the General tab | Harry | `us-outbound hubspot ids`, then paste `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id` into the General tab (never written automatically) | Next sync carries them |
 
@@ -109,7 +109,7 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
 | Review | Harry | Read the diff (SPEC 13: Harry reviews before each deploy) | |
-| Build and deploy | Harry | `DRY_RUN=1 PROJECT=spill-warehouse-test REGION=europe-west2 SETTINGS_SHEET_ID=<id> deploy/deploy.sh`, then without `DRY_RUN` | `gcloud run jobs list` shows settings_sync, score, mailbox_health, heartbeat_check and suppression_load |
+| Build and deploy | Harry | `DRY_RUN=1 PROJECT=columbus REGION=europe-west2 SETTINGS_SHEET_ID=<id> deploy/deploy.sh`, then without `DRY_RUN` | `gcloud run jobs list` shows settings_sync, score, mailbox_health, heartbeat_check and suppression_load |
 | Heartbeats | jobs | After a day: `us-outbound status` | Every phase-0 job shows ok; `heartbeat_check` alerts `#us-outbound-dev` on a missed one |
 
 Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mailbox_health
