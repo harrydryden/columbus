@@ -12,7 +12,7 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
 4. **Instantly.** We have no connector or key in this session. Please add the API key to Secret Manager. The plan facts in SPEC 14 are still unconfirmed: plan tier, email and contact caps and current use, and whether the emails, reply, forward and accounts endpoints exist.
 5. **Google Cloud.** Which project and region should hold Cloud Run, Scheduler, Secret Manager and Artifact Registry? BigQuery `us_outbound` will go in EU, next to the existing datasets.
-   *Answered (Harry, 30 Sep): a separate project, `columbus`. Region defaults to europe-west2 (London); BigQuery in EU.*
+   *Answered (Harry, 30 Sep): a separate project, Columbus (id `columbus-510209`). Region defaults to europe-west2 (London); BigQuery in EU.*
 6. **Small Google Cloud costs (SPEC 1.1: no new paid services).**
    - Cloud Scheduler is $0.10 per job per month beyond 3 free jobs. There are about 15 jobs by phase 3, so about $1.20 a month.
    - Secret Manager is about $0.06 per secret per month beyond 6 free. We have 7 secrets, so about $0.06 a month.

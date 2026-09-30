@@ -3,7 +3,7 @@
 # every step checks what exists first. Each command is printed before it runs; set
 # DRY_RUN=1 to print them without running anything.
 #
-#   PROJECT=columbus REGION=europe-west2 deploy/setup.sh
+#   PROJECT=columbus-510209 REGION=europe-west2 deploy/setup.sh
 #
 # Needs: gcloud and bq, logged in as someone who can manage IAM on the project.
 # Creates: the service account us-outbound@, its roles (BigQuery data editor on the

@@ -49,15 +49,15 @@ Status key:
 
 ## Google Cloud / BigQuery
 
-**Decision (Harry, 30 Sep):** the system runs in its own Google Cloud project, `columbus`, separate from the warehouse project `spill-warehouse-test`. SPEC 3 said "Spill's existing Google Cloud project". A separate project keeps the outbound system's service account, secrets and costs apart from the warehouse. The jobs never read the warehouse datasets.
+**Decision (Harry, 30 Sep):** the system runs in its own Google Cloud project, "Columbus" (id `columbus-510209`, number 548271199497, in the spill.chat organization), separate from the warehouse project `spill-warehouse-test`. SPEC 3 said "Spill's existing Google Cloud project". A separate project keeps the outbound system's service account, secrets and costs apart from the warehouse. The jobs never read the warehouse datasets.
 
 | Fact | Status | Value |
 | :- | :- | :- |
-| Project | Decided | `columbus`, linked to Spill's billing account. If the id is taken globally, only `PROJECT` / `US_OUTBOUND_PROJECT` change |
+| Project | Created | `columbus-510209` (display name Columbus), in the spill.chat organization. Check that it is linked to Spill's billing account |
 | Dataset location | Decided | **EU**, like the warehouse's 24 datasets (SPEC 6) |
 | Region for Cloud Run, Scheduler, secrets and registry | Default | `europe-west2` (London) |
 | Dataset us_outbound | Not created yet | Created by `us-outbound bq apply` |
-| Service account | Not created yet | `us-outbound@columbus.iam.gserviceaccount.com`, created by `deploy/setup.sh`. The settings sheet is shared with it |
+| Service account | Not created yet | `us-outbound@columbus-510209.iam.gserviceaccount.com`, created by `deploy/setup.sh`. The settings sheet is shared with it |
 
 ## Website (Webflow site 60b75255186ee4cfc87b1cc0)
 
