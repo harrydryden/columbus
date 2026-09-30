@@ -111,7 +111,7 @@ PHASE0_GENERAL = {
     "hubspot_owner_id": "owner-harry",
     "clay_accounts_function_id": "fn-us-accounts",
     "clay_contacts_function_id": "fn-us-contacts",
-    "clay_weekly_credits": "500",
+    "clay_monthly_credits": "2000",
     "clay_credits_per_account": "5",
     "approver_slack_ids": "U_HARRY",
     "postal_address": "Spill Group Ltd, 1 Example Street, London EC1A 1AA, UK",
@@ -249,7 +249,7 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     s = flow["sync1"]
     detail = s["heartbeat"]["detail"]
     assert detail["rejected"] == [] and detail["unusable"] == [] and detail["alerted"] is False
-    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides"}
+    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides", "Focus", "Named accounts"}  # empty tabs
     assert [r for r in s["requests"] if r.method != "GET"] == []
     settings, errors = load_current(flow["world"].store)
     assert settings is not None and not any(errors.values())
@@ -330,7 +330,7 @@ def test_every_job_left_a_heartbeat(flow):
 
 def test_changing_a_weight_changes_the_score_after_the_next_sync(flow):
     detail = flow["sync2"]["heartbeat"]["detail"]
-    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 15}
+    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 16}
     assert detail["rescored"] is True
     before, after = flow["scored"], flow["reweighted"]
     assert before["score"] - after["score"] == 25

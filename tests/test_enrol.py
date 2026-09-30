@@ -355,15 +355,17 @@ def test_budgets_never_hold_back_accounts_already_verified():
     """Clay and Apollo are spent before enrollment, so a spent week limits the queue, not the day."""
     ctx, _ = make()
     ctx.store.insert("credit_ledger", [
-        {"entry_id": "e1", "system": "clay", "credits": 600.0, "occurred_at": NOW - timedelta(days=1)},
-        {"entry_id": "e2", "system": "clay", "credits": 5000.0, "occurred_at": NOW - timedelta(days=7)},  # last week
+        {"entry_id": "e1", "system": "clay", "credits": 2100.0, "occurred_at": NOW - timedelta(days=1)},
+        {"entry_id": "e2", "system": "clay", "credits": 5000.0, "occurred_at": datetime(2026, 9, 20, tzinfo=UTC)},  # September
         {"entry_id": "e3", "system": "apollo", "credits": 120.0, "occurred_at": NOW - timedelta(hours=2)},
     ])
     out = enrol.run(ctx)
     assert out["prepared"] == 3 and out["number_terms"]["binding"] == "ready_accounts"
-    assert out["number_terms"]["budgets"]["clay"] == {"budget": 500.0, "used": 600.0, "remaining": -100.0}
-    assert "Clay: 600 of 500 credits used this week, 0 left." in out["limits"]
-    assert "Apollo: 120 of 500 credits used this week, 380 left." in out["limits"]
+    clay = out["number_terms"]["budgets"]["clay"]
+    assert (clay["budget"], clay["used"], clay["remaining"]) == (2000.0, 2100.0, -100.0)
+    assert any(line.startswith("Clay: 2,100 of 2,000 credits used this month (105%)") and line.endswith("none left this month.")
+               for line in out["limits"])
+    assert any(line.startswith("Apollo: 120 of 2,000 credits used this month (6%)") for line in out["limits"])
 
 
 def queue_of(tiers: dict[str, int], **settings) -> tuple:

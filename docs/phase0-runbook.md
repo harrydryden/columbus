@@ -31,7 +31,7 @@ prospect; see README "Dry-run and live".
 
 | Fact | Who | Status / how |
 | :- | :- | :- |
-| Clay tier, monthly credits and actions; functions creatable and callable through the API; spend limits | Harry | Open. Set `clay_weekly_credits` on the General tab once known (0 means no Clay calls; budgets run Monday to Sunday, UK time). |
+| Clay tier, monthly credits and actions; functions creatable and callable through the API; spend limits | Harry | `clay_monthly_credits` is 2,000 (Harry, 30 Sep), paced by the day; 0 would mean no Clay calls. |
 | Instantly plan; email and uploaded-contact caps and what other campaigns use; emails, reply and accounts endpoints included | Harry | Open (no Instantly access from the build). |
 | HubSpot tier and remaining custom-property allowance; "Spill 3.0" pipeline and stage ids | Harry / jobs | Ids confirmed (phase0-facts.md); `us-outbound hubspot ids` prints them again. Allowance open. |
 | Apollo: when credits lapse; visitor discovery through the API | Harry | Credits lapse 2027-08-21. Discovery: one approved call to confirm. |
@@ -95,6 +95,8 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | Follow-ups stay on the step-1 address | Harry | Two seed leads in Harry's campaign; check steps 2 to 4 come from the step-1 address | Noted in phase0-facts.md |
 | Forward endpoint | Harry | Check `POST /emails/forward` works on our plan | Noted in phase0-facts.md |
 | Tracking off, workspace untouched | Harry | Open and link tracking off on the three campaigns; no workspace setting changed | |
+| Step timing | Harry | The created campaigns show steps on days 0, 7, 14 and 21 (delays 7, 7, 7) | Noted in phase0-facts.md |
+| What Instantly reports back | jobs | `us-outbound mailbox check` reads each inbox's daily sends (`/accounts/analytics/daily`) and each campaign's sending status. Check the field names and the `not_sending_status` codes against a paused campaign, and whether the API reports the plan's usage | `sent_by_day` and `campaign_status` in the mailbox check's summary; codes noted in phase0-facts.md |
 
 ## 8. Clay
 

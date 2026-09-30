@@ -118,9 +118,9 @@ def spec_violation(rec: CallRecord) -> str | None:
     in_registry = bool(accounts) and accounts <= REGISTRY
     if s == "instantly":
         if not rec.write:
-            if a in {"email.list", "email.get", "account.get", "account.list", "warmup.analytics"}:
+            if a in {"email.list", "email.get", "account.get", "account.list", "warmup.analytics", "account.analytics_daily"}:
                 return None if in_registry else f"Instantly {a} not filtered by registry accounts"
-            if a in {"lead.list", "lead.get", "campaign.get", "campaign.steps_analytics"}:
+            if a in {"lead.list", "lead.get", "campaign.get", "campaign.steps_analytics", "campaign.sending_status"}:
                 return None if t.startswith(PREFIX) else f"Instantly {a} on {t!r}"
             if a == "campaign.list":
                 return None if str(d.get("search", "")).startswith(PREFIX.strip()) else "unfiltered campaign list"
@@ -139,6 +139,10 @@ def spec_violation(rec: CallRecord) -> str | None:
             return "Instantly forward to someone other than escalation_email"
         if a in {"email.reply", "email.forward", "account.warmup_enable", "account.pause", "account.resume"}:
             return None if in_registry else f"Instantly {a} from outside the registry"
+        if a == "account.update_limit":  # a registry mailbox's own daily limit, nothing else
+            if not in_registry or set(d) - {"accounts", "daily_limit"}:
+                return f"Instantly {a} beyond a registry account's daily limit"
+            return None
         if a == "blocklist.add":
             entries = list(d.get("entries") or ())
             return None if entries and all(REDACTED_EMAIL.match(e) for e in entries) else "blocklist entry not an email"
@@ -338,10 +342,13 @@ def install_routes(t: FakeTransport) -> None:
     t.route("GET", "api.instantly.ai/api/v2/accounts/",
             fn=lambda r: {"email": r.url.rsplit("/", 1)[1], "status": 1, "warmup_status": 1, "stat_warmup_score": 100})
     t.route("POST", "/accounts/warmup-analytics", {"aggregate_data": {}})
+    t.route("GET", "/accounts/analytics/daily", [{"date": "2026-10-26", "email_account": "hannah@meetspill.org", "sent": 30},
+                                                 {"date": "2026-10-26", "email_account": "someone@eu.example", "sent": 50}])
     t.route("GET", "api.instantly.ai/api/v2/campaigns",
             {"items": [{"id": "cmp-h", "name": HANNAH_CAMPAIGN}, {"id": EU_ID, "name": EU_CAMPAIGN}]})
     t.route("GET", "/campaigns/cmp-h", {"id": "cmp-h", "name": HANNAH_CAMPAIGN})
     t.route("GET", "/campaigns/analytics/steps", [])
+    t.route("GET", "/campaigns/cmp-h/sending-status", {"not_sending_status": 3})
     t.route("POST", "api.instantly.ai/api/v2/campaigns", {"id": "cmp-s", "name": SAM_CAMPAIGN, "status": 0})
     t.route("POST", "/leads/add", {"leads_uploaded": 1, "created_leads": [{"index": 0, "id": "L1", "email": JANE}]})
     t.route("POST", "/leads/list", {"items": [{"id": "L1", "campaign": "cmp-h", "email": JANE}]})
@@ -495,6 +502,9 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "forward": lambda c, w: c.forward("hannah@meetspill.org", "E1", "harry@spill.chat", "Waiting 24 hours."),
         "blocklist_add": lambda c, w: c.blocklist_add([JANE]),
         "step_analytics": lambda c, w: c.step_analytics(HANNAH_CAMPAIGN),
+        "daily_sends": lambda c, w: c.daily_sends(["hannah@meetspill.org"], start_date="2026-10-20"),
+        "set_daily_limit": lambda c, w: c.set_daily_limit("hannah@meetspill.org", 30),
+        "sending_status": lambda c, w: c.sending_status(HANNAH_CAMPAIGN),
     },
     "Apollo": {
         "credit_usage": lambda c, w: c.credit_usage(),
@@ -633,7 +643,9 @@ def test_instantly_touches_only_us_campaigns_and_registry_accounts(live_world):
         assert _path(r.url) not in {"/api/v2/accounts", "/api/v2/leads"}, "an unfiltered list call"
         if _path(r.url) == "/api/v2/emails":
             assert r.params.get("eaccount") in ADDRESSES
-        if _path(r.url).startswith("/api/v2/accounts/") and r.method == "GET":
+        if _path(r.url) == "/api/v2/accounts/analytics/daily":
+            assert r.params.get("emails") and set(r.params["emails"]) <= set(ADDRESSES), "daily analytics not filtered"
+        elif _path(r.url).startswith("/api/v2/accounts/") and r.method in ("GET", "PATCH"):
             assert _path(r.url).rsplit("/", 1)[1] in ADDRESSES
         body = r.json if isinstance(r.json, dict) else {}
         for key in ("emails", "email_list"):

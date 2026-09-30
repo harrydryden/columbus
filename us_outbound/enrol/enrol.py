@@ -43,7 +43,7 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
-from us_outbound.enrol import queue, render
+from us_outbound.enrol import focus, queue, render
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import Mailbox, Settings
@@ -486,16 +486,23 @@ class _Run:
 def _walk(
     ctx: Context, lane: Iterator[Candidate], target: int, free: Counter[str], counts: Counter[str],
     approved: Sequence[str], run: _Run, pace: Mapping[str, int] | None = None,
+    quota: focus.Quota | None = None, held: list[Candidate] | None = None,
 ) -> list[Prepared]:
     """Prepare accounts in queue order until target are ready; skipped ones make way for the next.
 
-    lane is an iterator, so a second walk carries on where the first stopped.
+    lane is an iterator, so a second walk carries on where the first stopped. With a quota,
+    an account whose industry share is full today is held back (in held) instead, for the
+    fill at the end.
     """
     out: list[Prepared] = []
     while len(out) < target:
         cand = next(lane, None)
         if cand is None:
             break
+        if quota is not None and not quota.allows(cand.account):
+            if held is not None:
+                held.append(cand)
+            continue
         p = prepare(ctx, cand, free, counts, approved, pace)
         if isinstance(p, Skip):
             run.skip(cand.account, p.reason, p.detail)
@@ -505,6 +512,8 @@ def _walk(
             continue
         out.append(p)
         free[p.owner] -= 1
+        if quota is not None:
+            quota.take(cand.account)
         if p.test_id:
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
@@ -581,9 +590,19 @@ def run(ctx: Context) -> dict:
     control = iter([c for c in in_order if c.account.get("tier") == queue.CONTROL])
     main = iter([c for c in in_order if c.account.get("tier") != queue.CONTROL])
     counts, approved = running_test_counts(ctx), approved_versions(s)
-    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace)
-    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace)
-    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace)
+    # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
+    # accounts, the rest of the day in queue order whatever the group.
+    quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
+    held_main: list[Candidate] = []
+    held_control: list[Candidate] = []
+    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace, quota, held_control)
+    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace, quota, held_main)
+    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace, quota, held_control)
+    for held in (held_main, held_control):
+        fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace)
+        for p in fill:
+            quota.take(p.account)
+        prepared += fill
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:
@@ -617,7 +636,8 @@ def run(ctx: Context) -> dict:
         number=n,
         number_terms=terms,
         limited_by=lim.explanation,
-        limits=lim.detail,
+        limits=lim.lines,
+        focus=quota.describe() if quota.active else None,
         candidates=len(cands),
         prepared=len(prepared),
         enrolled=sum(enrolled.values()),

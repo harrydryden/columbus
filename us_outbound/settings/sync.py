@@ -12,7 +12,8 @@ Nightly at 02:00 UK and on demand:
      The tab's keys in sheet order are versioned the same way, in one row per tab with
      tab = ORDER_TAB, so the settings jobs load keep the sheet's order (roles listed first
      win a tie, the first approved copy version, and so on).
-  4. Rescore the queue with the settings now in force, so today's change shapes
+  4. Bring the Named accounts tab in through the front door (sources/named.py).
+  5. Rescore the queue with the settings now in force, so today's change shapes
      tomorrow's enrollment.
 
 The settings table has one row per (tab, key) version; values is the raw sheet row.
@@ -28,10 +29,11 @@ from typing import Any
 
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
+from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
-from us_outbound.settings.model import TABS, Settings
+from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
 from us_outbound.settings.validate import HEADER_ROW, KEY_COLUMNS, MAY_BE_EMPTY, RowError, natural_key, validate_all
 
 TABLE = "settings"
@@ -218,6 +220,13 @@ def format_errors(report: Mapping[str, list[RowError]], unusable: list[str]) -> 
     return _slack_escape("\n".join(lines))
 
 
+def _named(ctx: Context) -> dict:
+    """The Named accounts tab into accounts and facts, before the rescore scores them (sources/named.py)."""
+    from us_outbound.sources import named
+
+    return named.run(ctx)
+
+
 def _rescore(ctx: Context) -> bool:
     """Rescore the queue with the settings now in force (SPEC 5). Imported here, as tests replace the module."""
     from us_outbound.scoring import score
@@ -226,12 +235,26 @@ def _rescore(ctx: Context) -> bool:
     return True
 
 
+def read_sheet(ctx: Context, sheet_id: str) -> dict[str, Rows]:
+    """Every tab. An optional tab the sheet does not have yet reads as empty (a missing tab is a 400)."""
+    sheet = ctx.clients.sheets.read_tabs(sheet_id, [t for t in TABS if t not in OPTIONAL_TABS])
+    for tab in sorted(OPTIONAL_TABS):
+        try:
+            sheet.update(ctx.clients.sheets.read_tabs(sheet_id, [tab]))
+        except ApiError as exc:
+            if exc.status != 400:
+                raise
+            log("settings_tab_missing", tab=tab, note="read as empty until the tab is added")
+        sheet.setdefault(tab, [])
+    return sheet
+
+
 def run(ctx: Context) -> dict:
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise RuntimeError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID (bootstrap() creates the sheet)")
     now = ctx.now
-    sheet = ctx.clients.sheets.read_tabs(sheet_id, list(TABS))
+    sheet = read_sheet(ctx, sheet_id)
     in_force, stale = _in_force(ctx.store)
     stored = _stored(in_force)
     has_version = {t for t in TABS if _has_version(t, in_force)}
@@ -271,11 +294,13 @@ def run(ctx: Context) -> dict:
             log("settings_sync_alert_failed", error=str(exc))
 
     settings, _ = load_current(ctx.store)
-    rescored = False
+    rescored, named = False, None
     if settings is None:
         log("settings_sync_rescore_skipped", reason="settings unusable", unusable=unusable)
     else:
-        rescored = _rescore(dataclasses.replace(ctx, settings=settings))
+        current = dataclasses.replace(ctx, settings=settings)
+        named = _named(current)
+        rescored = _rescore(current)
 
     summary = {
         "sheet_id": sheet_id,
@@ -286,6 +311,7 @@ def run(ctx: Context) -> dict:
         "unusable": unusable,
         "errors": sum(len(v) for v in report.values()),
         "alerted": alerted,
+        "named_accounts": named,
         "rescored": rescored,
     }
     log("settings_sync", **summary)

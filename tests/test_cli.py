@@ -374,8 +374,9 @@ def test_status_prints_jobs_and_mailboxes(capsys):
     out = capsys.readouterr().out
     assert "live_sending: no" in out and "settings_sync" in out and "poll_replies" in out
     assert HANNAH in out and "Campaigns:" in out
-    assert "This week (Monday to Sunday, UK time):" in out and "Today: 0, limited by ready accounts" in out
-    assert "Apollo: 0 of 500 credits used this week, 500 left." in out
+    assert "Credit budgets this month (UK time):" in out and "Enrolment this week (Monday to Sunday, UK time):" in out
+    assert "Today: 0, limited by ready accounts" in out
+    assert "Apollo: 0 of 2,000 credits used this month (0%)" in out
 
 
 # -- copy tests -------------------------------------------------------------------------------------------

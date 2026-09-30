@@ -6,7 +6,7 @@
 -- or 'copy_version'; a missing value shows as '(none)'.
 --   Cohort columns, by the week of the account's first step 1 (v_account_outcomes):
 --     accounts_enrolled, accounts_delivered, accounts_replied, accounts_positive and
---     the rates; replies count within 21 days of step 1, so a week's rates settle
+--     the rates; replies count within 28 days of step 1, so a week's rates settle
 --     three weeks after it ends.
 --   Activity columns, by the week the event happened: meetings_booked (events type
 --     meeting_booked) and site_visit events, split by whether they came before the
@@ -38,8 +38,8 @@ cohort AS (
     k.cut_value,
     count(*) AS accounts_enrolled,
     count(*) FILTER (WHERE f.delivered) AS accounts_delivered,
-    count(*) FILTER (WHERE f.delivered AND f.replied_21d) AS accounts_replied,
-    count(*) FILTER (WHERE f.delivered AND f.positive_21d) AS accounts_positive
+    count(*) FILTER (WHERE f.delivered AND f.replied_in_window) AS accounts_replied,
+    count(*) FILTER (WHERE f.delivered AND f.positive_in_window) AS accounts_positive
   FROM first_send AS f
   JOIN account_cuts AS k
     ON k.account_id = f.account_id
@@ -84,4 +84,4 @@ FROM cohort AS c
 FULL OUTER JOIN activity AS v
   USING (week_start, cut, cut_value)
 ORDER BY week_start DESC NULLS LAST, cut, cut_value;
-COMMENT ON VIEW us_outbound.v_readout_weekly IS 'Per ISO week (UK time), overall and by industry group and copy version: accounts enrolled, reply and positive rates within 21 days of step 1, meetings booked, and site visits before and after the first email (SPEC 12).';
+COMMENT ON VIEW us_outbound.v_readout_weekly IS 'Per ISO week (UK time), overall and by industry group and copy version: accounts enrolled, reply and positive rates within 28 days of step 1, meetings booked, and site visits before and after the first email (SPEC 12).';

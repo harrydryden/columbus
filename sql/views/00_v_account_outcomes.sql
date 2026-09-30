@@ -1,12 +1,13 @@
 -- v_account_outcomes: one row per account that has been sent step 1 (helper view, build).
 -- It holds the SPEC 12 reply-rate definition in one place, for v_signal_value and
--- v_readout_weekly: "human replies within 21 days of step 1 ÷ accounts with step 1
--- delivered". The company is the unit (SPEC 2), so a reply from anyone at the account
--- counts.
+-- v_readout_weekly: "human replies within 28 days of step 1 ÷ accounts with step 1
+-- delivered". SPEC 12 says 21 days, a week after its day-15 step; the steps are now a week
+-- apart, to day 21 (Harry, 30 Sep 2026), so the window is 28 days (instantly.REPLY_WINDOW_DAYS).
+-- The company is the unit (SPEC 2), so a reply from anyone at the account counts.
 --   step 1:     the account's first events row with type 'sent' and step 1.
 --   delivered:  that contact has no 'bounced' event for step 1 (or with no step).
 --   human:      any reply class except out_of_office; not yet classified (NULL) counts.
---   positive:   reply_class positive or referral, in the same 21 days.
+--   positive:   reply_class positive or referral, in the same 28 days.
 CREATE OR REPLACE VIEW us_outbound.v_account_outcomes AS
 WITH step1 AS (
   SELECT DISTINCT ON (account_id)
@@ -31,7 +32,7 @@ replies AS (
   WHERE r.type = 'replied'
     AND COALESCE(r.reply_class, '') <> 'out_of_office'
     AND r.occurred_at >= s.step1_at
-    AND r.occurred_at < s.step1_at + INTERVAL '21 days'
+    AND r.occurred_at < s.step1_at + INTERVAL '28 days'
   GROUP BY s.account_id
 )
 SELECT
@@ -42,12 +43,12 @@ SELECT
   s.step1_at,
   b.contact_id IS NULL AS delivered,
   r.first_reply_at,
-  r.account_id IS NOT NULL AS replied_21d,
-  COALESCE(r.positive, FALSE) AS positive_21d,
-  now() >= s.step1_at + INTERVAL '21 days' AS window_closed
+  r.account_id IS NOT NULL AS replied_in_window,
+  COALESCE(r.positive, FALSE) AS positive_in_window,
+  now() >= s.step1_at + INTERVAL '28 days' AS window_closed
 FROM step1 AS s
 LEFT JOIN bounced AS b
   ON b.contact_id = s.contact_id
 LEFT JOIN replies AS r
   ON r.account_id = s.account_id;
-COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 21 days of step 1 (SPEC 12).';
+COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12).';

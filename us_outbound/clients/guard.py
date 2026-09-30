@@ -229,9 +229,11 @@ class Guard:
                 raise GuardViolation(f"Instantly {a} targets campaign {op.target!r}, not a US Outbound campaign")
 
         if not op.write:
-            if a in {"email.list", "email.get", "account.list", "account.get", "account.vitals", "warmup.analytics"}:
+            if a in {"email.list", "email.get", "account.list", "account.get", "account.vitals", "warmup.analytics",
+                     "account.analytics_daily"}:
                 need_registry_accounts()
-            elif a in {"lead.list", "lead.get", "campaign.get", "campaign.analytics", "campaign.steps_analytics"}:
+            elif a in {"lead.list", "lead.get", "campaign.get", "campaign.analytics", "campaign.steps_analytics",
+                       "campaign.sending_status"}:
                 need_us_campaign()
             elif a == "campaign.list":
                 if not str(op.detail.get("search", "")).startswith(US_CAMPAIGN_PREFIX.strip()):
@@ -263,6 +265,10 @@ class Guard:
                 raise GuardViolation("Instantly forwards go only to escalation_email (SPEC 11)")
         elif a in {"account.warmup_enable", "account.warmup_disable", "account.pause", "account.resume"}:
             need_registry_accounts()
+        elif a == "account.update_limit":
+            need_registry_accounts()  # only the daily limit, only on a registry account (Instantly.set_daily_limit)
+            if set(op.detail) - {"accounts", "daily_limit"}:
+                raise GuardViolation("Instantly account.update_limit may change only the daily limit")
         elif a == "blocklist.add":
             if not op.detail.get("entries"):
                 raise GuardViolation("blocklist.add needs entries")

@@ -1,6 +1,6 @@
 """Today's enrollment number, the order accounts are taken in, test versions and senders.
 
-Today's number is the smallest of (weekly budgets and targets, Harry 30 Sep 2026):
+Today's number is the smallest of (Harry, 30 Sep 2026):
   * the weekly target: what is left of weekly_enrol_cap ÷ the send days left in the week
     (budget.weekly_target_today; weeks run Monday to Sunday, UK time);
   * sending capacity: each sender's free slots today, from the follow-ups already due

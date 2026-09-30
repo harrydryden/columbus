@@ -14,7 +14,7 @@ from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.settings import sync
 from us_outbound.settings.defaults import COLUMNS, default_tabs
-from us_outbound.settings.model import TABS
+from us_outbound.settings.model import OPTIONAL_TABS, TABS
 from us_outbound.settings.validate import FIRST_DATA_ROW, natural_key, validate_all
 
 T1 = datetime(2026, 10, 1, 1, 0, tzinfo=UTC)
@@ -98,7 +98,9 @@ def _keyed_rows(tabs) -> int:
 
 def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     summary = sync.run(ctx)
-    assert ctx.clients.sheets.reads == [(TEST_SHEET_ID, list(TABS))]
+    # The tabs every sheet has in one read, then each optional tab on its own (a missing tab is a 400).
+    assert ctx.clients.sheets.reads == [(TEST_SHEET_ID, [t for t in TABS if t not in OPTIONAL_TABS]),
+                                        (TEST_SHEET_ID, ["Focus"]), (TEST_SHEET_ID, ["Named accounts"])]
     rows = [r for r in _rows(ctx) if r["tab"] in TABS]
     assert len(rows) == _keyed_rows(sheet) == summary["rows_opened"]
     assert all(r["effective_from"] == r["synced_at"] == T1 and r["effective_to"] is None for r in _rows(ctx))
@@ -111,13 +113,13 @@ def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     assert _in_force(ctx, "General", "live_sending")["values"] == {"key": "live_sending", "value": "no", "note": _row(sheet, "General", key="live_sending")[1]["note"]}
     assert _in_force(ctx, "Copy", "eap-v1|2")["values"]["step"] == "2"
     assert _in_force(ctx, "Mailboxes", "sam@meetspill.org")
-    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 16, "changed": 0, "removed": 0, "unchanged": 0}
+    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 17, "changed": 0, "removed": 0, "unchanged": 0}
     assert summary["tabs"]["Overrides"]["status"] == "unchanged"
     assert summary["rejected"] == [] and summary["errors"] == 0 and summary["rescored"] is True
     assert ctx.clients.slack.posts == []
     # The rescore sees the settings now in force.
     (rescore_ctx,) = fake_score.calls
-    assert len(rescore_ctx.settings.signals) == 16
+    assert len(rescore_ctx.settings.signals) == 17
     assert rescore_ctx.settings.versions["Signals"] == T1
     assert rescore_ctx.run_id == ctx.run_id and rescore_ctx.store is ctx.store
 
@@ -139,7 +141,7 @@ def test_changed_weight_closes_the_old_row_and_opens_a_new_one(ctx, sheet, fake_
     _row(sheet, "Signals", signal="EAP named")[1]["weight"] = "15"
     ctx.now = T2
     summary = sync.run(ctx)
-    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 15}
+    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 16}
     assert summary["rows_opened"] == summary["rows_closed"] == 1
     old, new = sorted(_rows(ctx, tab="Signals", key="EAP named"), key=lambda r: r["effective_from"])
     assert (old["effective_from"], old["effective_to"], old["values"]["weight"]) == (T1, T2, "10")
@@ -168,7 +170,7 @@ def test_removed_and_added_rows(ctx, sheet):
     assert "Layoffs" not in {s.signal for s in settings.signals}
     assert settings.overrides_for("acme.com") == {"hq_state": "NY"}
     # Put it back: a new version opens; the closed one stays closed.
-    sheet["Signals"].append(default_tabs()["Signals"][-1])
+    sheet["Signals"].append(next(r for r in default_tabs()["Signals"] if r["signal"] == "Layoffs"))
     ctx.now = T3
     sync.run(ctx)
     assert [(r["effective_from"], r["effective_to"]) for r in sorted(_rows(ctx, tab="Signals", key="Layoffs"), key=lambda r: r["effective_from"])] == [

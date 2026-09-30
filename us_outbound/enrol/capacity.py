@@ -9,9 +9,9 @@ A lead enrolled today sends step 1 today and steps 2–4 on days 3, 8 and 15 (SP
 step waits its delay after the one before and, when that falls outside the send window,
 goes on the next send day: Instantly counts delays in calendar days, weekends included. So
 a new lead takes one slot on each of four send days, and the leads already enrolled hold
-slots on the days their later steps fall. With steps on days 0, 3, 8 and 15, most later
-steps of leads enrolled Wednesday to Friday fall on a weekend and move to Monday, and
-those Mondays, not the average day, are what limit a sender (docs/pipeline.md).
+slots on the days their later steps fall. Steps a week apart (0, 7, 14, 21) always fall on
+the weekday of the first; with SPEC 10's days 0, 3, 8 and 15, most later steps of leads
+enrolled Wednesday to Friday fell at the weekend and piled onto Mondays (docs/pipeline.md).
 
 A sender takes at most capacity ÷ 4 new leads a day (the pace that keeps a full day
 steady), and fewer when, on any of the four days a lead enrolled today would send, the
@@ -19,8 +19,16 @@ follow-ups already due leave less room than that. So no step of any lead, old or
 to wait for a full inbox, including on the Mondays that collect steps due at the weekend.
 
 Leads that have stopped (a reply, bounce or unsubscribe, or an account no longer enrolled)
-hold nothing. Steps Instantly is behind on are not counted yet: sync_outcomes (phase 2)
-reads that backlog from Instantly, and it will come off capacity then.
+hold nothing.
+
+What Instantly reports back, from the latest mailbox_health run (registry/mailboxes.py):
+  * each mailbox's own daily limit (the lower of it and the sheet's cap is used);
+  * each mailbox's campaign sends per day: when a sender's inboxes sent fewer emails on the
+    last send day than the forecast had due, Instantly is behind, and the shortfall goes out
+    today, so it comes off today's room;
+  * each campaign's sending status: Instantly saying a campaign or all its inboxes hit their
+    daily limit marks the sender as full, which limits.py turns into "add a mailbox" when
+    ready accounts are waiting.
 """
 
 from __future__ import annotations
@@ -39,7 +47,7 @@ from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import ET
 from us_outbound.settings.model import Settings
 
-# Days after the step before, from the campaign's own step days (0, 3, 8, 15 -> 0, 3, 5, 7),
+# Days after the step before, from the campaign's own step days (0, 7, 14, 21 -> 0, 7, 7, 7),
 # so the forecast and the Instantly campaign cannot drift apart.
 STEP_DELAYS = (0,) + tuple(b - a for a, b in zip(STEP_DAYS, STEP_DAYS[1:]))
 STOP_EVENTS = ("replied", "bounced", "unsubscribed")
@@ -85,20 +93,33 @@ def _ts(v: Any) -> datetime | None:
     return None
 
 
-def instantly_limits(store: Store) -> dict[str, int]:
-    """address -> Instantly's daily limit on the account, from the latest mailbox_health run that saw one."""
+def instantly_report(store: Store) -> Mapping[str, Any]:
+    """The latest ok mailbox_health summary: what Instantly last reported ({} if it never ran)."""
     runs = [r for r in store.select("heartbeats", {"job": "mailbox_health", "status": "ok"})
-            if isinstance(r.get("detail"), Mapping) and r["detail"].get("instantly_daily_limits")]
+            if isinstance(r.get("detail"), Mapping) and not r["detail"].get("skipped")]
     if not runs:
         return {}
-    latest = max(runs, key=lambda r: _ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))
+    return max(runs, key=lambda r: _ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))["detail"]
+
+
+def instantly_limits(store: Store, report: Mapping[str, Any] | None = None) -> dict[str, int]:
+    """address -> Instantly's daily limit on the account, from the latest mailbox_health run."""
+    report = instantly_report(store) if report is None else report
     out: dict[str, int] = {}
-    for addr, limit in latest["detail"]["instantly_daily_limits"].items():
+    for addr, limit in (report.get("instantly_daily_limits") or {}).items():
         try:
             out[str(addr).lower()] = int(limit)
         except (TypeError, ValueError):
             continue
     return out
+
+
+def previous_send_day(d: date, settings: Settings) -> date | None:
+    for i in range(1, 15):
+        day = d - timedelta(days=i)
+        if is_send_day(day, settings):
+            return day
+    return None
 
 
 @dataclass(frozen=True)
@@ -150,6 +171,24 @@ class SenderCapacity:
     pace: int = 0  # the steady rate: cap ÷ 4, rounded up
     room: int = 0  # cap less the steps already due, on the tightest day
     mailboxes: list[MailboxCap] = field(default_factory=list)
+    backlog: int = 0  # emails due on the last send day that Instantly did not send; they go today
+    last_day: date | None = None  # the last send day Instantly reported sends for
+    sent_last_day: int | None = None  # campaign emails this sender's inboxes sent that day
+    instantly_says: str = ""  # why Instantly says the campaign is not sending, when it says so
+    at_limit: bool = False  # Instantly says the campaign or all its inboxes hit their daily limit
+
+    @property
+    def full(self) -> bool:
+        """At capacity: no room today, Instantly says it hit its limit, or its inboxes sent 95% of the cap."""
+        near_cap = self.sent_last_day is not None and self.cap > 0 and self.sent_last_day >= 0.95 * self.cap
+        return self.cap > 0 and (self.free <= 0 or self.at_limit or near_cap)
+
+    def why_full(self) -> str:
+        if self.at_limit:
+            return f"Instantly says {self.instantly_says}"
+        if self.sent_last_day is not None and self.last_day and self.sent_last_day >= 0.95 * self.cap:
+            return f"its inboxes sent {self.sent_last_day} of {self.cap} on {self.last_day:%a %d %b}"
+        return f"follow-ups already fill {self.tightest_day:%a %d %b}" if self.tightest_day else "no room today"
 
     def describe(self) -> str:
         lowered = [m for m in self.mailboxes if m.instantly_limit is not None and m.instantly_limit < m.sheet_cap]
@@ -160,7 +199,8 @@ class SenderCapacity:
             why = f"{self.held_that_day} follow-ups already due on {self.tightest_day:%a %d %b}"
         else:
             why = f"a new lead sends 4 emails, so {self.pace} new a day keeps {self.cap} sends a day steady"
-        return f"{self.owner}: {self.free} new leads today, {self.cap} sends a day ({why}){note}"
+        extra = f"; Instantly is {self.backlog} emails behind from {self.last_day:%a %d %b}, sent today first" if self.backlog and self.last_day else ""
+        return f"{self.owner}: {self.free} new leads today, {self.cap} sends a day ({why}){extra}{note}"
 
 
 def free_slots(
@@ -204,7 +244,34 @@ def stopped_contacts(store: Store) -> set[str]:
 
 
 def sending_capacity(store: Store, settings: Settings, today: date) -> dict[str, SenderCapacity]:
-    """Today's free slots per sender, from the enrolled leads, the stop events and Instantly's limits."""
+    """Today's new leads per sender, from the enrolled leads, the stop events and what Instantly reported."""
+    report = instantly_report(store)
     contacts = [c for c in store.select("contacts") if c.get("enrolled_at")]
-    committed = committed_steps(contacts, stopped_contacts(store), settings, today)
-    return free_slots(settings, committed, mailbox_caps(settings, instantly_limits(store)), today)
+    stopped = stopped_contacts(store)
+    committed = committed_steps(contacts, stopped, settings, today)
+
+    # Instantly's backlog: steps due on the last send day that were not sent go out today first.
+    sent_by_day = report.get("sent_by_day") or {}
+    last = previous_send_day(today, settings)
+    sent_last: dict[str, int] = {}
+    backlog: dict[str, int] = {}
+    if last is not None and sent_by_day:
+        due_last = committed_steps(contacts, stopped, settings, last)
+        for owner in settings.owners():
+            days = [sent_by_day.get(m.address.lower(), {}) for m in settings.mailboxes if m.owner_name == owner]
+            if not any(last.isoformat() in d for d in days):
+                continue  # Instantly reported nothing for that day
+            sent_last[owner] = sum(int(d.get(last.isoformat()) or 0) for d in days)
+            backlog[owner] = max(0, due_last[(owner, last)] - sent_last[owner])
+            committed[(owner, today)] += backlog[owner]
+
+    out = free_slots(settings, committed, mailbox_caps(settings, instantly_limits(store, report)), today)
+    status = report.get("campaign_status") or {}
+    for owner, c in out.items():
+        c.backlog = backlog.get(owner, 0)
+        c.last_day = last if owner in sent_last else None
+        c.sent_last_day = sent_last.get(owner)
+        st = status.get(owner) or {}
+        c.at_limit = bool(st.get("at_limit"))
+        c.instantly_says = str(st.get("meaning") or "")
+    return out

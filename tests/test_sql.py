@@ -82,7 +82,7 @@ INDEXES = {
 ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "tier"): set(TIERS),
     ("accounts", "size_band"): set(SIZE_BANDS),
-    ("accounts", "source"): {"apollo", "irs", "site_visit"},
+    ("accounts", "source"): {"apollo", "irs", "site_visit", "named"},
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
@@ -571,3 +571,12 @@ def test_apply_needs_a_database_url_unless_dry_run():
 def test_ddl_files_need_no_placeholders():
     for p in ddl.files():
         assert not re.search(r"\{[a-z_]+\}", ddl._code_only(p.read_text(encoding="utf-8"))), p.name
+
+
+def test_the_readout_reply_window_matches_the_sequence():
+    """Replies count for a week after the last step; the views and the client share the number."""
+    from us_outbound.clients.instantly import REPLY_WINDOW_DAYS, STEP_DAYS
+
+    assert REPLY_WINDOW_DAYS == STEP_DAYS[-1] + 7 == 28
+    text = (ddl.SQL_DIR / "views" / "00_v_account_outcomes.sql").read_text()
+    assert f"INTERVAL '{REPLY_WINDOW_DAYS} days'" in text and "INTERVAL '21 days'" not in text

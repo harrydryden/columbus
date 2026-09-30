@@ -1,4 +1,4 @@
-"""Weekly budgets and the weekly target (budget.py; Harry, 30 Sep 2026): weeks run Monday to Sunday, UK time."""
+"""Monthly credit budgets and the weekly enrolment target (budget.py; Harry, 30 Sep 2026), in UK time."""
 
 from __future__ import annotations
 
@@ -31,25 +31,48 @@ def test_a_week_across_the_clock_change_is_169_hours():
     assert start == budget.week_start(datetime(2026, 11, 8, 23, 30, tzinfo=UTC))
 
 
-def test_spend_counts_only_this_week():
-    now = datetime(2026, 10, 28, 10, tzinfo=UTC)  # Wednesday
+def test_the_month_runs_in_uk_time():
+    start, end = budget.month_bounds(datetime(2026, 10, 15, 12, tzinfo=UTC))
+    assert start == datetime(2026, 10, 1, tzinfo=UK) and start.astimezone(UTC) == datetime(2026, 9, 30, 23, tzinfo=UTC)
+    assert end == datetime(2026, 11, 1, tzinfo=UK)
+    assert budget.month_bounds(datetime(2026, 12, 31, 23, 30, tzinfo=UTC))[1] == datetime(2027, 1, 1, tzinfo=UK)
+    assert budget.weekdays(date(2026, 10, 1), date(2026, 11, 1)) == 22
+
+
+def test_how_the_month_is_going():
+    now = datetime(2026, 10, 28, 10, tzinfo=UTC)  # Wednesday: 19 weekdays gone, 3 left with today, of 22
     ctx = make_context(S, now=now)
     ctx.store.insert("credit_ledger", [
-        {"entry_id": "a", "system": "apollo", "credits": 100.0, "occurred_at": datetime(2026, 10, 26, 0, 30, tzinfo=UK)},
-        {"entry_id": "b", "system": "apollo", "credits": 50.0, "occurred_at": datetime(2026, 10, 25, 23, 59, tzinfo=UK)},  # Sunday
+        {"entry_id": "a", "system": "apollo", "credits": 1000.0, "occurred_at": datetime(2026, 10, 5, 9, tzinfo=UTC)},
+        {"entry_id": "b", "system": "apollo", "credits": 50.0, "occurred_at": datetime(2026, 9, 30, 22, 59, tzinfo=UTC)},  # September, UK time
         {"entry_id": "c", "system": "apollo", "credits": 7.0, "occurred_at": now - timedelta(hours=1)},
         {"entry_id": "d", "system": "clay", "credits": 9.0, "occurred_at": now},
     ])
-    b = budget.weekly(ctx.store, S, "apollo", now)
-    assert (b.budget, b.used, b.remaining, b.spent) == (500.0, 107.0, 393.0, False)
-    assert b.describe() == "Apollo: 107 of 500 credits used this week, 393 left"
-    assert budget.weekly(ctx.store, S, "clay", now).used == 9.0
+    b = budget.monthly(ctx.store, S, "apollo", now)
+    assert (b.budget, b.used, b.used_today, b.remaining) == (2000.0, 1007.0, 7.0, 993.0)
+    assert (b.weekdays_in_month, b.weekdays_before_today, b.weekdays_left) == (22, 19, 3)
+    assert round(b.allowance_today, 2) == 333.33  # what was left this morning ÷ 3 weekdays
+    assert round(b.expected_by_now, 1) == 1818.2 and b.pace == "behind"
+    assert round(b.projected) == 1108  # 1,007 over the 20 weekdays through today, for 22
+    assert b.describe() == ("Apollo: 1,007 of 2,000 credits used this month (50%); pace to date 1,818, so behind pace; "
+                            "heading for 1,108 by 31 Oct; up to 326 more today (3 weekdays left)")
+    assert budget.monthly(ctx.store, S, "clay", now).used == 9.0
+
+
+def test_pace_and_a_spent_month():
+    base = dict(system="clay", budget=2000.0, used_today=0.0, weekdays_in_month=20, weekdays_before_today=9,
+                month_end=date(2026, 11, 30))
+    assert budget.Budget(used=1000.0, **base).pace == "on"  # 10 of 20 weekdays through today: 1,000 is on pace
+    assert budget.Budget(used=1200.0, **base).pace == "ahead"
+    assert budget.Budget(used=800.0, **base).pace == "behind"
+    spent = budget.Budget(used=2000.0, **base)
+    assert spent.spent and spent.left_today == 0 and spent.describe().endswith("none left this month")
 
 
 def test_a_zero_budget_means_the_system_is_not_called():
-    ctx = make_context(make_settings(clay_weekly_credits=0.0))
-    b = budget.weekly(ctx.store, ctx.settings, "clay", ctx.now)
-    assert b.spent and "no weekly budget set (clay_weekly_credits is 0)" in b.describe()
+    ctx = make_context(make_settings(clay_monthly_credits=0.0))
+    b = budget.monthly(ctx.store, ctx.settings, "clay", ctx.now)
+    assert b.spent and "no monthly budget set (clay_monthly_credits is 0)" in b.describe()
 
 
 def test_send_days_left_in_the_week():

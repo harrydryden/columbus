@@ -86,6 +86,7 @@ See `docs/phase0-runbook.md` for commands, and `docs/phase0-facts.md` for what h
    - Confirm the plan facts.
    - `us-outbound mailbox …` / `campaigns ensure --live` sets up the registry and the three paused campaigns.
    - Test the custom-variable length limit, that follow-ups stay on the step-1 address, and whether a forward endpoint exists.
+   - Confirm the step days (0, 7, 14, 21) and what the analytics and sending-status endpoints return.
 8. **Clay:** create the "US Outbound" folder and the two functions (SPEC 8). Enable API access, set the budget, and try them on 20 hand-picked accounts.
 9. **Apollo tracker:** change "us/pricing" to "/us/pricing", add "/us/book-demo" as high intent, then confirm data arrives and the script is not on employee-facing pages.
 10. **Privacy:** publish the US privacy and opt-out page (the Webflow page is still a draft). Approve the footer and Article 14 text.

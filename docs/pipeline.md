@@ -3,11 +3,19 @@
 Apollo, Clay and Instantly can each find companies, find emails and enrich records, and Apollo, Clay, Instantly and HubSpot each have their own idea of an ICP. This page covers:
 - which tool does which job, and where the ICP lives;
 - the order in which an account is found, checked and paid for;
-- the weekly budgets, and how the system shows which one is holding it back;
-- how many emails Instantly can actually send;
-- how Harry can steer the system.
+- the credit budgets and the weekly target, and how the system shows which one is holding it back;
+- how many emails Instantly can send, and what it reports back;
+- how Harry can steer the system from the sheet.
 
-Harry approved changes 1–8 on 30 Sep 2026, and set budgets and targets to run weekly (Monday to Sunday, UK time). Changes 9–14 need his answer; the list is at the end.
+Harry's decisions on 30 Sep 2026:
+- He approved changes 1–8.
+- Credit budgets are monthly, like Apollo's and Clay's own: 2,000 each, about 500 a week.
+- The enrolment target is weekly: 150, Monday to Sunday, UK time.
+- Steps go a week apart.
+- The sheet gets an industry focus and named companies.
+- Lookalikes wait.
+
+The list of changes is at the end.
 
 ## The short answer
 
@@ -15,14 +23,14 @@ Harry approved changes 1–8 on 30 Sep 2026, and set budgets and targets to run 
 - **Each job has one owner.** A second vendor is only ever a fallback, called when the first one misses.
 - **Fit finds accounts, and signals rank them.** The main driver is an Apollo organisation search built from the sheet's Industries, States and size bands. Signals never add a company to the universe, with one exception: a company that visits the US site.
 - **Free checks come before paid ones.** Clay, the scarcest budget, is spent only on accounts that have passed every free check. An Apollo email reveal is spent only on the contact about to be emailed.
-- **Budgets are weekly and are spent where they are needed.** Each job that spends credits checks the week's balance before every batch. Enrolment spends none.
+- **Budgets are monthly and paced by the day.** Each job that spends credits checks the month's balance and today's share of it before every batch. Enrolment spends none.
 - **Postgres is the only record.** Vendors return observations. Python stores each one as a fact with its source and date, and makes every decision.
 
 ## One owner per job
 
 | Job | Owner | Fallback | Not used |
 | :- | :- | :- | :- |
-| Find companies (the universe) | Apollo organisation search | IRS BMF for nonprofits (January). New site visitors. Great Place To Work and B Corp lists (phase 3). Named accounts and lookalikes (**Proposed 12, 13**) | Clay Find Companies, Instantly SuperSearch, Apollo lists and saved searches |
+| Find companies (the universe) | Apollo organisation search | IRS BMF for nonprofits (January). New site visitors. The Named accounts tab. Great Place To Work and B Corp lists (phase 3) | Clay Find Companies, Instantly SuperSearch, Apollo lists and saved searches |
 | Company facts (size, HQ, NAICS, founded) | Apollo | Clay confirms HQ state and size. If they disagree, the account goes to the hand-check | Clay's other data providers; HubSpot auto-enrichment |
 | Clean company name | Clay AI, checked against the `clean/names.py` rules | The `clean/names.py` rules alone | |
 | Read careers, benefits and values pages | Clay "US Outbound – Accounts" | None: a failed read is scored as "not read" | |
@@ -60,10 +68,10 @@ The vendors' own ICP features all stay off:
 
 Each stage lists what it spends and the status it leaves the account in. A stage starts only on accounts the previous stage passed.
 
-**1. Find: weekly, `source_universe`.**
+**1. Find: `source_universe` (weekly, Proposed 9).**
 - Apollo searches the slices of active industry × active state × size band. Cost: 1 Apollo credit per 100 companies.
-- **Proposed 9:** each week covers a quarter of the slices, so every slice is refreshed every four weeks and the Apollo cost is the same each week, instead of one large monthly bill.
-- The same front door serves every other way in: new site visitors, IRS BMF matches, named accounts and lookalikes, and later the GPTW and B Corp lists. Each is matched to an Apollo record by domain.
+- **Proposed 9:** each week covers a quarter of the slices, so every slice is refreshed every four weeks and the month's Apollo budget is spent evenly instead of in one large bill on the 1st.
+- The same front door (`accounts.admit`) serves every other way in: new site visitors, IRS BMF matches, the Named accounts tab, and later the GPTW and B Corp lists. Each is matched to an Apollo record by domain.
 - At the door, each company gets its root domain, its name is cleaned by rule, and its industry label and group are set from the Industries tab.
 - It is deduplicated on root domain against accounts and aliases, against suppression, and against the whole HubSpot portal.
 - It is rejected at once for:
@@ -89,15 +97,15 @@ These give a provisional score. Free data can decide every hard exclusion:
 
 An account also needs at least one candidate contact: a person matching the Roles tab for its size, located in the US outside CA and WA. **Status: `queued`** once every free check passes, or `disqualified` with the reason.
 
-**3. Verify in Clay: weekdays, `verify_in_clay`, within the week's Clay budget.**
-- It takes `queued` accounts in order of provisional score, enough to keep the verified queue 10 working days deep, and stops when the week's Clay credits are spent.
+**3. Verify in Clay: weekdays, `verify_in_clay`, within today's share of the month's Clay budget.**
+- It takes `queued` accounts in order of provisional score, enough to keep the verified queue 10 working days deep. With an industry focus set, it takes each group's share. It stops when today's share of the month's Clay credits is spent.
 - It runs Apollo organisation enrich (1 credit) first, only if the search record is missing a field Clay needs.
 - It then runs the Clay Accounts function in batches of up to 100. The function returns the clean name, confirmed HQ and size, an industry label, the pages it read, benefits, mental-health provision, culture statements, and funding (only when Apollo had none).
 - If Clay and Apollo disagree on HQ state or size band, the account goes to the hand-check.
 - Afterwards the job-post feeds read the careers URL that Clay found (free).
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
-**4. Contact: weekdays, `pick_contacts`, just in time, within the week's Apollo budget.**
+**4. Contact: weekdays, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
 - It takes only the accounts the next two enrolment days will use, not the whole verified queue.
 - It refreshes the candidates with a free people search, picks one by the role rule, and runs Apollo bulk match (verified emails only).
 - On a miss or a catch-all, it runs the Clay Contacts function.
@@ -110,38 +118,50 @@ An account also needs at least one candidate contact: a person matching the Role
 
 A search built from signals ("funded in the last 18 months", "hiring a People role") would give a smaller, hotter list. But it would leave out the Control tier: the 15% of sends that go to accounts with no signal. Without the Control tier, the Monday readout can't show what any signal is worth. So the universe is every company that fits, and signals only order it.
 
-## Weekly budgets and targets
+## Budgets and targets
 
-A week runs from Monday 00:00 to Sunday 24:00, UK time. Unspent credits don't carry over. The General tab holds:
+Credit budgets are monthly, a calendar month in UK time, because that's how Apollo and Clay count credits. The enrolment target is weekly, Monday to Sunday, UK time. The General tab holds:
 
 | Key | Default | Spent or used by | Checked |
 | :- | :- | :- | :- |
-| `weekly_enrol_cap` | 150 (the spec's 30 a day × 5) | `enrol` | Each send day takes what's left of it ÷ the send days left in the week, so a short Monday is made up by Friday, never in the next week |
-| `apollo_weekly_credits` | 500 | `source_universe` (search pages), `verify_in_clay` (enrich), `pick_contacts` (email reveals) | Before every batch. The job stops at zero |
-| `clay_weekly_credits` | 0 until Harry sets it (0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts) | Before every batch. The job stops at zero |
-| `apollo_floor` | 5,000 | All Apollo spend | Stops Apollo spend if the account balance falls below it, whatever is left of the week |
-| `claude_monthly_cap_usd` | $10 | Reply classification and drafts | Stays monthly. SPEC 1.1 sets it at $10 a month, the same period as the Anthropic Console's own limit |
+| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages), `verify_in_clay` (enrich), `pick_contacts` (email reveals) | Before every batch: the month's balance, and today's share of it |
+| `clay_monthly_credits` | 2,000 (about 500 a week; 0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts) | The same |
+| `apollo_floor` | 5,000 | All Apollo spend | Stops Apollo spend if the account balance falls below it |
+| `claude_monthly_cap_usd` | $10 | Reply classification and drafts | A UTC month, as the Anthropic Console counts it |
+| `weekly_enrol_cap` | 150 | `enrol` | Each send day takes what's left of it ÷ the send days left in the week. A short Monday is made up by Friday |
 
-The budgets are not part of today's enrolment number. The enrol job spends no Clay or Apollo credits, so a budget that has run out never holds back accounts that are already verified and have an email. It limits the stages before enrolment instead. When that leaves too few accounts ready, the limiter says so (below).
+**Today's share.** Each weekday may spend what was left of the month that morning ÷ the weekdays left, today included. The budget then lasts the whole month instead of going in the first week. A quiet day leaves more for the rest of the month. Unspent credits don't carry over.
 
-**Is 500 Apollo credits a week sustainable?**
+**How the month is going** shows the same figures for each budget:
+- used and left;
+- the month's pace to date (the budget spread evenly over its weekdays, through today);
+- whether spend is ahead of, on or behind that pace (more than 10% either side counts);
+- where the month is heading at the pace so far;
+- how much today may still spend.
+
+For example:
+
+```
+Apollo: 1,007 of 2,000 credits used this month (50%); pace to date 1,818, so behind pace; heading for 1,108 by 31 Oct; up to 326 more today (3 weekdays left).
+```
+
+The budgets are not part of today's enrolment number. The enrol job spends no credits, so a budget that has run out never holds back accounts that are already verified and have an email. It limits the stages before enrolment, and when that leaves too few accounts ready, the limiter says so (below).
+
+**Is 2,000 Apollo credits a month sustainable?**
 - **Balance:** 30,128 credits were left on 29 Sep, and they reset on 21 Aug 2027.
-- **Use until the reset:** about 46 weeks × 500 = about 23,000.
-- **What that leaves:** about 7,100, which is 2,100 above the floor. That 2,100 is all the headroom for any other Apollo use at Spill.
+- **Use until the reset:** about 10.7 months × 2,000 = about 21,400.
+- **What that leaves:** about 8,700, which is about 3,700 above the floor.
 
-The 500 a week has to cover three things:
-- the weekly sweep: universe ÷ 100 ÷ 4 pages;
-- organisation enrichment for each account sent to Clay, about 30 a day;
-- email reveals, about 30 a day.
+The monthly 2,000 has to cover:
+- the sweep;
+- organisation enrichment for each account sent to Clay;
+- about 650 email reveals.
 
-At 150 enrolments a week, reveals and enrichment take up to about 330. The sweep must fit in the rest. Phase 1 measures it.
+Phase 1 measures the sweep.
 
-**Clay:** the week's verified accounts are about `clay_weekly_credits` ÷ credits per account (measured on the first 100 accounts). To keep 150 accounts a week ready, the budget needs roughly 150 × credits per account ÷ the share that passes Clay's checks.
+**Clay:** the month's verified accounts are about 2,000 ÷ credits per account (measured on the first 100 accounts). To keep 150 accounts a week ready, the budget needs roughly 650 × credits per account ÷ the share that passes Clay's checks each month.
 
-The sheet already has the old monthly and daily rows. Rename them, and settings_sync will reject the General tab until you do:
-- `daily_enrol_cap` → `weekly_enrol_cap`, value 150.
-- `apollo_monthly_credits` → `apollo_weekly_credits`, value 500.
-- `clay_monthly_credits` → `clay_weekly_credits`, value your weekly number.
+**In the sheet:** keep `apollo_monthly_credits` and `clay_monthly_credits` and set both to 2000. Rename `daily_enrol_cap` to `weekly_enrol_cap` with 150. A row still named `daily_enrol_cap`, `apollo_weekly_credits` or `clay_weekly_credits` is rejected, with the new name.
 
 ## Where the limit shows
 
@@ -150,77 +170,86 @@ Today's number is the smallest of three terms:
 | Term | What it is | What raises it |
 | :- | :- | :- |
 | **Weekly target** | What's left of `weekly_enrol_cap` ÷ the send days left this week | A higher `weekly_enrol_cap` |
-| **Sending capacity** | Each sender's new leads today, after the follow-ups already due (next section) | Another mailbox, a higher daily cap once warm, or a better cadence (Proposed 10) |
+| **Sending capacity** | Each sender's new leads today, after the follow-ups already due and Instantly's backlog (next section) | Another mailbox, or a higher daily cap once warm |
 | **Ready accounts** | Verified accounts with a sendable email | Whatever is short behind it (below) |
 
 When ready accounts is the limit, the explanation walks back through the stages and names the first one that is short:
-1. verified accounts still waiting for an email, and whether Apollo's weekly budget is spent;
-2. Clay has no weekly budget;
-3. Clay's weekly budget is spent while accounts wait;
+1. verified accounts still waiting for an email, and whether Apollo's budget is used (for today, or until the 1st);
+2. Clay has no monthly budget;
+3. Clay's budget is used (for today, or until the 1st) while accounts wait;
 4. accounts are waiting for Clay;
 5. nothing is waiting for Clay, so the universe or the free checks are the limit.
 
-The same picture appears in three places now, and two more with Slack:
-- **The enrol job's summary** (`limited_by` and `limits`), kept in its heartbeat row and in the Railway log.
-- **`us-outbound status`**, under "This week". For example:
+When sending capacity is the limit, it names each sender that is full and why:
+- Instantly says the campaign or its inboxes hit their daily limit;
+- its inboxes sent 95% of their cap on the last send day;
+- follow-ups already fill a day.
 
-  ```
-  This week (Monday to Sunday, UK time):
-    Today: 18, limited by ready accounts (weekly target 38, sending capacity 31, ready accounts 18).
-    Weekly target: 0 of 150 enrolled this week (Monday to Sunday, UK time), 4 send days left.
-    Sending capacity, Hannah Spalding: 8 new leads today, 30 sends a day (a new lead sends 4 emails, so 8 new a day keeps 30 sends a day steady).
-    Clay: 600 of 600 credits used this week, 0 left.
-    Apollo: 212 of 500 credits used this week, 288 left.
-    Behind it: Clay's weekly budget is used and 41 accounts are waiting to be verified until Monday.
-  ```
-- **`v_budgets`** in Postgres: each budget's spend and balance this week (Claude: this month).
+It then says to add a mailbox, and how many ready accounts are waiting for inbox space. For example:
+
+```
+Add a mailbox for Hannah Spalding: Instantly says the campaign reached its daily limit. `us-outbound mailbox add <address> --owner "Hannah Spalding" --live`, then it warms for 21 days.
+92 ready accounts are waiting for inbox space.
+```
+
+The same picture appears in several places:
+- **`us-outbound status`** has two blocks: "Credit budgets this month" (one pace line per budget) and "Enrolment this week" (today's number, what limits it, each sender, the focus, and what stands behind it).
+- **The enrol job's summary** (`limited_by`, `limits`, `focus`), kept in its heartbeat row and in the Railway log.
+- **The mailbox check's summary** each morning: limits it set, and campaigns Instantly says are held back.
+- **`v_budgets`** in Postgres: each budget this month, with `expected_by_now`, `projected` and `pace`.
 - **The daily post** (phase 3, Slack): the `limited_by` line, every morning. Until Slack is set up, it goes to the log.
-- **The Monday readout** (phase 3): how many days each term was the limit last week, and each budget's use (**Proposed 11**, with alerts when a budget is 80% spent before Thursday, or when the same limit binds three send days running).
+- **The Monday readout** (phase 3): how many days each term was the limit, and each budget's pace (**Proposed 11**, with alerts when a budget runs ahead of pace, or when the same limit binds three send days running).
 
-## How many emails Instantly can send
+## How many emails Instantly can send, and what it reports back
 
-Instantly decides the moment each email goes. The jobs decide how many new leads go in, and check the limits Instantly works within:
+Instantly decides the moment each email goes. The jobs decide how many new leads go in, set the limits Instantly works within, and read back what it did:
 
-| Limit | Set by | What the jobs do |
-| :- | :- | :- |
-| Each mailbox's daily cap | The Mailboxes tab (`daily_cap`, 30) and Instantly's own limit on the account | mailbox_health reads Instantly's limit every morning. The forecast uses the lower of the two and says when Instantly's is lower |
-| The campaign's daily limit | The jobs set it to the sum of the owner's Active caps | mailbox_health checks it for drift every day and fixes it with `campaigns ensure --fix` |
-| The send window | Mon–Fri 09:00–16:00 ET, set by the jobs | No sends at weekends or on blackout dates |
-| Step timing | The campaign's steps: day 0, 3, 8, 15 | **Instantly counts delays in calendar days.** A step due on a Saturday or Sunday goes on Monday, and the next step waits from Monday |
-| Warmup | Instantly | Warmup emails are separate from the campaign limit, and warmup stays on (SPEC 13) |
+| Limit or report | How the jobs use it |
+| :- | :- |
+| Each mailbox's daily cap | Set on the Mailboxes tab (`daily_cap`, 30). The morning check reads Instantly's own limit on each inbox and sets it back to the sheet's cap when they differ (live; reported in dry-run). Caps are changed in the sheet, never in Instantly |
+| The campaign's daily limit | Set to the sum of the owner's Active caps, and checked for drift every morning (`campaigns ensure --fix`) |
+| Sends per inbox per day | `GET /accounts/analytics/daily`, filtered to the registry inboxes, read each morning for the last 7 days. If yesterday's sends fall short of what the forecast had due, Instantly is behind, and the shortfall comes off today's room |
+| Why a campaign isn't sending | `GET /campaigns/{id}/sending-status`, read each morning. "Daily limit reached" (the campaign's, or every inbox's) marks the sender as full |
+| The send window | Mon–Fri 09:00–16:00 ET. No sends at weekends or on blackout dates |
+| Step timing | Days 0, 7, 14 and 21. Instantly counts delays in calendar days and moves a step due at the weekend to Monday. A week apart, every step falls on the same weekday as the first, so none does |
+| Warmup | Instantly. Warmup emails are separate from the campaign limit, and warmup stays on (SPEC 13) |
 
-**The forecast** (`enrol/capacity.py`, which replaces the spec's "caps ÷ 4") works per sender, because each account keeps its sender for life:
-- Every enrolled lead holds a slot on the days its later steps will go out. Leads that replied, bounced or unsubscribed hold nothing.
-- A new lead sends four emails, so a sender takes at most **capacity ÷ 4** new leads a day. That pace keeps a full day steady. Filling every free slot at once would crowd the days those leads' follow-ups land on, and leave later days idle.
-- It takes fewer when, on any of the four days a lead enrolled today would send, the follow-ups already due leave less room.
-- So no email of any lead, old or new, ever has to wait for a full inbox.
+**The forecast** (`enrol/capacity.py`) works per sender, because each account keeps its sender for life:
+- Every enrolled lead holds a slot on the days its later steps go out. Leads that replied, bounced or unsubscribed hold nothing.
+- A new lead sends four emails, so a sender takes at most **capacity ÷ 4** new leads a day. That pace keeps a full day steady.
+- It takes fewer when, on any of the four days a lead enrolled today would send, the follow-ups already due (plus any backlog) leave less room.
+- So no email, old or new, ever has to wait for a full inbox.
 - New accounts go to the sender with the largest share of today's pace left, so Harry's two mailboxes take twice Hannah's or Sam's share.
 
-**What the forecast found (Proposed 10, [ASK HARRY]).** With steps on days 0, 3, 8 and 15, leads enrolled Wednesday to Friday have most of their later steps fall at a weekend and move to Monday. Mondays fill first and hold the whole week back. Simulating 12 weeks with the four inboxes (120 sends a day):
+**Why the steps are a week apart.** With SPEC 10's days 0, 3, 8 and 15, most later steps of leads enrolled Wednesday to Friday fell at a weekend and piled onto Mondays. Simulating 12 weeks with the four inboxes (120 sends a day):
 
 | Cadence | New accounts a week | Sequence length |
 | :- | :- | :- |
 | Days 0, 3, 8, 15 (SPEC 10) | about 61 | 15 days |
-| Days 0, 2, 7, 14 | about 100 | 14 days |
-| **Days 0, 7, 14, 21** | **150**: every inbox full every day | 21 days |
-| Days 0, 7, 14 (three steps) | 200 | 14 days |
+| **Days 0, 7, 14, 21 (now)** | **150**: every inbox full every day | 21 days |
 
-The spec's "about 650 a month" assumed every day could be filled evenly. With Instantly counting calendar days, the current cadence gives about 260 a month.
+The copy doesn't change, only the gaps. The readout counts a reply for a week after the last step: 28 days from step 1, where SPEC 12 had 21 days for its 15-day sequence. The cadence is set in one place (`clients/instantly.py`, `STEP_DAYS`), and the campaigns, the forecast and the reply window all read it.
 
-A weekly cadence puts every step on the same weekday as the first email, so no step ever lands on a weekend. It reaches the 150 target with today's inboxes, and also avoids Monday spikes, which hurt deliverability. The copy doesn't change, only the gaps. The cadence is set in one place (`clients/instantly.py`, `STEP_DAYS`). The campaigns and the forecast both read it, so they can't drift apart.
+**Not yet counted:** the plan's own caps (emails a month and uploaded contacts, shared with the EU campaigns in the same workspace). Phase 0 checks whether Instantly's API reports the workspace's plan usage. If it does, it becomes a fourth term; if not, a General key `instantly_monthly_emails` holds this system's share (**Proposed 14**).
 
-**Not yet counted, and when they will be:**
-- **Instantly's backlog** (steps due but not sent, for example after an error): sync_outcomes (phase 2) reads it from Instantly, and it comes off capacity.
-- **The plan's own caps** (emails a month and uploaded contacts, shared with the EU campaigns in the same workspace): still an open phase 0 fact. **Proposed 14:** once they're known, a General key `instantly_weekly_emails` for this system's share, checked as a fourth term.
-- **Kill rules** (phase 3): a mailbox paused for bounces or blocks drops out of capacity the same day.
+## Where the copy lives
+
+- **The copy is in the sheet's Copy tab:** one row per version and step (`copy_version`, `angle`, `step`, `subject`, `body`, `status`, `approved_by`). The defaults load as `draft`, and only rows with `status = approved` are ever sent (SPEC 5, 10).
+- **The enrol job writes each lead's four emails.** It takes the approved version for the account's angle (or the running test's split), fills in the account's opener, proof point, price line, demo line and the sender's signature, and checks every copy rule. Any breach skips the account.
+- **It uploads them to Instantly as that lead's own custom variables:** `{{s1_subject}}`, `{{s1_body}}` … `{{s4_body}}`.
+- **The three campaigns are created by the jobs** (`us-outbound campaigns ensure --live`), paused, one per sender. Each has four steps whose subject and body are just those placeholders, with the settings from SPEC 9 and the step days above.
+- **So nobody writes sequences in Instantly by hand.** A sequence edited there would be reported as drift the next morning. To change what prospects read, edit the Copy tab and approve it.
+- **Phase 0 tests Instantly's custom-variable length limit.** If a rendered body is too long, the fallback is smaller variables (`{{opener}}`, `{{proof}}`, `{{ask}}`, `{{price_line}}`, `{{signature}}`) with the fixed text in the campaign step (SPEC 9).
 
 ## How Harry can steer the system
 
-**In the sheet already (no code):**
+**Levers in the sheet:**
 
 | Lever | Tab | Effect |
 | :- | :- | :- |
-| Turn an industry on or off | Industries: `active` | The universe search and the queue include it or leave it out |
+| Focus the week on some industry groups | **Focus** (new): `industry_group`, `share` (60% or 0.6), `note` | Each listed group gets its share of the week's enrolment, in queue order within the group. The groups not listed share what's left of 100%. If a group has too few ready accounts, the rest of the day goes to the next accounts in queue order, so inboxes are never idle. The shares may not add up to more than 100%, and each group needs an active industry on the Industries tab |
+| Approach specific companies | **Named accounts** (new): `domain` (a root domain like acme.com), `name`, `note` | Each domain comes in through the front door (same dedupe, suppression and partner checks) and gets the "Named by Harry" signal (+30, editable on the Signals tab). It still has to pass every other check, including HubSpot and Clay. Taking a row off stops the signal |
+| Turn an industry on or off | Industries: `active` | The universe search and the queue include it or leave it out. For only some industries, switch the others off |
 | Put an industry first | Industries: `priority` | Its accounts go ahead of others at the same score and size |
 | Widen or narrow an industry | Industries: `naics_prefixes`, `exclude_naics`, `apollo_keywords` | Changes the Apollo filters and the Python re-check |
 | Where | States | HQ states in or out (CA and WA never) |
@@ -229,35 +258,30 @@ A weekly cadence puts every step on the same weekday as the first email, so no s
 | A single company | Overrides | Any field for one domain, winning over every source |
 | Mix | General: `priority_threshold`, `standard_threshold`, `control_share` | How tiers are cut, and the share kept for the control group |
 
-**Proposed (need a small build each):**
-- **12. Industry weekly share.** A `weekly_share` column on Industries, for example Technology & Startups 60% and Marketing & Creative Agencies 40%. Enrolment fills each group's share of the week, and a share that can't be filled passes to the others. This steers volume directly, not just order.
-- **12b. Named accounts.** A tab where Harry lists domains he wants approached. They enter by the same front door and pass the same checks, including Clay and suppression. An optional Signals row, "Named by Harry", lifts their score. They are tagged, so the readout can report them separately.
-- **13. Lookalikes.** A Seeds tab of companies Harry wants more of (for example Spill's best customers; these could also be read from HubSpot's closed-won companies, read only). The system reads each seed's Apollo record, one enrichment credit per seed, once. Then:
-  - **Discovery:** extra Apollo searches built from the seeds' most common Apollo keyword tags, within the active states and sizes. New companies still enter by the front door.
-  - **Ranking:** every account gets a `lookalike_similarity` fact from 0 to 1, from shared keyword tags, NAICS prefix and size band. A Signals row ("Looks like our customers", `lookalike_similarity >= 0.5`, weight +15) scores it like any other signal, and the readout shows what it's worth.
+**Adding the two new tabs to your sheet.** Add a tab named `Focus` with the header row `industry_group | share | note`, and a tab named `Named accounts` with `domain | name | note`. Until they exist, the sync reads them as empty and carries on.
 
-  This costs nothing beyond the seed lookups. Clay and Apollo have their own lookalike tools. Clay's charges per result through its data providers, and Apollo's would put the ICP inside Apollo, so neither is used.
+**Lookalikes** (a Seeds tab of companies to find more like) wait, as Harry decided.
 
 ## Changes for Harry
 
 | # | Change | Why | SPEC | Status |
 | :- | :- | :- | :- | :- |
-| 1 | A free "someone to email" check before Clay | Clay credits are never spent on an account that can't be emailed | 9 | Approved 30 Sep |
-| 2 | The Clay Accounts function takes `apollo_funding_date` and skips Company Latest Funding when it is set | Saves Clay credits | 8 | Approved |
-| 3 | One resolver with the precedence table (below) | Stops the last job to run from deciding an account's HQ, size or name | 13 | Approved |
-| 4 | One owning source per fact (`open_roles` from `apollo_jobs`) | Removes three-way disagreement | 5, 7 | Approved |
-| 5 | `pick_contacts` reveals emails only for the next two days | No credits spent on accounts later re-ranked or dropped | 9 | Approved |
-| 6 | Apollo organisation enrich only when needed | Up to one Apollo credit saved per verified account | 7 | Approved |
+| 1 | A free "someone to email" check before Clay | Clay credits are never spent on an account that can't be emailed | 9 | Approved 30 Sep; built in phase 1 |
+| 2 | The Clay Accounts function takes `apollo_funding_date` and skips Company Latest Funding when it is set | Saves Clay credits | 8 | Approved; for the function build |
+| 3 | One resolver with the precedence table (below) | Stops the last job to run from deciding an account's HQ, size or name | 13 | Approved; phase 1 |
+| 4 | One owning source per fact (`open_roles` from `apollo_jobs`) | Removes three-way disagreement | 5, 7 | Approved; phase 1 |
+| 5 | `pick_contacts` reveals emails only for the next two days | No credits spent on accounts later re-ranked or dropped | 9 | Approved; phase 2 |
+| 6 | Apollo organisation enrich only when needed | Up to one Apollo credit saved per verified account | 7 | Approved; phase 1 |
 | 7 | Vendor features stay off; check HubSpot auto-enrichment without changing it | Keeps one record and one ICP | 1.2, 3 | Approved |
 | 8 | Decide whether `catch_all_valid` is sendable; test Instantly's "risky contacts off" | Otherwise a catch-all could be enrolled and never sent | 8, 9 | Approved; the test is in phase 0 |
-| — | Weekly budgets and targets | Harry's instruction | 5, 9 | Done |
-| — | The send forecast replaces "caps ÷ 4" | Accounts for follow-ups and Instantly's own limits | 9 | Done |
-| 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend each week | 9 | Proposed |
-| 10 | **[ASK HARRY]** Steps on days 0, 7, 14, 21 instead of 0, 3, 8, 15 | 150 a week instead of about 61 with today's inboxes; no Monday spikes | 10 | Proposed |
-| 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed |
-| 12 | Industry weekly share, and a Named accounts tab | Steer volume and specific companies from the sheet | 5 | Proposed |
-| 13 | A Seeds tab for lookalikes | More companies like the best ones, at no extra cost | 5, 7 | Proposed |
-| 14 | `instantly_weekly_emails` once the plan's caps are known | The workspace is shared with the EU campaigns | 1.2, 9 | Proposed |
+| — | Monthly credit budgets (2,000 each) paced by the day, with the month's pace shown; a weekly enrolment target (150) | Harry | 5, 9 | Done |
+| — | The send forecast replaces "caps ÷ 4", with Instantly's reports (limits, sends, sending status) and an "add a mailbox" flag | Harry | 9 | Done |
+| — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
+| — | Focus and Named accounts tabs | Harry | 5 | Done |
+| 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |
+| 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
+| 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Deferred |
+| 14 | The Instantly plan's caps as a fourth term, from its API or `instantly_monthly_emails` | The workspace is shared with the EU campaigns | 1.2, 9 | Proposed; the phase 0 check first |
 
 ## Which value wins
 
@@ -288,8 +312,9 @@ Each fact name has one owning source. `open_roles` comes from `apollo_jobs` only
 | `clean/` | Pure functions: names, domains, people | Calls a vendor |
 | resolver | Facts → account columns, by the table above | Calls a vendor |
 | `scoring/` | Facts + sheet → score, tier and angle | Calls a vendor |
-| `budget.py` | The week, each budget's balance, the weekly target | Calls a vendor |
-| `enrol/capacity.py`, `limits.py` | The send forecast, today's number and why | Calls a vendor |
+| `accounts.py` | The front door: one account per root domain, suppression and partners checked | Calls a vendor |
+| `budget.py` | The month and each budget's pace; the week and the weekly target | Calls a vendor |
+| `enrol/capacity.py`, `enrol/focus.py`, `limits.py` | The send forecast (from what Instantly last reported), the focus shares, today's number and why | Calls a vendor |
 | `contacts/`, `enrol/` | Pick, verify, render, enrol | Change a score |
 
 Jobs talk only through tables and `accounts.status`, never by calling each other. Each one can be re-run safely.
@@ -298,8 +323,13 @@ Swapping a vendor means rewriting one client and one source module. The fact nam
 
 ## To measure in phase 1
 
-- **Universe size per slice, and so the Apollo credits per weekly sweep.** It has to fit in the 500 a week alongside enrichment and reveals.
-- **Clay credits per account** (SPEC 8), and so the weekly Clay budget that keeps 150 accounts a week ready.
+- **Universe size per slice, and so the Apollo credits per sweep.** It has to fit in the month's 2,000 alongside enrichment and reveals.
+- **Clay credits per account** (SPEC 8), and so whether 2,000 a month keeps 150 accounts a week ready.
 - **How many accounts the free checks keep away from Clay.**
 - **Apollo's email hit rate**, which sets how often the Clay Contacts function runs.
-- **Instantly's real step timing**, to confirm the calendar-day delays and the Monday pile-up on the three paused campaigns before any send.
+- **Instantly's real behaviour on the paused campaigns, before any send:**
+  - the step timing, days 0, 7, 14 and 21;
+  - the analytics fields;
+  - the sending-status codes;
+  - whether the API reports the plan's usage.
+

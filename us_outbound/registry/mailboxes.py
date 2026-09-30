@@ -361,6 +361,13 @@ def last_use(ctx: Context, address: str) -> datetime | None:
     return max(times) if times else None
 
 
+def _as_int(v: Any) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _lower_limit(row: Mapping[str, Any]) -> bool:
     try:
         return row.get("instantly_daily_limit") is not None and int(row["instantly_daily_limit"]) < int(row.get("daily_cap") or 0)
@@ -381,6 +388,13 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
             + (f", Instantly limits it to {r['instantly_daily_limit']} a day (sheet cap {r['daily_cap']}; the lower is used)"
                if _lower_limit(r) else "")
         )
+    for address, change in (out.get("limit_set") or {}).items():
+        verb = "Would set" if ctx.dry_run else "Set"
+        lines.append(f"{verb} {address}'s Instantly daily limit from {change['from']} to {change['to']} (the Mailboxes tab's daily_cap)")
+    for owner, st in (out.get("campaign_status") or {}).items():
+        if st.get("code") is not None:
+            lines.append(f"Instantly says {campaign_name(owner)} is held back: {st['meaning']}"
+                         + (". The sender is at capacity; see `us-outbound status` for whether accounts are waiting." if st.get("at_limit") else "."))
     for key, label in (
         ("promoted", "Promoted to Active"),
         ("retired", "Retired"),
@@ -417,13 +431,35 @@ def mailbox_health(ctx: Context) -> dict:
     }
     rows: list[dict] = []
     changes: list[tuple[Mailbox, str]] = []
-    # Instantly's own per-account daily limit, which caps a mailbox below its sheet daily_cap
-    # when it is lower (enrol/capacity.py reads it from this job's latest summary).
+    # What Instantly reports back (enrol/capacity.py and limits.py read this job's latest summary):
+    #   instantly_daily_limits: each mailbox's own daily limit in Instantly;
+    #   sent_by_day:            campaign emails each mailbox sent on each of the last 7 days;
+    #   campaign_status:        per owner, why Instantly says the campaign is not sending, if it is not.
+    # The Mailboxes tab is where caps are set: a mailbox whose Instantly limit differs from its
+    # daily_cap is set back to the cap (live; reported in dry-run), as warmup is turned back on.
     out["instantly_daily_limits"] = {}
+    out["limit_set"] = {}
     for m in registry:
         w = warmups.get(m.address.lower(), {})
-        if w.get("found") and w.get("daily_limit") is not None:
-            out["instantly_daily_limits"][m.address.lower()] = w["daily_limit"]
+        if not w.get("found") or w.get("daily_limit") is None:
+            continue
+        out["instantly_daily_limits"][m.address.lower()] = w["daily_limit"]
+        if m.status != RETIRED and _as_int(w["daily_limit"]) != int(m.daily_cap or 0):
+            out["limit_set"][m.address.lower()] = {"from": w["daily_limit"], "to": int(m.daily_cap or 0)}
+    present = [m.address.lower() for m in registry if warmups.get(m.address.lower(), {}).get("found")]
+    out["sent_by_day"] = {}
+    if present:
+        sends = inst.daily_sends(present, start_date=(today - timedelta(days=7)).isoformat(), end_date=today.isoformat())
+        out["sent_by_day"] = {a: {d: _as_int(r.get("sent")) for d, r in days.items()} for a, days in sends.items()}
+    out["campaign_status"] = {}
+    for owner in settings.owners():
+        try:
+            out["campaign_status"][owner] = inst.sending_status(campaign_name(owner))
+        except LookupError:  # no campaign yet (ensure_campaigns below creates or reports it)
+            continue
+
+    for m in registry:
+        w = warmups.get(m.address.lower(), {})
         rows.append({
             "address": m.address, "owner": m.owner_name, "status": m.status, "found": bool(w.get("found")),
             "warmup_enabled": bool(w.get("warmup_enabled")), "warmup_score": w.get("warmup_score"),
@@ -447,6 +483,8 @@ def mailbox_health(ctx: Context) -> dict:
 
     if out["warmup_turned_on"]:
         inst.enable_warmup(out["warmup_turned_on"])  # SPEC 13: warmup always on
+    for address, change in out["limit_set"].items():
+        inst.set_daily_limit(address, change["to"])  # the sheet's daily_cap is the one place caps are set
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new_settings = settings
     for m, status in changes:

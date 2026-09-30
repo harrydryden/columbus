@@ -60,6 +60,8 @@ class FakeInstantly:
         self.accounts = accounts if accounts is not None else {m.address: warm_account(m.address) for m in MAILBOXES}
         self.campaigns: dict[str, dict] = {}
         self.leads: dict[str, dict] = {}
+        self.daily: list[dict] = []  # GET /accounts/analytics/daily rows
+        self.sending_status: dict[str, dict] = {}  # campaign id -> GET /campaigns/{id}/sending-status
         self._n = 0
         for method in ("GET", "POST", "PATCH", "DELETE"):
             transport.route(method, "api.instantly.ai", fn=self.handle)
@@ -102,6 +104,8 @@ class FakeInstantly:
                 self.campaigns[c["id"]] = c
                 return dict(c)
             c = self.campaigns[parts[1]]
+            if m == "GET" and parts[-1] == "sending-status":
+                return dict(self.sending_status.get(c["id"], {}))
             if m == "GET":
                 return dict(c)
             if m == "PATCH":
@@ -113,8 +117,14 @@ class FakeInstantly:
                 c["status"] = 1
             return {"id": c["id"]}
         if parts[0] == "accounts":
+            if m == "GET" and parts[1:] == ["analytics", "daily"]:
+                wanted = set((req.params or {}).get("emails") or ())
+                return [dict(r) for r in self.daily if r["email_account"] in wanted]
             if m == "GET":
                 return dict(self.accounts.get(parts[1], {}))
+            if m == "PATCH":
+                self.accounts[parts[1]].update(req.json)
+                return dict(self.accounts[parts[1]])
             if parts[-1] == "warmup-analytics":
                 return {"aggregate_data": {}}
             if parts[-1] == "enable":
@@ -372,8 +382,11 @@ def test_mailbox_health_promotes_retires_and_reports():
     assert out["campaigns"]["drift"] == {}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert post["channel"] == "C_ALERT" and "Promoted to Active: hannah@meetspill.org" in post["text"]
-    account_reads = [r.url for r in t.requests if "/accounts/" in r.url and r.method == "GET"]
+    account_reads = [r.url for r in t.requests if "/accounts/" in r.url and r.method == "GET"
+                     and "/accounts/analytics/" not in r.url]
     assert all(any(a in u for a in (HANNAH, HARRY, SAM, HARRY2)) for u in account_reads)
+    [daily] = [r for r in t.requests if "/accounts/analytics/daily" in r.url]  # filtered to the registry
+    assert set(daily.params["emails"]) <= {HANNAH, HARRY, SAM, HARRY2}
 
 
 def test_mailbox_health_waits_to_retire_a_recently_used_mailbox():
@@ -407,3 +420,42 @@ def test_a_waiting_campaign_is_not_drift():
     inst.standard(C_HANNAH, [HANNAH], 30, status=2)
     out = reg.ensure_campaigns(ctx)
     assert out["ok"] == [C_HANNAH] and out["drift"] == {}
+
+
+# -- what Instantly reports back (Harry, 30 Sep 2026) -------------------------------------------------
+
+
+def test_mailbox_health_sets_instantly_limits_to_the_sheet_caps():
+    accounts = {m.address: warm_account(m.address) for m in MAILBOXES}
+    accounts[HANNAH]["daily_limit"] = 50  # someone raised it in Instantly
+    ctx, t, inst, sheets = setup(accounts=accounts)
+    out = reg.mailbox_health(ctx)
+    assert out["limit_set"] == {HANNAH: {"from": 50, "to": 30}} and accounts[HANNAH]["daily_limit"] == 30
+    [patch] = [r for r in t.requests if r.method == "PATCH" and "/accounts/" in r.url]
+    assert patch.json == {"daily_limit": 30}
+    [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "Set hannah@meetspill.org's Instantly daily limit from 50 to 30" in post["text"]
+
+
+def test_mailbox_health_in_dry_run_only_reports_a_limit_it_would_set():
+    accounts = {m.address: warm_account(m.address) for m in MAILBOXES}
+    accounts[SAM]["daily_limit"] = 20
+    ctx, t, inst, sheets = setup(live=False, accounts=accounts)
+    out = reg.mailbox_health(ctx)
+    assert out["limit_set"] == {SAM: {"from": 20, "to": 30}} and accounts[SAM]["daily_limit"] == 20
+    [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "Would set sam@meetspill.org's Instantly daily limit from 20 to 30" in post["text"]
+
+
+def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():
+    ctx, t, inst, sheets = setup()
+    c = inst.standard(C_HARRY, [HARRY, HARRY2], 60)
+    inst.daily = [{"date": "2026-10-26", "email_account": HARRY, "sent": 30},
+                  {"date": "2026-10-26", "email_account": HARRY2, "sent": 29}]
+    inst.sending_status[c["id"]] = {"not_sending_status": 3}
+    out = reg.mailbox_health(ctx)
+    assert out["sent_by_day"][HARRY] == {"2026-10-26": 30} and out["sent_by_day"][HARRY2] == {"2026-10-26": 29}
+    assert out["campaign_status"]["Harry Dryden"] == {"code": 3, "meaning": "the campaign reached its daily limit",
+                                                      "at_limit": True}
+    [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "Instantly says US Outbound – Harry Dryden is held back: the campaign reached its daily limit" in post["text"]

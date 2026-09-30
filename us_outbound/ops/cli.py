@@ -48,6 +48,7 @@ from typing import Any
 
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
+from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.logs import log, redact
 from us_outbound.ops import bootstrap
@@ -85,7 +86,7 @@ JOBS: dict[str, str] = {
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
-TEST_WINDOW_DAYS = 21  # SPEC 12: human replies within 21 days of step 1
+TEST_WINDOW_DAYS = REPLY_WINDOW_DAYS  # human replies within 28 days of step 1: a week after the last step
 
 Factory = Callable[..., Context]
 
@@ -235,7 +236,7 @@ def _status_heartbeats(store: Any, now: datetime) -> None:
 
 
 def _status_limits(ctx: Context) -> None:
-    """This week's budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
+    """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
     from us_outbound import limits
     from us_outbound.enrol import enrol
 
@@ -245,7 +246,10 @@ def _status_limits(ctx: Context) -> None:
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
-    print("This week (Monday to Sunday, UK time):")
+    print("Credit budgets this month (UK time):")
+    for line in lim.budget_lines:
+        print(f"  {line}")
+    print("Enrolment this week (Monday to Sunday, UK time):")
     print(f"  {lim.explanation}")
     for line in lim.detail:
         print(f"  {line}")
@@ -465,7 +469,7 @@ def _when(v: Any) -> datetime | None:
 def read_test(ctx: Context, test_id: str) -> dict:
     """Per version: accounts with step 1 delivered, and their human, positive and meeting rates (SPEC 12).
 
-    Reply rate = accounts with a human reply (any class but out_of_office) within 21 days of
+    Reply rate = accounts with a human reply (any class but out_of_office) within REPLY_WINDOW_DAYS (28) days of
     step 1 ÷ accounts whose step 1 was delivered, as in v_account_outcomes.
     """
     test = next((t for t in ctx.settings.tests if t.test_id == test_id), None)

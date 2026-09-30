@@ -218,13 +218,14 @@ def test_general_unknown_and_duplicate_keys(tabs):
     assert all(e.column == "key" for e in errs)
 
 
-def test_the_monthly_and_daily_keys_say_what_replaced_them(tabs):
-    for old, new in (("daily_enrol_cap", "weekly_enrol_cap"), ("clay_monthly_credits", "clay_weekly_credits"),
-                     ("apollo_monthly_credits", "apollo_weekly_credits")):
+def test_renamed_keys_say_what_replaced_them(tabs):
+    for old, new, why in (("daily_enrol_cap", "weekly_enrol_cap", "Monday to Sunday"),
+                          ("clay_weekly_credits", "clay_monthly_credits", "monthly, like Clay's own"),
+                          ("apollo_weekly_credits", "apollo_monthly_credits", "monthly, like Apollo's own")):
         t = copy.deepcopy(BASE)
         t["General"].append({"key": old, "value": "30", "note": ""})
         e = _one(t, "General", "key")
-        assert f"'{old}' is now '{new}'" in e.message and "Monday to Sunday" in e.message
+        assert f"'{old}' is now '{new}'" in e.message and why in e.message
 
 
 def test_general_types(tabs):
@@ -257,13 +258,13 @@ def test_general_conversions(tabs):
     _row(tabs, "General", key="approver_slack_ids")[1]["value"] = "U01HARRY, U02OTHER"
     _row(tabs, "General", key="live_sending")[1]["value"] = "No"
     _row(tabs, "General", key="send_window")[1]["value"] = "Mon-Thu 08:30-15:00 America/Chicago"
-    _row(tabs, "General", key="apollo_weekly_credits")[1]["value"] = "1,500"
+    _row(tabs, "General", key="apollo_monthly_credits")[1]["value"] = "1,500"
     settings, _ = validate_all(tabs)
     g = settings.general
     assert g.approver_slack_ids == ("U01HARRY", "U02OTHER")
     assert g.live_sending is False
     assert g.send_window == SendWindow((0, 1, 2, 3), time(8, 30), time(15), "America/Chicago")
-    assert g.apollo_weekly_credits == 1500
+    assert g.apollo_monthly_credits == 1500
 
 
 def test_missing_general_keys_take_model_defaults(tabs):
@@ -476,7 +477,7 @@ def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
     assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
-    assert not errors and len(signals) == 16
+    assert not errors and len(signals) == 17
     bad = [dict(BASE["States"][0], active="sometimes")]
     states, errors = validate_tab("States", bad)
     assert states == () and errors == [RowError("States", 2, "active", "must be yes or no, not 'sometimes'", "AL")]

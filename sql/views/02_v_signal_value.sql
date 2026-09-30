@@ -47,8 +47,8 @@ per_signal AS (
     m.signal,
     count(*) AS accounts,
     count(*) FILTER (WHERE o.delivered) AS accounts_delivered,
-    count(*) FILTER (WHERE o.delivered AND o.replied_21d) AS accounts_replied,
-    count(*) FILTER (WHERE o.delivered AND o.positive_21d) AS accounts_positive
+    count(*) FILTER (WHERE o.delivered AND o.replied_in_window) AS accounts_replied,
+    count(*) FILTER (WHERE o.delivered AND o.positive_in_window) AS accounts_positive
   FROM matched AS m
   LEFT JOIN us_outbound.v_account_outcomes AS o
     ON o.account_id = m.account_id
@@ -57,9 +57,9 @@ per_signal AS (
 control AS (
   SELECT
     count(*) FILTER (WHERE o.delivered) AS accounts_delivered,
-    (count(*) FILTER (WHERE o.delivered AND o.replied_21d))::double precision
+    (count(*) FILTER (WHERE o.delivered AND o.replied_in_window))::double precision
       / NULLIF(count(*) FILTER (WHERE o.delivered), 0) AS reply_rate,
-    (count(*) FILTER (WHERE o.delivered AND o.positive_21d))::double precision
+    (count(*) FILTER (WHERE o.delivered AND o.positive_in_window))::double precision
       / NULLIF(count(*) FILTER (WHERE o.delivered), 0) AS positive_rate
   FROM us_outbound.v_account_outcomes AS o
   JOIN us_outbound.accounts AS a
@@ -92,4 +92,4 @@ LEFT JOIN per_signal AS p
   ON p.signal = s.signal
 CROSS JOIN control AS c
 ORDER BY accounts DESC, s.signal;
-COMMENT ON VIEW us_outbound.v_signal_value IS 'Per active signal: accounts that showed it, their reply and positive-reply rates within 21 days of step 1, the Control tier''s rates, and a below_control flag after 200 delivered accounts (SPEC 12).';
+COMMENT ON VIEW us_outbound.v_signal_value IS 'Per active signal: accounts that showed it, their reply and positive-reply rates within 28 days of step 1, the Control tier''s rates, and a below_control flag after 200 delivered accounts (SPEC 12).';

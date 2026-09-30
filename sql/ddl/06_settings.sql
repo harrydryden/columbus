@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.settings (
   PRIMARY KEY (tab, "key", effective_from)
 );
 COMMENT ON TABLE us_outbound.settings IS 'One row per setting version (SPEC 6). settings_sync validates every tab first; a tab that fails keeps the version in force (SPEC 5).';
-COMMENT ON COLUMN us_outbound.settings.tab IS 'One of: General, Signals, Angles, Industries, States, Roles, Copy, Mailboxes, Overrides, Tests, _order. An _order row keeps one tab''s keys in sheet order (key = the tab).';
+COMMENT ON COLUMN us_outbound.settings.tab IS 'One of: General, Signals, Angles, Industries, States, Roles, Copy, Mailboxes, Overrides, Tests, Focus, Named accounts, _order. An _order row keeps one tab''s keys in sheet order (key = the tab).';
 COMMENT ON COLUMN us_outbound.settings."key" IS 'The General key, or the row''s natural key (settings.validate.KEY_COLUMNS, joined with |).';
 COMMENT ON COLUMN us_outbound.settings."values" IS 'JSON: the raw sheet row, column to text.';
 COMMENT ON COLUMN us_outbound.settings.effective_to IS 'NULL while the version is in force.';
