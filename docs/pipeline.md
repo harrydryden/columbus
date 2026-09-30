@@ -289,7 +289,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 **The first library:**
 - There are 106 draft rows: 105 industries and a General row.
 - Insurance, HR consulting and Substance use treatment are partners, never contacted, so they have no copy.
-- Every row passed the sheet check and QA in the build session. Each row's `qa_notes` says what QA found.
+- Every row passed the sheet check, then QA in the build session. 21 rows failed QA's first round, mostly claims beyond facts.md or the page, and were rewritten and checked again. Each row's `qa_notes` gives QA's summary and its minor suggestions.
 - All are `draft` until Harry approves them.
 - Load them with `us-outbound settings load --live` (below).
 

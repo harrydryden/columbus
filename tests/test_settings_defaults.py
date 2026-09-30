@@ -245,6 +245,8 @@ def test_every_contactable_industry_has_a_draft_sequence(settings):
     assert industries == ({i.industry for i in settings.industries} - UNREACHABLE) | {"General"}
     assert len(settings.copy) == len(industries) and all(c.role == "" for c in settings.copy)
     assert all(c.status == "draft" and c.approved_by == "" for c in settings.copy)  # only Harry approves copy
+    # Every row passed QA in its current wording: editing data/copy.csv needs `copy qa` again.
+    assert all(c.qa_current for c in settings.copy), [c.copy_version for c in settings.copy if not c.qa_current]
     assert all(c.copy_version.endswith("-v1") for c in settings.copy)
 
 
