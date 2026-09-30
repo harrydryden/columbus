@@ -25,7 +25,9 @@ dollar quoting are refused, since the check cannot read them.
 
 apply() runs every statement in one transaction, each after
 guard.authorize("db", Op("ddl", target="us_outbound.<object>", write=True)). Tables and
-indexes are IF NOT EXISTS and views OR REPLACE, so applying again changes nothing.
+indexes are IF NOT EXISTS, so applying again changes no table. Every view is dropped and
+created again (dependents first), because CREATE OR REPLACE VIEW cannot change a view's
+columns; readers never see the gap, as the whole apply is one transaction.
 Dry-run (the default) returns the statements and connects to nothing.
 """
 
@@ -173,12 +175,25 @@ def check_statement(sql: str) -> str:
     return target
 
 
+REFRESH_FILE = "views/(drop before recreate)"
+
+
 def _checked(root: Path) -> list[tuple[str, str, str]]:
     paths = files(root)
     if not paths:
         raise FileNotFoundError(f"no DDL files under {root}")
     out = [(f"{p.parent.name}/{p.name}", s) for p in paths for s in split(p.read_text(encoding="utf-8"))]
-    return [(name, s, check_statement(s)) for name, s in out]
+    checked = [(name, s, check_statement(s)) for name, s in out]
+    # Postgres's CREATE OR REPLACE VIEW cannot rename, drop or reorder a view's columns, so a
+    # changed view would fail against a database made by an older version. Views hold no
+    # data: drop every view first, dependents before what they read (the reverse of file
+    # order), and create them all again, inside the one transaction apply() uses.
+    views = [t for name, s, t in checked if name.startswith("views/") and FORMS["view"].match(_code_only(s).strip())]
+    drops = [(REFRESH_FILE, f"DROP VIEW IF EXISTS {t}", t) for t in reversed(views)]
+    for d in drops:
+        check_statement(d[1])
+    first_view = next((i for i, (name, _, _) in enumerate(checked) if name.startswith("views/")), len(checked))
+    return checked[:first_view] + drops + checked[first_view:]
 
 
 def statements(root: Path = SQL_DIR) -> list[tuple[str, str]]:

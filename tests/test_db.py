@@ -118,6 +118,27 @@ def test_a_second_apply_changes_nothing(db, dsn, store):
     assert (row["account_id"], row["domain"]) == ("a1", "acme.com")
 
 
+def test_apply_over_views_an_older_version_left(db, dsn):
+    """A deploy must apply over the views the last version made, even when their columns
+    changed (CREATE OR REPLACE VIEW alone cannot rename a column): this failed on Railway
+    when v_account_outcomes.replied_21d became replied_in_window."""
+    before = catalog(db)
+    db.execute(f"DROP VIEW {SCHEMA}.v_readout_weekly")
+    db.execute(f"DROP VIEW {SCHEMA}.v_signal_value")
+    db.execute(f"DROP VIEW {SCHEMA}.v_account_outcomes")
+    db.execute(f"DROP VIEW {SCHEMA}.v_budgets")
+    db.execute(f"CREATE VIEW {SCHEMA}.v_account_outcomes AS SELECT 'x'::text AS account_id, true AS replied_21d")
+    db.execute(f"CREATE VIEW {SCHEMA}.v_signal_value AS SELECT replied_21d FROM {SCHEMA}.v_account_outcomes")
+    db.execute(f"CREATE VIEW {SCHEMA}.v_budgets AS SELECT 'clay'::text AS system, 'week'::text AS period")
+    db.execute(f"CREATE VIEW {SCHEMA}.v_credits_month AS SELECT 1 AS n")  # retired, dropped by the apply
+    ddl.apply(Guard(), dsn, dry_run=False)
+    assert catalog(db) == before
+    cols = {r["column_name"] for r in db.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = 'v_account_outcomes'",
+        (SCHEMA,)).fetchall()}
+    assert "replied_in_window" in cols and "replied_21d" not in cols
+
+
 # -- views -----------------------------------------------------------------------------
 
 

@@ -207,11 +207,23 @@ def test_files_are_numbered_ddl_then_views():
 
 def test_statements_come_in_file_order_and_hold_no_semicolon():
     order = [f"{p.parent.name}/{p.name}" for p in ddl.files()]
-    names = [name for name, _ in ddl.statements()]
+    names = [name for name, _ in ddl.statements() if name != ddl.REFRESH_FILE]
     assert sorted(set(names), key=order.index) == order, "every file holds a statement"
     assert names == sorted(names, key=order.index)
     for _, sql in ddl.statements():
         assert ";" not in ddl._code_only(sql)
+
+
+def test_every_view_is_dropped_before_the_views_are_created_again():
+    """CREATE OR REPLACE VIEW cannot change a view's columns, so apply drops every view first,
+    dependents before what they read (the reverse of file order)."""
+    stmts = ddl.statements()
+    kinds = [("drop" if name == ddl.REFRESH_FILE else name.split("/")[0]) for name, _ in stmts]
+    assert kinds == sorted(kinds, key=["ddl", "drop", "views"].index)
+    drops = [sql.rsplit(".", 1)[1] for name, sql in stmts if name == ddl.REFRESH_FILE]
+    created = [ddl.check_statement(sql).split(".", 1)[1] for name, sql in stmts
+               if name.startswith("views/0") and ddl.FORMS["view"].match(ddl._code_only(sql).strip())]
+    assert drops == list(reversed(created)) and set(drops) == VIEWS
 
 
 def test_every_statement_parses_as_an_allowed_kind(parsed):
