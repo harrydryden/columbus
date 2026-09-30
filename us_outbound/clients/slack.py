@@ -13,6 +13,7 @@ from typing import Any
 
 from us_outbound.clients.guard import Op
 from us_outbound.clients.http import ApiError, HttpClient
+from us_outbound.logs import log
 
 LIST_PAGE = 200  # Slack recommends no more than 200 per page
 
@@ -127,3 +128,25 @@ class Slack(HttpClient):
         if body is None:
             return None
         return {"channel": channel, "channel_id": body.get("channel"), "ts": body.get("ts")}
+
+
+class SlackOff:
+    """Stands in for Slack while US_OUTBOUND_SLACK_BOT_TOKEN is not set, in dry-run only.
+
+    Harry (30 Sep 2026): leave Slack out while the build starts. Posts are logged instead of
+    sent, and nothing is read. Live runs still need the token (Clients.slack), because
+    approvals come through Slack (SPEC 1.1, 11). It makes no network call, so it holds no guard.
+    """
+
+    system = "slack"
+
+    def post(self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None) -> None:
+        log("slack_off", channel=channel, message=text, thread_ts=thread_ts)
+        return None
+
+    def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> None:
+        log("slack_off", channel=channel, message=text, ts=ts)
+        return None
+
+    def replies(self, channel: str, ts: str) -> list[dict]:
+        return []

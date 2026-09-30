@@ -93,3 +93,7 @@ See `docs/phase0-runbook.md` for commands, and `docs/phase0-facts.md` for what h
 12. **Mailboxes:** check domain authentication (SPF, DKIM, DMARC p=none) for meetspill.org and tryspill.org.
 
 Open decisions are in `docs/open-questions.md`.
+
+## Before phase 1: how accounts are found and enriched
+
+[pipeline.md](pipeline.md) sets out which vendor does which job, where the ICP lives, the order of the funnel and which value wins when sources disagree. Its eight proposed changes need Harry's answer before the phase 1 source modules are written.

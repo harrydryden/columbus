@@ -177,3 +177,37 @@ def test_a_job_without_its_key_exits_two_and_names_the_variable(monkeypatch, cap
     assert "set US_OUTBOUND_HUBSPOT_TOKEN" in capsys.readouterr().err
     [beat] = store.tables["heartbeats"]
     assert beat["status"] == "error" and "US_OUTBOUND_HUBSPOT_TOKEN" in beat["error"]
+
+
+# -- Slack left out (Harry, 30 Sep 2026) ----------------------------------------------------------------
+
+
+def _clients(guard, env, transport=None):
+    from us_outbound.context import Clients
+
+    return Clients(guard, transport or FakeTransport(), Secrets(guard, env=env), MemoryStore(guard), SETTINGS)
+
+
+def test_without_a_slack_token_a_dry_run_logs_posts_and_calls_nothing(capsys):
+    from us_outbound.clients.slack import SlackOff
+
+    transport = FakeTransport()
+    clients = _clients(Guard(), {}, transport)
+    assert isinstance(clients.slack, SlackOff)
+    assert clients.slack.post("#us-outbound", "Settings rejected: someone@example.com") is None
+    assert clients.slack.replies("#us-outbound", "1.2") == []
+    assert transport.requests == []
+    out = capsys.readouterr().out
+    assert '"event": "slack_off"' in out and "someone@example.com" not in out  # emails hashed as in every log
+
+
+def test_a_live_run_still_needs_the_slack_token():
+    with pytest.raises(ConfigError) as err:
+        _clients(Guard(live=True), {}).slack
+    assert "US_OUTBOUND_SLACK_BOT_TOKEN" in str(err.value)
+
+
+def test_with_a_slack_token_the_real_client_is_used():
+    from us_outbound.clients.slack import Slack
+
+    assert isinstance(_clients(Guard(), {"US_OUTBOUND_SLACK_BOT_TOKEN": "xoxb-test"}).slack, Slack)

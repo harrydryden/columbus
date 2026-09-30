@@ -133,9 +133,15 @@ class Clients:
 
     @cached_property
     def slack(self):
-        from us_outbound.clients.slack import Slack
+        from us_outbound.clients.slack import Slack, SlackOff
 
-        return Slack(self.guard, self.transport, self.secrets.get("slack"))
+        try:
+            token = self.secrets.get("slack")
+        except ConfigError:
+            if self.guard.live:
+                raise
+            return SlackOff()  # dry-run without a token: posts go to the log
+        return Slack(self.guard, self.transport, token)
 
     @cached_property
     def sheets(self):

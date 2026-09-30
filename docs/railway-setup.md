@@ -76,7 +76,7 @@ API. It can only be replaced.
 | `US_OUTBOUND_CLAY_API_KEY` | Clay API key | yes |
 | `US_OUTBOUND_INSTANTLY_API_KEY` | Instantly API key | yes |
 | `US_OUTBOUND_HUBSPOT_TOKEN` | HubSpot service key with the SPEC 13 scopes (phase0-runbook.md §5) | yes |
-| `US_OUTBOUND_SLACK_BOT_TOKEN` | Slack bot token (`xoxb-…`) from `deploy/slack-app-manifest.yaml` | yes |
+| `US_OUTBOUND_SLACK_BOT_TOKEN` | Slack bot token (`xoxb-…`) from `deploy/slack-app-manifest.yaml`. Optional for now (Harry, 30 Sep): without it, dry-run jobs write their Slack messages to the log. Live runs refuse to start without it | yes |
 | `US_OUTBOUND_CLAUDE_API_KEY` | The new Claude key, with a $10 monthly limit set in the Anthropic console (SPEC 1.1) | yes |
 | `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | `30`. On a redeploy the scheduler gets 30 s between SIGTERM and SIGKILL. It gives running jobs 25 s, then stops them | no (a setting) |
 | `US_OUTBOUND_MAX_PARALLEL` | Optional: how many jobs may run at once (default `2`) | no (a setting) |
