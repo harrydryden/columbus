@@ -1,6 +1,6 @@
-"""Copy rendering (SPEC 10): variables, footer, Article 14 notice, and every template against
-empty and maximum-length values. Settings are built here directly from the model; the
-builders are shared with test_copy_rules, test_queue and test_enrol."""
+"""Copy rendering (SPEC 10; Harry, 30 Sep 2026): variables, the markup, the footer, the Article 14
+notice, and every row against empty and maximum-length values. Settings are built here directly
+from the model; the builders are shared with test_copy_rules, test_queue, test_enrol and others."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ from datetime import date
 
 import pytest
 
-from us_outbound.enrol import copy_rules, render
+from us_outbound.enrol import copy_markup, copy_rules, render
 from us_outbound.settings.model import (
     Angle,
     CopyRow,
+    CopyStep,
     DateRange,
     General,
     Industry,
@@ -24,7 +25,8 @@ from us_outbound.settings.model import Test as ABTest  # aliased so pytest does 
 
 POSTAL = "Spill Group Ltd, 1 Example Street, London, EC1A 1AA, UK"
 PRIVACY = "https://www.spill.chat/us/privacy"
-BOOKING = "https://meetings.hubspot.com/harry336/us-demo-link"
+DEMO = "https://www.spill.chat/us/book-demo"
+PAGE = "https://www.spill.chat/us/industry/"
 AD_LINE = "This is a marketing email from Spill."
 STOP_LINE = f"Reply STOP or use this link to opt out: {PRIVACY}"
 
@@ -50,50 +52,77 @@ ANGLES = (
     Angle("Growing team", 3, "Hiring fast means onboarding stress.", "It looks like your team is growing fast.", True),
     Angle("General", 4, "Mental health support your team will use.", GENERAL_OPENER, True),
 )
+AGENCIES, TECH = "Marketing & Creative Agencies", "Technology & Startups"
 INDUSTRIES = (
-    Industry("Marketing & Creative Agencies", "Marketing & Creative Agencies", True,
+    Industry(AGENCIES, AGENCIES, True, landing_page_url=PAGE + "agencies",
              proof_point="UK example: the London agency Mother gives its whole team Spill.", priority=2),
-    Industry("Advertising agencies", "Marketing & Creative Agencies", True, priority=2),
-    Industry("Technology & Startups", "Technology & Startups", True, proof_point="UK example: Monzo's teams use Spill.", priority=1),
-    Industry("Fintech", "Technology & Startups", True, priority=1),
-    Industry("Legal Teams", "Legal Teams", True, proof_point="UK example: a London law firm gives its staff Spill.", priority=4),
+    Industry("Advertising agencies", AGENCIES, True, landing_page_url=PAGE + "advertising", priority=2),
+    Industry(TECH, TECH, True, landing_page_url=PAGE + "tech", proof_point="UK example: Monzo's teams use Spill.", priority=1),
+    Industry("Fintech", TECH, True, priority=1),  # no page of its own
+    Industry("Legal Teams", "Legal Teams", True, landing_page_url=PAGE + "legal",
+             proof_point="UK example: a London law firm gives its staff Spill.", priority=4),
     Industry("Staffing agencies", "Professional Services", False, priority=5),
 )
 LEGAL_OVERLAY = "The bar's Lawyer Assistance Program covers attorneys. Who covers paralegals and staff?"
 
-SUBJECTS = {1: "Mental health support for the {{company}} team", 2: "Same-day counseling for {{company}}",
-            3: "Quick question", 4: "Closing the loop"}
+SUBJECTS = {1: "Support for the {{company}} team", 2: "How Spill works for agencies",
+            3: "Will anyone know who's using it?", 4: "One last note"}
 BODIES = {
-    1: "Hi {{first_name}},\n\n{{opener}}\n\n{{legal_overlay}}\n\nSpill is mental health support your team will use: "
-       "same-day counseling with registered counselors, booked right in Slack or Teams, for one flat monthly fee. "
-       "30% of employees use Spill.\n\n{{ask}}",
-    2: "Hi {{first_name}},\n\nFollowing up on my note about mental health support for the {{company}} team.\n\n"
-       "{{proof}}\n\n{{price_line}}\n\nIf you'd like to see how it works, {{demo_line}}\n\n{{signature}}",
-    3: "Hi {{first_name}},\n\nIs mental health support for your team in {{place}} on your list right now?",
-    4: "Hi {{first_name}},\n\nI'll leave it here. If it would help to have something to share with the team later, "
-       "reply \"one-pager\" and I'll send over our one-page summary of Spill.",
+    1: "Hi {{first_name}},\n\n{{opener}}\n\n{{legal_overlay}}\n\nIn most agencies, the work runs on deadlines and client "
+       "moods, and the strain stays hidden until someone good leaves.\n\n{{role_line}}\n\nSpill gives your team private "
+       "counseling, often the same day, booked from any phone or from Slack, with evening sessions that fit around "
+       "launches. If it's worth a look, you can [see a quick demo]({{demo_url}}).\n\nBest,\n{{sender_first_name}}",
+    2: "Hi {{first_name}},\n\nIn case it's useful, here's a short overview of Spill for agencies.\n\n"
+       "**What is Spill?**\nSpill is an on-demand counseling service, trusted by tens of thousands of employees. We help "
+       "agencies increase productivity, reduce absenteeism and free up HR time by addressing the issues that most often "
+       "derail performance at work.\nWith Spill, employees get fast, easy access to professional counseling, and managers "
+       "get the tools they need to support anyone on their team who's struggling.\n\n"
+       "**Who is Spill for?**\nAnyone on your team who's struggling with personal or professional issues that affect "
+       "their well-being and job performance.\nThat could be work-related challenges (like stress or burnout), mental "
+       "health conditions (like anxiety, depression or ADHD) or life events (like having a baby or losing someone close).\n\n"
+       "**What makes Spill unique**\n- Employees can get support the same day, in just a couple of clicks. No waiting "
+       "lists or callbacks.\n- Sessions run early mornings, evenings and weekends, so support fits around pitches and "
+       "launches.\n- We integrate with the tools you already use, like email, Slack and Microsoft Teams.\n"
+       "- {{price_line}} We don't lock you in.\n\n"
+       "If you'd like more detail, you can [see how Spill works for agencies]({{industry_url}}).\n\n"
+       "To hear more and get a quote for your team, [book a short demo]({{demo_url}}).\n\nBest,\n{{sender_first_name}}",
+    3: "Hi {{first_name}},\n\nOne question agencies often ask: will anyone know who's using it?\n\nNo. People book "
+       "directly and privately, and you see only anonymized, aggregate data. That privacy is often what makes people "
+       "willing to use it at all.\n\nSetup takes hours, so it can be ready before your next busy stretch. If that's "
+       "useful, [book 20 minutes for a demo]({{demo_url}}).\n\nBest,\n{{sender_first_name}}",
+    4: "Hi {{first_name}},\n\nI'll leave it here for now.\n\nIf support for your team in {{place}} moves up the list, "
+       "Spill can be set up in hours, with counseling that fits around client work.\n\nWhenever the timing suits, "
+       "[book a demo]({{demo_url}}) and we'll walk you through it.\n\nBest,\n{{sender_first_name}}",
+}
+ROLE_LINES = {
+    "People leader": "If you're the one people come to when a launch goes sideways, you want support they'll actually use.",
+    "Founder or executive": "Keeping your best people through a hard quarter matters more than any single pitch.",
+    "Operations": "Sick days and scrambled cover in launch weeks add up faster than most people expect.",
 }
 
 
-def copy_rows(version: str, angle: str, status: str = "approved") -> tuple[CopyRow, ...]:
-    return tuple(
-        CopyRow(version, angle, step, SUBJECTS[step], BODIES[step], status, "Harry Dryden" if status == "approved" else "")
-        for step in (1, 2, 3, 4)
-    )
+def copy_row(version: str, industry: str, *, status: str = "approved", role: str = "", qa: bool = True,
+             bodies=None, subjects=None, role_lines=None) -> CopyRow:
+    bodies, subjects = bodies or BODIES, subjects or SUBJECTS
+    row = CopyRow(version, industry, status, tuple(CopyStep(subjects[n], bodies[n]) for n in (1, 2, 3, 4)), role,
+                  dict(ROLE_LINES if role_lines is None else role_lines),
+                  "Harry Dryden" if status == "approved" else "")
+    return dataclasses.replace(row, qa=f"pass {row.content_hash()}") if qa else row
 
 
-COPY = copy_rows("general-v1", "General") + copy_rows("eap-v1", "Upgrade the EAP")
-FIRST_TEST = ABTest("t1-eap-opener", "EAP opener beats General", "eap-v1", "general-v1", 400, "running")
+COPY = (copy_row("agencies-v1", AGENCIES), copy_row("general-v1", "General"))
+FIRST_TEST = ABTest("t1-agencies", "A shorter email 1 beats the first", "agencies-v1", "agencies-v2", 400, "running")
 BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2026, 12, 18), date(2027, 1, 4)))
 
 
-def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(), named_accounts=(), **general) -> Settings:
+def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(), named_accounts=(),
+                  industries=INDUSTRIES, **general) -> Settings:
     g = General(
         postal_address=POSTAL, privacy_url=PRIVACY, hubspot_owner_id="owner-harry",
         clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
     )
     return Settings(
-        general=dataclasses.replace(g, **general), angles=ANGLES, industries=INDUSTRIES, copy=tuple(copy),
+        general=dataclasses.replace(g, **general), angles=ANGLES, industries=tuple(industries), copy=tuple(copy),
         mailboxes=tuple(mailboxes), tests=tuple(tests), overrides=tuple(overrides), focus=tuple(focus),
         named_accounts=tuple(named_accounts),
     )
@@ -102,7 +131,7 @@ def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), foc
 def account(**kw) -> dict:
     return {
         "account_id": "acc-1", "domain": "acmecreative.com", "clean_name": "Acme Creative", "hq_city": "Chicago",
-        "hq_state": "IL", "industry": "Advertising agencies", "industry_group": "Marketing & Creative Agencies",
+        "hq_state": "IL", "industry": "Advertising agencies", "industry_group": AGENCIES,
         "employees": 64, "size_band": "50-99", "tier": "Priority", "score": 60, "angle": "Upgrade the EAP",
         "status": "verified", **kw,
     }
@@ -116,34 +145,46 @@ def contact(**kw) -> dict:
     }
 
 
-def values_for(mb=HANNAH, settings=None, acct=None, con=None, opener=EAP_OPENER, overlay="") -> dict[str, str]:
+def values_for(mb=HANNAH, settings=None, acct=None, con=None, opener=EAP_OPENER, overlay="", row=None) -> dict[str, str]:
     s = settings or make_settings()
-    return render.variables(acct or account(), con or contact(), mb, s, opener=opener, legal_overlay=overlay)
+    return render.variables(acct or account(), con or contact(), mb, s, copy_row=row or s.copy[0], opener=opener,
+                            legal_overlay=overlay)
+
+
+def sequence(row=None, mb=HANNAH, settings=None, **kw) -> list[render.Rendered]:
+    s = settings or make_settings()
+    row = row or s.copy[0]
+    return render.render_sequence(row, values_for(mb, s, row=row, **kw), mailbox=mb, settings=s)
 
 
 # -- variables --------------------------------------------------------------------------
 
 
-def test_variables_follow_the_spec_table():
+def test_variables_for_one_lead():
     v = values_for()
-    assert v["first_name"] == "Jane" and v["company"] == "Acme Creative"
+    assert v["first_name"] == "Jane" and v["company"] == "Acme Creative" and v["place"] == "Chicago, IL"
     assert v["opener"] == EAP_OPENER
-    assert v["place"] == "Chicago, IL"
+    assert v["role_line"] == ROLE_LINES["People leader"]
+    assert v["price_line"] == "For a team your size it's $495 a month, on a rolling 30-day contract."
+    assert v["demo_url"] == DEMO
+    assert v["industry_url"] == PAGE + "agencies"  # the Copy row's industry (the group) and its page
+    assert v["sender_first_name"] == "Hannah"
     assert v["proof"] == INDUSTRIES[0].proof_point  # the label has none, so the group's row
-    assert v["price_line"] == "For a team your size it's $495 a month, flat."
-    assert v["signature"] == "Hannah Spalding\nSpill\nspill.chat/us"
     assert v["legal_overlay"] == ""
     assert set(v) == set(render.VARIABLES)
 
 
-def test_place_proof_and_signature_fallbacks():
+def test_role_line_follows_the_contact_s_role():
+    assert values_for(con=contact(role="Operations"))["role_line"] == ROLE_LINES["Operations"]
+    assert values_for(con=contact(role="Finance"))["role_line"] == ""
+
+
+def test_the_general_row_links_the_account_s_own_page():
     s = make_settings()
-    assert render.place_for({"hq_state": "NY"}) == "NY"
-    assert render.place_for({}) == ""
-    assert render.proof_for({"industry": "Fintech", "industry_group": "Technology & Startups"}, s).startswith("UK example: Monzo")
-    assert render.proof_for({"industry": "Unknown label", "industry_group": ""}, s) == ""
-    bare = dataclasses.replace(HANNAH, signature="")
-    assert render.signature_for(bare) == "Hannah Spalding\nSpill\nspill.chat/us"
+    general = s.copy_row("general-v1")
+    assert values_for(settings=s, row=general)["industry_url"] == PAGE + "advertising"
+    fintech = account(industry="Fintech", industry_group=TECH)  # no page: its group's
+    assert values_for(settings=s, row=general, acct=fintech)["industry_url"] == PAGE + "tech"
 
 
 @pytest.mark.parametrize(
@@ -152,29 +193,21 @@ def test_place_proof_and_signature_fallbacks():
      (100, "$495"), (101, "$995"), (200, "$995"), ("64", "$495")],
 )
 def test_price_line_by_team_size(employees, dollars):
-    assert render.price_line(employees) == f"For a team your size it's {dollars} a month, flat."
+    assert render.price_line(employees) == f"For a team your size it's {dollars} a month, on a rolling 30-day contract."
 
 
 def test_price_line_over_200_and_unknown():
-    assert render.price_line(201) == "For a team your size it's $5 per employee a month."
-    assert render.price_line(None) == "" and render.price_line("n/a") == "" and render.price_line(0) == ""
+    assert render.price_line(201) == "For a team your size it's $5 per employee a month, on a rolling 30-day contract."
+    for unknown in (None, "n/a", 0):
+        assert render.price_line(unknown) == "Plans start from $195 a month, on a rolling 30-day contract."
 
 
-def test_ask_by_role_and_host():
-    assert render.ask_for("People leader", sender_is_host=True, host="Harry Dryden") == "Would a 20-minute walkthrough be useful?"
-    hosted = render.ask_for("People leader", sender_is_host=False, host="Harry Dryden")
-    assert "20-minute walkthrough" in hosted and "Harry Dryden" in hosted
-    assert render.ask_for("Founder or executive", sender_is_host=False, host="Harry Dryden") == "Worth a look for the team?"
-    assert "happy to send the one-pager" in render.ask_for("Operations", sender_is_host=True, host="Harry Dryden").lower()
-    assert render.ask_for("Finance", sender_is_host=True, host="Harry Dryden") == ""
-
-
-def test_demo_line_names_harry_for_other_senders():
+def test_place_and_proof_fallbacks():
     s = make_settings()
-    hannah = render.demo_line_for(HANNAH, s)
-    assert hannah == f"my colleague Harry Dryden runs our US demos; you can grab a time with him here: {BOOKING}"
-    harry = render.demo_line_for(HARRY_M, s)
-    assert harry == f"grab a time with me: {BOOKING}"
+    assert render.place_for({"hq_state": "NY"}) == "NY"
+    assert render.place_for({}) == ""
+    assert render.proof_for({"industry": "Fintech", "industry_group": TECH}, s).startswith("UK example: Monzo")
+    assert render.proof_for({"industry": "Unknown label", "industry_group": ""}, s) == ""
     assert render.is_demo_host(HARRY_T, s) and not render.is_demo_host(SAM, s)
 
 
@@ -190,168 +223,188 @@ def test_overrides_win_over_the_account_row():
     assert v["company"] == "Acme" and "$250" in v["price_line"]
 
 
-def test_pick_opener_falls_back_when_evidence_breaks_a_rule():
-    opener, why = render.pick_opener("Saw your benefits page mentions unlimited PTO", EAP_OPENER)
-    assert opener == EAP_OPENER and "unlimited" in why
-    opener, why = render.pick_opener("Saw your benefits page mentions 100% employer-paid", EAP_OPENER)
-    assert opener == EAP_OPENER and "100%" in why
-    opener, why = render.pick_opener("Saw your benefits page mentions mental health days", EAP_OPENER)
-    assert opener == "Saw your benefits page mentions mental health days" and why == ""
-    assert render.pick_opener("", EAP_OPENER) == (EAP_OPENER, "")
+def test_pick_opener_drops_evidence_that_breaks_a_rule():
+    opener, why = render.pick_opener("Saw your benefits page mentions unlimited PTO")
+    assert opener == "" and "unlimited" in why
+    opener, why = render.pick_opener("Saw your benefits page mentions 100% employer-paid")
+    assert opener == "" and "100%" in why
+    assert render.pick_opener("Saw your benefits page mentions mental health days") == (
+        "Saw your benefits page mentions mental health days", "")
+    assert render.pick_opener("") == ("", "")
 
 
-# -- rendering ----------------------------------------------------------------------------
+# -- the markup ----------------------------------------------------------------------------------
+
+
+def test_markup_to_html_and_text():
+    src = "Hi {{first_name}},\n\n**Why**\n- one\n- two\n\nSee [the page]({{demo_url}}).\nNext line."
+    r = copy_markup.render(src, {"first_name": "Jane <b>", "demo_url": DEMO})
+    assert r.html == ('<p>Hi Jane &lt;b&gt;,</p><p><strong>Why</strong></p><ul><li>one</li><li>two</li></ul>'
+                      f'<p>See <a href="{DEMO}">the page</a>.<br>Next line.</p>')
+    assert r.text == f"Hi Jane <b>,\n\nWhy\n\n• one\n• two\n\nSee the page ({DEMO}).\nNext line."
+    assert r.words == "Hi Jane <b>,\n\nWhy\n\n• one\n• two\n\nSee the page.\nNext line."
+    assert r.links == [("the page", DEMO)] and r.problems == []
+
+
+def test_values_never_become_markup():
+    r = copy_markup.render("Hi {{company}}.", {"company": "[Acme](https://evil.example) **Co**"})
+    assert "<a " not in r.html and "<strong>" not in r.html and r.links == []
+
+
+def test_an_empty_optional_line_disappears():
+    r = copy_markup.render("Hi.\n\n{{opener}}\n\nMore.", {"opener": ""}, optional={"opener"})
+    assert r.html == "<p>Hi.</p><p>More.</p>" and r.problems == []
+    r = copy_markup.render("Hi.\n\n{{opener}}\n\nMore.", {"opener": ""})
+    assert any("empty variable {{opener}}" in p for p in r.problems)
+
+
+@pytest.mark.parametrize(
+    "src, part",
+    [
+        ("Hi <b>there</b>.", "has HTML"),
+        ("See [the page](https://www.spill.chat.", "broken link"),
+        ("Some **bold.", "unmatched **"),
+        ("- only one bullet", "one bullet"),
+        ("Go to https://www.spill.chat/us now.", "bare address"),
+        ("See [](https://www.spill.chat/us).", "no anchor text"),
+        ("See [www.spill.chat](https://www.spill.chat/us).", "anchor text is an address"),
+    ],
+)
+def test_markup_problems(src, part):
+    _, problems = copy_markup.parse(src)
+    assert any(part in p for p in problems), problems
+
+
+# -- rendering ------------------------------------------------------------------------------------
 
 
 def test_clean_sequence_renders_without_violations():
-    s = make_settings()
     for mb in MAILBOXES:
-        for version in ("general-v1", "eap-v1"):
-            seq = render.render_sequence(version, values_for(mb, s), mailbox=mb, settings=s)
-            assert [r.step for r in seq] == [1, 2, 3, 4]
-            assert all(r.ok for r in seq), render.violations(seq)
-            cv = render.custom_variables(seq)
-            assert list(cv) == ["s1_subject", "s1_body", "s2_subject", "s2_body", "s3_subject", "s3_body", "s4_subject", "s4_body"]
-            assert cv["s1_subject"] == "Mental health support for the Acme Creative team"
-            assert "{{" not in "".join(cv.values())
+        seq = sequence(mb=mb)
+        assert [r.step for r in seq] == [1, 2, 3, 4]
+        assert all(r.ok for r in seq), render.violations(seq)
+    cv = render.custom_variables(sequence())
+    assert set(cv) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
+    assert cv["s1_subject"] == "Support for the Acme Creative team"
+    assert f'<a href="{DEMO}">see a quick demo</a>' in cv["s1_body"]
+    assert f'<a href="{PAGE}agencies">see how Spill works for agencies</a>' in cv["s2_body"]
+    assert "<ul><li>Employees can get support the same day" in cv["s2_body"]
 
 
-def test_footer_on_every_step():
-    s = make_settings()
-    for r in render.render_sequence("general-v1", values_for(HANNAH, s), mailbox=HANNAH, settings=s):
-        lines = r.body.splitlines()
-        assert lines[-4:] == ["Hannah Spalding, Spill", POSTAL, AD_LINE, STOP_LINE], r.step
-        assert PRIVACY in r.body
+def test_email_format_text_sends_plain_text_with_links_written_out():
+    s = make_settings(email_format="text")
+    seq = sequence(settings=s)
+    assert all(r.ok for r in seq)
+    assert f"see a quick demo ({DEMO})" in seq[0].body and "<p>" not in seq[0].body
+
+
+def test_the_role_line_and_opener_land_in_email_1():
+    first = sequence()[0].text
+    assert EAP_OPENER in first and ROLE_LINES["People leader"] in first
+    no_opener = sequence(opener="")[0]
+    assert no_opener.ok and EAP_OPENER not in no_opener.text
+    assert "Hi Jane,\n\nIn most agencies" in no_opener.text  # the opener's line went with it
+
+
+def test_footer_on_every_email_and_the_notice_on_email_1():
+    seq = sequence()
+    for r in seq:
+        assert r.text.splitlines()[-2:] == [AD_LINE, STOP_LINE]
+        assert f'<a href="{PRIVACY}">{PRIVACY}</a>' in r.html
+    assert "Where we got your details" in seq[0].text
+    assert all("Where we got your details" not in r.text for r in seq[1:])
 
 
 def test_footer_role_shown_only_when_set():
     s = make_settings()
-    with_role = dataclasses.replace(HANNAH, owner_role="Head of Partnerships")
-    foot, missing = render.footer(with_role, s)
-    assert foot.splitlines()[0] == "Hannah Spalding, Head of Partnerships, Spill" and not missing
-    foot, _ = render.footer(HANNAH, s)
-    assert foot.splitlines()[0] == "Hannah Spalding, Spill"
-
-
-def test_step1_has_article14_notice_and_exactly_one_link():
-    s = make_settings()
-    seq = render.render_sequence("eap-v1", values_for(HANNAH, s), mailbox=HANNAH, settings=s)
-    step1 = seq[0]
-    assert step1.ok, step1.violations
-    assert "Where we got your details" in step1.body and "Apollo" in step1.body and "Acme Creative" in step1.body
-    assert "legitimate interests" in step1.body
-    assert copy_rules.links(step1.body) == [PRIVACY]
-    assert step1.body.index("Where we got your details") < step1.body.index(AD_LINE)
-    # later steps have no notice, and step 2 may carry the booking link too
-    assert all("Where we got your details" not in r.body for r in seq[1:])
-    assert BOOKING in seq[1].body
-
-
-def test_step1_with_a_second_link_is_blocked():
-    s = make_settings()
-    row = dataclasses.replace(COPY[0], body=COPY[0].body + "\n\nIf you'd like, {{demo_line}}")
-    r = render.render_step(row, values_for(HARRY_M, s), step=1, mailbox=HARRY_M, settings=s)
-    assert any("step 1 has 2 links" in v for v in r.violations)
-
-
-def test_signature_link_counts_in_step1():
-    s = make_settings()
-    row = dataclasses.replace(COPY[0], body=COPY[0].body + "\n\n{{signature}}")
-    r = render.render_step(row, values_for(HANNAH, s), step=1, mailbox=HANNAH, settings=s)
-    assert any("step 1 has 2 links" in v for v in r.violations)
-
-
-def test_blank_legal_overlay_leaves_no_gap_and_legal_accounts_get_it():
-    s = make_settings()
-    step1 = render.render_sequence("general-v1", values_for(HANNAH, s), mailbox=HANNAH, settings=s)[0]
-    assert "\n\n\n" not in step1.body
-    legal = account(industry="Legal Teams", industry_group="Legal Teams")
-    step1 = render.render_sequence("general-v1", values_for(HANNAH, s, acct=legal, overlay=LEGAL_OVERLAY),
-                                   mailbox=HANNAH, settings=s)[0]
-    assert step1.ok and LEGAL_OVERLAY in step1.body
+    with_role = dataclasses.replace(HANNAH, owner_role="Partnerships")
+    assert "Hannah Spalding, Partnerships" in render.footer(with_role, s)[0]
+    assert render.footer(HANNAH, s)[0].splitlines()[0] == "Hannah Spalding, Spill"
 
 
 def test_unknown_and_empty_variables_stay_visible_and_block():
-    s = make_settings()
-    row = dataclasses.replace(COPY[2], body="Hi {{first_name}}, about {{nickname}} in {{place}}")
-    v = {**values_for(HANNAH, s), "place": ""}
-    r = render.render_step(row, v, step=3, mailbox=HANNAH, settings=s)
-    assert "{{nickname}}" in r.body and "{{place}}" in r.body
-    assert "body has the unknown variable {{nickname}}" in r.violations
-    assert "body has the empty variable {{place}}" in r.violations
+    bodies = dict(BODIES)
+    bodies[3] = BODIES[3].replace("One question", "{{nickname}} One question")
+    s = make_settings(copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies),))
+    seq = sequence(settings=s)
+    assert any("unknown variable {{nickname}}" in v for v in seq[2].violations)
+    assert "{{nickname}}" in seq[2].text
+    blank = sequence(con=contact(first_name=""))
+    assert all(any("empty variable {{first_name}}" in v for v in r.violations) for r in blank)
 
 
-def test_empty_proof_blocks_step2():
-    s = make_settings()
-    acct = account(industry="Staffing agencies", industry_group="Professional Services")
-    seq = render.render_sequence("general-v1", values_for(HANNAH, s, acct=acct), mailbox=HANNAH, settings=s)
-    assert seq[0].ok and not seq[1].ok
-    assert "body has the empty variable {{proof}}" in seq[1].violations
-
-
-def test_blank_postal_address_or_privacy_url_blocks_every_step():
+def test_blank_postal_address_or_privacy_url_blocks_every_email():
     s = make_settings(postal_address="", privacy_url="")
-    seq = render.render_sequence("general-v1", values_for(HANNAH, s), mailbox=HANNAH, settings=s)
-    for r in seq:
+    for r in sequence(settings=s):
         assert any("postal_address is blank" in v for v in r.violations)
         assert any("privacy_url is blank" in v for v in r.violations)
 
 
-def test_draft_copy_blocks():
-    s = make_settings(copy=copy_rows("general-v1", "General", status="draft"))
-    seq = render.render_sequence("general-v1", values_for(HANNAH, s), mailbox=HANNAH, settings=s)
-    assert all(any("is draft, not approved" in v for v in r.violations) for r in seq)
+def test_draft_or_unchecked_copy_blocks():
+    s = make_settings(copy=(copy_row("agencies-v1", AGENCIES, status="draft"),))
+    assert all(any("is draft, not approved" in v for v in r.violations) for r in sequence(settings=s))
+    s = make_settings(copy=(copy_row("agencies-v1", AGENCIES, qa=False),))
+    assert all(any("has not passed QA" in v for v in r.violations) for r in sequence(settings=s))
 
 
-def test_missing_step_is_a_violation():
-    s = make_settings(copy=copy_rows("general-v1", "General")[:3])
-    seq = render.render_sequence("general-v1", values_for(HANNAH, s), mailbox=HANNAH, settings=s)
-    assert seq[3].violations == ("copy general-v1 has no step 4 row",)
+def test_an_edit_after_qa_needs_qa_again():
+    row = COPY[0]
+    edited = dataclasses.replace(row, steps=(CopyStep(row.step(1).subject, row.step(1).body + " "),) + row.steps[1:])
+    assert edited.qa_current  # trailing spaces do not change the wording
+    edited = dataclasses.replace(row, steps=(CopyStep("A new subject", row.step(1).body),) + row.steps[1:])
+    assert not edited.qa_current and edited.qa_verdict == "pass"
 
 
-def test_copy_rows_prefers_the_approved_row():
-    draft = dataclasses.replace(COPY[0], status="draft", body="old")
-    s = make_settings(copy=(draft,) + COPY)
-    assert render.copy_rows(s, "general-v1")[1].status == "approved"
+def test_the_sequence_must_link_the_industry_page():
+    bodies = dict(BODIES)
+    bodies[2] = BODIES[2].replace("If you'd like more detail, you can [see how Spill works for agencies]({{industry_url}}).\n\n", "")
+    s = make_settings(copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies),))
+    assert any("never links the industry page" in v for v in sequence(settings=s)[1].violations)
+    # An industry with no page need not link one.
+    fintech_row = copy_row("fintech-v1", "Fintech", bodies=bodies)
+    s = make_settings(copy=(fintech_row,))
+    fintech = account(industry="Fintech", industry_group=TECH)
+    assert all(r.ok for r in sequence(row=fintech_row, settings=s, acct=fintech))
 
 
-# -- every template against empty and maximum-length values (SPEC 10) -------------------------
+def test_a_sender_who_is_not_harry_cannot_offer_a_time_with_me():
+    bodies = dict(BODIES)
+    bodies[4] = BODIES[4].replace("[book a demo]({{demo_url}})", "[grab a time with me]({{demo_url}})")
+    s = make_settings(copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies),))
+    assert any("demos are always with Harry Dryden" in v for v in sequence(settings=s, mb=HANNAH)[3].violations)
+    assert sequence(settings=s, mb=HARRY_M)[3].ok
 
 
-def _every_template(s: Settings):
+# -- every row against empty and maximum-length values (SPEC 10) -------------------------
+
+
+def test_every_row_against_empty_values():
+    s = make_settings()
     for row in s.copy:
         for mb in s.mailboxes:
-            yield row, mb
+            for r in render.render_sequence(row, render.empty_variables(), mailbox=mb, settings=s):
+                assert any("empty variable" in v for v in r.violations), (row.copy_version, r.step)
+                assert r.text.splitlines()[-2:] == [AD_LINE, STOP_LINE]  # the footer is still there
 
 
-def test_every_template_against_empty_values():
+def test_every_row_against_maximum_length_values():
     s = make_settings()
-    for row, mb in _every_template(s):
-        r = render.render_step(row, render.empty_variables(), step=row.step, mailbox=mb, settings=s)
-        assert r.violations, (row.copy_version, row.step)
-        assert any("empty variable" in v for v in r.violations)
-        assert r.body.splitlines()[-2:] == [AD_LINE, STOP_LINE]  # the footer is still there
-
-
-def test_every_template_against_maximum_length_values():
-    s = make_settings()
-    for row, mb in _every_template(s):
-        values = render.max_length_variables(mb, s)
-        r = render.render_step(row, values, step=row.step, mailbox=mb, settings=s)
-        long_lines = [line for line in r.body.splitlines() if len(line) > copy_rules.MAX_LINE]
-        flagged = [v for v in r.violations if "characters (the limit is 300)" in v]
-        assert len(flagged) == len(long_lines), (row.copy_version, row.step, r.violations)
-        if row.step in (1, 2):  # opener and proof run past 300 characters at their longest
-            assert flagged
-        assert not any("empty variable" in v for v in r.violations)
+    for row in s.copy:
+        values = render.max_length_variables(row, s)
+        for mb in s.mailboxes:
+            for r in render.render_sequence(row, values, mailbox=mb, settings=s):
+                assert not any("empty variable" in v for v in r.violations)
+                long_lines = [line for line in r.text.split("\n") if len(line) > copy_rules.MAX_LINE]
+                if r.step == 1:  # the opener runs past 300 characters at its longest
+                    assert long_lines and any("characters (the limit is 300)" in v for v in r.violations)
 
 
 def test_max_rendered_lengths_probe():
     s = make_settings()
     lengths = render.max_rendered_lengths(s)
     assert set(lengths) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
-    assert lengths["s1_body"] > 300 and lengths["s1_subject"] >= 100
-    seq = render.render_sequence("eap-v1", render.max_length_variables(HANNAH, s), mailbox=HANNAH, settings=s)
+    assert lengths["s2_body"] > lengths["s3_body"] > 500 and lengths["s1_subject"] >= 100
+    seq = render.render_sequence(COPY[0], render.max_length_variables(COPY[0], s), mailbox=HANNAH, settings=s)
     for k, v in render.custom_variables(seq).items():
         assert len(v) <= lengths[k]
 
@@ -364,3 +417,9 @@ def test_templates_are_drafts_and_comments_are_stripped():
         assert "#" not in text and "DRAFT" not in text
         assert all(len(line) <= copy_rules.MAX_LINE for line in text.splitlines())
         assert copy_rules.content_violations(text) == []
+
+
+def test_a_long_opener_never_pushes_email_1_over_its_word_limit():
+    long_opener = "Saw your careers page: " + " ".join(["words"] * 60) + "."
+    first = sequence(opener=long_opener)[0]
+    assert long_opener in first.text and not any("words; it should have" in v for v in first.violations)

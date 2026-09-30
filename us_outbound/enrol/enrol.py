@@ -8,15 +8,17 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      escalation_hours (SPEC 11); this week's hand-check approved (SPEC 11).
   2. Today's number (queue.daily_number): the weekly target's share for today, each
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
-     accounts. The Clay and Apollo budgets are weekly and applied where credits are spent.
+     accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
      suppressed or a partner, whose industry is on, with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before.
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
-     wait), its copy version (the running test's hash split, else the approved version for
-     its angle), its four rendered steps (any copy-rule violation skips it), and a HubSpot
+     wait), its Copy row (the most specific approved, QA-passed row for its industry and its
+     contact's role, else its group's, else General; the running test's hash split takes
+     half of version_a's accounts), its four rendered emails (any copy-rule violation skips
+     it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the rendered steps as
      custom variables.
@@ -46,7 +48,7 @@ from us_outbound import budget, limits
 from us_outbound.enrol import focus, queue, render
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.score import score_account
-from us_outbound.settings.model import Mailbox, Settings
+from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
 
 
 JOB = "enrol"
@@ -62,6 +64,7 @@ HS_OPEN_DEAL = "hubspot_open_deal"
 HS_OTHER_OWNER = "hubspot_other_owner"
 HS_OPTED_OUT = "hubspot_opted_out_or_bounced"
 LIST_LIMIT = 100  # per-account lists in the summary
+GENERAL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
 ID_CHUNK = 1000
 
 
@@ -271,21 +274,47 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     return out, skipped
 
 
-# -- copy version (SPEC 9 "Test assignment", SPEC 12) -----------------------------------------------
+# -- copy (SPEC 9 "Test assignment", SPEC 12; Harry, 30 Sep 2026: by industry and role) -------------
 
 
-def approved_versions(settings: Settings) -> list[str]:
-    """Copy versions with all four steps approved, in sheet order."""
-    out = []
-    for version in dict.fromkeys(c.copy_version for c in settings.copy):
-        rows = render.copy_rows(settings, version)
-        if all(step in rows and rows[step].status == "approved" for step in render.STEPS):
-            out.append(version)
+def sendable_copy(settings: Settings) -> dict[str, CopyRow]:
+    """Copy rows that may be sent: approved, and passed QA in their current wording; in sheet order."""
+    return {c.copy_version: c for c in settings.copy if c.status == "approved" and c.qa_current}
+
+
+def copy_targets(account: Mapping[str, Any], role: str, settings: Settings) -> list[tuple[str, str]]:
+    """(industry, role) from the most specific Copy row an account could get to the least:
+    its label for its role, its label, its group for its role, its group, General for its role, General."""
+    label = str(account.get("industry") or "").strip()
+    group = settings.industry_group_of(account)
+    out: list[tuple[str, str]] = []
+    for industry in (label, group, GENERAL_COPY):
+        for r in (role, ""):
+            key = (industry.casefold(), r.casefold())
+            if industry and key not in {(i.casefold(), x.casefold()) for i, x in out}:
+                out.append((industry, r))
     return out
 
 
-def version_angle(settings: Settings, version: str) -> str:
-    return next((c.angle for c in settings.copy if c.copy_version == version), "")
+def _find(rows: Iterable[CopyRow], industry: str, role: str) -> CopyRow | None:
+    return next((c for c in rows if c.industry.casefold() == industry.casefold()
+                 and c.role.casefold() == role.casefold()), None)
+
+
+def pick_copy(account: Mapping[str, Any], role: str, settings: Settings,
+              rows: Mapping[str, CopyRow]) -> tuple[CopyRow | None, str]:
+    """(the most specific sendable row, a note when a more specific row exists but cannot be sent yet)."""
+    note = ""
+    for target in copy_targets(account, role, settings):
+        row = _find(rows.values(), *target)
+        if row is not None:
+            return row, note
+        waiting = next((c for c in settings.copy if c.status != "retired" and c.industry.casefold() == target[0].casefold()
+                        and c.role.casefold() == target[1].casefold()), None)
+        if waiting is not None and not note:
+            why = "a draft" if waiting.status == "draft" else "approved but has not passed QA in its current wording"
+            note = f"{waiting.copy_version} is {why}"
+    return None, note
 
 
 def running_test_counts(ctx: Context) -> Counter[str]:
@@ -299,27 +328,27 @@ def running_test_counts(ctx: Context) -> Counter[str]:
     return Counter({v: len(ids) for v, ids in seen.items()})
 
 
-
 def choose_copy(
-    account: Mapping[str, Any], settings: Settings, counts: Mapping[str, int], approved: Sequence[str]
-) -> tuple[str | None, str, str]:
-    """(copy_version, test_id or "", why there is none).
+    account: Mapping[str, Any], role: str, settings: Settings, counts: Mapping[str, int], rows: Mapping[str, CopyRow]
+) -> tuple[CopyRow | None, str, str, str]:
+    """(Copy row, test_id or "", why there is none, fallback note).
 
-    The running test takes accounts whose angle is its version_a's angle (the first test:
-    "Upgrade the EAP" accounts, split between an EAP and a General opener), other than
-    Control, while each version has fewer than accounts_per_version. Everyone else gets the
-    first approved version for their angle.
+    The account gets the most specific sendable row for its industry and its contact's role
+    (copy_targets). The running test takes accounts that would get its version_a, other than
+    Control, and sends half of them (by account hash) version_b instead, while each version
+    has fewer than accounts_per_version.
     """
-    angle = str(account.get("angle") or "")
+    row, note = pick_copy(account, role, settings, rows)
+    if row is None:
+        label = str(account.get("industry") or settings.industry_group_of(account) or "its industry")
+        return None, "", f"no approved copy that has passed QA for {label}, its group or General", note
     t = settings.running_test()
-    if t and angle and account.get("tier") != queue.CONTROL and version_angle(settings, t.version_a) == angle:
+    if t and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
         v = t.version_a if queue.test_version(str(account["account_id"]), t.test_id) == "a" else t.version_b
-        if v in approved and (t.accounts_per_version <= 0 or counts.get(v, 0) < t.accounts_per_version):
-            return v, t.test_id, ""
-    for v in approved:
-        if version_angle(settings, v) == angle:
-            return v, "", ""
-    return None, "", f"no approved copy for the {angle or 'blank'} angle"
+        chosen = rows.get(v)
+        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(v, 0) < t.accounts_per_version):
+            return chosen, t.test_id, "", note
+    return row, "", "", note
 
 
 # -- opener -------------------------------------------------------------------------------------
@@ -328,13 +357,16 @@ def choose_copy(
 def account_opener(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str]:
     """(opener, legal_overlay) for the account's angle, worked out as scoring does (SPEC 9 steps 4-5).
 
-    The opener is not stored on accounts, so it is recomputed from the account's facts.
+    The opener is not stored on accounts, so it is recomputed from the account's facts. The
+    General angle's opener is generic, and the industry copy carries the hook, so General
+    accounts (Control among them) get none: email 1's opener line disappears.
     """
     angle = ctx.settings.angle(str(account.get("angle") or ""))
-    default = angle.default_opener if angle else ""
+    if angle is None or angle.angle == GENERAL_ANGLE:
+        return "", ""
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
     r = score_account(account, events, ctx.settings, ctx.today_uk())
-    opener = r.opener if r.angle == account.get("angle") and r.opener else default
+    opener = r.opener if r.angle == account.get("angle") and r.opener else angle.default_opener
     return opener, r.legal_overlay
 
 
@@ -388,10 +420,11 @@ class Prepared:
     owner: str
     mailbox: str  # the address that sends step 1, when the owner has one Active mailbox; else ""
     copy_version: str
-    copy_angle: str
+    angle: str
     test_id: str
     lead: dict
     opener_note: str = ""
+    copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
 
 
 @dataclass
@@ -401,13 +434,8 @@ class Skip:
     exclude_fact: str = ""  # set when HubSpot excludes the account
 
 
-def _default_opener(settings: Settings, angle: str) -> str:
-    a = settings.angle(angle)
-    return a.default_opener if a else ""
-
-
 def prepare(
-    ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], approved: Sequence[str],
+    ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], rows: Mapping[str, CopyRow],
     pace: Mapping[str, int] | None = None,
 ) -> Prepared | Skip:
     s, g = ctx.settings, ctx.settings.general
@@ -423,24 +451,21 @@ def prepare(
     boxes: tuple[Mailbox, ...] = s.mailboxes_for(owner, "Active")
     mb = boxes[0]
 
-    version, test_id, why = choose_copy(a, s, counts, approved)
-    if version is None:
-        return Skip("no approved copy", [why])
-    copy_angle = version_angle(s, version)
+    row, test_id, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
+    if row is None:
+        return Skip("no approved copy", [why, copy_note] if copy_note else [why])
 
     opener, overlay = account_opener(ctx, a)
-    if copy_angle != a.get("angle"):
-        opener = _default_opener(s, copy_angle)  # a test version on another angle uses that angle's opener
     host = render.is_demo_host(mb, s)
     opener, note = render.pick_opener(
-        opener, _default_opener(s, copy_angle), sender_is_harry=host, demo_host=g.demo_host,
+        opener, sender_is_harry=host, demo_host=g.demo_host,
         exempt=(str(a.get("clean_name") or ""), str(c.get("first_name") or "")),
     )
-    values = render.variables(a, c, mb, s, opener=opener, legal_overlay=overlay)
-    rendered = render.render_sequence(version, values, mailbox=mb, settings=s)
+    values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
+    rendered = render.render_sequence(row, values, mailbox=mb, settings=s)
     problems = render.violations(rendered)
     if problems:
-        return Skip("copy blocked", problems)
+        return Skip("copy blocked", [f"{row.copy_version}: {p}" for p in problems])
 
     try:
         block = hubspot_block(ctx, a, c)
@@ -459,7 +484,8 @@ def prepare(
     }
     return Prepared(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
-        copy_version=version, copy_angle=copy_angle, test_id=test_id, lead=lead, opener_note=note,
+        copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
+        opener_note=note, copy_note=copy_note,
     )
 
 
@@ -472,6 +498,7 @@ class _Run:
     skipped_accounts: list[dict] = field(default_factory=list)
     excluded: list[dict] = field(default_factory=list)
     opener_fallbacks: list[dict] = field(default_factory=list)
+    copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 
     def skip(self, account: Mapping[str, Any], reason: str, detail: Sequence[str] = ()) -> None:
@@ -485,7 +512,7 @@ class _Run:
 
 def _walk(
     ctx: Context, lane: Iterator[Candidate], target: int, free: Counter[str], counts: Counter[str],
-    approved: Sequence[str], run: _Run, pace: Mapping[str, int] | None = None,
+    rows: Mapping[str, CopyRow], run: _Run, pace: Mapping[str, int] | None = None,
     quota: focus.Quota | None = None, held: list[Candidate] | None = None,
 ) -> list[Prepared]:
     """Prepare accounts in queue order until target are ready; skipped ones make way for the next.
@@ -503,7 +530,7 @@ def _walk(
             if held is not None:
                 held.append(cand)
             continue
-        p = prepare(ctx, cand, free, counts, approved, pace)
+        p = prepare(ctx, cand, free, counts, rows, pace)
         if isinstance(p, Skip):
             run.skip(cand.account, p.reason, p.detail)
             if p.exclude_fact:
@@ -518,6 +545,8 @@ def _walk(
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
+        if p.copy_note:
+            run.copy_fallbacks[f"sent {p.copy_version}: {p.copy_note}"] += 1
     return out
 
 
@@ -549,7 +578,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "contact_id": p.contact["contact_id"],
             "enrolment_month": month,
             "enrolled_at": ctx.now,
-            "angle": p.copy_angle,
+            "angle": p.angle,
             "copy_version": p.copy_version,
             "test_id": p.test_id or None,
             "mailbox": p.mailbox or None,
@@ -589,7 +618,7 @@ def run(ctx: Context) -> dict:
     n_control = sum(c.account.get("tier") == queue.CONTROL for c in in_order)
     control = iter([c for c in in_order if c.account.get("tier") == queue.CONTROL])
     main = iter([c for c in in_order if c.account.get("tier") != queue.CONTROL])
-    counts, approved = running_test_counts(ctx), approved_versions(s)
+    counts, approved = running_test_counts(ctx), sendable_copy(s)
     # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
     # accounts, the rest of the day in queue order whatever the group.
     quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
@@ -646,6 +675,8 @@ def run(ctx: Context) -> dict:
         skipped_accounts=r.skipped_accounts,
         excluded=r.excluded,
         opener_fallbacks=r.opener_fallbacks,
+        copy_fallbacks=dict(r.copy_fallbacks),
+        copy_sendable=len(approved),
         errors=r.errors,
     )
     log("enrol_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "skipped_accounts"})

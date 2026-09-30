@@ -35,7 +35,13 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
-from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, STEP_DAYS, instantly_schedule, sequences, settings_drift
+from us_outbound.clients.instantly import (
+    STEP_DAYS,
+    campaign_settings,
+    instantly_schedule,
+    sequences,
+    settings_drift,
+)
 from us_outbound.context import UK, Context, boundaries_for
 from us_outbound.logs import log
 from us_outbound.settings.model import Mailbox, Settings
@@ -104,6 +110,11 @@ def warmup_to_status(warmup: Mapping[str, Any], *, today: date | None = None, ad
 # -- sending lists and campaigns -----------------------------------------------------
 
 
+def text_only(settings: Settings) -> bool:
+    """Instantly's text_only for the sheet's email_format: html (the default) sends links and bullets."""
+    return settings.general.email_format == "text"
+
+
 def sending_list(settings: Settings, owner: str) -> list[str]:
     return [m.address.lower() for m in settings.mailboxes_for(owner, ACTIVE)]
 
@@ -123,6 +134,7 @@ def campaign_drift(campaign: Mapping[str, Any], settings: Settings, owner: str) 
         accounts=sending_list(settings, owner),
         daily_limit=daily_limit(settings, owner),
         window=settings.general.send_window,
+        text_only=text_only(settings),
     )
     out = {k: [want, got] for k, (want, got) in drift.items()}
     steps = ((campaign.get("sequences") or [{}])[0] or {}).get("steps") or []
@@ -150,7 +162,7 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
             daily_limit=limit,
             schedule=settings.general.send_window,
             steps=CAMPAIGN_STEPS,
-            options=dict(CAMPAIGN_SETTINGS),
+            text_only=text_only(settings),
         )
         return "created (paused)"
     if not accounts:
@@ -164,7 +176,8 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
 
 
 def _fix_fields(drift: Mapping[str, Any], settings: Settings, owner: str) -> dict[str, Any]:
-    fields: dict[str, Any] = {k: CAMPAIGN_SETTINGS[k] for k in drift if k in CAMPAIGN_SETTINGS}
+    fixed = campaign_settings(text_only(settings))
+    fields: dict[str, Any] = {k: fixed[k] for k in drift if k in fixed}
     if any(k.startswith("schedule.") for k in drift):
         fields["campaign_schedule"] = instantly_schedule(settings.general.send_window)
     if any(k.startswith("steps") for k in drift):

@@ -67,6 +67,13 @@ ACTIONS = ("Score", "Hold", "Exclude", "Suppress")
 TIERS = ("Priority", "Standard", "Control", "Held", "Excluded")
 MAILBOX_STATUSES = ("Warming", "Active", "Paused", "Retired")
 COPY_STATUSES = ("draft", "approved", "retired")
+COPY_STEPS = (1, 2, 3, 4)
+GENERAL_COPY = "General"  # a Copy row for every industry: the fallback when an industry has no approved row
+EMAIL_FORMATS = ("html", "text")
+# The contacted roles (Roles tab) and the Copy-tab column holding each one's line for email 1.
+ROLE_LINE_COLUMNS = {"People leader": "people_leader_line", "Founder or executive": "founder_line",
+                     "Operations": "operations_line"}
+QA_VERDICTS = ("pass", "fail")
 TEST_STATUSES = ("planned", "running", "read", "stopped")
 SIZE_BANDS = ("10-19", "20-49", "50-99", "100-249")
 
@@ -129,8 +136,10 @@ class General:
     clay_contacts_function_id: str = ""  # (build) "US Outbound – Contacts"
     clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
-    claude_model: str = "claude-haiku-4-5"
+    claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
+    claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0
+    email_format: str = "html"  # (build) html: links and bullets; text: plain text, links written out
 
 
 @dataclass(frozen=True)
@@ -168,6 +177,27 @@ class Angle:
 
 
 @dataclass(frozen=True)
+class IndustryPage:
+    """The industry's spill.chat page, as material for writing its emails (Harry, 30 Sep 2026)."""
+
+    blurb: str = ""
+    intro: str = ""
+    ticks: str = ""
+    challenges: str = ""
+    stats: str = ""  # context only: the copy may quote no statistic but the 30% figure
+    benefits: str = ""
+    features: str = ""
+    faqs: str = ""
+    customers: str = ""  # the page's logos heading: the kinds of teams Spill already supports
+
+    def as_dict(self) -> dict[str, str]:
+        return {f: getattr(self, f) for f in PAGE_FIELDS}
+
+
+PAGE_FIELDS = ("blurb", "intro", "ticks", "challenges", "stats", "benefits", "features", "faqs", "customers")
+
+
+@dataclass(frozen=True)
 class Industry:
     industry: str
     industry_group: str
@@ -178,6 +208,7 @@ class Industry:
     landing_page_url: str = ""
     proof_point: str = ""
     priority: int = 99
+    page: IndustryPage = field(default_factory=lambda: IndustryPage())
 
 
 @dataclass(frozen=True)
@@ -203,15 +234,58 @@ class Role:
 
 
 @dataclass(frozen=True)
-class CopyRow:
-    copy_version: str
-    angle: str
-    step: int
+class CopyStep:
     subject: str
     body: str
+
+
+@dataclass(frozen=True)
+class CopyRow:
+    """One Copy-tab row: a four-email sequence for one industry, optionally for one role (Harry, 30 Sep 2026).
+
+    industry is an Industries label, an industry group, or "General" (every industry). role is a
+    Roles-tab role, or "" for every role. role_lines holds each role's line for {{role_line}}.
+    qa is the QA step's verdict and the content hash it checked ("pass 1a2b3c4d"): editing the
+    copy changes the hash, so edited copy is checked again before it can be sent.
+    """
+
+    copy_version: str
+    industry: str
     status: str
+    steps: tuple[CopyStep, ...]
+    role: str = ""
+    role_lines: Mapping[str, str] = field(default_factory=dict)
     approved_by: str = ""
+    qa: str = ""
+    qa_notes: str = ""
     sources: str = ""
+
+    def step(self, n: int) -> CopyStep:
+        return self.steps[n - 1]
+
+    def content_hash(self) -> str:
+        """Eight hex characters over everything the QA step reads."""
+        import hashlib
+
+        parts = [self.industry, self.role]
+        for st in self.steps:
+            parts += [st.subject.strip(), st.body.replace("\r\n", "\n").strip()]
+        parts += [self.role_lines.get(r, "").strip() for r in ROLE_LINE_COLUMNS]
+        return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:8]
+
+    @property
+    def qa_verdict(self) -> str:
+        return self.qa.split()[0].lower() if self.qa.split() else ""
+
+    @property
+    def qa_hash(self) -> str:
+        parts = self.qa.split()
+        return parts[1].lower() if len(parts) > 1 else ""
+
+    @property
+    def qa_current(self) -> bool:
+        """True when QA passed this exact copy."""
+        return self.qa_verdict == "pass" and self.qa_hash == self.content_hash()
 
 
 @dataclass(frozen=True)
@@ -324,11 +398,15 @@ class Settings:
     def running_test(self) -> Test | None:
         return next((t for t in self.tests if t.status == "running"), None)
 
-    def approved_copy(self, copy_version: str, step: int) -> CopyRow | None:
-        return next(
-            (c for c in self.copy if c.copy_version == copy_version and c.step == step and c.status == "approved"),
-            None,
-        )
+    def copy_row(self, copy_version: str) -> CopyRow | None:
+        return next((c for c in self.copy if c.copy_version == copy_version), None)
+
+    def industry_page_url(self, label: str) -> str:
+        """The page of an Industries label or group (the group's own row), else ""."""
+        row = self.industry(label)
+        if row is None:
+            row = next((i for i in self.industries if i.industry_group == label and i.industry == label), None)
+        return row.landing_page_url.strip() if row else ""
 
     def overrides_for(self, domain: str) -> dict[str, str]:
         return {o.field: o.value for o in self.overrides if o.domain == domain}

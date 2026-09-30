@@ -42,7 +42,6 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "stop_on_reply": True,
     "stop_for_company": True,  # "stop the campaign for the entire company (domain) when a lead replies"
     "stop_on_auto_reply": False,  # the jobs handle out-of-office replies
-    "text_only": True,
     "open_tracking": False,  # SPEC 1.8: open and link tracking stay off
     "link_tracking": False,
     "insert_unsubscribe_header": True,
@@ -50,6 +49,14 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "is_evergreen": True,  # PHASE0-CONFIRM: that is_evergreen keeps the campaign open to new leads indefinitely
 }
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
+# text_only follows the General tab's email_format (Harry, 30 Sep 2026): html by default, so the
+# copy's links are embedded; tracking stays off either way.
+TEXT_ONLY = "text_only"
+
+
+def campaign_settings(text_only: bool = False) -> dict[str, Any]:
+    """The fixed SPEC 9 settings plus text_only for the sheet's email_format."""
+    return {**CAMPAIGN_SETTINGS, TEXT_ONLY: bool(text_only)}
 
 # Four steps, one variant each (SPEC 9/10), a week apart (Harry, 30 Sep 2026; SPEC 10 had days
 # 0, 3, 8 and 15). Instantly counts delays in calendar days and moves a step due at the weekend
@@ -189,10 +196,11 @@ def settings_drift(
     daily_limit: int | None = None,
     window: SendWindow | None = None,
     step_days: Sequence[int] = STEP_DAYS,
+    text_only: bool = False,
 ) -> dict[str, tuple[Any, Any]]:
     """{field: (expected, actual)} for every SPEC 9 setting the campaign no longer matches."""
     drift: dict[str, tuple[Any, Any]] = {}
-    for key, want in CAMPAIGN_SETTINGS.items():
+    for key, want in campaign_settings(text_only).items():
         if campaign.get(key) != want:
             drift[key] = (want, campaign.get(key))
     want_sched = instantly_schedule(window)["schedules"][0]
@@ -250,6 +258,8 @@ def _check_campaign_fields(fields: Mapping[str, Any]) -> None:
     for key in (set(CAMPAIGN_SETTINGS) - TRACKING_FIELDS) & set(fields):
         if fields[key] != CAMPAIGN_SETTINGS[key]:
             raise ValueError(f"{key} is fixed at {CAMPAIGN_SETTINGS[key]!r} by SPEC 9")
+    if TEXT_ONLY in fields and not isinstance(fields[TEXT_ONLY], bool):
+        raise ValueError("text_only is true or false (the General tab's email_format)")
     if "name" in fields:
         raise ValueError("campaigns are addressed by name; they are never renamed from here")
     if "email_list" in fields:
@@ -466,6 +476,7 @@ class Instantly(HttpClient):
         schedule: SendWindow | Mapping[str, Any] | None = None,
         steps: Sequence[Mapping[str, str]],
         options: Mapping[str, Any] | None = None,
+        text_only: bool = False,
     ) -> dict | None:
         """Create the owner's campaign with the SPEC 9 settings. It stays in Draft: never activated here."""
         self._us_name(name, "campaign.create", True)
@@ -482,7 +493,7 @@ class Instantly(HttpClient):
             campaign_schedule = dict(schedule)
         payload: dict[str, Any] = {
             **options,
-            **CAMPAIGN_SETTINGS,
+            **campaign_settings(text_only),
             "name": name,
             "campaign_schedule": campaign_schedule,
             "sequences": sequences(steps),

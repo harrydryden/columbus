@@ -13,7 +13,7 @@ import pytest
 
 from tests.fakes import TEST_SHEET_ID, FakeTransport, make_context
 from us_outbound.clients.guard import Op
-from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, instantly_schedule
+from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, campaign_settings, instantly_schedule
 from us_outbound.registry import mailboxes as reg
 from us_outbound.settings.defaults import COLUMNS
 from us_outbound.settings.model import General, Mailbox, Settings
@@ -76,7 +76,7 @@ class FakeInstantly:
         """A campaign exactly as ensure_campaigns would create it."""
         from us_outbound.clients.instantly import sequences
 
-        return self.add_campaign(name, **{**CAMPAIGN_SETTINGS, "campaign_schedule": instantly_schedule(),
+        return self.add_campaign(name, **{**campaign_settings(), "campaign_schedule": instantly_schedule(),
                                           "sequences": sequences(reg.CAMPAIGN_STEPS), "email_list": accounts,
                                           "daily_limit": limit, **over})
 
@@ -231,7 +231,7 @@ def test_ensure_campaigns_creates_three_paused_campaigns():
     assert ours[C_HANNAH]["email_list"] == [HANNAH] and ours[C_HANNAH]["daily_limit"] == 30
     for c in ours.values():
         assert {k: c[k] for k in CAMPAIGN_SETTINGS} == CAMPAIGN_SETTINGS
-        assert c["open_tracking"] is False and c["link_tracking"] is False and c["text_only"] is True
+        assert c["open_tracking"] is False and c["link_tracking"] is False and c["text_only"] is False
         steps = c["sequences"][0]["steps"]
         assert [s["variants"][0]["subject"] for s in steps] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
     assert inst.by_name(C_EU)["status"] == 1  # the European campaign is untouched

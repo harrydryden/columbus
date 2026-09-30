@@ -34,13 +34,23 @@ from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
-from us_outbound.settings.validate import HEADER_ROW, KEY_COLUMNS, MAY_BE_EMPTY, RowError, natural_key, validate_all
+from us_outbound.settings.validate import (
+    HEADER_ROW,
+    KEY_COLUMNS,
+    MAY_BE_EMPTY,
+    RowError,
+    is_legacy_copy,
+    natural_key,
+    validate_all,
+)
 
 TABLE = "settings"
 SLACK_ERROR_LINES = 20
 # Tabs whose rows name rows on another tab. If one of these has to keep its previous
 # version, the version of the tab it names that is now on the sheet may not fit it.
-DEPENDS_ON: dict[str, tuple[str, ...]] = {"Signals": ("Angles",), "Copy": ("Angles",), "Tests": ("Copy",)}
+DEPENDS_ON: dict[str, tuple[str, ...]] = {
+    "Signals": ("Angles",), "Copy": ("Industries", "Roles"), "Tests": ("Copy",), "Focus": ("Industries",),
+}
 
 ORDER_TAB = "_order"  # key = a tab name, values = {"keys": [its keys in sheet order]}; views ignore it
 
@@ -314,6 +324,9 @@ def run(ctx: Context) -> dict:
         "named_accounts": named,
         "rescored": rescored,
     }
+    if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
+        summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
+                                  "run `us-outbound settings load --tab Copy --live`")
     log("settings_sync", **summary)
     if alert_error is not None:
         raise alert_error

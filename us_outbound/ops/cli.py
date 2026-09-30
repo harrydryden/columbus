@@ -9,9 +9,11 @@ SPEC 13 commands:
   dry-run <job>                       run a job in dry-run whatever the flags
   erase --email <address>             an erasure request (SPEC 6)
   test start|read <test_id>           start the copy test, or read it (SPEC 12)
+  copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
+                                      preview one, QA it (task model), draft one (writing model)
 Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
 Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
-(mailbox_health by hand), settings sync|bootstrap, db apply, hubspot setup|ids,
+(mailbox_health by hand), settings sync|bootstrap|load, db apply, hubspot setup|ids,
 campaigns ensure [--fix], suppression load. On Railway, run a command inside the worker
 with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
 
@@ -19,8 +21,9 @@ Dry-run is the default everywhere. Two kinds of live:
   * jobs (run, rescore, settings sync, suppression load) and start: --live AND
     live_sending = yes, as SPEC 0.3 says;
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
-    test start, settings bootstrap, hubspot setup, campaigns ensure): --live alone, so the
-    phase-0 setup and the kill switch work while live_sending is still no.
+    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure):
+    --live alone, so the phase-0 setup and the kill switch work while live_sending is still no.
+    copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
 Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
 
@@ -41,9 +44,11 @@ import signal
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
+from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from us_outbound.clients.db import new_id
@@ -443,13 +448,11 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     if read_date <= start:
         raise Refused(f"read_date {read_date} must be after the start date {start}")
     missing = [
-        f"{v} step {step}"
-        for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
-        for step in (1, 2, 3, 4)
-        if ctx.settings.approved_copy(v, step) is None
+        v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
+        if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
     ]
     if missing:
-        raise Refused("copy is not approved in the synced settings for: " + ", ".join(missing))
+        raise Refused("copy is not approved, with a current QA pass, in the synced settings for: " + ", ".join(missing))
     sheets = ctx.clients.sheets
     writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
     for column, value in [*writes, ("status", "running")]:
@@ -548,6 +551,21 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
 def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     if args.action == "sync":
         return _job("settings_sync", args.live, factory)
+    if args.action == "load":
+        from us_outbound.settings.load import LOADABLE, load
+
+        ctx = factory("settings_load", args.live, operator=True)
+        tabs = args.tab or list(LOADABLE)
+        try:
+            summary = run_job(ctx, lambda c: load(c, tabs))
+        except ValueError as exc:
+            raise Refused(str(exc)) from exc
+        for t in summary["tabs"]:
+            _print(t)
+        _dry_note(ctx, "the sheet is unchanged.")
+        if ctx.live:
+            print("Now run `us-outbound settings sync` (or wait for 02:00 UK) to bring the tabs in.")
+        return 0
     from us_outbound.settings.sync import bootstrap as create_sheet
 
     ctx = factory("settings_bootstrap", args.live, operator=True)
@@ -558,6 +576,125 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
               "with the Sheets service account as Editor, then run `us-outbound settings sync`.")
     else:
         _dry_note(ctx, "no sheet was created.")
+    return 0
+
+
+def _sheet_settings(ctx: Context):
+    """The settings as the sheet has them now, validated (not yet synced), so copy can be checked as it is edited."""
+    from us_outbound.settings.sync import read_sheet
+    from us_outbound.settings.validate import validate_all
+
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not sheet_id:
+        return ctx.settings
+    settings, errors = validate_all(read_sheet(ctx, sheet_id))
+    if settings is None:
+        lines = [str(e) for errs in errors.values() for e in errs]
+        raise Refused("the sheet does not validate: " + "; ".join(lines[:10]))
+    return settings
+
+
+def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, role: str | None) -> list:
+    rows = [c for c in settings.copy if c.status != "retired"]
+    if versions:
+        want = {v.casefold() for v in versions}
+        rows = [c for c in rows if c.copy_version.casefold() in want]
+    if industry:
+        rows = [c for c in rows if c.industry.casefold() == industry.casefold()]
+    if role is not None and industry:
+        rows = [c for c in rows if c.role.casefold() == role.casefold()] or rows
+    return rows
+
+
+def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
+    """The copy desk (enrol/copy_desk.py): check, preview, QA and draft the Copy tab."""
+    from us_outbound.enrol import copy_desk
+
+    live = args.live if args.action in ("qa", "draft") else False
+    ctx = factory(f"copy_{args.action}", live, operator=True)
+    settings = _sheet_settings(ctx) if not args.synced else ctx.settings
+    if args.action in ("qa", "draft"):
+        from us_outbound.clients.claude import PRICES
+
+        key = "claude_task_model" if args.action == "qa" else "claude_model"
+        model = getattr(settings.general, key)
+        if model not in PRICES:
+            raise Refused(f"{key} is {model!r}, which the monthly cap cannot price; use one of {', '.join(PRICES)}")
+    if args.action == "check":
+        checks = copy_desk.check_all(settings, args.version)
+        bad = [c for c in checks if not c.ok]
+        for c in bad:
+            print(f"{c.copy_version}:")
+            for p in c.problems:
+                print(f"  - {p}")
+        by_status: Counter[str] = Counter(c.status for c in settings.copy)
+        qa_ok = sum(1 for c in settings.copy if c.qa_current)
+        sendable = sum(1 for c in settings.copy if c.status == "approved" and c.qa_current)
+        print(f"{len(checks)} rows checked, {len(bad)} with problems. By status: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items()))
+              + f". QA passed in the current wording: {qa_ok}. Sendable (approved and QA passed): {sendable}.")
+        return 1 if bad else 0
+    if args.action == "preview":
+        rows = _pick_rows(settings, args.version, args.industry, args.role or "")
+        if not rows:
+            raise Refused("no Copy row matches; give --version or --industry")
+        p = copy_desk.preview(rows[0], settings, role=args.role or "", sender=args.sender or "",
+                              opener=copy_desk.SAMPLE_OPENER if args.opener else "")
+        print(p.text())
+        if args.html:
+            Path(args.html).write_text(p.html(), encoding="utf-8")
+            print(f"Wrote {args.html}")
+        return 0
+    if args.action == "qa":
+        rows = _pick_rows(settings, args.version, args.industry, None)
+        if not args.all:
+            rows = [c for c in rows if not c.qa_current]
+        if not ctx.live:
+            est = sum(ctx.clients.claude_task.estimate_usd(copy_desk.QA_SYSTEM, copy_desk.qa_prompt(r, settings),
+                                                           copy_desk.QA_SCHEMA, copy_desk.QA_MAX_TOKENS) for r in rows)
+            for row in rows:
+                c = copy_desk.check_row(row, settings)
+                print(f"{row.copy_version}: " + ("sheet check clean; would go to QA" if c.ok
+                                                 else "sheet check fails, so QA fails it without a model call"))
+            print(f"Dry-run: {len(rows)} rows, no model called. With --live they go to "
+                  f"{settings.general.claude_task_model}, at most ${est:.2f} of the monthly cap.")
+            return 0
+        results = []
+        for row in rows:
+            try:
+                results.append(copy_desk.qa_row(ctx, row, settings))
+            except Exception as exc:  # the cap, or the API: report and stop, keeping what is done
+                print(f"{row.copy_version}: QA stopped: {exc}")
+                break
+        for r in results:
+            print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"))
+        updates = {r.copy_version: {"qa": r.cell, "qa_notes": r.notes} for r in results}
+        sheet_id = ctx.guard.bounds.settings_sheet_id
+        if updates and sheet_id:
+            ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version", updates)
+        print(f"{sum(r.verdict == 'pass' for r in results)} of {len(results)} passed.")
+        _dry_note(ctx, "the verdicts were not written to the sheet.")
+        return 0
+    # draft
+    if not args.industry:
+        raise Refused("give --industry (an Industries label, an industry group, or General)")
+    if not ctx.live:
+        prompt = copy_desk.draft_prompt(args.industry, args.role or "", settings)
+        est = ctx.clients.claude.estimate_usd(copy_desk.DRAFT_SYSTEM, prompt, copy_desk.DRAFT_SCHEMA,
+                                              copy_desk.DRAFT_MAX_TOKENS)
+        print(f"Dry-run: no model called. With --live, {settings.general.claude_model} drafts {args.industry} "
+              f"for at most ${est:.2f} of the monthly cap, and the draft is added to the Copy tab.")
+        return 0
+    row = copy_desk.draft_row(ctx, args.industry, args.role or "", settings=settings)
+    check = copy_desk.check_row(copy_desk.row_from_dict(row), settings)
+    print(copy_desk.preview(copy_desk.row_from_dict(row), settings, role=args.role or "").text())
+    print("Sheet check: " + ("clean" if check.ok else "; ".join(check.problems)))
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if sheet_id:
+        ctx.clients.sheets.append_rows(sheet_id, "Copy", [row])
+    _dry_note(ctx, "the draft was not added to the sheet.")
+    if ctx.live:
+        print(f"Added {row['copy_version']} as a draft. Next: `us-outbound copy qa --version {row['copy_version']} --live`.")
     return 0
 
 
@@ -670,10 +807,23 @@ def build_parser() -> argparse.ArgumentParser:
     ts.add_argument("test_id")
     ts.set_defaults(fn=cmd_test)
 
-    st = sub.add_parser("settings", parents=[live], help="sync the sheet, or create it with the defaults")
-    st.add_argument("action", choices=["sync", "bootstrap"])
+    st = sub.add_parser("settings", parents=[live], help="sync the sheet, create it, or load the build's tabs into it")
+    st.add_argument("action", choices=["sync", "bootstrap", "load"])
     st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
+    st.add_argument("--tab", action="append", choices=["Industries", "Copy"], help="load: the tab (default both)")
     st.set_defaults(fn=cmd_settings)
+
+    co = sub.add_parser("copy", parents=[live], help="check, preview, QA (task model) or draft (writing model) copy")
+    co.add_argument("action", choices=["check", "preview", "qa", "draft"])
+    co.add_argument("--version", action="append", help="a copy_version (repeatable)")
+    co.add_argument("--industry", help="an Industries label, an industry group, or General")
+    co.add_argument("--role", help="a Roles-tab role (preview: whose line to show; draft: a role-only row)")
+    co.add_argument("--sender", help="preview: the mailbox owner who sends it")
+    co.add_argument("--opener", action="store_true", help="preview: with a sample evidence opener")
+    co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
+    co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
+    co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
+    co.set_defaults(fn=cmd_copy)
 
     db = sub.add_parser("db", parents=[live], help="create the tables and views in DATABASE_URL (prints them unless --live)")
     db.add_argument("action", choices=["apply"])

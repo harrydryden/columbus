@@ -336,6 +336,8 @@ def install_routes(t: FakeTransport) -> None:
     # Sheets.
     t.route("POST", "sheets.googleapis.com/v4/spreadsheets", {"spreadsheetId": "new-sheet"})
     t.route("POST", ":append", {})
+    t.route("POST", "values:batchUpdate", {})
+    t.route("POST", ":clear", {})
     t.route("GET", "values:batchGet", {"valueRanges": [{"values": [["key", "value"], ["live_sending", "no"]]}]})
     t.route("GET", "/values/", {"values": [["address", "status"], ["hannah@meetspill.org", "Warming"]]})
     # Instantly.
@@ -477,6 +479,8 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "read_tabs": lambda c, w: c.read_tabs(SHEET, ["General"]),
         "append_rows": lambda c, w: c.append_rows(SHEET, "Mailboxes", [{"address": "new@meetspill.org", "status": "Warming"}]),
         "update_cell": lambda c, w: c.update_cell(SHEET, "Mailboxes", {"address": "hannah@meetspill.org"}, "status", "Active"),
+        "update_rows": lambda c, w: c.update_rows(SHEET, "Mailboxes", "address", {"hannah@meetspill.org": {"status": "Active"}}),
+        "replace_tab": lambda c, w: c.replace_tab(SHEET, "Mailboxes", ["address", "status"], [{"address": "a@meetspill.org"}]),
         "create_settings_sheet": lambda c, w: c.create_settings_sheet(
             {"General": [{"key": "live_sending", "value": "no"}]}, {"General": ["key", "value"]}),
     },
@@ -756,6 +760,7 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     # Sheets: only the settings sheet.
     "sheets append to another sheet": lambda w: w.clients["Sheets"].append_rows("other-sheet", "General", [{"key": "x"}]),
     "sheets update another sheet": lambda w: w.clients["Sheets"].update_cell("other-sheet", "General", {"key": "x"}, "value", "y"),
+    "sheets rewrite another sheet's tab": lambda w: w.clients["Sheets"].replace_tab("other-sheet", "General", ["key"], []),
     "sheets read another sheet": lambda w: w.clients["Sheets"].read_tabs("other-sheet", ["General"]),
     "sheets create another sheet": lambda w: w.clients["Sheets"].request(
         "POST", "", Op("spreadsheet.create", write=True, detail={"title": "Finance 2027"})),

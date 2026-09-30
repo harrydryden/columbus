@@ -157,7 +157,8 @@ def test_create_campaign_payload_and_left_paused():
         assert body[key] == value, key
     assert body["open_tracking"] is False and body["link_tracking"] is False
     assert body["stop_on_reply"] and body["stop_for_company"] and not body["stop_on_auto_reply"]
-    assert body["text_only"] and body["insert_unsubscribe_header"] and not body["allow_risky_contacts"]
+    assert body["text_only"] is False  # html by default: the copy's links are embedded (email_format)
+    assert body["insert_unsubscribe_header"] and not body["allow_risky_contacts"]
     assert body["is_evergreen"] is True
     [sched] = body["campaign_schedule"]["schedules"]
     assert sched["timezone"] == "America/Detroit"
@@ -203,7 +204,7 @@ def test_update_campaign():
         inst.update_campaign(C_HANNAH, {"link_tracking": True})
     with pytest.raises(GuardViolation):
         inst.update_campaign(C_HANNAH, {"daily_limit": 60}, accounts=[HANNAH, OUTSIDER])
-    for bad in ({"name": C_HARRY}, {"email_list": [HANNAH]}, {"text_only": False}):
+    for bad in ({"name": C_HARRY}, {"email_list": [HANNAH]}, {"text_only": "no"}, {"stop_on_reply": False}):
         with pytest.raises(ValueError):
             inst.update_campaign(C_HANNAH, bad)
     with pytest.raises(ValueError):

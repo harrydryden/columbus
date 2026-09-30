@@ -246,6 +246,8 @@ def test_general_types(tabs):
         ("apollo_floor", "-1", "negative"),
         ("escalation_email", "", "required"),
         ("claude_model", "Haiku", "Claude model id"),
+        ("claude_task_model", "Sonnet", "Claude model id"),
+        ("email_format", "rich", "html, text"),
     ]:
         t = copy.deepcopy(BASE)
         n, row = _row(t, "General", key=key)
@@ -317,9 +319,6 @@ def test_dev_channel_must_differ_from_alert_channel(tabs):
 
 def test_angles_need_general(tabs):
     tabs["Angles"] = [r for r in tabs["Angles"] if r["angle"] != "General"]
-    for c in tabs["Copy"]:
-        if c["angle"] == "General":
-            c["angle"] = "Growing team"
     e = _one(tabs, "Angles", "angle")
     assert e.row == HEADER_ROW
     _row(tabs, "Angles", angle="Growing team")  # still there
@@ -358,31 +357,71 @@ def test_roles(tabs):
 
 
 def test_copy(tabs):
-    n, row = _row(tabs, "Copy", copy_version="eap-v1", step="2")
-    row["body"] += " {{frist_name}}"
-    e = _one(tabs, "Copy", "body")
-    assert (e.row, e.label) == (n, "eap-v1 step 2") and "did you mean first_name" in e.message
+    n, row = _row(tabs, "Copy", copy_version="cpa-firms-v1")
+    row["s2_body"] += " {{frist_name}}"
+    e = _one(tabs, "Copy", "s2_body")
+    assert (e.row, e.label) == (n, "cpa-firms-v1") and "did you mean first_name" in e.message
+    for col, value, fragment in [
+        ("s3_body", "Hi {company}", "double braces"),
+        ("s1_subject", "", "required"),
+        ("status", "live", "draft, approved, retired"),
+        ("qa", "looks good", "written by `us-outbound copy qa`"),
+        ("founder_line", "", "is required: the emails use {{role_line}}"),
+        ("operations_line", "Hi {{first_name}}", "only {{company}}"),
+        ("industry", "Accountants", "not an industry or industry_group"),
+        ("role", "Intern", "not on the Roles tab"),
+    ]:
+        t = copy.deepcopy(BASE)
+        _row(t, "Copy", copy_version="cpa-firms-v1")[1][col] = value
+        e = _one(t, "Copy", col)
+        assert fragment in e.message, (col, e.message)
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="2")[1]["body"] += " {company}"
-    assert "double braces" in _one(t, "Copy", "body").message
-    t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="2")[1]["step"] = "1"
-    assert "already on row" in _one(t, "Copy", "step").message
-    t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="2")[1]["status"] = "approved"
+    _row(t, "Copy", copy_version="cpa-firms-v1")[1]["status"] = "approved"
     assert _one(t, "Copy", "approved_by").message.startswith("is required")
     t = copy.deepcopy(BASE)
-    for r in t["Copy"]:
-        if r["copy_version"] == "eap-v1":
-            r["angle"] = "Upgrade EAP"
-    errs = _errors(t, "Copy")
-    assert len(errs) == 4 and all(e.column == "angle" and "not on the Angles tab" in e.message for e in errs)
+    _row(t, "Copy", copy_version="legal-teams-v1")[1]["copy_version"] = "CPA-firms-v1"
+    assert "already on row" in _one(t, "Copy", "copy_version").message
+    t = copy.deepcopy(BASE)  # a group, General and a role-only row are all fine
+    _row(t, "Copy", copy_version="cpa-firms-v1")[1].update(industry="professional services", role="operations")
+    settings, errors = validate_all(t)
+    assert not any(errors.values())
+    row = settings.copy_row("cpa-firms-v1")
+    assert (row.industry, row.role) == ("Professional Services", "Operations")  # as the other tabs spell them
+
+
+def test_the_old_copy_layout_reads_as_no_copy():
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="3")[1]["angle"] = "General"
-    assert "already the Upgrade the EAP angle" in _one(t, "Copy", "angle").message
+    t["Copy"] = [{"copy_version": "general-v1", "angle": "General", "step": "1", "subject": "Hi", "body": "Hi",
+                  "status": "approved", "approved_by": "Harry", "sources": ""}]
+    settings, errors = validate_all(t)
+    assert not any(errors.values()) and settings.copy == ()
+
+
+def test_qa_code_follows_the_wording():
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="4")[1]["step"] = "5"
-    _one(t, "Copy", "step")
+    s, _ = validate_all(t)
+    code = s.copy_row("cpa-firms-v1").content_hash()
+    _row(t, "Copy", copy_version="cpa-firms-v1")[1]["qa"] = f"PASS {code.upper()}"
+    s, _ = validate_all(t)
+    assert s.copy_row("cpa-firms-v1").qa_current
+    _row(t, "Copy", copy_version="cpa-firms-v1")[1]["s4_subject"] = "A different subject"
+    s, _ = validate_all(t)
+    assert not s.copy_row("cpa-firms-v1").qa_current
+
+
+def test_new_industries_columns_are_optional():
+    t = copy.deepcopy(BASE)
+    for r in t["Industries"]:
+        for c in [c for c in r if c.startswith("page_")]:
+            del r[c]
+    settings, errors = validate_all(t)
+    assert not any(errors.values()) and settings.industry("CPA firms").page.intro == ""
+
+
+def test_industry_pages_are_on_spill_chat():
+    t = copy.deepcopy(BASE)
+    _row(t, "Industries", industry="CPA firms")[1]["landing_page_url"] = "https://example.com/cpa"
+    assert "must be a page on https://www.spill.chat" in _one(t, "Industries", "landing_page_url").message
 
 
 def test_mailboxes(tabs):
@@ -424,18 +463,20 @@ def test_overrides(tabs):
 
 
 def test_tests(tabs):
+    # A planned test may name copy not written yet; a running one needs both versions approved.
     n, row = _row(tabs, "Tests", test_id="t1-eap-opener")
-    row["version_b"] = "general-v9"
-    e = _one(tabs, "Tests", "version_b")
-    assert e.row == n and "not a copy_version" in e.message
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values())
     t = copy.deepcopy(BASE)
     _row(t, "Tests", test_id="t1-eap-opener")[1]["status"] = "running"
     errs = _errors(t, "Tests")
     assert {e.column for e in errs} == {"start_date", "read_date"}
-    _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14")
+    _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14",
+                                                         version_a="cpa-firms-v1", version_b="cpa-firms-v9")
     errs = _errors(t, "Tests")
-    assert {e.column for e in errs} == {"version_a", "version_b"}
-    assert all("approved for steps 1, 2, 3, 4" in e.message for e in errs)
+    assert [(e.column, "not a copy_version" in e.message) for e in errs] == [("version_a", False), ("version_b", True)]
+    assert "needs cpa-firms-v1 approved" in errs[0].message
+    _row(t, "Tests", test_id="t1-eap-opener")[1]["version_b"] = "legal-teams-v1"
     for c in t["Copy"]:
         c.update(status="approved", approved_by="Harry")
     settings, _ = validate_all(t)
@@ -487,7 +528,7 @@ def test_validate_tab_alone():
 
 def test_natural_keys():
     assert natural_key("General", {"key": " live_sending ", "value": "no"}) == "live_sending"
-    assert natural_key("Copy", {"copy_version": "eap-v1", "step": "2"}) == "eap-v1|2"
+    assert natural_key("Copy", {"copy_version": "cpa-firms-v1", "industry": "CPA firms"}) == "cpa-firms-v1"
     assert natural_key("Overrides", {"domain": "acme.com", "field": "hq_state"}) == "acme.com|hq_state"
 
 

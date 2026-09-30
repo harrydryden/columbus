@@ -28,7 +28,6 @@ from tests.fakes import FakeTransport
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.context import Secrets
-from us_outbound.enrol import copy_rules
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.logs import hash_email
 from us_outbound.ops import bootstrap, cli
@@ -130,8 +129,11 @@ def phase0_sheet() -> dict[str, list[dict[str, str]]]:
     for row in tabs["Industries"]:
         if row["industry"] == "Advertising agencies":
             row["proof_point"] = PROOF
+    from us_outbound.enrol.copy_desk import row_from_dict
+
     for row in tabs["Copy"]:
         row.update(status="approved", approved_by="Harry Dryden")
+        row["qa"] = f"pass {row_from_dict(row).content_hash()}"  # as `us-outbound copy qa` writes it
     for row in tabs["Mailboxes"]:
         row.update(status="Active", instantly_account_id="acct-" + row["address"].split("@")[0] + "-" + row["domain"],
                    added_on="2026-09-01")
@@ -284,16 +286,14 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
     assert sorted(cv) == sorted(f"s{i}_{p}" for i in (1, 2, 3, 4) for p in ("subject", "body"))
     for step in (1, 2, 3, 4):
         subject, body = cv[f"s{step}_subject"], cv[f"s{step}_body"]
-        problems = copy_rules.check(
-            subject, body, copy_row=s.approved_copy("eap-v1", step), step=step,
-            sender_is_harry=owner == g.demo_host, privacy_url=g.privacy_url, demo_host=g.demo_host,
-            exempt=("Jane", "Acme Creative", "Chicago, IL", g.postal_address, owner),
-        )
-        assert problems == [], (step, problems)
+        assert subject and "{{" not in subject + body, step
+        assert body.startswith("<p>Hi Jane,</p>"), step  # html, the default email_format
+        assert body.count(f'<a href="{g.booking_page}">') == 1, step  # one call to action: the demo page
         assert g.postal_address in body and "Reply STOP" in body and g.privacy_url in body  # SPEC 10 footer
     assert "Saw your benefits page mentions EAP." in cv["s1_body"]
-    assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on step 1
-    assert PROOF in cv["s2_body"] and g.booking_link in cv["s2_body"]
+    assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
+    page = s.industry("Advertising agencies").landing_page_url
+    assert f'<a href="{page}">' in cv["s2_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
 
     refused = [c for c in ctx.guard.calls if c.system == "instantly" and c.write]
     assert refused and all(c.action == "lead.add" and c.target == campaign and not c.sent for c in refused)

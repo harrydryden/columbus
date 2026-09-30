@@ -14,7 +14,7 @@ from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
 from us_outbound.ops import heartbeat as hb
-from us_outbound.settings.model import CopyRow, General, Settings
+from us_outbound.settings.model import General, Settings
 from us_outbound.settings.model import Test as CopyTest
 
 SPEC9_JOBS = [
@@ -390,8 +390,9 @@ def _tests_tab(**over):
 
 
 def _approved():
-    return tuple(CopyRow(v, a, step, "s", "b", "approved", "Harry Dryden")
-                 for v, a in (("eap-v1", "Upgrade the EAP"), ("general-v1", "General")) for step in (1, 2, 3, 4))
+    from tests.test_render import copy_row
+
+    return (copy_row("eap-v1", "Marketing & Creative Agencies"), copy_row("general-v1", "General"))
 
 
 def test_test_start_sets_running_and_refuses_a_second():

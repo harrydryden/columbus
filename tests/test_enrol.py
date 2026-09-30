@@ -10,16 +10,19 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_render import (
+    AGENCIES,
+    COPY,
+    DEMO,
     EAP_OPENER,
     FIRST_TEST,
-    GENERAL_OPENER,
     HANNAH,
     HARRY_M,
     HARRY_T,
     SAM,
+    SUBJECTS,
     account,
     contact,
-    copy_rows,
+    copy_row,
     make_settings,
 )
 from us_outbound import suppression
@@ -152,9 +155,9 @@ def test_live_posts_leads_only_to_us_outbound_campaigns_with_custom_variables():
     jane = next(lead for lead in by_campaign["c-harry"] if lead["email"] == "jane@acmecreative.com")
     assert jane["first_name"] == "Jane" and jane["company_name"] == "Acme Creative"
     assert EAP_OPENER in jane["custom_variables"]["s1_body"]
-    assert "grab a time with me" in jane["custom_variables"]["s2_body"]
     omar = by_campaign["c-hannah"][0]
-    assert "my colleague Harry Dryden runs our US demos" in omar["custom_variables"]["s2_body"]
+    for lead in (jane, omar):
+        assert f'<a href="{DEMO}">' in lead["custom_variables"]["s2_body"]  # every email's call to action
 
 
 def test_live_records_enrollment_and_keeps_senders():
@@ -167,11 +170,12 @@ def test_live_records_enrollment_and_keeps_senders():
     cons = rows(ctx, "contacts", "contact_id")
     jane, omar = cons["con-1"], cons["con-2"]
     assert jane["enrolment_month"] == "2026-10"
-    assert jane["angle"] == "Upgrade the EAP" and jane["copy_version"] == "eap-v1" and jane["test_id"] is None
+    assert jane["angle"] == "Upgrade the EAP" and jane["copy_version"] == "agencies-v1" and jane["test_id"] is None
     assert jane["instantly_campaign"] == "US Outbound – Harry Dryden"
     assert jane["instantly_lead_id"] == "lead-jane@acmecreative.com"
     assert jane["mailbox"] is None  # Harry has two Active addresses; sync_outcomes records the one that sent
-    assert omar["mailbox"] == "hannah@meetspill.org" and omar["copy_version"] == "general-v1"
+    assert omar["mailbox"] == "hannah@meetspill.org"
+    assert omar["copy_version"] == "general-v1"  # Fintech has no row of its own, nor has its group
 
 
 def test_live_flag_without_live_sending_does_nothing():
@@ -218,39 +222,77 @@ def test_missing_campaign_is_an_error_not_a_crash():
 # -- test versions -------------------------------------------------------------------------------
 
 
-def test_running_test_splits_eap_accounts_and_records_the_test():
-    eap_accounts = [account(account_id=f"eap-{i}", domain=f"eap{i}.com", clean_name=f"Eap {i}") for i in range(8)]
-    eap_contacts = [contact(contact_id=f"c-{i}", account_id=f"eap-{i}", email=f"p{i}@eap{i}.com") for i in range(8)]
-    s = make_settings(live_sending=True, tests=(FIRST_TEST,))
-    ctx, t = make(live=True, settings=s, accounts=eap_accounts, contacts=eap_contacts)
+V2_SUBJECTS = {**SUBJECTS, 1: "A shorter note for {{company}}"}
+TEST_COPY = COPY + (copy_row("agencies-v2", AGENCIES, subjects=V2_SUBJECTS),)
+
+
+def test_running_test_splits_version_a_accounts_and_records_the_test():
+    accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(8)]
+    cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(8)]
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
+    ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     leads = {lead["email"]: lead for r in instantly_posts(t) for lead in r.json["leads"]}
     versions = set()
     for i in range(8):
         con = ctx.store.get("contacts", contact_id=f"c-{i}")
-        want = "eap-v1" if queue.test_version(f"eap-{i}", FIRST_TEST.test_id) == "a" else "general-v1"
+        want = "agencies-v1" if queue.test_version(f"ag-{i}", FIRST_TEST.test_id) == "a" else "agencies-v2"
         assert con["test_id"] == FIRST_TEST.test_id and con["copy_version"] == want
-        body = leads[f"p{i}@eap{i}.com"]["custom_variables"]["s1_body"]
-        assert (EAP_OPENER if want == "eap-v1" else GENERAL_OPENER) in body
-        assert con["angle"] == ("Upgrade the EAP" if want == "eap-v1" else "General")
+        subject = leads[f"p{i}@ag{i}.com"]["custom_variables"]["s1_subject"]
+        assert subject.startswith("A shorter note" if want == "agencies-v2" else "Support for the")
+        assert con["angle"] == "Upgrade the EAP"  # the account's angle, whichever copy it got
         versions.add(want)
-    assert versions == {"eap-v1", "general-v1"}
+    assert versions == {"agencies-v1", "agencies-v2"}
 
 
-def test_control_and_other_angles_stay_out_of_the_test():
-    s = make_settings(live_sending=True, tests=(FIRST_TEST,))
+def test_control_and_other_copy_stay_out_of_the_test():
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
     ctx, _ = make(live=True, settings=s)
     enrol.run(ctx)
     assert ctx.store.get("contacts", contact_id="con-1")["test_id"] == FIRST_TEST.test_id
-    assert ctx.store.get("contacts", contact_id="con-2")["test_id"] is None
-    assert ctx.store.get("contacts", contact_id="con-3")["test_id"] is None
+    assert ctx.store.get("contacts", contact_id="con-2")["test_id"] is None  # General copy
+    assert ctx.store.get("contacts", contact_id="con-3")["test_id"] is None  # Control
 
 
-def test_no_approved_copy_for_the_angle_skips_the_account():
-    s = make_settings(copy=copy_rows("general-v1", "General") + copy_rows("eap-v1", "Upgrade the EAP", status="draft"))
+def test_no_approved_copy_skips_the_account_and_says_what_waits():
+    s = make_settings(copy=(COPY[0], copy_row("general-v1", "General", status="draft")))
     ctx, _ = make(settings=s)
     out = enrol.run(ctx)
     assert out["skipped"]["no approved copy"] == 1 and out["prepared"] == 2
+    [skip] = [x for x in out["skipped_accounts"] if x["reason"] == "no approved copy"]
+    assert skip["account_id"] == "acc-2" and "general-v1 is a draft" in skip["detail"][1]
+
+
+def test_a_draft_industry_row_falls_back_to_general_and_says_so():
+    s = make_settings(live_sending=True, copy=(copy_row("agencies-v1", AGENCIES, status="draft"), COPY[1]))
+    ctx, _ = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and out["copy_sendable"] == 1
+    assert {c["copy_version"] for c in ctx.store.select("contacts")} == {"general-v1"}
+    assert out["copy_fallbacks"] == {"sent general-v1: agencies-v1 is a draft": 2}
+
+
+def test_unchecked_copy_is_not_sent():
+    s = make_settings(live_sending=True, copy=(copy_row("agencies-v1", AGENCIES, qa=False), COPY[1]))
+    ctx, _ = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    assert {c["copy_version"] for c in ctx.store.select("contacts")} == {"general-v1"}
+    assert "agencies-v1 is approved but has not passed QA" in next(iter(out["copy_fallbacks"]))
+
+
+def test_the_most_specific_row_wins_label_then_role():
+    label = copy_row("advertising-v1", "Advertising agencies")
+    ops = copy_row("agencies-ops-v1", AGENCIES, role="Operations")
+    s = make_settings(live_sending=True, copy=COPY + (ops, label))
+    ctx, _ = make(live=True, settings=s)
+    enrol.run(ctx)
+    cons = rows(ctx, "contacts", "contact_id")
+    assert cons["con-1"]["copy_version"] == "advertising-v1"  # its own label beats its group
+    assert cons["con-3"]["copy_version"] == "advertising-v1"  # the label beats a role row for the group
+    s = make_settings(live_sending=True, copy=COPY + (ops,))
+    ctx, _ = make(live=True, settings=s)
+    enrol.run(ctx)
+    assert rows(ctx, "contacts", "contact_id")["con-3"]["copy_version"] == "agencies-ops-v1"  # Lee is Operations
 
 
 # -- gates ------------------------------------------------------------------------------------
@@ -571,16 +613,16 @@ def test_hubspot_error_skips_the_account_without_excluding():
 
 
 def test_render_violation_skips_the_account_and_says_why():
-    accts = [account(industry="Unlisted label", industry_group="")]  # no proof point for step 2
-    ctx, t = make(live=True, accounts=accts, contacts=[contact()])
+    ctx, t = make(live=True, settings=make_settings(live_sending=True, postal_address=""), accounts=[account()],
+                  contacts=[contact()])
     out = enrol.run(ctx)
     assert out["prepared"] == 0 and out["skipped"]["copy blocked"] == 1
     [skip] = [s for s in out["skipped_accounts"] if s["reason"] == "copy blocked"]
-    assert any("{{proof}}" in d for d in skip["detail"])
+    assert any("agencies-v1: email 1: postal_address is blank" in d for d in skip["detail"])
     assert instantly_posts(t) == []
 
 
-def test_unlimited_pto_opener_falls_back_to_the_default(monkeypatch):
+def test_an_opener_that_breaks_a_rule_is_dropped(monkeypatch):
     monkeypatch.setattr(enrol, "account_opener", lambda ctx, a: ("Saw your benefits page mentions unlimited PTO", ""))
     ctx, t = make(live=True, accounts=[account()], contacts=[contact()])
     out = enrol.run(ctx)
@@ -589,7 +631,7 @@ def test_unlimited_pto_opener_falls_back_to_the_default(monkeypatch):
     assert fallback["account_id"] == "acc-1" and "unlimited" in fallback["reason"]
     [post] = instantly_posts(t)
     body = post.json["leads"][0]["custom_variables"]["s1_body"]
-    assert EAP_OPENER in body and "unlimited" not in body.lower()
+    assert "unlimited" not in body.lower() and "<p>Hi Jane,</p><p>In most agencies" in body
 
 
 def test_created_ids_match_by_index_then_email():

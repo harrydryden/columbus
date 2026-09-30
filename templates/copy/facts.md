@@ -1,0 +1,44 @@
+# What US Outbound emails may say about Spill
+
+Every claim about Spill in a sequence comes from this list or from the industry's own page on
+spill.chat (the Industries tab's page_* columns), reworded to fit the copy rules below. Anything
+else is a claim nobody has checked, so the QA step fails it. Harry owns this list; change it here.
+
+## Claims
+
+- Spill is an on-demand counseling service for employees, trusted by tens of thousands of employees.
+- Spill helps organizations increase staff productivity, reduce absenteeism and free up HR time by
+  addressing the issues that most often derail performance at work.
+- Employees get fast, easy access to professional counseling, often the same day, in a couple of clicks.
+  No waiting lists, callbacks, referrals or paperwork through the employer.
+- Sessions run early mornings, evenings and weekends, seven days a week, so support fits around shifts,
+  client work and travel.
+- Spill works through the tools a team already uses: email, Slack and Microsoft Teams, or any phone.
+- It is confidential. Employees book directly and privately; the employer sees only anonymized,
+  aggregate data, never who used it or what they talked about.
+- It covers anyone struggling with personal or professional issues that affect their well-being and work:
+  work-related challenges (like stress or burnout), mental health conditions (like anxiety, depression
+  or ADHD) and life events (like having a baby or losing someone close).
+- Managers get training and tools to support people on their team who are struggling.
+- There is a library of practical, evidence-based self-guided resources for anyone not ready to talk yet,
+  covering topics from burnout prevention to grief, financial stress and sleep (the website's wording).
+- Spill works instead of, or alongside, a traditional EAP.
+- Setup takes hours, and there is no minimum team size.
+- A demo is short: about 20 minutes (SPEC 10's "20-minute walkthrough").
+- Spill is HIPAA compliant.
+- Pricing: only through {{price_line}} (the team-size price and the rolling 30-day contract), then
+  "We don't lock you in." Never write a dollar figure yourself.
+- The one statistic allowed: 30% of employees use Spill.
+
+## Words and claims never to use
+
+- "therapy", "therapist", "psychotherapy": say counseling, counselor.
+- "licensed" or "unlicensed": say professional counselors, or just counselors.
+- "unlimited", in any sense (sessions, support, PTO).
+- Any other statistic: no percentages but the 30% above, no "3 in 4", no "2x", no ratings like 4.9/5,
+  no "30,000+ employees", no survey results from the industry pages. Describe the pressure instead.
+- Anything that criticizes the prospect's current EAP or benefits. "EAP" may name theirs, never Spill.
+- Any dollar amount, discount, free trial, guarantee or deadline.
+- A named customer, unless the Industries tab's proof_point gives one.
+- Anything about the prospect's own company that the email cannot know: write "in most accounting
+  firms", "often", "usually", never "your team is burned out".

@@ -66,6 +66,8 @@ console), and `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON` (the Sheets service acco
 | Point the jobs at it | Harry | Put the id in the sealed variable `US_OUTBOUND_SETTINGS_SHEET_ID` and deploy; share the sheet with `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com` as Editor (open question 8: who owns the sheet) | |
 | First sync | jobs | `us-outbound settings sync` (dry-run still writes the database; errors go to `#us-outbound-dev`) | `us-outbound status` shows "Settings synced" |
 | HubSpot ids on the General tab | Harry | `us-outbound hubspot ids`, then paste `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id` into the General tab (never written automatically) | Next sync carries them |
+| Load the 108 industries and the Copy tab by industry (Harry, 30 Sep 2026) | jobs | `railway ssh -- us-outbound settings load` to see the changes, then the same with `--live`, then `us-outbound settings sync`. Harry's `active`, `priority` and `proof_point` are kept; the old one-row-per-step Copy tab is replaced (docs/pipeline.md, "Where the copy lives") | The Industries tab has 108 rows with page columns; Copy has 106 draft rows |
+| New General keys | Harry | Add rows `claude_task_model` = `claude-sonnet-5-5` and `email_format` = `html` (missing keys use these defaults; `claude_model` stays `claude-opus-5-5`) | `us-outbound status` shows them |
 
 ## 5. HubSpot
 
@@ -133,6 +135,8 @@ Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mai
 | Footer text (sender, postal address, advertisement line, "Reply STOP or use this link to opt out", privacy link) | `templates/copy/footer.txt`; `postal_address` on the General tab |
 | Privacy page link | `privacy_url` on the General tab. The US privacy notice is still a draft and there is no opt-out page (phase0-facts.md): sends stay blocked until it is live |
 | Legitimate-interests text (UK GDPR Article 14, step 1) | `templates/copy/article14.txt` |
+| The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |
+| The claims the emails may make, and the voice | `templates/copy/facts.md`, `templates/copy/style.md` (open questions 65 to 72) |
 
 ## Acceptance (SPEC 14)
 

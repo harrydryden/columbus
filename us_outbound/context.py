@@ -149,19 +149,27 @@ class Clients:
 
         return Sheets(self.guard, self.transport, credentials=self.google_credentials)
 
-    @cached_property
-    def claude(self):
+    def _claude(self, model: str):
         from us_outbound.clients.claude import Claude
 
-        g = self.settings.general
         return Claude(
             self.guard,
             self.store,
             api_key=None if self.claude_sdk else self.secrets.get("claude"),
-            model=g.claude_model,
-            monthly_cap_usd=g.claude_monthly_cap_usd,
+            model=model,
+            monthly_cap_usd=self.settings.general.claude_monthly_cap_usd,
             sdk=self.claude_sdk,
         )
+
+    @cached_property
+    def claude(self):
+        """The writing model (claude_model): copy drafts, reply drafts."""
+        return self._claude(self.settings.general.claude_model)
+
+    @cached_property
+    def claude_task(self):
+        """The model for well-defined tasks (claude_task_model): copy QA, reply classification."""
+        return self._claude(self.settings.general.claude_task_model)
 
     @cached_property
     def public(self):

@@ -167,6 +167,72 @@ class Sheets(HttpClient):
         )
         return True
 
+    def update_rows(
+        self, sheet_id: str, tab: str, key: str, updates: Mapping[str, Mapping[str, str]]
+    ) -> list[str]:
+        """Set cells in the rows whose `key` column holds each given value (ignoring case), in one write.
+
+        updates: {key value: {column: new text}}. Returns the key values with no row on the tab
+        (they are not written). More than one row for a key raises ValueError rather than guess.
+        """
+        if not updates:
+            return []
+        values = self._values(sheet_id, a1_tab(tab))
+        headers = [str(h).strip() for h in (values[0] if values else [])]
+        cols = {c for cells in updates.values() for c in cells} | {key}
+        for col in sorted(cols):
+            if col not in headers:
+                raise ValueError(f"column {col!r} is not on the {tab} tab")
+        k = headers.index(key)
+        where: dict[str, list[int]] = {}
+        for n, row in enumerate(values[1:], start=2):
+            cell = str(row[k]).strip().casefold() if k < len(row) and row[k] is not None else ""
+            where.setdefault(cell, []).append(n)
+        data, missing = [], []
+        for value, cells in updates.items():
+            rows = where.get(str(value).strip().casefold(), [])
+            if not rows:
+                missing.append(value)
+                continue
+            if len(rows) > 1:
+                raise ValueError(f"{len(rows)} rows on the {tab} tab have {key} {value!r}")
+            for col, text in cells.items():
+                a1 = f"{a1_tab(tab)}!{column_letter(headers.index(col))}{rows[0]}"
+                data.append({"range": a1, "majorDimension": "ROWS", "values": [[str(text)]]})
+        if data:
+            self.request(
+                "POST",
+                f"/{sheet_id}/values:batchUpdate",
+                Op("values.batchUpdate", target=sheet_id, write=True, detail={"tab": tab, "cells": len(data)}),
+                json={"valueInputOption": "RAW", "data": data},
+            )
+        return missing
+
+    def replace_tab(self, sheet_id: str, tab: str, headers: Sequence[str], rows: Sequence[Mapping[str, str]]) -> None:
+        """Rewrite a tab: clear it, then write the header row and every row (values only; formatting stays).
+
+        The tab must exist (add it in the sheet first). Used by `us-outbound settings load`.
+        """
+        headers = list(headers)
+        unknown = sorted({k for r in rows for k in r} - set(headers))
+        if unknown:
+            raise ValueError(f"columns {unknown} are not in the headers for {tab}")
+        self.request(
+            "POST",
+            f"/{sheet_id}/values/{_quote(a1_tab(tab))}:clear",
+            Op("values.clear", target=sheet_id, write=True, detail={"tab": tab}),
+            json={},
+        )
+        values = [headers] + [[str(r.get(h, "")) for h in headers] for r in rows]
+        a1 = f"{a1_tab(tab)}!A1"
+        self.request(
+            "PUT",
+            f"/{sheet_id}/values/{_quote(a1)}",
+            Op("values.update", target=sheet_id, write=True, detail={"tab": tab, "rows": len(rows)}),
+            params={"valueInputOption": "RAW"},
+            json={"range": a1, "majorDimension": "ROWS", "values": values},
+        )
+
     def create_settings_sheet(
         self, tabs: Mapping[str, Sequence[Mapping[str, str]]], columns: Mapping[str, Sequence[str]]
     ) -> str | None:

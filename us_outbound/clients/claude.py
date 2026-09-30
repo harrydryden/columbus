@@ -1,4 +1,4 @@
-"""Claude API client for reply classification, drafts and readout notes (SPEC 1.1, 11, 12).
+"""Claude API client for copy drafts and QA, reply classification, drafts and readout notes (SPEC 1.1, 11, 12).
 
 Uses the official anthropic SDK with structured outputs (output_config.format =
 json_schema), so every answer is one JSON object matching the caller's schema.
@@ -44,7 +44,12 @@ PRICES: dict[str, Price] = {
     "claude-haiku-4-5": Price(input=1.0, output=5.0, cache_read=0.10),
     "claude-sonnet-5-5": Price(input=2.0, output=10.0, cache_read=0.20),
     "claude-opus-5-5": Price(input=4.0, output=20.0, cache_read=0.20),
+    "claude-fable-5-1": Price(input=10.0, output=50.0, cache_read=0.25),
 }
+# Which General-tab key names the model for each kind of work (Harry, 30 Sep 2026: Opus writes
+# the emails; Sonnet does the well-defined tasks). Orchestration is the scheduler's code, not a model.
+WRITING, TASK = "writing", "task"
+MODEL_KEYS = {WRITING: "claude_model", TASK: "claude_task_model"}
 
 CHARS_PER_TOKEN = 3.5  # deliberately low, so the estimate errs high
 OVERHEAD_TOKENS = 300  # the system prompt structured outputs adds, plus message framing
@@ -168,6 +173,7 @@ class Claude:
         max_tokens: int = 1024,
         purpose: str = "classify",
         now: datetime | None = None,
+        timeout: float | None = None,
     ) -> dict:
         """One structured-output call; returns the parsed JSON object."""
         import anthropic
@@ -187,8 +193,11 @@ class Claude:
             )
 
         self.guard.authorize("claude", Op("messages.create", target=self.model, detail={"purpose": purpose}))
+        client = self.client
+        if timeout is not None and hasattr(client, "with_options"):
+            client = client.with_options(timeout=timeout)  # a long draft outlasts the default timeout
         try:
-            response = self.client.messages.create(
+            response = client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=system,

@@ -1,14 +1,13 @@
 """The sheet's SPEC 5 defaults: shape, content, and that they pass validation."""
 
 import dataclasses
-import re
 from datetime import time
 
 import pytest
 
 from us_outbound.settings.defaults import COLUMNS, US_STATES, default_tabs
 from us_outbound.settings.model import TABS, General, SendWindow
-from us_outbound.settings.validate import COPY_VARIABLES, validate_all
+from us_outbound.settings.validate import validate_all
 
 
 @pytest.fixture(scope="module")
@@ -50,7 +49,8 @@ def test_general_spec_values(tabs, settings):
     assert raw["live_sending"] == "no"
     assert raw["send_window"] == "Mon–Fri 09:00–16:00 America/New_York"
     assert raw["approver_slack_ids"] == raw["postal_address"] == raw["privacy_url"] == ""
-    assert raw["claude_model"] == "claude-haiku-4-5"
+    assert raw["claude_model"] == "claude-opus-5-5" and raw["claude_task_model"] == "claude-sonnet-5-5"
+    assert raw["email_format"] == "html" and raw["booking_page"] == "https://www.spill.chat/us/book-demo"
     notes = {r["key"]: r["note"] for r in tabs["General"]}
     assert "calendar month" in notes["clay_monthly_credits"] and "0 means no Clay calls" in notes["clay_monthly_credits"]
     assert "Monday to Sunday" in notes["weekly_enrol_cap"] and "calendar month" in notes["apollo_monthly_credits"]
@@ -126,40 +126,57 @@ def test_angles_in_order(settings):
     assert all(a.default_opener for a in settings.angles)
 
 
+UNREACHABLE = {"Insurance", "HR consulting", "Substance use treatment"}  # partners, never contacted: no copy
+
+
 def test_industries(settings):
+    """All 108 of the website's industry pages (Harry, 30 Sep 2026), grouped under its 15 hub pages."""
+    assert len(settings.industries) == 108
     by_group: dict[str, list] = {}
     for i in settings.industries:
         by_group.setdefault(i.industry_group, []).append(i)
+    assert len(by_group) == 15 and all(rows[0].industry == g for g, rows in by_group.items())  # each hub row first
     tech = by_group["Technology & Startups"]
-    assert len(tech) == 17 and all(i.active and i.priority == 1 for i in tech)
-    assert all(len(i.apollo_keywords) == 1 for i in tech)
+    assert len(tech) == 17 and all(i.priority == 1 for i in tech)
+    assert [i.industry for i in tech if not i.active] == ["Remote & hybrid teams"]  # not an industry (SPEC 5)
     assert tech[0].naics_prefixes == ("5112", "513210", "5415", "518210")
+    assert all(i.apollo_keywords for i in settings.industries if i.industry != "Small Businesses")
     marketing = by_group["Marketing & Creative Agencies"]
     assert len(marketing) == 10 and all(i.active and i.priority == 2 for i in marketing)
-    assert marketing[0].naics_prefixes == ("5418", "541430", "541613", "5121", "5111")
-    assert len(by_group["Nonprofits"]) == 13 and not any(i.active for i in by_group["Nonprofits"])
+    assert len(by_group["Nonprofits"]) == 14 and not any(i.active for i in by_group["Nonprofits"])
     assert [i.industry for i in by_group["Legal Teams"]] == ["Legal Teams"]
     prof = {i.industry: i for i in by_group["Professional Services"]}
-    assert prof["CPA firms"].exclude_naics == ("541214", "541612")
-    assert not any(i.active for i in prof.values())
+    assert "541214" in prof["CPA firms"].exclude_naics and not any(i.active for i in prof.values())
+    digital = settings.industry("Digital health")
+    assert digital.industry_group == "Healthcare" and digital.active and digital.priority == 1
     active_groups = {i.industry_group for i in settings.industries if i.active}
-    assert active_groups == {"Technology & Startups", "Marketing & Creative Agencies"}
-    assert {i.priority for g, rows in by_group.items() if g not in {
-        "Technology & Startups", "Marketing & Creative Agencies", "Nonprofits", "Legal Teams", "Professional Services"
-    } for i in rows} == {9}
-    assert all(i.landing_page_url == "" and i.proof_point == "" for i in settings.industries)
+    assert active_groups == {"Technology & Startups", "Marketing & Creative Agencies", "Healthcare"}
+    assert sum(i.active for i in settings.industries) == 27  # as before: 17 tech labels (Digital health moved) and 10 agencies
+
+
+def test_industry_pages_and_links(settings):
+    live = [i for i in settings.industries if i.landing_page_url]
+    assert len(live) == 106  # Retail & E-commerce and Small Businesses are drafts on the site
+    assert {i.industry for i in settings.industries if not i.landing_page_url} == {"Retail & E-commerce", "Small Businesses"}
+    assert all(i.landing_page_url.startswith("https://www.spill.chat/us/industry/mental-health-support-for-") for i in live)
+    cpa = settings.industry("CPA firms")
+    assert cpa.page.blurb == "Counseling that fits around client work and busy season"
+    assert "Busy season is structural" in cpa.page.intro and cpa.page.customers.startswith("Proudly supporting")
+    assert all("$" not in i.page.ticks for i in settings.industries)  # the site's price tick is left out
+    assert all(i.proof_point == "" for i in settings.industries)  # Harry fills a named customer
 
 
 def test_industry_notes(tabs):
     notes = {r["industry"]: r["note"] for r in tabs["Industries"]}
     assert notes["Fintech"].startswith("On from 26 Oct")
-    assert "Harry to fill" in notes["Fintech"]
     assert notes["Nonprofits"].startswith("January")
-    assert notes["Churches & religious organizations"] == notes["Emergency & rescue"] == "off"
+    assert notes["Churches & religious organizations"].startswith("off")
     assert notes["Legal Teams"].startswith("January")
     assert notes["Management consulting"].startswith("After January")
-    assert notes["Staffing agencies"] == "off"
+    assert notes["Staffing agencies"].startswith("off")
     assert notes["HR consulting"].startswith("never")
+    assert "draft on spill.chat" in notes["Retail & E-commerce"]
+    assert all("partner" in notes[i] or "never" in notes[i] for i in UNREACHABLE)
 
 
 def test_states(tabs, settings):
@@ -220,56 +237,33 @@ def test_first_test_is_planned(settings):
     assert not settings.overrides
 
 
-# -- copy obeys SPEC 10 ------------------------------------------------------------
-
-FORBIDDEN = re.compile(r"\b(therapy|therapies|therapist|therapists|licensed|licence|unlimited)\b", re.IGNORECASE)
-BRITISH = re.compile(
-    r"\b(counsell\w*|organis\w*|utilis\w*|recognis\w*|prioritis\w*|colour\w*|favour\w*|behaviour\w*|programme\w*|"
-    r"centre\w*|labour\w*|enrol|enrolment|personalis\w*|analys(e|es|ed|ing)|cheque|wellbeing)\b",
-    re.IGNORECASE,
-)
-FOOTER_WORDS = re.compile(r"\b(STOP|opt out|opt-out|unsubscribe|privacy)\b", re.IGNORECASE)
+# -- copy: one sequence per industry, and a General one (Harry, 30 Sep 2026) ---------------------
 
 
-def _copy_text(row) -> str:
-    return row["subject"] + "\n" + row["body"]
+def test_every_contactable_industry_has_a_draft_sequence(settings):
+    industries = {c.industry for c in settings.copy}
+    assert industries == ({i.industry for i in settings.industries} - UNREACHABLE) | {"General"}
+    assert len(settings.copy) == len(industries) and all(c.role == "" for c in settings.copy)
+    assert all(c.status == "draft" and c.approved_by == "" for c in settings.copy)  # only Harry approves copy
+    assert all(c.copy_version.endswith("-v1") for c in settings.copy)
 
 
-def test_copy_rows_are_drafts_for_both_versions(settings):
-    assert {(c.copy_version, c.angle) for c in settings.copy} == {("general-v1", "General"), ("eap-v1", "Upgrade the EAP")}
-    for version in ("general-v1", "eap-v1"):
-        assert sorted(c.step for c in settings.copy if c.copy_version == version) == [1, 2, 3, 4]
-    assert all(c.status == "draft" and c.approved_by == "" for c in settings.copy)
-    assert settings.approved_copy("eap-v1", 1) is None
+def test_every_sequence_passes_the_sheet_check(settings):
+    from us_outbound.enrol import copy_desk
+
+    bad = {c.copy_version: c.problems for c in copy_desk.check_all(settings) if not c.ok}
+    assert bad == {}
 
 
-def test_copy_obeys_the_rules(tabs):
-    for row in tabs["Copy"]:
-        text = _copy_text(row)
-        label = f"{row['copy_version']} step {row['step']}"
-        assert not FORBIDDEN.search(text), label
-        assert not BRITISH.search(text), (label, BRITISH.search(text))
-        assert not FOOTER_WORDS.search(text), label  # the footer is added at render time
-        assert not re.search(r"https?://|www\.", text), label  # step 1's only link is the footer's privacy link
-        assert "Spill EAP" not in text and "our EAP" not in text.lower(), label
-        for line in text.splitlines():
-            assert len(line) <= 300, label
-        # 30% is the only statistic; other digits appear only inside variables.
-        stripped = re.sub(r"\{\{[^}]*\}\}", "", text).replace("30%", "")
-        assert not re.search(r"\d", stripped), (label, stripped)
-        assert set(re.findall(r"\{\{\s*(\w+)\s*\}\}", text)) <= COPY_VARIABLES, label
-        if "counsel" in text.lower():
-            assert re.search(r"\bcounsel(or|ors|ing)\b", text), label
-
-
-def test_copy_sequence_shape(tabs):
-    for version in ("general-v1", "eap-v1"):
-        steps = {int(r["step"]): r for r in tabs["Copy"] if r["copy_version"] == version}
-        s1, s2, s3, s4 = (steps[i]["body"] for i in (1, 2, 3, 4))
-        assert "{{opener}}" in s1 and "{{demo_line}}" not in s1 and "{{proof}}" not in s1
-        assert "same-day" in s1 and "registered counselors" in s1
-        assert "{{proof}}" in s2 and "{{demo_line}}" in s2
-        assert s3.count("?") == 1 and len(s3) < 200
-        assert "one-pager" in s4
-    eap1 = next(r for r in tabs["Copy"] if r["copy_version"] == "eap-v1" and r["step"] == "1")
-    assert "EAP" in eap1["body"]
+def test_every_sequence_has_harry_s_shape(settings):
+    for c in settings.copy:
+        s1, s2, s3, s4 = (c.step(n).body for n in (1, 2, 3, 4))
+        assert "{{opener}}" in s1 and "{{role_line}}" in s1, c.copy_version
+        for heading in ("**What is Spill?**", "**Who is Spill for?**", "**What makes Spill unique**"):
+            assert heading in s2, (c.copy_version, heading)
+        assert "{{price_line}} We don't lock you in." in s2, c.copy_version
+        page = settings.industry_page_url(c.industry) if c.industry != "General" else "any"
+        assert ("{{industry_url}}" in s2) is bool(page), c.copy_version
+        assert all("{{industry_url}}" not in b for b in (s1, s3, s4)), c.copy_version
+        assert len(s2) > max(len(s1), len(s3), len(s4)), c.copy_version  # the long form is email 2
+        assert all(c.role_lines.get(r) for r in ("People leader", "Founder or executive", "Operations")), c.copy_version

@@ -27,7 +27,13 @@ from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
     ACTIONS,
     COPY_STATUSES,
+    COPY_STEPS,
+    EMAIL_FORMATS,
+    GENERAL_COPY,
     MAILBOX_STATUSES,
+    PAGE_FIELDS,
+    QA_VERDICTS,
+    ROLE_LINE_COLUMNS,
     OPTIONAL_TABS,
     SOURCE_FIELDS,
     SOURCE_KEYS,
@@ -36,10 +42,12 @@ from us_outbound.settings.model import (
     TEXT_SOURCES,
     Angle,
     CopyRow,
+    CopyStep,
     DateRange,
     Focus,
     General,
     Industry,
+    IndustryPage,
     Mailbox,
     NamedAccount,
     Override,
@@ -54,17 +62,25 @@ from us_outbound.settings.model import (
 HEADER_ROW = 1
 FIRST_DATA_ROW = 2
 OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
+# Columns added after the sheet was first made (Harry, 30 Sep 2026): a tab without them reads them as blank.
+TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
+    "Industries": frozenset(f"page_{f}" for f in PAGE_FIELDS),
+    "Copy": frozenset({"qa_notes", "sources"}),
+}
+# The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
+LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
 MAY_BE_EMPTY = frozenset({"Overrides", "Tests", *OPTIONAL_TABS})  # an empty tab anywhere else is almost surely a mistake
 NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
 CLAUDE_CAP_USD = 10.0  # SPEC 1.1
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
 CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
-COPY_STEPS = (1, 2, 3, 4)
-# Variables a copy row may use (SPEC 10, plus the lead's first name and company).
+# Variables a copy row may use (render.VARIABLES; style.md).
 COPY_VARIABLES = frozenset(
-    {"first_name", "company", "opener", "proof", "place", "ask", "price_line", "demo_line", "legal_overlay", "signature"}
+    {"first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
+     "industry_url", "sender_first_name", "proof"}
 )
+SPILL_PAGE = re.compile(r"https://(?:www\.)?spill\.chat/\S*")
 OPENER_PLACEHOLDERS = frozenset({"evidence"})  # SPEC 5: "Saw your benefits page mentions {evidence}"
 # The sheet row whose key names each tab's rows; settings_sync versions rows by it.
 KEY_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -74,7 +90,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     "Industries": ("industry",),
     "States": ("state",),
     "Roles": ("role",),
-    "Copy": ("copy_version", "step"),
+    "Copy": ("copy_version",),
     "Mailboxes": ("address",),
     "Overrides": ("domain", "field"),
     "Tests": ("test_id",),
@@ -84,7 +100,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -321,8 +337,6 @@ def natural_key(tab: str, row: Mapping[str, Any]) -> str:
 
 
 def _label(tab: str, row: Mapping[str, Any]) -> str:
-    if tab == "Copy":
-        return f"{_cell(row, 'copy_version')} step {_cell(row, 'step')}".strip()
     return " ".join(_cell(row, c) for c in KEY_COLUMNS[tab]).strip()
 
 
@@ -354,6 +368,12 @@ class _Row:
             return default
 
 
+def is_legacy_copy(columns: Iterable[str]) -> bool:
+    """True for a Copy tab still in the one-row-per-step layout (before 30 Sep 2026)."""
+    cols = set(columns)
+    return LEGACY_COPY_COLUMNS <= cols and "s1_body" not in cols
+
+
 def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[RowError]) -> list[_Row] | None:
     """Tab-level checks; None when the tab cannot be read row by row."""
     if rows is None:
@@ -367,7 +387,10 @@ def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[Ro
             errors.append(RowError(tab, HEADER_ROW, "", f"the {tab} tab has no rows"))
         return []
     present = set().union(*(set(r) for r in rows))
-    missing = [c for c in COLUMNS[tab] if c not in present and c not in OPTIONAL_COLUMNS]
+    if tab == "Copy" and is_legacy_copy(present):
+        return []  # the old one-row-per-step layout: no copy until the new tab is loaded (sync says so)
+    optional = OPTIONAL_COLUMNS | TAB_OPTIONAL_COLUMNS.get(tab, frozenset())
+    missing = [c for c in COLUMNS[tab] if c not in present and c not in optional]
     if missing:
         noun = "columns are" if len(missing) > 1 else "column is"
         errors.append(RowError(tab, HEADER_ROW, ", ".join(missing), f"the {noun} missing from the header row"))
@@ -436,8 +459,12 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
     if key == "escalation_email":
         _email(value)
-    if key == "claude_model" and not re.fullmatch(r"claude-[a-z0-9.-]+", value):
-        raise ValueError(f"must be a Claude model id like claude-haiku-4-5, not {value!r}")
+    # A model id the cap cannot price is refused at call time (clients/claude.py), not here, so a typo
+    # stops only the Claude calls, never the whole General tab. `us-outbound copy` names the ids it knows.
+    if key in ("claude_model", "claude_task_model") and not re.fullmatch(r"claude-[a-z0-9.-]+", value):
+        raise ValueError(f"must be a Claude model id like claude-opus-5-5 or claude-sonnet-5-5, not {value!r}")
+    if key == "email_format" and value not in EMAIL_FORMATS:
+        raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
     if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
     if key in ("booking_link", "booking_page", "privacy_url") and value:
@@ -605,24 +632,35 @@ def _naics(text: str) -> tuple[str, ...]:
     return codes
 
 
+def _page_url(text: str) -> str:
+    """An industry page: emails link it, and emails link only to spill.chat."""
+    _https(text)
+    if not SPILL_PAGE.fullmatch(text):
+        raise ValueError(f"must be a page on https://www.spill.chat (emails link only there), not {text!r}")
+    return text
+
+
 def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
     out: list[tuple[Industry, int]] = []
     seen: dict[str, int] = {}
     for r in rows:
         label = r.parse("industry", str)
         _unique(r, "industry", label.casefold() if label else None, seen, f"industry {label!r}")
+        if label and label.casefold() == GENERAL_COPY.casefold():
+            r.fail("industry", f"{GENERAL_COPY!r} is kept for the Copy tab's fallback sequence; name the industry")
         group = r.parse("industry_group", str)
         active = r.parse("active", parse_bool)
         naics = r.parse("naics_prefixes", _naics, required=False, default=())
         exclude = r.parse("exclude_naics", _naics, required=False, default=())
         keywords = split_list(r.text("apollo_keywords"), ";")
-        landing = r.parse("landing_page_url", _https, required=False, default="")
+        landing = r.parse("landing_page_url", _page_url, required=False, default="")
         priority = r.parse("priority", parse_int, required=False, default=Industry.priority)
         if priority is not None and priority < 1:
             r.fail("priority", "must be 1 or more")
+        page = IndustryPage(**{f: r.text(f"page_{f}") for f in PAGE_FIELDS})
         if r.ok:
             out.append((
-                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority),
+                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority, page),
                 r.number,
             ))
     return out
@@ -698,37 +736,44 @@ def _check_copy_text(r: _Row, col: str) -> None:
         r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
 
 
-def _step(text: str) -> int:
-    n = parse_int(text)
-    if n not in COPY_STEPS:
-        raise ValueError(f"must be one of {', '.join(map(str, COPY_STEPS))}")
-    return n
+def _qa(text: str) -> str:
+    parts = text.split()
+    if parts[0].lower() not in QA_VERDICTS or len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{8}", parts[1].lower()):
+        raise ValueError('is written by `us-outbound copy qa`: "pass" or "fail" and the copy\'s check code, like "pass 1a2b3c4d"')
+    return f"{parts[0].lower()} {parts[1].lower()}"
 
 
 def _copy(rows: list[_Row]) -> list[tuple[CopyRow, int]]:
     out: list[tuple[CopyRow, int]] = []
-    seen: dict[tuple[str, int], int] = {}
-    version_angle: dict[str, tuple[str, int]] = {}
+    seen: dict[str, int] = {}
     for r in rows:
         version = r.parse("copy_version", str)
-        angle = r.parse("angle", str)
-        step = r.parse("step", _step)
-        if version and step is not None:
-            _unique(r, "step", (version, step), seen, f"{version} step {step}")
-        subject = r.parse("subject", str, required=step == 1, default="")
-        body = r.parse("body", str)
+        _unique(r, "copy_version", version.casefold() if version else None, seen, f"copy_version {version!r}")
+        industry = r.parse("industry", str)
+        role = r.text("role")
         status = r.parse("status", one_of(COPY_STATUSES))
         approved_by = r.text("approved_by")
         if status == "approved" and not approved_by:
             r.fail("approved_by", "is required once a row is approved")
-        _check_copy_text(r, "subject")
-        _check_copy_text(r, "body")
-        if version and angle:
-            first = version_angle.setdefault(version, (angle, r.number))
-            if first[0] != angle:
-                r.fail("angle", f"{version} is already the {first[0]} angle on row {first[1]}")
+        qa = r.parse("qa", _qa, required=False, default="")
+        steps = []
+        for n in COPY_STEPS:
+            subject = r.parse(f"s{n}_subject", str, default="")
+            body = r.parse(f"s{n}_body", str, default="")
+            _check_copy_text(r, f"s{n}_subject")
+            _check_copy_text(r, f"s{n}_body")
+            steps.append(CopyStep(subject or "", body or ""))
+        lines = {name: r.text(col) for name, col in ROLE_LINE_COLUMNS.items()}
+        uses_line = any("role_line" in _VARIABLE.findall(st.body) for st in steps)
+        for name, col in ROLE_LINE_COLUMNS.items():
+            if uses_line and not lines[name] and (not role or role.casefold() == name.casefold()):
+                r.fail(col, f"is required: the emails use {{{{role_line}}}}, and this is the {name} line")
+            for v in _VARIABLE.findall(lines[name]):
+                if v not in ("company",):
+                    r.fail(col, f"a role line may use only {{{{company}}}}, not {{{{{v}}}}}")
         if r.ok:
-            out.append((CopyRow(version, angle, step, subject, body, status, approved_by, r.text("sources")), r.number))
+            out.append((CopyRow(version, industry, status, tuple(steps), role, lines, approved_by, qa,
+                                r.text("qa_notes"), r.text("sources")), r.number))
     return out
 
 
@@ -938,34 +983,42 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
         signals.append((s, row))
     values["Signals"] = signals
 
+    # A Copy row names an Industries label, an industry group, or General; and a role or none.
+    labels = _names(raw["Industries"], "industry")
+    groups = _names(raw["Industries"], "industry_group")
+    roles = _names(raw["Roles"], "role")
     copy_rows = []
     for c, row in values["Copy"]:
-        canonical = angles.get(c.angle.casefold())
+        target = c.industry.casefold()
+        canonical = (GENERAL_COPY if target == GENERAL_COPY.casefold() else labels.get(target) or groups.get(target))
         if canonical is None:
             errors["Copy"].append(RowError(
-                "Copy", row, "angle", f"{c.angle!r} is not on the Angles tab{_hint(c.angle, angles.values())}",
-                f"{c.copy_version} step {c.step}",
+                "Copy", row, "industry",
+                f"{c.industry!r} is not an industry or industry_group on the Industries tab, nor {GENERAL_COPY!r}"
+                f"{_hint(c.industry, [*labels.values(), *groups.values()])}", c.copy_version,
             ))
             continue
-        copy_rows.append((dataclasses.replace(c, angle=canonical), row))
+        role = c.role
+        if role:
+            role = roles.get(role.casefold())
+            if role is None:
+                errors["Copy"].append(RowError("Copy", row, "role", f"{c.role!r} is not on the Roles tab"
+                                               f"{_hint(c.role, roles.values())}", c.copy_version))
+                continue
+        copy_rows.append((dataclasses.replace(c, industry=canonical, role=role), row))
     values["Copy"] = copy_rows
 
-    versions = {_cell(r, "copy_version") for r in raw["Copy"] or ()}
-    approved = {
-        (_cell(r, "copy_version"), _cell(r, "step"))
-        for r in raw["Copy"] or ()
-        if _cell(r, "status").lower() == "approved"
-    }
+    # A test's versions may be written after it is planned; a running test needs both approved.
+    versions = {_cell(r, "copy_version").casefold(): _cell(r, "status").lower() for r in raw["Copy"] or ()}
     for t, row in values["Tests"]:
+        if t.status != "running":
+            continue
         for col, version in (("version_a", t.version_a), ("version_b", t.version_b)):
-            if version not in versions:
+            status = versions.get(version.casefold())
+            if status is None:
                 errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
-            elif t.status == "running":
-                missing = [str(s) for s in COPY_STEPS if (version, str(s)) not in approved]
-                if missing:
-                    errors["Tests"].append(RowError(
-                        "Tests", row, col, f"a running test needs {version} approved for steps {', '.join(missing)}", t.test_id,
-                    ))
+            elif status != "approved":
+                errors["Tests"].append(RowError("Tests", row, col, f"a running test needs {version} approved", t.test_id))
 
     # A Focus row names an industry group on the Industries tab that has an active industry.
     groups = _names(raw["Industries"], "industry_group")

@@ -234,12 +234,72 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 ## Where the copy lives
 
-- **The copy is in the sheet's Copy tab:** one row per version and step (`copy_version`, `angle`, `step`, `subject`, `body`, `status`, `approved_by`). The defaults load as `draft`, and only rows with `status = approved` are ever sent (SPEC 5, 10).
-- **The enrol job writes each lead's four emails.** It takes the approved version for the account's angle (or the running test's split), fills in the account's opener, proof point, price line, demo line and the sender's signature, and checks every copy rule. Any breach skips the account.
-- **It uploads them to Instantly as that lead's own custom variables:** `{{s1_subject}}`, `{{s1_body}}` … `{{s4_body}}`.
-- **The three campaigns are created by the jobs** (`us-outbound campaigns ensure --live`), paused, one per sender. Each has four steps whose subject and body are just those placeholders, with the settings from SPEC 9 and the step days above.
-- **So nobody writes sequences in Instantly by hand.** A sequence edited there would be reported as drift the next morning. To change what prospects read, edit the Copy tab and approve it.
-- **Phase 0 tests Instantly's custom-variable length limit.** If a rendered body is too long, the fallback is smaller variables (`{{opener}}`, `{{proof}}`, `{{ask}}`, `{{price_line}}`, `{{signature}}`) with the fixed text in the campaign step (SPEC 9).
+**The Copy tab holds one row per industry** (Harry, 30 Sep 2026). Each row is a four-email sequence: `s1_subject`, `s1_body` … `s4_body`, plus one line per contacted role (`people_leader_line`, `founder_line`, `operations_line`), and `status`, `approved_by`, `qa`, `qa_notes`, `sources` and `note`.
+- **Which row a lead gets:** the most specific approved row that has passed QA. That is its own industry label for its contact's role, then the label, then the label's group for the role, then the group, then `General`. So an industry can go live as soon as its own row is approved, and a General row covers the rest if Harry approves one.
+- **How it is personal:**
+  - Industry-specific copy throughout.
+  - The role line in email 1.
+  - The evidence opener from the account's signals, which is left out for the General angle and for Control accounts.
+  - The company, first name, place and a price for the team's size.
+- **The industry's spill.chat page is linked in email 2** (`{{industry_url}}`). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. The two pages still in draft on the site (Retail & E-commerce, Small Businesses) have no link yet.
+- **Every email's call to action is the demo page**, `{{demo_url}}` (General `booking_page`, https://www.spill.chat/us/book-demo), as a link in the text.
+- **The emails are HTML** (General `email_format = html`): embedded links, bullets and the bold headings of the long-form email, with tracking still off. `email_format = text` sends plain text with the links written out, if phase 0 finds Instantly mangles HTML in a custom variable. Instantly's `text_only` follows the setting.
+- **Where the words come from:**
+  - `templates/copy/style.md`: the voice, the four emails, the role lines, the markup, and Harry's long-form email as the model for email 2.
+  - `templates/copy/facts.md`: the only claims the emails may make about Spill.
+  - The industry's page, in the Industries tab's `page_*` columns: the pressures, the language and the angles.
+- **The four emails:**
+
+  | Email | Day | What it does | Words |
+  | :- | :- | :- | :- |
+  | 1 | 0 | The hook: a real pressure in this industry, the role line, one line on how Spill helps, the demo link | 60 to 110 |
+  | 2 | 7 | Harry's long form: What is Spill? Who is Spill for? What makes Spill unique (four bullets, the last the team-size price), the industry page link, the demo link | 180 to 280 |
+  | 3 | 14 | A new angle, often from the page's FAQs: confidentiality, managers, out-of-hours, working with an EAP | 50 to 90 |
+  | 4 | 21 | A polite close that leaves the door open | 40 to 80 |
+
+- **The enrol job writes each lead's four emails and uploads them** as the lead's custom variables `{{s1_subject}}` … `{{s4_body}}`. The three campaigns (`us-outbound campaigns ensure --live`) have four steps that are just those placeholders. Nobody writes sequences in Instantly by hand; a sequence edited there is reported as drift the next morning.
+
+**The QA pipeline: copy reaches a prospect only through all five gates** (`enrol/copy_desk.py`):
+
+| # | Gate | Who or what | What it catches |
+| :- | :- | :- | :- |
+| 1 | Draft | The writing model (`claude_model`, Opus), `us-outbound copy draft --industry X --live`, or a person | |
+| 2 | Sheet check | Code, free: `us-outbound copy check` renders every row for each role, from the demo host and from another sender, with sample and longest values | Everything the copy rules check (below) |
+| 3 | QA | The task model (`claude_task_model`, Sonnet), `us-outbound copy qa --live`: writes `qa` ("pass 1a2b3c4d") and `qa_notes` to the row | Claims not in facts.md or on the page, wrong data, statistics, tone, US grammar, the structure. A row that fails the sheet check fails QA without a model call |
+| 4 | Approval | Harry: `status = approved` and `approved_by` | Judgment |
+| 5 | Render-time check | Code, on every lead, in the enrol job | Anything the lead's own values break: a missing first name, a blank footer setting, an opener with a banned word (the opener is dropped) |
+
+**QA stamps the exact wording:** `qa` carries a check code over the row's subjects, bodies and role lines. Edit the copy and the code no longer matches, so the row stops being sent until it passes QA again (`us-outbound copy qa --version <v> --live`, about a cent a row).
+
+**The copy rules** (`enrol/copy_rules.py`; SPEC 10, plus Harry's changes):
+- SPEC 10's word rules: counselor and counseling, never therapy or therapist; never licensed; never unlimited; American spelling; no statistic but "30% of employees use Spill"; never disparage their EAP; "EAP" never in Spill's name; demos only with Harry.
+- The shape of each email:
+  - It opens "Hi {{first_name}}," and ends with a sign-off and `{{sender_first_name}}`.
+  - It carries exactly one link to the demo page.
+  - It links only to the demo page, the industry page or spill.chat, with no bare addresses and no "click here".
+  - The sequence links the industry page.
+- Words per email, not counting the opener.
+- No dollar figures: prices come only from `{{price_line}}`, by team size.
+- No exclamation marks, spam phrases, "Re:" or emoji in subjects.
+- No line over 300 characters.
+- Markup the system can read: no typed HTML, no broken links, no one-item lists.
+
+**Two models, one cap:** `claude_model` (Opus) writes; `claude_task_model` (Sonnet) does the well-defined tasks (copy QA now, reply classification in phase 2). Both spend the same $10 a month (`claude_monthly_cap_usd`). Orchestration is the scheduler's code, not a model. Drafting all 106 sequences through the API would cost more than a month's cap, so the first library was drafted in the build session (Opus) and checked there (Sonnet), outside the cap. The in-system commands are for new and redone rows.
+
+**The first library:**
+- There are 106 draft rows: 105 industries and a General row.
+- Insurance, HR consulting and Substance use treatment are partners, never contacted, so they have no copy.
+- Every row passed the sheet check and QA in the build session. Each row's `qa_notes` says what QA found.
+- All are `draft` until Harry approves them.
+- Load them with `us-outbound settings load --live` (below).
+
+**Loading the new tabs into the sheet** (`settings/load.py`):
+- `us-outbound settings load` (dry-run) prints what would change; `--live` writes it, then `us-outbound settings sync` brings it in.
+- Industries rows are matched by label. Harry's `active`, `priority` and `proof_point` are kept, the build's other columns win, and rows Harry added stay.
+- A Copy tab still in the old one-row-per-step layout is replaced. Its rows stay in the database's settings history, and until it is replaced the sync reads it as no copy and says so.
+- A Copy tab already in the new layout keeps every row as it is; only missing versions are added.
+
+**Phase 0 tests Instantly's custom-variable length limit.** The longest email 2 is about 2,500 characters of HTML with the footer. If Instantly's limit is lower, the fallback is to put the fixed parts of the footer in the campaign step.
 
 ## How Harry can steer the system
 
@@ -278,6 +338,10 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | The send forecast replaces "caps ÷ 4", with Instantly's reports (limits, sends, sending status) and an "add a mailbox" flag | Harry | 9 | Done |
 | — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
+| — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |
+| — | A demo link in every email, and the industry page in email 2, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry: "the CTA is always to book a demo" | 10 | Done |
+| — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |
+| — | `claude_model` (Opus) writes; `claude_task_model` (Sonnet) checks and classifies | Harry | 1.1 | Done |
 | 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |
 | 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
 | 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Deferred |

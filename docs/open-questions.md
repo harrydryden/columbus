@@ -87,11 +87,8 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 ### Copy and rendering
 
-38. The ask sentences are constants in render.py. [as below]
-    - People leader: "Would a 20-minute walkthrough be useful?"
-    - Founder or executive: "Worth a look for the team?"
-    - Operations: "Happy to send the one-pager if that's useful."
-39. Step 4 offers the one-pager on reply, because there is no link variable. Should there be a `{{one_pager}}` variable? [no variable]
+38. The asks by role are gone: every email's call to action is the demo page (Harry, 30 Sep 2026). The role now shows in email 1's role line. [demo link]
+39. Email 4 no longer offers the one-pager; it ends on the demo link too. Should one of the emails offer the one-pager instead? [no]
 40. Must every email mention same-day counseling? [not enforced]
 41. "therapy" and "therapist" are blocked even inside a quote from the prospect's page, and the opener then falls back to the default. [blocked]
 42. Please review the phrase lists for disparaging an EAP and for EAP in Spill's name, in `enrol/copy_rules.py`. [short lists]
@@ -116,7 +113,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 ### Instantly, Apollo and HubSpot details (PHASE0-CONFIRM)
 
 57. Instantly has no America/New_York in its time-zone list, so campaigns use America/Detroit (same rules). Check that a created campaign shows Mon–Fri and steps on days 0, 3, 8 and 15.
-58. Instantly: confirm the custom-variable length limit (worst case for s1_body is about 1,500 characters), that newlines survive in text-only mode, that the forward endpoint and is_evergreen behave as expected, and that step 2–4 sends stay on the step-1 address.
+58. Instantly: confirm the custom-variable length limit (worst case: s2_body about 2,350 characters of HTML, s1_body about 1,950 with the longest opener), that HTML in a custom variable renders in a campaign with text_only off (email_format = html; text is the fallback), that the forward endpoint and is_evergreen behave as expected, and that step 2–4 sends stay on the step-1 address.
 59. Apollo: `apollo_floor` and the monthly budget (`apollo_monthly_credits`, 2,000) count lead credits. Visitor discovery uses organization search with website-visitor filters (1 credit to confirm). bulk_match never runs the email waterfall; misses go to Clay.
 60. HubSpot: confirm the deal→company and contact→company association ids and the v4 unsubscribe-all endpoint. Suppression loads hard bounces only. Company match is on the primary domain and its www. form.
 
@@ -126,3 +123,37 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 62. Raw tables (including raw_clay_contacts, which holds names and emails) have no retention rule, but erase covers them. Should they follow the 12-month contacts rule? [kept]
 63. `erase` GDPR-deletes the HubSpot contact whoever created it, lists a manual Clay step, and deletes database rows even in dry-run. [yes]
 64. heartbeat_check alerts once when a job is newly missed and repeats at 09:00 UK. `test read` before the read date is labelled an early look. [yes]
+
+### Copy by industry (Harry, 30 Sep 2026)
+
+65. **The website and SPEC 10 disagree.** The industry pages say "licensed therapists" and quote statistics. SPEC 10 bans "licensed", "therapy" and "therapist", and allows no statistic but the 30% figure. The drafts follow SPEC 10: they say "professional counselors" and use no statistics. Keep SPEC 10's rules? [kept]
+66. **"Unlimited".** Your long-form email says "Counseling sessions are unlimited", which SPEC 10 bans. That bullet became "Sessions run early mornings, evenings and weekends". Should the ban go? [kept]
+67. **The price.** Three sources disagree:
+    - the website: "Packages from $250 a month", "priced per employee per month";
+    - your email: "Plans start from $195 per month";
+    - SPEC 4's size table: $195 up to 10 staff, $250 to 25, $350 to 50, $495 to 100, $995 to 200, then $5 an employee.
+
+    The emails use `{{price_line}}` from the table: "For a team your size it's $350 a month, on a rolling 30-day contract." When the size is unknown it reads "Plans start from $195 a month…". Which is current? [SPEC 4's table]
+68. **"Trusted by tens of thousands of employees"** had a HubSpot-tracked link in your email, going somewhere unknown. Emails link only to the demo page, the industry page and spill.chat, with tracking off, so it has no link. Should it link a spill.chat page (reviews, customers)? [no link]
+69. **Links in email 1.** SPEC 10 had step 1 carry one link only, the privacy page, for deliverability. Every email now carries the demo link, and email 2 carries the industry page. Watch spam placement in phase 2. [as you asked]
+70. **The long form is email 2** (day 7), after a short hook on day 0, not email 1. [email 2]
+71. **Sign-off.** Each email ends "Best," and the sender's first name; the footer then gives the full name. Would you prefer "Thanks," or no sign-off? [Best,]
+72. **Page-only claims.** QA allows a claim that is on the industry's own page. The drafts use some to check are true for the US:
+    - HIPAA compliant;
+    - nothing reported to bar associations, boards or regulators;
+    - booking by text;
+    - sessions in several languages;
+    - post-incident sessions;
+    - manager training for team leads.
+
+    [allowed; confirm]
+73. **Pages with another page's copy on spill.chat.** These pages carry another page's intro and challenges:
+    - the churches page on Animal welfare, Arts & culture, Environmental nonprofits, Human rights, and International aid & relief;
+    - Social welfare on Emergency & rescue;
+    - Automotive & vehicles on Packaging;
+    - Private duty & live-in care on Supported living.
+
+    Many sub-industry pages also share their group's wording. The emails for these industries describe their own pressures, and QA checked them. [worth fixing on the site]
+74. **The first test** (t1, the EAP opener against the General opener) names copy versions that no longer exist. With copy by industry, it could test two versions of one industry's row, or the opener on and off. [planned; decide before phase 3]
+75. **Role-specific copy** is a line per role in email 1. A row with `role` set (for example CPA firms for Operations) overrides it for that role, if you want to go further. [role lines]
+76. **Industries not contacted** (Insurance, HR consulting, Substance use treatment: partners) are on the Industries tab, off, with no copy. [no copy]

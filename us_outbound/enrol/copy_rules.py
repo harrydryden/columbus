@@ -1,25 +1,29 @@
-"""The render-time copy check (SPEC 10 "Rules"; SPEC 1.4; SPEC 13 CAN-SPAM).
+"""The copy rules (SPEC 10 "Rules"; SPEC 1.4; SPEC 13 CAN-SPAM; Harry, 30 Sep 2026).
 
-check() runs on every rendered email before it is handed to Instantly. Any violation
-blocks the send: SPEC 1.4 says the copy rules are enforced by a check at render time,
-not only by review. It returns every violation, not just the first.
+Every email is checked twice: on the sheet, when copy is written (enrol/copy_check.py renders
+every row with sample values), and at render time, for the lead it is going to. Any violation
+blocks the send: SPEC 1.4 says the copy rules are enforced by a check at render time, not only
+by review. Each check returns every violation, not just the first.
 
-The rules (SPEC 10):
+The word rules (content_violations; SPEC 10):
   * "counselor" and "counseling", never "therapy" or "therapist";
-  * "registered", never "licensed";
+  * never "licensed" (SPEC 10 says "registered"; facts.md says "professional counselors");
   * no "unlimited";
   * never disparage the prospect's existing EAP or benefits (a small phrase list, for
-    Harry to review);
-  * "EAP" is fine when naming theirs, but never in Spill's product name;
+    Harry to review); "EAP" is fine when naming theirs, but never in Spill's product name;
   * American spelling;
   * the 30% utilization figure is the only statistic allowed;
-  * no empty or unrendered {{variable}};
-  * no line over 300 characters;
-  * every copy row sent has status approved.
-Step 1 also carries exactly one link, the privacy and opt-out page (SPEC 10 "Sequence").
-
-A demo is always with Harry (SPEC 9 "Sender continuity"), so a sender who is not the demo
-host may not offer "a time with me", and the host may not call himself "my colleague".
+  * a sender who is not the demo host may not offer "a time with me" (SPEC 9).
+The rules on the copy as written (source_violations): it opens "Hi {{first_name}}," and ends
+with a sign-off and {{sender_first_name}}; no exclamation marks; no dollar figures (prices come
+from {{price_line}}, by team size); no "Re:" or emoji in a subject; {{opener}} and
+{{legal_overlay}} alone on their lines.
+The rules on each email as sent (email_violations): a subject; no empty or unrendered
+{{variable}}; no line over 300 characters; the word count for its step; no spam phrases; no
+bare addresses; exactly one link to the demo page, the call to action (Harry: "the CTA is
+always to book a demo"); links only to the demo page, the industry page or spill.chat.
+SPEC 10 had step 1 carry one link only, the privacy page; Harry asked for the demo link in
+every email and the industry page in the sequence (docs/pipeline.md, "Copy").
 
 content_violations() is the word-level part on its own: render.py uses it to test an
 opener before choosing it, and reply drafts (SPEC 11) can use it too.
@@ -30,7 +34,6 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 
-from us_outbound.settings.model import CopyRow
 
 MAX_LINE = 300  # SPEC 10: no line over 300 characters
 ALLOWED_STATISTIC = "30"  # SPEC 10: the 30% utilization figure is the only statistic allowed
@@ -279,44 +282,111 @@ def structure_violations(text: str) -> list[str]:
     return out
 
 
-def check(
-    rendered_subject: str,
-    rendered_body: str,
+# -- one email, as copy (the sheet) and as sent (Harry, 30 Sep 2026) ----------------------------
+
+GREETING = re.compile(r"^Hi \{\{\s*first_name\s*\}\},$")
+SIGN_OFF_NAME = re.compile(r"^\{\{\s*sender_first_name\s*\}\}$")
+SIGN_OFFS = ("Best,", "Thanks,", "Thank you,", "All the best,", "Cheers,", "Warmly,", "Best wishes,")
+# Words each email may have, not counting the greeting and the sign-off (style.md gives the
+# targets; these are the limits past which the email is blocked).
+STEP_WORDS: dict[int, tuple[int, int]] = {1: (40, 120), 2: (150, 300), 3: (30, 100), 4: (25, 90)}
+SUBJECT_MAX = 60  # characters, with a typical company name (the sheet check); style.md asks for under 50
+SUBJECT_MAX_SENT = 150  # characters as sent, whatever the company name
+SPAM_PHRASES: tuple[re.Pattern[str], ...] = tuple(
+    _rx(rf"\b{p}\b")
+    for p in (
+        r"click here", r"act now", r"limited time", r"risk[- ]free", r"guaranteed?", r"no obligation",
+        r"free trial", r"buy now", r"special offer", r"exclusive (?:deal|offer)", r"once in a lifetime",
+    )
+)
+POOR_ANCHORS = frozenset({"here", "click here", "this link", "link", "this", "click"})
+_DOLLARS = re.compile(r"\$\s?\d|\b\d[\d,]*\s?(?:dollars|USD)\b", _I)
+_EMOJI = re.compile("[\u2600-\u27bf\U0001f000-\U0001faff]")
+_REPLY_PREFIX = _rx(r"^\s*(?:re|fwd?)\s*:")
+SPILL_PAGES = ("https://www.spill.chat/", "https://spill.chat/")
+
+
+def source_violations(subject: str, body: str, *, step: int) -> list[str]:
+    """Rules on the copy as written in the sheet, before any value goes in."""
+    out: list[str] = []
+    lines = [line.strip() for line in body.replace("\r\n", "\n").split("\n") if line.strip()]
+    if not lines or not GREETING.match(lines[0]):
+        out.append('body must start with the line "Hi {{first_name}},"')
+    if len(lines) < 2 or not SIGN_OFF_NAME.match(lines[-1]) or lines[-2] not in SIGN_OFFS:
+        out.append('body must end with a sign-off line (like "Best,") and then "{{sender_first_name}}"')
+    for part, text in (("subject", subject), ("body", body)):
+        if "!" in text:
+            out.append(f"{part} has an exclamation mark; the style is calm, not salesy")
+        for m in _DOLLARS.finditer(text):
+            out.append(f'{part} has the price "{_quoted(m)}"; prices come only from {{{{price_line}}}}, by team size')
+    if _REPLY_PREFIX.match(subject):
+        out.append('subject starts with "Re:" or "Fwd:" for an email that is neither')
+    if _EMOJI.search(subject):
+        out.append("subject has an emoji")
+    for name in ("opener", "legal_overlay"):
+        for line in body.split("\n"):
+            if re.search(rf"\{{\{{\s*{name}\s*\}}\}}", line) and not re.fullmatch(rf"\s*\{{\{{\s*{name}\s*\}}\}}\s*", line):
+                out.append(f"{{{{{name}}}}} must be alone on its line, so the line disappears when it is empty")
+    return out
+
+
+def email_violations(
+    subject: str,
+    words: str,
+    links_found: Iterable[tuple[str, str]],
     *,
-    copy_row: CopyRow | None,
-    step: int | None,
+    step: int,
+    demo_url: str,
+    industry_url: str = "",
     sender_is_harry: bool,
-    privacy_url: str | None = None,
     demo_host: str = "Harry Dryden",
     exempt: Iterable[str] = (),
+    uncounted: Iterable[str] = (),
 ) -> list[str]:
-    """Every violation of the SPEC 10 rules in one rendered email; the send is blocked if any.
+    """Rules on one email as it will be sent: its subject, its words and its links (footer excluded).
 
-    copy_row: the Copy-tab row it came from (None for a reply draft, which has no row).
-    step: 1 to 4, or None for a reply draft. Step 1 must carry exactly one link, the
-      privacy and opt-out page (privacy_url, when given).
-    exempt: literal strings the word rules skip (the prospect's name, company and place,
-      and our postal address); line length and variables still apply to them.
+    uncounted: filled-in lines that are not the copy's own words (the evidence opener, the legal
+    overlay), left out of the word count so a long opener never blocks an email.
     """
     exempt = tuple(exempt)
     out: list[str] = []
-    if copy_row is not None and copy_row.status != "approved":
-        out.append(f"copy {copy_row.copy_version} step {copy_row.step} is {copy_row.status or 'blank'}, not approved")
-    if step == 1 and not rendered_subject.strip():
+    if not subject.strip():
         out.append("subject is empty")
-    if not rendered_body.strip():
-        out.append("body is empty")
-    if "\n" in rendered_subject:
+    if "\n" in subject:
         out.append("subject has a line break")
-    for part, text in (("subject", rendered_subject), ("body", rendered_body)):
+    if len(subject) > SUBJECT_MAX_SENT:
+        out.append(f"subject is {len(subject)} characters (the limit is {SUBJECT_MAX_SENT})")
+    if not words.strip():
+        out.append("body is empty")
+    for part, text in (("subject", subject), ("body", words)):
         out.extend(f"{part} {v}" for v in content_violations(
             text, sender_is_harry=sender_is_harry, demo_host=demo_host, exempt=exempt
         ))
         out.extend(f"{part} {v}" for v in structure_violations(text))
-    if step == 1:
-        found = links(rendered_subject) + links(rendered_body)
-        if len(found) != 1:
-            out.append(f"step 1 has {len(found)} links; it may have only one, the privacy and opt-out link")
-        elif privacy_url and _norm_link(found[0]) != _norm_link(privacy_url):
-            out.append(f'step 1\'s one link must be the privacy and opt-out page, not "{found[0]}"')
+        masked = _mask(text, exempt)
+        for rx in SPAM_PHRASES:
+            for m in rx.finditer(masked):
+                out.append(f'{part} says "{_quoted(m)}", which reads as spam')
+    for bare in links(_mask(words, exempt)):
+        out.append(f'body has the bare address "{bare}"; write it as [anchor text](link)')
+    lines = [line for line in words.split("\n") if line.strip()]
+    counted = " ".join(lines[1:-2]) if len(lines) > 3 else " ".join(lines)
+    from us_outbound.enrol.copy_markup import word_count
+
+    n = word_count(counted) - sum(word_count(u) for u in uncounted if u and u in counted)
+    lo, hi = STEP_WORDS.get(step, (0, 10**6))
+    if not lo <= n <= hi:
+        out.append(f"email {step} has {n} words; it should have {lo} to {hi}")
+    found = list(links_found)
+    demo = [u for _, u in found if _norm_link(u) == _norm_link(demo_url)] if demo_url else []
+    if len(demo) != 1:
+        out.append(f"has {len(demo)} links to the demo page; every email has exactly one, the call to action")
+    if industry_url and sum(1 for _, u in found if _norm_link(u) == _norm_link(industry_url)) > 1:
+        out.append("links the industry page more than once")
+    for anchor, url in found:
+        if anchor.strip().casefold().rstrip(".") in POOR_ANCHORS:
+            out.append(f'has the anchor text "{anchor}"; say where the link goes')
+        known = {_norm_link(u) for u in (demo_url, industry_url) if u}
+        if _norm_link(url) not in known and not url.startswith(SPILL_PAGES):
+            out.append(f'links to "{url}"; emails link only to the demo page, the industry page or spill.chat')
     return list(dict.fromkeys(out))

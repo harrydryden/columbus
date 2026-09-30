@@ -1,23 +1,25 @@
-"""The render-time copy check (SPEC 10 "Rules"): each rule fails and passes, and check()
-returns every violation, not the first."""
+"""The copy rules (SPEC 10 "Rules"; Harry, 30 Sep 2026): each rule fails and passes, and every
+check returns every violation, not the first."""
 
 from __future__ import annotations
-
-import dataclasses
 
 import pytest
 
 from us_outbound.enrol import copy_rules
-from us_outbound.enrol.copy_rules import check, content_violations, links
-from us_outbound.settings.model import CopyRow
+from us_outbound.enrol.copy_rules import content_violations, email_violations, links, source_violations
 
 PRIVACY = "https://www.spill.chat/us/privacy"
-ROW = CopyRow("general-v1", "General", 2, "Subject", "Body", "approved", "Harry Dryden")
-FOOTER = f"\n\nHannah Spalding, Spill\n1 Example Street, London\nThis is a marketing email from Spill.\nReply STOP or use this link to opt out: {PRIVACY}"
+DEMO = "https://www.spill.chat/us/book-demo"
+PAGE = "https://www.spill.chat/us/industry/mental-health-support-for-cpa-firms"
 
 
-def run(body: str, *, subject: str = "Quick question", step: int | None = 2, harry: bool = True, row=ROW, **kw) -> list[str]:
-    return check(subject, body, copy_row=row, step=step, sender_is_harry=harry, privacy_url=PRIVACY, **kw)
+def run(body: str, *, subject: str = "Quick question", harry: bool = True, **kw) -> list[str]:
+    """The word and structure rules on a subject and a body (what every email and reply draft gets)."""
+    out: list[str] = []
+    for part, text in (("subject", subject), ("body", body)):
+        out += [f"{part} {v}" for v in content_violations(text, sender_is_harry=harry, **kw)]
+        out += [f"{part} {v}" for v in copy_rules.structure_violations(text)]
+    return out
 
 
 def test_clean_copy_passes():
@@ -130,31 +132,6 @@ def test_line_length_limit():
     assert v == "body line 2 is 301 characters (the limit is 300)"
 
 
-@pytest.mark.parametrize("status", ["draft", "retired", ""])
-def test_copy_row_must_be_approved(status):
-    row = dataclasses.replace(ROW, status=status)
-    assert any("not approved" in v for v in run("Hi Jane.", row=row))
-
-
-def test_reply_drafts_have_no_row_or_step():
-    assert check("Re: hello", "Hi Jane, grab a time with me.", copy_row=None, step=None, sender_is_harry=True) == []
-
-
-def test_step1_carries_exactly_one_link_the_privacy_page():
-    row = dataclasses.replace(ROW, step=1)
-    assert run("Hi Jane." + FOOTER, step=1, row=row) == []
-    assert any("step 1 has 0 links" in v for v in run("Hi Jane.", step=1, row=row))
-    two = run("Hi Jane, see spill.chat/us." + FOOTER, step=1, row=row)
-    assert any("step 1 has 2 links" in v for v in two)
-    wrong = check("Hi", "Hi Jane.\nhttps://example.com/x", copy_row=row, step=1, sender_is_harry=True, privacy_url=PRIVACY)
-    assert any("must be the privacy and opt-out page" in v for v in wrong)
-    assert any("subject is empty" in v for v in run("Hi Jane." + FOOTER, subject="", step=1, row=row))
-
-
-def test_later_steps_may_have_more_links():
-    assert run("Grab a time: https://meetings.hubspot.com/harry336/us-demo-link" + FOOTER) == []
-
-
 def test_links_finds_urls_and_bare_domains_but_not_emails():
     text = "See https://www.spill.chat/us/privacy. Or spill.chat/us, www.example.org and Apollo.io; mail hannah@meetspill.org, e.g. U.S."
     assert links(text) == ["https://www.spill.chat/us/privacy", "spill.chat/us", "www.example.org", "Apollo.io"]
@@ -173,10 +150,10 @@ def test_same_day_forms_pass():
 
 def test_every_violation_is_returned():
     body = "Our licensed therapists offer unlimited counselling. 50% of teams agree.\n" + "x" * 301
-    found = run(body, row=dataclasses.replace(ROW, status="draft"))
-    for part in ("not approved", '"licensed"', '"therapists"', '"unlimited"', '"counselling"', '"50%"', "301 characters"):
+    found = run(body)
+    for part in ('"licensed"', '"therapists"', '"unlimited"', '"counselling"', '"50%"', "301 characters"):
         assert any(part in v for v in found), part
-    assert len(found) >= 7
+    assert len(found) >= 6
 
 
 def test_prospect_names_are_exempt_from_word_rules():
@@ -188,3 +165,84 @@ def test_prospect_names_are_exempt_from_word_rules():
 
 def test_max_line_constant():
     assert copy_rules.MAX_LINE == 300
+
+
+# -- the copy as written (source_violations) ---------------------------------------------------
+
+GOOD_BODY = "Hi {{first_name}},\n\n{{opener}}\n\nA short note.\n\nBest,\n{{sender_first_name}}"
+
+
+def test_clean_source_passes():
+    assert source_violations("Busy season support for {{company}}", GOOD_BODY, step=1) == []
+
+
+@pytest.mark.parametrize(
+    "body, part",
+    [
+        ("Hello {{first_name}},\n\nA note.\n\nBest,\n{{sender_first_name}}", 'start with the line "Hi {{first_name}},"'),
+        ("Hi {{first_name}},\n\nA note.\n\nHannah", "end with a sign-off"),
+        ("Hi {{first_name}},\n\nA note.\n\nYours,\n{{sender_first_name}}", "end with a sign-off"),
+        ("Hi {{first_name}},\n\nPlans from $195 a month.\n\nBest,\n{{sender_first_name}}", 'the price "$1'),
+        ("Hi {{first_name}},\n\nIt's great!\n\nBest,\n{{sender_first_name}}", "exclamation mark"),
+        ("Hi {{first_name}},\n\n{{opener}} And more.\n\nBest,\n{{sender_first_name}}", "{{opener}} must be alone"),
+    ],
+)
+def test_source_rules(body, part):
+    assert any(part in v for v in source_violations("Subject", body, step=1)), source_violations("Subject", body, step=1)
+
+
+def test_subjects_are_calm_and_honest():
+    assert any("Re:" in v for v in source_violations("Re: our chat", GOOD_BODY, step=1))
+    assert any("emoji" in v for v in source_violations("Support 🎉", GOOD_BODY, step=1))
+    assert any("exclamation" in v for v in source_violations("Act fast!", GOOD_BODY, step=1))
+
+
+# -- each email as sent (email_violations) -------------------------------------------------------
+
+
+def words(n: int) -> str:
+    return "Hi Jane,\n\n" + " ".join(["word"] * n) + "\n\nBest,\nHannah"
+
+
+def emailed(text: str = "", *, step: int = 3, found=(("book a short demo", DEMO),), subject: str = "A question", **kw):
+    return email_violations(subject, text or words(50), list(found), step=step, demo_url=DEMO, industry_url=PAGE,
+                            sender_is_harry=kw.pop("harry", True), **kw)
+
+
+def test_a_clean_email_passes():
+    assert emailed() == []
+
+
+def test_every_email_has_exactly_one_demo_link():
+    assert any("0 links to the demo page" in v for v in emailed(found=()))
+    two = (("book a demo", DEMO), ("see a demo", DEMO))
+    assert any("2 links to the demo page" in v for v in emailed(found=two))
+
+
+def test_links_go_only_to_the_demo_page_the_industry_page_or_spill():
+    ok = (("book a demo", DEMO), ("see how Spill works for CPA firms", PAGE), ("our privacy page", PRIVACY))
+    assert emailed(found=ok) == []
+    bad = emailed(found=(("book a demo", DEMO), ("our story", "https://example.com/x")))
+    assert any('links to "https://example.com/x"' in v for v in bad)
+    assert any("more than once" in v for v in emailed(found=(("book a demo", DEMO), ("a", PAGE), ("b", PAGE))))
+
+
+def test_anchor_text_says_where_the_link_goes():
+    assert any('anchor text "here"' in v for v in emailed(found=(("here", DEMO),)))
+
+
+def test_bare_addresses_and_spam_phrases_are_blocked():
+    assert any("bare address" in v for v in emailed(words(40) + "\nSee spill.chat/us for more."))
+    assert any("reads as spam" in v for v in emailed(words(40) + "\nAct now, it is risk-free."))
+
+
+@pytest.mark.parametrize("step, n, ok", [(1, 39, False), (1, 40, True), (1, 120, True), (1, 121, False),
+                                         (2, 149, False), (2, 300, True), (4, 25, True), (4, 91, False)])
+def test_word_counts_by_email(step, n, ok):
+    found = emailed(words(n), step=step)
+    assert (not any("words; it should have" in v for v in found)) is ok, found
+
+
+def test_a_subject_is_needed_and_the_word_rules_apply_to_it():
+    assert any("subject is empty" in v for v in emailed(subject=""))
+    assert any('subject says "Therapy"' in v for v in emailed(subject="Therapy for your team"))

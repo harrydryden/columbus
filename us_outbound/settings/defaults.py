@@ -12,6 +12,9 @@ Copy rows load as draft: only Harry approves copy (SPEC 5, 10).
 
 from __future__ import annotations
 
+import csv
+from pathlib import Path
+
 from us_outbound.settings.model import TABS
 
 COLUMNS: dict[str, list[str]] = {
@@ -23,11 +26,19 @@ COLUMNS: dict[str, list[str]] = {
     "Angles": ["angle", "order", "argument", "default_opener", "landing_page_override", "active", "note"],
     "Industries": [
         "industry", "industry_group", "active", "naics_prefixes", "exclude_naics", "apollo_keywords",
-        "landing_page_url", "proof_point", "priority", "note",
+        "landing_page_url", "proof_point", "priority",
+        # The industry's spill.chat page, as material for its emails (Harry, 30 Sep 2026); optional columns.
+        "page_blurb", "page_intro", "page_ticks", "page_challenges", "page_stats", "page_benefits",
+        "page_features", "page_faqs", "page_customers", "note",
     ],
     "States": ["state", "active", "note"],
     "Roles": ["role", "titles", "first_choice_for_size", "fallback_order", "note"],
-    "Copy": ["copy_version", "angle", "step", "subject", "body", "status", "approved_by", "sources"],
+    # One row per industry (and optionally role), the four emails across (Harry, 30 Sep 2026).
+    "Copy": [
+        "copy_version", "industry", "role", "status", "approved_by", "qa", "qa_notes",
+        "s1_subject", "s1_body", "s2_subject", "s2_body", "s3_subject", "s3_body", "s4_subject", "s4_body",
+        "people_leader_line", "founder_line", "operations_line", "sources", "note",
+    ],
     "Mailboxes": [
         "address", "instantly_account_id", "domain", "provider", "owner_name", "owner_role", "signature",
         "status", "daily_cap", "added_on", "retire_after",
@@ -84,8 +95,9 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("escalation_hours", "24", "Hours before an open item is emailed to escalation_email."),
     ("alert_channel", "#us-outbound", "Alerts, approvals, the daily post and the Monday readout."),
     ("dev_channel", "#us-outbound-dev", "The only channel dry-run posts to. Added by the build."),
-    ("booking_link", "https://meetings.hubspot.com/harry336/us-demo-link", "Demo link in emails and replies."),
-    ("booking_page", "https://www.spill.chat/us/book-demo", "Demo booking page on the website."),
+    ("booking_link", "https://meetings.hubspot.com/harry336/us-demo-link", "Harry's own meeting link, for replies."),
+    ("booking_page", "https://www.spill.chat/us/book-demo",
+     "The demo page every email links as its call to action ({{demo_url}}; Harry, 30 Sep 2026)."),
     ("demo_host", "Harry Dryden", "Every demo is booked with this person."),
     (
         "postal_address",
@@ -121,7 +133,12 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("clay_contacts_function_id", "", "Clay function \"US Outbound – Contacts\", once built in phase 0."),
     ("clay_credits_per_account", "0", "Estimate until measured on the first 100 accounts (SPEC 8)."),
     ("apollo_credits_per_account", "1", "Estimate until measured."),
-    ("claude_model", "claude-haiku-4-5", "SPEC: a current fast Claude model."),
+    ("claude_model", "claude-opus-5-5",
+     "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),
+    ("claude_task_model", "claude-sonnet-5-5",
+     "Well-defined tasks: checks drafted copy (copy qa) and classifies replies. Both models share the cap below."),
+    ("email_format", "html",
+     "html: emails with embedded links and bullets; text: plain text with links written out. Tracking stays off."),
     ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend; SPEC 1.1 allows at most $10 a month."),
 ]
 
@@ -256,99 +273,27 @@ _ANGLES: list[tuple[str, str, str, str, str]] = [
     ),
 ]
 
-# -- Industries (SPEC 5: website labels grouped under the industry pages) -------
+# -- Industries (SPEC 5; Harry, 30 Sep 2026: all 108 of the website's industry pages) ----------
+# data/industries.csv holds the tab as first loaded: each page's label, its group (the website's
+# 15 hub pages), NAICS and Apollo keywords, the page link and the page's copy. The build makes
+# it from the website's export (docs/pipeline.md, "Industries"); the sheet is then Harry's.
 
-_TECH = "Technology & Startups"
-_MARKETING = "Marketing & Creative Agencies"
-_NONPROFITS = "Nonprofits"
-_LEGAL = "Legal Teams"
-_PROFESSIONAL = "Professional Services"
-
-# label -> one Apollo keyword ("plus a keyword per label").
-_TECH_LABELS: list[tuple[str, str]] = [
-    ("Technology & Startups", "software"),
-    ("Startups", "startup"),
-    ("Fintech", "fintech"),
-    ("Healthtech", "healthtech"),
-    ("Insurtech", "insurtech"),
-    ("Edtech", "edtech"),
-    ("Proptech", "proptech"),
-    ("Legaltech", "legal tech"),
-    ("Adtech & martech", "adtech"),
-    ("Digital health", "digital health"),
-    ("AI & deep tech", "artificial intelligence"),
-    ("Cybersecurity", "cybersecurity"),
-    ("Agritech", "agtech"),
-    ("Gametech", "gaming technology"),
-    ("Cleantech", "cleantech"),
-    ("Traveltech", "travel technology"),
-    ("Games studios", "video games"),
-]
-_MARKETING_LABELS = [
-    "Marketing & Creative Agencies", "Marketing agencies", "Advertising agencies", "Creative & design agencies",
-    "PR agencies", "Content agencies", "UX & product design agencies", "Events & experiential agencies",
-    "Production studios", "Publishers",
-]
-_NONPROFIT_LABELS = [
-    "Nonprofits", "Human rights", "Disability organizations", "Animal welfare", "Social welfare",
-    "Youth development", "Community development", "International aid & relief", "Environmental nonprofits",
-    "Health & medical nonprofits", "Arts & culture", "Churches & religious organizations", "Emergency & rescue",
-]
-_NONPROFITS_OFF = {"Churches & religious organizations", "Emergency & rescue"}
-_PROFESSIONAL_LABELS = [
-    "Professional Services", "CPA firms", "Management consulting", "Architecture studios",
-    "Engineering & design firms", "Research & market intelligence", "Staffing agencies", "HR consulting",
-]
-# Groups that are off in v1. SPEC names only the groups ("all their website labels"),
-# so each starts as one row named after its group; Harry adds the labels.
-_OFF_GROUPS = [
-    "Financial Services", "Healthcare", "Senior Care & Home Care", "Education", "Hospitality",
-    "Retail & E-commerce", "Construction & Trades", "Manufacturing & Industrial", "Fitness & Recreation",
-]
-
-_FILL_NOTE = HARRY_TO_FILL + ": landing_page_url and proof_point (a named US customer, or a UK analogue labeled UK)."
+DATA_DIR = Path(__file__).resolve().parent / "data"
+INDUSTRIES_FILE = DATA_DIR / "industries.csv"
+COPY_FILE = DATA_DIR / "copy.csv"
 
 
-def _industry(label: str, group: str, active: bool, naics: str, exclude: str, keywords: str,
-              priority: int, note: str) -> dict[str, str]:
-    return {
-        "industry": label,
-        "industry_group": group,
-        "active": "yes" if active else "no",
-        "naics_prefixes": naics,
-        "exclude_naics": exclude,
-        "apollo_keywords": keywords,
-        "landing_page_url": "",
-        "proof_point": "",
-        "priority": str(priority),
-        "note": note,
-    }
+def _csv_rows(path: Path, tab: str) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    cols = COLUMNS[tab]
+    return [{c: str(r.get(c) or "") for c in cols} for r in rows]
 
 
 def _industries() -> list[dict[str, str]]:
-    rows = []
-    for label, keyword in _TECH_LABELS:
-        rows.append(_industry(label, _TECH, True, "5112; 513210; 5415; 518210", "", keyword, 1,
-                              "On from 26 Oct. " + _FILL_NOTE))
-    for label in _MARKETING_LABELS:
-        rows.append(_industry(label, _MARKETING, True, "5418; 541430; 541613; 5121; 5111", "", "", 2,
-                              "On from 26 Oct. " + _FILL_NOTE))
-    for label in _NONPROFIT_LABELS:
-        if label in _NONPROFITS_OFF:
-            note = "off"
-        else:
-            note = "January. Found through the IRS Business Master File (501(c)(3) by NTEE), matched to Apollo. " + _FILL_NOTE
-        rows.append(_industry(label, _NONPROFITS, False, "813; 624", "", "", 3, note))
-    rows.append(_industry(_LEGAL, _LEGAL, False, "541110", "", "", 4, "January. " + _FILL_NOTE))
-    for label in _PROFESSIONAL_LABELS:
-        note = {"Staffing agencies": "off", "HR consulting": "never (HR consultancies are a hard exclusion)"}.get(
-            label, "After January. " + _FILL_NOTE
-        )
-        rows.append(_industry(label, _PROFESSIONAL, False, "5412; 5416; 54131; 54133; 5419", "541214; 541612",
-                              "", 5, note))
-    for group in _OFF_GROUPS:
-        rows.append(_industry(group, group, False, "", "", "", 9, "Off. Harry to add the website labels."))
-    return rows
+    return _csv_rows(INDUSTRIES_FILE, "Industries")
 
 
 # -- States ----------------------------------------------------------------------
@@ -383,78 +328,18 @@ _ROLES: list[tuple[str, str, str, str, str]] = [
     ("Finance", "CFO; Finance Director; Head of Finance; Controller", "", "", "not contacted"),
 ]
 
-# -- Copy (drafts for Harry to approve; SPEC 10) -----------------------------------
-# The footer (sender, postal address, advertisement line, opt-out, privacy link and, on
-# step 1, where the data came from) is added at render time, never stored here.
-
-_SUBJECTS = {
-    1: "Mental health support for the {{company}} team",
-    2: "Same-day counseling for {{company}}",
-    3: "Quick question",
-    4: "Closing the loop",
-}
-
-_STEP1_ARGUMENT = {
-    "general-v1": (
-        "Spill is mental health support your team will use: same-day counseling with registered counselors, "
-        "booked right in Slack or Teams, for one flat monthly fee. 30% of employees use Spill."
-    ),
-    "eap-v1": (
-        "Having an EAP says you take this seriously. Spill is the version your team will use: same-day "
-        "counseling with registered counselors, booked right in Slack or Teams, and 30% of employees use Spill."
-    ),
-}
-_STEP2_LEAD = {
-    "general-v1": "Following up on my note about mental health support for the {{company}} team.",
-    "eap-v1": "Following up on my note about Spill and the benefits your team already has.",
-}
-_STEP2_ARGUMENT = {
-    "general-v1": (
-        "Your team books a registered counselor in a couple of clicks, often for the same day, without leaving "
-        "Slack or Teams. {{price_line}}"
-    ),
-    "eap-v1": (
-        "Spill works alongside the benefits you already offer: your team books a registered counselor in Slack "
-        "or Teams, often for the same day. {{price_line}}"
-    ),
-}
+# -- Copy (drafts for Harry to approve; SPEC 10; Harry, 30 Sep 2026) --------------------------
+# data/copy.csv: one four-email sequence per industry and a General one, drafted by Claude from
+# templates/copy/style.md, facts.md and each industry's page, then checked by a second model
+# (docs/pipeline.md, "Copy"). Every row loads as draft: only Harry approves copy (SPEC 5, 10).
+# The footer, opt-out and (email 1) Article 14 notice are added at render time, never stored here.
 
 
-def _body(*paragraphs: str) -> str:
-    return "\n\n".join(paragraphs)
-
-
-def _copy_rows(version: str, angle: str) -> list[dict[str, str]]:
-    bodies = {
-        1: _body("Hi {{first_name}},", "{{opener}}", "{{legal_overlay}}", _STEP1_ARGUMENT[version], "{{ask}}"),
-        2: _body(
-            "Hi {{first_name}},",
-            _STEP2_LEAD[version],
-            "{{proof}}",
-            _STEP2_ARGUMENT[version],
-            "If you'd like to see how it works, {{demo_line}}",
-        ),
-        3: _body("Hi {{first_name}},", "Is mental health support for your team in {{place}} on your list right now?"),
-        4: _body(
-            "Hi {{first_name}},",
-            "I haven't heard back, so I'll leave it here. If the timing is wrong, no problem at all.",
-            "If it would help to have something to share with the team later, reply \"one-pager\" and I'll send "
-            "over our one-page summary of Spill.",
-        ),
-    }
-    return [
-        {
-            "copy_version": version,
-            "angle": angle,
-            "step": str(step),
-            "subject": _SUBJECTS[step],
-            "body": bodies[step],
-            "status": "draft",
-            "approved_by": "",
-            "sources": "",
-        }
-        for step in (1, 2, 3, 4)
-    ]
+def _copy() -> list[dict[str, str]]:
+    rows = _csv_rows(COPY_FILE, "Copy")
+    for r in rows:
+        r["status"], r["approved_by"] = "draft", ""
+    return rows
 
 
 # -- Mailboxes (SPEC 5) --------------------------------------------------------------
@@ -518,7 +403,7 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
             for s in US_STATES
         ],
         "Roles": _rows("Roles", _ROLES),
-        "Copy": _copy_rows("general-v1", "General") + _copy_rows("eap-v1", "Upgrade the EAP"),
+        "Copy": _copy(),
         "Mailboxes": [
             {
                 "address": address, "instantly_account_id": "", "domain": domain, "provider": "",
