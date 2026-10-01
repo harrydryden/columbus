@@ -14,7 +14,9 @@ command merges them into the sheet without losing Harry's own edits:
     decided. Note-only rows stay where they are.
   * Copy: a tab still in the one-row-per-step layout is replaced (its rows stay in the
     database's settings history). A tab already in the new layout keeps every row as it
-    is on the sheet; only copy versions it does not have are added, at the end.
+    is on the sheet; only copy versions it does not have are added, at the end. With
+    --replace-drafts (Harry, 1 Oct 2026: the copy by industry AND role replaces the copy by
+    industry), rows Harry has not approved are replaced by the build's; approved rows stay.
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -103,7 +105,7 @@ def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[M
 
 
 def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]],
-             sets: Mapping[str, str] | None = None) -> Plan:
+             sets: Mapping[str, str] | None = None, *, replace_drafts: bool = False) -> Plan:
     if tab == "General":
         return plan_general(sheet_rows, build_rows, sets)
     cols = COLUMNS[tab]
@@ -116,6 +118,18 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
         p.replaced_layout = True
         p.rows = [{c: str(r.get(c, "")) for c in cols} for r in build_rows]
         p.added = [str(r[KEY[tab]]) for r in build_rows]
+        return p
+    if tab == "Copy" and replace_drafts:
+        kept = [r for r in sheet_rows if _key(r, tab) and str(r.get("status", "")).strip().casefold() == "approved"]
+        p.rows = [{c: str(r.get(c, "")) for c in cols} for r in kept]
+        p.kept_from_sheet = [str(r.get(KEY[tab], "")) for r in kept]
+        p.updated = [f"{r.get(KEY[tab], '')} removed (not approved)" for r in sheet_rows
+                     if _key(r, tab) and r not in kept]
+        have = {_key(r, tab) for r in kept}
+        for k, r in build.items():
+            if k not in have:
+                p.rows.append({c: str(r.get(c, "")) for c in cols})
+                p.added.append(str(r[KEY[tab]]))
         return p
     if tab == "Copy":
         p.rows = [{c: str(r.get(c, "")) for c in cols} for r in sheet_rows]
@@ -148,7 +162,8 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
     return p
 
 
-def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = None) -> dict:
+def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = None, *,
+         replace_drafts: bool = False) -> dict:
     """Plan (and, live, write) each tab; refuses if the result would not validate."""
     bad = [t for t in tabs if t not in LOADABLE]
     if bad:
@@ -162,7 +177,7 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
     build = default_tabs()
     if sets and "General" not in tabs:
         raise ValueError("--set changes the General tab; load it too (--tab General)")
-    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets) for t in tabs}
+    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets, replace_drafts=replace_drafts) for t in tabs}
     merged = {**sheet, **{t: p.rows for t, p in plans.items()}}
     _, errors = validate_all(merged)
     problems = [str(e) for t in (*tabs, "Tests", "Focus") for e in errors.get(t, [])]

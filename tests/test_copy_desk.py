@@ -298,3 +298,15 @@ def test_load_all_three_tabs_validates_and_writes_live():
     settings, errors = validate_all(sheet)
     assert not any(errors.values()) and settings.general.weekly_enrol_cap == 150
     assert settings.general.clay_monthly_credits == 2000 and settings.general.price_from == 195
+
+
+def test_copy_load_replace_drafts_keeps_approved_rows_and_replaces_the_rest():
+    build = default_tabs()["Copy"]
+    approved = {**build[0], "copy_version": "harrys-own-v1", "status": "approved", "approved_by": "Harry"}
+    draft = {**build[0], "copy_version": "old-draft-v1", "status": "draft"}
+    plan = loader.plan_tab("Copy", [approved, draft], build, replace_drafts=True)
+    versions = [r["copy_version"] for r in plan.rows]
+    assert versions[0] == "harrys-own-v1" and "old-draft-v1" not in versions
+    assert len(plan.rows) == len(build) + 1 and "old-draft-v1 removed (not approved)" in plan.updated
+    kept = loader.plan_tab("Copy", [approved, draft], build)  # without the flag nothing on the sheet goes
+    assert {"harrys-own-v1", "old-draft-v1"} <= {r["copy_version"] for r in kept.rows}

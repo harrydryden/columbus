@@ -563,7 +563,7 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
                 raise Refused(f"--set takes key=value, not {item!r}")
             sets[key.strip()] = value.strip()
         try:
-            summary = run_job(ctx, lambda c: load(c, tabs, sets))
+            summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts))
         except ValueError as exc:
             raise Refused(str(exc)) from exc
         for t in summary["tabs"]:
@@ -819,6 +819,8 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy"],
                     help="load: the tab (default all three)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
+    st.add_argument("--replace-drafts", action="store_true",
+                    help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
     st.set_defaults(fn=cmd_settings)
 
     co = sub.add_parser("copy", parents=[live], help="check, preview, QA (task model) or draft (writing model) copy")
