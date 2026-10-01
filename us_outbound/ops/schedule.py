@@ -47,7 +47,9 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # On for the pilot from Mon 5 Oct 2026, ahead of enrol at 12:00. It writes only to the database
     # (its Apollo calls are reads), so it never needs --live; reveals spend credits within the budget.
     ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=2),
-    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=False, timeout_minutes=30, phase=2),
+    # Enabled for the 5 Oct go-live (Harry, 1 Oct 2026). It runs dry, writing only the database, until
+    # live_sending = yes on the General tab: that flag stays Harry's sign-off (SPEC 0.3, 14).
+    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=True, timeout_minutes=30, phase=2),
     ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("poll_approvals", "*/5 * * * *", live=True, enabled=True, timeout_minutes=4, phase=2),
     ScheduledJob("hubspot_readback", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),

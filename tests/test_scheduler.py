@@ -495,7 +495,7 @@ def test_the_table_matches_the_job_registry_and_spec9():
     for j in SCHEDULE:
         if j.cron:
             sch.Cron.parse(j.cron)
-        assert j.enabled is not (cli.JOBS[j.name].startswith("not built") or j.name == "enrol"), j.name
+        assert j.enabled is not cli.JOBS[j.name].startswith("not built"), j.name
         assert 1 <= j.timeout_minutes <= hb.OVERLAP_MINUTES, j.name
     assert table["poll_approvals"].timeout_minutes < 5  # done before it is due again
 
@@ -503,7 +503,7 @@ def test_the_table_matches_the_job_registry_and_spec9():
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "verify_accounts", "pick_contacts",
-                       "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes", "mailbox_health",
+                       "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes", "mailbox_health",
                        "kill_rules", "daily_post", "heartbeat_check", "suppression_load", "lookalikes",
                        "hand_check_post"]
     assert set(enabled) <= set(hb.EXPECTED)
@@ -521,4 +521,4 @@ def test_next_run_and_the_listing():
     lines = {line.split()[0]: line for line in sch.describe(now=utc(2026, 9, 30, 12, 0))}
     assert lines["settings_sync"].endswith("Thu 01 Oct 02:00 BST")
     assert lines["heartbeat_check"].endswith("Wed 30 Sep 13:05 BST")
-    assert lines["enrol"].endswith("disabled until phase 2") and lines["score"].endswith("on demand only")
+    assert lines["monday_readout"].endswith("disabled until phase 3") and lines["score"].endswith("on demand only")

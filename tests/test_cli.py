@@ -140,7 +140,7 @@ def test_schedule_lists_every_job_with_its_next_run(capsys):
     lines = {line.split()[0]: line for line in out.splitlines() if line.split() and line.split()[0] in cli.JOBS}
     assert set(lines) == set(cli.JOBS)
     assert "0 2 * * *" in lines["settings_sync"] and "--live" in lines["settings_sync"]
-    assert "disabled until phase 2" in lines["enrol"] and "on demand only" in lines["score"]
+    assert "disabled until phase 3" in lines["monday_readout"] and "on demand only" in lines["score"]
     assert re.search(r"(BST|GMT)$", lines["heartbeat_check"])
     assert "live_sending = yes" in out
     assert cli.main(["scheduler", "--list"]) == 0

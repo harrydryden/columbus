@@ -79,11 +79,10 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     assert got["Queue"] == "FAIL  Queue: no verified account has a sendable contact"
     assert got["Hand-check"].startswith(f"FAIL  Hand-check: this week's hand-check ({WEEK}) has not been posted")
     assert got["Enrollment"].startswith("PASS")
-    assert got["Jobs"].startswith("FAIL  Jobs:") and "enrol: built, but not enabled in ops/schedule.py" in out
-    assert "sync_outcomes" not in got["Jobs"] and "not built yet" not in got["Jobs"]  # every reply job is built
+    assert got["Jobs"].startswith("PASS")  # every job a live send needs is built and scheduled
     assert got["clay_verification"].startswith("WARN  clay_verification: 'skip'")  # the pilot (Harry, 1 Oct 2026)
     assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of {{unsubscribe}} not done")
-    assert out.splitlines()[-1].startswith("NO-GO: 9 FAIL, 1 WARN, 4 PASS.")
+    assert out.splitlines()[-1].startswith("NO-GO: 8 FAIL, 1 WARN, 5 PASS.")
     # Read-only: no write was attempted anywhere.
     assert f.ctx.guard.writes() == [] and f.ctx.store.select("heartbeats") == []
 

@@ -231,7 +231,7 @@ def test_default_jobs_are_the_built_scheduled_ones():
     jobs = hb.scheduled_jobs()
     assert {"settings_sync", "poll_replies", "sync_outcomes", "poll_approvals", "hubspot_readback",
             "mailbox_health", "heartbeat_check", "suppression_load"} <= set(jobs)
-    assert "score" not in jobs and "enrol" not in jobs  # enrol waits for Harry's sign-off
+    assert "score" not in jobs and "enrol" in jobs  # enrol runs dry until live_sending = yes
 
 
 def test_latest_runs_uses_the_view_when_the_store_has_one():
