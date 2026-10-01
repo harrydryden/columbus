@@ -310,9 +310,9 @@ TRIAL_STEP = 4
 # Harry, 1 Oct 2026: email 1 informs and plants a seed. It asks only for a visit to the site,
 # never for a demo, a call or a meeting (the signature's own booking line is not the copy).
 _STEP1_ASK = _rx(
-    r"\b(?:demo|demos|book(?:ing)?|calls?|meetings?|calendar|schedule|hop on|jump on|walkthrough"
+    r"\b(?:demo|demos|book(?:ing)?|(?<!on-)calls?(?!-)|meetings?|calendar|schedule|hop on|jump on|walkthrough"
     r"|(?:15|20|30)[- ]minutes?)\b"
-)
+)  # "on-call" and "call-outs" are industry words, not an ask
 POOR_ANCHORS = frozenset({"here", "click here", "this link", "link", "this", "click"})
 _DOLLARS = re.compile(r"\$\s?\d|\b\d[\d,]*\s?(?:dollars|USD)\b", _I)
 _EMOJI = re.compile("[\u2600-\u27bf\U0001f000-\U0001faff]")
