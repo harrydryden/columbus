@@ -1,0 +1,219 @@
+"""sync_outcomes: Instantly's sends, replies, bounces and unsubscribes into events, idempotently (SPEC 6, 11, 13)."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+
+import pytest
+
+from tests.fakes_replies import BOB, HANNAH, HARRY, JANE, NOW, make_world
+from us_outbound.clients.instantly import LEAD_BOUNCED, LEAD_UNSUBSCRIBED
+from us_outbound.enrol.capacity import STOP_EVENTS, stopped_contacts
+from us_outbound.replies import outcomes
+
+
+@pytest.fixture
+def world(default_settings):
+    w = make_world(default_settings)
+    w.ctx.job = "sync_outcomes"
+    return w
+
+
+def run(world):
+    return outcomes.run(world.ctx)
+
+
+def test_the_event_names_are_the_ones_capacity_reads():
+    assert set(STOP_EVENTS) == {outcomes.REPLIED, outcomes.BOUNCED, outcomes.UNSUBSCRIBED}
+    assert outcomes.SENT == "sent"
+
+
+# -- sent ----------------------------------------------------------------------------------------------
+
+
+def test_sends_become_events_numbered_by_step_with_their_mailbox(world):
+    world.sent("S2", at=NOW - timedelta(days=3))
+    world.sent("S1", at=NOW - timedelta(days=10))
+    world.sent("S9", BOB, frm="harry@tryspill.org", campaign="cmp-harry", at=NOW - timedelta(days=8))
+    out = run(world)
+    sent = {e["event_id"]: e for e in world.events("sent")}
+    assert (sent["S1"]["step"], sent["S2"]["step"], sent["S9"]["step"]) == (1, 2, 1)
+    assert sent["S1"]["mailbox"] == HANNAH and sent["S9"]["mailbox"] == "harry@tryspill.org"
+    assert sent["S1"]["contact_id"] == "k-jane" and sent["S1"]["account_id"] == "acc-acme"
+    jane = world.ctx.store.get("contacts", contact_id="k-jane")
+    bob = world.ctx.store.get("contacts", contact_id="k-bob")
+    assert jane["last_step_at"] == NOW - timedelta(days=3)
+    assert bob["mailbox"] == "harry@tryspill.org"  # step 1's address, which enrol could not know for Harry
+    assert jane["mailbox"] == HANNAH
+    assert out["sent"] == 3
+
+
+def test_a_late_listed_send_renumbers_the_steps(world):
+    world.sent("S2", at=NOW - timedelta(days=3))
+    run(world)
+    assert world.ctx.store.get("events", event_id="S2")["step"] == 1
+    world.sent("S1", at=NOW - timedelta(days=10))
+    run(world)
+    assert world.ctx.store.get("events", event_id="S1")["step"] == 1
+    assert world.ctx.store.get("events", event_id="S2")["step"] == 2
+
+
+def test_sends_outside_our_campaigns_or_contacts_are_dropped(world):
+    world.sent("S1", campaign="cmp-eu")
+    world.sent("S2", "someone@else.com")
+    world.sent("S3", ue_type=3)  # a reply sent by hand is not a step
+    out = run(world)
+    assert world.events("sent") == []
+    assert out["dropped"] == {"sent: another campaign": 1, "sent: no contact of ours": 1, "sent: not a campaign step": 1}
+
+
+# -- replied -------------------------------------------------------------------------------------------
+
+
+def test_a_reply_is_recorded_unclassified_and_engages_the_account(world):
+    world.sent("S1", at=NOW - timedelta(days=10))
+    world.sent("S2", at=NOW - timedelta(days=3))
+    world.reply("E1")
+    out = run(world)
+    [ev] = world.events("replied")
+    assert ev["event_id"] == "E1" and ev.get("reply_class") is None and ev["step"] == 2 and ev["mailbox"] == HANNAH
+    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "engaged"
+    assert out["replied"] == 1
+    assert "k-jane" in stopped_contacts(world.ctx.store)
+
+
+def test_an_auto_reply_is_left_to_poll_replies(world):
+    world.reply("E1", text="I am out of the office.", is_auto_reply=1)
+    out = run(world)
+    assert world.events("replied") == [] and out["auto_replies_left_to_poll_replies"] == 1
+    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "enrolled"
+
+
+def test_engaged_never_moves_a_later_status_back(world):
+    world.ctx.store.update("accounts", {"account_id": "acc-acme"}, {"status": "demo_booked"})
+    world.reply("E1")
+    run(world)
+    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "demo_booked"
+
+
+# -- bounced and unsubscribed leads ---------------------------------------------------------------------
+
+
+def test_a_bounced_lead_is_recorded_and_suppressed(world):
+    world.sent("S1", at=NOW - timedelta(days=1))
+    world.lead("L-jane", JANE, LEAD_BOUNCED)
+    out = run(world)
+    [ev] = world.events("bounced")
+    assert ev["event_id"] == "bounced:L-jane" and ev["step"] == 1 and ev["mailbox"] == HANNAH
+    assert ev["occurred_at"] == NOW - timedelta(days=1)  # at its send, so v_mailbox_health counts it
+    assert world.suppressed(JANE)[0]["reason"] == "bounce"
+    assert world.ctx.store.get("contacts", contact_id="k-jane")["suppressed_reason"] == "bounce"
+    assert out["bounced"] == 1
+    run(world)
+    assert len(world.events("bounced")) == 1
+
+
+def test_an_instantly_unsubscribe_is_recorded_everywhere_when_live(world):
+    world.hubspot_contacts[JANE] = {"hs_email_optout": "false"}
+    world.lead("L-jane", JANE, LEAD_UNSUBSCRIBED)
+    out = run(world)
+    assert out["unsubscribed"] == {"done": 1}
+    assert world.suppressed(JANE)[0]["reason"] == "unsubscribe"
+    assert world.blocked == [[JANE]] and world.hubspot_unsubscribed == ["jane.doe%40acmecreative.com"]
+    [ev] = world.events("unsubscribed")
+    assert ev["event_id"] == "unsubscribed:lead:L-jane" and ev["contact_id"] == "k-jane"
+    assert "k-jane" in stopped_contacts(world.ctx.store)
+    writes = len(world.instantly_writes()) + len(world.hubspot_writes())
+    world.at(NOW + timedelta(minutes=15))
+    assert run(world)["unsubscribed"] == {"done": 1}
+    assert len(world.instantly_writes()) + len(world.hubspot_writes()) == writes  # nothing again
+
+
+def test_an_unsubscribe_already_opted_out_in_hubspot_is_left_alone(world):
+    world.hubspot_contacts[JANE] = {"hs_email_optout": "true"}
+    world.lead("L-jane", JANE, LEAD_UNSUBSCRIBED)
+    run(world)
+    assert world.hubspot_unsubscribed == [] and len(world.events("unsubscribed")) == 1
+
+
+def test_an_unsubscribe_in_dry_run_suppresses_now_and_syncs_on_the_first_live_run(default_settings):
+    world = make_world(default_settings, live=False)
+    world.lead("L-jane", JANE, LEAD_UNSUBSCRIBED)
+    out = outcomes.run(world.ctx)
+    assert out["unsubscribed"] == {"dry_run": 1}
+    assert world.suppressed(JANE)  # this system will never email them again, from now
+    assert world.instantly_writes() == [] and world.hubspot_writes() == [] and world.events("unsubscribed") == []
+    world.at(NOW + timedelta(minutes=15), live=True)
+    assert outcomes.run(world.ctx)["unsubscribed"] == {"done": 1}
+    assert world.blocked == [[JANE]] and len(world.events("unsubscribed")) == 1
+
+
+def test_an_unsubscribe_whose_blocklist_call_fails_stays_pending(world):
+    world.fail_blocklist(503)
+    world.lead("L-jane", JANE, LEAD_UNSUBSCRIBED)
+    assert run(world)["unsubscribed"] == {"pending": 1}
+    assert world.events("unsubscribed") == [] and world.suppressed(JANE)
+    world.transport.routes.pop()
+    assert run(world)["unsubscribed"] == {"done": 1}
+
+
+def test_leads_of_other_people_are_dropped(world):
+    world.lead("L-x", "nobody@else.com", LEAD_UNSUBSCRIBED)
+    out = run(world)
+    assert world.blocked == [] and out["dropped"] == {"lead: no contact of ours": 1}
+
+
+# -- idempotency, the read window, the guard ------------------------------------------------------------------
+
+
+def test_a_second_run_adds_nothing(world):
+    world.sent("S1", at=NOW - timedelta(days=10))
+    world.reply("E1")
+    world.lead("L-bob", BOB, LEAD_BOUNCED, campaign="cmp-harry")
+    run(world)
+    before = [dict(e) for e in world.events()]
+    out = run(world)
+    assert world.events() == before
+    assert (out["sent"], out["replied"], out["bounced"]) == (0, 0, 0)
+
+
+def test_it_reads_from_the_last_good_run_and_at_least_two_days_back(world):
+    d = outcomes.Directory(world.ctx)
+    assert outcomes.since(world.ctx, "sync_outcomes", earliest=d.earliest_enrolled()) == NOW - timedelta(days=10, hours=1)
+    world.ctx.store.insert("heartbeats", [
+        {"run_id": "r1", "job": "sync_outcomes", "status": "ok", "started_at": NOW - timedelta(minutes=15), "dry_run": True},
+        {"run_id": "r2", "job": "poll_replies", "status": "ok", "started_at": NOW - timedelta(minutes=15), "dry_run": True},
+    ])
+    assert outcomes.since(world.ctx, "sync_outcomes") == NOW - outcomes.RECHECK
+    # poll_replies counts only live runs: a dry run classified nothing.
+    assert outcomes.since(world.ctx, "poll_replies", live_only=True, earliest=d.earliest_enrolled()) == \
+        NOW - timedelta(days=10, hours=1)
+    world.ctx.store.insert("heartbeats", [
+        {"run_id": "r3", "job": "sync_outcomes", "status": "ok", "started_at": NOW - timedelta(days=90), "dry_run": False}])
+    world.ctx.store.delete("heartbeats", {"run_id": "r1"})
+    assert outcomes.since(world.ctx, "sync_outcomes") == NOW - outcomes.MAX_LOOKBACK
+
+
+def test_every_instantly_read_is_filtered_by_registry_mailbox_or_us_campaign(world):
+    world.sent("S1")
+    world.reply("E1")
+    world.lead("L-jane", JANE, LEAD_BOUNCED)
+    run(world)
+    reads = [c for c in world.ctx.guard.calls if c.system == "instantly" and not c.write]
+    assert {c.action for c in reads} == {"campaign.list", "email.list", "lead.list"}
+    assert all(c.target.startswith("US Outbound – ") for c in reads if c.action == "lead.list")
+    email_reads = [r for r in world.transport.requests if r.url.endswith("/api/v2/emails")]
+    assert {r.params["eaccount"] for r in email_reads} == {HANNAH, HARRY, "sam@meetspill.org", "harry@tryspill.org"}
+    assert {r.params["email_type"] for r in email_reads} == {"sent", "received"}
+    lead_lists = [r for r in world.transport.requests if r.url.endswith("/leads/list")]
+    assert {r.json["campaign"] for r in lead_lists} == {"cmp-hannah", "cmp-harry", "cmp-sam"}  # never the EU one
+
+
+def test_dry_run_writes_the_database_and_nothing_else(default_settings):
+    world = make_world(default_settings, live=False)
+    world.sent("S1")
+    world.reply("E1")
+    world.lead("L-bob", BOB, LEAD_BOUNCED, campaign="cmp-harry")
+    outcomes.run(world.ctx)
+    assert {e["type"] for e in world.events()} == {"sent", "replied", "bounced"}
+    assert world.instantly_writes() == [] and world.hubspot_writes() == []

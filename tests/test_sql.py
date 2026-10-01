@@ -99,7 +99,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
     ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
-    ("hitl_items", "kind"): {"reply_approval", "hand_check", "manual_merge", "kill_rule"},
+    ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule"},
     ("hitl_items", "status"): {"open", "handled", "escalated"},
 }
 

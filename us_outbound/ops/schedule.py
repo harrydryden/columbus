@@ -42,10 +42,12 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
     ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=2),
     ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=False, timeout_minutes=30, phase=2),
-    ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=False, timeout_minutes=10, phase=2),
+    ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("poll_approvals", "*/5 * * * *", live=True, enabled=False, timeout_minutes=4, phase=2),
     ScheduledJob("hubspot_readback", "*/15 * * * *", live=True, enabled=False, timeout_minutes=10, phase=2),
-    ScheduledJob("sync_outcomes", "0 1 * * *", live=True, enabled=False, timeout_minutes=30, phase=2),
+    # Every 15 minutes, not SPEC 9's 01:00: the kill rules and the send forecast need today's sends and
+    # stops, and opt-outs are honored the same day (SPEC 13). Offset from poll_replies by 7 minutes.
+    ScheduledJob("sync_outcomes", "7-59/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
     ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
     ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=False, timeout_minutes=10, phase=3),

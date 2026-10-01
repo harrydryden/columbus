@@ -195,7 +195,7 @@ def test_spring_forward_runs_a_skipped_fixed_time_once_at_0200():
     """29 Mar 2026: 01:00 GMT becomes 02:00 BST, so 01:00-01:59 UK never happens."""
     start, end = utc(2026, 3, 28, 0, 0), utc(2026, 3, 31, 0, 0)
     assert uk_times(runs("30 1 * * *", start, end)) == ["28 01:30 GMT", "29 02:00 BST", "30 01:30 BST"]  # suppression_load
-    assert uk_times(runs("0 1 * * *", start, end)) == ["28 01:00 GMT", "29 02:00 BST", "30 01:00 BST"]  # sync_outcomes
+    assert uk_times(runs("0 1 * * *", start, end)) == ["28 01:00 GMT", "29 02:00 BST", "30 01:00 BST"]  # a 01:00 daily job
     assert uk_times(runs("0 2 * * *", start, end)) == ["28 02:00 GMT", "29 02:00 BST", "30 02:00 BST"]  # settings_sync
     assert runs("0 2 * * *", start, end)[1] == utc(2026, 3, 29, 1, 0)
     assert uk_times(runs("0 7 * * *", start, end)) == ["28 07:00 GMT", "29 07:00 BST", "30 07:00 BST"]
@@ -473,7 +473,7 @@ SPEC9_CRONS = {
     "settings_sync": "0 2 * * *", "source_universe": "0 3 1 * *", "apollo_signals": "30 3 * * 1",
     "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
-    "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "0 1 * * *",
+    "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
     "monday_readout": "0 9 * * 1",
     # Build additions.
@@ -499,7 +499,8 @@ def test_the_table_matches_the_job_registry_and_spec9():
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
-    assert enabled == ["settings_sync", "mailbox_health", "heartbeat_check", "suppression_load"]
+    assert enabled == ["settings_sync", "poll_replies", "sync_outcomes", "mailbox_health", "heartbeat_check",
+                       "suppression_load"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]

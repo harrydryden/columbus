@@ -226,8 +226,9 @@ def test_never_run_jobs_are_not_flagged():
 
 def test_default_jobs_are_the_built_scheduled_ones():
     jobs = hb.scheduled_jobs()
-    assert {"settings_sync", "mailbox_health", "heartbeat_check", "suppression_load"} <= set(jobs)
-    assert "poll_replies" not in jobs and "score" not in jobs
+    assert {"settings_sync", "poll_replies", "sync_outcomes", "mailbox_health", "heartbeat_check",
+            "suppression_load"} <= set(jobs)
+    assert "poll_approvals" not in jobs and "score" not in jobs
 
 
 def test_latest_runs_uses_the_view_when_the_store_has_one():
