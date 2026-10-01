@@ -70,11 +70,13 @@ from us_outbound.ops.heartbeat import (
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
     "settings_sync": "us_outbound.settings.sync:run",
-    "source_universe": "not built yet (phase 1)",
-    "apollo_signals": "not built yet (phase 1)",
+    "source_universe": "us_outbound.sources.apollo_universe:run",
+    "apollo_signals": "us_outbound.sources.apollo_jobs:run",
     "site_visits": "not built yet (phase 1)",
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
+    # Build addition: verified on Apollo data and HubSpot while clay_verification = skip (Harry, 1 Oct 2026).
+    "verify_accounts": "us_outbound.verify:run",
     "score": "us_outbound.scoring.score:rescore",
     "pick_contacts": "not built yet (phase 2)",
     "enrol": "us_outbound.enrol.enrol:run",

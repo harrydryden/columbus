@@ -126,6 +126,13 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("clay_accounts_function_id", "", "Clay function \"US Outbound – Accounts\", once built in phase 0."),
     ("clay_contacts_function_id", "", "Clay function \"US Outbound – Contacts\", once built in phase 0."),
     ("clay_credits_per_account", "0", "Estimate until measured on the first 100 accounts (SPEC 8)."),
+    (
+        "clay_verification",
+        "skip",
+        "required: every account passes through Clay before it can be emailed (SPEC 2, verify_in_clay). "
+        "skip: verify_accounts verifies an account on its Apollo data and HubSpot instead. "
+        "Harry, 1 Oct 2026: go live on 5 Oct before the Clay functions exist; set to required once they do.",
+    ),
     ("apollo_credits_per_account", "1", "Estimate until measured."),
     ("claude_model", "claude-opus-5-5",
      "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),

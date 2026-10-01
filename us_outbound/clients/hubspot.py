@@ -153,6 +153,25 @@ class HubSpot(HttpClient):
         groups = [{"filters": [{"propertyName": "email", "operator": "EQ", "value": email.strip().lower()}]}]
         return [{"id": r["id"], "properties": r.get("properties", {})} for r in self._search("contacts", groups, CONTACT_PROPS)]
 
+    def opted_out_contacts_at_domain(self, domain: str, limit: int = 1) -> list[dict]:
+        """Up to `limit` contacts on this email domain who opted out of all email or hard-bounced.
+
+        One search page: the caller only needs to know whether there is one (SPEC 9 hard exclusions).
+        PHASE0-CONFIRM: hs_email_domain, HubSpot's "Email domain" contact property, is searchable with EQ.
+        """
+        root = domain.strip().lower().removeprefix("www.")
+        on_domain = {"propertyName": "hs_email_domain", "operator": "EQ", "value": root}
+        groups = [
+            {"filters": [on_domain, {"propertyName": "hs_email_optout", "operator": "EQ", "value": "true"}]},
+            {"filters": [on_domain, {"propertyName": "hs_email_hard_bounce_reason_enum", "operator": "HAS_PROPERTY"}]},
+        ]
+        out: list[dict] = []
+        for r in self._search("contacts", groups, CONTACT_PROPS, limit=limit):
+            out.append({"id": r["id"], "properties": r.get("properties", {})})
+            if len(out) >= limit:
+                break
+        return out
+
     def find_pipeline(self, label: str, object_type: str = "deals") -> tuple[str, str] | None:
         """(pipeline id, id of its first stage by displayOrder) for the pipeline with this label."""
         body = self.request("GET", f"/crm/v3/pipelines/{object_type}", Op("pipeline.list", target=object_type)) or {}

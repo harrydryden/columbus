@@ -470,14 +470,15 @@ def test_the_live_gate_is_unchanged(monkeypatch, live_sending):
 
 
 SPEC9_CRONS = {
-    "settings_sync": "0 2 * * *", "source_universe": "0 3 1 * *", "apollo_signals": "30 3 * * 1",
+    # Build, 1 Oct 2026: source_universe and apollo_signals each weekday (SPEC 9: the 1st, and Mondays).
+    "settings_sync": "0 2 * * *", "source_universe": "0 3 * * 1-5", "apollo_signals": "30 3 * * 1-5",
     "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
     "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "0 1 * * *",
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
     "monday_readout": "0 9 * * 1",
     # Build additions.
-    "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *",
+    "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
@@ -499,7 +500,8 @@ def test_the_table_matches_the_job_registry_and_spec9():
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
-    assert enabled == ["settings_sync", "mailbox_health", "heartbeat_check", "suppression_load"]
+    assert enabled == ["settings_sync", "source_universe", "apollo_signals", "verify_accounts", "mailbox_health",
+                       "heartbeat_check", "suppression_load"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]

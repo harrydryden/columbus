@@ -40,14 +40,16 @@ TEXT_SOURCES = frozenset({"clay_careers", "job_posts"})
 # Field facts each source writes to signal_events (fact = field name, value = scalar).
 # A condition on a signal may only use fields its sources provide; validation checks this.
 SOURCE_FIELDS: dict[str, frozenset[str]] = {
+    # technologies, keywords and apollo_industry: lists and text from Apollo's organization record
+    # (sources/apollo_universe.py); scoring/tiers.py reads keywords and apollo_industry for partners.
     "apollo_org": frozenset(
         {"employees", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
-         "funding_stage", "funding_amount_usd", "founded_year"}
+         "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry"}
     ),
     "apollo_people": frozenset(
         {"people_leader_count", "people_leader_days_in_title", "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
     ),
-    "apollo_jobs": frozenset({"open_people_roles", "open_roles"}),
+    "apollo_jobs": frozenset({"open_people_roles", "open_roles", "posting_titles"}),  # sources/apollo_jobs.py
     "site_visits": frozenset({"us_visits_30d", "pricing_or_demo_visits_30d", "top_paths", "days_since_first_visit"}),
     "clay_careers": frozenset({"values_page", "read_status"}),
     "clay_funding": frozenset({"days_since_funding", "funding_stage", "funding_amount_usd"}),
@@ -76,6 +78,10 @@ ROLE_LINE_COLUMNS = {"People leader": "people_leader_line", "Founder or executiv
 QA_VERDICTS = ("pass", "fail")
 TEST_STATUSES = ("planned", "running", "read", "stopped")
 SIZE_BANDS = ("10-19", "20-49", "50-99", "100-249")
+# General clay_verification (Harry, 1 Oct 2026): required is SPEC 2 (every account through Clay before it
+# can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
+CLAY_REQUIRED, CLAY_SKIP = "required", "skip"
+CLAY_VERIFICATION_MODES = (CLAY_REQUIRED, CLAY_SKIP)
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,7 @@ class General:
     clay_accounts_function_id: str = ""  # (build) "US Outbound – Accounts"
     clay_contacts_function_id: str = ""  # (build) "US Outbound – Contacts"
     clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
+    clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification

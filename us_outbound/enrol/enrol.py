@@ -373,9 +373,9 @@ def account_opener(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str]:
 # -- HubSpot re-check (SPEC 9 enrol "re-checks HubSpot"; hard exclusions) ---------------------------
 
 
-def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any]) -> tuple[str, str] | None:
-    """(fact, reason) when HubSpot now excludes the account: a customer, another owner, an open deal,
-    or the contact opted out there. None when it is clear."""
+def hubspot_company_block(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str] | None:
+    """(fact, reason) when HubSpot excludes the company: a customer, another owner or an open deal.
+    None when it is clear. verify_accounts makes the same check before an account is verified."""
     hs = ctx.clients.hubspot
     harry = ctx.settings.general.hubspot_owner_id.strip()
     for co in hs.search_companies_by_domain(str(account.get("domain") or "")):
@@ -387,6 +387,17 @@ def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str
             return HS_OTHER_OWNER, "owned by someone else in HubSpot"
         if hs.open_deals_for_company(str(co["id"])):
             return HS_OPEN_DEAL, "an open deal in HubSpot"
+    return None
+
+
+def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any]) -> tuple[str, str] | None:
+    """(fact, reason) when HubSpot now excludes the account: a customer, another owner, an open deal,
+    or the contact opted out there. None when it is clear."""
+    block = hubspot_company_block(ctx, account)
+    if block:
+        return block
+    hs = ctx.clients.hubspot
+    harry = ctx.settings.general.hubspot_owner_id.strip()
     for hc in hs.search_contacts_by_email(str(contact.get("email") or "")):
         p = hc.get("properties") or {}
         if _lower(p.get("hs_email_optout")) == "true":

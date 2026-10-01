@@ -11,7 +11,8 @@ command merges them into the sheet without losing Harry's own edits:
     renamed and given the build's value, since its unit changed; retired keys (postal_address,
     privacy_url) are removed; keys the sheet does not have
     yet are added with the build's value and note; `--set key=value` sets the values Harry has
-    decided. Note-only rows stay where they are.
+    decided. Note-only rows stay where they are. clay_verification (Harry, 1 Oct 2026) arrives
+    this way as skip; `--set clay_verification=required` once the Clay functions exist.
   * Copy: a tab still in the one-row-per-step layout is replaced (its rows stay in the
     database's settings history). A tab already in the new layout keeps every row as it
     is on the sheet; only copy versions it does not have are added, at the end. With
