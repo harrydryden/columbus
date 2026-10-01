@@ -11,6 +11,7 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from tests.test_render import (
     AGENCIES,
+    BODIES,
     COPY,
     DEMO,
     EAP_OPENER,
@@ -151,7 +152,7 @@ def test_live_posts_leads_only_to_us_outbound_campaigns_with_custom_variables():
             cv = lead["custom_variables"]
             assert set(cv) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
             assert "{{" not in "".join(cv.values())
-            assert "Reply STOP or use this link to opt out" in cv["s4_body"]
+            assert "This is a marketing email from Spill." in cv["s4_body"]  # the footer
     jane = next(lead for lead in by_campaign["c-harry"] if lead["email"] == "jane@acmecreative.com")
     assert jane["first_name"] == "Jane" and jane["company_name"] == "Acme Creative"
     assert EAP_OPENER in jane["custom_variables"]["s1_body"]
@@ -613,12 +614,13 @@ def test_hubspot_error_skips_the_account_without_excluding():
 
 
 def test_render_violation_skips_the_account_and_says_why():
-    ctx, t = make(live=True, settings=make_settings(live_sending=True, postal_address=""), accounts=[account()],
-                  contacts=[contact()])
+    bodies = {**BODIES, 1: BODIES[1].replace("{{opener}}", "{{opener}} {{nickname}}")}
+    bad = make_settings(live_sending=True, copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies), COPY[1]))
+    ctx, t = make(live=True, settings=bad, accounts=[account()], contacts=[contact()])
     out = enrol.run(ctx)
     assert out["prepared"] == 0 and out["skipped"]["copy blocked"] == 1
     [skip] = [s for s in out["skipped_accounts"] if s["reason"] == "copy blocked"]
-    assert any("agencies-v1: email 1: postal_address is blank" in d for d in skip["detail"])
+    assert any("agencies-v1: email 1:" in d and "{{nickname}}" in d for d in skip["detail"])
     assert instantly_posts(t) == []
 
 

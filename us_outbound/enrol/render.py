@@ -51,8 +51,6 @@ PRICE_LINE = "Plans start from ${dollars} a month for the whole team, on a rolli
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
 _FOOTER_MISSING = {
     "sender": "the mailbox has no owner_name for the footer",
-    "postal_address": "postal_address is blank on the General tab, so the footer has no postal address",
-    "privacy_url": "privacy_url is blank on the General tab, so the footer has no opt-out link",
     "company": "the Article 14 notice has no company name",
 }
 
@@ -208,14 +206,13 @@ def fill(template: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
 
 
 def footer(mailbox: Mailbox, settings: Settings) -> tuple[str, list[str]]:
-    """The footer every email ends with (SPEC 10, 13): sender and role, postal address, ad line, opt-out, privacy link."""
-    g = settings.general
+    """The footer every email ends with (SPEC 10): sender and role, and the ad line.
+
+    No postal address and no privacy link (Harry, 1 Oct 2026); the opt-out is Instantly's unsubscribe
+    link, added after this by the campaign's step template (clients/instantly.py).
+    """
     name, role = mailbox.owner_name.strip(), mailbox.owner_role.strip()
-    return fill(
-        load_template(FOOTER_TEMPLATE),
-        {"sender": f"{name}, {role}" if name and role else name, "postal_address": g.postal_address,
-         "privacy_url": g.privacy_url},
-    )
+    return fill(load_template(FOOTER_TEMPLATE), {"sender": f"{name}, {role}" if name and role else name})
 
 
 def article14(values: Mapping[str, str]) -> tuple[str, list[str]]:
@@ -260,9 +257,9 @@ def render_step(
     fixed.append(foot)
 
     text = "\n\n".join([body.text, *fixed])
-    html = body.html + "".join(copy_markup.plain_to_html(x, link_urls=[g.privacy_url]) for x in fixed)
+    html = body.html + "".join(copy_markup.plain_to_html(x) for x in fixed)
     exempt = (variables.get("first_name", ""), variables.get("company", ""), variables.get("place", ""),
-              g.postal_address, mailbox.owner_name)
+              mailbox.owner_name)
     problems += copy_rules.email_violations(
         subject, body.words, body.links,
         step=step, demo_url=variables.get("demo_url", ""), industry_url=variables.get("industry_url", ""),

@@ -283,22 +283,28 @@ def test_a_missing_blackout_dates_row_keeps_the_spec_blackouts(tabs):
     ]
 
 
-def test_live_sending_needs_address_privacy_and_approver(tabs):
+def test_live_sending_needs_an_approver(tabs):
     n, row = _row(tabs, "General", key="live_sending")
     row["value"] = "yes"
     e = _one(tabs, "General", "value")
-    assert e.row == n
-    assert "postal_address" in e.message and "privacy_url" in e.message and "approver_slack_ids" in e.message
-    _row(tabs, "General", key="postal_address")[1]["value"] = "Spill, 1 Example St, London"
-    _row(tabs, "General", key="privacy_url")[1]["value"] = "https://www.spill.chat/us/privacy"
+    assert e.row == n and "approver_slack_ids" in e.message
     _row(tabs, "General", key="approver_slack_ids")[1]["value"] = "U01HARRY"
     settings, _ = validate_all(tabs)
     assert settings.general.live_sending is True
 
 
 def test_blank_sending_values_are_allowed_in_dry_run(tabs):
-    settings, _ = validate_all(tabs)
-    assert settings.general.postal_address == "" and settings.general.privacy_url == ""
+    settings, errors = validate_all(tabs)
+    assert settings.general.approver_slack_ids == () and not errors["General"]
+
+
+def test_retired_general_keys_are_skipped_not_errors(tabs):
+    # Harry, 1 Oct 2026: no postal address and no privacy link. A sheet that still has the rows stays valid.
+    tabs["General"].append({"key": "postal_address", "value": "", "note": ""})
+    tabs["General"].append({"key": "privacy_url", "value": "https://www.spill.chat/us/privacy", "note": ""})
+    settings, errors = validate_all(tabs)
+    assert settings is not None and not errors["General"]
+    assert not hasattr(settings.general, "postal_address")
 
 
 def test_thresholds_in_order(tabs):

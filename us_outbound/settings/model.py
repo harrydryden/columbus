@@ -118,8 +118,6 @@ class General:
     site_url: str = "https://www.spill.chat/us"  # (build) Harry, 1 Oct 2026: the "trusted by" link, and the page when an industry has none
     price_from: int = 195  # (build) Harry, 1 Oct 2026: "from $195 a month for the whole team", as on the website
     demo_host: str = "Harry Dryden"
-    postal_address: str = ""
-    privacy_url: str = ""
     send_window: SendWindow = SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
     blackout_dates: tuple[DateRange, ...] = (  # SPEC 5; the same as the sheet default (defaults.py)
         DateRange(date(2026, 11, 23), date(2026, 11, 27)),

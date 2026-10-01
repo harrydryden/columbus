@@ -5,9 +5,11 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
 ## A. Needed to finish Phase 0 (blocking)
 
 1. **Privacy and opt-out page.** `/us/legals/privacy-notice` is still a Webflow draft, and there is no US opt-out page. Every email links to it (SPEC 10), and render blocks any send while `privacy_url` is blank. What is the live URL?
-   *Deferred (Harry, 30 Sep): on the website; not needed yet. Render still blocks sends while `privacy_url` is blank, so this is needed before phase 2 goes live.*
+   *Deferred (Harry, 30 Sep): on the website; not needed yet.*
+   *Answered (Harry, 1 Oct): emails carry no privacy link, and none is needed. The opt-out is Instantly's own unsubscribe link, which the campaign's step template adds after every email (`clients/instantly.py` UNSUBSCRIBE_HTML), alongside the List-Unsubscribe header that was already on. `privacy_url` is retired: the sheet may keep the row, and `settings load` removes it. Email 1's Article 14 notice now points at the unsubscribe link instead of a privacy page. Note: Article 14 also lists identity, purposes, retention and the right to complain, which a privacy page usually carries; the notice no longer points to one.*
 2. **Postal address.** Please give Spill's UK registered address as it should appear in the footer (`postal_address`).
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
+   *Answered (Harry, 1 Oct): emails carry no postal address, and none is needed. `postal_address` is retired and no longer blocks sends. Note: CAN-SPAM (15 U.S.C. 7704(a)(5)) asks commercial email to include a valid physical postal address; this was Harry's decision with that in view.*
 3. **Footer and Article 14 text.** Please approve or edit `templates/copy/footer.txt` and `templates/copy/article14.txt` (SPEC 14: "For Harry to approve"). The notice names Apollo and Clay as sources for every contact, and gives the lawful basis as legitimate interests.
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
 4. **Instantly.** We have no connector or key in this session. Please add the API key to the sealed Railway variable `US_OUTBOUND_INSTANTLY_API_KEY` (docs/railway-setup.md, step c). The plan facts in SPEC 14 are still unconfirmed: plan tier, email and contact caps and current use, and whether the emails, reply, forward and accounts endpoints exist.

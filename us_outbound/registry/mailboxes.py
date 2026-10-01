@@ -41,6 +41,7 @@ from us_outbound.clients.instantly import (
     instantly_schedule,
     sequences,
     settings_drift,
+    unsubscribe_line,
 )
 from us_outbound.context import UK, Context, boundaries_for
 from us_outbound.logs import log
@@ -55,10 +56,16 @@ RETIRE_WAIT_DAYS = 30  # SPEC 9, 13: removed 30 days after retire, never within 
 DEFAULT_CAP = 30  # SPEC 13
 MAX_CAP = 30
 SIGNATURE = "{owner}\nSpill\nspill.chat/us"  # SPEC 5 default signature
-# Each step's subject and body are the lead's rendered custom variables (SPEC 9).
-CAMPAIGN_STEPS: tuple[dict[str, str], ...] = tuple(
-    {"subject": f"{{{{s{i}_subject}}}}", "body": f"{{{{s{i}_body}}}}"} for i in range(1, len(STEP_DAYS) + 1)
-)
+
+
+def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
+    """Each step: the lead's rendered subject and body (custom variables, SPEC 9), then Instantly's unsubscribe link."""
+    return tuple(
+        {"subject": f"{{{{s{i}_subject}}}}", "body": f"{{{{s{i}_body}}}}{unsubscribe_line(text_only)}"}
+        for i in range(1, len(STEP_DAYS) + 1)
+    )
+
+
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
 _TAG = re.compile(r"<[^>]+>")
 
@@ -138,9 +145,10 @@ def campaign_drift(campaign: Mapping[str, Any], settings: Settings, owner: str) 
     )
     out = {k: [want, got] for k, (want, got) in drift.items()}
     steps = ((campaign.get("sequences") or [{}])[0] or {}).get("steps") or []
-    for i, want in enumerate(CAMPAIGN_STEPS):
+    for i, step in enumerate(campaign_steps(text_only(settings))):
         variant = ((steps[i].get("variants") or [{}])[0] or {}) if i < len(steps) else {}
         # PHASE0-CONFIRM: Instantly may hand bodies back as HTML; tags are ignored here.
+        want = {k: _plain(v) for k, v in step.items()}
         got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body"))}
         if got != want:
             out[f"steps.{i + 1}"] = [dict(want), got]
@@ -161,7 +169,7 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
             accounts=accounts,
             daily_limit=limit,
             schedule=settings.general.send_window,
-            steps=CAMPAIGN_STEPS,
+            steps=campaign_steps(text_only(settings)),
             text_only=text_only(settings),
         )
         return "created (paused)"
@@ -181,7 +189,7 @@ def _fix_fields(drift: Mapping[str, Any], settings: Settings, owner: str) -> dic
     if any(k.startswith("schedule.") for k in drift):
         fields["campaign_schedule"] = instantly_schedule(settings.general.send_window)
     if any(k.startswith("steps") for k in drift):
-        fields["sequences"] = sequences(CAMPAIGN_STEPS)
+        fields["sequences"] = sequences(campaign_steps(text_only(settings)))
     if "daily_limit" in drift:
         fields["daily_limit"] = daily_limit(settings, owner)
     return fields

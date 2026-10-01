@@ -48,7 +48,8 @@ def test_general_spec_values(tabs, settings):
     raw = {r["key"]: r["value"] for r in tabs["General"]}
     assert raw["live_sending"] == "no"
     assert raw["send_window"] == "Mon–Fri 09:00–16:00 America/New_York"
-    assert raw["approver_slack_ids"] == raw["postal_address"] == raw["privacy_url"] == ""
+    assert raw["approver_slack_ids"] == ""
+    assert "postal_address" not in raw and "privacy_url" not in raw  # retired (Harry, 1 Oct 2026)
     assert raw["claude_model"] == "claude-opus-5-5" and raw["claude_task_model"] == "claude-sonnet-5-5"
     assert raw["email_format"] == "html" and raw["booking_page"] == "https://www.spill.chat/us/book-demo"
     assert raw["site_url"] == "https://www.spill.chat/us" and raw["price_from"] == "195"

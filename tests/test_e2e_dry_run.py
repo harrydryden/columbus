@@ -113,8 +113,6 @@ PHASE0_GENERAL = {
     "clay_monthly_credits": "2000",
     "clay_credits_per_account": "5",
     "approver_slack_ids": "U_HARRY",
-    "postal_address": "Spill Group Ltd, 1 Example Street, London EC1A 1AA, UK",
-    "privacy_url": "https://www.spill.chat/us/privacy",
 }
 PROOF = "Creative agencies in the UK use Spill so their teams get same-day support (a UK example)."
 
@@ -255,7 +253,7 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     assert [r for r in s["requests"] if r.method != "GET"] == []
     settings, errors = load_current(flow["world"].store)
     assert settings is not None and not any(errors.values())
-    assert settings.general.privacy_url == PHASE0_GENERAL["privacy_url"]
+    assert settings.general.approver_slack_ids == (PHASE0_GENERAL["approver_slack_ids"],)
 
 
 def test_the_account_scores_priority_with_the_eap_angle_and_evidence(flow):
@@ -290,7 +288,8 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
         assert body.startswith("<p>Hi Jane,</p>"), step  # html, the default email_format
         # Email 1 links the industry page; emails 2 to 4 have one call to action, the demo page.
         assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
-        assert g.postal_address in body and "Reply STOP" in body and g.privacy_url in body  # SPEC 10 footer
+        # The footer; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
+        assert "This is a marketing email from Spill." in body and "{{unsubscribe}}" not in body
     assert "Saw your benefits page mentions EAP." in cv["s1_body"]
     assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
     page = s.industry("Advertising agencies").landing_page_url

@@ -78,7 +78,7 @@ An earlier decision the same day put the system in its own Google Cloud project,
 | :- | :- | :- |
 | US locale | Confirmed | en-US subdirectory `/us` (locale 6a7b1a45465079bd9e1fe40f) |
 | Book-demo page | Confirmed | `/us/book-demo` is live. Its US SEO title still reads "The UK's Highest Rated EAP" |
-| US privacy and opt-out page | **Open: blocks sending** | `/us/legals/privacy-notice` exists only as a draft, and there is no opt-out page. `privacy_url` must point at a live page before any send |
+| US privacy and opt-out page | Not needed (Harry, 1 Oct) | Emails carry no privacy link and no postal address. The opt-out is Instantly's unsubscribe link in every campaign step, plus the List-Unsubscribe header. `/us/legals/privacy-notice` is still a draft |
 
 ## Not reachable from here
 

@@ -119,17 +119,11 @@ def check_row(row: CopyRow, settings: Settings) -> Check:
                 values = _values(row, settings, mb, role, opener=opener)
                 for v in render.violations(render.render_sequence(row, values, mailbox=mb, settings=settings,
                                                                   for_send=False)):
-                    if _footer_setting(v):
-                        continue  # postal_address and privacy_url are the General tab's, not this row's
                     who = "the demo host" if render.is_demo_host(mb, settings) else "another sender"
                     problems[f"{v} ({role}, sent by {who}{', with an opener' if opener else ''})"] = None
     # The same problem for every role and sender reads once.
     out.problems = _collapse(problems)
     return out
-
-
-def _footer_setting(v: str) -> bool:
-    return "General tab" in v
 
 
 def _collapse(problems: Mapping[str, None]) -> list[str]:

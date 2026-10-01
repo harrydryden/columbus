@@ -8,7 +8,8 @@ command merges them into the sheet without losing Harry's own edits:
     ones Harry owns (KEEP: active, priority, proof_point), which keep their sheet value
     when it is not blank. Rows Harry added that the build does not have stay, at the end.
   * General: Harry's values stay. A renamed key (daily_enrol_cap is now weekly_enrol_cap) is
-    renamed and given the build's value, since its unit changed; keys the sheet does not have
+    renamed and given the build's value, since its unit changed; retired keys (postal_address,
+    privacy_url) are removed; keys the sheet does not have
     yet are added with the build's value and note; `--set key=value` sets the values Harry has
     decided. Note-only rows stay where they are.
   * Copy: a tab still in the one-row-per-step layout is replaced (its rows stay in the
@@ -27,7 +28,7 @@ from dataclasses import dataclass, field
 from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
-from us_outbound.settings.validate import RENAMED_GENERAL, is_legacy_copy, validate_all
+from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, validate_all
 
 LOADABLE = ("General", "Industries", "Copy")
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
@@ -77,6 +78,9 @@ def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[M
     for r in sheet_rows:
         row = {c: str(r.get(c, "")) for c in cols}
         key = row["key"].strip()
+        if key in RETIRED_GENERAL:
+            p.updated.append(f"{key} removed (no longer used)")
+            continue
         if key in RENAMED_GENERAL:
             new = RENAMED_GENERAL[key][0]
             if new in present:

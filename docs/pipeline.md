@@ -270,7 +270,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | 2 | Sheet check | Code, free: `us-outbound copy check` renders every row for each role, from the demo host and from another sender, with sample and longest values | Everything the copy rules check (below) |
 | 3 | QA | The task model (`claude_task_model`, Sonnet), `us-outbound copy qa --live`: writes `qa` ("pass 1a2b3c4d") and `qa_notes` to the row | Claims not in facts.md or on the page, wrong data, statistics, tone, US grammar, the structure. A row that fails the sheet check fails QA without a model call |
 | 4 | Approval | Harry: `status = approved` and `approved_by` | Judgment |
-| 5 | Render-time check | Code, on every lead, in the enrol job | Anything the lead's own values break: a missing first name, a blank footer setting, an opener with a banned word (the opener is dropped) |
+| 5 | Render-time check | Code, on every lead, in the enrol job | Anything the lead's own values break: a missing first name, a mailbox with no owner name for the footer, an opener with a banned word (the opener is dropped) |
 
 **QA stamps the exact wording:** `qa` carries a check code over the row's subjects, bodies and role lines. Edit the copy and the code no longer matches, so the row stops being sent until it passes QA again (`us-outbound copy qa --version <v> --live`, about a cent a row).
 

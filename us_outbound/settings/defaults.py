@@ -103,16 +103,6 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("price_from", "195",
      "The starting price in every email: \"Plans start from $195 a month for the whole team, on a rolling 30-day contract\" (Harry, 1 Oct 2026)."),
     ("demo_host", "Harry Dryden", "Every demo is booked with this person."),
-    (
-        "postal_address",
-        "",
-        "Spill's UK registered address, for the email footer. " + HARRY_TO_FILL + "; sends are blocked while blank.",
-    ),
-    (
-        "privacy_url",
-        "",
-        "The US privacy and opt-out page. " + HARRY_TO_FILL + "; sends are blocked while blank.",
-    ),
     ("send_window", "Mon–Fri 09:00–16:00 America/New_York", "Days, hours and time zone for sends."),
     (
         "blackout_dates",
@@ -336,7 +326,8 @@ _ROLES: list[tuple[str, str, str, str, str]] = [
 # data/copy.csv: one four-email sequence per industry and a General one, drafted by Claude from
 # templates/copy/style.md, facts.md and each industry's page, then checked by a second model
 # (docs/pipeline.md, "Copy"). Every row loads as draft: only Harry approves copy (SPEC 5, 10).
-# The footer, opt-out and (email 1) Article 14 notice are added at render time, never stored here.
+# The footer and (email 1) Article 14 notice are added at render time, and Instantly's unsubscribe
+# line by the campaign's step template; none is stored here.
 
 
 def _copy() -> list[dict[str, str]]:

@@ -80,11 +80,6 @@ def test_the_sheet_check_names_each_problem_once():
     assert any("the People leader line is" in p for p in problems)
 
 
-def test_the_sheet_check_ignores_the_general_tab_s_blanks():
-    s = make_settings(postal_address="", privacy_url="")
-    assert copy_desk.check_row(COPY[0], s).ok  # those block sends, but they are not this row's problem
-
-
 def test_preview_renders_the_four_emails():
     s = make_settings()
     p = copy_desk.preview(COPY[0], s, role="Operations", sender="Hannah Spalding", opener=copy_desk.SAMPLE_OPENER)
@@ -272,6 +267,8 @@ def live_general() -> list[dict]:
             r.update(key="daily_enrol_cap", value="30")
         if r["key"] == "clay_monthly_credits":
             r["value"] = "0"
+    # The two keys retired on 1 Oct (no postal address, no privacy link) are still on the sheet.
+    rows += [{"key": "postal_address", "value": "", "note": ""}, {"key": "privacy_url", "value": "", "note": ""}]
     return rows
 
 
@@ -285,6 +282,8 @@ def test_general_load_renames_adds_and_sets():
     assert by["clay_monthly_credits"] == "2000"
     assert "daily_enrol_cap renamed weekly_enrol_cap = 150" in plan.updated
     assert "clay_monthly_credits: 0 -> 2000" in plan.updated and len(plan.added) == 4
+    assert "postal_address" not in by and "privacy_url" not in by  # retired keys are removed
+    assert "postal_address removed (no longer used)" in plan.updated
     with pytest.raises(ValueError, match="not General keys"):
         loader.plan_tab("General", live_general(), default_tabs()["General"], {"nonsense": "1"})
 

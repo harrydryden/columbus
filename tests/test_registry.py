@@ -13,7 +13,12 @@ import pytest
 
 from tests.fakes import TEST_SHEET_ID, FakeTransport, make_context
 from us_outbound.clients.guard import Op
-from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, campaign_settings, instantly_schedule
+from us_outbound.clients.instantly import (
+    CAMPAIGN_SETTINGS,
+    UNSUBSCRIBE_TAG,
+    campaign_settings,
+    instantly_schedule,
+)
 from us_outbound.registry import mailboxes as reg
 from us_outbound.settings.defaults import COLUMNS
 from us_outbound.settings.model import General, Mailbox, Settings
@@ -77,7 +82,7 @@ class FakeInstantly:
         from us_outbound.clients.instantly import sequences
 
         return self.add_campaign(name, **{**campaign_settings(), "campaign_schedule": instantly_schedule(),
-                                          "sequences": sequences(reg.CAMPAIGN_STEPS), "email_list": accounts,
+                                          "sequences": sequences(reg.campaign_steps()), "email_list": accounts,
                                           "daily_limit": limit, **over})
 
     def add_lead(self, campaign_id: str, email: str) -> dict:
@@ -459,3 +464,14 @@ def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():
                                                       "at_limit": True}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert "Instantly says US Outbound – Harry Dryden is held back: the campaign reached its daily limit" in post["text"]
+
+
+def test_every_step_ends_with_instantly_s_unsubscribe_link():
+    # Harry, 1 Oct 2026: the opt-out is Instantly's own link, in the step template after the lead's
+    # rendered body (Instantly fills merge tags in the template, not inside a custom variable).
+    html, text = reg.campaign_steps(), reg.campaign_steps(text_only=True)
+    assert [s["subject"] for s in html] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
+    for i, (h, t) in enumerate(zip(html, text), start=1):
+        assert h["body"].startswith(f"{{{{s{i}_body}}}}<p><a href=\"{UNSUBSCRIBE_TAG}\">")
+        assert t["body"] == f"{{{{s{i}_body}}}}\n\nTo stop hearing from us, unsubscribe here: {UNSUBSCRIBE_TAG}"
+    assert CAMPAIGN_SETTINGS["insert_unsubscribe_header"] is True  # and the mail client's one-click button

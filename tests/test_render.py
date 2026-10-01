@@ -23,12 +23,9 @@ from us_outbound.settings.model import (
 )
 from us_outbound.settings.model import Test as ABTest  # aliased so pytest does not collect it
 
-POSTAL = "Spill Group Ltd, 1 Example Street, London, EC1A 1AA, UK"
-PRIVACY = "https://www.spill.chat/us/privacy"
 DEMO = "https://www.spill.chat/us/book-demo"
 PAGE = "https://www.spill.chat/us/industry/"
 AD_LINE = "This is a marketing email from Spill."
-STOP_LINE = f"Reply STOP or use this link to opt out: {PRIVACY}"
 
 
 def mailbox(address: str, owner: str, status: str = "Active", cap: int = 30, **kw) -> Mailbox:
@@ -117,7 +114,7 @@ BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2
 def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(), named_accounts=(),
                   industries=INDUSTRIES, **general) -> Settings:
     g = General(
-        postal_address=POSTAL, privacy_url=PRIVACY, hubspot_owner_id="owner-harry",
+        hubspot_owner_id="owner-harry",
         clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
     )
     return Settings(
@@ -311,9 +308,12 @@ def test_the_role_line_and_opener_land_in_email_1():
 def test_footer_on_every_email_and_the_notice_on_email_1():
     seq = sequence()
     for r in seq:
-        assert r.text.splitlines()[-2:] == [AD_LINE, STOP_LINE]
-        assert f'<a href="{PRIVACY}">{PRIVACY}</a>' in r.html
+        # No postal address and no privacy link (Harry, 1 Oct 2026); the opt-out is Instantly's
+        # unsubscribe link, which the campaign's step template adds after this.
+        assert r.text.splitlines()[-2:] == ["Hannah Spalding, Spill", AD_LINE]
+        assert "privacy notice" not in r.text.lower() and "{{unsubscribe}}" not in r.html
     assert "Where we got your details" in seq[0].text
+    assert "use the unsubscribe link below" in seq[0].text and "link below explains" not in seq[0].text
     assert all("Where we got your details" not in r.text for r in seq[1:])
 
 
@@ -333,13 +333,6 @@ def test_unknown_and_empty_variables_stay_visible_and_block():
     assert "{{nickname}}" in seq[2].text
     blank = sequence(con=contact(first_name=""))
     assert all(any("empty variable {{first_name}}" in v for v in r.violations) for r in blank)
-
-
-def test_blank_postal_address_or_privacy_url_blocks_every_email():
-    s = make_settings(postal_address="", privacy_url="")
-    for r in sequence(settings=s):
-        assert any("postal_address is blank" in v for v in r.violations)
-        assert any("privacy_url is blank" in v for v in r.violations)
 
 
 def test_draft_or_unchecked_copy_blocks():
@@ -390,7 +383,7 @@ def test_every_row_against_empty_values():
         for mb in s.mailboxes:
             for r in render.render_sequence(row, render.empty_variables(), mailbox=mb, settings=s):
                 assert any("empty variable" in v for v in r.violations), (row.copy_version, r.step)
-                assert r.text.splitlines()[-2:] == [AD_LINE, STOP_LINE]  # the footer is still there
+                assert r.text.splitlines()[-1] == AD_LINE  # the footer is still there
 
 
 def test_every_row_against_maximum_length_values():

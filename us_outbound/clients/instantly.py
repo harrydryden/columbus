@@ -49,6 +49,24 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "is_evergreen": True,  # PHASE0-CONFIRM: that is_evergreen keeps the campaign open to new leads indefinitely
 }
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
+# The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
+# of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly
+# fills its merge tags in the template, not inside a custom variable's value. A click stops the
+# lead's sequence and adds the address to the workspace's unsubscribe list, which every campaign
+# honors; insert_unsubscribe_header also gives mail clients their one-click unsubscribe button.
+# PHASE0-CONFIRM: that the tag is {{unsubscribe}} and becomes the link's URL, by a test send to a seed
+# inbox in both formats (Instantly's editor offers it as "Insert unsubscribe link").
+UNSUBSCRIBE_TAG = "{{unsubscribe}}"
+UNSUBSCRIBE_TEXT = "To stop hearing from us, unsubscribe here"
+UNSUBSCRIBE_HTML = f'<p><a href="{UNSUBSCRIBE_TAG}">{UNSUBSCRIBE_TEXT}</a>.</p>'
+UNSUBSCRIBE_PLAIN = f"\n\n{UNSUBSCRIBE_TEXT}: {UNSUBSCRIBE_TAG}"
+
+
+def unsubscribe_line(text_only: bool = False) -> str:
+    """What the step template adds after the rendered body: Instantly's unsubscribe link."""
+    return UNSUBSCRIBE_PLAIN if text_only else UNSUBSCRIBE_HTML
+
+
 # text_only follows the General tab's email_format (Harry, 30 Sep 2026): html by default, so the
 # copy's links are embedded; tracking stays off either way.
 TEXT_ONLY = "text_only"

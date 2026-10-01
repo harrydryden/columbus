@@ -418,6 +418,13 @@ RENAMED_GENERAL = {
     "clay_weekly_credits": ("clay_monthly_credits", "credit budgets are monthly, like Clay's own"),
     "apollo_weekly_credits": ("apollo_monthly_credits", "credit budgets are monthly, like Apollo's own"),
 }
+# Keys no longer used (Harry, 1 Oct 2026): emails carry no postal address and no privacy link, and
+# the opt-out is Instantly's own unsubscribe link. A sheet that still has these rows stays valid;
+# `us-outbound settings load` removes them.
+RETIRED_GENERAL = {
+    "postal_address": "emails carry no postal address (Harry, 1 Oct 2026)",
+    "privacy_url": "emails carry no privacy link; the opt-out is Instantly's unsubscribe link (Harry, 1 Oct 2026)",
+}
 
 
 def _converter(hint: Any) -> Callable[[str], Any]:
@@ -467,7 +474,7 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
     if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
-    if key in ("booking_link", "booking_page", "privacy_url") and value:
+    if key in ("booking_link", "booking_page") and value:
         _https(value)
     if key == "site_url":
         _page_url(value)
@@ -492,6 +499,8 @@ def _general(rows: list[_Row]) -> General:
             new, why = RENAMED_GENERAL[key]
             r.fail("key", f"{key!r} is now {new!r}: {why}")
             continue
+        if key in RETIRED_GENERAL:
+            continue  # no longer used; the row can be deleted
         if key not in _GENERAL_TYPES:
             r.fail("key", f"unknown key {key!r}{_hint(key, _GENERAL_TYPES)}")
             continue
@@ -524,10 +533,8 @@ def _general(rows: list[_Row]) -> General:
         err("standard_threshold", f"must not be above priority_threshold ({g.priority_threshold})")
     if g.dev_channel.lstrip("#").lower() == g.alert_channel.lstrip("#").lower():
         err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
-    if g.live_sending:
-        missing = [k for k in ("postal_address", "privacy_url", "approver_slack_ids") if not getattr(g, k)]
-        if missing:
-            err("live_sending", f"cannot be yes while {', '.join(missing)} is blank")
+    if g.live_sending and not g.approver_slack_ids:
+        err("live_sending", "cannot be yes while approver_slack_ids is blank")
     return g
 
 

@@ -132,8 +132,8 @@ Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mai
 
 | Item | Where |
 | :- | :- |
-| Footer text (sender, postal address, advertisement line, "Reply STOP or use this link to opt out", privacy link) | `templates/copy/footer.txt`; `postal_address` on the General tab |
-| Privacy page link | `privacy_url` on the General tab. The US privacy notice is still a draft and there is no opt-out page (phase0-facts.md): sends stay blocked until it is live |
+| Footer text (sender and the advertisement line; no postal address or privacy link, Harry 1 Oct) | `templates/copy/footer.txt` |
+| Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that `{{unsubscribe}}` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
 | Legitimate-interests text (UK GDPR Article 14, step 1) | `templates/copy/article14.txt` |
 | The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |
 | The claims the emails may make, and the voice | `templates/copy/facts.md`, `templates/copy/style.md` (open questions 65 to 72) |

@@ -122,7 +122,7 @@ def test_the_utilization_figure_prices_and_durations_pass(good):
 def test_unrendered_variables_and_placeholders():
     assert any('unrendered variable "{{proof}}"' in v for v in run("Hi,\n\n{{proof}}"))
     assert any('unmatched "{{" or "}}"' in v for v in run("Hi }} there"))
-    assert any('unfilled placeholder "{privacy_url}"' in v for v in run("Opt out: {privacy_url}"))
+    assert any('unfilled placeholder "{opt_out}"' in v for v in run("Opt out: {opt_out}"))
     assert any("subject" in v and "{{company}}" in v for v in run("Hi", subject="For {{company}}"))
 
 
