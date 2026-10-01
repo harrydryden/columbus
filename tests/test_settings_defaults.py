@@ -33,7 +33,7 @@ def test_every_tab_has_its_columns_and_only_strings(tabs):
 def test_defaults_are_fresh_copies(tabs):
     other = default_tabs()
     other["Signals"][0]["weight"] = "99"
-    assert tabs["Signals"][0]["weight"] == "25"
+    assert tabs["Signals"][0]["weight"] == "15"
 
 
 def test_general_has_every_model_key_once(tabs, settings):
@@ -65,55 +65,119 @@ def test_general_spec_values(tabs, settings):
     assert g.claude_monthly_cap_usd == 10.0
 
 
-# signal, weight, max_weight, action, suggests_angle, counts_for_days (SPEC 5)
-SPEC_SIGNALS = [
-    ("Mental health support listed", 25, None, "Score", "Progressive employer", 540),
-    ("EAP named", 10, None, "Score", "Upgrade the EAP", 540),
-    ("Modern mental-health vendor named", 0, None, "Hold", "Switch from a competitor", 540),
-    ("Progressive benefits", 10, 30, "Score", "Progressive employer", 540),
-    ("Culture or values page", 10, None, "Score", "Progressive employer", 540),
-    ("People leader in place", 10, None, "Score", "", 365),
-    ("New People leader", 30, None, "Score", "Progressive employer", 90),
-    ("First People hire", 25, None, "Score", "Growing team", 90),
-    ("Recent funding", 20, None, "Score", "Growing team", 540),
-    ("Hiring and growth", 15, None, "Score", "Growing team", 90),
-    ("Visited the US site", 20, None, "Score", "", 30),
-    ("Viewed US pricing or demo page", 15, None, "Score", "", 30),
-    ("Nonprofit budget", 15, None, "Score", "", 400),
-    ("Nonprofit fiscal year ahead", 20, None, "Score", "", 1),
-    ("Q4 plan-year window", 10, None, "Score", "", 1),
-    ("Layoffs", 0, None, "Suppress", "", 90),
+# signal, weight, max_weight, action, suggests_angle, counts_for_days, active: SPEC 5's rows as the design
+# review's Appendix A reworked them (docs/gtm-review/README.md, 1 Oct 2026), plus the build's two.
+DEFAULT_SIGNALS = [
+    ("Mental health support listed", 15, None, "Score", "Progressive employer", 540, True),  # was +25
+    ("EAP named", 5, None, "Score", "Upgrade the EAP", 540, True),  # was +10
+    ("Modern mental-health vendor named", 0, None, "Hold", "Switch from a competitor", 540, True),  # competitors only
+    ("Wellbeing app or perk named", 5, None, "Score", "Progressive employer", 540, True),  # new: the complements
+    ("Progressive benefits", 5, 15, "Score", "Progressive employer", 540, True),  # was +10 each, at most +30
+    ("Culture or values page", 0, None, "Score", "Progressive employer", 540, False),  # was +10
+    ("People leader in place", 10, None, "Score", "", 365, True),
+    ("New People leader", 30, None, "Score", "Progressive employer", 90, True),
+    ("First People hire", 25, None, "Score", "Growing team", 90, True),
+    ("People role open", 15, None, "Score", "Growing team", 60, True),  # new
+    ("Funding in the last 6 months", 20, None, "Score", "Growing team", 180, True),  # Recent funding, split
+    ("Funding 6–12 months ago", 10, None, "Score", "Growing team", 365, True),
+    ("Hiring and growth", 15, None, "Score", "Growing team", 90, True),
+    ("Visited the US site", 35, None, "Score", "", 30, True),  # was +20
+    ("Viewed US pricing or demo page", 25, None, "Score", "", 30, True),  # was +15
+    ("Nonprofit budget", 15, None, "Score", "", 400, True),
+    ("Nonprofit fiscal year ahead", 20, None, "Score", "", 1, True),
+    ("Q4 plan-year window", 10, None, "Score", "", 1, False),  # inactive
+    ("Team of 10–49", 15, None, "Score", "", 365, True),  # new: the size signal
+    ("Team of 50–99", 10, None, "Score", "", 365, True),
+    ("Layoffs", 0, None, "Suppress", "", 90, True),
+    ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
+    ("Looks like Spill's customers", 4, None, "Score", "", 120, True),  # build addition (Harry, 1 Oct 2026)
 ]
 
 
-def test_every_spec_signal(settings):
+def test_every_default_signal(settings):
     got = {s.signal: s for s in settings.signals}
-    assert list(got) == [row[0] for row in SPEC_SIGNALS] + ["Named by Harry"]  # the last is a build addition
-    for name, weight, max_weight, action, angle, days in SPEC_SIGNALS:
+    assert list(got) == [row[0] for row in DEFAULT_SIGNALS]
+    for name, weight, max_weight, action, angle, days, active in DEFAULT_SIGNALS:
         s = got[name]
-        assert (s.weight, s.max_weight, s.action, s.suggests_angle, s.counts_for_days) == (
-            weight, max_weight, action, angle, days,
+        assert (s.weight, s.max_weight, s.action, s.suggests_angle, s.counts_for_days, s.active) == (
+            weight, max_weight, action, angle, days, active,
         ), name
-        assert s.active
+        assert s.note, name  # every row says why it is set that way
 
 
 def test_signal_sources_and_parsing(settings):
     got = {s.signal: s for s in settings.signals}
     assert got["Modern mental-health vendor named"].sources == ("clay_careers", "job_posts")
-    assert got["Recent funding"].sources == ("apollo_org", "clay_funding")
+    assert got["Funding in the last 6 months"].sources == ("apollo_org", "clay_funding")
     # people_leader_count comes from apollo_people, so that source is listed too.
     assert got["First People hire"].sources == ("apollo_jobs", "apollo_people")
-    assert got["EAP named"].terms == ("EAP", "employee assistance", "ComPsych", "GuidanceResources", "Magellan")
-    assert "Justworks Plus" in got["Modern mental-health vendor named"].terms
-    assert got["Modern mental-health vendor named"].context == {
+    assert got["First People hire"].condition.evaluate({"open_people_roles": 1, "people_leader_count": 0})
+    assert got["Q4 plan-year window"].condition.evaluate({"month": 11})  # kept on the sheet, inactive
+    assert got["Culture or values page"].condition.evaluate({"values_page": True})
+    assert got["Looks like Spill's customers"].sources == ("lookalike",)
+    for s in settings.signals:
+        assert bool(s.terms) != s.is_condition, s.signal
+
+
+def test_a_carrier_eap_is_counted_once(settings):
+    """Appendix A: "EAP" and "employee assistance" were in both rows, so a carrier EAP alone scored 25 + 10."""
+    got = {s.signal: s for s in settings.signals}
+    mh, eap = got["Mental health support listed"], got["EAP named"]
+    assert mh.sources == eap.sources == ("clay_careers", "job_posts")  # job posts read too
+    assert not {t.casefold() for t in mh.terms} & {t.casefold() for t in eap.terms}
+    assert "EAP" not in mh.terms and "employee assistance" not in mh.terms
+    for vendor in ("Optum", "Carelon", "Cigna", "Aetna Resources For Living", "TELUS Health", "Health Advocate"):
+        assert vendor in eap.terms, vendor
+    # The medical carriers count only near words that make them the EAP, so the opener stays true.
+    assert set(eap.context) == {"optum", "cigna", "carelon", "health advocate"}
+    assert eap.opener == "Your benefits page lists an employee assistance program."
+
+
+def test_competitors_hold_and_complements_score(settings):
+    got = {s.signal: s for s in settings.signals}
+    hold, apps = got["Modern mental-health vendor named"], got["Wellbeing app or perk named"]
+    assert hold.terms == ("Talkspace", "Lyra", "Modern Health", "Spring Health", "BetterUp", "Nivati", "Tava",
+                          "Wellbound")
+    assert apps.terms == ("Headspace", "Calm", "Wellhub", "Gympass")
+    assert not set(hold.terms) & set(apps.terms) and hold.context == {}
+    assert apps.context == {
         "headspace": ("for Work", "app", "subscription"),
         "calm": ("app", "premium", "business", "subscription"),
     }
-    assert got["Q4 plan-year window"].condition.evaluate({"month": 11})
-    assert got["First People hire"].condition.evaluate({"open_people_roles": 1, "people_leader_count": 0})
-    assert got["Culture or values page"].condition.evaluate({"values_page": True})
-    for s in settings.signals:
-        assert bool(s.terms) != s.is_condition, s.signal
+
+
+def test_hiring_reads_apollo_jobs_and_funding_decays(settings):
+    got = {s.signal: s for s in settings.signals}
+    assert got["Hiring and growth"].sources == ("apollo_jobs", "apollo_org")  # apollo_jobs owns open_roles
+    recent, older = got["Funding in the last 6 months"], got["Funding 6–12 months ago"]
+    for days, want in ((1, (True, False)), (180, (True, False)), (181, (False, True)), (365, (False, True)),
+                       (366, (False, False)), (539, (False, False))):
+        values = {"days_since_funding": days}
+        assert (recent.condition.evaluate(values), older.condition.evaluate(values)) == want, days
+    assert "Recent funding" not in got
+
+
+def test_size_rows_favor_10_to_99(settings):
+    got = {s.signal: s for s in settings.signals}
+    small, mid = got["Team of 10–49"], got["Team of 50–99"]
+    assert small.sources == mid.sources == ("apollo_org",)
+    for n, want in ((9, (False, False)), (10, (True, False)), (49, (True, False)), (50, (False, True)),
+                    (99, (False, True)), (100, (False, False)), (249, (False, False))):
+        assert (small.condition.evaluate({"employees": n}), mid.condition.evaluate({"employees": n})) == want, n
+
+
+def test_openers_are_one_observed_fact_and_pass_the_copy_rules(settings):
+    from us_outbound.enrol import render
+
+    openers = {s.signal: s.opener for s in settings.signals if s.opener}
+    assert openers == {
+        "EAP named": "Your benefits page lists an employee assistance program.",
+        "New People leader": "Congratulations on the new role.",
+        "People role open": "You're hiring for a People role.",
+        "Funding in the last 6 months": "Congratulations on the recent round.",
+    }
+    for opener in openers.values():
+        assert render.pick_opener(opener, sender_is_harry=False, demo_host="Harry Dryden") == (opener, "")
 
 
 def test_angles_in_order(settings):
@@ -146,14 +210,37 @@ def test_industries(settings):
     marketing = by_group["Marketing & Creative Agencies"]
     assert len(marketing) == 10 and all(i.active and i.priority == 2 for i in marketing)
     assert len(by_group["Nonprofits"]) == 14 and not any(i.active for i in by_group["Nonprofits"])
-    assert [i.industry for i in by_group["Legal Teams"]] == ["Legal Teams"]
+    # Legal Teams on from launch at priority 2, beside the agencies (design review Appendix A.4, 1 Oct 2026).
+    [legal] = by_group["Legal Teams"]
+    assert (legal.industry, legal.active, legal.priority) == ("Legal Teams", True, 2)
     prof = {i.industry: i for i in by_group["Professional Services"]}
     assert "541214" in prof["CPA firms"].exclude_naics and not any(i.active for i in prof.values())
     digital = settings.industry("Digital health")
     assert digital.industry_group == "Healthcare" and digital.active and digital.priority == 1
     active_groups = {i.industry_group for i in settings.industries if i.active}
-    assert active_groups == {"Technology & Startups", "Marketing & Creative Agencies", "Healthcare"}
-    assert sum(i.active for i in settings.industries) == 27  # as before: 17 tech labels (Digital health moved) and 10 agencies
+    assert active_groups == {"Technology & Startups", "Marketing & Creative Agencies", "Legal Teams", "Healthcare"}
+    assert sum(i.active for i in settings.industries) == 28  # 17 tech labels (Digital health moved), 10 agencies, Legal
+
+
+IT_SERVICES = ("541512", "541513", "541519")  # computer systems design, facilities management, other IT services
+
+
+def test_tech_rows_exclude_it_services(settings):
+    """Appendix A.4: the tech labels share NAICS 5415, which brings in IT services, MSPs and IT staffing."""
+    tech = [i for i in settings.industries if i.naics_prefixes and (
+        i.industry_group == "Technology & Startups" or i.industry == "Digital health")]
+    assert len(tech) == 17
+    for i in tech:
+        assert i.exclude_naics == IT_SERVICES, i.industry
+    others = [i for i in settings.industries if i not in tech]
+    assert not any(set(IT_SERVICES) & set(i.exclude_naics) for i in others)
+
+
+def test_focus_at_launch(settings, tabs):
+    """Appendix A.4: Tech 50%, Agencies 30%, Legal 20%."""
+    assert [(f.industry_group, f.share) for f in settings.focus] == [
+        ("Technology & Startups", 0.5), ("Marketing & Creative Agencies", 0.3), ("Legal Teams", 0.2)]
+    assert all(r["note"] for r in tabs["Focus"])
 
 
 def test_industry_pages_and_links(settings):
@@ -173,7 +260,8 @@ def test_industry_notes(tabs):
     assert notes["Fintech"].startswith("On from 26 Oct")
     assert notes["Nonprofits"].startswith("January")
     assert notes["Churches & religious organizations"].startswith("off")
-    assert notes["Legal Teams"].startswith("January")
+    assert notes["Legal Teams"].startswith("On from launch") and "Appendix A.4" in notes["Legal Teams"]
+    assert "541512" in notes["Fintech"] and "541512" not in notes["Advertising agencies"]
     assert notes["Management consulting"].startswith("After January")
     assert notes["Staffing agencies"].startswith("off")
     assert notes["HR consulting"].startswith("never")

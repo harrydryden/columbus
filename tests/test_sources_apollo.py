@@ -128,7 +128,9 @@ def test_each_search_is_a_group_s_naics_codes_in_one_active_state_at_10_to_249_e
     assert {"5112", "51321", "5415", "51821"} <= set(tech) and "5418" in agencies
     assert all(2 <= len(c) <= 5 for c in tech + agencies)  # PHASE0-CONFIRM: Apollo takes 2 to 5 digits
     assert not any(c.startswith(p) for c in agencies for p in tech)  # nothing paid for twice
-    assert len(fake.searches) == 4  # Digital health's codes are Tech's: no search of its own
+    # Tech, Agencies and Legal Teams (on from launch, review Appendix A) in two states; Digital health's
+    # codes are Tech's, so it has no search of its own.
+    assert len(fake.searches) == 6
     assert all(r.method in ("GET", "POST") for r in t.requests)
     assert {c.action for c in ctx.guard.calls if c.system == "apollo"} <= APOLLO_READ_ACTIONS
 
@@ -278,7 +280,7 @@ def test_a_page_with_results_costs_one_credit_and_an_empty_page_none():
     ctx, _, _ = make([org(1)])
     uni.run(ctx)
     rows = ledger(ctx)
-    assert sorted(r["credits"] for r in rows) == [0.0, 0.0, 0.0, 1.0]
+    assert sorted(r["credits"] for r in rows) == [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]  # Legal Teams' two empty searches
     assert all(r["system"] == "apollo" and r["run_id"] == ctx.run_id and r["occurred_at"] == NOW for r in rows)
 
 

@@ -105,14 +105,16 @@ One worker with its own scheduler replaces Cloud Run Jobs and Cloud Scheduler (S
 See [docs/railway-setup.md](docs/railway-setup.md#where-this-differs-from-spec-harry-30-sep-2026).
 
 Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_aliases`,
-`partners`. `suppression` gains `expires_at` (only Suppress-signal domains expire) and
+`partners`, `lookalike_cells`. `suppression` gains `expires_at` (only Suppress-signal domains expire) and
 `contacts` gains `last_step_at` (for retention). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
 Clay function ids, and the credits-per-account estimates.
 
-Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack) and
-`suppression_load` (daily: HubSpot opt-outs and bounces). `stop` and `start` record the
+Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack),
+`suppression_load` (daily: HubSpot opt-outs and bounces) and `lookalikes` (Mondays: Spill's
+HubSpot customers as lookalike cells, a signal and an early exclusion; `sources/lookalikes.py`,
+Harry, 1 Oct 2026; `us-outbound lookalikes show` lists the cells). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`).
 
 For the 5 Oct pilot (1 Oct 2026): `verify_accounts` (weekdays 04:30) verifies accounts on their

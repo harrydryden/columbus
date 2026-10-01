@@ -3,8 +3,9 @@
 Every call is an Op the guard judges. Writes are limited to the six us_outbound_*
 properties, notes, tasks, Spill 3.0 deals and the three empty-only fields; records are
 created only for positive or referral replies. Reads (search, pipelines, owners,
-properties) are free in any mode. In dry-run every write returns its dry_result and
-sends nothing.
+properties, deal-to-company associations) are free in any mode. In dry-run every write
+returns its dry_result and sends nothing. The company and deal searches take the
+properties to read from the caller, so a job reads only the fields it needs.
 
 API: CRM v3 objects and search, v4 default associations, v3 pipelines/owners/properties,
 communication preferences v4 and the v3 GDPR delete.
@@ -21,6 +22,8 @@ from us_outbound.clients.http import HttpClient
 
 SEARCH_PAGE = 100  # HubSpot allows up to 200 per search page
 SEARCH_CAP = 10_000  # search never pages past 10k results; we re-query on hs_object_id instead
+MAX_FILTER_GROUPS = 5  # HubSpot's limit on filterGroups in one search
+ASSOCIATION_PAGE = 500  # v4 associations: up to 500 per page
 
 COMPANY_PROPS = (
     "name",
@@ -240,6 +243,70 @@ class HubSpot(HttpClient):
                 if len(results) < SEARCH_PAGE:
                     break
                 last = str(results[-1]["id"])
+
+    def _iter_by_object_id(self, obj: str, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
+        """Every record matching any of the filter groups (each a list of filters, all of which must hold), once.
+
+        Pages on hs_object_id > last seen (sorted ascending) rather than the after cursor, so the
+        search API's 10k-result cap never truncates the list. HubSpot allows five filter groups.
+        """
+        if not 1 <= len(filter_groups) <= MAX_FILTER_GROUPS:
+            raise ValueError(f"a HubSpot search takes 1 to {MAX_FILTER_GROUPS} filter groups, not {len(filter_groups)}")
+        props = sorted({*properties, "hs_object_id"})
+        last = "0"
+        while True:
+            groups = [{"filters": [*f, {"propertyName": "hs_object_id", "operator": "GT", "value": last}]}
+                      for f in filter_groups]
+            body = self.request(
+                "POST",
+                f"/crm/v3/objects/{obj}/search",
+                Op(f"{_SINGULAR.get(obj, obj)}.search", target=obj),
+                json={"filterGroups": groups, "properties": props,
+                      "sorts": [{"propertyName": "hs_object_id", "direction": "ASCENDING"}], "limit": SEARCH_PAGE},
+            ) or {}
+            results = body.get("results", [])
+            for r in results:
+                yield {"id": str(r["id"]), "properties": r.get("properties") or {}}
+            if len(results) < SEARCH_PAGE:
+                return
+            last = str(results[-1]["id"])
+
+    def iter_companies(self, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
+        """Companies matching any of the filter groups, each once, with only the properties named (read only)."""
+        return self._iter_by_object_id("companies", filter_groups, properties)
+
+    def iter_deals(self, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
+        """Deals matching any of the filter groups, each once, with only the properties named (read only)."""
+        return self._iter_by_object_id("deals", filter_groups, properties)
+
+    def companies_by_id(self, ids: Iterable[str], properties: Iterable[str]) -> list[dict]:
+        """The companies with these record ids: a search on hs_object_id IN, 100 ids at a time (read only)."""
+        wanted = sorted({str(i) for i in ids if str(i).strip()})
+        out: list[dict] = []
+        for i in range(0, len(wanted), SEARCH_PAGE):
+            chunk = wanted[i : i + SEARCH_PAGE]
+            groups = [[{"propertyName": "hs_object_id", "operator": "IN", "values": chunk}]]
+            out.extend(self._iter_by_object_id("companies", groups, properties))
+        return out
+
+    def deal_company_ids(self, deal_id: str) -> list[str]:
+        """Ids of the companies associated with a deal (v4 associations; a GET, read only)."""
+        ids: list[str] = []
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": ASSOCIATION_PAGE}
+            if after:
+                params["after"] = after
+            body = self.request(
+                "GET",
+                f"/crm/v4/objects/deals/{_quote(str(deal_id))}/associations/companies",
+                Op("association.list", target="deals/companies"),
+                params=params,
+            ) or {}
+            ids.extend(str(r["toObjectId"]) for r in body.get("results", []) if r.get("toObjectId") is not None)
+            after = ((body.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                return ids
 
     # -- writes (guarded; dry-run returns dry_result) ----------------------------
 

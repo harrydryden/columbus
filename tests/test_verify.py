@@ -260,7 +260,8 @@ def test_from_apollo_to_a_verified_scored_account():
     [a] = ctx.store.select("accounts")
     assert (a["domain"], a["status"], a["industry"], a["size_band"]) == ("company1.com", "verified", "Fintech", "50-99")
     matched = {e["value"]["signal"] for e in ctx.store.select("signal_events", {"source": "scoring"})}
-    assert "Recent funding" in matched  # apollo_org's funding fact, scored by the rescore
+    # apollo_org's funding fact, scored by the rescore (funding split by age, review Appendix A)
+    assert matched & {"Recent funding", "Funding 6–12 months ago"}
     jobs = {e["fact"]: e["value"] for e in ctx.store.select("signal_events", {"source": "apollo_jobs"})}
     assert (jobs["open_roles"], jobs["open_people_roles"]) == (3, 1)
     assert {r["job"] for r in ctx.store.select("credit_ledger")} == {"source_universe", "apollo_signals"}

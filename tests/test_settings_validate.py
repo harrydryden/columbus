@@ -122,9 +122,17 @@ def test_field_source_needs_a_condition(tabs):
 
 
 def test_text_source_takes_terms(tabs):
-    _row(tabs, "Signals", signal="EAP named")[1]["looks_for"] = "EAP; Lyra Health >= good"
+    _row(tabs, "Signals", signal="Mental health support listed")[1]["looks_for"] = "EAP; Lyra Health >= good"
     settings, _ = validate_all(tabs)
-    assert next(s for s in settings.signals if s.signal == "EAP named").terms == ("EAP", "Lyra Health >= good")
+    assert next(s for s in settings.signals if s.signal == "Mental health support listed").terms == (
+        "EAP", "Lyra Health >= good")
+
+
+def test_a_context_rule_names_only_its_own_terms(tabs):
+    """EAP named's context rule names Optum, Cigna, Carelon and Health Advocate: dropping one from looks_for fails."""
+    _row(tabs, "Signals", signal="EAP named")[1]["looks_for"] = "EAP; employee assistance; ComPsych"
+    e = _one(tabs, "Signals", "context_rule")
+    assert "'Optum', which is not in looks_for" in e.message
 
 
 def test_suggests_angle_not_on_angles(tabs):
@@ -160,9 +168,9 @@ def test_context_rule_on_a_condition(tabs):
 
 
 def test_max_weight_below_weight(tabs):
-    _row(tabs, "Signals", signal="Progressive benefits")[1]["max_weight"] = "5"
+    _row(tabs, "Signals", signal="Progressive benefits")[1]["max_weight"] = "4"
     e = _one(tabs, "Signals", "max_weight")
-    assert "at least the weight (10)" in e.message
+    assert "at least the weight (5)" in e.message
 
 
 def test_counts_for_days_at_least_one(tabs):
@@ -593,7 +601,7 @@ def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
     assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
-    assert not errors and len(signals) == 17
+    assert not errors and len(signals) == len(BASE["Signals"]) == 23
     bad = [dict(BASE["States"][0], active="sometimes")]
     states, errors = validate_tab("States", bad)
     assert states == () and errors == [RowError("States", 2, "active", "must be yes or no, not 'sometimes'", "AL")]

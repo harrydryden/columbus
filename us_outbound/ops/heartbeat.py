@@ -65,6 +65,7 @@ EXPECTED: dict[str, int] = {
     "daily_post": 26 * _H,  # 09:00 daily
     "monday_readout": 8 * _DAY,  # Mon 09:00
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
+    "lookalikes": 8 * _DAY,  # Mon 02:30 (build addition)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
 WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "verify_in_clay", "verify_accounts", "pick_contacts", "enrol"})

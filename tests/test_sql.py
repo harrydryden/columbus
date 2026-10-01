@@ -57,6 +57,10 @@ BUILD_TABLES: dict[str, set[str]] = {
     },
     "domain_aliases": {"alias", "root_domain", "source", "added_at"},
     "partners": {"domain", "name", "reason", "naics", "added_at"},
+    "lookalike_cells": {
+        "cell_id", "industry_label", "industry_group", "size_band", "active_customers", "churned_customers",
+        "us_active", "us_churned", "strength", "computed_at", "run_id",
+    },
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -68,8 +72,9 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
-INTS = {"employees", "us_employees", "founded_year", "score", "step"}
-FLOATS = {"clay_credits_used", "credits", "usd"}
+INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
+        "us_active", "us_churned"}
+FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 
 # Indexes the brief asks for (table -> leading columns); more are fine.
@@ -101,6 +106,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
     ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule"},
     ("hitl_items", "status"): {"open", "handled", "escalated"},
+    ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
 }
 
 

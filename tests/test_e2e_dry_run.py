@@ -10,8 +10,8 @@ Only the outside world is faked: the Sheets, Slack, HubSpot and Instantly APIs a
 FakeTransport, and the Postgres database is a MemoryStore. The Sheets API serves default_tabs() with the
 phase-0 fills (ids, postal address, privacy link, approved copy, Active mailboxes).
 
-The flow runs on Tue 29 Sep 2026: outside Q4, so the test account's raw score (100) is not
-cut by score_cap, and a 25-point weight change shows as 25 points.
+The flow runs on Tue 29 Sep 2026. The test account's raw score (80 with the design review's
+Appendix A weights, 1 Oct 2026) is not cut by score_cap, and a 25-point weight change shows as 25 points.
 """
 
 from __future__ import annotations
@@ -249,7 +249,7 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     s = flow["sync1"]
     detail = s["heartbeat"]["detail"]
     assert detail["rejected"] == [] and detail["unusable"] == [] and detail["alerted"] is False
-    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides", "Focus", "Named accounts"}  # empty tabs
+    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides", "Named accounts"}  # empty tabs
     assert [r for r in s["requests"] if r.method != "GET"] == []
     settings, errors = load_current(flow["world"].store)
     assert settings is not None and not any(errors.values())
@@ -258,7 +258,9 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
 
 def test_the_account_scores_priority_with_the_eap_angle_and_evidence(flow):
     a = flow["scored"]
-    assert (a["score"], a["tier"], a["angle"]) == (100, "Priority", "Upgrade the EAP")
+    # Mental health support 15, EAP named 5, Progressive benefits 5 (mental health days), People leader
+    # in place 10, New People leader 30, Hiring and growth 15; the values page no longer scores.
+    assert (a["score"], a["tier"], a["angle"]) == (80, "Priority", "Upgrade the EAP")
     assert "capped" not in a["tier_reason"] and "New People leader (+30)" in a["tier_reason"]
     matched = [e["value"]["signal"] for e in flow["world"].store.select("signal_events", {"source": "scoring"})]
     assert "EAP named" in matched and "New People leader" in matched
@@ -330,7 +332,7 @@ def test_every_job_left_a_heartbeat(flow):
 
 def test_changing_a_weight_changes_the_score_after_the_next_sync(flow):
     detail = flow["sync2"]["heartbeat"]["detail"]
-    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 16}
+    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": len(default_tabs()["Signals"]) - 1}
     assert detail["rescored"] is True
     before, after = flow["scored"], flow["reweighted"]
     assert before["score"] - after["score"] == 25

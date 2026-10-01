@@ -20,6 +20,7 @@ from us_outbound.settings.validate import FIRST_DATA_ROW, natural_key, validate_
 T1 = datetime(2026, 10, 1, 1, 0, tzinfo=UTC)
 T2 = datetime(2026, 10, 2, 1, 0, tzinfo=UTC)
 T3 = datetime(2026, 10, 3, 1, 0, tzinfo=UTC)
+N_SIGNALS = len(default_tabs()["Signals"])  # 23 since the design review's Appendix A (1 Oct 2026)
 
 
 class StubSheets:
@@ -113,13 +114,13 @@ def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     assert _in_force(ctx, "General", "live_sending")["values"] == {"key": "live_sending", "value": "no", "note": _row(sheet, "General", key="live_sending")[1]["note"]}
     assert _in_force(ctx, "Copy", "cpa-firms-v1")["values"]["industry"] == "CPA firms"
     assert _in_force(ctx, "Mailboxes", "sam@meetspill.org")
-    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 17, "changed": 0, "removed": 0, "unchanged": 0}
+    assert summary["tabs"]["Signals"] == {"status": "synced", "added": N_SIGNALS, "changed": 0, "removed": 0, "unchanged": 0}
     assert summary["tabs"]["Overrides"]["status"] == "unchanged"
     assert summary["rejected"] == [] and summary["errors"] == 0 and summary["rescored"] is True
     assert ctx.clients.slack.posts == []
     # The rescore sees the settings now in force.
     (rescore_ctx,) = fake_score.calls
-    assert len(rescore_ctx.settings.signals) == 17
+    assert len(rescore_ctx.settings.signals) == N_SIGNALS
     assert rescore_ctx.settings.versions["Signals"] == T1
     assert rescore_ctx.run_id == ctx.run_id and rescore_ctx.store is ctx.store
 
@@ -141,10 +142,10 @@ def test_changed_weight_closes_the_old_row_and_opens_a_new_one(ctx, sheet, fake_
     _row(sheet, "Signals", signal="EAP named")[1]["weight"] = "15"
     ctx.now = T2
     summary = sync.run(ctx)
-    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 16}
+    assert summary["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": N_SIGNALS - 1}
     assert summary["rows_opened"] == summary["rows_closed"] == 1
     old, new = sorted(_rows(ctx, tab="Signals", key="EAP named"), key=lambda r: r["effective_from"])
-    assert (old["effective_from"], old["effective_to"], old["values"]["weight"]) == (T1, T2, "10")
+    assert (old["effective_from"], old["effective_to"], old["values"]["weight"]) == (T1, T2, "5")
     assert (new["effective_from"], new["effective_to"], new["synced_at"], new["values"]["weight"]) == (T2, None, T2, "15")
     assert _in_force(ctx, "Signals", "Layoffs")["effective_from"] == T1  # untouched
     settings, errors = sync.load_current(ctx.store)
@@ -190,7 +191,7 @@ def test_bad_tab_keeps_previous_version_and_posts_one_message(ctx, sheet, fake_s
     assert summary["rejected"] == ["Signals"] and summary["unusable"] == []
     assert summary["tabs"]["Signals"] == {"status": "kept_previous", "errors": 1}
     assert _in_force(ctx, "Signals", "Layoffs")["values"]["action"] == "Suppress"
-    assert _in_force(ctx, "Signals", "EAP named")["values"]["weight"] == "10"
+    assert _in_force(ctx, "Signals", "EAP named")["values"]["weight"] == "5"
     assert _in_force(ctx, "States", "NC")["values"]["active"] == "yes"
 
     (post,) = ctx.clients.slack.posts
@@ -236,7 +237,7 @@ def test_new_signal_naming_an_angle_on_a_rejected_angles_tab_waits(ctx, sheet):
     ctx.now = T2
     summary = sync.run(ctx)
     assert summary["rejected"] == ["Signals", "Angles"]
-    assert _in_force(ctx, "Signals", "Recent funding")["values"]["suggests_angle"] == "Growing team"
+    assert _in_force(ctx, "Signals", "Funding in the last 6 months")["values"]["suggests_angle"] == "Growing team"
     (post,) = ctx.clients.slack.posts
     assert "Angles row" in post[1] and "active: must be yes or no" in post[1]
     assert "suggests_angle: 'Growing fast' is not on the Angles tab" in post[1]

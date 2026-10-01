@@ -13,7 +13,7 @@ Harry's decisions on 30 Sep 2026:
 - The enrolment target is weekly: 150, Monday to Sunday, UK time.
 - Steps go a week apart.
 - The sheet gets an industry focus and named companies.
-- Lookalikes wait.
+- Lookalikes wait. (Superseded 1 Oct: lookalikes from Spill's HubSpot customers; see "How Harry can steer the system".)
 
 The list of changes is at the end.
 
@@ -337,7 +337,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **Adding the two new tabs to your sheet.** Add a tab named `Focus` with the header row `industry_group | share | note`, and a tab named `Named accounts` with `domain | name | note`. Until they exist, the sync reads them as empty and carries on.
 
-**Lookalikes** (a Seeds tab of companies to find more like) wait, as Harry decided.
+**Lookalikes** come from Spill's own HubSpot customers instead of a Seeds tab (Harry, 1 Oct 2026: "I'm happy using Spill companies from HubSpot to help inform lookalike target lists"). The weekly `lookalikes` job (`sources/lookalikes.py`, Mondays 02:30 UK) reads customer companies read-only, at company level only, and counts them into cells of industry label × size band. The cells feed the "Looks like Spill's customers" signal, keep every customer domain (current or former) out of the queue from the front door on, and are listed by `us-outbound lookalikes show` for the Focus tab and sourcing priorities.
 
 ## Changes for Harry
 
@@ -361,7 +361,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | `claude_model` (Opus) writes; `claude_task_model` (Sonnet) checks and classifies | Harry | 1.1 | Done |
 | 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |
 | 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
-| 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Deferred |
+| 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Replaced 1 Oct by lookalikes from Spill's HubSpot customers (Harry); built |
 | 14 | The Instantly plan's caps as a fourth term, from its API or `instantly_monthly_emails` | The workspace is shared with the EU campaigns | 1.2, 9 | Proposed; the phase 0 check first |
 
 ## Which value wins
