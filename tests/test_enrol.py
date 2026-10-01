@@ -640,3 +640,49 @@ def test_created_ids_match_by_index_then_email():
     leads = [{"email": "a@x.com"}, {"email": "b@x.com"}]
     got = enrol._created_ids({"created_leads": [{"index": 5, "id": "L2", "email": "b@x.com"}, {"index": 0, "id": "L1"}]}, leads)
     assert got == {0: "L1", 1: "L2"}
+
+
+# -- which contact (Harry, 1 Oct 2026: the best-ranked sendable one) ----------------------------------------
+
+
+def _with_default_roles(**general):
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    return dataclasses.replace(make_settings(**general), roles=validate_all(default_tabs())[0].roles)
+
+
+RANKED_CONTACTS = [
+    contact(contact_id="k-cfo", email="cfo@acmecreative.com", title="CFO", role="Finance", created_at="2026-09-01"),
+    contact(contact_id="k-hr", email="hr@acmecreative.com", title="HR Manager", created_at="2026-10-01"),
+    contact(contact_id="k-om", email="om@acmecreative.com", title="Office Manager", role="Operations",
+            created_at="2026-10-02"),
+    contact(contact_id="k-hop", email="hop@acmecreative.com", title="Head of People", created_at="2026-10-03"),
+    contact(contact_id="k-ceo", email="ceo@acmecreative.com", title="CEO", role="Founder or executive",
+            created_at="2026-10-04"),
+]
+
+
+@pytest.mark.parametrize("employees, band, chosen", [
+    (30, "20-49", "k-ceo"),  # 10-49: the founder first, though created last
+    (120, "100-249", "k-hop"),  # 50-249: the senior People leader first
+])
+def test_enrol_takes_the_best_ranked_sendable_contact(employees, band, chosen):
+    ctx, _ = make(live=True, settings=_with_default_roles(live_sending=True),
+                  accounts=[account(employees=employees, size_band=band)], contacts=[dict(c) for c in RANKED_CONTACTS])
+    assert enrol.run(ctx)["enrolled"] == 1
+    assert [c["contact_id"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")] == [chosen]
+
+
+def test_enrol_passes_over_an_unsendable_best_contact():
+    s, a = _with_default_roles(), account(employees=30, size_band="20-49")
+    cons = [
+        contact(contact_id="k-om", email="om@acmecreative.com", title="Office Manager", created_at="2026-10-01"),
+        contact(contact_id="k-ceo", email="ceo@acmecreative.com", title="CEO", person_state="CA", created_at="2026-10-02"),
+        contact(contact_id="k-hop", email="hop@acmecreative.com", title="Head of People", created_at="2026-10-03"),
+    ]
+    assert enrol.pick_contact(cons, set(), set(), a, s) == (cons[2], "")
+    assert enrol.pick_contact(cons[1:2], set(), set(), a, s) == (None, "contact in CA or WA")
+    # Without a Roles tab or an account, the first created, as before.
+    assert enrol.pick_contact(cons, set(), set())[0]["contact_id"] == "k-om"
+    assert enrol.pick_contact(cons, set(), set(), a, make_settings())[0]["contact_id"] == "k-om"

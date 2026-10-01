@@ -349,17 +349,86 @@ def test_states(tabs):
 
 
 def test_roles(tabs):
-    _row(tabs, "Roles", role="Operations")[1]["fallback_order"] = "10-49"
-    e = _one(tabs, "Roles", "fallback_order")
-    assert "range:rank" in e.message
+    _row(tabs, "Roles", role="Operations")[1]["order_10_49"] = "first"
+    e = _one(tabs, "Roles", "order_10_49")
+    assert "whole number" in e.message
     t = copy.deepcopy(BASE)
-    _row(t, "Roles", role="Founder or executive")[1]["first_choice_for_size"] = "10-99"
-    e = _one(t, "Roles", "first_choice_for_size")
-    assert "overlaps People leader" in e.message
+    _row(t, "Roles", role="Operations")[1]["order_50_249"] = "0"
+    assert "rank from 1" in _one(t, "Roles", "order_50_249").message
     t = copy.deepcopy(BASE)
     _row(t, "Roles", role="Finance")[1]["titles"] = "CFO; COO"
     e = _one(t, "Roles", "titles")
     assert "also a title of Operations" in e.message
+    t = copy.deepcopy(BASE)  # however it is spelled
+    _row(t, "Roles", role="HR manager")[1]["titles"] += "; Head of Human Resources"
+    assert "also a title of People leader" in _one(t, "Roles", "titles").message
+
+
+def test_roles_copy_role_and_who_is_contacted(tabs):
+    _row(tabs, "Roles", role="HR manager")[1]["copy_role"] = "HR"
+    assert "must be one of People leader" in _one(tabs, "Roles", "copy_role").message
+    t = copy.deepcopy(BASE)
+    _row(t, "Roles", role="Finance")[1]["order_50_249"] = "6"  # contacted, but Finance has no copy line
+    assert "set copy_role" in _one(t, "Roles", "copy_role").message
+    t = copy.deepcopy(BASE)
+    for r in t["Roles"]:
+        r["order_10_49"] = ""
+    e = _one(t, "Roles", "order_10_49")
+    assert (e.row, e.message) == (HEADER_ROW, "no row is contacted at 10-49 staff")
+    t = copy.deepcopy(BASE)  # two rows may share a rank, and a copy role may have several rows
+    _row(t, "Roles", role="Operations")[1]["order_10_49"] = "1"
+    settings, errors = validate_all(t)
+    assert settings is not None, errors
+    assert next(r for r in settings.roles if r.role == "HR manager").writes_as == "People leader"
+
+
+def test_roles_industry_groups_are_on_the_industries_tab(tabs):
+    _row(tabs, "Roles", role="Partner at a professional firm")[1]["industry_groups"] = "legal teams; Law firms"
+    e = _one(tabs, "Roles", "industry_groups")
+    assert "'Law firms' is not an industry_group" in e.message
+    t = copy.deepcopy(BASE)
+    _row(t, "Roles", role="Partner at a professional firm")[1]["industry_groups"] = "legal teams"
+    settings, _ = validate_all(t)
+    assert next(r for r in settings.roles if r.role == "Partner at a professional firm").industry_groups == ("Legal Teams",)
+
+
+# The Roles tab as SPEC 5 laid it out, before 1 Oct 2026; a sheet made then still has it.
+LEGACY_ROLES = [
+    {"role": "People leader", "titles": "Head of People; HR Manager", "first_choice_for_size": "50-249",
+     "fallback_order": "", "note": ""},
+    {"role": "Founder or executive", "titles": "CEO; Founder", "first_choice_for_size": "10-49",
+     "fallback_order": "50-249:3", "note": ""},
+    {"role": "Operations", "titles": "COO; Office Manager", "first_choice_for_size": "",
+     "fallback_order": "10-49:2; 50-249:2", "note": ""},
+    {"role": "Finance", "titles": "CFO", "first_choice_for_size": "", "fallback_order": "", "note": "not contacted"},
+]
+
+
+def test_the_spec5_roles_layout_is_still_read(tabs):
+    tabs["Roles"] = copy.deepcopy(LEGACY_ROLES)
+    settings, errors = validate_all(tabs)
+    assert settings is not None, {t: [str(x) for x in e] for t, e in errors.items() if e}
+    order = {r.role: dict(r.order) for r in settings.roles}
+    assert order == {"People leader": {"50-249": 1}, "Founder or executive": {"10-49": 1, "50-249": 3},
+                     "Operations": {"10-49": 2, "50-249": 2}, "Finance": {}}
+    founder = settings.roles[1]
+    assert founder.first_choice_for_size == ("10-49",) and founder.fallback_order == {"50-249": 3}
+    tabs["Roles"][2]["fallback_order"] = "10-49"
+    assert "range:rank" in _one(tabs, "Roles", "fallback_order").message
+
+
+def test_settings_load_replaces_the_spec5_roles_layout_and_keeps_a_new_one():
+    from us_outbound.settings import load as loader
+
+    assert "Roles" in loader.LOADABLE
+    build = BASE["Roles"]
+    plan = loader.plan_tab("Roles", copy.deepcopy(LEGACY_ROLES), build)
+    assert plan.replaced_layout and plan.rows == build
+    edited = copy.deepcopy(build[:-1])  # Harry's edit, and no Finance row
+    edited[0]["titles"] += "; Chief Executive"
+    plan = loader.plan_tab("Roles", edited, build)
+    assert not plan.replaced_layout and plan.added == ["Finance"]
+    assert plan.rows[0]["titles"].endswith("; Chief Executive") and plan.rows[-1] == build[-1]
 
 
 def test_copy(tabs):

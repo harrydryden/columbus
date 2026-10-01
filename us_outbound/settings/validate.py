@@ -22,6 +22,7 @@ from datetime import date, time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from us_outbound.clean.people import title_key
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
@@ -34,6 +35,7 @@ from us_outbound.settings.model import (
     PAGE_FIELDS,
     QA_VERDICTS,
     ROLE_LINE_COLUMNS,
+    ROLE_ORDER_COLUMNS,
     OPTIONAL_TABS,
     SOURCE_FIELDS,
     SOURCE_KEYS,
@@ -66,9 +68,14 @@ OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be pre
 TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Industries": frozenset(f"page_{f}" for f in PAGE_FIELDS),
     "Copy": frozenset({"qa_notes", "sources"}),
+    "Roles": frozenset({"copy_role", "industry_groups"}),
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
+# The Roles tab's layout before 1 Oct 2026 (SPEC 5): still read, as the same order, until
+# `us-outbound settings load --tab Roles` replaces it with the new rows.
+LEGACY_ROLES_COLUMNS = frozenset({"first_choice_for_size", "fallback_order"})
+MAX_ROLE_RANK = 20
 MAY_BE_EMPTY = frozenset({"Overrides", "Tests", *OPTIONAL_TABS})  # an empty tab anywhere else is almost surely a mistake
 NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
@@ -275,11 +282,6 @@ def parse_size_range(text: str) -> str:
     return f"{lo}-{hi}"
 
 
-def _span(size_range: str) -> tuple[int, int]:
-    lo, _, hi = size_range.partition("-")
-    return int(lo), int(hi)
-
-
 def parse_fallback_order(text: str) -> dict[str, int]:
     """"10-49:2; 50-249:3" -> {"10-49": 2, "50-249": 3}. Rank 1 is the first choice, so ranks start at 2."""
     out: dict[str, int] = {}
@@ -374,6 +376,12 @@ def is_legacy_copy(columns: Iterable[str]) -> bool:
     return LEGACY_COPY_COLUMNS <= cols and "s1_body" not in cols
 
 
+def is_legacy_roles(columns: Iterable[str]) -> bool:
+    """True for a Roles tab still in SPEC 5's layout (first_choice_for_size, fallback_order; before 1 Oct 2026)."""
+    cols = set(columns)
+    return bool(LEGACY_ROLES_COLUMNS & cols) and not set(ROLE_ORDER_COLUMNS) & cols
+
+
 def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[RowError]) -> list[_Row] | None:
     """Tab-level checks; None when the tab cannot be read row by row."""
     if rows is None:
@@ -389,6 +397,8 @@ def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[Ro
     present = set().union(*(set(r) for r in rows))
     if tab == "Copy" and is_legacy_copy(present):
         return []  # the old one-row-per-step layout: no copy until the new tab is loaded (sync says so)
+    if tab == "Roles" and is_legacy_roles(present):
+        return [_Row(tab, i + FIRST_DATA_ROW, r, errors) for i, r in enumerate(rows)]  # read by _legacy_role_order
     optional = OPTIONAL_COLUMNS | TAB_OPTIONAL_COLUMNS.get(tab, frozenset())
     missing = [c for c in COLUMNS[tab] if c not in present and c not in optional]
     if missing:
@@ -698,43 +708,78 @@ def _states(rows: list[_Row]) -> list[tuple[State, int]]:
     return out
 
 
+def _role_rank(text: str) -> int:
+    n = parse_int(text)
+    if not 1 <= n <= MAX_ROLE_RANK:
+        raise ValueError(f"must be a rank from 1 (contacted first) to {MAX_ROLE_RANK}, or blank (not contacted)")
+    return n
+
+
+def _legacy_role_order(r: _Row) -> dict[str, int]:
+    """SPEC 5's first_choice_for_size and fallback_order as one {size range: rank}."""
+    first = r.parse(
+        "first_choice_for_size", lambda t: tuple(parse_size_range(x) for x in split_list(t, ";,")),
+        required=False, default=(),
+    )
+    order = dict.fromkeys(first or (), 1)
+    for rng, rank in (r.parse("fallback_order", parse_fallback_order, required=False, default={}) or {}).items():
+        if rng in order:
+            r.fail("fallback_order", f"{rng} is already this role's first choice")
+        order[rng] = rank
+    return order
+
+
+def _role_order(r: _Row) -> dict[str, int]:
+    """{size range: rank} from the order_10_49 and order_50_249 columns; a blank one is not contacted."""
+    order: dict[str, int] = {}
+    for col, rng in ROLE_ORDER_COLUMNS.items():
+        rank = r.parse(col, _role_rank, required=False)
+        if rank is not None:
+            order[rng] = rank
+    return order
+
+
 def _roles(rows: list[_Row]) -> list[tuple[Role, int]]:
+    """Roles (Harry, 1 Oct 2026): one row per group of titles, its copy role, and its rank at each size.
+
+    Two rows may share a rank (a founder and a law firm's partner both come first at 10 to
+    49 staff): seniority then decides (clean/people.rank_person). A title may not be on two
+    rows, however it is spelled ("Head of HR", "Head of Human Resources"). A row that is
+    contacted at some size needs a copy role with a line on the Copy tab. Every size needs at
+    least one row that is contacted there. The SPEC 5 layout (first_choice_for_size,
+    fallback_order) is still read, as the same order.
+    """
     out: list[tuple[Role, int]] = []
     names: dict[str, int] = {}
     titles_seen: dict[str, tuple[str, int]] = {}
-    first_seen: list[tuple[str, str, int]] = []  # (range, role, row)
-    ranks_seen: dict[tuple[str, int], tuple[str, int]] = {}
+    legacy = bool(rows) and is_legacy_roles(set().union(*(set(r.raw) for r in rows)))
+    copy_roles = {k.casefold() for k in ROLE_LINE_COLUMNS}
     for r in rows:
         role = r.parse("role", str)
         _unique(r, "role", role.casefold() if role else None, names, f"role {role!r}")
         titles = r.parse("titles", lambda t: split_list(t, ";") or _fail("lists no titles"))
         for t in titles or ():
-            other = titles_seen.get(t.casefold())
+            other = titles_seen.get(title_key(t))
             if other and other[0] != role:
                 r.fail("titles", f"{t!r} is also a title of {other[0]} (row {other[1]})")
             else:
-                titles_seen[t.casefold()] = (role, r.number)
-        first = r.parse(
-            "first_choice_for_size", lambda t: tuple(parse_size_range(x) for x in split_list(t, ";,")),
-            required=False, default=(),
-        )
-        fallback = r.parse("fallback_order", parse_fallback_order, required=False, default={})
-        for rng in first or ():
-            if rng in (fallback or {}):
-                r.fail("fallback_order", f"{rng} is already this role's first choice")
-            lo, hi = _span(rng)
-            for other_rng, other_role, other_row in first_seen:
-                olo, ohi = _span(other_rng)
-                if lo <= ohi and olo <= hi:
-                    r.fail("first_choice_for_size", f"{rng} overlaps {other_role}'s first choice {other_rng} (row {other_row})")
-            first_seen.append((rng, role, r.number))
-        for rng, rank in (fallback or {}).items():
-            other = ranks_seen.get((rng, rank))
-            if other:
-                r.fail("fallback_order", f"{rng}:{rank} is also {other[0]}'s rank (row {other[1]})")
-            ranks_seen[(rng, rank)] = (role, r.number)
+                titles_seen[title_key(t)] = (role, r.number)
+        if legacy:
+            order, copy_role, groups = _legacy_role_order(r), "", ()
+        else:
+            order = _role_order(r)
+            copy_role = r.parse("copy_role", one_of(ROLE_LINE_COLUMNS), required=False, default="")
+            groups = r.parse("industry_groups", lambda t: split_list(t, ";,"), required=False, default=())
+        if order and role and not r.text("copy_role") and role.casefold() not in copy_roles:
+            r.fail("copy_role", f"a row that is contacted gets the copy of one of {', '.join(ROLE_LINE_COLUMNS)}; "
+                                "set copy_role to one of them")
         if r.ok:
-            out.append((Role(role, titles, first, fallback), r.number))
+            out.append((Role(role, titles, order, copy_role, groups), r.number))
+    if rows and not legacy:
+        contacted = {rng for role, _ in out for rng in role.order}
+        for col, rng in ROLE_ORDER_COLUMNS.items():
+            if rng not in contacted and all(r.ok for r in rows):
+                rows[0].errors.append(RowError("Roles", HEADER_ROW, col, f"no row is contacted at {rng} staff"))
     return out
 
 
@@ -1018,6 +1063,18 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
                 continue
         copy_rows.append((dataclasses.replace(c, industry=canonical, role=role), row))
     values["Copy"] = copy_rows
+
+    # A Roles row's industry_groups are groups on the Industries tab ("Partner" at law firms).
+    role_rows = []
+    for role, row in values["Roles"]:
+        unknown = [g for g in role.industry_groups if g.casefold() not in groups]
+        for g in unknown:
+            errors["Roles"].append(RowError("Roles", row, "industry_groups", f"{g!r} is not an industry_group on the "
+                                            f"Industries tab{_hint(g, groups.values())}", role.role))
+        if not unknown:
+            role = dataclasses.replace(role, industry_groups=tuple(groups[g.casefold()] for g in role.industry_groups))
+            role_rows.append((role, row))
+    values["Roles"] = role_rows
 
     # A test's versions may be written after it is planned; a running test needs both approved.
     versions = {_cell(r, "copy_version").casefold(): _cell(r, "status").lower() for r in raw["Copy"] or ()}

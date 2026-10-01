@@ -76,7 +76,7 @@ JOBS: dict[str, str] = {
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
     "score": "us_outbound.scoring.score:rescore",
-    "pick_contacts": "not built yet (phase 2)",
+    "pick_contacts": "us_outbound.contacts.pick:run",
     "enrol": "us_outbound.enrol.enrol:run",
     "poll_replies": "not built yet (phase 2)",
     "poll_approvals": "not built yet (phase 2)",
@@ -816,8 +816,8 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("settings", parents=[live], help="sync the sheet, create it, or load the build's tabs into it")
     st.add_argument("action", choices=["sync", "bootstrap", "load"])
     st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
-    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy"],
-                    help="load: the tab (default all three)")
+    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy", "Roles"],
+                    help="load: the tab (default all four)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.set_defaults(fn=cmd_settings)
 

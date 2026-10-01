@@ -73,6 +73,8 @@ EMAIL_FORMATS = ("html", "text")
 # The contacted roles (Roles tab) and the Copy-tab column holding each one's line for email 1.
 ROLE_LINE_COLUMNS = {"People leader": "people_leader_line", "Founder or executive": "founder_line",
                      "Operations": "operations_line"}
+# The Roles tab's two size columns and the range each covers (SPEC 5 "Who to contact first").
+ROLE_ORDER_COLUMNS = {"order_10_49": "10-49", "order_50_249": "50-249"}
 QA_VERDICTS = ("pass", "fail")
 TEST_STATUSES = ("planned", "running", "read", "stopped")
 SIZE_BANDS = ("10-19", "20-49", "50-99", "100-249")
@@ -220,17 +222,58 @@ class State:
 
 @dataclass(frozen=True)
 class Role:
-    """Roles tab. first_choice_for_size and fallback_order use size ranges like "10-49".
+    """A Roles-tab row: a group of titles, the copy its contacts get, and its place in the order by size.
 
-    first_choice_for_size: the ranges where this role is contacted first, e.g. ("50-249",).
-    fallback_order: {range: rank} for the ranges where it is a fallback, e.g. {"10-49": 2}.
-    A role with neither for a company's size is not contacted at that size.
+    Harry, 1 Oct 2026: wide title lists, and an order for each size band (SPEC 5 "Who to contact
+    first"), led by seniority. A copy role can have more than one row: "HR manager" comes fourth
+    at 50 to 249 staff, after the senior People leaders, but its contacts get the People leader copy.
+
+    role:            the row's name, unique on the tab (the settings key).
+    titles:          matched as whole phrases (clean/people.py).
+    order:           {size range: rank}, e.g. {"10-49": 1, "50-249": 2}; 1 is contacted first. A size
+                     with no rank is not contacted (Finance has none).
+    copy_role:       the role whose Copy-tab line its contacts get (ROLE_LINE_COLUMNS); blank means role.
+    industry_groups: when set, the titles count only at accounts in these groups ("Partner" at law firms).
     """
 
     role: str
     titles: tuple[str, ...]
-    first_choice_for_size: tuple[str, ...] = ()
-    fallback_order: dict[str, int] = field(default_factory=dict)
+    order: Mapping[str, int] = field(default_factory=dict)
+    copy_role: str = ""
+    industry_groups: tuple[str, ...] = ()
+
+    @property
+    def writes_as(self) -> str:
+        """The role written on contacts.role, which picks the copy's role line."""
+        return self.copy_role or self.role
+
+    def order_at(self, employees: int | None) -> int | None:
+        """This row's rank at a company of this size, or None when it is not contacted there."""
+        if employees is None:
+            return None
+        ranks = [rank for rng, rank in self.order.items() if _in_range(employees, rng)]
+        return min(ranks) if ranks else None
+
+    def counts_in(self, industry_group: str) -> bool:
+        """Whether the titles count at an account in this industry group."""
+        if not self.industry_groups:
+            return True
+        return industry_group.casefold() in {g.casefold() for g in self.industry_groups}
+
+    @property
+    def first_choice_for_size(self) -> tuple[str, ...]:
+        """The SPEC 5 view: the size ranges where this row comes first."""
+        return tuple(rng for rng, rank in self.order.items() if rank == 1)
+
+    @property
+    def fallback_order(self) -> dict[str, int]:
+        """The SPEC 5 view: {size range: rank} where this row is a fallback."""
+        return {rng: rank for rng, rank in self.order.items() if rank > 1}
+
+
+def _in_range(employees: int, size_range: str) -> bool:
+    lo, _, hi = size_range.partition("-")
+    return int(lo) <= employees <= int(hi)
 
 
 @dataclass(frozen=True)

@@ -191,29 +191,48 @@ def test_states(tabs, settings):
     assert notes["CA"] == notes["WA"] == "never (also enforced in code)"
 
 
-def _contact_order(roles, employees: int) -> list[str]:
-    """Who to contact first at a company size, from the Roles tab alone."""
-    ranked = []
-    for r in roles:
-        for rng in r.first_choice_for_size:
-            lo, hi = map(int, rng.split("-"))
-            if lo <= employees <= hi:
-                ranked.append((1, r.role))
-        for rng, rank in r.fallback_order.items():
-            lo, hi = map(int, rng.split("-"))
-            if lo <= employees <= hi:
-                ranked.append((rank, r.role))
-    return [role for _, role in sorted(ranked)]
+def _contact_order(roles, employees: int) -> list[tuple[int, str, str]]:
+    """Who to contact first at a company size, from the Roles tab alone: (rank, row, the copy it gets)."""
+    return sorted((r.order_at(employees), r.role, r.writes_as) for r in roles if r.order_at(employees) is not None)
 
 
 def test_roles_encode_who_to_contact_first(settings):
-    assert _contact_order(settings.roles, 30) == ["Founder or executive", "Operations"]
-    assert _contact_order(settings.roles, 120) == ["People leader", "Operations", "Founder or executive"]
+    """Harry, 1 Oct 2026: the size-band order, led by seniority; Finance never contacted."""
+    assert _contact_order(settings.roles, 30) == [
+        (1, "Founder or executive", "Founder or executive"),
+        (1, "Partner at a professional firm", "Founder or executive"),
+        (2, "People leader", "People leader"),
+        (3, "Operations", "Operations"),
+        (4, "Office or firm administrator", "Operations"),
+    ]
+    assert _contact_order(settings.roles, 120) == [
+        (1, "People leader", "People leader"),
+        (2, "Founder or executive", "Founder or executive"),
+        (2, "Partner at a professional firm", "Founder or executive"),
+        (3, "Operations", "Operations"),
+        (4, "HR manager", "People leader"),
+        (5, "Office or firm administrator", "Operations"),
+    ]
+    assert _contact_order(settings.roles, 49) == _contact_order(settings.roles, 10)
+    assert _contact_order(settings.roles, 249) == _contact_order(settings.roles, 50)
     finance = next(r for r in settings.roles if r.role == "Finance")
-    assert not finance.first_choice_for_size and not finance.fallback_order
-    assert finance.titles == ("CFO", "Finance Director", "Head of Finance", "Controller")
-    people = next(r for r in settings.roles if r.role == "People leader")
-    assert "People & Culture" in people.titles and len(people.titles) == 8
+    assert not finance.order and not finance.first_choice_for_size and not finance.fallback_order
+    assert "CFO" in finance.titles and "Controller" in finance.titles
+    by_role = {r.role: r for r in settings.roles}
+    assert {r.writes_as for r in settings.roles if r.order} == {"People leader", "Founder or executive", "Operations"}
+    people = by_role["People leader"]
+    assert {"CHRO", "Chief People Officer", "VP of People", "Head of HR", "Director of People", "HR Director",
+            "People and Culture Lead", "People and Culture Director"} <= set(people.titles)
+    assert "HR Manager" not in people.titles and "HR Manager" in by_role["HR manager"].titles
+    assert {"Owner", "Principal", "Partner", "General Manager"} <= set(by_role["Founder or executive"].titles
+                                                                       + by_role["Partner at a professional firm"].titles)
+    assert by_role["Partner at a professional firm"].industry_groups == ("Legal Teams", "Professional Services")
+    assert {"Office Manager", "Firm Administrator"} <= set(by_role["Office or firm administrator"].titles)
+    assert not {"Office Manager", "Firm Administrator"} & set(by_role["Operations"].titles)
+
+
+def test_every_role_row_explains_itself(tabs):
+    assert all(r["note"] for r in tabs["Roles"])
 
 
 def test_mailboxes(settings):

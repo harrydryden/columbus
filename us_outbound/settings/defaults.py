@@ -32,7 +32,8 @@ COLUMNS: dict[str, list[str]] = {
         "page_features", "page_faqs", "page_customers", "note",
     ],
     "States": ["state", "active", "note"],
-    "Roles": ["role", "titles", "first_choice_for_size", "fallback_order", "note"],
+    # One row per group of titles, with its order at each size (Harry, 1 Oct 2026).
+    "Roles": ["role", "copy_role", "titles", "order_10_49", "order_50_249", "industry_groups", "note"],
     # One row per industry (and optionally role), the four emails across (Harry, 30 Sep 2026).
     "Copy": [
         "copy_version", "industry", "role", "status", "approved_by", "qa", "qa_notes",
@@ -300,26 +301,72 @@ _STATE_NOTES = {
     "WA": "never (also enforced in code)",
 }
 
-# -- Roles (SPEC 5, "Who to contact first") ---------------------------------------
+# -- Roles (SPEC 5, "Who to contact first"; Harry, 1 Oct 2026) -----------------------
+# "Targeting the right contact is paramount... the closer to seniority and decision maker the
+# better, whilst also having the time to engage in understanding Spill." Spill's HubSpot win
+# rates by the main contact's title (docs/gtm-review/05-spill-evidence.md §3.5): founders and
+# CEOs 55%; senior People leaders 42%, 50% at 50+ staff; Operations 35%, 25% at 50+; HR
+# Managers and generalists 22-26%; Finance 30% (n = 10). Seniority matters more than function.
+# Rows: (role, copy_role, titles, order_10_49, order_50_249, industry_groups, note). Within a
+# rank, clean/people.py ranks by seniority, then by how well the title matches.
 
-_ROLES: list[tuple[str, str, str, str, str]] = [
+_ROLES: list[tuple[str, str, str, str, str, str, str]] = [
     (
-        "People leader",
-        "Head of People; VP People; Chief People Officer; People Ops Lead; HR Director; Director of HR; "
-        "HR Manager; People & Culture",
-        "50-249", "", "First choice at 50 to 249 staff.",
+        "Founder or executive", "",
+        "CEO; Founder; Co-founder; Founding Partner; Owner; Co-owner; President; Managing Partner; "
+        "Managing Director; Managing Principal; Managing Member; Executive Director; Founding Director; "
+        "General Manager",
+        "1", "2", "",
+        "Founders and CEOs win 55% of Spill's deals at every size. First at 10 to 49 staff, second at 50 to 249.",
     ),
     (
-        "Founder or executive",
-        "CEO; Founder; Co-founder; President; Managing Partner; Managing Director; Executive Director",
-        "10-49", "50-249:3", "First choice at 10 to 49 staff; third at 50 to 249.",
+        "Partner at a professional firm", "Founder or executive",
+        "Partner; Senior Partner; Equity Partner; Principal",
+        "1", "2", "Legal Teams; Professional Services",
+        "Partners and principals own law, accounting, consulting and design firms. Elsewhere these words name "
+        "other jobs (Partner Manager, Principal Engineer), so they count only in these groups.",
     ),
     (
-        "Operations",
-        "COO; Chief of Staff; Head of Operations; Director of Operations; Office Manager; Firm Administrator",
-        "", "10-49:2; 50-249:2", "Second choice at every size.",
+        "People leader", "",
+        "Chief People Officer; CPO; Chief Human Resources Officer; CHRO; Chief People and Culture Officer; "
+        "VP of People; VP of HR; VP of People and Culture; VP of People Operations; VP of Total Rewards; "
+        "Head of People; Head of HR; Head of People and Culture; Head of People Operations; "
+        "Head of Total Rewards; Head of Benefits; Director of People; Director of HR; "
+        "Director of People and Culture; Director of People Operations; Director of Total Rewards; "
+        "Director of Benefits; People Director; HR Director; People and Culture Director; "
+        "People and Culture Lead; People Operations Lead; People Lead; HR Lead",
+        "2", "1", "",
+        "Senior People leaders win 42% of Spill's deals, 50% at 50 or more staff. First at 50 to 249 staff, "
+        "second at 10 to 49. CPO is read as Chief People Officer; Chief Product Officer written out is not.",
     ),
-    ("Finance", "CFO; Finance Director; Head of Finance; Controller", "", "", "not contacted"),
+    (
+        "Operations", "",
+        "COO; VP of Operations; Head of Operations; Director of Operations; Operations Director; Chief of Staff; "
+        "Head of Finance and Operations; Director of Finance and Operations; Finance and Operations Director",
+        "3", "3", "",
+        "Operations win 35% of Spill's deals, but 25% at 50 or more staff. Third at every size.",
+    ),
+    (
+        "HR manager", "People leader",
+        "HR Manager; People Manager; People Operations Manager; People and Culture Manager; HR Generalist; "
+        "HR Business Partner; Benefits Manager; Total Rewards Manager",
+        "", "4", "",
+        "Often the most senior HR person at 50 to 249 staff, but HR Managers and generalists win only 22-26% of "
+        "Spill's deals. Fourth at 50 to 249, after the founder; not contacted at 10 to 49.",
+    ),
+    (
+        "Office or firm administrator", "Operations",
+        "Office Manager; Firm Administrator; Office Administrator; Operations Manager; Practice Manager; "
+        "Studio Manager",
+        "4", "5", "",
+        "A fallback only, when nobody above is found.",
+    ),
+    (
+        "Finance", "",
+        "CFO; VP of Finance; Head of Finance; Director of Finance; Finance Director; Controller",
+        "", "", "",
+        "Never contacted. Listed so these titles are recognized and left out.",
+    ),
 ]
 
 # -- Copy (drafts for Harry to approve; SPEC 10; Harry, 30 Sep 2026) --------------------------

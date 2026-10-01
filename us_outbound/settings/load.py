@@ -1,4 +1,4 @@
-"""`us-outbound settings load`: bring the build's General, Industries and Copy tabs into the live sheet (Harry, 30 Sep 2026).
+"""`us-outbound settings load`: bring the build's General, Industries, Copy and Roles tabs into the live sheet (Harry, 30 Sep 2026).
 
 The sheet was made from the first defaults (58 industries, copy one row per step). The build
 now has all 108 industry pages and a four-email sequence per industry (settings/data/). This
@@ -15,6 +15,9 @@ command merges them into the sheet without losing Harry's own edits:
   * Copy: a tab still in the one-row-per-step layout is replaced (its rows stay in the
     database's settings history). A tab already in the new layout keeps every row as it
     is on the sheet; only copy versions it does not have are added, at the end.
+  * Roles (Harry, 1 Oct 2026): a tab still in SPEC 5's layout (first_choice_for_size,
+    fallback_order) is replaced by the build's rows, the size-band order led by seniority. A
+    tab already in the new layout keeps its rows; only roles it does not have are added.
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -28,11 +31,13 @@ from dataclasses import dataclass, field
 from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
-from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, validate_all
+from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, is_legacy_roles, validate_all
 
-LOADABLE = ("General", "Industries", "Copy")
+LOADABLE = ("General", "Industries", "Copy", "Roles")
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
-KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version"}
+KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role"}
+# Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
+LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
 SHOW = 12  # names listed per change in the summary
 
 
@@ -112,12 +117,12 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
     sheet = {_key(r, tab): r for r in sheet_rows if _key(r, tab)}
     build = {_key(r, tab): r for r in build_rows}
 
-    if tab == "Copy" and is_legacy_copy(present):
+    if tab in LEGACY_LAYOUT and LEGACY_LAYOUT[tab](present):
         p.replaced_layout = True
         p.rows = [{c: str(r.get(c, "")) for c in cols} for r in build_rows]
         p.added = [str(r[KEY[tab]]) for r in build_rows]
         return p
-    if tab == "Copy":
+    if tab in LEGACY_LAYOUT:
         p.rows = [{c: str(r.get(c, "")) for c in cols} for r in sheet_rows]
         p.kept_from_sheet = [str(r.get(KEY[tab], "")) for r in sheet_rows if _key(r, tab)]
         for k, r in build.items():
