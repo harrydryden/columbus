@@ -157,6 +157,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
     - Private duty & live-in care on Supported living.
 
     Many sub-industry pages also share their group's wording. The emails for these industries describe their own pressures, and QA checked them. [worth fixing on the site]
+    *Fixed (1 Oct, at Harry's request): corrections to these eight pages, and to Automotive & vehicles (which carried a packaging sentence), are saved in Webflow's US locale and await Harry's publish. The changes are in `docs/website/industry-pages-2026-10-01.md`, and the text from before them is in `industry-pages-2026-10-01-before.json`.*
 74. **The first test** (t1, the EAP opener against the General opener) names copy versions that no longer exist. With copy by industry, it could test two versions of one industry's row, or the opener on and off. [planned; decide before phase 3]
 75. **Role-specific copy** is a line per role in email 1. A row with `role` set (for example CPA firms for Operations) overrides it for that role, if you want to go further. [role lines]
 76. **Industries not contacted** (Insurance, HR consulting, Substance use treatment: partners) are on the Industries tab, off, with no copy. [no copy]

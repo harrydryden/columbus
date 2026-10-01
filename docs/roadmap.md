@@ -166,10 +166,11 @@ verification and contact choice write only the database; enrol, replies and post
 5. HubSpot's newer API versions (v1–v3 end in Sept 2027).
 
 ### Website and sheet items for Harry
-- Eight industry pages still carry another page's text: the churches text on Animal welfare, Arts &
-  culture, Environmental nonprofits, Human rights and International aid & relief; Social welfare on
-  Emergency & rescue; Automotive on Packaging; Private duty on Supported living. Copy for those
-  rows was written around them.
+- **To publish:** corrections to the nine US industry pages that carried another page's text are
+  saved in Webflow, unpublished (`docs/website/industry-pages-2026-10-01.md`). The nine are Animal
+  welfare, Arts & culture, Environmental nonprofits, Human rights, International aid & relief,
+  Emergency & rescue, Packaging, Supported living and Automotive & vehicles. After publishing, a
+  fresh site export can refresh the Industries tab's page columns for them.
 - Small Businesses has no page (its emails link spill.chat/us). A duplicate Nonprofits page should
   be archived. The pages say "over 30,000 employees" while the emails say 50,000.
 - **Open question 72**, page-only claims to confirm for the US: HIPAA compliance; nothing reported
