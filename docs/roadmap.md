@@ -76,7 +76,9 @@ verification and contact choice write only the database; enrol, replies and post
    Editing a row clears its stamp until `copy qa` runs again.
 6. **Hand-check.** Monday morning, `handcheck show --live`, then `handcheck approve --live`, pulling
    any account that looks wrong.
-7. **Sign-off.** Set `live_sending` = yes. Enrol runs at 12:00 UK (07:00 ET) on weekdays.
+7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It activates the
+   paused campaigns once `campaigns ensure` reports no drift. Enrol runs at 12:00 UK (07:00 ET) on
+   weekdays. `us-outbound stop --live` pauses everything again.
 8. **The demo page.** Its SEO title still reads "The UK's Highest Rated EAP". Every email 2–4 links
    to it, and the signature links Harry's booking page.
 
