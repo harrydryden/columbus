@@ -235,7 +235,7 @@ def test_load_is_dry_until_live_and_the_result_validates():
     out = loader.load(ctx, ["Industries", "Copy"])
     assert ctx.clients.sheets.writes == ["replace Industries", "replace Copy"]
     settings, errors = validate_all(sheet)
-    assert not any(errors.values()) and len(settings.industries) == 109 and len(settings.copy) == 106
+    assert not any(errors.values()) and len(settings.industries) == 109 and len(settings.copy) == 318
     assert settings.industry("Fintech").active is False
 
 

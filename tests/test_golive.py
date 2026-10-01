@@ -68,7 +68,9 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     [fintech] = [line for line in out.splitlines() if line.strip().startswith("Fintech: nothing sendable for")]
     # One line per copy role: "HR manager" contacts get the People leader copy (the Roles tab's copy_role).
     assert all(r in fintech for r in ("People leader", "Founder or executive", "Operations"))
-    assert "HR manager" not in fintech and "(fintech-v1 is a draft)" in fintech
+    assert "HR manager" not in fintech
+    assert all(f"(fintech-{v}-v1 is a draft" in fintech or f"; fintech-{v}-v1 is a draft" in fintech
+               for v in ("people", "founder", "ops"))
     assert got["Mailboxes"] == "FAIL  Mailboxes: no Active mailbox: nothing can send"
     assert "hannah@meetspill.org: Warming, not on a sending list" in out
     assert got["live_sending"].startswith("FAIL  live_sending: no")

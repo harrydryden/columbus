@@ -440,35 +440,43 @@ def test_settings_load_replaces_the_spec5_roles_layout_and_keeps_a_new_one():
 
 
 def test_copy(tabs):
-    n, row = _row(tabs, "Copy", copy_version="cpa-firms-v1")
+    n, row = _row(tabs, "Copy", copy_version="cpa-firms-people-v1")
     row["s2_body"] += " {{frist_name}}"
     e = _one(tabs, "Copy", "s2_body")
-    assert (e.row, e.label) == (n, "cpa-firms-v1") and "did you mean first_name" in e.message
+    assert (e.row, e.label) == (n, "cpa-firms-people-v1") and "did you mean first_name" in e.message
     for col, value, fragment in [
         ("s3_body", "Hi {company}", "double braces"),
         ("s1_subject", "", "required"),
         ("status", "live", "draft, approved, retired"),
         ("qa", "looks good", "written by `us-outbound copy qa`"),
-        ("founder_line", "", "is required: the emails use {{role_line}}"),
         ("operations_line", "Hi {{first_name}}", "only {{company}}"),
         ("industry", "Accountants", "not an industry or industry_group"),
         ("role", "Intern", "not on the Roles tab"),
     ]:
         t = copy.deepcopy(BASE)
-        _row(t, "Copy", copy_version="cpa-firms-v1")[1][col] = value
+        _row(t, "Copy", copy_version="cpa-firms-people-v1")[1][col] = value
         e = _one(t, "Copy", col)
         assert fragment in e.message, (col, e.message)
+    # A row written for no role that uses {{role_line}} needs every role's line.
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="cpa-firms-v1")[1]["status"] = "approved"
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1].update(
+        role="", s1_body="{{role_line}}", people_leader_line="x", founder_line="", operations_line="y")
+    assert "is required: the emails use {{role_line}}" in _one(t, "Copy", "founder_line").message
+    t = copy.deepcopy(BASE)  # one written for a role needs only that role's line
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1].update(
+        s1_body="{{role_line}}", people_leader_line="x", founder_line="")
+    assert not any(validate_all(t)[1].values())
+    t = copy.deepcopy(BASE)
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1]["status"] = "approved"
     assert _one(t, "Copy", "approved_by").message.startswith("is required")
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="legal-teams-v1")[1]["copy_version"] = "CPA-firms-v1"
+    _row(t, "Copy", copy_version="legal-teams-people-v1")[1]["copy_version"] = "CPA-firms-people-v1"
     assert "already on row" in _one(t, "Copy", "copy_version").message
     t = copy.deepcopy(BASE)  # a group, General and a role-only row are all fine
-    _row(t, "Copy", copy_version="cpa-firms-v1")[1].update(industry="professional services", role="operations")
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1].update(industry="professional services", role="operations")
     settings, errors = validate_all(t)
     assert not any(errors.values())
-    row = settings.copy_row("cpa-firms-v1")
+    row = settings.copy_row("cpa-firms-people-v1")
     assert (row.industry, row.role) == ("Professional Services", "Operations")  # as the other tabs spell them
 
 
@@ -483,13 +491,13 @@ def test_the_old_copy_layout_reads_as_no_copy():
 def test_qa_code_follows_the_wording():
     t = copy.deepcopy(BASE)
     s, _ = validate_all(t)
-    code = s.copy_row("cpa-firms-v1").content_hash()
-    _row(t, "Copy", copy_version="cpa-firms-v1")[1]["qa"] = f"PASS {code.upper()}"
+    code = s.copy_row("cpa-firms-people-v1").content_hash()
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1]["qa"] = f"PASS {code.upper()}"
     s, _ = validate_all(t)
-    assert s.copy_row("cpa-firms-v1").qa_current
-    _row(t, "Copy", copy_version="cpa-firms-v1")[1]["s4_subject"] = "A different subject"
+    assert s.copy_row("cpa-firms-people-v1").qa_current
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1]["s4_subject"] = "A different subject"
     s, _ = validate_all(t)
-    assert not s.copy_row("cpa-firms-v1").qa_current
+    assert not s.copy_row("cpa-firms-people-v1").qa_current
 
 
 def test_new_industries_columns_are_optional():
@@ -579,11 +587,11 @@ def test_tests(tabs):
     errs = _errors(t, "Tests")
     assert {e.column for e in errs} == {"start_date", "read_date"}
     _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14",
-                                                         version_a="cpa-firms-v1", version_b="cpa-firms-v9")
+                                                         version_a="cpa-firms-people-v1", version_b="cpa-firms-people-v9")
     errs = _errors(t, "Tests")
     assert [(e.column, "not a copy_version" in e.message) for e in errs] == [("version_a", False), ("version_b", True)]
-    assert "needs cpa-firms-v1 approved" in errs[0].message
-    _row(t, "Tests", test_id="t1-eap-opener")[1]["version_b"] = "legal-teams-v1"
+    assert "needs cpa-firms-people-v1 approved" in errs[0].message
+    _row(t, "Tests", test_id="t1-eap-opener")[1]["version_b"] = "legal-teams-people-v1"
     for c in t["Copy"]:
         c.update(status="approved", approved_by="Harry")
     settings, _ = validate_all(t)
@@ -635,7 +643,7 @@ def test_validate_tab_alone():
 
 def test_natural_keys():
     assert natural_key("General", {"key": " live_sending ", "value": "no"}) == "live_sending"
-    assert natural_key("Copy", {"copy_version": "cpa-firms-v1", "industry": "CPA firms"}) == "cpa-firms-v1"
+    assert natural_key("Copy", {"copy_version": "cpa-firms-people-v1", "industry": "CPA firms"}) == "cpa-firms-people-v1"
     assert natural_key("Overrides", {"domain": "acme.com", "field": "hq_state"}) == "acme.com|hq_state"
 
 

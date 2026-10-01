@@ -112,7 +112,7 @@ def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     lay = _in_force(ctx, "Signals", "Layoffs")
     assert lay["values"] == _row(sheet, "Signals", signal="Layoffs")[1]
     assert _in_force(ctx, "General", "live_sending")["values"] == {"key": "live_sending", "value": "no", "note": _row(sheet, "General", key="live_sending")[1]["note"]}
-    assert _in_force(ctx, "Copy", "cpa-firms-v1")["values"]["industry"] == "CPA firms"
+    assert _in_force(ctx, "Copy", "cpa-firms-people-v1")["values"]["industry"] == "CPA firms"
     assert _in_force(ctx, "Mailboxes", "sam@meetspill.org")
     assert summary["tabs"]["Signals"] == {"status": "synced", "added": N_SIGNALS, "changed": 0, "removed": 0, "unchanged": 0}
     assert summary["tabs"]["Overrides"]["status"] == "unchanged"

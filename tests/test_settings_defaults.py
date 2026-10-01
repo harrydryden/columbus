@@ -354,17 +354,21 @@ def test_first_test_is_planned(settings):
     assert not settings.overrides
 
 
-# -- copy: one sequence per industry, and a General one (Harry, 30 Sep 2026) ---------------------
+# -- copy: one sequence per industry and role, and General ones (Harry, 30 Sep and 1 Oct 2026) ----
+
+COPY_ROLES = {"People leader": "people", "Founder or executive": "founder", "Operations": "ops"}
 
 
-def test_every_contactable_industry_has_a_draft_sequence(settings):
+def test_every_contactable_industry_has_a_draft_sequence_for_each_role(settings):
     industries = {c.industry for c in settings.copy}
     assert industries == ({i.industry for i in settings.industries} - UNREACHABLE) | {"General"}
-    assert len(settings.copy) == len(industries) and all(c.role == "" for c in settings.copy)
+    by_industry = {i: sorted(c.role for c in settings.copy if c.industry == i) for i in industries}
+    assert all(roles == sorted(COPY_ROLES) for roles in by_industry.values()), by_industry
+    assert len(settings.copy) == 3 * len(industries)
+    assert all(c.copy_version.endswith(f"-{COPY_ROLES[c.role]}-v1") for c in settings.copy)
     assert all(c.status == "draft" and c.approved_by == "" for c in settings.copy)  # only Harry approves copy
     # Every row passed QA in its current wording: editing data/copy.csv needs `copy qa` again.
     assert all(c.qa_current for c in settings.copy), [c.copy_version for c in settings.copy if not c.qa_current]
-    assert all(c.copy_version.endswith("-v1") for c in settings.copy)
 
 
 def test_every_sequence_passes_the_sheet_check(settings):
@@ -377,7 +381,8 @@ def test_every_sequence_passes_the_sheet_check(settings):
 def test_every_sequence_has_harry_s_shape(settings):
     for c in settings.copy:
         s1, s2, s3, s4 = (c.step(n).body for n in (1, 2, 3, 4))
-        assert "{{opener}}" in s1 and "{{role_line}}" in s1, c.copy_version
+        # Written for its role, so no role line; email 1 informs and asks only for a visit to the page.
+        assert "{{opener}}" in s1 and "{{role_line}}" not in s1, c.copy_version
         for heading in ("**What is Spill?**", "**Who is Spill for?**", "**What makes Spill unique**"):
             assert heading in s2, (c.copy_version, heading)
         assert "{{price_line}} We don't lock you in." in s2, c.copy_version
@@ -386,4 +391,5 @@ def test_every_sequence_has_harry_s_shape(settings):
         assert all(b.endswith("Best wishes,\n{{sender_first_name}}") for b in (s1, s2, s3, s4)), c.copy_version
         assert all("{{industry_url}}" not in b and "{{demo_url}}" in b for b in (s2, s3, s4)), c.copy_version
         assert len(s2) > max(len(s1), len(s3), len(s4)), c.copy_version  # the long form is email 2
-        assert all(c.role_lines.get(r) for r in ("People leader", "Founder or executive", "Operations")), c.copy_version
+        assert "free trial" in s4.lower() and all("free trial" not in b.lower() for b in (s1, s2, s3)), c.copy_version
+        assert not any(c.role_lines.values()), c.copy_version
