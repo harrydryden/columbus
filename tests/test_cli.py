@@ -473,6 +473,7 @@ def test_build_context_refuses_unusable_settings_except_for_sync():
         _build("mailbox_health", False, None)
     ctx = _build("settings_sync", True, None)
     assert ctx.settings.general == General() and ctx.dry_run  # defaults: live_sending is no
+    assert _build("settings_load", True, None, operator=True).live  # it repairs the sheet: --live alone
     with pytest.raises(bootstrap.ConfigError, match="DATABASE_URL"):
         _build("status", False, SETTINGS, env={})
 

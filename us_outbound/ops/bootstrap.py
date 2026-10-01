@@ -11,8 +11,8 @@ Environment (on Railway: service variables, the keys sealed; docs/railway-setup.
 
 Order: a guard that starts in dry-run, the database store, the settings in force, and
 only then the live decision and the boundaries, so nothing can be sent before the
-settings are known. If the settings are unusable, jobs refuse to run; settings_sync
-(and the sheet bootstrap) start from the General defaults so they can repair them.
+settings are known. If the settings are unusable, jobs refuse to run; settings_sync, the
+sheet bootstrap and `settings load` start from the General defaults so they can repair them.
 
 Live (SPEC 0.3) needs the --live flag and live_sending = yes. Operator commands that
 never reach a prospect (setup, pause, erase; see ops/cli.py) pass operator=True and are
@@ -35,7 +35,7 @@ from us_outbound.settings.model import General, Settings
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 # Jobs that may start from the General defaults when no valid settings are in force.
-DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap"})
+DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap", "settings_load"})
 DATABASE_VAR = "DATABASE_URL"
 GOOGLE_KEY_VAR = "US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON"
 # ConfigError (the environment is missing something) lives in context.py, beside Secrets;
