@@ -135,7 +135,7 @@ Volume is a separate axis. All levers in §6 move interest *per account*; only t
 | B8 | Apollo tracker: `us/pricing` slash, `/us/book-demo` missing, no data received | `phase0-facts.md` Apollo row | Harry, ten minutes | S |
 | B9 | Railway, Slack app, HubSpot service key, Sheets service account | `docs/build-plan.md` setup steps | Runbook | M |
 
-Harry decided on 1 Oct (commit `8797784`) that the emails carry no postal address and no privacy link, and `postal_address` and `privacy_url` are retired keys that no longer block sends. CAN-SPAM's postal-address requirement and Article 14's fuller information list are his call; they are noted here once and not listed as blockers.
+Harry decided on 1 Oct (commit `8797784`), and confirmed the same day as final, that the emails carry no postal address and no privacy link. `postal_address` and `privacy_url` are retired keys that no longer block sends. This is closed and is not to be raised again.
 
 ### 4.2 Launch-depressors: shipped as designed, these would cut interest per lead
 

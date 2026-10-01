@@ -77,7 +77,7 @@ An earlier decision the same day put the system in its own Google Cloud project,
 | Fact | Status | Value |
 | :- | :- | :- |
 | US locale | Confirmed | en-US subdirectory `/us` (locale 6a7b1a45465079bd9e1fe40f) |
-| Book-demo page | Confirmed | `/us/book-demo` is live. Its US SEO title still reads "The UK's Highest Rated EAP" |
+| Book-demo page | Confirmed | `/us/book-demo` is live. Its SEO title (tab, Google, link previews), inherited by the US locale, reads "Spill \| The UK's Highest Rated EAP \| Book a demo" (checked 1 Oct) |
 | US privacy and opt-out page | Not needed (Harry, 1 Oct) | Emails carry no privacy link and no postal address. The opt-out is Instantly's unsubscribe link in every campaign step, plus the List-Unsubscribe header. `/us/legals/privacy-notice` is still a draft |
 
 ## Not reachable from here

@@ -79,8 +79,11 @@ verification and contact choice write only the database; enrol, replies and post
 7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It activates the
    paused campaigns once `campaigns ensure` reports no drift. Enrol runs at 12:00 UK (07:00 ET) on
    weekdays. `us-outbound stop --live` pauses everything again.
-8. **The demo page.** Its SEO title still reads "The UK's Highest Rated EAP". Every email 2–4 links
-   to it, and the signature links Harry's booking page.
+8. **The demo page's SEO title.** https://www.spill.chat/us/book-demo looks right on the page itself.
+   Its SEO title, which shows in the browser tab, in Google and in link previews, is "Spill | The
+   UK's Highest Rated EAP | Book a demo". Its description says "employee assistance programme". The
+   US locale inherits both from the UK page (Webflow page 65c650592086330a300a3cf6). Every email 2–4
+   links to this page. The signature's "Book a call here" goes to Harry's HubSpot meetings page instead.
 
 ### The pilot (week of 5 Oct)
 - **Volume:** the ramp holds each mailbox to 10 sends a day in its first sending week. Four

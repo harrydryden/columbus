@@ -387,6 +387,16 @@ def test_email_1_links_the_industry_page_and_asks_for_no_demo():
     assert 'href="https://www.spill.chat/us"' in sequence(row=fintech_row, settings=s, acct=fintech)[0].html
 
 
+def test_the_signature_is_outside_the_copy_rules():
+    """Harry, 1 Oct 2026: the signature's "Book a call here" and its two outside links are fixed text,
+    so email 1 still sends with them, and the QA model is told not to judge them."""
+    from us_outbound.enrol import copy_desk
+
+    first = sequence()[0]
+    assert first.ok and "Book a call here" in first.text and BOOKING in first.html and TRUSTPILOT in first.html
+    assert "signature's booking line is\nnot an ask in email 1" in copy_desk.QA_SYSTEM
+
+
 def test_a_sender_who_is_not_harry_cannot_offer_a_time_with_me():
     bodies = dict(BODIES)
     bodies[4] = BODIES[4].replace("[book a demo]({{demo_url}})", "[grab a time with me]({{demo_url}})")

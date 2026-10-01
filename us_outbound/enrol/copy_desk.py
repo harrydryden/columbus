@@ -278,6 +278,9 @@ already checked banned words, spelling lists, links, word counts and markup, so 
 accuracy, tone, US grammar and idiom, and whether each role line reads well after email 1's hook.
 Minor problems (severity "minor") are wording you would improve but that could be sent.
 A free trial mentioned in email 4, as facts.md allows, is not a problem.
+The signature (Spill, "Book a call here", the Trustpilot line) and the data-source notice are fixed
+text outside these rules (Harry, 1 Oct 2026): do not judge them, and the signature's booking line is
+not an ask in email 1.
 Report every problem with the email number (0 for the role lines or the whole sequence) and a fix.
 Do not invent problems. verdict is "pass" only when there are no blockers."""
 
