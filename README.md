@@ -16,9 +16,9 @@ Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
 - **Jobs** (`run <job>`, `rescore`, `settings sync`, `suppression load`) and `start` are live
   only with `--live` **and** `live_sending = yes` in the settings sheet.
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
-  `erase`, `test start`, `settings bootstrap`, `hubspot setup`, `campaigns ensure`) are live
-  with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is
-  still `no`.
+  `erase`, `test start`, `settings bootstrap`, `hubspot setup`, `campaigns ensure`, `replies skip`)
+  are live with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending`
+  is still `no`. `replies approve` sends to a prospect, so it needs both, like a job.
 
 ## Commands
 
@@ -39,6 +39,9 @@ us-outbound db apply [--live]                      the DDL in sql/ against DATAB
 us-outbound hubspot setup|ids [--live]             the six properties; ids for the General tab
 us-outbound campaigns ensure [--fix] [--live]      the sender campaigns (created paused) and drift
 us-outbound suppression load [--live]              HubSpot opt-outs and bounces, hashed
+us-outbound replies list                           reply items waiting for a human: class, account, role, excerpt, draft
+us-outbound replies approve <id> [--edit "text"] [--live]   send the draft (or that text), as a Slack approval would
+us-outbound replies skip <id> [--live]             handled, nothing sent
 us-outbound scheduler                              the always-on worker: starts every job on its schedule
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)
 ```
@@ -81,7 +84,7 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | :- | :- |
 | 0 Foundations | Being built: clients, guard, settings sync, DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the Railway scheduler |
 | 1 Universe | Scoring built early; sources and Clay verification not built |
-| 2 First sends | Enrollment being built; replies, approvals and readback not built |
+| 2 First sends | Enrollment being built; the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback` built; reply ingest (`poll_replies`) being built |
 | 3 Learning loop | Not built |
 
 ## Deviations from the SPEC 13 layout
@@ -108,6 +111,11 @@ Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_alias
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
 Clay function ids, and the credits-per-account estimates.
+
+The reply desk (decision D11, Harry, 1 Oct 2026): approvers are `approver_slack_ids` plus a
+mailbox's owner for replies to that mailbox, from an optional `slack_id` column on the Mailboxes
+tab; approvals are ✅ or "send", "send: <text>", "edit: <text>", ❌ or "skip"; unanswered alerts
+are re-posted until 23:00 UK. `us-outbound replies list|approve|skip` does the same without Slack.
 
 Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack) and
 `suppression_load` (daily: HubSpot opt-outs and bounces). `stop` and `start` record the

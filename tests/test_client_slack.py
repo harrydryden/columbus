@@ -114,3 +114,53 @@ def test_replies_paginate_and_skip_parent():
     calls = [r for r in t.requests if "conversations.replies" in r.url]
     assert calls[0].params["channel"] == "C_ALERT" and calls[0].params["ts"] == "1.0"
     assert calls[1].params["cursor"] == "c2"
+
+
+# -- approvals and escalation (SPEC 11; D11) ---------------------------------------------------------------
+
+
+def test_reactions_and_permalink_are_reads():
+    slack, t, guard = make(live=False)
+    t.route("GET", "reactions.get", body={"ok": True, "message": {"reactions": [
+        {"name": "white_check_mark", "users": ["U_HARRY"], "count": 1}]}})
+    t.route("GET", "chat.getPermalink", body={"ok": True, "permalink": "https://spill.slack.com/archives/C_ALERT/p1"})
+    assert slack.reactions("#us-outbound", "1.0") == [{"name": "white_check_mark", "users": ["U_HARRY"], "count": 1}]
+    assert slack.permalink("#us-outbound", "1.0") == "https://spill.slack.com/archives/C_ALERT/p1"
+    got = [r for r in t.requests if "reactions.get" in r.url][0]
+    assert got.params == {"channel": "C_ALERT", "timestamp": "1.0", "full": "true"}
+    assert t.writes() == [] and guard.writes("slack") == []
+
+
+def test_a_broadcast_thread_reply():
+    slack, t, _ = make(live=True)
+    slack.post("#us-outbound", "Still waiting", thread_ts="1.0", broadcast=True)
+    slack.post("#us-outbound", "Sent", thread_ts="1.0")
+    first, second = t.writes()
+    assert first.json["reply_broadcast"] is True and "reply_broadcast" not in second.json
+
+
+def approver_slack():
+    slack, t, guard = make(live=True)
+    guard.configure(bounds=Boundaries(approver_slack_ids=frozenset({"U_HARRY"})))
+    return slack, t, guard
+
+
+def test_dm_goes_only_to_an_approver():
+    slack, t, guard = approver_slack()
+    assert slack.dm("U_HARRY", "Waiting 24 hours")["channel"] == "@U_HARRY"
+    [post] = t.writes()
+    assert (post.json["channel"], post.json["text"]) == ("U_HARRY", "Waiting 24 hours")
+    with pytest.raises(GuardViolation):
+        slack.dm("U_SAM", "hello")
+    assert len(t.requests) == 1
+
+
+def test_dm_in_dry_run_goes_to_the_dev_channel():
+    slack, t, guard = approver_slack()
+    guard.configure(live=False)
+    slack.dm("U_HARRY", "Waiting 24 hours")
+    [post] = t.writes()
+    assert (post.json["channel"], post.json["text"]) == ("C_DEV", "[dry-run → DM @U_HARRY] Waiting 24 hours")
+    assert [(r.target, r.sent) for r in guard.writes("slack")] == [("@U_HARRY", False), ("#us-outbound-dev", True)]
+    with pytest.raises(GuardViolation):
+        slack.dm("U_SAM", "hello")

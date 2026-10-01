@@ -59,6 +59,8 @@ CLAY_FUNCTIONS = ("fn-us-accounts", "fn-us-contacts")
 SHEET = "sheet-test"
 ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
+APPROVER = "U_HARRY"  # approver_slack_ids (SPEC 1.3): the only reply approver, and the only Slack DM recipient
+HANNAH_SLACK = "U_HANNAH"  # D11: Hannah approves replies to her own mailbox only
 
 BOUNDS = Boundaries(
     registry_addresses=frozenset(ADDRESSES),
@@ -70,6 +72,8 @@ BOUNDS = Boundaries(
     alert_channel=ALERT,
     dev_channel=DEV,
     escalation_email=ESCALATION,
+    approver_slack_ids=frozenset({APPROVER}),
+    owner_slack_ids=frozenset({("hannah@meetspill.org", HANNAH_SLACK)}),
 )
 
 # -- SPEC 1.2 restated as data (deliberately not imported from guard.py) ----------------------
@@ -84,6 +88,7 @@ HS_DEAL_PROPS = {"dealname", "pipeline", "dealstage", "hubspot_owner_id"}
 HS_WARM = {"positive", "referral"}
 HS_FREE_WRITES = {"note.create", "task.create", "association.create", "communication.unsubscribe"}
 SLACK_WRITES = {"chat.postMessage", "chat.update"}
+SLACK_DMS = {f"@{APPROVER}"}  # direct messages: only to approvers (escalation, SPEC 11)
 SETTINGS_TITLE = "US Outbound – Settings"
 DB_SCHEMA = "us_outbound"  # the database: schema us_outbound only (SPEC 1.2)
 REGISTRY = set(redact(sorted(ADDRESSES)))  # CallRecord details carry hashed addresses (logs.redact)
@@ -91,7 +96,8 @@ REDACTED_EMAIL = re.compile(r"^email:[0-9a-f]{16}$")
 
 # Reads that go over POST, by system: (action, URL path suffix). Anything else not GET is a write.
 READS_OVER_POST = {
-    "hubspot": {("company.search", "/search"), ("contact.search", "/search"), ("deal.search", "/search")},
+    "hubspot": {("company.search", "/search"), ("contact.search", "/search"), ("deal.search", "/search"),
+                ("meeting.search", "/search")},
     "instantly": {("lead.list", "/leads/list"), ("warmup.analytics", "/accounts/warmup-analytics")},
     "apollo": {
         ("usage.credits", "/usage_stats/credit_usage_stats"),
@@ -137,6 +143,13 @@ def spec_violation(rec: CallRecord) -> str | None:
             return None if t.startswith(PREFIX) else f"Instantly {a} on {t!r}"
         if a == "email.forward" and set(d.get("to") or ()) != set(redact([ESCALATION])):
             return "Instantly forward to someone other than escalation_email"
+        if a == "email.reply":  # SPEC 1.3 and D11: an approver approved it, in a US Outbound thread
+            owners = {sid for address, sid in BOUNDS.owner_slack_ids if redact([address])[0] in accounts}
+            if not str(d.get("campaign", "")).startswith(PREFIX):
+                return "Instantly reply outside a US Outbound campaign's thread"
+            # "cli" is `us-outbound replies approve`; that only its job may use it is a NEGATIVE case below.
+            if d.get("approved_by") not in {APPROVER, "cli"} | owners:
+                return "Instantly reply without an approver"
         if a in {"email.reply", "email.forward", "account.warmup_enable", "account.pause", "account.resume"}:
             return None if in_registry else f"Instantly {a} from outside the registry"
         if a == "account.update_limit":  # a registry mailbox's own daily limit, nothing else
@@ -182,6 +195,8 @@ def spec_violation(rec: CallRecord) -> str | None:
             return None if d.get("erasure_request") is True else "GDPR delete outside an erasure request"
         return None if a in HS_FREE_WRITES else f"HubSpot write {a} is not allowed"
     if s == "slack":
+        if t in SLACK_DMS and a == "chat.postMessage":
+            return f"dry-run Slack DM to {t!r}" if rec.sent and not rec.live else None
         if a not in SLACK_WRITES or t not in {ALERT, DEV}:
             return f"Slack {a} to {t!r}"
         if rec.sent and not rec.live and t != DEV:
@@ -323,6 +338,11 @@ def install_routes(t: FakeTransport) -> None:
     t.route("POST", "/crm/v3/objects/contacts/search", {"results": [{"id": "k1", "properties": {"email": JANE}}]})
     t.route("POST", "/crm/v3/objects/deals/search", {"results": [{"id": "d1", "properties": {"hs_is_closed": "false"}}]})
     t.route("GET", "/crm/v3/objects/contacts/k1", {"properties": {"hs_lead_status": ""}})
+    t.route("POST", "/crm/v3/objects/meetings/search", {"results": [
+        {"id": "m1", "properties": {"hs_meeting_source": "MEETINGS_PUBLIC", "hubspot_owner_id": "owner-harry"}}]})
+    t.route("GET", "/crm/v3/objects/meetings/m1", {"id": "m1", "properties": {}, "associations": {
+        "contacts": {"results": [{"id": "k1", "type": "meeting_event_to_contact"}]}}})
+    t.route("GET", f"/crm/v3/pipelines/deals/{PIPELINE}", {"id": PIPELINE, "stages": [{"id": FIRST_STAGE, "displayOrder": 0}]})
     t.route("GET", "/crm/v3/pipelines/deals",
             {"results": [{"id": PIPELINE, "label": "Spill 3.0", "stages": [{"id": FIRST_STAGE, "displayOrder": 0}]}]})
     t.route("GET", "/crm/v3/owners/", {"results": [{"id": "owner-harry"}]})
@@ -333,6 +353,8 @@ def install_routes(t: FakeTransport) -> None:
     t.route("POST", "chat.postMessage", fn=lambda r: {"ok": True, "channel": r.json["channel"], "ts": "1.1"})
     t.route("POST", "chat.update", fn=lambda r: {"ok": True, "channel": r.json["channel"], "ts": r.json["ts"]})
     t.route("GET", "conversations.replies", {"ok": True, "messages": [{"ts": "1.1"}, {"ts": "1.2", "text": "send"}]})
+    t.route("GET", "reactions.get", {"ok": True, "message": {"reactions": [{"name": "white_check_mark", "users": [APPROVER]}]}})
+    t.route("GET", "chat.getPermalink", {"ok": True, "permalink": "https://spill.slack.com/archives/C_ALERT/p11"})
     # Sheets.
     t.route("POST", "sheets.googleapis.com/v4/spreadsheets", {"spreadsheetId": "new-sheet"})
     t.route("POST", ":append", {})
@@ -357,7 +379,8 @@ def install_routes(t: FakeTransport) -> None:
     t.route("GET", "/leads/L1", {"id": "L1", "campaign": "cmp-h"})
     t.route("GET", "api.instantly.ai/api/v2/emails",
             fn=lambda r: {"items": [{"id": "E1", "eaccount": r.params["eaccount"], "subject": "Re: hi"}]})
-    t.route("GET", "/emails/E1", {"id": "E1", "eaccount": "hannah@meetspill.org", "subject": "Re: hi"})
+    t.route("GET", "/emails/E1", {"id": "E1", "eaccount": "hannah@meetspill.org", "subject": "Re: hi", "campaign_id": "cmp-h"})
+    t.route("POST", "/leads/update-interest-status", {"status": "ok"})
     # Clay.
     t.route("POST", "api.clay.com/public/v0/routines/", {"routine_run_id": "R1"})
     t.route("GET", "/routines/run/R1/results", {"status": "complete", "results": [
@@ -441,6 +464,10 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "search_companies_by_domain": lambda c, w: c.search_companies_by_domain("acmecreative.com"),
         "search_contacts_by_email": lambda c, w: c.search_contacts_by_email(JANE),
         "open_deals_for_company": lambda c, w: c.open_deals_for_company("c1"),
+        "deals_for_company": lambda c, w: c.deals_for_company("c1"),
+        "get_record": lambda c, w: c.get_record("meetings", "m1", ["hs_meeting_outcome"], associations=["contacts"]),
+        "search_meetings": lambda c, w: c.search_meetings("owner-harry", NOW),
+        "pipeline_stages": lambda c, w: c.pipeline_stages(PIPELINE),
         "properties": lambda c, w: c.properties("companies"),
         "property_groups": lambda c, w: c.property_groups("companies"),
         "iter_opted_out_or_bounced_emails": lambda c, w: list(c.iter_opted_out_or_bounced_emails()),
@@ -474,6 +501,9 @@ EXERCISES: dict[str, dict[str, Ex]] = {
                               c.post(DEV, "dev note")),
         "update": lambda c, w: (c.update(ALERT, "1.1", "Handled"), c.update(DEV, "1.1", "Handled")),
         "replies": lambda c, w: c.replies(ALERT, "1.1"),
+        "reactions": lambda c, w: c.reactions(ALERT, "1.1"),
+        "permalink": lambda c, w: c.permalink(ALERT, "1.1"),
+        "dm": lambda c, w: c.dm(APPROVER, "A positive reply has waited 24 hours."),
     },
     "Sheets": {
         "read_tabs": lambda c, w: c.read_tabs(SHEET, ["General"]),
@@ -502,7 +532,11 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "list_leads": lambda c, w: c.list_leads(HANNAH_CAMPAIGN),
         "delete_lead": lambda c, w: c.delete_lead(HANNAH_CAMPAIGN, "L1"),
         "list_emails": lambda c, w: c.list_emails(["hannah@meetspill.org"], since=NOW),
-        "reply": lambda c, w: c.reply("hannah@meetspill.org", "E1", "Re: hi", "Thanks, Jane."),
+        "reply": lambda c, w: (c.reply("hannah@meetspill.org", "E1", "Re: hi", "Thanks, Jane.", approved_by=APPROVER),
+                               c.reply("hannah@meetspill.org", "E1", None, "Thanks, Jane.", approved_by=HANNAH_SLACK),
+                               w.as_job("replies_approve", lambda: c.reply(
+                                   "hannah@meetspill.org", "E1", None, "Thanks, Jane.", approved_by="cli"))),
+        "stop_lead": lambda c, w: c.stop_lead(HANNAH_CAMPAIGN, JANE),
         "forward": lambda c, w: c.forward("hannah@meetspill.org", "E1", "harry@spill.chat", "Waiting 24 hours."),
         "blocklist_add": lambda c, w: c.blocklist_add([JANE]),
         "step_analytics": lambda c, w: c.step_analytics(HANNAH_CAMPAIGN),
@@ -747,7 +781,18 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "instantly emails unfiltered": lambda w: w.clients["Instantly"].list_emails([]),
     "instantly accounts outside the registry": lambda w: w.clients["Instantly"].list_accounts(["anna@spill.eu"]),
     "instantly warmup outside the registry": lambda w: w.clients["Instantly"].enable_warmup(["anna@spill.eu"]),
-    "instantly reply from outside the registry": lambda w: w.clients["Instantly"].reply("anna@spill.eu", "E1", "Re", "Hi"),
+    "instantly reply from outside the registry": lambda w: w.clients["Instantly"].reply(
+        "anna@spill.eu", "E1", "Re", "Hi", approved_by=APPROVER),
+    # SPEC 1.3 as changed by D11: an approver, or the owner for their own mailbox, or the CLI command.
+    "instantly reply without an approver": lambda w: w.clients["Instantly"].reply(
+        "hannah@meetspill.org", "E1", "Re", "Hi", approved_by=""),
+    "instantly reply approved by someone else": lambda w: w.clients["Instantly"].reply(
+        "hannah@meetspill.org", "E1", "Re", "Hi", approved_by="U_SAM"),
+    "instantly reply approved by another mailbox's owner": lambda w: w.clients["Instantly"].reply(
+        "sam@meetspill.org", "E1", "Re", "Hi", approved_by=HANNAH_SLACK),
+    "instantly reply approved cli outside replies approve": lambda w: w.as_job("poll_approvals", lambda: w.clients[
+        "Instantly"].reply("hannah@meetspill.org", "E1", "Re", "Hi", approved_by="cli")),
+    "instantly lead stop in the EU campaign": lambda w: w.clients["Instantly"].stop_lead(EU_CAMPAIGN, JANE),
     "instantly forward outside Spill": lambda w: w.clients["Instantly"].forward(
         "hannah@meetspill.org", "E1", "someone@other.com", "Waiting 24 hours."),
     "instantly workspace settings": lambda w: w.clients["Instantly"].request(
@@ -755,6 +800,7 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     # Slack: only #us-outbound and #us-outbound-dev.
     "slack post to #general": lambda w: w.clients["Slack"].post("#general", "hello"),
     "slack update in #general": lambda w: w.clients["Slack"].update("#general", "1.1", "hello"),
+    "slack DM to someone who is not an approver": lambda w: w.clients["Slack"].dm("U_SAM", "hello"),
     "slack channel create": lambda w: w.clients["Slack"].request(
         "POST", "conversations.create", Op("conversations.create", target=ALERT, write=True)),
     # Sheets: only the settings sheet.
@@ -875,7 +921,7 @@ def test_dry_run_slack_posts_only_to_the_dev_channel(dry_world):
     redirected = [r for r in posts if r.json["text"].startswith(f"[dry-run → {ALERT}] ")]
     assert redirected, "the alert-channel post was not redirected with its dry-run prefix"
     refused = [c for c in w.guard.calls if c.system == "slack" and c.write and not c.sent]
-    assert refused and {c.target for c in refused} == {ALERT}
+    assert refused and {c.target for c in refused} == {ALERT} | SLACK_DMS  # the DM went to dev instead
 
 
 def test_dry_run_still_writes_the_database(dry_world):

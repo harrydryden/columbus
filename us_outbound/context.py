@@ -87,6 +87,9 @@ def boundaries_for(settings: Settings, settings_sheet_id: str = "") -> Boundarie
         alert_channel=g.alert_channel,
         dev_channel=g.dev_channel,
         escalation_email=g.escalation_email.strip().lower(),
+        approver_slack_ids=frozenset(x.strip() for x in g.approver_slack_ids if x.strip()),
+        # D11 (Harry, 1 Oct 2026): a mailbox's owner approves replies to that mailbox only.
+        owner_slack_ids=frozenset((m.address.lower(), m.slack_id) for m in live_mailboxes if m.slack_id),
     )
 
 

@@ -36,7 +36,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
@@ -56,7 +56,6 @@ ENROLLED = "enrolled"
 EXCLUDED = "Excluded"
 SENDABLE_EMAIL_STATUSES = frozenset({"verified", "valid", "catch_all_valid"})  # Apollo verified; Clay (SPEC 8)
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.5
-WAITING = ("open", "escalated")  # hitl_items still waiting for Harry
 HUBSPOT_SOURCE = "hubspot"
 # signal_events facts that scoring/tiers.py reads as hard exclusions, so a rescore keeps them.
 HS_CUSTOMER = "hubspot_customer"
@@ -112,11 +111,15 @@ def operator_pause(ctx: Context) -> str | None:
 
 
 def reply_pause(ctx: Context) -> str | None:
-    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses."""
+    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
+
+    The reply items are poll_replies' (kind "reply"; replies/items.py reads them, and the first kind
+    name too): positive or referral, not yet handled, escalated included.
+    """
+    from us_outbound.replies.items import positive_waiting
+
     hours = ctx.settings.general.escalation_hours
-    cutoff = ctx.now - timedelta(hours=hours)
-    rows = ctx.store.select("hitl_items", {"kind": "reply_approval", "status": list(WAITING)})
-    old = [r for r in rows if (t := _ts(r.get("created_at"))) is not None and t <= cutoff]
+    old = positive_waiting(ctx.store, ctx.now, hours)
     if not old:
         return None
     return f"{len(old)} positive {'reply has' if len(old) == 1 else 'replies have'} waited over {hours} hours for approval"

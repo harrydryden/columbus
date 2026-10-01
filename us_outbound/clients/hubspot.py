@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from us_outbound.clients.guard import HUBSPOT_EMPTY_ONLY, HUBSPOT_PROPERTY_GROUP, Op
-from us_outbound.clients.http import HttpClient
+from us_outbound.clients.http import ApiError, HttpClient
 
 SEARCH_PAGE = 100  # HubSpot allows up to 200 per search page
 SEARCH_CAP = 10_000  # search never pages past 10k results; we re-query on hs_object_id instead
@@ -47,6 +47,13 @@ CONTACT_PROPS = (
     "us_outbound_reply_class",
 )
 DEAL_PROPS = ("dealname", "pipeline", "dealstage", "hubspot_owner_id", "hs_is_closed", "closedate")
+# Meetings (hubspot_readback, SPEC 9, 11). PHASE0-CONFIRM: a meeting booked through Harry's meetings
+# link (the emails' link, and the website's booking page, which embeds it) has hs_meeting_source
+# MEETINGS_PUBLIC, and hs_meeting_outcome becomes COMPLETED once it is held.
+MEETING_PROPS = (
+    "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_outcome", "hs_meeting_source", "hubspot_owner_id",
+    "hs_createdate", "hs_lastmodifieddate",
+)
 
 # HubSpot-defined association type ids, keyed (from, to).
 # PHASE0-CONFIRM: ids from HubSpot's association type table; deal->company 5 is the
@@ -62,7 +69,8 @@ ASSOCIATION_TYPE_IDS: dict[tuple[str, str], int] = {
     ("contacts", "companies"): 279,
 }
 
-_PLURAL = {"company": "companies", "contact": "contacts", "deal": "deals", "note": "notes", "task": "tasks"}
+_PLURAL = {"company": "companies", "contact": "contacts", "deal": "deals", "note": "notes", "task": "tasks",
+           "meeting": "meetings"}
 _SINGULAR = {v: k for k, v in _PLURAL.items()}
 
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -176,6 +184,55 @@ class HubSpot(HttpClient):
         groups = [{"filters": [{"propertyName": "associations.company", "operator": "EQ", "value": str(company_id)}]}]
         deals = [{"id": r["id"], "properties": r.get("properties", {})} for r in self._search("deals", groups, DEAL_PROPS)]
         return [d for d in deals if str(d["properties"].get("hs_is_closed", "")).lower() != "true"]
+
+    def deals_for_company(self, company_id: str) -> list[dict]:
+        """Every deal associated with the company, open or closed, with its pipeline, stage and create date."""
+        # PHASE0-CONFIRM: search filters on the associations.company pseudo-property (as above).
+        groups = [{"filters": [{"propertyName": "associations.company", "operator": "EQ", "value": str(company_id)}]}]
+        return [{"id": r["id"], "properties": r.get("properties", {})}
+                for r in self._search("deals", groups, (*DEAL_PROPS, "createdate"))]
+
+    def get_record(
+        self, object_type: str, record_id: str, properties: Iterable[str], associations: Iterable[str] = ()
+    ) -> dict | None:
+        """{"id", "properties", "associations": {type: [ids]}} for one record; None when HubSpot has no such record."""
+        obj = plural_type(object_type)
+        params = {"properties": ",".join(properties)}
+        kinds = [plural_type(a) for a in associations]
+        if kinds:
+            params["associations"] = ",".join(kinds)
+        try:
+            body = self.request(
+                "GET", f"/crm/v3/objects/{obj}/{_quote(str(record_id))}", Op(f"{_SINGULAR.get(obj, obj)}.get", target=obj),
+                params=params,
+            ) or {}
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        links: dict[str, list[str]] = {}
+        for kind, block in (body.get("associations") or {}).items():
+            ids = [str(r.get("id")) for r in (block or {}).get("results", []) if r.get("id")]
+            links[str(kind)] = list(dict.fromkeys(ids))  # a labeled and an unlabeled association list one id twice
+        return {"id": str(body.get("id") or record_id), "properties": body.get("properties") or {}, "associations": links}
+
+    def search_meetings(self, owner_id: str, changed_since: datetime) -> list[dict]:
+        """Meetings owned by owner_id created or changed since then (new bookings and new outcomes), oldest first."""
+        since = changed_since if changed_since.tzinfo else changed_since.replace(tzinfo=UTC)
+        groups = [{"filters": [
+            {"propertyName": "hubspot_owner_id", "operator": "EQ", "value": str(owner_id)},
+            {"propertyName": "hs_lastmodifieddate", "operator": "GTE", "value": str(int(since.timestamp() * 1000))},
+        ]}]
+        sorts = [{"propertyName": "hs_lastmodifieddate", "direction": "ASCENDING"}]
+        return [{"id": r["id"], "properties": r.get("properties", {})}
+                for r in self._search("meetings", groups, MEETING_PROPS, sorts)]
+
+    def pipeline_stages(self, pipeline_id: str, object_type: str = "deals") -> list[dict]:
+        """The pipeline's stages ({id, label, displayOrder, metadata}) in board order."""
+        body = self.request(
+            "GET", f"/crm/v3/pipelines/{object_type}/{_quote(str(pipeline_id))}", Op("pipeline.get", target=object_type)
+        ) or {}
+        return sorted(body.get("stages") or [], key=lambda s: s.get("displayOrder", 0))
 
     def properties(self, object_type: str) -> list[dict]:
         body = self.request("GET", f"/crm/v3/properties/{object_type}", Op("property.list", target=object_type)) or {}

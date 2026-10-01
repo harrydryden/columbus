@@ -66,6 +66,7 @@ OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be pre
 TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Industries": frozenset(f"page_{f}" for f in PAGE_FIELDS),
     "Copy": frozenset({"qa_notes", "sources"}),
+    "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -794,10 +795,20 @@ def is_spill_domain(domain: str) -> bool:
     return d == SPILL_DOMAIN or d.endswith("." + SPILL_DOMAIN)
 
 
+def _slack_user(text: str) -> str:
+    if not _SLACK_USER.fullmatch(text):
+        raise ValueError(f"{text!r} is not a Slack user id (they look like U01ABCDEF)")
+    return text
+
+
 def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
     out: list[tuple[Mailbox, int]] = []
     seen: dict[str, int] = {}
     ids: dict[str, int] = {}
+    # slack_id (D11): one Slack id per owner and one owner per Slack id, so an approval in Slack
+    # names exactly one person, and only for that person's own mailboxes.
+    slack_owner: dict[str, str] = {}
+    owner_slack: dict[str, str] = {}
     for r in rows:
         address = r.parse("address", _email)
         _unique(r, "address", address, seen, address or "")
@@ -817,12 +828,19 @@ def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
         account_id = r.text("instantly_account_id")
         if account_id:
             _unique(r, "instantly_account_id", account_id, ids, account_id)
+        slack_id = r.parse("slack_id", _slack_user, required=False, default="")
+        if slack_id and owner:
+            if slack_owner.setdefault(slack_id, owner) != owner:
+                r.fail("slack_id", f"{slack_id} is already {slack_owner[slack_id]}'s; one person per Slack id")
+            elif owner_slack.setdefault(owner, slack_id) != slack_id:
+                r.fail("slack_id", f"{owner} already has Slack id {owner_slack[owner]} on another row")
         if r.ok:
             out.append((
                 Mailbox(
                     address=address, domain=domain, owner_name=owner, status=status, daily_cap=cap,
                     instantly_account_id=account_id, provider=r.text("provider"), owner_role=r.text("owner_role"),
                     signature=r.text("signature"), added_on=added_on, retire_after=retire_after,
+                    slack_id=slack_id or "",
                 ),
                 r.number,
             ))

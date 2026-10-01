@@ -3,7 +3,8 @@
 # #us-outbound-dev, and put the bot token (xoxb-…) in the sealed Railway variable
 # US_OUTBOUND_SLACK_BOT_TOKEN (docs/railway-setup.md). There is no public endpoint
 # (SPEC 2): no events, no interactivity, no slash commands. The jobs post with chat:write
-# and poll thread replies for approvals (poll_approvals, every 5 minutes).
+# and poll thread replies and reactions for approvals (poll_approvals, every 5 minutes), and
+# DM the approvers when an item escalates and Instantly's forward endpoint is missing.
 _metadata:
   major_version: 1
   minor_version: 1
@@ -15,6 +16,9 @@ features:
   bot_user:
     display_name: US Outbound
     always_online: false
+  app_home:
+    messages_tab_enabled: true  # escalation DMs to the approvers (PHASE0-CONFIRM: posting by user id lands here)
+    messages_tab_read_only_enabled: true
 oauth_config:
   scopes:
     bot:
@@ -24,6 +28,8 @@ oauth_config:
       - channels:read     # resolve #us-outbound to its id
       - groups:read       # ... when the channel is private
       - users:read        # names for approver ids in confirmations
+      - reactions:read    # ✅ / ❌ on an alert's draft (poll_approvals; decision D11)
+      - im:write          # escalation DMs to the approvers on approver_slack_ids
 settings:
   org_deploy_enabled: false
   socket_mode_enabled: false

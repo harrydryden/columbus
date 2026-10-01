@@ -24,7 +24,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any
 
-from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation, Op
+from us_outbound.clients.guard import CLI_APPROVER, REPLIES_CLI_JOB, US_CAMPAIGN_PREFIX, GuardViolation, Op
 from us_outbound.clients.http import ApiError, HttpClient
 from us_outbound.logs import log
 from us_outbound.settings.model import SendWindow
@@ -120,7 +120,18 @@ CAMPAIGN_STATUS = {
     -99: "account_suspended", -1: "accounts_unhealthy", -2: "bounce_protect",
 }
 
+# POST /leads/update-interest-status values. PHASE0-CONFIRM: that 2 is "Meeting booked" and that a
+# lead marked so gets no further steps (stop_lead).
+INTEREST_MEETING_BOOKED = 2
+
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~@")
+_RE_PREFIX = ("re:", "re ")
+
+
+def reply_subject(subject: Any) -> str:
+    """The subject of a reply in the thread: the original's, with "Re: " unless it already has one."""
+    s = str(subject or "").strip()
+    return s if s.lower().startswith(_RE_PREFIX) else f"Re: {s}".strip()
 
 
 def _segment(text: str) -> str:
@@ -670,6 +681,22 @@ class Instantly(HttpClient):
             "DELETE", f"/leads/{_segment(lead_id)}", Op("lead.delete", target=name, write=True, detail={"lead_id": lead_id})
         )
 
+    def stop_lead(self, name: str, email: str) -> dict | None:
+        """Stop a lead's remaining steps in this campaign once a meeting is booked (SPEC 9 hubspot_readback).
+
+        It marks the lead "Meeting booked" (POST /leads/update-interest-status, scoped to the campaign)
+        rather than deleting it, since SPEC 13 keeps leads 31 days after their last step.
+        PHASE0-CONFIRM: the endpoint and its fields, INTEREST_MEETING_BOOKED, and that Instantly then
+        sends the lead no further step; if it does not, delete_lead is the stop that is certain.
+        """
+        cid = self._campaign_id(name, "lead.stop", True)
+        lead = str(email or "").strip().lower()
+        if "@" not in lead:
+            raise ValueError("stop_lead needs the lead's email address")
+        op = Op("lead.stop", target=name, write=True, detail={"id": cid, "interest_value": INTEREST_MEETING_BOOKED})
+        payload = {"lead_email": lead, "campaign_id": cid, "interest_value": INTEREST_MEETING_BOOKED}
+        return self.request("POST", "/leads/update-interest-status", op, json=payload, dry_result={"dry_run": True})
+
     # -- emails ----------------------------------------------------------------
 
     def list_emails(
@@ -724,17 +751,61 @@ class Instantly(HttpClient):
             raise GuardViolation(f"email {email_id} does not belong to {eaccount}")
         return body
 
-    def reply(self, eaccount: str, reply_to_uuid: str, subject: str, body: str) -> dict | None:
-        """Reply in the thread from the registry mailbox that received the email."""
+    def _campaign_named_by_id(self, cid: str) -> str | None:
+        """The US Outbound campaign with this id, or None; the name→id cache is refreshed once if needed."""
+        for refresh in (False, True):
+            if refresh:
+                self.list_campaigns()
+            name = next((n for n, known in self._ids.items() if known == cid), None)
+            if name is not None:
+                return name
+        return None
+
+    def _need_approval(self, acct: str, approved_by: str) -> None:
+        """Refuse before any request unless an approver approved this reply (SPEC 1.3, D11; the guard checks too)."""
+        b = self.guard.bounds
+        owners = {sid for address, sid in b.owner_slack_ids if address.lower() == acct}
+        by = str(approved_by or "").strip()
+        if (by == CLI_APPROVER and self.guard.job == REPLIES_CLI_JOB) or (
+            by not in ("", CLI_APPROVER) and by in b.approver_slack_ids | owners
+        ):
+            return
+        detail = {"accounts": [acct], "campaign": US_CAMPAIGN_PREFIX, "approved_by": by}
+        self.guard.authorize(self.system, Op("email.reply", target=acct, write=True, detail=detail))  # refuses
+        raise GuardViolation("nothing goes to a prospect after their reply unless an approver approved it (SPEC 1.3)")
+
+    def reply(
+        self, eaccount: str, reply_to_uuid: str, subject: str | None, body: str, *, approved_by: str
+    ) -> dict | None:
+        """Reply in the thread from the registry mailbox that received the email (SPEC 11 Approval).
+
+        Only in a thread of a US Outbound campaign: the email replied to must carry the id of a
+        "US Outbound – {owner}" campaign. PHASE0-CONFIRM: that Instantly sets campaign_id on a
+        prospect's reply, and that reply_to_uuid is the id of the email being answered.
+        approved_by is the approver's Slack id, or "cli" from `us-outbound replies approve`; the
+        guard refuses anyone else (SPEC 1.3, decision D11). subject None answers "Re: " the original's.
+        """
         [acct] = self._registry("email.reply", [eaccount], write=True, target=eaccount)
-        self._owned_email(acct, reply_to_uuid)
+        self._need_approval(acct, approved_by)
+        original = self._owned_email(acct, reply_to_uuid)
+        cid = str(original.get("campaign_id") or "").strip()
+        campaign = self._campaign_named_by_id(cid) if cid else None
+        op = Op(
+            "email.reply",
+            target=acct,
+            write=True,
+            detail={"accounts": [acct], "reply_to_uuid": reply_to_uuid, "campaign": campaign or "",
+                    "approved_by": str(approved_by).strip()},
+        )
+        if campaign is None:
+            self.guard.authorize(self.system, op)  # refuses: not a thread of a US Outbound campaign
+            raise GuardViolation(f"email {reply_to_uuid} is not in a US Outbound campaign")
         payload = {
             "eaccount": acct,
             "reply_to_uuid": reply_to_uuid,
-            "subject": subject,
+            "subject": reply_subject(original.get("subject")) if subject is None else subject,
             "body": {"text": body, "html": text_to_html(body)},
         }
-        op = Op("email.reply", target=acct, write=True, detail={"accounts": [acct], "reply_to_uuid": reply_to_uuid})
         return self.request("POST", "/emails/reply", op, json=payload, dry_result={"id": None, "dry_run": True})
 
     def forward(
