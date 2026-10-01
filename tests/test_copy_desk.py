@@ -320,6 +320,16 @@ def test_signals_load_brings_the_build_weights_and_focus_is_added_when_missing()
     plan = plan_tab("Signals", old, build["Signals"])
     by = {r["signal"]: r for r in plan.rows}
     assert by["EAP named"]["weight"] == "5" and "Harry's own" in by  # build wins; Harry's extra row stays
+    # The old funding row the build split by age stays on the sheet, switched off, so funding scores once.
+    old_funding = {"signal": "Recent funding", "source": "apollo_org, clay_funding",
+                   "looks_for": "days_since_funding <= 540",
+                   "weight": "20", "action": "Score", "active": "yes", "note": ""}
+    plan = plan_tab("Signals", [*old, old_funding], build["Signals"])
+    by = {r["signal"]: r for r in plan.rows}
+    assert by["Recent funding"]["active"] == "no" and by["Recent funding"]["note"].startswith("Replaced by Funding")
+    assert ("Recent funding switched off (replaced by Funding in the last 6 months and Funding 6–12 months ago)"
+            in plan.updated)
+    assert by["Harry's own"]["active"] == ""  # only the superseded row is touched
     focus = plan_tab("Focus", [], build["Focus"])
     assert [r["industry_group"] for r in focus.rows] == ["Technology & Startups", "Marketing & Creative Agencies",
                                                           "Legal Teams"]

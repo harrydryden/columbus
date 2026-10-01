@@ -21,6 +21,9 @@ command merges them into the sheet without losing Harry's own edits:
   * Roles (Harry, 1 Oct 2026): a tab still in SPEC 5's layout (first_choice_for_size,
     fallback_order) is replaced by the build's rows, the size-band order led by seniority. A
     tab already in the new layout keeps its rows; only roles it does not have are added.
+  * Signals and Focus (Harry, 1 Oct 2026): the build's rows win and Harry's own rows stay. A row
+    the build replaced under another name (SUPERSEDED: Recent funding, now split by age) stays
+    on the sheet but is switched off, so it does not score alongside its replacements.
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -43,6 +46,11 @@ KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_
 KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
        "Focus": "industry_group"}
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
+# Rows the build replaced under another name: a load keeps them on the sheet but switches them off,
+# so the old and new rows don't both score (Recent funding was split by age; review Appendix A).
+SUPERSEDED: dict[str, dict[str, str]] = {
+    "Signals": {"recent funding": "Funding in the last 6 months and Funding 6–12 months ago"},
+}
 # Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
 LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
 SHOW = 12  # names listed per change in the summary
@@ -168,7 +176,12 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
         p.rows.append(row)
     for k, old in sheet.items():
         if k not in build:
-            p.rows.append({c: str(old.get(c, "")) for c in cols})
+            row = {c: str(old.get(c, "")) for c in cols}
+            by = SUPERSEDED.get(tab, {}).get(k)
+            if by and "active" in cols and row["active"].strip().casefold() not in ("no", "false"):
+                row.update(active="no", note=f"Replaced by {by} (1 Oct 2026). {row.get('note', '')}".strip())
+                p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {by})")
+            p.rows.append(row)
             p.extra.append(str(old.get(KEY[tab], "")))
     return p
 
