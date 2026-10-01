@@ -188,7 +188,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     (
         "Mental health support listed", "clay_careers, job_posts",
         "mental health; therapy; counseling; counselling; wellbeing support; well-being support",
-        "", "15", "", "Score", "Progressive employer", "", "540", "yes",
+        "", "15", "", "Score", "Progressive employer", "I noticed your careers page mentions {evidence}.", "540", "yes",
         "A budget-and-brand signal: wellbeing is part of the employer's brand, never an exclusion. "
         f"{_APPENDIX_A}: +25 to +15, and EAP and employee assistance moved out, so a carrier EAP is no "
         "longer counted twice (it scored +35 with the EAP named row); job posts read too.",
@@ -198,7 +198,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "EAP; employee assistance; ComPsych; GuidanceResources; Magellan; Optum; Carelon; Cigna; "
         "Aetna Resources For Living; TELUS Health; Health Advocate",
         _EAP_CONTEXT, "5", "", "Score", "Upgrade the EAP",
-        "Your benefits page lists an employee assistance program.", "540", "yes",
+        "I noticed your benefits page lists an employee assistance program.", "540", "yes",
         f"Kept as the Upgrade the EAP angle trigger, alongside or instead, never disparaging. {_APPENDIX_A}: "
         "+10 to +5, because Spill won 32% of deals where an EAP was in place against 46% with nothing "
         "(05 §3.6); the carrier EAP names and job posts added. Not in Appendix A: Optum, Cigna, Carelon and "
@@ -218,7 +218,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     (
         "Wellbeing app or perk named", "clay_careers, job_posts",
         "Headspace; Calm; Wellhub; Gympass",
-        _APP_CONTEXT, "5", "", "Score", "Progressive employer", "", "540", "yes",
+        _APP_CONTEXT, "5", "", "Score", "Progressive employer", "I noticed {evidence} is part of your benefits.", "540", "yes",
         f"New ({_APPENDIX_A}): apps and fitness perks complement counseling, and Calm and Headspace buyers "
         "buy counseling too, so they score instead of being held. Headspace and Calm count only near the "
         "context terms.",
@@ -228,7 +228,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "wellness stipend; wellness stipends; mental health day; mental health days; unlimited PTO; "
         "four-day week; four-day weeks; 4-day week; 4-day weeks; parental leave; sabbatical; sabbaticals; "
         "100% employer-paid",
-        "", "5", "15", "Score", "Progressive employer", "", "540", "yes",
+        "", "5", "15", "Score", "Progressive employer", "I noticed your benefits include {evidence}.", "540", "yes",
         f"+5 for each benefit found, at most +15. {_APPENDIX_A}: from +10 each and at most +30, since these are "
         "standard tech perks and +30 skewed Priority toward VC-backed startups that most often already have "
         "a modern vendor; plurals added (terms match whole words).",
@@ -244,26 +244,26 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "New People leader", "apollo_people", "people_leader_days_in_title <= 90",
-        "", "30", "", "Score", "Progressive employer", "Congratulations on the new role.", "90", "yes",
+        "", "30", "", "Score", "Progressive employer", "I saw the team recently added a new People leader.", "90", "yes",
         f"SPEC 5 weight, kept by {_APPENDIX_A}, which adds the opener. The opener is right only when the email "
-        "goes to the new People leader the signal names (pick_contacts puts that person first, Appendix A.1); "
-        "clear it if anyone else is emailed.",
+        "goes to anyone at the account (1 Oct 2026: worded so it reads right to the founder or to the new "
+        "People leader, since pick_contacts ranks by seniority, not by the signal).",
     ),
     (
         "First People hire", "apollo_jobs, apollo_people", "open_people_roles >= 1 AND people_leader_count = 0",
-        "", "25", "", "Score", "Growing team", "", "90", "yes",
+        "", "25", "", "Score", "Growing team", "I saw you're hiring your first People role.", "90", "yes",
         "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it. "
         "A missing people_leader_count never matches, so People role open below fires anyway.",
     ),
     (
         "People role open", "apollo_jobs", "open_people_roles >= 1",
-        "", "15", "", "Score", "Growing team", "You're hiring for a People role.", "60", "yes",
+        "", "15", "", "Score", "Growing team", "I saw you're hiring for a People role right now.", "60", "yes",
         f"New ({_APPENDIX_A}): a People role posted in the last 60 days, whether or not a People leader is "
         "already known.",
     ),
     (
         "Funding in the last 6 months", "apollo_org, clay_funding", "days_since_funding <= 180",
-        "", "20", "", "Score", "Growing team", "Congratulations on the recent round.", "180", "yes",
+        "", "20", "", "Score", "Growing team", "Congratulations on the recent funding round.", "180", "yes",
         f"{_APPENDIX_A}: Recent funding (+20 for 540 days) split so funding decays without code: +20 up to "
         "180 days, +10 from 181 to 365 days (the next row), nothing after. days_since_funding is aged to "
         "today, so a round read months ago still counts its true age.",
@@ -277,7 +277,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "Hiring and growth", "apollo_jobs, apollo_org", "open_roles >= 3 OR headcount_growth_12m >= 0.10",
-        "", "15", "", "Score", "Growing team", "", "90", "yes",
+        "", "15", "", "Score", "Growing team", "I saw the team has been growing.", "90", "yes",
         f"{_APPENDIX_A}: reads apollo_jobs too, which owns open_roles (docs/pipeline.md, one owning source per "
         "fact); it read apollo_org only, so 5 open roles from apollo_jobs scored 0. headcount_growth_12m is "
         "apollo_org's.",

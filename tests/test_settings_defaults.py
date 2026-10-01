@@ -130,7 +130,7 @@ def test_a_carrier_eap_is_counted_once(settings):
         assert vendor in eap.terms, vendor
     # The medical carriers count only near words that make them the EAP, so the opener stays true.
     assert set(eap.context) == {"optum", "cigna", "carelon", "health advocate"}
-    assert eap.opener == "Your benefits page lists an employee assistance program."
+    assert eap.opener == "I noticed your benefits page lists an employee assistance program."
 
 
 def test_competitors_hold_and_complements_score(settings):
@@ -170,14 +170,22 @@ def test_openers_are_one_observed_fact_and_pass_the_copy_rules(settings):
     from us_outbound.enrol import render
 
     openers = {s.signal: s.opener for s in settings.signals if s.opener}
+    # Harry, 1 Oct 2026: email 1 opens on a personal, relevant fact, so every signal with evidence
+    # about the account has an opener, worded to read right to any of the three roles.
     assert openers == {
-        "EAP named": "Your benefits page lists an employee assistance program.",
-        "New People leader": "Congratulations on the new role.",
-        "People role open": "You're hiring for a People role.",
-        "Funding in the last 6 months": "Congratulations on the recent round.",
+        "Mental health support listed": "I noticed your careers page mentions {evidence}.",
+        "EAP named": "I noticed your benefits page lists an employee assistance program.",
+        "Wellbeing app or perk named": "I noticed {evidence} is part of your benefits.",
+        "Progressive benefits": "I noticed your benefits include {evidence}.",
+        "New People leader": "I saw the team recently added a new People leader.",
+        "First People hire": "I saw you're hiring your first People role.",
+        "People role open": "I saw you're hiring for a People role right now.",
+        "Funding in the last 6 months": "Congratulations on the recent funding round.",
+        "Hiring and growth": "I saw the team has been growing.",
     }
     for opener in openers.values():
-        assert render.pick_opener(opener, sender_is_harry=False, demo_host="Harry Dryden") == (opener, "")
+        filled = opener.replace("{evidence}", "parental leave")
+        assert render.pick_opener(filled, sender_is_harry=False, demo_host="Harry Dryden") == (filled, "")
 
 
 def test_angles_in_order(settings):
