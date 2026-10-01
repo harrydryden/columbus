@@ -99,9 +99,9 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("booking_page", "https://www.spill.chat/us/book-demo",
      "The demo page every email links as its call to action ({{demo_url}}; Harry, 30 Sep 2026)."),
     ("site_url", "https://www.spill.chat/us",
-     "Spill's US site ({{site_url}}): the \"trusted by over 100,000 employees\" link, and the page linked when an industry has none (Harry, 1 Oct 2026)."),
-    ("price_from", "250",
-     "The starting price in every email: \"Plans start from $250 a month, on a rolling 30-day contract\" (Harry, 1 Oct 2026)."),
+     "Spill's US site ({{site_url}}): the \"trusted by over 50,000 employees\" link, and the page linked when an industry has none (Harry, 1 Oct 2026)."),
+    ("price_from", "195",
+     "The starting price in every email: \"Plans start from $195 a month for the whole team, on a rolling 30-day contract\" (Harry, 1 Oct 2026)."),
     ("demo_host", "Harry Dryden", "Every demo is booked with this person."),
     (
         "postal_address",

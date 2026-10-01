@@ -6,8 +6,8 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 
 ## Claims
 
-- Spill is an on-demand counseling service for employees, trusted by over 100,000 employees (Harry, 1 Oct
-  2026), written as [trusted by over 100,000 employees]({{site_url}}).
+- Spill is an on-demand counseling service for employees, trusted by over 50,000 employees (Harry, 1 Oct
+  2026), written as [trusted by over 50,000 employees]({{site_url}}).
 - Spill helps organizations increase staff productivity, reduce absenteeism and free up HR time by
   addressing the issues that most often derail performance at work.
 - Employees get fast, easy access to professional counseling, often the same day, in a couple of clicks.
@@ -29,9 +29,9 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - Spill is HIPAA compliant.
 - For law firms (SPEC 5's legal overlay): "The bar's Lawyer Assistance Program covers attorneys. Who covers
   paralegals and staff?"
-- Pricing: only through {{price_line}} ("Plans start from $250 a month, on a rolling 30-day contract",
+- Pricing: only through {{price_line}} ("Plans start from $195 a month for the whole team, on a rolling 30-day contract",
   General price_from), then "We don't lock you in." Never write a dollar figure yourself.
-- The only figures allowed: 30% of employees use Spill, and "trusted by over 100,000 employees".
+- The only figures allowed: 30% of employees use Spill, and "trusted by over 50,000 employees".
 
 ## Words and claims never to use
 

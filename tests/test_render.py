@@ -71,9 +71,9 @@ BODIES = {
     1: "Hi {{first_name}},\n\n{{opener}}\n\n{{legal_overlay}}\n\nIn most agencies, the work runs on deadlines and client "
        "moods, and the strain stays hidden until someone good leaves.\n\n{{role_line}}\n\nSpill gives your team private "
        "counseling, often the same day, booked from any phone or from Slack, with evening sessions that fit around "
-       "launches. If it's worth a look, you can [see a quick demo]({{demo_url}}).\n\nBest wishes,\n{{sender_first_name}}",
+       "launches. If it's useful, here's [how Spill works for agencies]({{industry_url}}).\n\nBest wishes,\n{{sender_first_name}}",
     2: "Hi {{first_name}},\n\nIn case it's useful, here's a short overview of Spill for agencies.\n\n"
-       "**What is Spill?**\nSpill is an on-demand counseling service, [trusted by over 100,000 employees]({{site_url}}). We help "
+       "**What is Spill?**\nSpill is an on-demand counseling service, [trusted by over 50,000 employees]({{site_url}}). We help "
        "agencies increase productivity, reduce absenteeism and free up HR time by addressing the issues that most often "
        "derail performance at work.\nWith Spill, employees get fast, easy access to professional counseling, and managers "
        "get the tools they need to support anyone on their team who's struggling.\n\n"
@@ -84,7 +84,6 @@ BODIES = {
        "lists or callbacks.\n- Sessions run early mornings, evenings and weekends, so support fits around pitches and "
        "launches.\n- We integrate with the tools you already use, like email, Slack and Microsoft Teams.\n"
        "- {{price_line}} We don't lock you in.\n\n"
-       "If you'd like more detail, you can [see how Spill works for agencies]({{industry_url}}).\n\n"
        "To hear more and get a quote for your team, [book a short demo]({{demo_url}}).\n\nBest wishes,\n{{sender_first_name}}",
     3: "Hi {{first_name}},\n\nOne question agencies often ask: will anyone know who's using it?\n\nNo. People book "
        "directly and privately, and you see only anonymized, aggregate data. That privacy is often what makes people "
@@ -165,7 +164,7 @@ def test_variables_for_one_lead():
     assert v["first_name"] == "Jane" and v["company"] == "Acme Creative" and v["place"] == "Chicago, IL"
     assert v["opener"] == EAP_OPENER
     assert v["role_line"] == ROLE_LINES["People leader"]
-    assert v["price_line"] == "Plans start from $250 a month, on a rolling 30-day contract."
+    assert v["price_line"] == "Plans start from $195 a month for the whole team, on a rolling 30-day contract."
     assert v["demo_url"] == DEMO and v["site_url"] == "https://www.spill.chat/us"
     assert v["industry_url"] == PAGE + "agencies"  # the Copy row's industry (the group) and its page
     assert v["sender_first_name"] == "Hannah"
@@ -188,11 +187,12 @@ def test_the_general_row_links_the_account_s_own_page():
 
 
 def test_one_starting_price_whatever_the_team_size():
-    """Harry, 1 Oct 2026: "Plans start from $250 a month", as on the website, for every team (General price_from)."""
+    """Harry, 1 Oct 2026: "from $195 a month for the whole team", as on the website, for every team (General price_from)."""
     for employees in (12, 64, 240):
         assert values_for(acct=account(employees=employees))["price_line"] == (
-            "Plans start from $250 a month, on a rolling 30-day contract.")
-    assert render.price_line(make_settings(price_from=195)) == "Plans start from $195 a month, on a rolling 30-day contract."
+            "Plans start from $195 a month for the whole team, on a rolling 30-day contract.")
+    assert render.price_line(make_settings(price_from=250)) == (
+        "Plans start from $250 a month for the whole team, on a rolling 30-day contract.")
 
 
 def test_an_industry_with_no_page_links_the_site():
@@ -201,7 +201,7 @@ def test_an_industry_with_no_page_links_the_site():
     retail = account(industry="Retail & E-commerce", industry_group="Retail & E-commerce")
     assert values_for(settings=s, acct=retail)["industry_url"] == "https://www.spill.chat/us"
     seq = sequence(settings=s, acct=retail)
-    assert all(r.ok for r in seq), render.violations(seq)  # the site, linked twice in email 2, is fine
+    assert all(r.ok for r in seq), render.violations(seq)  # email 1 links the site instead
 
 
 def test_place_and_proof_fallbacks():
@@ -288,8 +288,8 @@ def test_clean_sequence_renders_without_violations():
     cv = render.custom_variables(sequence())
     assert set(cv) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
     assert cv["s1_subject"] == "Support for the Acme Creative team"
-    assert f'<a href="{DEMO}">see a quick demo</a>' in cv["s1_body"]
-    assert f'<a href="{PAGE}agencies">see how Spill works for agencies</a>' in cv["s2_body"]
+    assert f'<a href="{PAGE}agencies">how Spill works for agencies</a>' in cv["s1_body"] and DEMO not in cv["s1_body"]
+    assert f'<a href="{DEMO}">book a short demo</a>' in cv["s2_body"]
     assert "<ul><li>Employees can get support the same day" in cv["s2_body"]
 
 
@@ -297,7 +297,7 @@ def test_email_format_text_sends_plain_text_with_links_written_out():
     s = make_settings(email_format="text")
     seq = sequence(settings=s)
     assert all(r.ok for r in seq)
-    assert f"see a quick demo ({DEMO})" in seq[0].body and "<p>" not in seq[0].body
+    assert f"how Spill works for agencies ({PAGE}agencies)" in seq[0].body and "<p>" not in seq[0].body
 
 
 def test_the_role_line_and_opener_land_in_email_1():
@@ -357,16 +357,20 @@ def test_an_edit_after_qa_needs_qa_again():
     assert not edited.qa_current and edited.qa_verdict == "pass"
 
 
-def test_the_sequence_must_link_the_industry_page():
+def test_email_1_links_the_industry_page_and_asks_for_no_demo():
+    """Harry, 1 Oct 2026: a demo ask in the first email is too presumptive."""
     bodies = dict(BODIES)
-    bodies[2] = BODIES[2].replace("If you'd like more detail, you can [see how Spill works for agencies]({{industry_url}}).\n\n", "")
+    bodies[1] = BODIES[1].replace("[how Spill works for agencies]({{industry_url}})", "[a short demo]({{demo_url}})")
     s = make_settings(copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies),))
-    assert any("never links the industry page" in v for v in sequence(settings=s)[1].violations)
-    # An industry with no page still links one: the site (Harry, 1 Oct 2026: a link in every sequence).
-    fintech_row = copy_row("fintech-v1", "Fintech", bodies=bodies)
+    first = sequence(settings=s)[0]
+    assert any("email 1 links the demo page" in v for v in first.violations)
+    assert any("email 1 has 0 links to the industry page" in v for v in first.violations)
+    # An industry with no page links the site instead, so it is never left without a link.
+    fintech_row = copy_row("fintech-v1", "Fintech")
     s = make_settings(copy=(fintech_row,))
     fintech = account(industry="Fintech", industry_group=TECH)
-    assert any("never links the industry page" in v for v in sequence(row=fintech_row, settings=s, acct=fintech)[1].violations)
+    assert all(r.ok for r in sequence(row=fintech_row, settings=s, acct=fintech))
+    assert 'href="https://www.spill.chat/us"' in sequence(row=fintech_row, settings=s, acct=fintech)[0].html
 
 
 def test_a_sender_who_is_not_harry_cannot_offer_a_time_with_me():

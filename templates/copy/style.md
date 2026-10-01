@@ -21,9 +21,11 @@ on every email before it is sent.
 ## The four emails
 
 Every email opens "Hi {{first_name}}," and ends with "Best wishes," and "{{sender_first_name}}" on its own
-line (Harry, 1 Oct 2026). Every email has exactly one call to action, a link to book a demo: [book a short demo]({{demo_url}})
-or similar anchor text. Email 2 also links the industry page ({{industry_url}}; Spill's US site when the
-industry has no page yet) and, in "What is Spill?", the site ({{site_url}}). Never "with me", "my calendar" or "a time with me": the demo page books
+line (Harry, 1 Oct 2026). Email 1 asks for nothing: it is about the reader's industry and links its
+page, [see how Spill works for CPA firms]({{industry_url}}) (Spill's US site when the industry has no
+page yet); a demo ask that early is too presumptive (Harry, 1 Oct 2026). Emails 2 to 4 each have exactly
+one call to action, a link to book a demo: [book a short demo]({{demo_url}}) or similar anchor text.
+Email 2 also links the site in "What is Spill?" ({{site_url}}). Never "with me", "my calendar" or "a time with me": the demo page books
 the right person whoever sends the email. The footer, opt-out and privacy notice are added by the
 system; never write them.
 
@@ -31,16 +33,15 @@ system; never write them.
    filled with evidence about the account when there is some, and disappears otherwise, so the email
    must read well without it). Then one or two sentences on a real pressure in this industry, from its
    page. Then "{{role_line}}" alone on its own line. Then one sentence on how Spill helps with that
-   pressure, and the call to action.
+   pressure, and a sentence linking the industry page. No demo ask.
 2. **Day 7, the long form (180 to 280 words).** Harry's explainer, tailored to the industry. A short
-   bridge line, then three headed sections, then the industry page link, then the call to action:
+   bridge line, then three headed sections, then the call to action:
    - **What is Spill?** what it is and what it does for the organization, in this industry's terms.
    - **Who is Spill for?** who on this kind of team it helps and with what, from the page and facts.md.
    - **What makes Spill unique** four bullets: same-day support in a couple of clicks with no waiting
      lists; one or two industry-specific points (out-of-hours sessions for shift workers, sessions
      around client work, confidentiality from partners); the tools it works through; and
      "{{price_line}} We don't lock you in."
-   - One sentence linking the industry page: [see how Spill works for CPA firms]({{industry_url}}).
 3. **Day 14, a new angle (50 to 90 words).** One different reason, often from the page's FAQs:
    confidentiality, manager support, out-of-hours access, setup in hours, working alongside an EAP.
    A short question is fine. Call to action.
@@ -79,7 +80,7 @@ Hi {{first_name}},
 In case it's useful, here's a short overview of Spill.
 
 **What is Spill?**
-Spill is an on-demand counseling service, [trusted by over 100,000 employees]({{site_url}}). We help organizations increase staff productivity, reduce absenteeism and free up HR time by addressing the issues that most often derail performance at work.
+Spill is an on-demand counseling service, [trusted by over 50,000 employees]({{site_url}}). We help organizations increase staff productivity, reduce absenteeism and free up HR time by addressing the issues that most often derail performance at work.
 With Spill, employees get fast, easy access to professional counseling, and managers get the tools they need to support anyone on their team who's struggling.
 
 **Who is Spill for?**

@@ -20,8 +20,9 @@ from {{price_line}}, General price_from); no "Re:" or emoji in a subject; {{open
 {{legal_overlay}} alone on their lines.
 The rules on each email as sent (email_violations): a subject; no empty or unrendered
 {{variable}}; no line over 300 characters; the word count for its step; no spam phrases; no
-bare addresses; exactly one link to the demo page, the call to action (Harry: "the CTA is
-always to book a demo"); links only to the demo page, the industry page or spill.chat.
+bare addresses; email 1 links the industry page and not the demo page (Harry, 1 Oct 2026: a demo
+ask first is too presumptive); emails 2 to 4 have exactly one link to the demo page, the call to
+action; links only to the demo page, the industry page or spill.chat.
 SPEC 10 had step 1 carry one link only, the privacy page; Harry asked for the demo link in
 every email and the industry page in the sequence (docs/pipeline.md, "Copy").
 
@@ -380,8 +381,15 @@ def email_violations(
         out.append(f"email {step} has {n} words; it should have {lo} to {hi}")
     found = list(links_found)
     demo = [u for _, u in found if _norm_link(u) == _norm_link(demo_url)] if demo_url else []
-    if len(demo) != 1:
-        out.append(f"has {len(demo)} links to the demo page; every email has exactly one, the call to action")
+    page = [u for _, u in found if industry_url and _norm_link(u) == _norm_link(industry_url)]
+    if step == 1:
+        # Harry, 1 Oct 2026: a demo ask in the first email is too presumptive; it links the industry page.
+        if demo:
+            out.append("email 1 links the demo page; the first email links the industry page instead")
+        if industry_url and len(page) != 1:
+            out.append(f"email 1 has {len(page)} links to the industry page; it has exactly one")
+    elif len(demo) != 1:
+        out.append(f"has {len(demo)} links to the demo page; emails 2 to 4 have exactly one, the call to action")
     # With no industry page, {{industry_url}} is the site, which the "trusted by" line also links.
     if industry_url and _norm_link(industry_url) != _norm_link(site_url) \
             and sum(1 for _, u in found if _norm_link(u) == _norm_link(industry_url)) > 1:

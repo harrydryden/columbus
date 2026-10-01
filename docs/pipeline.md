@@ -241,11 +241,11 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
   - The role line in email 1.
   - The evidence opener from the account's signals, which is left out for the General angle and for Control accounts.
   - The company, first name and place.
-- **The industry's spill.chat page is linked in email 2** (`{{industry_url}}`). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. An industry with no page yet (Small Businesses, still a draft on the site) links Spill's US site instead (General `site_url`, https://www.spill.chat/us; Harry, 1 Oct 2026).
-- **"Trusted by over 100,000 employees"** in email 2's "What is Spill?" links the US site (`{{site_url}}`; Harry, 1 Oct 2026).
-- **One price:** `{{price_line}}` reads "Plans start from $250 a month, on a rolling 30-day contract." for every team (General `price_from`; Harry, 1 Oct 2026). SPEC 4's price-by-size table is not quoted.
+- **Email 1 links the industry's spill.chat page and asks for nothing** (`{{industry_url}}`; Harry, 1 Oct 2026: a demo ask in the first email is too presumptive). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. An industry with no page yet (Small Businesses, still a draft on the site) links Spill's US site instead (General `site_url`, https://www.spill.chat/us; Harry, 1 Oct 2026).
+- **"Trusted by over 50,000 employees"** in email 2's "What is Spill?" links the US site (`{{site_url}}`; Harry, 1 Oct 2026).
+- **One price:** `{{price_line}}` reads "Plans start from $195 a month for the whole team, on a rolling 30-day contract." for every team (General `price_from`; Harry, 1 Oct 2026). SPEC 4's price-by-size table is not quoted.
 - **Sign-off:** "Best wishes," and the sender's first name (Harry, 1 Oct 2026).
-- **Every email's call to action is the demo page**, `{{demo_url}}` (General `booking_page`, https://www.spill.chat/us/book-demo), as a link in the text.
+- **Emails 2 to 4 each have one call to action, the demo page**, `{{demo_url}}` (General `booking_page`, https://www.spill.chat/us/book-demo), as a link in the text.
 - **The emails are HTML** (General `email_format = html`): embedded links, bullets and the bold headings of the long-form email, with tracking still off. `email_format = text` sends plain text with the links written out, if phase 0 finds Instantly mangles HTML in a custom variable. Instantly's `text_only` follows the setting.
 - **Where the words come from:**
   - `templates/copy/style.md`: the voice, the four emails, the role lines, the markup, and Harry's long-form email as the model for email 2.
@@ -255,8 +255,8 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
   | Email | Day | What it does | Words |
   | :- | :- | :- | :- |
-  | 1 | 0 | The hook: a real pressure in this industry, the role line, one line on how Spill helps, the demo link | 60 to 110 |
-  | 2 | 7 | Harry's long form: What is Spill? Who is Spill for? What makes Spill unique (four bullets, the last the starting price), the industry page link, the demo link | 180 to 280 |
+  | 1 | 0 | The hook: a real pressure in this industry, the role line, one line on how Spill helps, the industry page link (no demo ask) | 60 to 110 |
+  | 2 | 7 | Harry's long form: What is Spill? Who is Spill for? What makes Spill unique (four bullets, the last the starting price), the demo link | 180 to 280 |
   | 3 | 14 | A new angle, often from the page's FAQs: confidentiality, managers, out-of-hours, working with an EAP | 50 to 90 |
   | 4 | 21 | A polite close that leaves the door open | 40 to 80 |
 
@@ -343,7 +343,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
 | — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |
-| — | A demo link in every email, and the industry page in email 2, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry: "the CTA is always to book a demo" | 10 | Done |
+| — | A link in every email: the industry page in email 1, the demo page in emails 2 to 4, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry, 30 Sep and 1 Oct | 10 | Done |
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |
 | — | `claude_model` (Opus) writes; `claude_task_model` (Sonnet) checks and classifies | Harry | 1.1 | Done |
 | 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |

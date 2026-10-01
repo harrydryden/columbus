@@ -288,12 +288,13 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
         subject, body = cv[f"s{step}_subject"], cv[f"s{step}_body"]
         assert subject and "{{" not in subject + body, step
         assert body.startswith("<p>Hi Jane,</p>"), step  # html, the default email_format
-        assert body.count(f'<a href="{g.booking_page}">') == 1, step  # one call to action: the demo page
+        # Email 1 links the industry page; emails 2 to 4 have one call to action, the demo page.
+        assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
         assert g.postal_address in body and "Reply STOP" in body and g.privacy_url in body  # SPEC 10 footer
     assert "Saw your benefits page mentions EAP." in cv["s1_body"]
     assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
     page = s.industry("Advertising agencies").landing_page_url
-    assert f'<a href="{page}">' in cv["s2_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
+    assert f'<a href="{page}">' in cv["s1_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
 
     refused = [c for c in ctx.guard.calls if c.system == "instantly" and c.write]
     assert refused and all(c.action == "lead.add" and c.target == campaign and not c.sent for c in refused)

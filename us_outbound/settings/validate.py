@@ -472,7 +472,7 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "site_url":
         _page_url(value)
     if key == "price_from" and value < 1:
-        raise ValueError("is the starting price in dollars a month, like 250")
+        raise ValueError("is the starting price in dollars a month, like 195")
     if key == "approver_slack_ids":
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:

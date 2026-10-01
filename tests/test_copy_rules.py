@@ -246,3 +246,10 @@ def test_word_counts_by_email(step, n, ok):
 def test_a_subject_is_needed_and_the_word_rules_apply_to_it():
     assert any("subject is empty" in v for v in emailed(subject=""))
     assert any('subject says "Therapy"' in v for v in emailed(subject="Therapy for your team"))
+
+
+def test_email_1_links_the_industry_page_not_the_demo():
+    assert emailed(step=1, found=(("how Spill works for CPA firms", PAGE),), text=words(60)) == []
+    demo = emailed(step=1, found=(("book a demo", DEMO), ("how Spill works", PAGE)), text=words(60))
+    assert any("email 1 links the demo page" in v for v in demo)
+    assert any("email 1 has 0 links to the industry page" in v for v in emailed(step=1, found=(), text=words(60)))

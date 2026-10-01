@@ -46,7 +46,7 @@ ARTICLE14_TEMPLATE = "article14.txt"
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
 # (General price_from). SPEC 4's price-by-size table is not quoted.
-PRICE_LINE = "Plans start from ${dollars} a month, on a rolling 30-day contract."
+PRICE_LINE = "Plans start from ${dollars} a month for the whole team, on a rolling 30-day contract."
 
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
 _FOOTER_MISSING = {
@@ -82,7 +82,7 @@ def is_demo_host(mailbox: Mailbox, settings: Settings) -> bool:
 
 
 def price_line(settings: Settings) -> str:
-    """The starting price every email quotes (General price_from), like "Plans start from $250 a month, ..."."""
+    """The starting price every email quotes (General price_from), like "Plans start from $195 a month for the whole team, ..."."""
     return PRICE_LINE.format(dollars=settings.general.price_from)
 
 
