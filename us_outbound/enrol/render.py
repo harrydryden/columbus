@@ -1,14 +1,14 @@
-"""Copy rendering: variables, the four emails, the footer and the Article 14 notice.
+"""Copy rendering: variables, the four emails, the signature and the Article 14 notice.
 
 SPEC 10 ("Sequence", "Variables", "Rules"), SPEC 9 ("Instantly campaigns": subjects and
 bodies go to Instantly as custom variables {{s1_subject}}, {{s1_body}} ...; "Sender
-continuity": every demo is with Harry), SPEC 13 (CAN-SPAM footer), and Harry, 30 Sep 2026:
+continuity": every demo is with Harry), and Harry, 30 Sep and 1 Oct 2026:
 copy by industry and role, links embedded in the copy, the demo page as every email's call
 to action.
 
   * variables() builds the variables for one account, contact, sender mailbox and Copy row.
   * render_step() fills one email of a Copy row (copy_markup: HTML and plain text), appends
-    the Article 14 notice on email 1 and the footer on every email (templates/copy/*.txt;
+    the signature on every email and the Article 14 notice on email 1 (templates/copy/*.txt;
     "#" lines are comments and are stripped), then runs the copy rules. An unknown or empty
     variable is a violation and stays visible in the text. Any violation blocks the send,
     and so does copy that is not approved or has not passed QA in its current wording.
@@ -41,7 +41,7 @@ OPTIONAL_VARIABLES = frozenset({"opener", "legal_overlay"})  # alone on their li
 LEGAL_GROUP = "Legal Teams"
 
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
-FOOTER_TEMPLATE = "footer.txt"
+SIGNATURE_TEMPLATE = "signature.txt"
 ARTICLE14_TEMPLATE = "article14.txt"
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
@@ -49,8 +49,9 @@ ARTICLE14_TEMPLATE = "article14.txt"
 PRICE_LINE = "Plans start from ${dollars} a month for the whole team, on a rolling 30-day contract."
 
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
-_FOOTER_MISSING = {
-    "sender": "the mailbox has no owner_name for the footer",
+_FIXED_MISSING = {
+    "site_url": "site_url is blank on the General tab, so the signature has no Spill link",
+    "booking_link": "booking_link is blank on the General tab, so the signature has no booking link",
     "company": "the Article 14 notice has no company name",
 }
 
@@ -58,11 +59,11 @@ _FOOTER_MISSING = {
 @dataclass(frozen=True)
 class Rendered:
     subject: str
-    body: str  # as sent, in the General tab's email_format, footer included
+    body: str  # as sent, in the General tab's email_format, signature included
     violations: tuple[str, ...] = ()
     step: int = 0
     copy_version: str = ""
-    text: str = ""  # the plain-text version, footer included (previews and QA)
+    text: str = ""  # the plain-text version, signature included (previews and QA)
     html: str = ""
 
     @property
@@ -205,14 +206,16 @@ def fill(template: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
     return _PLACEHOLDER.sub(one, template), missing
 
 
-def footer(mailbox: Mailbox, settings: Settings) -> tuple[str, list[str]]:
-    """The footer every email ends with (SPEC 10): sender and role, and the ad line.
+def signature(settings: Settings) -> tuple[copy_markup.Rendered, list[str]]:
+    """The signature every email ends with, after the copy's sign-off (Harry, 1 Oct 2026), and what is missing.
 
-    No postal address and no privacy link (Harry, 1 Oct 2026); the opt-out is Instantly's unsubscribe
-    link, added after this by the campaign's step template (clients/instantly.py).
+    Three lines with three links: Spill's US site, Harry's booking link and the Trustpilot reviews.
+    No postal address and no privacy link; the opt-out is Instantly's unsubscribe link, which the
+    campaign's step template adds after everything here (clients/instantly.py).
     """
-    name, role = mailbox.owner_name.strip(), mailbox.owner_role.strip()
-    return fill(load_template(FOOTER_TEMPLATE), {"sender": f"{name}, {role}" if name and role else name})
+    g = settings.general
+    source, missing = fill(load_template(SIGNATURE_TEMPLATE), {"site_url": g.site_url, "booking_link": g.booking_link})
+    return copy_markup.render(source, {}), missing
 
 
 def article14(values: Mapping[str, str]) -> tuple[str, list[str]]:
@@ -227,7 +230,7 @@ def render_step(
     copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings,
     for_send: bool = True,
 ) -> Rendered:
-    """One email, footer and (email 1) Article 14 notice included, with every copy-rule violation.
+    """One email, signature and (email 1) Article 14 notice included, with every copy-rule violation.
 
     for_send=False leaves out the approval and QA checks, for previews and the sheet check.
     """
@@ -247,17 +250,19 @@ def render_step(
     body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES)
     problems += [f"body {x}" for x in body.problems]
 
-    fixed: list[str] = []
+    # After the copy's sign-off: the signature, then (email 1) the Article 14 notice in small type.
+    sig, missing = signature(settings)
+    problems += [_FIXED_MISSING.get(m, f"the signature has no {m}") for m in missing]
+    problems += [f"signature {x}" for x in sig.problems]
+    texts, htmls = [body.text, sig.text], [body.html, sig.html]
     if step == 1:
         notice, missing = article14(variables)
-        problems += [_FOOTER_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
-        fixed.append(notice)
-    foot, missing = footer(mailbox, settings)
-    problems += [_FOOTER_MISSING.get(m, f"the footer has no {m}") for m in missing]
-    fixed.append(foot)
+        problems += [_FIXED_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
+        texts.append(notice)
+        htmls.append(copy_markup.plain_to_html(notice))
 
-    text = "\n\n".join([body.text, *fixed])
-    html = body.html + "".join(copy_markup.plain_to_html(x) for x in fixed)
+    text = "\n\n".join(texts)
+    html = "".join(htmls)
     exempt = (variables.get("first_name", ""), variables.get("company", ""), variables.get("place", ""),
               mailbox.owner_name)
     problems += copy_rules.email_violations(

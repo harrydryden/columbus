@@ -26,8 +26,9 @@ page, [see how Spill works for CPA firms]({{industry_url}}) (Spill's US site whe
 page yet); a demo ask that early is too presumptive (Harry, 1 Oct 2026). Emails 2 to 4 each have exactly
 one call to action, a link to book a demo: [book a short demo]({{demo_url}}) or similar anchor text.
 Email 2 also links the site in "What is Spill?" ({{site_url}}). Never "with me", "my calendar" or "a time with me": the demo page books
-the right person whoever sends the email. The footer, opt-out and privacy notice are added by the
-system; never write them.
+the right person whoever sends the email. The signature (Spill, a booking link and the Trustpilot
+reviews), the data-source notice and the unsubscribe link are added by the system after "Best wishes,"
+and the sender's name; never write them.
 
 1. **Day 0, the hook (60 to 110 words).** "{{opener}}" alone on the line after the greeting (it is
    filled with evidence about the account when there is some, and disappears otherwise, so the email

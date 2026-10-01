@@ -132,7 +132,7 @@ Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mai
 
 | Item | Where |
 | :- | :- |
-| Footer text (sender and the advertisement line; no postal address or privacy link, Harry 1 Oct) | `templates/copy/footer.txt` |
+| Signature (Spill, "Book a call here", the Trustpilot reviews; Harry 1 Oct) | `templates/copy/signature.txt`; its links follow `site_url` and `booking_link` on the General tab |
 | Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that `{{unsubscribe}}` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
 | Legitimate-interests text (UK GDPR Article 14, step 1) | `templates/copy/article14.txt` |
 | The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |

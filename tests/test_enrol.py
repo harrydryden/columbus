@@ -152,7 +152,7 @@ def test_live_posts_leads_only_to_us_outbound_campaigns_with_custom_variables():
             cv = lead["custom_variables"]
             assert set(cv) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
             assert "{{" not in "".join(cv.values())
-            assert "This is a marketing email from Spill." in cv["s4_body"]  # the footer
+            assert "on-demand counseling for your team" in cv["s4_body"]  # the signature
     jane = next(lead for lead in by_campaign["c-harry"] if lead["email"] == "jane@acmecreative.com")
     assert jane["first_name"] == "Jane" and jane["company_name"] == "Acme Creative"
     assert EAP_OPENER in jane["custom_variables"]["s1_body"]

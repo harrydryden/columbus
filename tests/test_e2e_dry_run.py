@@ -288,8 +288,8 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
         assert body.startswith("<p>Hi Jane,</p>"), step  # html, the default email_format
         # Email 1 links the industry page; emails 2 to 4 have one call to action, the demo page.
         assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
-        # The footer; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
-        assert "This is a marketing email from Spill." in body and "{{unsubscribe}}" not in body
+        # The signature; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
+        assert f'Book a call <a href="{g.booking_link}">here</a>' in body and "{{unsubscribe}}" not in body
     assert "Saw your benefits page mentions EAP." in cv["s1_body"]
     assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
     page = s.industry("Advertising agencies").landing_page_url

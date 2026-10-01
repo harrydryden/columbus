@@ -25,7 +25,13 @@ from us_outbound.settings.model import Test as ABTest  # aliased so pytest does 
 
 DEMO = "https://www.spill.chat/us/book-demo"
 PAGE = "https://www.spill.chat/us/industry/"
-AD_LINE = "This is a marketing email from Spill."
+BOOKING = "https://meetings.hubspot.com/harry336/us-demo-link"
+TRUSTPILOT = "https://uk.trustpilot.com/review/spill.chat"
+SIGNATURE_LINES = [  # Harry, 1 Oct 2026: the signature, with its three links, after the copy's sign-off
+    "Spill (https://www.spill.chat/us), on-demand counseling for your team",
+    f"Book a call here ({BOOKING})",
+    f"Read our Trustpilot reviews ({TRUSTPILOT}) from employees",
+]
 
 
 def mailbox(address: str, owner: str, status: str = "Active", cap: int = 30, **kw) -> Mailbox:
@@ -305,23 +311,29 @@ def test_the_role_line_and_opener_land_in_email_1():
     assert "Hi Jane,\n\nIn most agencies" in no_opener.text  # the opener's line went with it
 
 
-def test_footer_on_every_email_and_the_notice_on_email_1():
+def test_signature_on_every_email_and_the_notice_on_email_1():
     seq = sequence()
     for r in seq:
-        # No postal address and no privacy link (Harry, 1 Oct 2026); the opt-out is Instantly's
-        # unsubscribe link, which the campaign's step template adds after this.
-        assert r.text.splitlines()[-2:] == ["Hannah Spalding, Spill", AD_LINE]
+        # The sign-off, then the signature (Harry, 1 Oct 2026). No postal address and no privacy link;
+        # the opt-out is Instantly's unsubscribe link, which the campaign's step template adds after this.
+        lines = r.text.splitlines()
+        sig = lines.index(SIGNATURE_LINES[0])
+        assert lines[sig - 3 : sig + 3] == ["Best wishes,", "Hannah", "", *SIGNATURE_LINES]
+        assert ('<p><a href="https://www.spill.chat/us">Spill</a>, on-demand counseling for your team<br>'
+                f'Book a call <a href="{BOOKING}">here</a><br>'
+                f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees</p>') in r.html
         assert "privacy notice" not in r.text.lower() and "{{unsubscribe}}" not in r.html
-    assert "Where we got your details" in seq[0].text
+    assert seq[0].text.splitlines()[-2].startswith("Where we got your details")  # small print, after the signature
     assert "use the unsubscribe link below" in seq[0].text and "link below explains" not in seq[0].text
     assert all("Where we got your details" not in r.text for r in seq[1:])
+    assert all(r.text.splitlines()[-3:] == SIGNATURE_LINES for r in seq[1:])
 
 
-def test_footer_role_shown_only_when_set():
-    s = make_settings()
-    with_role = dataclasses.replace(HANNAH, owner_role="Partnerships")
-    assert "Hannah Spalding, Partnerships" in render.footer(with_role, s)[0]
-    assert render.footer(HANNAH, s)[0].splitlines()[0] == "Hannah Spalding, Spill"
+def test_signature_links_follow_the_general_tab_and_blanks_block():
+    s = make_settings(booking_link="https://meetings.hubspot.com/someone-else")
+    assert '<a href="https://meetings.hubspot.com/someone-else">here</a>' in sequence(settings=s)[1].html
+    blank = sequence(settings=make_settings(booking_link=""))
+    assert all(any("booking_link is blank" in v for v in r.violations) for r in blank)
 
 
 def test_unknown_and_empty_variables_stay_visible_and_block():
@@ -383,7 +395,7 @@ def test_every_row_against_empty_values():
         for mb in s.mailboxes:
             for r in render.render_sequence(row, render.empty_variables(), mailbox=mb, settings=s):
                 assert any("empty variable" in v for v in r.violations), (row.copy_version, r.step)
-                assert r.text.splitlines()[-1] == AD_LINE  # the footer is still there
+                assert SIGNATURE_LINES[2] in r.text.splitlines()  # the signature is still there
 
 
 def test_every_row_against_maximum_length_values():
@@ -409,7 +421,7 @@ def test_max_rendered_lengths_probe():
 
 
 def test_templates_are_drafts_and_comments_are_stripped():
-    for name in (render.FOOTER_TEMPLATE, render.ARTICLE14_TEMPLATE):
+    for name in (render.SIGNATURE_TEMPLATE, render.ARTICLE14_TEMPLATE):
         raw = (render.TEMPLATES_DIR / name).read_text(encoding="utf-8")
         assert raw.splitlines()[0].startswith("# DRAFT — for Harry to approve")
         text = render.load_template(name)

@@ -285,7 +285,7 @@ def qa_prompt(row: CopyRow, settings: Settings) -> str:
         + json.dumps(industry_material(row.industry, settings), indent=1),
         "## The copy as written in the sheet\n" + json.dumps(row_as_json(row), indent=1),
         "## The emails as a prospect would get them (a sample prospect, the first role's line; "
-        "the footer and privacy notice are fixed text)\n" + sample,
+        "the signature and the data-source notice are fixed text)\n" + sample,
     ])
 
 

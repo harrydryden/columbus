@@ -345,7 +345,7 @@ def email_violations(
     uncounted: Iterable[str] = (),
     site_url: str = "",
 ) -> list[str]:
-    """Rules on one email as it will be sent: its subject, its words and its links (footer excluded).
+    """Rules on one email as it will be sent: its subject, its words and its links (signature and notice excluded).
 
     uncounted: filled-in lines that are not the copy's own words (the evidence opener, the legal
     overlay), left out of the word count so a long opener never blocks an email.

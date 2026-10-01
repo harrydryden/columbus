@@ -218,7 +218,7 @@ def render(source: str, values: Mapping[str, str], *, optional: Iterable[str] = 
 
 
 def plain_to_html(text: str, *, link_urls: Iterable[str] = (), style: str = FOOTER_STYLE) -> str:
-    """Fixed plain text (the footer, the Article 14 notice) as one HTML paragraph; the given URLs become links."""
+    """Fixed plain text (the Article 14 notice) as one small-type HTML paragraph; the given URLs become links."""
     body = "<br>".join(html.escape(line, quote=False) for line in text.split("\n"))
     for url in sorted({u for u in link_urls if u}, key=len, reverse=True):
         esc = html.escape(url, quote=False)

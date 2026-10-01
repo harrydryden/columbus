@@ -1,8 +1,8 @@
 # DRAFT — for Harry to approve (SPEC 14 phase 0: "For Harry to approve: ... the legitimate-interests text").
 # The UK GDPR Article 14 notice step 1 carries: where the contact data came from, the lawful basis, and where the
 # privacy notice is (SPEC 10: "Step 1 also says where the contact data came from, as UK GDPR Article 14 requires").
-# It sits just above the footer. There is no privacy link (Harry, 1 Oct 2026), so it points at the unsubscribe
-# link Instantly adds below the footer. Provider names are written without ".io" so no mail client links them.
+# It sits just below the signature, in small type. There is no privacy link (Harry, 1 Oct 2026), so it points
+# at the unsubscribe link Instantly adds below it. Provider names are written without ".io" so no mail client links them.
 # Lines starting with "#" are comments: render.py strips them. Placeholders in single braces:
 #   {company}  the account's clean name
 Where we got your details: we found your name, role and work email through Apollo and Clay, which provide business contact data, and read about {company} on its public website.
