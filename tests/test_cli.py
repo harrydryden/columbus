@@ -106,7 +106,8 @@ def test_dry_run_takes_no_live_flag():
 
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
-    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes"}
+    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
+                                               "hand_check_post"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["verify_accounts"] == "us_outbound.verify:run"
@@ -121,6 +122,9 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
     assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_approvals"
     assert cli.JOBS["hubspot_readback"] == "us_outbound.crm.readback:hubspot_readback"
+    assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
+    assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
+    assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 
@@ -212,7 +216,6 @@ def test_live_needs_both_the_flag_and_the_setting():
 
 @pytest.mark.parametrize("job, message", [
     ("monday_readout", "not built yet (phase 3)"),
-    ("kill_rules", "not built yet (phase 3)"),
     ("verify_in_clay", "not built yet (phase 1)"),
     ("no_such_job", "unknown job"),
 ])
@@ -317,6 +320,9 @@ def test_start_needs_live_sending_and_checks_drift():
     h = Harness(SETTINGS)
     for name, accounts, limit in ((C_HANNAH, [HANNAH], 30), (C_SAM, [SAM], 30), (C_HARRY, [HARRY, HARRY2], 60)):
         h.instantly.standard(name, accounts, limit)
+    from tests.test_ramp import past_ramp
+
+    past_ramp(h.store, SETTINGS.mailboxes, datetime(2026, 10, 27, 12, 0, tzinfo=UTC))  # campaigns at full caps
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())

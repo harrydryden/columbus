@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 
 from tests.fakes import make_context
+from tests.test_ramp import past_ramp
 from tests.test_render import HANNAH, HARRY_M, HARRY_T, SAM, make_settings
 from us_outbound.context import ET
 from us_outbound.enrol import capacity
@@ -163,6 +164,7 @@ def test_instantly_s_backlog_comes_off_today():
     leads = [lead(i, "Hannah Spalding", date(2026, 10, 19)) for i in range(25)]
     leads += [lead(25 + i, "Hannah Spalding", date(2026, 10, 20)) for i in range(22)]  # step 2 due today
     ctx.store.insert("contacts", leads)
+    past_ramp(ctx.store, S.mailboxes)
     health(ctx, sent_by_day={"hannah@meetspill.org": {"2026-10-26": 20}})
     hannah = capacity.sending_capacity(ctx.store, S, TUE)["Hannah Spalding"]
     assert (hannah.backlog, hannah.sent_last_day, hannah.last_day) == (5, 20, date(2026, 10, 26))

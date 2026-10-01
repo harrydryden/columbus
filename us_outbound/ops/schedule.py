@@ -55,8 +55,9 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # stops, and opt-outs are honored the same day (SPEC 13). Offset from poll_replies by 7 minutes.
     ScheduledJob("sync_outcomes", "7-59/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
-    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
-    ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
+    # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
+    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("monday_readout", "0 9 * * 1", live=True, enabled=False, timeout_minutes=20, phase=3),
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
@@ -64,6 +65,8 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Monday 02:30, after settings_sync and before source_universe and apollo_signals (Harry, 1 Oct 2026).
     # It reads HubSpot and writes only the database, so it needs no --live.
     ScheduledJob("lookalikes", "30 2 * * 1", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
+    ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
 )
 
 

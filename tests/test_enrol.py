@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.fakes import FakeTransport, make_context
+from tests.test_ramp import past_ramp
 from tests.test_render import (
     AGENCIES,
     BODIES,
@@ -97,6 +98,7 @@ def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, ha
     st = ctx.store
     st.insert("accounts", accounts if accounts is not None else accounts3())
     st.insert("contacts", contacts if contacts is not None else contacts3())
+    past_ramp(st, s.mailboxes, now)  # the mailboxes are past the sending ramp (tests/test_ramp.py covers it)
     if hand_check:
         st.insert("hitl_items", [{"item_id": "hc-1", "kind": "hand_check", "status": hand_check,
                                   "created_at": now - timedelta(days=1), "payload": {"iso_week": "2026-W44"}}])

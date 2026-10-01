@@ -2,7 +2,8 @@
 
 Today's number is the smallest of three terms (enrol/queue.py):
   * weekly_target:    what is left of weekly_enrol_cap ÷ the send days left this week;
-  * sending_capacity: the senders' free slots after follow-ups already due (enrol/capacity.py);
+  * sending_capacity: the senders' free slots after follow-ups already due (enrol/capacity.py),
+                      each mailbox at its place on the sending ramp (registry/ramp.py);
   * ready_accounts:   verified accounts with a sendable email.
 The budgets sit behind ready_accounts: Clay credits verify accounts and Apollo credits find
 emails, each within its monthly budget and today's share of it (budget.py). When
@@ -100,13 +101,30 @@ def explain(
     return head, detail
 
 
+def _ramp_line(c: capacity.SenderCapacity) -> str:
+    steps = "; ".join(f"{m.address} {m.ramp.describe()}" for m in c.ramping if m.ramp)
+    why = f": {c.why_full()}" if c.full else f", so {c.cap} sends a day"
+    return (f"{c.owner} is on the sending ramp ({steps}){why}. Capacity rises as the ramp does; "
+            "a new mailbox would start its own ramp at 10 a day.")
+
+
 def add_a_mailbox(senders: dict[str, capacity.SenderCapacity], waiting: int) -> list[str]:
-    """When sending capacity is the limit: which senders are full, and what adding a mailbox needs."""
+    """When sending capacity is the limit: which senders are full, and what adding a mailbox needs.
+
+    A full sender whose mailboxes are on the sending ramp is held by the ramp, not by a lack of
+    mailboxes, so the line says when the ramp lifts it instead (Harry, 1 Oct 2026).
+    """
     full = [c for c in senders.values() if c.full]
     if not full:
+        ramping = [c for c in senders.values() if c.ramping]
+        if ramping:
+            return [_ramp_line(c) for c in ramping]
         return ["More sends need another Active mailbox (`us-outbound mailbox add`), or higher daily caps once the inboxes are warm."]
     lines = []
     for c in full:
+        if c.ramping:
+            lines.append(_ramp_line(c))
+            continue
         lines.append(f"Add a mailbox for {c.owner}: {c.why_full()}. "
                      f"`us-outbound mailbox add <address> --owner \"{c.owner}\" --live`, then it warms for 21 days.")
     if waiting > 0:

@@ -5,7 +5,8 @@ SPEC 9 ("enrol", "Daily enrolment number", "Test assignment", "Instantly campaig
 SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; no positive reply waiting longer than
-     escalation_hours (SPEC 11); this week's hand-check approved (SPEC 11).
+     escalation_hours (SPEC 11); this week's hand-check approved (SPEC 11); no stop rule in
+     force (SPEC 12, learn/kill_rules.py).
   2. Today's number (queue.daily_number): the weekly target's share for today, each
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
      accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
@@ -13,7 +14,8 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      suppressed or a partner, whose industry is on, with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
-     pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person).
+     pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
+     hold back an industry group or an email source (learn/holds.py).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
@@ -43,11 +45,11 @@ from typing import Any
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
-from us_outbound.clients.guard import WARM_REPLY_CLASSES
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
 from us_outbound.enrol import focus, queue, render
+from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
@@ -105,7 +107,7 @@ def iso_week(d: date) -> str:
 
 
 def operator_pause(ctx: Context) -> str | None:
-    """Why enrollment is paused by the stop command (SPEC 13); kill-rule pauses are added in phase 3."""
+    """Why enrollment is paused by the stop command (SPEC 13); the stop rule's pause is holds.enrolment_stop."""
     from us_outbound.ops.heartbeat import enrolment_paused
 
     stop = enrolment_paused(ctx.store)
@@ -167,7 +169,7 @@ def gate(ctx: Context, today: date) -> str | None:
         return f"{today} is not a send day"
     if ctx.live and not s.general.live_sending:
         return "live_sending is no"
-    return operator_pause(ctx) or reply_pause(ctx)
+    return operator_pause(ctx) or holds.enrolment_stop(ctx.store) or reply_pause(ctx)
 
 
 # -- candidates --------------------------------------------------------------------------------
@@ -281,6 +283,7 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
     domains, hashes = suppressed(ctx)
     partners = {_lower(p.get("domain")) for p in store.select("partners")}
+    stopped, sources = holds.stopped_groups(store), holds.paused_sources(store)  # kill rules (SPEC 12)
     contacts: dict[str, list[dict]] = defaultdict(list)
     for chunk in _chunks([a["account_id"] for a in accounts]):
         for c in store.select("contacts", {"account_id": list(chunk)}):
@@ -288,9 +291,15 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     out: list[Candidate] = []
     for a in accounts:
         why = account_block(a, s, domains, partners, pulled)
+        if why is None and s.industry_group_of(a).casefold() in stopped:
+            why = "industry group stopped by a kill rule"
         contact = None
         if why is None:
-            contact, why = pick_contact(contacts.get(a["account_id"], []), domains, hashes, a, s)
+            mine = contacts.get(a["account_id"], [])
+            usable = [c for c in mine if _lower(c.get("email_source")) not in sources]
+            contact, why = pick_contact(usable, domains, hashes, a, s)
+            if contact is None and mine and not usable:
+                why = "email source paused by a kill rule"
         if contact is None:
             skipped[why] += 1
             continue

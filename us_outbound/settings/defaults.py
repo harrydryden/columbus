@@ -122,6 +122,24 @@ _GENERAL: list[tuple[str, str, str]] = [
         "enrollment pauses for a profile and copy review (SPEC 12).",
     ),
     ("stop_rule_meetings", "5", "See stop_rule_accounts."),
+    (
+        "stop_rule_bounce_rate",
+        "0.03",
+        "Stop rule: enrollment also pauses when more than this share of the accounts sent step 1 in the last "
+        "30 days bounced (at least 100 accounts; kill_rules, hourly). Added by the build.",
+    ),
+    (
+        "stop_rule_complaint_rate",
+        "0.003",
+        "Stop rule: and when more than this share of them made a spam complaint (Google's 0.3% line). "
+        "Added by the build.",
+    ),
+    (
+        "optout_tested",
+        "no",
+        "yes once a test send to a seed inbox shows Instantly's {{unsubscribe}} link renders and works in html and "
+        "text (go-live blocker; `us-outbound golive` checks it). Added by the build.",
+    ),
     ("hubspot_pipeline", "Spill 3.0", "Deals go in this pipeline."),
     ("hubspot_pipeline_id", "", "Looked up through the HubSpot API in phase 0."),
     ("hubspot_deal_stage", "", "SPEC: the first stage of Spill 3.0. Its label, looked up in phase 0."),

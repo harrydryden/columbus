@@ -181,10 +181,16 @@ def slack_routes(t: FakeTransport) -> FakeTransport:
     return t
 
 
-def setup(settings: Settings = SETTINGS, *, live: bool = True, accounts: dict | None = None, now: datetime = NOW):
+def setup(settings: Settings = SETTINGS, *, live: bool = True, accounts: dict | None = None, now: datetime = NOW,
+          ramp_done: bool = True):
+    """ramp_done: the mailboxes are past the sending ramp, so caps are the sheet's (tests/test_ramp.py covers the ramp)."""
     t = slack_routes(FakeTransport())
     inst = FakeInstantly(t, accounts)
     ctx = make_context(settings, live=live, transport=t, now=now)
+    if ramp_done:
+        from tests.test_ramp import past_ramp
+
+        past_ramp(ctx.store, settings.mailboxes, now)
     sheets = StubSheets(ctx.guard, {"Mailboxes": sheet_rows(settings)})
     ctx.clients.sheets = sheets
     return ctx, t, inst, sheets

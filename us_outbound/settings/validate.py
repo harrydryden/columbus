@@ -472,6 +472,8 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError("must not be negative")
     if key == "control_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.15")
+    if key in ("stop_rule_bounce_rate", "stop_rule_complaint_rate") and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
     if key == "escalation_hours" and value < 1:
         raise ValueError("must be at least 1")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:

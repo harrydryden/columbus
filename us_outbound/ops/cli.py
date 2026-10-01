@@ -21,20 +21,26 @@ Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailb
 campaigns ensure [--fix], suppression load, lookalikes show [--top N] [--all] (the cells the
 lookalikes job last stored, sources/lookalikes.py). On Railway, run a command inside the worker
 with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
+Go-live (Harry, 1 Oct 2026):
+  golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
+  handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
+  killrules show|clear <item>         the kill-rule holds in force, and lifting one (learn/kill_rules.py)
 
 Dry-run is the default everywhere. Two kinds of live:
   * jobs (run, rescore, settings sync, suppression load) and start: --live AND
     live_sending = yes, as SPEC 0.3 says;
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
-    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure, replies
-    skip): --live alone, so the phase-0 setup and the kill switch work while live_sending is still no.
-    `replies approve` sends to a prospect, so it is live like a job: --live AND live_sending = yes.
+    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
+    handcheck show|approve, killrules clear, replies skip): --live alone, so the phase-0 setup and
+    the kill switch work while live_sending is still no. `replies approve` sends to a prospect,
+    so it is live like a job: --live AND live_sending = yes.
     copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
 Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
 
 Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError
-or JSON/Unicode decoding error, which are bugs rather than bad input); 2 refused (not built,
+or JSON/Unicode decoding error, which are bugs rather than bad input), or a golive check that
+FAILs; 2 refused (not built,
 bad input, unusable settings); 3 blocked by a guardrail (GuardViolation); 143 stopped by
 SIGTERM while a job ran (the scheduler's timeout, or a redeploy; the heartbeat says error).
 """
@@ -91,13 +97,14 @@ JOBS: dict[str, str] = {
     "hubspot_readback": "us_outbound.crm.readback:hubspot_readback",
     "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
-    "kill_rules": "not built yet (phase 3)",
-    "daily_post": "not built yet (phase 3)",
+    "kill_rules": "us_outbound.learn.kill_rules:run",
+    "daily_post": "us_outbound.learn.daily_post:run",
     "monday_readout": "not built yet (phase 3)",
     # Build additions (README "Deviations").
     "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
+    "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 TEST_WINDOW_DAYS = REPLY_WINDOW_DAYS  # human replies within 28 days of step 1: a week after the last step
@@ -292,8 +299,19 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     print(f"Running test: {running.test_id} (read on {running.read_date})" if running else "Running test: none")
     _status_heartbeats(ctx.store, ctx.now)
     print("Mailboxes:")
+    try:
+        from us_outbound.learn.holds import held_mailboxes
+        from us_outbound.registry.ramp import ramps
+
+        on_ramp, held = ramps(ctx.store, s, ctx.now_et().date()), held_mailboxes(ctx.store)
+    except Exception as exc:  # status still prints what it can
+        print(f"  (ramp unavailable: {type(exc).__name__}: {redact(str(exc))[:120]})")
+        on_ramp, held = {}, {}
     for m in s.mailboxes:
-        print(f"  {m.address:<28} {m.owner_name:<18} {m.status:<8} cap {m.daily_cap}")
+        r = on_ramp.get(m.address.lower())
+        note = f"; today {r.cap}: {r.describe()}" if r is not None and r.ramping else ""
+        note += f"; held by a kill rule: {held[m.address.lower()]}" if m.address.lower() in held else ""
+        print(f"  {m.address:<28} {m.owner_name:<18} {m.status:<8} cap {m.daily_cap}{note}")
     _status_limits(ctx)
     try:
         campaigns = ctx.clients.instantly.list_campaigns()
@@ -824,6 +842,94 @@ def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+# -- go-live (Harry, 1 Oct 2026) ------------------------------------------------------------------
+
+
+def cmd_golive(args: argparse.Namespace, factory: Factory) -> int:
+    """The read-only go/no-go check (ops/golive.py). Exits 1 if any check FAILs."""
+    from us_outbound.ops import golive
+
+    try:
+        ctx = factory("golive", False)
+    except bootstrap.SettingsUnusable as exc:
+        checks = golive.unusable(exc.errors)
+        print(golive.render(checks, datetime.now(UTC)))
+        return golive.exit_code(checks)
+    checks = golive.run_checks(ctx)
+    print(golive.render(checks, ctx.now))
+    return golive.exit_code(checks)
+
+
+def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
+    """This week's hand-check without Slack (enrol/hand_check.py): show it, or approve it with pulls."""
+    from us_outbound.enrol import hand_check
+
+    if args.action == "show":
+        ctx = factory("handcheck_show", args.live, operator=True)
+        holder: dict[str, Any] = {}
+
+        def show(c: Context) -> dict:
+            item, payload = hand_check.show(c)
+            holder["payload"] = payload
+            return {"dry_run": c.dry_run, "iso_week": payload.get("iso_week"), "item_id": (item or {}).get("item_id"),
+                    "status": (item or {}).get("status") or "not recorded", "accounts": len(payload.get("accounts") or ())}
+
+        summary = run_job(ctx, show)
+        payload = holder.get("payload") or {}
+        if not payload.get("accounts"):
+            print(f"Hand-check {summary['iso_week']}: nothing to check (no queued or verified account in an active "
+                  "industry group).")
+            return 0
+        print(hand_check.text(payload, detailed=True))
+        if summary["status"] == "not recorded":
+            print("Not recorded yet: `us-outbound handcheck show --live` records this sample so it can be approved.")
+        else:
+            print(f"Item {summary['item_id']}: {summary['status']}.")
+        return 0
+    if args.pull and args.action != "approve":
+        raise Refused("--pull goes with approve")
+    ctx = factory("handcheck_approve", args.live, operator=True)
+    try:
+        summary = run_job(ctx, lambda c: hand_check.approve(c, args.pull or [], _operator()))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the hand-check was not marked approved.")
+    if ctx.live:
+        print(f"Approved {summary['iso_week']}; enrollment can go ahead"
+              + (f", leaving out {len(summary['pulled_account_ids'])} pulled accounts." if summary["pulled_account_ids"] else "."))
+    return 0
+
+
+def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
+    """The kill-rule holds in force (learn/kill_rules.py), and lifting one once Harry has checked it."""
+    from us_outbound.learn import kill_rules
+
+    if args.action == "show":
+        ctx = factory("killrules_show", False)
+        rows = kill_rules.show(ctx)
+        if not rows:
+            print("No kill-rule hold is in force.")
+        for r in rows:
+            until = f" until {r['until']}" if r.get("until") else ""
+            print(f"{r['item_id']}  {r['rule']}: {r['action']} {r['target']}{until} ({_fmt_time(r.get('created_at'))}"
+                  f"{', dry-run' if r.get('dry_run') else ''})")
+            print(f"    {r['reason']}")
+        return 0
+    if not args.item:
+        raise Refused("killrules clear needs the item id (`us-outbound killrules show` lists them)")
+    ctx = factory("killrules_clear", args.live, operator=True)
+    try:
+        summary = run_job(ctx, lambda c: kill_rules.clear(c, args.item, _operator()))
+    except LookupError as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the hold is still in force.")
+    if summary.get("next"):
+        print(summary["next"])
+    return 0
+
+
 
 def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
     """The job table with each enabled job's next run (UK time)."""
@@ -939,6 +1045,19 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
     lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
     lk.set_defaults(fn=cmd_lookalikes)
+
+    sub.add_parser("golive", help="the read-only go/no-go check before the first sends").set_defaults(fn=cmd_golive)
+
+    hc = sub.add_parser("handcheck", parents=[live], help="this week's hand-check: show it, or approve it")
+    hc.add_argument("action", choices=["show", "approve"])
+    hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
+                    help="approve: accounts to leave out (ids or domains)")
+    hc.set_defaults(fn=cmd_handcheck)
+
+    kr = sub.add_parser("killrules", parents=[live], help="the kill-rule holds in force, or lift one")
+    kr.add_argument("action", choices=["show", "clear"])
+    kr.add_argument("item", nargs="?", help="clear: the item id")
+    kr.set_defaults(fn=cmd_killrules)
 
     sub.add_parser("schedule", help="the job table and each job's next run (UK time)").set_defaults(fn=cmd_schedule)
     sc = sub.add_parser("scheduler", help="the always-on worker: start every job on its schedule")

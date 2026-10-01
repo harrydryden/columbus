@@ -21,6 +21,13 @@ to wait for a full inbox, including on the Mondays that collect steps due at the
 Leads that have stopped (a reply, bounce or unsubscribe, or an account no longer enrolled)
 hold nothing.
 
+Each mailbox's sends a day are the lowest of:
+  * the sending ramp (registry/ramp.py; Harry, 1 Oct 2026): 10 a day in its first sending
+    week, 20 in its second, then its cap;
+  * the Mailboxes tab's daily_cap;
+  * Instantly's own daily limit on the account, when mailbox_health last saw one.
+A mailbox a kill rule holds (learn/holds.py) has no capacity, even before the sheet syncs.
+
 What Instantly reports back, from the latest mailbox_health run (registry/mailboxes.py):
   * each mailbox's own daily limit (the lower of it and the sheet's cap is used);
   * each mailbox's campaign sends per day: when a sender's inboxes sent fewer emails on the
@@ -45,6 +52,8 @@ from us_outbound.clients.db import Store
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import ET
+from us_outbound.learn import holds
+from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
 
 # Days after the step before, from the campaign's own step days (0, 7, 14, 21 -> 0, 7, 7, 7),
@@ -129,18 +138,27 @@ class MailboxCap:
     owner: str
     sheet_cap: int
     instantly_limit: int | None
+    ramp: ramps_.Ramp | None = None  # its place on the sending ramp; None: not ramped
+
+    @property
+    def allowed(self) -> int:
+        """What the jobs allow it today: the sheet's cap, or the ramp's when that is lower."""
+        return self.ramp.cap if self.ramp is not None else max(0, self.sheet_cap)
 
     @property
     def cap(self) -> int:
-        """The lower of the sheet's cap and Instantly's own limit, when Instantly reports one."""
+        """The lower of what the jobs allow and Instantly's own limit, when Instantly reports one."""
         if self.instantly_limit is None:
-            return self.sheet_cap
-        return max(0, min(self.sheet_cap, self.instantly_limit))
+            return self.allowed
+        return max(0, min(self.allowed, self.instantly_limit))
 
 
-def mailbox_caps(settings: Settings, limits: Mapping[str, int]) -> list[MailboxCap]:
+def mailbox_caps(
+    settings: Settings, limits: Mapping[str, int], ramps: Mapping[str, ramps_.Ramp] | None = None
+) -> list[MailboxCap]:
+    ramps = ramps or {}
     return [
-        MailboxCap(m.address, m.owner_name, int(m.daily_cap or 0), limits.get(m.address.lower()))
+        MailboxCap(m.address, m.owner_name, int(m.daily_cap or 0), limits.get(m.address.lower()), ramps.get(m.address.lower()))
         for m in settings.mailboxes
         if m.status == ACTIVE
     ]
@@ -191,9 +209,19 @@ class SenderCapacity:
             return f"its inboxes sent {self.sent_last_day} of {self.cap} on {self.last_day:%a %d %b}"
         return f"follow-ups already fill {self.tightest_day:%a %d %b}" if self.tightest_day else "no room today"
 
+    @property
+    def ramping(self) -> list[MailboxCap]:
+        """Its mailboxes that the sending ramp holds below their cap today."""
+        return [m for m in self.mailboxes if m.ramp is not None and m.ramp.ramping]
+
     def describe(self) -> str:
-        lowered = [m for m in self.mailboxes if m.instantly_limit is not None and m.instantly_limit < m.sheet_cap]
-        note = "".join(f"; Instantly limits {m.address} to {m.instantly_limit} a day (sheet: {m.sheet_cap})" for m in lowered)
+        lowered = [m for m in self.mailboxes if m.instantly_limit is not None and m.instantly_limit < m.allowed]
+        note = "".join(
+            f"; Instantly limits {m.address} to {m.instantly_limit} a day "
+            f"({'ramp' if m.ramp is not None and m.ramp.ramping else 'sheet'}: {m.allowed})"
+            for m in lowered
+        )
+        note += "".join(f"; {m.address} is on its {m.ramp.describe()}" for m in self.ramping if m.ramp)
         if self.cap <= 0:
             return f"{self.owner}: no sending capacity{note}"
         if self.room < self.pace and self.tightest_day:
@@ -253,7 +281,8 @@ def stopped_contacts(store: Store) -> set[str]:
 
 
 def sending_capacity(store: Store, settings: Settings, today: date) -> dict[str, SenderCapacity]:
-    """Today's new leads per sender, from the enrolled leads, the stop events and what Instantly reported."""
+    """Today's new leads per sender, from the enrolled leads, the stop events, the ramp and what Instantly reported."""
+    settings = holds.with_holds(store, settings)
     report = instantly_report(store)
     contacts = [c for c in store.select("contacts") if c.get("enrolled_at")]
     stopped = stopped_contacts(store)
@@ -274,7 +303,8 @@ def sending_capacity(store: Store, settings: Settings, today: date) -> dict[str,
             backlog[owner] = max(0, due_last[(owner, last)] - sent_last[owner])
             committed[(owner, today)] += backlog[owner]
 
-    out = free_slots(settings, committed, mailbox_caps(settings, instantly_limits(store, report)), today)
+    caps = mailbox_caps(settings, instantly_limits(store, report), ramps_.ramps(store, settings, today))
+    out = free_slots(settings, committed, caps, today)
     status = report.get("campaign_status") or {}
     for owner, c in out.items():
         c.backlog = backlog.get(owner, 0)
