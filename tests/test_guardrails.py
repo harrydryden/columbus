@@ -444,6 +444,13 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "properties": lambda c, w: c.properties("companies"),
         "property_groups": lambda c, w: c.property_groups("companies"),
         "iter_opted_out_or_bounced_emails": lambda c, w: list(c.iter_opted_out_or_bounced_emails()),
+        # The lookalikes job's reads (sources/lookalikes.py): company and deal fields only.
+        "iter_companies": lambda c, w: list(c.iter_companies(
+            [[{"propertyName": "lifecyclestage", "operator": "EQ", "value": "customer"}]], ["domain"])),
+        "iter_deals": lambda c, w: list(c.iter_deals(
+            [[{"propertyName": "pipeline", "operator": "EQ", "value": PIPELINE}]], ["dealstage"])),
+        "companies_by_id": lambda c, w: c.companies_by_id(["c1"], ["domain"]),
+        "deal_company_ids": lambda c, w: c.deal_company_ids("d1"),
         "create_company": lambda c, w: c.create_company(
             {"name": "Acme Creative", "domain": "acmecreative.com", "us_outbound_account_id": "acc-1",
              "us_outbound_tier": "Priority", "us_outbound_industry_group": "Marketing & Creative Agencies"},

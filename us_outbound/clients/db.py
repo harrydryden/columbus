@@ -39,6 +39,7 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "hitl_items": ("item_id",),
     "domain_aliases": ("alias",),
     "partners": ("domain",),
+    "lookalike_cells": ("cell_id",),  # sources/lookalikes.py (Harry, 1 Oct 2026)
     "raw_irs_bmf": None,
     "raw_job_posts": None,
     "raw_clay_accounts": None,

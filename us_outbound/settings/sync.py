@@ -12,7 +12,9 @@ Nightly at 02:00 UK and on demand:
      The tab's keys in sheet order are versioned the same way, in one row per tab with
      tab = ORDER_TAB, so the settings jobs load keep the sheet's order (roles listed first
      win a tie, the first approved copy version, and so on).
-  4. Bring the Named accounts tab in through the front door (sources/named.py).
+  4. Bring the Named accounts tab in through the front door (sources/named.py), and write
+     the lookalike facts from the cells the weekly lookalikes job stored, so an account
+     sourced since then is scored on them (sources/lookalikes.py; no HubSpot call).
   5. Rescore the queue with the settings now in force, so today's change shapes
      tomorrow's enrollment.
 
@@ -237,6 +239,13 @@ def _named(ctx: Context) -> dict:
     return named.run(ctx)
 
 
+def _lookalikes(ctx: Context) -> dict:
+    """Lookalike facts from the stored cells, before the rescore scores them (sources/lookalikes.py)."""
+    from us_outbound.sources import lookalikes
+
+    return lookalikes.apply(ctx)
+
+
 def _rescore(ctx: Context) -> bool:
     """Rescore the queue with the settings now in force (SPEC 5). Imported here, as tests replace the module."""
     from us_outbound.scoring import score
@@ -304,12 +313,13 @@ def run(ctx: Context) -> dict:
             log("settings_sync_alert_failed", error=str(exc))
 
     settings, _ = load_current(ctx.store)
-    rescored, named = False, None
+    rescored, named, lookalike = False, None, None
     if settings is None:
         log("settings_sync_rescore_skipped", reason="settings unusable", unusable=unusable)
     else:
         current = dataclasses.replace(ctx, settings=settings)
         named = _named(current)
+        lookalike = _lookalikes(current)
         rescored = _rescore(current)
 
     summary = {
@@ -322,6 +332,7 @@ def run(ctx: Context) -> dict:
         "errors": sum(len(v) for v in report.values()),
         "alerted": alerted,
         "named_accounts": named,
+        "lookalike_facts": lookalike,
         "rescored": rescored,
     }
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):

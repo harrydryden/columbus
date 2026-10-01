@@ -34,6 +34,7 @@ SOURCE_KEYS = (
     "layoffs",
     "calendar",
     "named",
+    "lookalike",  # Spill's HubSpot customers in the account's industry group and size band (sources/lookalikes.py)
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
 TEXT_SOURCES = frozenset({"clay_careers", "job_posts"})
@@ -58,6 +59,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
     "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
+    "lookalike": frozenset({"lookalike_active", "lookalike_strength"}),  # sources/lookalikes.py (Harry, 1 Oct 2026)
 }
 # Fields that count days up to the moment they were read. A source stores each as of its
 # observed_at; scoring adds the days since then, so a fact read months ago still tells the truth.

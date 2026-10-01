@@ -53,6 +53,9 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
+    # Monday 02:30, after settings_sync and before source_universe and apollo_signals (Harry, 1 Oct 2026).
+    # It reads HubSpot and writes only the database, so it needs no --live.
+    ScheduledJob("lookalikes", "30 2 * * 1", live=False, enabled=True, timeout_minutes=30, phase=1),
 )
 
 

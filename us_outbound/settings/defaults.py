@@ -137,95 +137,182 @@ _GENERAL: list[tuple[str, str, str]] = [
 ]
 
 # -- Signals (SPEC 5, every one editable) --------------------------------------
+# The weights are the design review's Appendix A.2 (docs/gtm-review/README.md, 1 Oct 2026), which
+# reworked SPEC 5's defaults against Spill's own HubSpot win data (docs/gtm-review/05-spill-evidence.md).
+# Each row's note says what changed and why; where these rows differ from Appendix A, the note says so.
+# Openers are one observed fact with no inference about the reader (Appendix A.2).
 
-_VENDOR_CONTEXT = "Headspace: for Work, app, subscription; Calm: app, premium, business, subscription"
+_APP_CONTEXT = "Headspace: for Work, app, subscription; Calm: app, premium, business, subscription"
+# Optum, Cigna and Carelon are mainly medical carriers, and "health advocate" is an everyday phrase: each
+# counts only near words that make it the EAP, so the EAP opener never claims an EAP the page doesn't list.
+_EAP_CONTEXT = (
+    "Optum: EAP, employee assistance, emotional wellbeing, emotional well-being; "
+    "Cigna: EAP, employee assistance, life assistance; "
+    "Carelon: EAP, employee assistance, behavioral health; "
+    "Health Advocate: EAP, employee assistance, work-life"
+)
+_APPENDIX_A = "Design review Appendix A, 1 Oct 2026"
 
-# signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, counts_for_days, note
-_SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str]] = [
+# signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, opener, counts_for_days,
+# active, note: the Signals tab's columns in order.
+_SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]] = [
     (
-        "Mental health support listed", "clay_careers",
-        "mental health; EAP; employee assistance; therapy; counseling; counselling; wellbeing support; "
-        "well-being support",
-        "", "25", "", "Score", "Progressive employer", "540",
-        "Listed mental-health support is a positive sign: wellbeing is part of the employer's brand. "
-        "Never an exclusion. SPEC 5 default.",
+        "Mental health support listed", "clay_careers, job_posts",
+        "mental health; therapy; counseling; counselling; wellbeing support; well-being support",
+        "", "15", "", "Score", "Progressive employer", "", "540", "yes",
+        "A budget-and-brand signal: wellbeing is part of the employer's brand, never an exclusion. "
+        f"{_APPENDIX_A}: +25 to +15, and EAP and employee assistance moved out, so a carrier EAP is no "
+        "longer counted twice (it scored +35 with the EAP named row); job posts read too.",
     ),
     (
-        "EAP named", "clay_careers",
-        "EAP; employee assistance; ComPsych; GuidanceResources; Magellan",
-        "", "10", "", "Score", "Upgrade the EAP", "540",
-        "A named EAP suggests the Upgrade the EAP angle. SPEC 5 default.",
+        "EAP named", "clay_careers, job_posts",
+        "EAP; employee assistance; ComPsych; GuidanceResources; Magellan; Optum; Carelon; Cigna; "
+        "Aetna Resources For Living; TELUS Health; Health Advocate",
+        _EAP_CONTEXT, "5", "", "Score", "Upgrade the EAP",
+        "Your benefits page lists an employee assistance program.", "540", "yes",
+        f"Kept as the Upgrade the EAP angle trigger, alongside or instead, never disparaging. {_APPENDIX_A}: "
+        "+10 to +5, because Spill won 32% of deals where an EAP was in place against 46% with nothing "
+        "(05 §3.6); the carrier EAP names and job posts added. Not in Appendix A: Optum, Cigna, Carelon and "
+        "Health Advocate count only near their context words, so a medical plan through Cigna is not read "
+        "as an EAP and the opener stays true.",
     ),
     (
         "Modern mental-health vendor named", "clay_careers, job_posts",
-        "Talkspace; Lyra; Modern Health; Spring Health; Headspace; Calm; BetterUp; Nivati; Tava; Wellhub; "
-        "Gympass; Wellbound; Justworks Plus",
-        _VENDOR_CONTEXT, "0", "", "Hold", "Switch from a competitor", "540",
-        "Held for review: they already have a modern vendor. Headspace and Calm count only near the "
-        "context terms. SPEC 5 default.",
+        "Talkspace; Lyra; Modern Health; Spring Health; BetterUp; Nivati; Tava; Wellbound",
+        "", "0", "", "Hold", "Switch from a competitor", "", "540", "yes",
+        "Held for review: a direct competitor is already in place. "
+        f"{_APPENDIX_A}: competitors only. Headspace, Calm, Wellhub and Gympass moved to the Wellbeing app "
+        "or perk named row (complements, not competitors); Justworks Plus, a PEO plan rather than a "
+        "counseling vendor, left the list too, as Appendix A handles PEO clients with its phase-1 On a PEO "
+        "row. Teletherapy companies themselves are partners, never prospected (scoring/tiers.py).",
+    ),
+    (
+        "Wellbeing app or perk named", "clay_careers, job_posts",
+        "Headspace; Calm; Wellhub; Gympass",
+        _APP_CONTEXT, "5", "", "Score", "Progressive employer", "", "540", "yes",
+        f"New ({_APPENDIX_A}): apps and fitness perks complement counseling, and Calm and Headspace buyers "
+        "buy counseling too, so they score instead of being held. Headspace and Calm count only near the "
+        "context terms.",
     ),
     (
         "Progressive benefits", "clay_careers, job_posts",
-        "wellness stipend; mental health day; unlimited PTO; four-day week; 4-day week; parental leave; "
-        "sabbatical; 100% employer-paid",
-        "", "10", "30", "Score", "Progressive employer", "540",
-        "+10 for each benefit found, at most +30. SPEC 5 default.",
+        "wellness stipend; wellness stipends; mental health day; mental health days; unlimited PTO; "
+        "four-day week; four-day weeks; 4-day week; 4-day weeks; parental leave; sabbatical; sabbaticals; "
+        "100% employer-paid",
+        "", "5", "15", "Score", "Progressive employer", "", "540", "yes",
+        f"+5 for each benefit found, at most +15. {_APPENDIX_A}: from +10 each and at most +30, since these are "
+        "standard tech perks and +30 skewed Priority toward VC-backed startups that most often already have "
+        "a modern vendor; plurals added (terms match whole words).",
     ),
     (
         "Culture or values page", "clay_careers", "values_page = true",
-        "", "10", "", "Score", "Progressive employer", "540", "SPEC 5 default.",
+        "", "0", "", "Score", "Progressive employer", "", "540", "no",
+        f"{_APPENDIX_A}: 0 and inactive, because nearly every company has one.",
     ),
     (
         "People leader in place", "apollo_people", "people_leader_count >= 1",
-        "", "10", "", "Score", "", "365", "SPEC 5 default.",
+        "", "10", "", "Score", "", "", "365", "yes", "SPEC 5 default; unchanged by Appendix A.",
     ),
     (
         "New People leader", "apollo_people", "people_leader_days_in_title <= 90",
-        "", "30", "", "Score", "Progressive employer", "90", "SPEC 5 default.",
+        "", "30", "", "Score", "Progressive employer", "Congratulations on the new role.", "90", "yes",
+        f"SPEC 5 weight, kept by {_APPENDIX_A}, which adds the opener. The opener is right only when the email "
+        "goes to the new People leader the signal names (pick_contacts puts that person first, Appendix A.1); "
+        "clear it if anyone else is emailed.",
     ),
     (
         "First People hire", "apollo_jobs, apollo_people", "open_people_roles >= 1 AND people_leader_count = 0",
-        "", "25", "", "Score", "Growing team", "90",
-        "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it.",
+        "", "25", "", "Score", "Growing team", "", "90", "yes",
+        "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it. "
+        "A missing people_leader_count never matches, so People role open below fires anyway.",
     ),
     (
-        "Recent funding", "apollo_org, clay_funding", "days_since_funding <= 540",
-        "", "20", "", "Score", "Growing team", "540", "SPEC 5 default.",
+        "People role open", "apollo_jobs", "open_people_roles >= 1",
+        "", "15", "", "Score", "Growing team", "You're hiring for a People role.", "60", "yes",
+        f"New ({_APPENDIX_A}): a People role posted in the last 60 days, whether or not a People leader is "
+        "already known.",
     ),
     (
-        "Hiring and growth", "apollo_org", "open_roles >= 3 OR headcount_growth_12m >= 0.10",
-        "", "15", "", "Score", "Growing team", "90", "SPEC 5 default.",
+        "Funding in the last 6 months", "apollo_org, clay_funding", "days_since_funding <= 180",
+        "", "20", "", "Score", "Growing team", "Congratulations on the recent round.", "180", "yes",
+        f"{_APPENDIX_A}: Recent funding (+20 for 540 days) split so funding decays without code: +20 up to "
+        "180 days, +10 from 181 to 365 days (the next row), nothing after. days_since_funding is aged to "
+        "today, so a round read months ago still counts its true age.",
+    ),
+    (
+        "Funding 6–12 months ago", "apollo_org, clay_funding",
+        "days_since_funding > 180 AND days_since_funding <= 365",
+        "", "10", "", "Score", "Growing team", "", "365", "yes",
+        f"{_APPENDIX_A}: the second half of the funding split. No opener: a round six months old or more is "
+        "not \"recent\" (Appendix A gives the opener for the funding signal; it is on the 6-month row only).",
+    ),
+    (
+        "Hiring and growth", "apollo_jobs, apollo_org", "open_roles >= 3 OR headcount_growth_12m >= 0.10",
+        "", "15", "", "Score", "Growing team", "", "90", "yes",
+        f"{_APPENDIX_A}: reads apollo_jobs too, which owns open_roles (docs/pipeline.md, one owning source per "
+        "fact); it read apollo_org only, so 5 open roles from apollo_jobs scored 0. headcount_growth_12m is "
+        "apollo_org's.",
     ),
     (
         "Visited the US site", "site_visits", "us_visits_30d >= 1",
-        "", "20", "", "Score", "", "30", "SPEC 5 default.",
+        "", "35", "", "Score", "", "", "30", "yes",
+        f"{_APPENDIX_A}: +20 to +35, so a US-site visit with a pricing or demo-page view (35 + 25 = 60) is "
+        "Priority. A visit alone is Standard. The angle stays General and the copy never mentions the visit.",
     ),
     (
         "Viewed US pricing or demo page", "site_visits", "pricing_or_demo_visits_30d >= 1",
-        "", "15", "", "Score", "", "30", "SPEC 5 default.",
+        "", "25", "", "Score", "", "", "30", "yes",
+        f"{_APPENDIX_A}: +15 to +25; with Visited the US site it makes Priority.",
     ),
     (
         "Nonprofit budget", "irs_bmf", "revenue >= 2000000 AND revenue <= 50000000",
-        "", "15", "", "Score", "", "400", "SPEC 5 default.",
+        "", "15", "", "Score", "", "", "400", "yes", "SPEC 5 default.",
     ),
     (
         "Nonprofit fiscal year ahead", "irs_bmf",
         "days_to_fiscal_year_start >= 60 AND days_to_fiscal_year_start <= 120",
-        "", "20", "", "Score", "", "1", "SPEC 5 default. Recomputed daily.",
+        "", "20", "", "Score", "", "", "1", "yes", "SPEC 5 default. Recomputed daily.",
     ),
     (
         "Q4 plan-year window", "calendar", "month in [10, 11, 12]",
-        "", "10", "", "Score", "", "1", "SPEC 5 default. Recomputed daily.",
+        "", "10", "", "Score", "", "", "1", "no",
+        f"{_APPENDIX_A}: inactive. It added 10 to every account from October to December, so it could not tell "
+        "accounts apart and shifted every tier on 1 January. Seasonality is handled by reading in February.",
+    ),
+    (
+        "Team of 10–49", "apollo_org", "employees >= 10 AND employees <= 49",
+        "", "15", "", "Score", "", "", "365", "yes",
+        f"New ({_APPENDIX_A}): Spill wins 44% of deals at 10-49 staff, 28% at 50-99 and 24% at 100-249 "
+        "(05 §3.1). Matches only once the Apollo source writes employees as an apollo_org fact.",
+    ),
+    (
+        "Team of 50–99", "apollo_org", "employees >= 50 AND employees <= 99",
+        "", "10", "", "Score", "", "", "365", "yes",
+        f"New ({_APPENDIX_A}): see Team of 10–49. 100-249 gets nothing.",
     ),
     (
         "Layoffs", "layoffs", "days_since_layoff <= 90",
-        "", "0", "", "Suppress", "", "90",
+        "", "0", "", "Suppress", "", "", "90", "yes",
         "Suppresses the domain for 90 days after a layoff. SPEC 5 default.",
     ),
     (
         "Named by Harry", "named", "named = true",
-        "", "30", "", "Score", "", "365",
+        "", "30", "", "Score", "", "", "365", "yes",
         "Companies on the Named accounts tab (Harry, 30 Sep 2026). They pass every other check as usual.",
+    ),
+    (
+        "Looks like Spill's customers", "lookalike", "lookalike_active >= 5 AND lookalike_strength >= 10",
+        "", "4", "", "Score", "", "", "120", "yes",
+        "Spill's HubSpot customers in the account's industry group and size band (Harry, 1 Oct 2026: Spill "
+        "companies from HubSpot may inform lookalike targets; sources/lookalikes.py, weekly). "
+        "lookalike_strength counts an active customer 1 and a churned one 0.25, and a US one double. "
+        "Threshold: at least 5 active and a strength of 10, about ten active customers. From HubSpot's "
+        "aggregates on 1 Oct that is Technology & Startups at 10-49 (about 80 active), 50-99 (about 27) and "
+        "100-249 (about 12), and Marketing & Creative Agencies at 10-49 (about 44); every other cell from 10 "
+        "to 249 staff has fewer than 5 active, Legal Teams included. Weight +4, not more: the size rows "
+        "already give +15 at 10-49, so the two "
+        "firmographic rows together stay under standard_threshold (20) and an account with no observed "
+        "signal stays in Control, the signal-blind holdout. `us-outbound lookalikes show` lists the cells.",
     ),
 ]
 
@@ -288,6 +375,20 @@ def _csv_rows(path: Path, tab: str) -> list[dict[str, str]]:
 
 def _industries() -> list[dict[str, str]]:
     return _csv_rows(INDUSTRIES_FILE, "Industries")
+
+
+# -- Focus (Harry, 30 Sep 2026; the shares at launch from the design review, Appendix A.4) -------------
+
+_FOCUS: list[tuple[str, str, str]] = [
+    ("Technology & Startups", "50%", "Appendix A.4, 1 Oct 2026: the launch mix. Tech won 39% of decided deals (05 §3.2)."),
+    ("Marketing & Creative Agencies", "30%", "Appendix A.4: the launch mix. Agencies won 39% (05 §3.2)."),
+    (
+        "Legal Teams", "20%",
+        "Appendix A.4: Legal on from launch as a bet: 57% won on 14 UK deals (95% CI 33-79%) and 10 of 52 "
+        "historic US customers (05 §3.2, §5). The three shares make 100%, so Digital health (filed under "
+        "Healthcare) is enrolled only when these groups run short of ready accounts.",
+    ),
+]
 
 
 # -- States ----------------------------------------------------------------------
@@ -377,14 +478,7 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
     """Every tab's rows as the sheet is created with them (SPEC 5 defaults), all strings."""
     tabs: dict[str, list[dict[str, str]]] = {
         "General": _rows("General", _GENERAL),
-        "Signals": [
-            {
-                "signal": s, "source": src, "looks_for": looks, "context_rule": ctx, "weight": w,
-                "max_weight": mx, "action": action, "suggests_angle": angle, "opener": "",
-                "counts_for_days": days, "active": "yes", "note": note,
-            }
-            for s, src, looks, ctx, w, mx, action, angle, days, note in _SIGNALS
-        ],
+        "Signals": _rows("Signals", _SIGNALS),
         "Angles": [
             {
                 "angle": a, "order": str(i), "argument": arg, "default_opener": opener,
@@ -409,7 +503,7 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
         ],
         "Overrides": [],
         "Tests": [dict(_FIRST_TEST)],
-        "Focus": [],
+        "Focus": _rows("Focus", _FOCUS),
         "Named accounts": [],
     }
     for tab, rows in tabs.items():

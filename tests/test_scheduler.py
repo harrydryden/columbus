@@ -478,6 +478,7 @@ SPEC9_CRONS = {
     "monday_readout": "0 9 * * 1",
     # Build additions.
     "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *",
+    "lookalikes": "30 2 * * 1",  # Monday, after settings_sync (02:00) and before source_universe (03:00)
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
@@ -499,7 +500,7 @@ def test_the_table_matches_the_job_registry_and_spec9():
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
-    assert enabled == ["settings_sync", "mailbox_health", "heartbeat_check", "suppression_load"]
+    assert enabled == ["settings_sync", "mailbox_health", "heartbeat_check", "suppression_load", "lookalikes"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]

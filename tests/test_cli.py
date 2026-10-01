@@ -106,7 +106,8 @@ def test_dry_run_takes_no_live_flag():
 
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
-    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load"}
+    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "lookalikes"}
+    assert cli.JOBS["lookalikes"] == "us_outbound.sources.lookalikes:run"
     assert cli.JOBS["settings_sync"] == "us_outbound.settings.sync:run"
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"

@@ -14,7 +14,8 @@ SPEC 13 commands:
 Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
 Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
 (mailbox_health by hand), settings sync|bootstrap|load, db apply, hubspot setup|ids,
-campaigns ensure [--fix], suppression load. On Railway, run a command inside the worker
+campaigns ensure [--fix], suppression load, lookalikes show [--top N] [--all] (the cells the
+lookalikes job last stored, sources/lookalikes.py). On Railway, run a command inside the worker
 with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
 
 Dry-run is the default everywhere. Two kinds of live:
@@ -89,6 +90,7 @@ JOBS: dict[str, str] = {
     # Build additions (README "Deviations").
     "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
+    "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 TEST_WINDOW_DAYS = REPLY_WINDOW_DAYS  # human replies within 28 days of step 1: a week after the last step
@@ -748,6 +750,18 @@ def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
     return _job("suppression_load", args.live, factory)
 
 
+def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
+    """The lookalike cells from the last lookalikes run (the database only), for the Focus tab and sourcing."""
+    from us_outbound.sources import lookalikes
+
+    if args.top < 1:
+        raise Refused("--top must be 1 or more")
+    ctx = factory("lookalikes_show", False)
+    for line in lookalikes.report(ctx.settings, ctx.store, top=args.top, all_bands=args.all):
+        print(line)
+    return 0
+
+
 
 def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
     """The job table with each enabled job's next run (UK time)."""
@@ -849,6 +863,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("suppression", parents=[live], help="load HubSpot opt-outs and bounces")
     sp.add_argument("action", choices=["load"])
     sp.set_defaults(fn=cmd_suppression)
+
+    lk = sub.add_parser("lookalikes", help="the top lookalike cells from Spill's HubSpot customers")
+    lk.add_argument("action", choices=["show"])
+    lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
+    lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
+    lk.set_defaults(fn=cmd_lookalikes)
 
     sub.add_parser("schedule", help="the job table and each job's next run (UK time)").set_defaults(fn=cmd_schedule)
     sc = sub.add_parser("scheduler", help="the always-on worker: start every job on its schedule")
