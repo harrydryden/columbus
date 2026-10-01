@@ -33,12 +33,16 @@ class ScheduledJob:
 
 SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "0 2 * * *", live=True, enabled=True, timeout_minutes=15, phase=0),
-    ScheduledJob("source_universe", "0 3 1 * *", live=False, enabled=False, timeout_minutes=60, phase=1),
-    ScheduledJob("apollo_signals", "30 3 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
+    # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
+    # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
+    # weekday (sources/apollo_universe.py); then verify_accounts, all before pick_contacts at 05:30.
+    ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
+    ScheduledJob("apollo_signals", "30 3 * * 1-5", live=False, enabled=True, timeout_minutes=45, phase=1),
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),
-    # score runs inside settings_sync, verify_in_clay and site_visits (SPEC 9); by hand: `us-outbound rescore`.
+    ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # score runs inside settings_sync, verify_in_clay, verify_accounts and site_visits (SPEC 9); by hand: `us-outbound rescore`.
     ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
     ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=2),
     ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=False, timeout_minutes=30, phase=2),

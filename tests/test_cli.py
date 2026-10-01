@@ -106,7 +106,10 @@ def test_dry_run_takes_no_live_flag():
 
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
-    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load"}
+    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts"}
+    assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
+    assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
+    assert cli.JOBS["verify_accounts"] == "us_outbound.verify:run"
     assert cli.JOBS["settings_sync"] == "us_outbound.settings.sync:run"
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
@@ -206,7 +209,7 @@ def test_live_needs_both_the_flag_and_the_setting():
 @pytest.mark.parametrize("job, message", [
     ("poll_replies", "not built yet (phase 2)"),
     ("kill_rules", "not built yet (phase 3)"),
-    ("source_universe", "not built yet (phase 1)"),
+    ("verify_in_clay", "not built yet (phase 1)"),
     ("no_such_job", "unknown job"),
 ])
 def test_unbuilt_jobs_exit_non_zero(job, message, capsys):

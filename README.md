@@ -80,7 +80,7 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | Phase | State |
 | :- | :- |
 | 0 Foundations | Being built: clients, guard, settings sync, DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the Railway scheduler |
-| 1 Universe | Scoring built early; sources and Clay verification not built |
+| 1 Universe | Scoring built early; the Apollo universe and job postings built, with `verify_accounts` until Clay verification is built; the other sources not built |
 | 2 First sends | Enrollment being built; replies, approvals and readback not built |
 | 3 Learning loop | Not built |
 
@@ -112,3 +112,9 @@ Clay function ids, and the credits-per-account estimates.
 Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack) and
 `suppression_load` (daily: HubSpot opt-outs and bounces). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`).
+
+For the 5 Oct pilot (1 Oct 2026): `verify_accounts` (weekdays 04:30) verifies accounts on their
+Apollo data and HubSpot while the General key `clay_verification` is `skip` (Harry: go live before
+the Clay functions exist; `required` once they do). `source_universe` and `apollo_signals` run each
+weekday (03:00, 03:30) rather than monthly and on Mondays, to keep the queue two weeks deep with
+Apollo credits paced by the weekday (`us_outbound/sources/`).

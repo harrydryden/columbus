@@ -47,11 +47,12 @@ _DAY = 24 * _H
 # Longest gap between healthy runs before a job counts as missed (SPEC 9 schedules plus slack).
 EXPECTED: dict[str, int] = {
     "settings_sync": 26 * _H,  # 02:00 daily
-    "source_universe": 32 * _DAY,  # 1st of the month
-    "apollo_signals": 8 * _DAY,  # Mon 03:30
+    "source_universe": 26 * _H,  # 03:00 weekdays (weekday time; SPEC 9 had the 1st of the month)
+    "apollo_signals": 26 * _H,  # 03:30 weekdays (weekday time; SPEC 9 had Mondays)
     "site_visits": 26 * _H,  # 06:00 daily
     "public_signals": 8 * _DAY,  # Mon 04:00
     "verify_in_clay": 26 * _H,  # 04:30 weekdays (weekday time)
+    "verify_accounts": 26 * _H,  # 04:30 weekdays (weekday time; build addition)
     "pick_contacts": 26 * _H,  # 05:30 weekdays (weekday time)
     "enrol": 26 * _H,  # 12:00 weekdays (weekday time)
     "poll_replies": 45,  # every 15 min
@@ -65,8 +66,8 @@ EXPECTED: dict[str, int] = {
     "monday_readout": 8 * _DAY,  # Mon 09:00
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
 }
-# score has no schedule of its own: it runs inside settings_sync, verify_in_clay and site_visits.
-WEEKDAY_JOBS = frozenset({"verify_in_clay", "pick_contacts", "enrol"})
+# score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
+WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "verify_in_clay", "verify_accounts", "pick_contacts", "enrol"})
 OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 
 LATEST_SQL = (

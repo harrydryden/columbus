@@ -20,6 +20,7 @@ READ_METHODS = {
     "credit_usage",
     "search_organizations",
     "enrich_organization",
+    "job_postings",
     "search_people",
     "bulk_match",
     "website_visitor_aggregates",
@@ -36,6 +37,7 @@ def exercise(apollo):
     apollo.credit_usage()
     apollo.search_organizations({"organization_locations[]": ["new york"]})
     apollo.enrich_organization("acme.example")
+    apollo.job_postings("org1")
     apollo.search_people({"person_titles": ["Head of People"]})
     apollo.bulk_match([{"id": "p1"}])
     apollo.website_visitor_aggregates("spill.chat", ["org1"])
@@ -56,7 +58,7 @@ def test_every_call_is_a_read_through_the_guard(live):
     exercise(apollo)
     assert guard.calls and all(c.system == "apollo" and not c.write and c.sent for c in guard.calls)
     assert {c.action for c in guard.calls} <= APOLLO_READ_ACTIONS
-    allowed = {(m, BASE + p) for m, p in READ_ENDPOINTS.values()}
+    allowed = {(m, BASE + p.format(organization_id="org1")) for m, p in READ_ENDPOINTS.values()}
     assert {(r.method, r.url) for r in t.requests} <= allowed
     assert all(r.headers["X-Api-Key"] == "apollo-key" and "Authorization" not in r.headers for r in t.requests)
 

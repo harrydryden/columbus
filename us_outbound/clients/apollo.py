@@ -12,10 +12,16 @@ size band, SPEC 7) is the caller's job; this client just pages.
 
 Shapes come from Apollo's published OpenAPI documents (mirrored Aug 2026) and its MCP
 tool schemas. Auth is the master API key in the X-Api-Key header.
+
+Credits (Apollo's API docs, 1 Oct 2026): an organization search costs 1 credit for a page
+that returns at least one company and 0 for an empty one; job postings cost 1 credit per
+request. The jobs record what they spend in credit_ledger (budget.py); this client only
+says which reads are paid (paid_reads), so none is resent after a timeout.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import Any
@@ -26,12 +32,17 @@ from us_outbound.clients.http import ApiError, HttpClient
 MAX_PER_PAGE = 100
 MAX_PAGE = 500  # the display limit: 50,000 records = 500 pages of 100
 BULK_MATCH_MAX = 10  # people/bulk_match takes up to 10 details per call
+MAX_POSTINGS_PER_PAGE = 10_000  # job postings: a display limit of 10,000 records
+_PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")  # an Apollo id in a URL path
 
 # action -> (method, path). The only endpoints this client can reach.
 READ_ENDPOINTS: dict[str, tuple[str, str]] = {
     "usage.credits": ("POST", "/usage_stats/credit_usage_stats"),  # 0 credits
-    "organizations.search": ("POST", "/mixed_companies/search"),  # 1 credit per page
+    "organizations.search": ("POST", "/mixed_companies/search"),  # 1 credit per page with results
     "organizations.enrich": ("GET", "/organizations/enrich"),  # 1 credit per organization
+    # PHASE0-CONFIRM: REST path of Organization Job Postings (the MCP tool
+    # apollo_organizations_job_postings takes the organization id, page and per_page; 1 credit a request).
+    "organizations.job_postings": ("GET", "/organizations/{organization_id}/job_postings"),
     "people.search": ("POST", "/mixed_people/api_search"),  # 0 credits; no emails returned
     "people.bulk_match": ("POST", "/people/bulk_match"),  # credits per revealed email
     # PHASE0-CONFIRM: REST path of Apollo's website-visitor domain aggregates (the MCP tool
@@ -90,6 +101,34 @@ def organizations_in(page: Mapping[str, Any]) -> list[dict]:
     return out
 
 
+def postings_in(page: Mapping[str, Any]) -> list[dict]:
+    """The postings on one job_postings() page: {id, title, url, city, state, country, posted_at, ...}.
+
+    PHASE0-CONFIRM: the list's key; Apollo's docs show organization_job_postings.
+    """
+    for key in ("organization_job_postings", "job_postings"):
+        rows = page.get(key)
+        if isinstance(rows, list):
+            return [dict(r) for r in rows if isinstance(r, Mapping)]
+    return []
+
+
+def total_entries(page: Mapping[str, Any]) -> int | None:
+    """pagination.total_entries of a search or postings page, if Apollo gave it."""
+    value = (page.get("pagination") or {}).get("total_entries")
+    try:
+        return None if value is None else int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _segment(value: str) -> str:
+    v = str(value or "").strip()
+    if not _PATH_SEGMENT.fullmatch(v):
+        raise ValueError(f"not an Apollo id: {v[:40]!r}")
+    return v
+
+
 def credits_left(usage: Mapping[str, Any], credit_type: str = "lead_credit") -> float | None:
     """left_over for one credit type from credit_usage().
 
@@ -111,7 +150,7 @@ def _yyyymmdd(value: date | datetime | str) -> str:
 class Apollo(HttpClient):
     system = "apollo"
     base_url = "https://api.apollo.io/api/v1"
-    paid_reads = frozenset({"organizations.search", "organizations.enrich", "people.bulk_match"})
+    paid_reads = frozenset({"organizations.search", "organizations.enrich", "organizations.job_postings", "people.bulk_match"})
 
     def headers(self) -> dict[str, str]:
         return {
@@ -129,8 +168,11 @@ class Apollo(HttpClient):
         params: dict[str, Any] | None = None,
         json: Any = None,
         detail: Mapping[str, Any] | None = None,
+        path_args: Mapping[str, str] | None = None,
     ) -> Any:
         method, path = READ_ENDPOINTS[action]
+        if path_args:
+            path = path.format(**{k: _segment(v) for k, v in path_args.items()})
         op = Op(action, target=target or path.strip("/"), write=False, detail=dict(detail or {}))
         return self.request(method, path, op, params=params, json=json)
 
@@ -155,6 +197,18 @@ class Apollo(HttpClient):
         """Organization enrichment by root domain (1 credit)."""
         d = domain.strip().lower().removeprefix("www.")
         return self._read("organizations.enrich", target=d, params={"domain": d}) or {}
+
+    def job_postings(self, organization_id: str, page: int = 1, per_page: int = 100) -> dict:
+        """One page of an organization's current job postings (1 credit per request). See postings_in()."""
+        if not 1 <= per_page <= MAX_POSTINGS_PER_PAGE:
+            raise ValueError(f"per_page must be 1..{MAX_POSTINGS_PER_PAGE}")
+        if page < 1:
+            raise ValueError("page starts at 1")
+        org = _segment(organization_id)
+        return self._read(
+            "organizations.job_postings", target=org, path_args={"organization_id": org},
+            params={"page": page, "per_page": per_page}, detail={"organization_id": org},
+        ) or {}
 
     def search_people(self, filters: Mapping[str, Any], page: int = 1, per_page: int = 100) -> dict:
         """One page of People API Search (0 credits; returns no emails)."""

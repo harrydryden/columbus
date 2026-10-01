@@ -26,6 +26,7 @@ from us_outbound.settings.conditions import ConditionError, parse_condition, par
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
     ACTIONS,
+    CLAY_VERIFICATION_MODES,
     COPY_STATUSES,
     COPY_STEPS,
     EMAIL_FORMATS,
@@ -100,7 +101,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "clay_verification"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -472,6 +473,9 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"must be a Claude model id like claude-opus-5-5 or claude-sonnet-5-5, not {value!r}")
     if key == "email_format" and value not in EMAIL_FORMATS:
         raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
+    if key == "clay_verification" and value not in CLAY_VERIFICATION_MODES:
+        raise ValueError(f"must be one of {', '.join(CLAY_VERIFICATION_MODES)} (required: every account goes "
+                         "through Clay; skip: verified on Apollo data and HubSpot)")
     if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
     if key in ("booking_link", "booking_page") and value:
