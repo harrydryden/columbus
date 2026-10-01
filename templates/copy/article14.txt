@@ -5,5 +5,7 @@
 # at the unsubscribe link Instantly adds below it. Provider names are written without ".io" so no mail client links them.
 # Lines starting with "#" are comments: render.py strips them. Placeholders in single braces:
 #   {company}  the account's clean name
-Where we got your details: we found your name, role and work email through Apollo and Clay, which provide business contact data, and read about {company} on its public website.
+#   {sources}  the contact-data providers in use: "Apollo, which provides" while clay_verification = skip,
+#              "Apollo and Clay, which provide" once Clay runs (render.py, so the notice stays true)
+Where we got your details: we found your name, role and work email through {sources} business contact data, and read about {company} on its public website.
 We contact you on the basis of our legitimate interests in telling businesses about Spill. You can object at any time: reply to this email or use the unsubscribe link below, and we won't contact you again.

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from us_outbound.enrol import copy_markup, copy_rules
-from us_outbound.settings.model import COPY_STEPS, GENERAL_COPY, CopyRow, Mailbox, Settings
+from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, Mailbox, Settings
 
 STEPS = COPY_STEPS
 VARIABLES = (
@@ -218,9 +218,17 @@ def signature(settings: Settings) -> tuple[copy_markup.Rendered, list[str]]:
     return copy_markup.render(source, {}), missing
 
 
-def article14(values: Mapping[str, str]) -> tuple[str, list[str]]:
+def data_sources(settings: Settings) -> str:
+    """The contact-data providers the notice names: Clay only once it runs (clay_verification)."""
+    if settings.general.clay_verification == CLAY_SKIP:
+        return "Apollo, which provides"
+    return "Apollo and Clay, which provide"
+
+
+def article14(values: Mapping[str, str], settings: Settings) -> tuple[str, list[str]]:
     """Email 1's UK GDPR Article 14 notice: where the data came from and the lawful basis (SPEC 10)."""
-    return fill(load_template(ARTICLE14_TEMPLATE), {"company": values.get("company", "")})
+    return fill(load_template(ARTICLE14_TEMPLATE),
+                {"company": values.get("company", ""), "sources": data_sources(settings)})
 
 
 # -- rendering ------------------------------------------------------------------------------
@@ -256,7 +264,7 @@ def render_step(
     problems += [f"signature {x}" for x in sig.problems]
     texts, htmls = [body.text, sig.text], [body.html, sig.html]
     if step == 1:
-        notice, missing = article14(variables)
+        notice, missing = article14(variables, settings)
         problems += [_FIXED_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
         texts.append(notice)
         htmls.append(copy_markup.plain_to_html(notice))

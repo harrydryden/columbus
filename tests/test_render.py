@@ -330,6 +330,14 @@ def test_signature_on_every_email_and_the_notice_on_email_1():
     assert all(r.text.splitlines()[-3:] == SIGNATURE_LINES for r in seq[1:])
 
 
+def test_the_notice_names_only_the_data_providers_in_use():
+    # Clay is skipped until its functions exist (clay_verification), so the notice names Apollo alone.
+    assert "through Apollo, which provides business contact data" in sequence()[0].text
+    assert "Clay" not in sequence()[0].text
+    s = make_settings(clay_verification="required")
+    assert "through Apollo and Clay, which provide business contact data" in sequence(settings=s)[0].text
+
+
 def test_signature_links_follow_the_general_tab_and_blanks_block():
     s = make_settings(booking_link="https://meetings.hubspot.com/someone-else")
     assert '<a href="https://meetings.hubspot.com/someone-else">here</a>' in sequence(settings=s)[1].html
