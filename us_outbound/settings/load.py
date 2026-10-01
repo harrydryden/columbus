@@ -36,9 +36,13 @@ from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, is_legacy_roles, validate_all
 
-LOADABLE = ("General", "Industries", "Copy", "Roles")
+LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus")
+# The columns Harry owns; `--take COLUMN` lets the build's value win for one load (Harry, 1 Oct 2026:
+# "make all the changes" in the design review, so Legal Teams goes on at launch).
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
-KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role"}
+KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
+       "Focus": "industry_group"}
+DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
 # Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
 LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
 SHOW = 12  # names listed per change in the summary
@@ -111,7 +115,8 @@ def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[M
 
 
 def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]],
-             sets: Mapping[str, str] | None = None, *, replace_drafts: bool = False) -> Plan:
+             sets: Mapping[str, str] | None = None, *, replace_drafts: bool = False,
+             take: Sequence[str] = ()) -> Plan:
     if tab == "General":
         return plan_general(sheet_rows, build_rows, sets)
     cols = COLUMNS[tab]
@@ -146,7 +151,7 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
                 p.added.append(str(r[KEY[tab]]))
         return p
 
-    keep = KEEP.get(tab, ())
+    keep = tuple(c for c in KEEP.get(tab, ()) if c not in take)
     for k, r in build.items():
         row = {c: str(r.get(c, "")) for c in cols}
         old = sheet.get(k)
@@ -169,7 +174,7 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
 
 
 def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = None, *,
-         replace_drafts: bool = False) -> dict:
+         replace_drafts: bool = False, take: Sequence[str] = ()) -> dict:
     """Plan (and, live, write) each tab; refuses if the result would not validate."""
     bad = [t for t in tabs if t not in LOADABLE]
     if bad:
@@ -177,19 +182,26 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise ValueError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
+    from us_outbound.settings.model import OPTIONAL_TABS
     from us_outbound.settings.sync import read_sheet
 
     sheet = read_sheet(ctx, sheet_id)
     build = default_tabs()
     if sets and "General" not in tabs:
         raise ValueError("--set changes the General tab; load it too (--tab General)")
-    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets, replace_drafts=replace_drafts) for t in tabs}
+    unknown = sorted(set(take) - {c for t in tabs for c in KEEP.get(t, ())})
+    if unknown:
+        raise ValueError(f"--take names a column the loaded tabs do not keep: {', '.join(unknown)}")
+    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets, replace_drafts=replace_drafts, take=take)
+             for t in tabs}
     merged = {**sheet, **{t: p.rows for t, p in plans.items()}}
     _, errors = validate_all(merged)
     problems = [str(e) for t in (*tabs, "Tests", "Focus") for e in errors.get(t, [])]
     if problems:
         raise ValueError("the loaded tabs would not validate: " + "; ".join(problems[:10]))
     for t, p in plans.items():
+        if t in OPTIONAL_TABS and not sheet.get(t) and p.rows:
+            ctx.clients.sheets.add_tab(sheet_id, t)  # Focus may not be on the sheet yet; a no-op in dry-run
         ctx.clients.sheets.replace_tab(sheet_id, t, COLUMNS[t], p.rows)  # the guard skips it in dry-run
         log("settings_load", tab=t, dry_run=ctx.dry_run, **{k: v for k, v in p.summary().items() if k != "tab"})
     return {"dry_run": ctx.dry_run, "tabs": [p.summary() for p in plans.values()]}

@@ -208,6 +208,15 @@ class Sheets(HttpClient):
             )
         return missing
 
+    def add_tab(self, sheet_id: str, tab: str) -> None:
+        """Add an empty tab to the settings sheet (`settings load` adds Focus when the sheet lacks it)."""
+        self.request(
+            "POST",
+            f"/{sheet_id}:batchUpdate",
+            Op("spreadsheet.addSheet", target=sheet_id, write=True, detail={"tab": tab}),
+            json={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
+        )
+
     def replace_tab(self, sheet_id: str, tab: str, headers: Sequence[str], rows: Sequence[Mapping[str, str]]) -> None:
         """Rewrite a tab: clear it, then write the header row and every row (values only; formatting stays).
 

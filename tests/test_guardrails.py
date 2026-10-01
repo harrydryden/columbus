@@ -519,6 +519,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "update_cell": lambda c, w: c.update_cell(SHEET, "Mailboxes", {"address": "hannah@meetspill.org"}, "status", "Active"),
         "update_rows": lambda c, w: c.update_rows(SHEET, "Mailboxes", "address", {"hannah@meetspill.org": {"status": "Active"}}),
         "replace_tab": lambda c, w: c.replace_tab(SHEET, "Mailboxes", ["address", "status"], [{"address": "a@meetspill.org"}]),
+        "add_tab": lambda c, w: c.add_tab(SHEET, "Focus"),
         "create_settings_sheet": lambda c, w: c.create_settings_sheet(
             {"General": [{"key": "live_sending", "value": "no"}]}, {"General": ["key", "value"]}),
     },

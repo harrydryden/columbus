@@ -242,7 +242,7 @@ def test_load_is_dry_until_live_and_the_result_validates():
 def test_load_refuses_other_tabs_and_a_merge_that_would_not_validate():
     ctx, _ = ctx_with(tabs=old_sheet())
     with pytest.raises(ValueError, match="only General, Industries, Copy"):
-        loader.load(ctx, ["Signals"])
+        loader.load(ctx, ["States"])
     bad = old_sheet()
     bad["Industries"][1]["priority"] = "zero"
     ctx, _ = ctx_with(tabs=bad)
@@ -310,3 +310,28 @@ def test_copy_load_replace_drafts_keeps_approved_rows_and_replaces_the_rest():
     assert len(plan.rows) == len(build) + 1 and "old-draft-v1 removed (not approved)" in plan.updated
     kept = loader.plan_tab("Copy", [approved, draft], build)  # without the flag nothing on the sheet goes
     assert {"harrys-own-v1", "old-draft-v1"} <= {r["copy_version"] for r in kept.rows}
+
+
+def test_signals_load_brings_the_build_weights_and_focus_is_added_when_missing():
+    from us_outbound.settings.load import plan_tab
+
+    build = default_tabs()
+    old = [{**r, "weight": "99"} for r in build["Signals"]] + [{"signal": "Harry's own", "source": "named"}]
+    plan = plan_tab("Signals", old, build["Signals"])
+    by = {r["signal"]: r for r in plan.rows}
+    assert by["EAP named"]["weight"] == "5" and "Harry's own" in by  # build wins; Harry's extra row stays
+    focus = plan_tab("Focus", [], build["Focus"])
+    assert [r["industry_group"] for r in focus.rows] == ["Technology & Startups", "Marketing & Creative Agencies",
+                                                          "Legal Teams"]
+
+
+def test_take_lets_the_build_value_win_for_a_kept_column():
+    from us_outbound.settings.load import plan_tab
+
+    build = default_tabs()["Industries"]
+    legal = next(r for r in build if r["industry"] == "Legal Teams")
+    sheet = [{**r, "active": "no"} if r["industry"] == "Legal Teams" else dict(r) for r in build]
+    kept = {r["industry"]: r for r in plan_tab("Industries", sheet, build).rows}
+    assert kept["Legal Teams"]["active"] == "no"  # Harry's value stays by default
+    took = {r["industry"]: r for r in plan_tab("Industries", sheet, build, take=("active",)).rows}
+    assert took["Legal Teams"]["active"] == legal["active"] == "yes"

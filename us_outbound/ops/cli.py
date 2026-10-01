@@ -579,10 +579,10 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     if args.action == "sync":
         return _job("settings_sync", args.live, factory)
     if args.action == "load":
-        from us_outbound.settings.load import LOADABLE, load
+        from us_outbound.settings.load import DEFAULT_TABS, load
 
         ctx = factory("settings_load", args.live, operator=True)
-        tabs = args.tab or list(LOADABLE)
+        tabs = args.tab or list(DEFAULT_TABS)
         sets = {}
         for item in args.set or ():
             key, sep, value = item.partition("=")
@@ -590,7 +590,8 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
                 raise Refused(f"--set takes key=value, not {item!r}")
             sets[key.strip()] = value.strip()
         try:
-            summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts))
+            summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
+                                                   take=args.take or ()))
         except ValueError as exc:
             raise Refused(str(exc)) from exc
         for t in summary["tabs"]:
@@ -998,8 +999,10 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("settings", parents=[live], help="sync the sheet, create it, or load the build's tabs into it")
     st.add_argument("action", choices=["sync", "bootstrap", "load"])
     st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
-    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy", "Roles"],
-                    help="load: the tab (default all four)")
+    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy", "Roles", "Signals", "Focus"],
+                    help="load: the tab (default General, Industries, Copy and Roles)")
+    st.add_argument("--take", action="append", metavar="COLUMN",
+                    help="load: let the build's value win for a column Harry owns (Industries active, priority)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
