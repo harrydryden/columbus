@@ -556,8 +556,14 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
 
         ctx = factory("settings_load", args.live, operator=True)
         tabs = args.tab or list(LOADABLE)
+        sets = {}
+        for item in args.set or ():
+            key, sep, value = item.partition("=")
+            if not sep or not key.strip():
+                raise Refused(f"--set takes key=value, not {item!r}")
+            sets[key.strip()] = value.strip()
         try:
-            summary = run_job(ctx, lambda c: load(c, tabs))
+            summary = run_job(ctx, lambda c: load(c, tabs, sets))
         except ValueError as exc:
             raise Refused(str(exc)) from exc
         for t in summary["tabs"]:
@@ -810,7 +816,9 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("settings", parents=[live], help="sync the sheet, create it, or load the build's tabs into it")
     st.add_argument("action", choices=["sync", "bootstrap", "load"])
     st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
-    st.add_argument("--tab", action="append", choices=["Industries", "Copy"], help="load: the tab (default both)")
+    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy"],
+                    help="load: the tab (default all three)")
+    st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.set_defaults(fn=cmd_settings)
 
     co = sub.add_parser("copy", parents=[live], help="check, preview, QA (task model) or draft (writing model) copy")

@@ -246,7 +246,7 @@ def test_load_is_dry_until_live_and_the_result_validates():
 
 def test_load_refuses_other_tabs_and_a_merge_that_would_not_validate():
     ctx, _ = ctx_with(tabs=old_sheet())
-    with pytest.raises(ValueError, match="only Industries, Copy"):
+    with pytest.raises(ValueError, match="only General, Industries, Copy"):
         loader.load(ctx, ["Signals"])
     bad = old_sheet()
     bad["Industries"][1]["priority"] = "zero"
@@ -261,3 +261,41 @@ def test_the_build_s_tabs_are_complete_and_valid():
     assert not any(errors.values())
     assert [list(r) for r in tabs["Copy"][:1]] == [COLUMNS["Copy"]]
     assert dataclasses.asdict(settings.general)["email_format"] == "html"
+
+
+def live_general() -> list[dict]:
+    """The General tab as Harry's sheet has it on 1 Oct: the old daily cap, no new keys, Clay off."""
+    rows = [dict(r) for r in default_tabs()["General"]
+            if r["key"] not in {"claude_task_model", "email_format", "site_url", "price_from"}]
+    for r in rows:
+        if r["key"] == "weekly_enrol_cap":
+            r.update(key="daily_enrol_cap", value="30")
+        if r["key"] == "clay_monthly_credits":
+            r["value"] = "0"
+    return rows
+
+
+def test_general_load_renames_adds_and_sets():
+    sets = {"clay_monthly_credits": "2000", "claude_model": "claude-opus-5-5"}
+    plan = loader.plan_tab("General", live_general(), default_tabs()["General"], sets)
+    by = {r["key"]: r["value"] for r in plan.rows if r["key"]}
+    assert "daily_enrol_cap" not in by and by["weekly_enrol_cap"] == "150"  # renamed, with the weekly value
+    assert by["price_from"] == "195" and by["site_url"] == "https://www.spill.chat/us"
+    assert by["claude_task_model"] == "claude-sonnet-5-5" and by["email_format"] == "html"
+    assert by["clay_monthly_credits"] == "2000"
+    assert "daily_enrol_cap renamed weekly_enrol_cap = 150" in plan.updated
+    assert "clay_monthly_credits: 0 -> 2000" in plan.updated and len(plan.added) == 4
+    with pytest.raises(ValueError, match="not General keys"):
+        loader.plan_tab("General", live_general(), default_tabs()["General"], {"nonsense": "1"})
+
+
+def test_load_all_three_tabs_validates_and_writes_live():
+    sheet = old_sheet()
+    sheet["General"] = live_general()
+    ctx, _ = ctx_with(live=True, tabs=sheet)
+    ctx.guard.configure(live=True)
+    loader.load(ctx, ["General", "Industries", "Copy"], {"clay_monthly_credits": "2000"})
+    assert ctx.clients.sheets.writes == ["replace General", "replace Industries", "replace Copy"]
+    settings, errors = validate_all(sheet)
+    assert not any(errors.values()) and settings.general.weekly_enrol_cap == 150
+    assert settings.general.clay_monthly_credits == 2000 and settings.general.price_from == 195

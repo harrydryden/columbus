@@ -1,4 +1,4 @@
-"""`us-outbound settings load`: bring the build's Industries and Copy tabs into the live sheet (Harry, 30 Sep 2026).
+"""`us-outbound settings load`: bring the build's General, Industries and Copy tabs into the live sheet (Harry, 30 Sep 2026).
 
 The sheet was made from the first defaults (58 industries, copy one row per step). The build
 now has all 108 industry pages and a four-email sequence per industry (settings/data/). This
@@ -7,6 +7,10 @@ command merges them into the sheet without losing Harry's own edits:
   * Industries: rows are matched by industry label. The build's columns win, except the
     ones Harry owns (KEEP: active, priority, proof_point), which keep their sheet value
     when it is not blank. Rows Harry added that the build does not have stay, at the end.
+  * General: Harry's values stay. A renamed key (daily_enrol_cap is now weekly_enrol_cap) is
+    renamed and given the build's value, since its unit changed; keys the sheet does not have
+    yet are added with the build's value and note; `--set key=value` sets the values Harry has
+    decided. Note-only rows stay where they are.
   * Copy: a tab still in the one-row-per-step layout is replaced (its rows stay in the
     database's settings history). A tab already in the new layout keeps every row as it
     is on the sheet; only copy versions it does not have are added, at the end.
@@ -23,11 +27,11 @@ from dataclasses import dataclass, field
 from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
-from us_outbound.settings.validate import is_legacy_copy, validate_all
+from us_outbound.settings.validate import RENAMED_GENERAL, is_legacy_copy, validate_all
 
-LOADABLE = ("Industries", "Copy")
+LOADABLE = ("General", "Industries", "Copy")
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
-KEY = {"Industries": "industry", "Copy": "copy_version"}
+KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version"}
 SHOW = 12  # names listed per change in the summary
 
 
@@ -60,7 +64,44 @@ def _key(row: Mapping[str, str], tab: str) -> str:
     return str(row.get(KEY[tab]) or "").strip().casefold()
 
 
-def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]]) -> Plan:
+def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]],
+                 sets: Mapping[str, str] | None = None) -> Plan:
+    """The General tab with renamed keys renamed, missing keys added and Harry's decided values set."""
+    cols = COLUMNS["General"]
+    build = {r["key"]: r for r in build_rows}
+    unknown = sorted(set(sets or {}) - set(build))
+    if unknown:
+        raise ValueError(f"not General keys: {', '.join(unknown)}")
+    p = Plan("General", [], len(sheet_rows))
+    present = {str(r.get("key") or "").strip() for r in sheet_rows}
+    for r in sheet_rows:
+        row = {c: str(r.get(c, "")) for c in cols}
+        key = row["key"].strip()
+        if key in RENAMED_GENERAL:
+            new = RENAMED_GENERAL[key][0]
+            if new in present:
+                p.updated.append(f"{key} removed ({new} is already on the tab)")
+                continue
+            row = {c: str(build[new].get(c, "")) for c in cols}
+            p.updated.append(f"{key} renamed {new} = {row['value']}")
+            present.add(new)
+        p.rows.append(row)
+    for key, b in build.items():
+        if key not in present:
+            p.rows.append({c: str(b.get(c, "")) for c in cols})
+            p.added.append(f"{key} = {b['value']}")
+    for key, value in (sets or {}).items():
+        row = next(r for r in p.rows if r["key"].strip() == key)
+        if row["value"].strip() != str(value).strip():
+            p.updated.append(f"{key}: {row['value'] or 'blank'} -> {value}")
+            row["value"] = str(value)
+    return p
+
+
+def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]],
+             sets: Mapping[str, str] | None = None) -> Plan:
+    if tab == "General":
+        return plan_general(sheet_rows, build_rows, sets)
     cols = COLUMNS[tab]
     present = set().union(*(set(r) for r in sheet_rows)) if sheet_rows else set()
     p = Plan(tab, [], len(sheet_rows), new_columns=[c for c in cols if present and c not in present])
@@ -103,7 +144,7 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
     return p
 
 
-def load(ctx: Context, tabs: Sequence[str]) -> dict:
+def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = None) -> dict:
     """Plan (and, live, write) each tab; refuses if the result would not validate."""
     bad = [t for t in tabs if t not in LOADABLE]
     if bad:
@@ -115,7 +156,9 @@ def load(ctx: Context, tabs: Sequence[str]) -> dict:
 
     sheet = read_sheet(ctx, sheet_id)
     build = default_tabs()
-    plans = {t: plan_tab(t, sheet.get(t) or [], build[t]) for t in tabs}
+    if sets and "General" not in tabs:
+        raise ValueError("--set changes the General tab; load it too (--tab General)")
+    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets) for t in tabs}
     merged = {**sheet, **{t: p.rows for t, p in plans.items()}}
     _, errors = validate_all(merged)
     problems = [str(e) for t in (*tabs, "Tests", "Focus") for e in errors.get(t, [])]
