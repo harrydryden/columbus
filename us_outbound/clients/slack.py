@@ -5,6 +5,10 @@ Writes go only to the alert channel (#us-outbound) and the dev channel
 dev channel instead, its text prefixed "[dry-run → {channel}] ". Ops carry the channel
 NAME, since that is what the guard checks; request bodies carry the resolved id.
 Slack answers errors with HTTP 200 and ok: false, which raises ApiError here.
+
+Approvals (SPEC 11, poll_approvals) read thread replies and the reactions on one message.
+Direct messages (dm) go only to the approvers in approver_slack_ids (the guard checks), for
+escalation when the forward endpoint is missing; in dry-run they go to the dev channel instead.
 """
 
 from __future__ import annotations
@@ -85,10 +89,37 @@ class Slack(HttpClient):
             if not cursor:
                 return out
 
+    def reactions(self, channel: str, ts: str) -> list[dict]:
+        """The reactions on message ts: [{"name": "white_check_mark", "users": [...], "count": n}].
+
+        reactions.get with full=true, so every user is listed. Needs the reactions:read scope.
+        PHASE0-CONFIRM: the scope is on the installed app (deploy/slack-app-manifest.yaml).
+        """
+        cid = self.channel_id(channel)
+        body = self._api(
+            "GET", "reactions.get", Op("reactions.get", target=channel),
+            params={"channel": cid, "timestamp": ts, "full": "true"},
+        ) or {}
+        return list((body.get("message") or {}).get("reactions") or [])
+
+    def permalink(self, channel: str, ts: str) -> str:
+        """A link to message ts (chat.getPermalink), for escalation emails and DMs."""
+        cid = self.channel_id(channel)
+        body = self._api(
+            "GET", "chat.getPermalink", Op("chat.getPermalink", target=channel), params={"channel": cid, "message_ts": ts}
+        ) or {}
+        return str(body.get("permalink") or "")
+
     # -- writes ----------------------------------------------------------------
 
-    def post(self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None) -> dict | None:
-        """chat.postMessage. Returns {"channel": name posted to, "channel_id", "ts"}; None if skipped."""
+    def post(
+        self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None,
+        *, broadcast: bool = False,
+    ) -> dict | None:
+        """chat.postMessage. Returns {"channel": name posted to, "channel_id", "ts"}; None if skipped.
+
+        broadcast: a thread reply also shown in the channel (reply_broadcast), as SPEC 11's re-post is.
+        """
         op = Op("chat.postMessage", target=channel, write=True, detail={"thread_ts": thread_ts} if thread_ts else {})
         dev = self.guard.bounds.dev_channel
         if not self.guard.live and channel != dev:
@@ -112,10 +143,33 @@ class Slack(HttpClient):
             payload["blocks"] = blocks
         if thread_ts:
             payload["thread_ts"] = thread_ts
+            if broadcast:
+                payload["reply_broadcast"] = True
         body = self._api("POST", "chat.postMessage", op, json=payload)
         if body is None:
             return None
         return {"channel": channel, "channel_id": body.get("channel"), "ts": body.get("ts")}
+
+    def dm(self, user_id: str, text: str) -> dict | None:
+        """A direct message to an approver (the guard allows only approver_slack_ids).
+
+        chat.postMessage with the user id as channel, which posts in the app's Messages tab.
+        PHASE0-CONFIRM: that the installed app has that tab on and may post there (im:write).
+        Dry-run posts it to the dev channel instead, prefixed "[dry-run → DM @user]".
+        """
+        user = str(user_id or "").strip()
+        op = Op("chat.postMessage", target=f"@{user}", write=True, detail={"dm": True})
+        if not self.guard.live:
+            self.guard.authorize(self.system, op)  # records it as not sent, or refuses a non-approver
+            dev = self.guard.bounds.dev_channel
+            return self.post(dev, f"[dry-run → DM @{user}] {text}")
+        if user not in self.guard.bounds.approver_slack_ids:
+            self.guard.authorize(self.system, op)  # refuses before any request
+        payload = {"channel": user, "text": text, "unfurl_links": False, "unfurl_media": False}
+        body = self._api("POST", "chat.postMessage", op, json=payload)
+        if body is None:
+            return None
+        return {"channel": f"@{user}", "channel_id": body.get("channel"), "ts": body.get("ts")}
 
     def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> dict | None:
         """chat.update on a message this bot posted. Returns {"channel", "channel_id", "ts"}; None if skipped."""
@@ -140,8 +194,15 @@ class SlackOff:
 
     system = "slack"
 
-    def post(self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None) -> None:
+    def post(
+        self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None,
+        *, broadcast: bool = False,
+    ) -> None:
         log("slack_off", channel=channel, message=text, thread_ts=thread_ts)
+        return None
+
+    def dm(self, user_id: str, text: str) -> None:
+        log("slack_off", channel=f"@{user_id}", message=text)
         return None
 
     def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> None:
@@ -150,3 +211,9 @@ class SlackOff:
 
     def replies(self, channel: str, ts: str) -> list[dict]:
         return []
+
+    def reactions(self, channel: str, ts: str) -> list[dict]:
+        return []
+
+    def permalink(self, channel: str, ts: str) -> str:
+        return ""

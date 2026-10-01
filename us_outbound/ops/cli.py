@@ -11,6 +11,10 @@ SPEC 13 commands:
   test start|read <test_id>           start the copy test, or read it (SPEC 12)
   copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
                                       preview one, QA it (task model), draft one (writing model)
+  replies list|approve|skip [ITEM]    the reply desk without Slack (replies/desk.py): list the reply
+                                      items waiting, approve one (--edit "text" sends that instead),
+                                      or skip one; the same send, HubSpot and close path as a Slack
+                                      approval, with approved_by "cli"
 Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
 Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
 (mailbox_health by hand), settings sync|bootstrap|load, db apply, hubspot setup|ids,
@@ -22,8 +26,9 @@ Dry-run is the default everywhere. Two kinds of live:
   * jobs (run, rescore, settings sync, suppression load) and start: --live AND
     live_sending = yes, as SPEC 0.3 says;
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
-    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure):
-    --live alone, so the phase-0 setup and the kill switch work while live_sending is still no.
+    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure, replies
+    skip): --live alone, so the phase-0 setup and the kill switch work while live_sending is still no.
+    `replies approve` sends to a prospect, so it is live like a job: --live AND live_sending = yes.
     copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
 Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
@@ -82,8 +87,8 @@ JOBS: dict[str, str] = {
     "pick_contacts": "us_outbound.contacts.pick:run",
     "enrol": "us_outbound.enrol.enrol:run",
     "poll_replies": "us_outbound.replies.poll:run",
-    "poll_approvals": "not built yet (phase 2)",
-    "hubspot_readback": "not built yet (phase 2)",
+    "poll_approvals": "us_outbound.replies.desk:poll_approvals",
+    "hubspot_readback": "us_outbound.crm.readback:hubspot_readback",
     "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
     "kill_rules": "not built yet (phase 3)",
@@ -708,6 +713,61 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def _print_reply_items(items: list[dict]) -> None:
+    if not items:
+        print("No reply items are waiting.")
+        return
+    print(f"{len(items)} reply item{'s' if len(items) != 1 else ''} waiting, oldest first:")
+    for i in items:
+        who = ", ".join(x for x in (i["person"] or "someone", i["title"]) if x)
+        role = f" ({i['role']})" if i["role"] else ""
+        waited = f"waited {i['waited_hours']} h" if i["waited_hours"] is not None else "waiting"
+        print(f"\n{i['id']}  {i['reply_class'] or '?'}  {i['account'] or 'unknown account'} · {who}{role}")
+        print(f"  to {i['mailbox'] or '?'} ({i['owner'] or 'owner unknown'}) · {waited} · {i['status']}"
+              f"{' · escalated' if i['escalated'] else ''} · in Slack: {'yes' if i['in_slack'] else 'no'}")
+        if i["note"]:
+            print(f"  NOTE: {i['note']}")
+        if i["excerpt"]:
+            print(f"  They wrote: \"{i['excerpt']}\"")
+        if i["referral"]:
+            print("  Referred us to: " + ", ".join(v for v in i["referral"].values() if v))
+        print(f"  Draft{' (edited)' if i['draft_edited'] else ''}:" if i["draft"] else "  No draft: approve with --edit \"text\".")
+        for line in (i["draft"] or "").splitlines():
+            print(f"    {line}")
+        if i["hubspot"]:
+            print(f"  HubSpot: {i['hubspot']}")
+        print(f"  Send it: us-outbound replies approve {i['id']} --live   (--edit \"text\" sends that instead)")
+        print(f"  Skip it: us-outbound replies skip {i['id']} --live")
+
+
+def cmd_replies(args: argparse.Namespace, factory: Factory) -> int:
+    """The reply desk at the command line (replies/desk.py): Slack may not be set up for the pilot."""
+    from us_outbound.clients.guard import REPLIES_CLI_JOB
+    from us_outbound.replies import desk
+
+    if args.action == "list":
+        _print_reply_items(desk.list_items(factory("replies_list", False, operator=True)))
+        return 0
+    if not args.item_id:
+        raise Refused(f"replies {args.action} needs an item id from `us-outbound replies list`")
+    if args.action == "skip":
+        if args.edit is not None:
+            raise Refused("--edit goes with approve, not skip")
+        ctx = factory("replies_skip", args.live, operator=True)
+        summary = run_job(ctx, lambda c: desk.skip(c, args.item_id))
+        _print(summary)
+        _dry_note(ctx, "the item was not marked handled.")
+        return 0 if summary.get("skipped") or ctx.dry_run else 2
+    # approve sends to a prospect: --live and live_sending = yes (SPEC 0.3), not --live alone.
+    ctx = factory(REPLIES_CLI_JOB, args.live)
+    if args.live and ctx.dry_run:
+        print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
+    summary = run_job(ctx, lambda c: desk.approve(c, args.item_id, text=args.edit))
+    _print(summary)
+    _dry_note(ctx, "the reply was not sent, HubSpot was not written and the item is unchanged.")
+    return 0 if summary.get("sent") or ctx.dry_run else 2
+
+
 def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
     """The DDL in sql/ (ops/ddl.py): printed in dry-run; run against DATABASE_URL with --live."""
     from us_outbound.clients.guard import Guard
@@ -850,6 +910,12 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
     co.set_defaults(fn=cmd_copy)
+
+    rp = sub.add_parser("replies", parents=[live], help="the reply desk without Slack: list, approve or skip reply items")
+    rp.add_argument("action", choices=["list", "approve", "skip"])
+    rp.add_argument("item_id", nargs="?", help="approve, skip: the id `replies list` shows (or its first characters)")
+    rp.add_argument("--edit", help="approve: send this text instead of the draft (recorded as edited)")
+    rp.set_defaults(fn=cmd_replies)
 
     db = sub.add_parser("db", parents=[live], help="create the tables and views in DATABASE_URL (prints them unless --live)")
     db.add_argument("action", choices=["apply"])

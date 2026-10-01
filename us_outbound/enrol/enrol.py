@@ -37,7 +37,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
@@ -117,14 +117,13 @@ def operator_pause(ctx: Context) -> str | None:
 def reply_pause(ctx: Context) -> str | None:
     """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
 
-    poll_replies writes a "reply" item for every reply a person answers (replies/poll.py), so only the
-    warm ones count here: positive and referral, the replies SPEC 11 drafted for.
+    The reply items are poll_replies' (kind "reply"; replies/items.py reads them, and the first kind
+    name too): positive or referral, not yet handled, escalated included.
     """
+    from us_outbound.replies.items import positive_waiting
+
     hours = ctx.settings.general.escalation_hours
-    cutoff = ctx.now - timedelta(hours=hours)
-    rows = ctx.store.select("hitl_items", {"kind": REPLY_KIND, "status": list(WAITING)})
-    rows = [r for r in rows if isinstance(r.get("payload"), Mapping) and r["payload"].get("reply_class") in WARM_REPLY_CLASSES]
-    old = [r for r in rows if (t := _ts(r.get("created_at"))) is not None and t <= cutoff]
+    old = positive_waiting(ctx.store, ctx.now, hours)
     if not old:
         return None
     return f"{len(old)} positive {'reply has' if len(old) == 1 else 'replies have'} waited over {hours} hours for approval"

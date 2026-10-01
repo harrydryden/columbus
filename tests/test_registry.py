@@ -284,7 +284,8 @@ def test_mailbox_add_warm_new_owner_gets_a_campaign():
     added = row(sheets, new)
     assert added["status"] == "Active" and added["owner_name"] == "Maria Lopez" and added["added_on"] == "2026-10-27"
     assert added["daily_cap"] == "30" and added["signature"] == "Maria Lopez\nSpill\nspill.chat/us"
-    assert set(added) == set(MAILBOX_HEADERS)
+    # slack_id is optional (D11) and Harry fills it in by hand, so a sheet without the column still takes the row.
+    assert set(added) == set(MAILBOX_HEADERS) - {"slack_id"}
     c = inst.by_name("US Outbound – Maria Lopez")
     assert c["email_list"] == [new] and c["status"] == 0
     assert out["campaign_action"] == "created (paused)" and out["warmup_turned_on"] is False

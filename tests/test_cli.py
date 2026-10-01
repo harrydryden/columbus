@@ -119,7 +119,8 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
     assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
     assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
-    assert cli.JOBS["poll_approvals"] == "not built yet (phase 2)"
+    assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_approvals"
+    assert cli.JOBS["hubspot_readback"] == "us_outbound.crm.readback:hubspot_readback"
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 

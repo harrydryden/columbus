@@ -527,6 +527,30 @@ def test_mailboxes(tabs):
     assert "never sends cold email" in _one(t, "Mailboxes", "address").message
 
 
+def test_mailbox_slack_id_d11(tabs):
+    """Optional (D11, Harry, 1 Oct 2026): the owner's Slack id; one id per person, one person per id."""
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values()) and all(m.slack_id == "" for m in settings.mailboxes)
+    for row in tabs["Mailboxes"]:  # a sheet made before the column existed still validates
+        del row["slack_id"]
+    assert not any(validate_all(tabs)[1].values())
+    t = copy.deepcopy(BASE)
+    _row(t, "Mailboxes", address="harry@meetspill.org")[1]["slack_id"] = "U098X453UAG"
+    _row(t, "Mailboxes", address="harry@tryspill.org")[1]["slack_id"] = "U098X453UAG"  # Harry's two mailboxes
+    _row(t, "Mailboxes", address="hannah@meetspill.org")[1]["slack_id"] = "U0HANNAH1"
+    settings, errors = validate_all(t)
+    assert not any(errors.values())
+    assert {m.address: m.slack_id for m in settings.mailboxes}["harry@tryspill.org"] == "U098X453UAG"
+    for address, value, fragment in [
+        ("sam@meetspill.org", "hannah", "not a Slack user id"),
+        ("sam@meetspill.org", "U0HANNAH1", "already Hannah Spalding's"),
+        ("harry@tryspill.org", "U0OTHER22", "already has Slack id U098X453UAG"),
+    ]:
+        bad = copy.deepcopy(t)
+        _row(bad, "Mailboxes", address=address)[1]["slack_id"] = value
+        assert fragment in _one(bad, "Mailboxes", "slack_id").message, (address, value)
+
+
 def test_mailbox_address_is_lower_cased_and_domain_derived(tabs):
     _row(tabs, "Mailboxes", address="sam@meetspill.org")[1].update(address="Sam@MeetSpill.org", domain="")
     settings, _ = validate_all(tabs)

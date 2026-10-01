@@ -502,8 +502,8 @@ def test_the_table_matches_the_job_registry_and_spec9():
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "verify_accounts", "pick_contacts",
-                       "poll_replies", "sync_outcomes", "mailbox_health", "heartbeat_check", "suppression_load",
-                       "lookalikes"]
+                       "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes", "mailbox_health",
+                       "heartbeat_check", "suppression_load", "lookalikes"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]

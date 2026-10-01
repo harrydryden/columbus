@@ -43,6 +43,9 @@ COLUMNS: dict[str, list[str]] = {
     "Mailboxes": [
         "address", "instantly_account_id", "domain", "provider", "owner_name", "owner_role", "signature",
         "status", "daily_cap", "added_on", "retire_after",
+        # Optional (decision D11, Harry, 1 Oct 2026): the owner's Slack user id, so they can approve
+        # replies to their own mailbox. A sheet without the column reads it as blank.
+        "slack_id",
     ],
     "Overrides": ["domain", "field", "value", "note"],
     "Tests": [
@@ -551,7 +554,7 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
             {
                 "address": address, "instantly_account_id": "", "domain": domain, "provider": "",
                 "owner_name": owner, "owner_role": "", "signature": f"{owner}\nSpill\nspill.chat/us",
-                "status": "Warming", "daily_cap": "30", "added_on": "", "retire_after": "",
+                "status": "Warming", "daily_cap": "30", "added_on": "", "retire_after": "", "slack_id": "",
             }
             for address, domain, owner in _MAILBOXES
         ],

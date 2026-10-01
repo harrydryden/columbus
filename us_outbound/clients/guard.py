@@ -25,6 +25,13 @@ from us_outbound.logs import log, redact
 
 US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
 ERASE_JOB = "erase"  # the only job that may GDPR-delete in HubSpot (SPEC 6 erase --email)
+# SPEC 1.3, as changed by decision D11 (Harry, 1 Oct 2026): nothing goes to a prospect after their
+# first reply unless an approver approved it. An approver is a Slack id on approver_slack_ids, or the
+# owner of the mailbox the prospect wrote to (Mailboxes slack_id). At the command line (Slack may not
+# be set up for the pilot) the approver is the person running `us-outbound replies approve`, so the
+# reply carries approved_by = "cli" and only that command's job may send it.
+REPLIES_CLI_JOB = "replies_approve"
+CLI_APPROVER = "cli"
 SETTINGS_SHEET_TITLE = "US Outbound – Settings"
 DB_SCHEMA = "us_outbound"
 
@@ -119,6 +126,9 @@ class Boundaries:
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
     escalation_email: str = ""  # the only address an Instantly forward may go to (SPEC 11)
+    approver_slack_ids: frozenset[str] = frozenset()  # General approver_slack_ids; the only Slack DM recipients
+    # (mailbox address, its owner's Slack id): D11, owners approve replies to their own mailbox.
+    owner_slack_ids: frozenset[tuple[str, str]] = frozenset()
     db_schema: str = DB_SCHEMA
 
     @property
@@ -258,6 +268,17 @@ class Guard:
             need_us_campaign()
         elif a == "email.reply":
             need_registry_accounts()
+            if not str(op.detail.get("campaign", "")).startswith(US_CAMPAIGN_PREFIX):
+                raise GuardViolation("Instantly replies go only in threads of a US Outbound campaign (SPEC 1.2)")
+            by = str(op.detail.get("approved_by") or "").strip()
+            owners = {sid for address, sid in b.owner_slack_ids if address.lower() in accounts}
+            approved = (by == CLI_APPROVER and self.job == REPLIES_CLI_JOB) or (
+                by not in ("", CLI_APPROVER) and by in b.approver_slack_ids | owners
+            )
+            if not approved:
+                raise GuardViolation(
+                    "nothing goes to a prospect after their reply unless an approver approved it (SPEC 1.3, D11)"
+                )
         elif a == "email.forward":
             need_registry_accounts()
             to = {str(x).strip().lower() for x in op.detail.get("to", ())}
@@ -348,6 +369,12 @@ class Guard:
         b = self.bounds
         if op.action not in {"chat.postMessage", "chat.update", "reactions.add"}:
             raise GuardViolation(f"Slack write {op.action!r} is not allowed")
+        if op.target.startswith("@"):
+            # A direct message (build: SPEC 11 escalation when the forward endpoint is missing), only to
+            # an approver on approver_slack_ids (Harry). Dry-run sends none; the client redirects it to dev.
+            if op.action != "chat.postMessage" or op.target[1:] not in b.approver_slack_ids:
+                raise GuardViolation(f"Slack direct message to {op.target!r}: only approver_slack_ids get one")
+            return self.live
         if op.target not in {b.alert_channel, b.dev_channel}:
             raise GuardViolation(f"Slack channel {op.target!r} is not a US Outbound channel")
         if not self.live and op.target != b.dev_channel:

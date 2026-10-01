@@ -353,6 +353,9 @@ class Mailbox:
     signature: str = ""
     added_on: date | None = None
     retire_after: date | None = None
+    # The owner's Slack user id (build; decision D11, approved by Harry, 1 Oct 2026): the owner may
+    # approve replies to their own mailbox, beside approver_slack_ids. Blank: only those approve.
+    slack_id: str = ""
 
 
 @dataclass(frozen=True)
