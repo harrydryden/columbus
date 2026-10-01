@@ -117,13 +117,25 @@ verification and contact choice write only the database; enrol, replies and post
    - Apollo: organization and people search filters, job postings, credit charges.
    - HubSpot: meetings and pipeline stage labels.
    Fix whatever the first runs show.
-2. **A per-account opener written by Claude.** This is the biggest remaining lever on Harry's
-   "personalised, relevant data and hook". Today only accounts with a matched signal get an
-   opener, and without Clay those are hiring, growth, funding, People-team facts and size.
-   - A nightly Batch call (the task model) writes one factual sentence per queued account, from
-     its Apollo facts (description, keywords, hiring, growth, location). The render-time rules
-     check it, and a 30% holdout measures it.
-   - Cost: about $1–3 a month, within the $10 cap.
+2. **Tokenized openers: one template per signal and role, filled with the account's own facts.**
+   This is the biggest remaining lever on Harry's "personalised, relevant data and hook". Today
+   an opener is a fixed sentence per signal ("I saw the team has been growing"), and only
+   accounts with a matched signal get one.
+   - Each firing signal gets a line per copy role, with tokens filled from stored facts: the
+     posting title, the number of open roles, the funding round, the 12-month growth rounded, and
+     whether the new People leader is the contact. For example: "I saw {company} has six roles open,
+     including a Senior Product Designer."
+   - About 18 lines now, and more when Clay's page signals arrive. Opus writes them once, Sonnet
+     checks them, and Harry approves them on the Signals tab. They are filled at render time and
+     checked by the same rules.
+   - No cost per account, nothing invented (every token is a stored fact), and each line can be
+     tested.
+   - Claude fills only the one token templates can't: a short "what they do" phrase taken from the
+     company's description and keywords, checked for length and banned words. That costs pennies
+     a month in Batch.
+   - A 30% holdout measures opener against no opener. Per-account sentences written freely by Claude
+     are not planned: Harry couldn't approve them, they can't be tested line by line, and they can
+     invent.
 3. **Careers and benefits pages without Clay:** a direct read of each account's careers and
    benefits pages, so the EAP, benefits and wellbeing signals and their openers can fire. Clay
    replaces it when its functions exist.
