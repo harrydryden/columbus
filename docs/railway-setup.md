@@ -139,6 +139,13 @@ and `railway link`): `railway ssh -- us-outbound db apply` prints the SQL, and a
 `--live` runs it. The dry-run needs no database, so `.venv/bin/us-outbound db apply` also
 works on a laptop.
 
+Without the CLI, any one-off command (`us-outbound settings load --live`, say) can run the
+same way: make it the pre-deploy command, start a **new deployment** of the latest commit, read
+the deploy log, then set the pre-deploy command back to `us-outbound db apply --live`. Two
+things to know: a **Redeploy** reuses the earlier deployment's settings, so it runs the old
+command; and the command is not run through a shell, so `a && b` runs only `a`. Use one
+command per deployment.
+
 ## f. First dry-run checks
 
 Every command runs dry unless it says `--live`, and `live_sending` stays `no` in phase 0.
