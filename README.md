@@ -16,7 +16,8 @@ Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
 - **Jobs** (`run <job>`, `rescore`, `settings sync`, `suppression load`) and `start` are live
   only with `--live` **and** `live_sending = yes` in the settings sheet.
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
-  `erase`, `test start`, `settings bootstrap`, `hubspot setup`, `campaigns ensure`) are live
+  `erase`, `test start`, `settings bootstrap`, `hubspot setup`, `campaigns ensure`,
+  `handcheck show|approve`, `killrules clear`) are live
   with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is
   still `no`.
 
@@ -39,6 +40,9 @@ us-outbound db apply [--live]                      the DDL in sql/ against DATAB
 us-outbound hubspot setup|ids [--live]             the six properties; ids for the General tab
 us-outbound campaigns ensure [--fix] [--live]      the sender campaigns (created paused) and drift
 us-outbound suppression load [--live]              HubSpot opt-outs and bounces, hashed
+us-outbound golive                                 the read-only go/no-go check before sending (exits 1 on a FAIL)
+us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack (SPEC 11)
+us-outbound killrules show|clear <item> [--live]   the kill-rule holds in force; lift one once checked (SPEC 12)
 us-outbound scheduler                              the always-on worker: starts every job on its schedule
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)
 ```
@@ -81,8 +85,8 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | :- | :- |
 | 0 Foundations | Being built: clients, guard, settings sync, DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the Railway scheduler |
 | 1 Universe | Scoring built early; sources and Clay verification not built |
-| 2 First sends | Enrollment being built; replies, approvals and readback not built |
-| 3 Learning loop | Not built |
+| 2 First sends | Enrollment, the sending ramp, the weekly hand-check and `golive` built; replies, approvals and readback not built |
+| 3 Learning loop | Kill rules and the daily post built early (Harry, 1 Oct 2026); readout not built |
 
 ## Deviations from the SPEC 13 layout
 
@@ -107,8 +111,15 @@ Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_alias
 `contacts` gains `last_step_at` (for retention). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
-Clay function ids, and the credits-per-account estimates.
+Clay function ids, the credits-per-account estimates, `stop_rule_bounce_rate` and
+`stop_rule_complaint_rate` (the stop rule's account-level thresholds) and `optout_tested` (the
+seed-inbox test of the unsubscribe link, which `golive` checks).
 
-Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack) and
-`suppression_load` (daily: HubSpot opt-outs and bounces). `stop` and `start` record the
-enrollment pause as heartbeats rows (`operator_stop` / `operator_start`).
+Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack),
+`suppression_load` (daily: HubSpot opt-outs and bounces) and `hand_check_post` (Mondays 08:00:
+SPEC 11's weekly hand-check, which enrol waits for). `stop` and `start` record the
+enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
+fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
+enrollment until it is cleared (`learn/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
+in a mailbox's first sending week, 20 in its second, then its cap) sets the forecast, each
+campaign's daily limit and each Instantly account's own limit.

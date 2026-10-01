@@ -121,12 +121,20 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | :- | :- | :- | :- |
 | Review | Harry | Read the diff before merging to `main` (SPEC 13: Harry reviews before each deploy) | |
 | Deploy | Railway | Merging to `main` builds the Dockerfile and redeploys the worker. The old worker gets SIGTERM and 30 s to finish (`RAILWAY_DEPLOYMENT_DRAINING_SECONDS`) | The service's Deployments tab shows the new deploy as active |
-| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, heartbeat_check and suppression_load show a next run; later-phase jobs show "disabled" |
+| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_post show a next run; later-phase jobs show "disabled" |
 | Heartbeats | jobs | After a day: `us-outbound status` | Every phase-0 job shows ok; `heartbeat_check` alerts `#us-outbound-dev` on a missed one |
 
 Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mailbox_health
-07:00, heartbeat_check hourly at :05. Later-phase jobs have `enabled=False` in
-`us_outbound/ops/schedule.py` until their phase; turning one on is a reviewed code change.
+07:00, heartbeat_check hourly at :05; and, brought forward for the first sends (Harry, 1 Oct
+2026), kill_rules hourly at :00, daily_post 09:00 and hand_check_post Mondays 08:00. Later-phase
+jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; turning one on is a
+reviewed code change.
+
+Before the first send: `us-outbound golive` prints PASS, WARN or FAIL for each blocker and exits
+1 while any FAILs. The weekly hand-check without Slack: `us-outbound handcheck show --live`, then
+`us-outbound handcheck approve --live` (with `--pull ACCOUNT_ID ...` for accounts that are wrong).
+After the seed-inbox test of the unsubscribe link, set `optout_tested = yes` on the General tab
+(`us-outbound settings load --live --set optout_tested=yes` adds the row if it is missing).
 
 ## 11. For Harry to approve (SPEC 14)
 

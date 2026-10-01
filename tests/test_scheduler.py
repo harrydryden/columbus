@@ -477,11 +477,11 @@ SPEC9_CRONS = {
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
     "monday_readout": "0 9 * * 1",
     # Build additions.
-    "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *",
+    "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "hand_check_post": "0 8 * * 1",
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
-        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check"}
+        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post"}
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
@@ -499,7 +499,8 @@ def test_the_table_matches_the_job_registry_and_spec9():
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
-    assert enabled == ["settings_sync", "mailbox_health", "heartbeat_check", "suppression_load"]
+    assert enabled == ["settings_sync", "mailbox_health", "kill_rules", "daily_post", "heartbeat_check",
+                       "suppression_load", "hand_check_post"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]

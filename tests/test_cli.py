@@ -106,13 +106,16 @@ def test_dry_run_takes_no_live_flag():
 
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
-    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load"}
+    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "hand_check_post"}
     assert cli.JOBS["settings_sync"] == "us_outbound.settings.sync:run"
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
     assert cli.JOBS["mailbox_health"] == "us_outbound.registry.mailboxes:mailbox_health"
     assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:check_heartbeats"
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
+    assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
+    assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
+    assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
     assert cli.JOBS["poll_replies"] == "not built yet (phase 2)"
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
@@ -205,7 +208,7 @@ def test_live_needs_both_the_flag_and_the_setting():
 
 @pytest.mark.parametrize("job, message", [
     ("poll_replies", "not built yet (phase 2)"),
-    ("kill_rules", "not built yet (phase 3)"),
+    ("monday_readout", "not built yet (phase 3)"),
     ("source_universe", "not built yet (phase 1)"),
     ("no_such_job", "unknown job"),
 ])
@@ -310,6 +313,9 @@ def test_start_needs_live_sending_and_checks_drift():
     h = Harness(SETTINGS)
     for name, accounts, limit in ((C_HANNAH, [HANNAH], 30), (C_SAM, [SAM], 30), (C_HARRY, [HARRY, HARRY2], 60)):
         h.instantly.standard(name, accounts, limit)
+    from tests.test_ramp import past_ramp
+
+    past_ramp(h.store, SETTINGS.mailboxes, datetime(2026, 10, 27, 12, 0, tzinfo=UTC))  # campaigns at full caps
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())
