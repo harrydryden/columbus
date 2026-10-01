@@ -29,6 +29,9 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - Spill is HIPAA compliant.
 - For law firms (SPEC 5's legal overlay): "The bar's Lawyer Assistance Program covers attorneys. Who covers
   paralegals and staff?"
+- Spill offers a free trial (Harry, 1 Oct 2026). Email 4 mentions it once, before the sign-off, as "a free
+  trial" ("we can also set up a free trial for your team"). Never give its length, terms or conditions,
+  and never mention it in emails 1 to 3. Reply drafts may mention it too.
 - Pricing: only through {{price_line}} ("Plans start from $195 a month for the whole team, on a rolling 30-day contract",
   General price_from), then "We don't lock you in." Never write a dollar figure yourself.
 - The only figures allowed: 30% of employees use Spill, and "trusted by over 50,000 employees".
@@ -41,7 +44,7 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - Any other statistic: no percentages but the 30% above, no "3 in 4", no "2x", no ratings like 4.9/5,
   no other headcount (the pages say "over 30,000 employees"), no survey results from the industry pages. Describe the pressure instead.
 - Anything that criticizes the prospect's current EAP or benefits. "EAP" may name theirs, never Spill.
-- Any dollar amount, discount, free trial, guarantee or deadline.
+- Any dollar amount, discount, guarantee or deadline. A free trial only as above: email 4, no terms.
 - A named customer, unless the Industries tab's proof_point gives one.
 - Anything about the prospect's own company that the email cannot know: write "in most accounting
   firms", "often", "usually", never "your team is burned out".

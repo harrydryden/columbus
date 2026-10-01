@@ -22,7 +22,10 @@ The rules on each email as sent (email_violations): a subject; no empty or unren
 {{variable}}; no line over 300 characters; the word count for its step; no spam phrases; no
 bare addresses; email 1 links the industry page and not the demo page (Harry, 1 Oct 2026: a demo
 ask first is too presumptive); emails 2 to 4 have exactly one link to the demo page, the call to
-action; links only to the demo page, the industry page or spill.chat.
+action; links only to the demo page, the industry page or spill.chat. Harry, 1 Oct 2026: email 1
+informs and plants a seed, so its copy asks for nothing but a visit to the site (no demo, call or
+meeting words), and email 4 alludes to the free trial before it signs off ("free trial" is allowed
+there and nowhere else).
 SPEC 10 had step 1 carry one link only, the privacy page; Harry asked for the demo link in
 every email and the industry page in the sequence (docs/pipeline.md, "Copy").
 
@@ -300,6 +303,16 @@ SPAM_PHRASES: tuple[re.Pattern[str], ...] = tuple(
         r"free trial", r"buy now", r"special offer", r"exclusive (?:deal|offer)", r"once in a lifetime",
     )
 )
+# Harry, 1 Oct 2026: the last email alludes to a free trial before it signs off, so "free trial"
+# is allowed there (and required), and nowhere else.
+FREE_TRIAL = _rx(r"\bfree trial\b")
+TRIAL_STEP = 4
+# Harry, 1 Oct 2026: email 1 informs and plants a seed. It asks only for a visit to the site,
+# never for a demo, a call or a meeting (the signature's own booking line is not the copy).
+_STEP1_ASK = _rx(
+    r"\b(?:demo|demos|book(?:ing)?|calls?|meetings?|calendar|schedule|hop on|jump on|walkthrough"
+    r"|(?:15|20|30)[- ]minutes?)\b"
+)
 POOR_ANCHORS = frozenset({"here", "click here", "this link", "link", "this", "click"})
 _DOLLARS = re.compile(r"\$\s?\d|\b\d[\d,]*\s?(?:dollars|USD)\b", _I)
 _EMOJI = re.compile("[\u2600-\u27bf\U0001f000-\U0001faff]")
@@ -368,7 +381,15 @@ def email_violations(
         masked = _mask(text, exempt)
         for rx in SPAM_PHRASES:
             for m in rx.finditer(masked):
+                if step == TRIAL_STEP and part == "body" and rx.pattern == FREE_TRIAL.pattern:
+                    continue  # the free trial belongs in the last email (Harry, 1 Oct 2026)
                 out.append(f'{part} says "{_quoted(m)}", which reads as spam')
+    if step == TRIAL_STEP and not FREE_TRIAL.search(words):
+        out.append("email 4 does not mention the free trial; the last email alludes to it before signing off")
+    if step == 1:
+        for m in _STEP1_ASK.finditer(_mask(words, exempt)):
+            out.append(f'email 1 says "{_quoted(m)}"; the first email asks only for a visit to the site, '
+                       "never a demo, call or meeting")
     for bare in links(_mask(words, exempt)):
         out.append(f'body has the bare address "{bare}"; write it as [anchor text](link)')
     lines = [line for line in words.split("\n") if line.strip()]

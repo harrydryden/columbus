@@ -93,8 +93,9 @@ BODIES = {
        "willing to use it at all.\n\nSetup takes hours, so it can be ready before your next busy stretch. If that's "
        "useful, [book 20 minutes for a demo]({{demo_url}}).\n\nBest wishes,\n{{sender_first_name}}",
     4: "Hi {{first_name}},\n\nI'll leave it here for now.\n\nIf support for your team in {{place}} moves up the list, "
-       "Spill can be set up in hours, with counseling that fits around client work.\n\nWhenever the timing suits, "
-       "[book a demo]({{demo_url}}) and we'll walk you through it.\n\nBest wishes,\n{{sender_first_name}}",
+       "Spill can be set up in hours, with counseling that fits around client work, and we can start with a free trial "
+       "for your team.\n\nWhenever the timing suits, [book a demo]({{demo_url}}) and we'll walk you through it."
+       "\n\nBest wishes,\n{{sender_first_name}}",
 }
 ROLE_LINES = {
     "People leader": "If you're the one people come to when a launch goes sideways, you want support they'll actually use.",

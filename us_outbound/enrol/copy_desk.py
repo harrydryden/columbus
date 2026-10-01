@@ -264,14 +264,20 @@ A sequence FAILS (verdict "fail", severity "blocker") when any email:
   offers a demo "with me";
 - has British spelling, a grammar error, or a sentence that does not read naturally in US English;
 - reads as salesy, pushy, guilt-inducing or generic, when the style asks for warm, plain and specific;
-- breaks the structure: email 2 is the long-form explainer; each email has one call to action to
-  book a demo; the role lines each read naturally after email 1's hook.
+- breaks the structure (Harry, 1 Oct 2026): every email is written for this row's industry AND its
+  role (people leader, founder or executive, operations), so a reader in that role and industry
+  feels it was written for them; email 1 informs and plants a seed with a personal, relevant hook,
+  and asks only for a visit to the industry page (no demo, call or meeting); email 2 is the
+  long-form explainer; emails 2 to 4 each have one call to action to book a demo; email 4 mentions
+  the free trial once, before signing off, with no terms; role lines (rows with no role) each read
+  naturally after email 1's hook.
 A claim that is on the industry's own page is allowed, if it is not a statistic and is not stated
 more strongly than the page does. Plain, hedged description of the industry's own work and pressures
 ("often", "in most ...") is not a claim about Spill and is allowed when it is accurate. The code has
 already checked banned words, spelling lists, links, word counts and markup, so judge meaning: claims,
 accuracy, tone, US grammar and idiom, and whether each role line reads well after email 1's hook.
 Minor problems (severity "minor") are wording you would improve but that could be sent.
+A free trial mentioned in email 4, as facts.md allows, is not a problem.
 Report every problem with the email number (0 for the role lines or the whole sequence) and a fix.
 Do not invent problems. verdict is "pass" only when there are no blockers."""
 
