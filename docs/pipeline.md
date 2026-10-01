@@ -54,7 +54,7 @@ Instantly finds, enriches and verifies as well (SuperSearch, a seven-provider wa
 | Which industries? | Industries: labels, NAICS prefixes, excluded NAICS, Apollo keywords | Built into the filters of each Apollo search. Python then re-checks every result against the tab, so a loose Apollo filter can't let a wrong company in |
 | Where? | States (HQ state), and CA and WA never | Apollo `organization_locations`. People are checked against the same list |
 | How big? | 10–249 employees in four bands (General, code) | Apollo `organization_num_employees_ranges` |
-| Who do we email? | Roles: titles, first choice by size, fallback order | Apollo people-search title filters |
+| Who do we email? | Roles: titles, the copy each row gets, and its rank at 10–49 and at 50–249 staff | Apollo people-search title filters; Python ranks the results |
 | What makes an account better or worse? | Signals, Angles | Never sent to a vendor. Clay reports what the pages say and never judges them (SPEC 8) |
 | Who is never contacted? | Hard exclusions (code), Overrides, suppression | Checked in Python before any credit is spent |
 
@@ -105,11 +105,24 @@ An account also needs at least one candidate contact: a person matching the Role
 - Afterwards the job-post feeds read the careers URL that Clay found (free).
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
-**4. Contact: weekdays, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
-- It takes only the accounts the next two enrolment days will use, not the whole verified queue.
-- It refreshes the candidates with a free people search, picks one by the role rule, and runs Apollo bulk match (verified emails only).
-- On a miss or a catch-all, it runs the Clay Contacts function.
-- The email must not be a personal domain, suppressed, or a customer domain. If it fails, it tries the next candidate in fallback order.
+**4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
+- It takes only the accounts the next two enrolment days will use at the weekly target's pace, in enrol's queue order, not the whole verified queue.
+- It searches Apollo for free: people at the company with a Roles-tab title for its size, in the US, with a verified email.
+- It ranks them (Harry, 1 Oct 2026: "the closer to seniority and decision maker the better"): the Roles-tab rank for the size, then seniority, then how well the title matches, then the newest in role. Junior titles come last, and never as a People leader.
+- It reveals the top person's email with Apollo bulk match (1 credit). The email must be verified, at the company's own domain, not a personal domain, a shared inbox, suppressed or already a contact, and the person not in CA or WA. If it fails, it reveals the next person: at most two reveals an account.
+- When nobody suitable is found, the account records why (a `contact_pick` fact), `us-outbound status` counts it, and it is tried again after 14 days. Nobody is paid for twice.
+- Not yet: the Clay Contacts function for misses and catch-alls.
+
+| Rank | 10–49 staff | 50–249 staff |
+| :- | :- | :- |
+| 1 | Founder or executive; a partner or principal at a law or professional-services firm | People leader (senior: CHRO, VP, Head or Director of People or HR) |
+| 2 | People leader (senior) | Founder or executive; partner or principal |
+| 3 | Operations (COO, Head or Director of Operations, Chief of Staff) | Operations |
+| 4 | Office Manager or Firm Administrator, as a fallback | HR Manager, HR Generalist or People Operations Manager (People leader copy) |
+| 5 | | Office Manager or Firm Administrator, as a fallback |
+| Never | Finance; HR Manager | Finance |
+
+A sheet made before 1 Oct 2026 has the Roles tab in SPEC 5's layout. It is still read, as the old order, until `us-outbound settings load --tab Roles --live` replaces it; settings_sync says so meanwhile.
 
 **5. Enrol: weekdays at 12:00, `enrol`.**
 - It works out today's number (below), re-checks HubSpot, assigns the test version, renders the copy, and adds the lead to its sender's campaign. **Status: `enrolled`.**

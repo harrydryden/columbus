@@ -375,3 +375,20 @@ def test_bootstrap_in_dry_run_returns_none(ctx):
     ctx.clients.sheets.create_result = None  # what the Sheets client returns when the guard skips the create
     assert ctx.dry_run
     assert sync.bootstrap(ctx, force=True) is None
+
+
+def test_a_roles_tab_in_the_spec5_layout_still_syncs_with_a_notice(ctx, sheet):
+    """The Roles tab gained columns on 1 Oct 2026; a sheet made before keeps working until it is loaded."""
+    from tests.test_settings_validate import LEGACY_ROLES
+
+    sheet["Roles"] = copy.deepcopy(LEGACY_ROLES)
+    summary = sync.run(ctx)
+    assert summary["rejected"] == [] and "settings load --tab Roles --live" in summary["roles_notice"]
+    settings, _ = sync.load_current(ctx.store)
+    assert [r.role for r in settings.roles] == ["People leader", "Founder or executive", "Operations", "Finance"]
+    sheet["Roles"] = default_tabs()["Roles"]  # what `settings load --tab Roles --live` writes
+    ctx.now = T2
+    summary = sync.run(ctx)
+    assert "roles_notice" not in summary and summary["tabs"]["Roles"]["status"] == "synced"
+    settings, _ = sync.load_current(ctx.store)
+    assert next(r for r in settings.roles if r.role == "HR manager").order == {"50-249": 4}

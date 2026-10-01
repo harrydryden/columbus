@@ -85,7 +85,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 34. Only EMEA and APAC titles are skipped, not APJ, LATAM, Europe, UK or Asia. [only EMEA and APAC]
 35. RevOps counts as sales ops and is skipped. A title is skipped if a skip word appears anywhere in it. [yes]
-36. The Roles tab has no CHRO, VP HR, Head of HR, Director of People, Owner or Principal, so those titles are never contacted. Should they be added to the sheet? [not added]
+36. The Roles tab has no CHRO, VP HR, Head of HR, Director of People, Owner or Principal, so those titles are never contacted. Should they be added to the sheet? [added, with a rank by size led by seniority: Harry, 1 Oct 2026; docs/pipeline.md, stage 4]
 37. Company-name casing is kept as given, so "acme creative" stays lower case. [kept]
 
 ### Copy and rendering

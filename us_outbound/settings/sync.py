@@ -40,6 +40,7 @@ from us_outbound.settings.validate import (
     MAY_BE_EMPTY,
     RowError,
     is_legacy_copy,
+    is_legacy_roles,
     natural_key,
     validate_all,
 )
@@ -50,6 +51,7 @@ SLACK_ERROR_LINES = 20
 # version, the version of the tab it names that is now on the sheet may not fit it.
 DEPENDS_ON: dict[str, tuple[str, ...]] = {
     "Signals": ("Angles",), "Copy": ("Industries", "Roles"), "Tests": ("Copy",), "Focus": ("Industries",),
+    "Roles": ("Industries",),  # industry_groups (Harry, 1 Oct 2026)
 }
 
 ORDER_TAB = "_order"  # key = a tab name, values = {"keys": [its keys in sheet order]}; views ignore it
@@ -327,6 +329,9 @@ def run(ctx: Context) -> dict:
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
         summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
                                   "run `us-outbound settings load --tab Copy --live`")
+    if sheet.get("Roles") and is_legacy_roles(set().union(*(set(r) for r in sheet["Roles"]))):
+        summary["roles_notice"] = ("the Roles tab is still in SPEC 5's layout, so contacts follow the old order; "
+                                   "run `us-outbound settings load --tab Roles --live` for Harry's 1 Oct order")
     log("settings_sync", **summary)
     if alert_error is not None:
         raise alert_error

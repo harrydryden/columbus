@@ -12,7 +12,8 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
      suppressed or a partner, whose industry is on, with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
-     domain or shared inbox, not enrolled before.
+     domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
+     pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
@@ -40,7 +41,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
-from us_outbound.clean.people import state_code
+from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import WARM_REPLY_CLASSES
 from us_outbound.clients.http import ApiError
@@ -245,10 +246,27 @@ def contact_block(contact: Mapping[str, Any], domains: set[str], hashes: set[str
     return None
 
 
-def pick_contact(contacts: Iterable[Mapping[str, Any]], domains: set[str], hashes: set[str]) -> tuple[dict | None, str]:
-    """The account's one contact in v1: the first sendable one by created_at; else why none is."""
+def contact_order(
+    contact: Mapping[str, Any], account: Mapping[str, Any] | None, settings: Settings | None
+) -> tuple:
+    """Where a stored contact comes for its account: as pick_contacts ranks people (clean/people.rank_person,
+    Harry, 1 Oct 2026), then the first created. A title the Roles tab does not contact at the account's
+    size comes after every one it does."""
+    ranked = None
+    if account is not None and settings is not None and settings.roles:
+        size = company_size(account.get("employees"), account.get("size_band"))
+        ranked = rank_person(contact.get("title"), settings.roles, size, settings.industry_group_of(account))
+    rank = (0, ranked.key) if ranked else (1, ())
+    return (*rank, str(contact.get("created_at") or ""), str(contact.get("contact_id")))
+
+
+def pick_contact(
+    contacts: Iterable[Mapping[str, Any]], domains: set[str], hashes: set[str],
+    account: Mapping[str, Any] | None = None, settings: Settings | None = None,
+) -> tuple[dict | None, str]:
+    """The account's one contact in v1: the best-ranked sendable one (contact_order); else why the best is not."""
     first_reason = "no contact"
-    for i, c in enumerate(sorted(contacts, key=lambda c: (str(c.get("created_at") or ""), str(c.get("contact_id"))))):
+    for i, c in enumerate(sorted(contacts, key=lambda c: contact_order(c, account, settings))):
         why = contact_block(c, domains, hashes)
         if why is None:
             return dict(c), ""
@@ -273,7 +291,7 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
         why = account_block(a, s, domains, partners, pulled)
         contact = None
         if why is None:
-            contact, why = pick_contact(contacts.get(a["account_id"], []), domains, hashes)
+            contact, why = pick_contact(contacts.get(a["account_id"], []), domains, hashes, a, s)
         if contact is None:
             skipped[why] += 1
             continue

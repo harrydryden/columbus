@@ -6,7 +6,8 @@ Today's number is the smallest of three terms (enrol/queue.py):
   * ready_accounts:   verified accounts with a sendable email.
 The budgets sit behind ready_accounts: Clay credits verify accounts and Apollo credits find
 emails, each within its monthly budget and today's share of it (budget.py). When
-ready_accounts binds, the explanation says which of them, or which earlier stage, is the reason.
+ready_accounts binds, the explanation says which of them, or which earlier stage, is the reason,
+including verified accounts where pick_contacts found no suitable contact (contacts/pick.py).
 
 The enrol job records the result in its summary (number_terms, limited_by), so the
 heartbeat row keeps it; `us-outbound status` prints the same picture for this week; the
@@ -15,6 +16,7 @@ daily post (phase 3) will carry the limited_by line to Slack.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -120,13 +122,30 @@ def _until(b: budget.Budget) -> str:
     return "until tomorrow (today's share of the month is used)"
 
 
+def no_suitable_contact(ctx: Context) -> str:
+    """How many verified accounts pick_contacts found nobody suitable at, and why; "" for none."""
+    from us_outbound.contacts import pick  # pick imports enrol, which imports this module
+
+    verified = {a["account_id"] for a in ctx.store.select("accounts", {"status": "verified"})}
+    reasons = Counter(r for aid, r in pick.no_contact(ctx.store, ctx.now).items() if aid in verified)
+    if not reasons:
+        return ""
+    return (f"At {sum(reasons.values())} of them pick_contacts found no suitable contact "
+            f"(mostly: {reasons.most_common(1)[0][0]}); it tries again after {pick.RETRY_DAYS} days.")
+
+
 def behind_ready(ctx: Context, ready: int, budgets: dict[str, budget.Budget]) -> str:
     """Why there are only `ready` accounts: the first of the stages before enrollment that is short."""
     verified = _count(ctx, "verified")
     queued = _count(ctx, "queued")
     clay, apollo = budgets["clay"], budgets["apollo"]
     no_email = max(0, verified - ready)
-    if no_email and (apollo.spent or apollo.left_today <= 0):
+    apollo_used = apollo.spent or apollo.left_today <= 0
+    stuck = no_suitable_contact(ctx) if no_email else ""
+    if stuck:
+        return (f"Behind it: {no_email} verified accounts have no email yet. {stuck}"
+                + (f" Apollo's budget is used {_until(apollo)}." if apollo_used else ""))
+    if no_email and apollo_used:
         return (f"Behind it: {no_email} verified accounts have no email yet and Apollo's budget is used "
                 f"{_until(apollo)}, so no more emails are looked up.")
     if no_email:
