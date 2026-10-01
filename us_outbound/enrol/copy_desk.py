@@ -263,7 +263,8 @@ QA_SYSTEM = """You check cold outbound emails for Spill before a person approves
 A sequence FAILS (verdict "fail", severity "blocker") when any email:
 - makes a claim about Spill that is not in the facts list or on the industry's page, or states one
   more strongly than they do;
-- quotes a statistic other than "30% of employees use Spill", names a customer, or gives a price;
+- quotes a figure other than "30% of employees use Spill" or "trusted by over 100,000 employees", names
+  a customer, or gives a price other than through the price line;
 - gets the industry wrong, or says something about the reader's own company the email cannot know;
 - uses therapy, therapist, licensed or unlimited, criticizes the reader's EAP or benefits, or
   offers a demo "with me";

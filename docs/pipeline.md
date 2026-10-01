@@ -240,8 +240,11 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
   - Industry-specific copy throughout.
   - The role line in email 1.
   - The evidence opener from the account's signals, which is left out for the General angle and for Control accounts.
-  - The company, first name, place and a price for the team's size.
-- **The industry's spill.chat page is linked in email 2** (`{{industry_url}}`). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. The two pages still in draft on the site (Retail & E-commerce, Small Businesses) have no link yet.
+  - The company, first name and place.
+- **The industry's spill.chat page is linked in email 2** (`{{industry_url}}`). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. An industry with no page yet (Small Businesses, still a draft on the site) links Spill's US site instead (General `site_url`, https://www.spill.chat/us; Harry, 1 Oct 2026).
+- **"Trusted by over 100,000 employees"** in email 2's "What is Spill?" links the US site (`{{site_url}}`; Harry, 1 Oct 2026).
+- **One price:** `{{price_line}}` reads "Plans start from $250 a month, on a rolling 30-day contract." for every team (General `price_from`; Harry, 1 Oct 2026). SPEC 4's price-by-size table is not quoted.
+- **Sign-off:** "Best wishes," and the sender's first name (Harry, 1 Oct 2026).
 - **Every email's call to action is the demo page**, `{{demo_url}}` (General `booking_page`, https://www.spill.chat/us/book-demo), as a link in the text.
 - **The emails are HTML** (General `email_format = html`): embedded links, bullets and the bold headings of the long-form email, with tracking still off. `email_format = text` sends plain text with the links written out, if phase 0 finds Instantly mangles HTML in a custom variable. Instantly's `text_only` follows the setting.
 - **Where the words come from:**
@@ -253,7 +256,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
   | Email | Day | What it does | Words |
   | :- | :- | :- | :- |
   | 1 | 0 | The hook: a real pressure in this industry, the role line, one line on how Spill helps, the demo link | 60 to 110 |
-  | 2 | 7 | Harry's long form: What is Spill? Who is Spill for? What makes Spill unique (four bullets, the last the team-size price), the industry page link, the demo link | 180 to 280 |
+  | 2 | 7 | Harry's long form: What is Spill? Who is Spill for? What makes Spill unique (four bullets, the last the starting price), the industry page link, the demo link | 180 to 280 |
   | 3 | 14 | A new angle, often from the page's FAQs: confidentiality, managers, out-of-hours, working with an EAP | 50 to 90 |
   | 4 | 21 | A polite close that leaves the door open | 40 to 80 |
 
@@ -279,7 +282,8 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
   - It links only to the demo page, the industry page or spill.chat, with no bare addresses and no "click here".
   - The sequence links the industry page.
 - Words per email, not counting the opener.
-- No dollar figures: prices come only from `{{price_line}}`, by team size.
+- No dollar figures: the price comes only from `{{price_line}}` (General `price_from`).
+- The sign-off is "Best wishes," and `{{sender_first_name}}`.
 - No exclamation marks, spam phrases, "Re:" or emoji in subjects.
 - No line over 300 characters.
 - Markup the system can read: no typed HTML, no broken links, no one-item lists.

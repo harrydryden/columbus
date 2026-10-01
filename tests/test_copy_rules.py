@@ -169,7 +169,7 @@ def test_max_line_constant():
 
 # -- the copy as written (source_violations) ---------------------------------------------------
 
-GOOD_BODY = "Hi {{first_name}},\n\n{{opener}}\n\nA short note.\n\nBest,\n{{sender_first_name}}"
+GOOD_BODY = "Hi {{first_name}},\n\n{{opener}}\n\nA short note.\n\nBest wishes,\n{{sender_first_name}}"
 
 
 def test_clean_source_passes():
@@ -179,12 +179,12 @@ def test_clean_source_passes():
 @pytest.mark.parametrize(
     "body, part",
     [
-        ("Hello {{first_name}},\n\nA note.\n\nBest,\n{{sender_first_name}}", 'start with the line "Hi {{first_name}},"'),
-        ("Hi {{first_name}},\n\nA note.\n\nHannah", "end with a sign-off"),
-        ("Hi {{first_name}},\n\nA note.\n\nYours,\n{{sender_first_name}}", "end with a sign-off"),
-        ("Hi {{first_name}},\n\nPlans from $195 a month.\n\nBest,\n{{sender_first_name}}", 'the price "$1'),
-        ("Hi {{first_name}},\n\nIt's great!\n\nBest,\n{{sender_first_name}}", "exclamation mark"),
-        ("Hi {{first_name}},\n\n{{opener}} And more.\n\nBest,\n{{sender_first_name}}", "{{opener}} must be alone"),
+        ("Hello {{first_name}},\n\nA note.\n\nBest wishes,\n{{sender_first_name}}", 'start with the line "Hi {{first_name}},"'),
+        ("Hi {{first_name}},\n\nA note.\n\nBest,\n{{sender_first_name}}", 'end with the line "Best wishes,"'),
+        ("Hi {{first_name}},\n\nA note.\n\nHannah", 'end with the line "Best wishes,"'),
+        ("Hi {{first_name}},\n\nPlans from $195 a month.\n\nBest wishes,\n{{sender_first_name}}", 'the price "$1'),
+        ("Hi {{first_name}},\n\nIt's great!\n\nBest wishes,\n{{sender_first_name}}", "exclamation mark"),
+        ("Hi {{first_name}},\n\n{{opener}} And more.\n\nBest wishes,\n{{sender_first_name}}", "{{opener}} must be alone"),
     ],
 )
 def test_source_rules(body, part):

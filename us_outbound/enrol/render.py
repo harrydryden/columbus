@@ -35,7 +35,7 @@ from us_outbound.settings.model import COPY_STEPS, GENERAL_COPY, CopyRow, Mailbo
 STEPS = COPY_STEPS
 VARIABLES = (
     "first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
-    "industry_url", "sender_first_name", "proof",
+    "industry_url", "site_url", "sender_first_name", "proof",
 )
 OPTIONAL_VARIABLES = frozenset({"opener", "legal_overlay"})  # alone on their line; the line goes when empty
 LEGAL_GROUP = "Legal Teams"
@@ -44,13 +44,9 @@ TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).r
 FOOTER_TEMPLATE = "footer.txt"
 ARTICLE14_TEMPLATE = "article14.txt"
 
-# SPEC 4 US prices, Core plan, flat monthly by team size: (up to this many employees, dollars).
-CORE_PRICES = ((10, 195), (25, 250), (50, 350), (100, 495), (200, 995))
-PER_EMPLOYEE_PRICE = 5  # 201+: $5 per employee
-# Harry's long-form email: "Plans start from $195 per month, on a rolling 30 day contract."
-PRICE_LINE = "For a team your size it's ${dollars} a month, on a rolling 30-day contract."
-PER_EMPLOYEE_LINE = "For a team your size it's ${dollars} per employee a month, on a rolling 30-day contract."
-FROM_PRICE_LINE = "Plans start from ${dollars} a month, on a rolling 30-day contract."  # team size unknown
+# Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
+# (General price_from). SPEC 4's price-by-size table is not quoted.
+PRICE_LINE = "Plans start from ${dollars} a month, on a rolling 30-day contract."
 
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
 _FOOTER_MISSING = {
@@ -85,24 +81,9 @@ def is_demo_host(mailbox: Mailbox, settings: Settings) -> bool:
     return bool(host) and mailbox.owner_name.strip().casefold() == host
 
 
-def _int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return int(float(str(value).replace(",", "").strip()))
-    except ValueError:
-        return None
-
-
-def price_line(employees: Any) -> str:
-    """The Core plan price for this team size (SPEC 4); the "from" price when the size is unknown."""
-    n = _int(employees)
-    if n is None or n < 1:
-        return FROM_PRICE_LINE.format(dollars=CORE_PRICES[0][1])
-    for most, dollars in CORE_PRICES:
-        if n <= most:
-            return PRICE_LINE.format(dollars=dollars)
-    return PER_EMPLOYEE_LINE.format(dollars=PER_EMPLOYEE_PRICE)
+def price_line(settings: Settings) -> str:
+    """The starting price every email quotes (General price_from), like "Plans start from $250 a month, ..."."""
+    return PRICE_LINE.format(dollars=settings.general.price_from)
 
 
 def proof_for(account: Mapping[str, Any], settings: Settings) -> str:
@@ -126,11 +107,16 @@ def place_for(account: Mapping[str, Any]) -> str:
 
 
 def industry_url_for(account: Mapping[str, Any], copy_row: CopyRow, settings: Settings) -> str:
-    """The page {{industry_url}} links: the Copy row's industry's page; for General, the account's own."""
+    """The page {{industry_url}} links: the Copy row's industry's page; for General, the account's own.
+
+    With no page (one still in draft on the website), Spill's US site (General site_url; Harry, 1 Oct 2026).
+    """
     if copy_row.industry != GENERAL_COPY:
-        return settings.industry_page_url(copy_row.industry)
-    label = str(account.get("industry") or "").strip()
-    return settings.industry_page_url(label) or settings.industry_page_url(settings.industry_group_of(account))
+        page = settings.industry_page_url(copy_row.industry)
+    else:
+        label = str(account.get("industry") or "").strip()
+        page = settings.industry_page_url(label) or settings.industry_page_url(settings.industry_group_of(account))
+    return page or settings.general.site_url.strip()
 
 
 def role_line_for(copy_row: CopyRow, role: str | None) -> str:
@@ -156,9 +142,6 @@ def variables(
     domain = str(account.get("domain") or "").strip().lower()
     acct = {**account, **(settings.overrides_for(domain) if domain else {})}
     legal = settings.industry_group_of(acct).casefold() == LEGAL_GROUP.casefold()
-    employees = acct.get("employees")
-    if _int(employees) is None:
-        employees = acct.get("us_employees")
     return {
         "first_name": str(contact.get("first_name") or "").strip(),
         "company": str(acct.get("clean_name") or "").strip(),
@@ -166,9 +149,10 @@ def variables(
         "opener": (opener or "").strip(),
         "legal_overlay": (legal_overlay or "").strip() if legal else "",
         "role_line": role_line_for(copy_row, contact.get("role")),
-        "price_line": price_line(employees),
+        "price_line": price_line(settings),
         "demo_url": settings.general.booking_page.strip(),
         "industry_url": industry_url_for(acct, copy_row, settings),
+        "site_url": settings.general.site_url.strip(),
         "sender_first_name": sender_first_name(mailbox),
         "proof": proof_for(acct, settings),
     }
@@ -284,6 +268,7 @@ def render_step(
         step=step, demo_url=variables.get("demo_url", ""), industry_url=variables.get("industry_url", ""),
         sender_is_harry=is_demo_host(mailbox, settings), demo_host=g.demo_host, exempt=exempt,
         uncounted=[str(variables.get(v) or "").strip() for v in OPTIONAL_VARIABLES],
+        site_url=variables.get("site_url", ""),
     )
     sent = html if g.email_format == "html" else text
     return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html)
@@ -338,14 +323,14 @@ def empty_variables() -> dict[str, str]:
 
 def max_length_variables(copy_row: CopyRow, settings: Settings) -> dict[str, str]:
     """Every variable at its longest: free text at MAX_LENGTHS, fixed choices at their longest option."""
-    prices = [price_line(most) for most, _ in CORE_PRICES] + [price_line(CORE_PRICES[-1][0] + 1), price_line(None)]
-    pages = [i.landing_page_url for i in settings.industries if i.landing_page_url] or [""]
+    pages = [i.landing_page_url for i in settings.industries if i.landing_page_url] or [settings.general.site_url]
     values = {k: _filler(n) for k, n in MAX_LENGTHS.items()}
     values.update(
         role_line=max(copy_row.role_lines.values(), key=len, default=""),
-        price_line=max(prices, key=len),
+        price_line=price_line(settings),
         demo_url=settings.general.booking_page.strip(),
         industry_url=max(pages, key=len),
+        site_url=settings.general.site_url.strip(),
     )
     return values
 

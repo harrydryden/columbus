@@ -91,7 +91,7 @@ def test_preview_renders_the_four_emails():
     text = p.text()
     assert text.startswith("agencies-v1, Operations, sent by Hannah Spalding")
     assert "Subject: Support for the Harbor & Finch team" in text and copy_desk.SAMPLE_OPENER in text
-    assert "Best,\nHannah" in text and "Problems:" not in text
+    assert "Best wishes,\nHannah" in text and "Problems:" not in text
     html = p.html()
     assert html.startswith("<!doctype html>") and html.count('<section class="email">') == 4
     assert f'<a href="{DEMO}">' in html and "Harbor &amp; Finch" in html

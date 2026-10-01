@@ -115,6 +115,8 @@ class General:
     dev_channel: str = "#us-outbound-dev"  # (build)
     booking_link: str = "https://meetings.hubspot.com/harry336/us-demo-link"
     booking_page: str = "https://www.spill.chat/us/book-demo"
+    site_url: str = "https://www.spill.chat/us"  # (build) Harry, 1 Oct 2026: the "trusted by" link, and the page when an industry has none
+    price_from: int = 250  # (build) Harry, 1 Oct 2026: every email quotes "Plans start from $250 a month"
     demo_host: str = "Harry Dryden"
     postal_address: str = ""
     privacy_url: str = ""

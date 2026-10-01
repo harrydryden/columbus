@@ -51,6 +51,7 @@ def test_general_spec_values(tabs, settings):
     assert raw["approver_slack_ids"] == raw["postal_address"] == raw["privacy_url"] == ""
     assert raw["claude_model"] == "claude-opus-5-5" and raw["claude_task_model"] == "claude-sonnet-5-5"
     assert raw["email_format"] == "html" and raw["booking_page"] == "https://www.spill.chat/us/book-demo"
+    assert raw["site_url"] == "https://www.spill.chat/us" and raw["price_from"] == "250"
     notes = {r["key"]: r["note"] for r in tabs["General"]}
     assert "calendar month" in notes["clay_monthly_credits"] and "0 means no Clay calls" in notes["clay_monthly_credits"]
     assert "Monday to Sunday" in notes["weekly_enrol_cap"] and "calendar month" in notes["apollo_monthly_credits"]
@@ -156,8 +157,8 @@ def test_industries(settings):
 
 def test_industry_pages_and_links(settings):
     live = [i for i in settings.industries if i.landing_page_url]
-    assert len(live) == 106  # Retail & E-commerce and Small Businesses are drafts on the site
-    assert {i.industry for i in settings.industries if not i.landing_page_url} == {"Retail & E-commerce", "Small Businesses"}
+    assert len(live) == 107  # the 1 Oct export: only Small Businesses is still a draft on the site
+    assert {i.industry for i in settings.industries if not i.landing_page_url} == {"Small Businesses"}
     assert all(i.landing_page_url.startswith("https://www.spill.chat/us/industry/mental-health-support-for-") for i in live)
     cpa = settings.industry("CPA firms")
     assert cpa.page.blurb == "Counseling that fits around client work and busy season"
@@ -175,7 +176,7 @@ def test_industry_notes(tabs):
     assert notes["Management consulting"].startswith("After January")
     assert notes["Staffing agencies"].startswith("off")
     assert notes["HR consulting"].startswith("never")
-    assert "draft on spill.chat" in notes["Retail & E-commerce"]
+    assert "draft on spill.chat" in notes["Small Businesses"] and "draft" not in notes["Retail & E-commerce"]
     assert all("partner" in notes[i] or "never" in notes[i] for i in UNREACHABLE)
 
 
@@ -264,8 +265,9 @@ def test_every_sequence_has_harry_s_shape(settings):
         for heading in ("**What is Spill?**", "**Who is Spill for?**", "**What makes Spill unique**"):
             assert heading in s2, (c.copy_version, heading)
         assert "{{price_line}} We don't lock you in." in s2, c.copy_version
-        page = settings.industry_page_url(c.industry) if c.industry != "General" else "any"
-        assert ("{{industry_url}}" in s2) is bool(page), c.copy_version
+        assert "{{industry_url}}" in s2, c.copy_version  # the industry's page, else the site
+        assert "[trusted by over 100,000 employees]({{site_url}})" in s2, c.copy_version
+        assert all(b.endswith("Best wishes,\n{{sender_first_name}}") for b in (s1, s2, s3, s4)), c.copy_version
         assert all("{{industry_url}}" not in b for b in (s1, s3, s4)), c.copy_version
         assert len(s2) > max(len(s1), len(s3), len(s4)), c.copy_version  # the long form is email 2
         assert all(c.role_lines.get(r) for r in ("People leader", "Founder or executive", "Operations")), c.copy_version

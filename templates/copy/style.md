@@ -20,9 +20,10 @@ on every email before it is sent.
 
 ## The four emails
 
-Every email opens "Hi {{first_name}}," and ends with "Best," and "{{sender_first_name}}" on its own
-line. Every email has exactly one call to action, a link to book a demo: [book a short demo]({{demo_url}})
-or similar anchor text. Never "with me", "my calendar" or "a time with me": the demo page books
+Every email opens "Hi {{first_name}}," and ends with "Best wishes," and "{{sender_first_name}}" on its own
+line (Harry, 1 Oct 2026). Every email has exactly one call to action, a link to book a demo: [book a short demo]({{demo_url}})
+or similar anchor text. Email 2 also links the industry page ({{industry_url}}; Spill's US site when the
+industry has no page yet) and, in "What is Spill?", the site ({{site_url}}). Never "with me", "my calendar" or "a time with me": the demo page books
 the right person whoever sends the email. The footer, opt-out and privacy notice are added by the
 system; never write them.
 
@@ -65,10 +66,10 @@ The Copy tab is written in a small markup the system turns into an email:
 - A blank line starts a new paragraph; a single line break stays a line break.
 - A line starting "- " is a bullet; a list needs at least two.
 - **Bold** for the three headings of email 2, nothing else.
-- [anchor text](link) for links. Links go only to {{demo_url}}, {{industry_url}} or a page on
-  https://www.spill.chat. No bare URLs, no "click here".
+- [anchor text](link) for links. Links go only to {{demo_url}}, {{industry_url}}, {{site_url}} or a page
+  on https://www.spill.chat. No bare URLs, no "click here".
 - Variables in double braces: {{first_name}}, {{company}}, {{place}}, {{opener}}, {{role_line}},
-  {{price_line}}, {{demo_url}}, {{industry_url}}, {{sender_first_name}}, {{legal_overlay}}.
+  {{price_line}}, {{demo_url}}, {{industry_url}}, {{site_url}}, {{sender_first_name}}, {{legal_overlay}}.
   No other braces, no HTML.
 
 ## Harry's long-form email (the model for email 2)
@@ -78,7 +79,7 @@ Hi {{first_name}},
 In case it's useful, here's a short overview of Spill.
 
 **What is Spill?**
-Spill is an on-demand counseling service, trusted by tens of thousands of employees. We help organizations increase staff productivity, reduce absenteeism and free up HR time by addressing the issues that most often derail performance at work.
+Spill is an on-demand counseling service, [trusted by over 100,000 employees]({{site_url}}). We help organizations increase staff productivity, reduce absenteeism and free up HR time by addressing the issues that most often derail performance at work.
 With Spill, employees get fast, easy access to professional counseling, and managers get the tools they need to support anyone on their team who's struggling.
 
 **Who is Spill for?**
@@ -93,5 +94,5 @@ That could be work-related challenges (like stress or burnout), mental health co
 
 To hear more and get a quote for your team, [book a short demo]({{demo_url}}).
 
-Best,
+Best wishes,
 {{sender_first_name}}

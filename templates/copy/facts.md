@@ -6,7 +6,8 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 
 ## Claims
 
-- Spill is an on-demand counseling service for employees, trusted by tens of thousands of employees.
+- Spill is an on-demand counseling service for employees, trusted by over 100,000 employees (Harry, 1 Oct
+  2026), written as [trusted by over 100,000 employees]({{site_url}}).
 - Spill helps organizations increase staff productivity, reduce absenteeism and free up HR time by
   addressing the issues that most often derail performance at work.
 - Employees get fast, easy access to professional counseling, often the same day, in a couple of clicks.
@@ -28,9 +29,9 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - Spill is HIPAA compliant.
 - For law firms (SPEC 5's legal overlay): "The bar's Lawyer Assistance Program covers attorneys. Who covers
   paralegals and staff?"
-- Pricing: only through {{price_line}} (the team-size price and the rolling 30-day contract), then
-  "We don't lock you in." Never write a dollar figure yourself.
-- The one statistic allowed: 30% of employees use Spill.
+- Pricing: only through {{price_line}} ("Plans start from $250 a month, on a rolling 30-day contract",
+  General price_from), then "We don't lock you in." Never write a dollar figure yourself.
+- The only figures allowed: 30% of employees use Spill, and "trusted by over 100,000 employees".
 
 ## Words and claims never to use
 
@@ -38,7 +39,7 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - "licensed" or "unlicensed": say professional counselors, or just counselors.
 - "unlimited", in any sense (sessions, support, PTO).
 - Any other statistic: no percentages but the 30% above, no "3 in 4", no "2x", no ratings like 4.9/5,
-  no "30,000+ employees", no survey results from the industry pages. Describe the pressure instead.
+  no other headcount (the pages say "over 30,000 employees"), no survey results from the industry pages. Describe the pressure instead.
 - Anything that criticizes the prospect's current EAP or benefits. "EAP" may name theirs, never Spill.
 - Any dollar amount, discount, free trial, guarantee or deadline.
 - A named customer, unless the Industries tab's proof_point gives one.

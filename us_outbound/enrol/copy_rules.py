@@ -15,8 +15,8 @@ The word rules (content_violations; SPEC 10):
   * the 30% utilization figure is the only statistic allowed;
   * a sender who is not the demo host may not offer "a time with me" (SPEC 9).
 The rules on the copy as written (source_violations): it opens "Hi {{first_name}}," and ends
-with a sign-off and {{sender_first_name}}; no exclamation marks; no dollar figures (prices come
-from {{price_line}}, by team size); no "Re:" or emoji in a subject; {{opener}} and
+"Best wishes," and {{sender_first_name}}; no exclamation marks; no dollar figures (the price comes
+from {{price_line}}, General price_from); no "Re:" or emoji in a subject; {{opener}} and
 {{legal_overlay}} alone on their lines.
 The rules on each email as sent (email_violations): a subject; no empty or unrendered
 {{variable}}; no line over 300 characters; the word count for its step; no spam phrases; no
@@ -286,7 +286,7 @@ def structure_violations(text: str) -> list[str]:
 
 GREETING = re.compile(r"^Hi \{\{\s*first_name\s*\}\},$")
 SIGN_OFF_NAME = re.compile(r"^\{\{\s*sender_first_name\s*\}\}$")
-SIGN_OFFS = ("Best,", "Thanks,", "Thank you,", "All the best,", "Cheers,", "Warmly,", "Best wishes,")
+SIGN_OFFS = ("Best wishes,",)  # Harry, 1 Oct 2026
 # Words each email may have, not counting the greeting and the sign-off (style.md gives the
 # targets; these are the limits past which the email is blocked).
 STEP_WORDS: dict[int, tuple[int, int]] = {1: (40, 120), 2: (150, 300), 3: (30, 100), 4: (25, 90)}
@@ -313,12 +313,12 @@ def source_violations(subject: str, body: str, *, step: int) -> list[str]:
     if not lines or not GREETING.match(lines[0]):
         out.append('body must start with the line "Hi {{first_name}},"')
     if len(lines) < 2 or not SIGN_OFF_NAME.match(lines[-1]) or lines[-2] not in SIGN_OFFS:
-        out.append('body must end with a sign-off line (like "Best,") and then "{{sender_first_name}}"')
+        out.append('body must end with the line "Best wishes," and then "{{sender_first_name}}"')
     for part, text in (("subject", subject), ("body", body)):
         if "!" in text:
             out.append(f"{part} has an exclamation mark; the style is calm, not salesy")
         for m in _DOLLARS.finditer(text):
-            out.append(f'{part} has the price "{_quoted(m)}"; prices come only from {{{{price_line}}}}, by team size')
+            out.append(f'{part} has the price "{_quoted(m)}"; the price comes only from {{{{price_line}}}} (General price_from)')
     if _REPLY_PREFIX.match(subject):
         out.append('subject starts with "Re:" or "Fwd:" for an email that is neither')
     if _EMOJI.search(subject):
@@ -342,6 +342,7 @@ def email_violations(
     demo_host: str = "Harry Dryden",
     exempt: Iterable[str] = (),
     uncounted: Iterable[str] = (),
+    site_url: str = "",
 ) -> list[str]:
     """Rules on one email as it will be sent: its subject, its words and its links (footer excluded).
 
@@ -381,7 +382,9 @@ def email_violations(
     demo = [u for _, u in found if _norm_link(u) == _norm_link(demo_url)] if demo_url else []
     if len(demo) != 1:
         out.append(f"has {len(demo)} links to the demo page; every email has exactly one, the call to action")
-    if industry_url and sum(1 for _, u in found if _norm_link(u) == _norm_link(industry_url)) > 1:
+    # With no industry page, {{industry_url}} is the site, which the "trusted by" line also links.
+    if industry_url and _norm_link(industry_url) != _norm_link(site_url) \
+            and sum(1 for _, u in found if _norm_link(u) == _norm_link(industry_url)) > 1:
         out.append("links the industry page more than once")
     for anchor, url in found:
         if anchor.strip().casefold().rstrip(".") in POOR_ANCHORS:

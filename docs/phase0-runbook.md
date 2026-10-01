@@ -67,7 +67,7 @@ console), and `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON` (the Sheets service acco
 | First sync | jobs | `us-outbound settings sync` (dry-run still writes the database; errors go to `#us-outbound-dev`) | `us-outbound status` shows "Settings synced" |
 | HubSpot ids on the General tab | Harry | `us-outbound hubspot ids`, then paste `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id` into the General tab (never written automatically) | Next sync carries them |
 | Load the 108 industries and the Copy tab by industry (Harry, 30 Sep 2026) | jobs | `railway ssh -- us-outbound settings load` to see the changes, then the same with `--live`, then `us-outbound settings sync`. Harry's `active`, `priority` and `proof_point` are kept; the old one-row-per-step Copy tab is replaced (docs/pipeline.md, "Where the copy lives") | The Industries tab has 108 rows with page columns; Copy has 106 draft rows |
-| New General keys | Harry | Add rows `claude_task_model` = `claude-sonnet-5-5` and `email_format` = `html` (missing keys use these defaults; `claude_model` stays `claude-opus-5-5`) | `us-outbound status` shows them |
+| New General keys | Harry | Add rows `claude_task_model` = `claude-sonnet-5-5`, `email_format` = `html`, `site_url` = `https://www.spill.chat/us` and `price_from` = `250` (missing keys use these defaults; `claude_model` stays `claude-opus-5-5`) | `us-outbound status` shows them |
 
 ## 5. HubSpot
 

@@ -78,7 +78,7 @@ CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
 # Variables a copy row may use (render.VARIABLES; style.md).
 COPY_VARIABLES = frozenset(
     {"first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
-     "industry_url", "sender_first_name", "proof"}
+     "industry_url", "site_url", "sender_first_name", "proof"}
 )
 SPILL_PAGE = re.compile(r"https://(?:www\.)?spill\.chat/\S*")
 OPENER_PLACEHOLDERS = frozenset({"evidence"})  # SPEC 5: "Saw your benefits page mentions {evidence}"
@@ -100,7 +100,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -469,6 +469,10 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
     if key in ("booking_link", "booking_page", "privacy_url") and value:
         _https(value)
+    if key == "site_url":
+        _page_url(value)
+    if key == "price_from" and value < 1:
+        raise ValueError("is the starting price in dollars a month, like 250")
     if key == "approver_slack_ids":
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:
