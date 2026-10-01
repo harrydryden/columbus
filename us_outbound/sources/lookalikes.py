@@ -122,6 +122,21 @@ HUBSPOT_INDUSTRY_LABELS: dict[str, str | None] = {
     "mom & pop biz": "Small Businesses",
     "civil services": None,
     "other": None,
+    # HubSpot's standard industry values (the industry property, read when company_industry is blank;
+    # 1 Oct 2026's first run left these unmapped). IT services stays out, as above.
+    "computer software": "Technology & Startups",
+    "information technology and services": None,
+    "marketing and advertising": "Marketing & Creative Agencies",
+    "design": "Creative & design agencies",
+    "architecture planning": "Architecture studios",
+    "human resources": "HR consulting",
+    "pharmaceuticals": "Pharma & medical devices",
+    "renewables environment": "Energy & utilities",
+    "oil energy": "Energy & utilities",
+    "mechanical or industrial engineering": "Engineering & design firms",
+    "chemicals": "Manufacturing & Industrial",
+    "leisure travel tourism": "Hospitality",
+    "fund raising": "Nonprofits",
 }
 US_COUNTRIES = frozenset({"united states", "united states of america", "usa", "us", "u.s.", "u.s.a."})
 

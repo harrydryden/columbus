@@ -404,6 +404,10 @@ def test_customer_label(default_settings):
     assert lk.customer_label({"industry": "COMPUTER_GAMES"}, s) == "Games studios"
     assert lk.customer_label({"company_industry": "IT Services"}, s) == ""  # tech rows exclude IT services
     assert lk.customer_label({"company_industry": "Other"}, s) == ""
+    # HubSpot's standard industry values, read when company_industry is blank.
+    assert lk.customer_label({"industry": "COMPUTER_SOFTWARE"}, s) == "Technology & Startups"
+    assert lk.customer_label({"industry": "MARKETING_AND_ADVERTISING"}, s) == "Marketing & Creative Agencies"
+    assert lk.customer_label({"industry": "INFORMATION_TECHNOLOGY_AND_SERVICES"}, s) == ""  # IT services stays out
     # The pipeline's label for the same domain (NAICS and Apollo keywords) wins over HubSpot's coarse field.
     assert lk.customer_label({"company_industry": "Tech"}, s, account_label="Fintech") == "Fintech"
     # Text HubSpot's map does not know is matched against the Industries tab.
