@@ -268,6 +268,40 @@ def account_size(account: Mapping[str, Any]) -> int | None:
     return company_size(account.get("employees"), account.get("size_band"))
 
 
+PEOPLE_SOURCE = "apollo_people"  # the source the People-leader signals read (settings/model.py SOURCE_FIELDS)
+PEOPLE_LEADER = "People leader"
+
+
+def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
+                 today: date, now: datetime) -> list[dict]:
+    """apollo_people facts from the search pick_contacts already makes (no credits; 1 Oct 2026).
+
+    The People-leader signals ("New People leader", "People leader in place") read
+    people_leader_count and people_leader_days_in_title, which no other job writes. Only positive
+    evidence is written: the search returns people with a verified email only, so a count of 0
+    would not mean there is no People leader, and "First People hire" (count = 0) must not fire on it.
+    """
+    size, group = account_size(account), settings.industry_group_of(account)
+    days: list[int | None] = []
+    for p in people:
+        if location_block(p):
+            continue
+        r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
+        if r is not None and not r.junior and r.role.writes_as == PEOPLE_LEADER:
+            days.append(r.days_in_role)
+    if not days:
+        return []
+    aid = account["account_id"]
+    rows = [{"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE, "fact": "people_leader_count",
+             "value": len(days), "quote": "", "source_url": "", "observed_at": now}]
+    known = [d for d in days if d is not None]
+    if known:
+        rows.append({"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE,
+                     "fact": "people_leader_days_in_title", "value": min(known), "quote": "", "source_url": "",
+                     "observed_at": now})
+    return rows
+
+
 def rank_candidates(
     people: Sequence[Mapping[str, Any]], account: Mapping[str, Any], settings: Settings, today: date,
     revealed: Container[str] = frozenset(),
@@ -434,6 +468,9 @@ def pick_account(
     if not titles:
         return Outcome(NO_CONTACT, "no Roles-tab row is contacted at its size")
     people = search(ctx, account, titles)
+    facts = people_facts(account, people, s, ctx.today_uk(), ctx.now)
+    if facts:
+        ctx.store.insert("signal_events", facts)  # read by the next rescore (settings_sync, 02:00)
     if not people:
         return Outcome(NO_CONTACT, "nobody at Apollo with a Roles-tab title for its size, in the US, with a verified email",
                        detail={"found": 0})

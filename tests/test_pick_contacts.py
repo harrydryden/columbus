@@ -363,3 +363,20 @@ def test_the_cli_runs_it_with_a_heartbeat(default_settings):
     [beat] = h.beats("pick_contacts")
     assert beat["status"] == "ok" and beat["dry_run"] is True
     assert (beat["detail"]["picked"], beat["detail"]["picked_by_row"]) == (1, {"Founder or executive": 1})
+
+
+def test_the_search_writes_people_leader_facts_for_the_people_signals(ctx, transport):
+    # 1 Oct 2026: no other job writes apollo_people, so "New People leader" could never fire.
+    from datetime import date
+
+    hired = (ctx.today_uk() - timedelta(days=40)).isoformat()
+    people = [person("p1", "Head of People", state="New York", country="United States",
+                     employment_history=[{"current": True, "start_date": hired}]),
+              person("p2", "CEO", state="New York", country="United States")]
+    facts = pick.people_facts(account(employees=80, size_band="50-99"), people, ctx.settings, ctx.today_uk(), ctx.now)
+    by = {f["fact"]: f["value"] for f in facts}
+    assert {f["source"] for f in facts} == {"apollo_people"}
+    assert by == {"people_leader_count": 1, "people_leader_days_in_title": 40}
+    # No People leader found: nothing is written (a verified-email search can miss one), so
+    # "First People hire" (count = 0) never fires on a gap in the search.
+    assert pick.people_facts(account(), [people[1]], ctx.settings, date.today(), ctx.now) == []
