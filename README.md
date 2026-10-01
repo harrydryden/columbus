@@ -96,6 +96,8 @@ Files added beyond the SPEC 13 tree:
 - `ops/bootstrap.py` (the production context), `ops/ddl.py` (applies `sql/`), `__main__.py`
 - `ops/schedule.py` (the job table) and `ops/scheduler.py` (the always-on worker that runs it)
 - `deploy/slack-app-manifest.yaml` (the Slack app)
+- `replies/outcomes.py` (sync_outcomes), `replies/optout.py` (one opt-out path for links and replies),
+  `replies/draft.py` (reply drafts); `replies/poll.py` holds the hitl_items contract with the reply desk
 
 Infrastructure (Harry, 30 Sep 2026): Railway instead of Google Cloud. Railway PostgreSQL
 replaces BigQuery (SPEC 3, 6). Sealed Railway variables replace Secret Manager (SPEC 1.7).
@@ -118,3 +120,6 @@ Apollo data and HubSpot while the General key `clay_verification` is `skip` (Har
 the Clay functions exist; `required` once they do). `source_universe` and `apollo_signals` run each
 weekday (03:00, 03:30) rather than monthly and on Mondays, to keep the queue two weeks deep with
 Apollo credits paced by the weekday (`us_outbound/sources/`).
+
+`sync_outcomes` runs every 15 minutes (SPEC 9: 01:00 daily), so the kill rules, the send forecast
+and same-day opt-outs (SPEC 13) see today's sends, bounces and unsubscribes.

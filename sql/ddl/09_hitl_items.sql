@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.hitl_items (
 );
 CREATE INDEX IF NOT EXISTS hitl_items_account_id_idx ON us_outbound.hitl_items (account_id);
 COMMENT ON TABLE us_outbound.hitl_items IS 'One row per human-in-the-loop item (build addition): reply approvals, hand-checks, manual merges and kill-rule alerts, re-posted at 2 hours and escalated at escalation_hours (SPEC 11).';
-COMMENT ON COLUMN us_outbound.hitl_items.kind IS 'One of: reply_approval, hand_check, manual_merge, kill_rule.';
+COMMENT ON COLUMN us_outbound.hitl_items.kind IS 'One of: reply, out_of_office, hand_check, manual_merge, kill_rule. reply: a reply waiting for a person (replies/poll.py holds the payload contract); out_of_office: a return date and its re-timing, status handled.';
 COMMENT ON COLUMN us_outbound.hitl_items.event_id IS 'The events row it is about, e.g. the reply.';
 COMMENT ON COLUMN us_outbound.hitl_items.slack_ts IS 'Slack message ts of the alert; approvals are thread replies to it.';
 COMMENT ON COLUMN us_outbound.hitl_items.payload IS 'JSON: what the item needs (draft, links, ...).';

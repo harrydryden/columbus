@@ -312,10 +312,26 @@ def test_weekend_skips():
 
 def test_positive_reply_waiting_over_24_hours_pauses_enrollment():
     ctx, _ = make()
-    ctx.store.insert("hitl_items", [{"item_id": "r-1", "kind": "reply_approval", "status": "open",
-                                     "created_at": NOW - timedelta(hours=25)}])
+    ctx.store.insert("hitl_items", [{"item_id": "r-1", "kind": "reply", "status": "open",
+                                     "payload": {"reply_class": "positive"}, "created_at": NOW - timedelta(hours=25)}])
     out = enrol.run(ctx)
     assert out["status"] == "skipped" and "waited over 24 hours" in out["reason"]
+
+
+def test_only_warm_replies_waiting_pause_enrollment():
+    """poll_replies writes a reply item for every class a person answers; only positive and referral pause (SPEC 11)."""
+    from us_outbound.replies.poll import KIND
+
+    assert enrol.REPLY_KIND == KIND
+    ctx, _ = make()
+    ctx.store.insert("hitl_items", [
+        {"item_id": f"r-{c}", "kind": "reply", "status": "open", "payload": {"reply_class": c},
+         "created_at": NOW - timedelta(hours=30)} for c in ("objection", "not_now", "negative", "other", "wrong_person")
+    ])
+    assert enrol.run(ctx)["status"] == "ok"
+    ctx.store.insert("hitl_items", [{"item_id": "r-ref", "kind": "reply", "status": "escalated",
+                                     "payload": {"reply_class": "referral"}, "created_at": NOW - timedelta(hours=30)}])
+    assert "waited over 24 hours" in enrol.run(ctx)["reason"]
 
 
 def test_operator_stop_pauses_enrollment_until_a_live_start():
@@ -335,8 +351,10 @@ def test_operator_stop_pauses_enrollment_until_a_live_start():
 def test_recent_or_handled_replies_do_not_pause():
     ctx, _ = make()
     ctx.store.insert("hitl_items", [
-        {"item_id": "r-1", "kind": "reply_approval", "status": "open", "created_at": NOW - timedelta(hours=23)},
-        {"item_id": "r-2", "kind": "reply_approval", "status": "handled", "created_at": NOW - timedelta(hours=50)},
+        {"item_id": "r-1", "kind": "reply", "status": "open", "payload": {"reply_class": "positive"},
+         "created_at": NOW - timedelta(hours=23)},
+        {"item_id": "r-2", "kind": "reply", "status": "handled", "payload": {"reply_class": "positive"},
+         "created_at": NOW - timedelta(hours=50)},
     ])
     assert enrol.run(ctx)["status"] == "ok"
 

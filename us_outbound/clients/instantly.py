@@ -119,6 +119,16 @@ CAMPAIGN_STATUS = {
     0: "draft", 1: "active", 2: "paused", 3: "completed", 4: "running_subsequences",
     -99: "account_suspended", -1: "accounts_unhealthy", -2: "bounce_protect",
 }
+# A lead's `status` (the v2 Lead schema). sync_outcomes reads bounced and unsubscribed from it:
+# a click on the {{unsubscribe}} link stops the lead and marks it unsubscribed (Harry, 1 Oct 2026:
+# the opt-out is Instantly's own link). PHASE0-CONFIRM: the codes, read from a lead in a paused
+# campaign, and that an unsubscribe click (and the List-Unsubscribe header) sets -2 on the lead.
+LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
+LEAD_STATUS = {1: "active", 2: "paused", 3: "completed", -1: "bounced", -2: "unsubscribed", -3: "skipped"}
+# PHASE0-CONFIRM: that PATCH /leads/{id} takes status 2 (paused) and 1 (active), and that a lead set
+# back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused:
+# an out-of-office reply only records the return date (replies/poll.py).
+LEAD_PAUSE_CONFIRMED = False
 
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~@")
 
@@ -670,6 +680,23 @@ class Instantly(HttpClient):
             "DELETE", f"/leads/{_segment(lead_id)}", Op("lead.delete", target=name, write=True, detail={"lead_id": lead_id})
         )
 
+    def set_lead_paused(self, name: str, lead_id: str, paused: bool) -> dict | None:
+        """Pause one lead of this campaign, or set it going again (re-timing after an out-of-office reply).
+
+        The lead is checked to belong to the campaign first, as delete_lead does. Only the
+        status changes. PHASE0-CONFIRM: see LEAD_PAUSE_CONFIRMED.
+        """
+        cid = self._campaign_id(name, "lead.update", True)
+        lead = self.request("GET", f"/leads/{_segment(lead_id)}", Op("lead.get", target=name, detail={"lead_id": lead_id}))
+        if str((lead or {}).get("campaign") or "") != cid:
+            raise GuardViolation(f"lead {lead_id} is not in campaign {name!r}")
+        status = LEAD_PAUSED if paused else LEAD_ACTIVE
+        return self.request(
+            "PATCH", f"/leads/{_segment(lead_id)}",
+            Op("lead.update", target=name, write=True, detail={"lead_id": lead_id, "status": status}),
+            json={"status": status}, dry_result={"id": lead_id, "status": status, "dry_run": True},
+        )
+
     # -- emails ----------------------------------------------------------------
 
     def list_emails(
@@ -723,6 +750,11 @@ class Instantly(HttpClient):
         if not isinstance(body, dict) or str(body.get("eaccount", "")).strip().lower() != eaccount:
             raise GuardViolation(f"email {email_id} does not belong to {eaccount}")
         return body
+
+    def get_email(self, eaccount: str, email_id: str) -> dict:
+        """One email of a registry mailbox (GET /emails/{id}), with its body, checked to belong to that mailbox."""
+        [acct] = self._registry("email.get", [eaccount], target=eaccount)
+        return self._owned_email(acct, email_id)
 
     def reply(self, eaccount: str, reply_to_uuid: str, subject: str, body: str) -> dict | None:
         """Reply in the thread from the registry mailbox that received the email."""

@@ -503,6 +503,8 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "list_leads": lambda c, w: c.list_leads(HANNAH_CAMPAIGN),
         "delete_lead": lambda c, w: c.delete_lead(HANNAH_CAMPAIGN, "L1"),
         "list_emails": lambda c, w: c.list_emails(["hannah@meetspill.org"], since=NOW),
+        "get_email": lambda c, w: c.get_email("hannah@meetspill.org", "E1"),
+        "set_lead_paused": lambda c, w: c.set_lead_paused(HANNAH_CAMPAIGN, "L1", True),
         "reply": lambda c, w: c.reply("hannah@meetspill.org", "E1", "Re: hi", "Thanks, Jane."),
         "forward": lambda c, w: c.forward("hannah@meetspill.org", "E1", "harry@spill.chat", "Waiting 24 hours."),
         "blocklist_add": lambda c, w: c.blocklist_add([JANE]),

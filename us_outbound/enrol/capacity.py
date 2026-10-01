@@ -51,6 +51,7 @@ from us_outbound.settings.model import Settings
 # so the forecast and the Instantly campaign cannot drift apart.
 STEP_DELAYS = (0,) + tuple(b - a for a, b in zip(STEP_DAYS, STEP_DAYS[1:]))
 STOP_EVENTS = ("replied", "bounced", "unsubscribed")
+OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
 MAX_SCAN_DAYS = 400  # no send day in this long means the settings allow none
 
@@ -234,8 +235,16 @@ def free_slots(
 
 
 def stopped_contacts(store: Store) -> set[str]:
-    """Contacts whose sequence has stopped: a reply, bounce or unsubscribe, or an account no longer enrolled."""
-    out = {str(e.get("contact_id")) for t in STOP_EVENTS for e in store.select("events", {"type": t}) if e.get("contact_id")}
+    """Contacts whose sequence has stopped: a reply, bounce or unsubscribe, or an account no longer enrolled.
+
+    An out-of-office reply stops nothing: stop_on_auto_reply is off (SPEC 9), so Instantly keeps sending.
+    """
+    out = {
+        str(e.get("contact_id"))
+        for t in STOP_EVENTS
+        for e in store.select("events", {"type": t})
+        if e.get("contact_id") and not (t == "replied" and e.get("reply_class") == OUT_OF_OFFICE)
+    }
     not_enrolled = {str(a.get("account_id")) for a in store.select("accounts") if a.get("status") != "enrolled"}
     for c in store.select("contacts"):
         if c.get("enrolled_at") and str(c.get("account_id")) in not_enrolled:

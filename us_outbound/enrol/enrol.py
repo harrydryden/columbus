@@ -42,6 +42,7 @@ from typing import Any
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
 from us_outbound.clean.people import state_code
 from us_outbound.clients.db import new_id
+from us_outbound.clients.guard import WARM_REPLY_CLASSES
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
@@ -57,6 +58,7 @@ EXCLUDED = "Excluded"
 SENDABLE_EMAIL_STATUSES = frozenset({"verified", "valid", "catch_all_valid"})  # Apollo verified; Clay (SPEC 8)
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.5
 WAITING = ("open", "escalated")  # hitl_items still waiting for Harry
+REPLY_KIND = "reply"  # hitl_items.kind of a reply waiting for a person (replies/poll.py KIND)
 HUBSPOT_SOURCE = "hubspot"
 # signal_events facts that scoring/tiers.py reads as hard exclusions, so a rescore keeps them.
 HS_CUSTOMER = "hubspot_customer"
@@ -112,10 +114,15 @@ def operator_pause(ctx: Context) -> str | None:
 
 
 def reply_pause(ctx: Context) -> str | None:
-    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses."""
+    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
+
+    poll_replies writes a "reply" item for every reply a person answers (replies/poll.py), so only the
+    warm ones count here: positive and referral, the replies SPEC 11 drafted for.
+    """
     hours = ctx.settings.general.escalation_hours
     cutoff = ctx.now - timedelta(hours=hours)
-    rows = ctx.store.select("hitl_items", {"kind": "reply_approval", "status": list(WAITING)})
+    rows = ctx.store.select("hitl_items", {"kind": REPLY_KIND, "status": list(WAITING)})
+    rows = [r for r in rows if isinstance(r.get("payload"), Mapping) and r["payload"].get("reply_class") in WARM_REPLY_CLASSES]
     old = [r for r in rows if (t := _ts(r.get("created_at"))) is not None and t <= cutoff]
     if not old:
         return None

@@ -58,7 +58,7 @@ EXPECTED: dict[str, int] = {
     "poll_replies": 45,  # every 15 min
     "poll_approvals": 20,  # every 5 min
     "hubspot_readback": 45,  # every 15 min
-    "sync_outcomes": 26 * _H,  # 01:00 daily
+    "sync_outcomes": 45,  # every 15 min (SPEC 9 had 01:00 daily)
     "mailbox_health": 26 * _H,  # 07:00 daily
     "kill_rules": 150,  # hourly
     "heartbeat_check": 150,  # hourly (nothing watches this one; the daily post reports it)

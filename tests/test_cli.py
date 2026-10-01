@@ -116,7 +116,9 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["mailbox_health"] == "us_outbound.registry.mailboxes:mailbox_health"
     assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:check_heartbeats"
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
-    assert cli.JOBS["poll_replies"] == "not built yet (phase 2)"
+    assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
+    assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
+    assert cli.JOBS["poll_approvals"] == "not built yet (phase 2)"
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 
@@ -207,7 +209,7 @@ def test_live_needs_both_the_flag_and_the_setting():
 
 
 @pytest.mark.parametrize("job, message", [
-    ("poll_replies", "not built yet (phase 2)"),
+    ("monday_readout", "not built yet (phase 3)"),
     ("kill_rules", "not built yet (phase 3)"),
     ("verify_in_clay", "not built yet (phase 1)"),
     ("no_such_job", "unknown job"),
