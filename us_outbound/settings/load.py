@@ -21,9 +21,14 @@ command merges them into the sheet without losing Harry's own edits:
   * Roles (Harry, 1 Oct 2026): a tab still in SPEC 5's layout (first_choice_for_size,
     fallback_order) is replaced by the build's rows, the size-band order led by seniority. A
     tab already in the new layout keeps its rows; only roles it does not have are added.
-  * Signals and Focus (Harry, 1 Oct 2026): the build's rows win and Harry's own rows stay. A row
-    the build replaced under another name (SUPERSEDED: Recent funding, now split by age) stays
-    on the sheet but is switched off, so it does not score alongside its replacements.
+  * Signals and Focus (Harry, 1 Oct 2026): the build's rows are added and Harry's own rows stay. A
+    row the build replaced under another name (SUPERSEDED: Recent funding, now split by age) stays
+    on the sheet but is switched off, so it does not score alongside its replacements. Focus rows
+    take the build's values. Signals rows (SHEET_WINS; Harry, 2 Oct 2026) keep the sheet's value in
+    every column the sheet already has, blank included, so a load never undoes his edits; columns
+    the sheet does not have yet, like the tokenized openers' opener_people, opener_founder,
+    opener_ops and opener_self, arrive with the build's lines. `--take weight` (any column) lets the
+    build's value win for one load, as the design review's did on 1 Oct.
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -43,6 +48,11 @@ LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus")
 # The columns Harry owns; `--take COLUMN` lets the build's value win for one load (Harry, 1 Oct 2026:
 # "make all the changes" in the design review, so Legal Teams goes on at launch).
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
+# Tabs where every column the sheet already has keeps its value, blank included (Harry, 2 Oct 2026: the
+# tokenized openers arrive as new Signals columns without undoing his edits). Columns the sheet does not
+# have yet take the build's values; `--take COLUMN` lets the build win for one column, as the design
+# review's load did for the weights on 1 Oct.
+SHEET_WINS = frozenset({"Signals"})
 KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
        "Focus": "industry_group"}
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
@@ -160,13 +170,16 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
         return p
 
     keep = tuple(c for c in KEEP.get(tab, ()) if c not in take)
+    if tab in SHEET_WINS:
+        keep = tuple(c for c in cols if c in present and c != KEY[tab] and c not in take)
     for k, r in build.items():
         row = {c: str(r.get(c, "")) for c in cols}
         old = sheet.get(k)
         if old is None:
             p.added.append(row[KEY[tab]])
         else:
-            kept = [c for c in keep if str(old.get(c, "")).strip() and str(old.get(c, "")).strip() != row[c].strip()]
+            kept = [c for c in keep if str(old.get(c, "")).strip() != row[c].strip()
+                    and (tab in SHEET_WINS or str(old.get(c, "")).strip())]
             for c in kept:
                 row[c] = str(old[c])
             if kept:
@@ -202,7 +215,8 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
     build = default_tabs()
     if sets and "General" not in tabs:
         raise ValueError("--set changes the General tab; load it too (--tab General)")
-    unknown = sorted(set(take) - {c for t in tabs for c in KEEP.get(t, ())})
+    kept = {c for t in tabs for c in (COLUMNS[t] if t in SHEET_WINS else KEEP.get(t, ()))}
+    unknown = sorted(set(take) - kept)
     if unknown:
         raise ValueError(f"--take names a column the loaded tabs do not keep: {', '.join(unknown)}")
     plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets, replace_drafts=replace_drafts, take=take)

@@ -640,6 +640,50 @@ def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, r
     return rows
 
 
+def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: Any) -> Any:
+    """copy preview: the sample prospect (with --opener, a real Signals-tab line filled with sample facts),
+    or with --account a stored account, its contact and the opener enrol would give it (no model call)."""
+    from us_outbound.enrol import enrol, openers
+    from us_outbound.settings.model import ROLE_LINE_COLUMNS
+
+    if not args.account:
+        rows = _pick_rows(settings, args.version, args.industry, args.role or "")
+        if not rows:
+            raise Refused("no Copy row matches; give --version or --industry")
+        role = args.role or rows[0].role or next(iter(ROLE_LINE_COLUMNS))
+        text, note = ("", "")
+        if args.opener:
+            try:
+                text, note = copy_desk.sample_opener(settings, role, args.signal or "", leader=args.leader)
+            except ValueError as exc:
+                raise Refused(str(exc)) from None
+            note = f"{text or 'none'} ({note})"
+        return copy_desk.preview(rows[0], settings, role=role, sender=args.sender or "", opener=text, opener_note=note)
+    domain = args.account.strip().lower()
+    account = next(iter(ctx.store.select("accounts", {"domain": domain})), None)
+    if account is None:
+        raise Refused(f"no account with the domain {domain!r}")
+    domains, hashes = enrol.suppressed(ctx)
+    contacts = ctx.store.select("contacts", {"account_id": account["account_id"]})
+    contact, why = enrol.pick_contact(contacts, domains, hashes, account, settings)
+    contact = contact or (sorted(contacts, key=lambda c: str(c.get("created_at") or ""))[:1] or [{}])[0]
+    role = args.role or str(contact.get("role") or "") or next(iter(ROLE_LINE_COLUMNS))
+    rows = _pick_rows(settings, args.version, args.industry, role) if args.version or args.industry else []
+    row = rows[0] if rows else enrol.pick_copy(
+        account, role, settings, {c.copy_version: c for c in settings.copy if c.status != "retired"})[0]
+    if row is None:
+        raise Refused("no Copy row for this account; give --version")
+    events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
+    op = openers.for_account(ctx, account, {**contact, "role": role}, events, check=copy_desk._opener_check(settings),
+                             spend=False, settings=settings)
+    arm = op.arm + (f", would be: {op.would_be}" if op.would_be else "")
+    note = f"{op.text or 'none'} ({arm}; {op.source or 'no line'})" + (f"; passed over: {'; '.join(op.notes)}" if op.notes else "")
+    if why:
+        note += f". The contact is not sendable yet: {why}"
+    return copy_desk.preview(row, settings, role=role, sender=args.sender or "", opener=op.text, opener_note=note,
+                             account=account, contact=contact)
+
+
 def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
     """The copy desk (enrol/copy_desk.py): check, preview, QA and draft the Copy tab."""
     from us_outbound.enrol import copy_desk
@@ -667,13 +711,13 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
         print(f"{len(checks)} rows checked, {len(bad)} with problems. By status: "
               + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items()))
               + f". QA passed in the current wording: {qa_ok}. Sendable (approved and QA passed): {sendable}.")
-        return 1 if bad else 0
+        lines = copy_desk.check_openers(settings)  # the Signals tab's opener lines (enrol/openers.py)
+        for p in lines.problems:
+            print(f"Signals opener: {p}")
+        print(f"Signals opener lines: {len(lines.problems)} problems.")
+        return 1 if bad or not lines.ok else 0
     if args.action == "preview":
-        rows = _pick_rows(settings, args.version, args.industry, args.role or "")
-        if not rows:
-            raise Refused("no Copy row matches; give --version or --industry")
-        p = copy_desk.preview(rows[0], settings, role=args.role or "", sender=args.sender or "",
-                              opener=copy_desk.SAMPLE_OPENER if args.opener else "")
+        p = _preview(ctx, settings, args, copy_desk)
         print(p.text())
         if args.html:
             Path(args.html).write_text(p.html(), encoding="utf-8")
@@ -1002,7 +1046,8 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy", "Roles", "Signals", "Focus"],
                     help="load: the tab (default General, Industries, Copy and Roles)")
     st.add_argument("--take", action="append", metavar="COLUMN",
-                    help="load: let the build's value win for a column Harry owns (Industries active, priority)")
+                    help="load: let the build's value win for a column Harry owns (Industries active, priority; "
+                         "any Signals column, like weight)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
@@ -1014,7 +1059,13 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--industry", help="an Industries label, an industry group, or General")
     co.add_argument("--role", help="a Roles-tab role (preview: whose line to show; draft: a role-only row)")
     co.add_argument("--sender", help="preview: the mailbox owner who sends it")
-    co.add_argument("--opener", action="store_true", help="preview: with a sample evidence opener")
+    co.add_argument("--opener", action="store_true",
+                    help="preview: with a real Signals-tab opener line, filled with sample facts")
+    co.add_argument("--signal", help="preview --opener: the Signals row whose line to show (default: the first with one)")
+    co.add_argument("--leader", action="store_true",
+                    help="preview --opener: the line for a contact who is the new People leader (opener_self)")
+    co.add_argument("--account", metavar="DOMAIN",
+                    help="preview: a stored account, its contact and the opener enrol would give it")
     co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
     co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")

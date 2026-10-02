@@ -11,7 +11,9 @@ hand_check_post, Mondays 08:00 UK and on demand (`us-outbound run hand_check_pos
      status open), its payload holding iso_week, the account ids by group, and for each
      account the facts Harry checks: clean name, HQ state, size band, the role and title of
      the contact enrol would choose, and the opener with its evidence (SPEC 14: "Clean name,
-     HQ state, size band, role title and opener evidence are right in 90% or more");
+     HQ state, size band, role title and opener evidence are right in 90% or more"). The
+     opener is the one enrol would give that contact (enrol/openers.py), worked out with no
+     model call; a held-out account shows none, with the line it would have had;
   3. posts it to the alert channel (in dry-run, the dev channel), or logs it with no Slack
      token. A live run posts an item a dry run or `handcheck show --live` recorded unposted.
 A week with nothing to check records no item: run it again once accounts are queued.
@@ -36,7 +38,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from us_outbound.context import Context
-from us_outbound.enrol import enrol, queue
+from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
 from us_outbound.ops import notify
 from us_outbound.scoring.score import score_account
@@ -103,24 +105,37 @@ def draw(ctx: Context, week: str, per_group: int = PER_GROUP) -> dict[str, list[
     return out
 
 
-def _contact(ctx: Context, account_id: str, domains: set[str], hashes: set[str]) -> dict:
-    """The contact enrol would choose, or the first candidate on file with why it cannot be emailed yet."""
+def _person(ctx: Context, account_id: str, domains: set[str], hashes: set[str]) -> tuple[dict, str]:
+    """(the contact enrol would choose, or the first on file, or {}; why it cannot be emailed yet, or "")."""
     contacts = ctx.store.select("contacts", {"account_id": account_id})
     chosen, why = enrol.pick_contact(contacts, domains, hashes)
     if chosen is not None:
-        return {"role": chosen.get("role") or "", "title": chosen.get("title") or "", "note": ""}
+        return chosen, ""
     if contacts:
         first = sorted(contacts, key=lambda c: (str(c.get("created_at") or ""), str(c.get("contact_id"))))[0]
-        return {"role": first.get("role") or "", "title": first.get("title") or "", "note": f"not sendable yet: {why}"}
-    return {"role": "", "title": "", "note": "no contact yet (pick_contacts finds one before enrollment)"}
+        return dict(first), f"not sendable yet: {why}"
+    return {}, "no contact yet (pick_contacts finds one before enrollment)"
+
+
+def opener_for(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any],
+               events: Sequence[Mapping[str, Any]]) -> openers.Opener:
+    """The opener enrol would give this contact (enrol/openers.py), with no model call: a "what they do"
+    phrase only if one is stored already."""
+    exempt = (str(account.get("clean_name") or ""), str(contact.get("first_name") or ""))
+
+    def check(text: str) -> str:
+        return render.pick_opener(text, sender_is_harry=False, demo_host=ctx.settings.general.demo_host,
+                                  exempt=exempt)[1]
+
+    return openers.for_account(ctx, account, contact, events, check=check, spend=False)
 
 
 def facts(ctx: Context, account: Mapping[str, Any], domains: set[str], hashes: set[str]) -> dict[str, Any]:
-    """What Harry checks for one account (SPEC 14 phase 1 acceptance)."""
+    """What Harry checks for one account (SPEC 14 phase 1 acceptance), the opener as enrol would send it."""
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
     r = score_account(account, events, ctx.settings, ctx.today_uk())
-    angle = ctx.settings.angle(str(account.get("angle") or ""))
-    opener = r.opener if r.angle == account.get("angle") and r.opener else (angle.default_opener if angle else "")
+    person, note = _person(ctx, str(account["account_id"]), domains, hashes)
+    op = opener_for(ctx, account, person, events)
     matches = sorted((m for m in r.matches if m.signal.action == "Score"), key=lambda m: -m.weight_applied)
     evidence = []
     for m in matches[:EVIDENCE_LIMIT]:
@@ -133,8 +148,10 @@ def facts(ctx: Context, account: Mapping[str, Any], domains: set[str], hashes: s
         "size_band": account.get("size_band") or "", "employees": account.get("employees"),
         "industry": account.get("industry") or "", "industry_group": ctx.settings.industry_group_of(account),
         "tier": account.get("tier") or "", "score": account.get("score"), "status": account.get("status") or "",
-        "angle": account.get("angle") or "", "contact": _contact(ctx, str(account["account_id"]), domains, hashes),
-        "opener": _clip(opener, 300), "evidence": evidence,
+        "angle": account.get("angle") or "",
+        "contact": {"role": person.get("role") or "", "title": person.get("title") or "", "note": note},
+        "opener": _clip(op.text or op.would_be, 300), "opener_arm": op.arm, "opener_source": op.source,
+        "evidence": evidence,
     }
 
 
@@ -168,6 +185,14 @@ def _size(a: Mapping[str, Any]) -> str:
     return f"{band} ({a['employees']} staff)" if a.get("employees") not in (None, "") else band
 
 
+def _opener(a: Mapping[str, Any]) -> str:
+    """The opener as enrol would send it; a held-out account sends none, and shows the line it would have had."""
+    line = a.get("opener") or ""
+    if a.get("opener_arm") == openers.HOLDOUT:
+        return f"none (held out; would be: {line})" if line else "none (held out)"
+    return line or "none"
+
+
 def _evidence(a: Mapping[str, Any]) -> str:
     parts = []
     for e in a.get("evidence") or ():
@@ -192,7 +217,7 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
                     f"  {n}. {a.get('clean_name') or '?'} ({a.get('domain')})  id {aid}",
                     f"     {_where(a)} · {_size(a)} · {a.get('industry')} · {a.get('tier')} {a.get('score')} · {a.get('status')}",
                     f"     Contact: {_who(a)}",
-                    f"     Opener ({a.get('angle') or 'no angle'}): {a.get('opener') or 'none'}",
+                    f"     Opener ({a.get('angle') or 'no angle'}): {_opener(a)}",
                     f"     Evidence: {_evidence(a)}",
                 ]
             else:

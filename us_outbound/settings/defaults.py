@@ -21,7 +21,10 @@ COLUMNS: dict[str, list[str]] = {
     "General": ["key", "value", "note"],
     "Signals": [
         "signal", "source", "looks_for", "context_rule", "weight", "max_weight", "action",
-        "suggests_angle", "opener", "counts_for_days", "active", "note",
+        "suggests_angle", "opener",
+        # Tokenized openers by copy role (Harry, 2 Oct 2026; enrol/openers.py); optional columns.
+        "opener_people", "opener_founder", "opener_ops", "opener_self",
+        "counts_for_days", "active", "note",
     ],
     "Angles": ["angle", "order", "argument", "default_opener", "landing_page_override", "active", "note"],
     "Industries": [
@@ -163,6 +166,24 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("email_format", "html",
      "html: emails with embedded links and bullets; text: plain text with links written out. Tracking stays off."),
     ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend; SPEC 1.1 allows at most $10 a month."),
+    (
+        "opener_holdout_share",
+        "0.3",
+        "Share of accounts that get no opener in email 1, chosen by a hash of the account id, so replies "
+        "can compare opener against none (contacts.opener_arm). Added by the build (Harry, 2 Oct 2026).",
+    ),
+    (
+        "opener_focus",
+        "no",
+        "yes: an account with no signal line gets opener_focus_line, with a short \"what they do\" phrase the "
+        "task model takes from Apollo's keywords and description (about $0.002 an account, once, in live runs "
+        "only; within the monthly cap). Added by the build.",
+    ),
+    (
+        "opener_focus_line",
+        "I came across {company} and its work on {focus}.",
+        "The line opener_focus uses. Tokens: {company}, {focus}, {city}. Added by the build.",
+    ),
 ]
 
 # -- Signals (SPEC 5, every one editable) --------------------------------------
@@ -183,7 +204,7 @@ _EAP_CONTEXT = (
 _APPENDIX_A = "Design review Appendix A, 1 Oct 2026"
 
 # signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, opener, counts_for_days,
-# active, note: the Signals tab's columns in order.
+# active, note: the Signals tab's columns in order, but for the opener lines by role (_OPENERS, below).
 _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]] = [
     (
         "Mental health support listed", "clay_careers, job_posts",
@@ -344,6 +365,89 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "signal stays in Control, the signal-blind holdout. `us-outbound lookalikes show` lists the cells.",
     ),
 ]
+
+# Tokenized openers (docs/roadmap.md §4 item 2; Harry, 2 Oct 2026): one line per copy role, filled at enrol
+# time from the account's stored facts (enrol/openers.py, which documents each token). A line whose token has
+# no fact, or a fact that fails its check, falls back to the next line in the cell, then to the signal's plain
+# opener, then to none. opener_self is for a contact who is the new People leader. Written to style.md: one
+# observed fact, US English, one sentence, no statistic, nothing about the reader's company beyond the fact.
+# signal: (opener_people, opener_founder, opener_ops, opener_self)
+_OPENERS: dict[str, tuple[str, str, str, str]] = {
+    "New People leader": (
+        "I saw {company} recently named a new {people_title}.",
+        "I saw {company} has a new {people_title} in place.",
+        "I saw there's a new {people_title} at {company}.",
+        "Congratulations on the new role at {company}.",
+    ),
+    "First People hire": (
+        "I saw {company} is hiring a {people_title}.",
+        "I saw {company} is hiring its first {people_title}.",
+        "I saw {company} is looking for its first {people_title}.",
+        "",
+    ),
+    "People role open": (
+        "I saw {company} is adding a {people_title} to the team.",
+        "I saw {company} is hiring a {people_title} right now.",
+        "I saw {company} has a {people_title} role open.",
+        "",
+    ),
+    "Funding in the last 6 months": (
+        "Congratulations to everyone at {company} on the {funding_stage}.",
+        "Congratulations on the {funding_stage}.",
+        "Congratulations to the {company} team on the {funding_stage}.",
+        "",
+    ),
+    "Hiring and growth": (
+        "I saw {company} has {open_roles} roles open, including a {posting_title}.\n"
+        "I saw the team at {company} has {growth} in the last year.",
+        "I saw {company} is hiring for {open_roles} roles, including a {posting_title}.\n"
+        "I saw {company} has {growth} in headcount over the last year.",
+        "I saw {company} is recruiting for {open_roles} roles, including a {posting_title}.\n"
+        "I saw the {company} team has {growth} over the past year.",
+        "",
+    ),
+    # The page-reader signals: they fire once the careers and benefits pages are read (roadmap §4 item 3).
+    "Mental health support listed": (
+        "I saw {evidence} comes up when {company} talks about working there.",
+        "I saw {company} mentions {evidence} when it talks about working there.",
+        "I saw {evidence} is part of how {company} describes working there.",
+        "",
+    ),
+    "EAP named": (
+        "I saw {company} offers its team an employee assistance program through {provider}.\n"
+        "I saw {company} already offers its team an employee assistance program.",
+        "I saw {company} offers an employee assistance program through {provider}.\n"
+        "I saw {company} offers an employee assistance program as part of its benefits.",
+        "I saw {company} provides an employee assistance program through {provider}.\n"
+        "I saw an employee assistance program is part of the benefits at {company}.",
+        "",
+    ),
+    "Wellbeing app or perk named": (
+        "I saw {company} offers {evidence} as part of its benefits.",
+        "I saw {evidence} is one of the perks at {company}.",
+        "I saw {company} includes {evidence} in its benefits.",
+        "",
+    ),
+    "Progressive benefits": (
+        "I saw {company} lists {evidence} among its benefits.",
+        "I saw {evidence} is one of the benefits at {company}.",
+        "I saw the benefits at {company} include {evidence}.",
+        "",
+    ),
+}
+_OPENER_COLUMNS = ("opener_people", "opener_founder", "opener_ops", "opener_self")
+
+
+def _signal_rows() -> list[dict[str, str]]:
+    """The Signals rows: _SIGNALS in its column order, with each signal's _OPENERS lines."""
+    plain = [c for c in COLUMNS["Signals"] if c not in _OPENER_COLUMNS]
+    out = []
+    for values in _SIGNALS:
+        row = dict(zip(plain, values, strict=True))
+        lines = dict(zip(_OPENER_COLUMNS, _OPENERS.get(row["signal"], ("",) * 4), strict=True))
+        out.append({c: row[c] if c in row else lines[c] for c in COLUMNS["Signals"]})
+    return out
+
 
 # -- Angles (SPEC 5, in order) -------------------------------------------------
 
@@ -553,7 +657,7 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
     """Every tab's rows as the sheet is created with them (SPEC 5 defaults), all strings."""
     tabs: dict[str, list[dict[str, str]]] = {
         "General": _rows("General", _GENERAL),
-        "Signals": _rows("Signals", _SIGNALS),
+        "Signals": _signal_rows(),
         "Angles": [
             {
                 "angle": a, "order": str(i), "argument": arg, "default_opener": opener,

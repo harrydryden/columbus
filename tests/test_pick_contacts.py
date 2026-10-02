@@ -122,6 +122,8 @@ def test_at_10_to_49_the_founder_is_revealed_and_written(ctx, transport):
     [outcome] = facts(ctx, pick.OUTCOME_FACT)
     assert outcome["value"]["outcome"] == "picked" and outcome["value"]["row"] == "Founder or executive"
     assert outcome["value"]["seniority"] == "C-level, founder or owner"
+    # The person's Apollo id, so the opener knows when the contact is the new People leader (Harry, 2 Oct 2026).
+    assert (outcome["value"]["contact_id"], outcome["value"]["apollo_person_id"]) == (c["contact_id"], "p-ceo")
     assert "omar" not in str(facts(ctx, pick.REVEAL_FACT) + facts(ctx, pick.OUTCOME_FACT)).lower()  # no names or emails
 
 
@@ -376,7 +378,9 @@ def test_the_search_writes_people_leader_facts_for_the_people_signals(ctx, trans
     facts = pick.people_facts(account(employees=80, size_band="50-99"), people, ctx.settings, ctx.today_uk(), ctx.now)
     by = {f["fact"]: f["value"] for f in facts}
     assert {f["source"] for f in facts} == {"apollo_people"}
-    assert by == {"people_leader_count": 1, "people_leader_days_in_title": 40}
+    assert by == {"people_leader_count": 1, "people_leader_days_in_title": 40,
+                  # Who the newest leader is, so the opener can congratulate them when they are the contact.
+                  "people_leader_newest": {"apollo_person_id": "p1", "title": "Head of People", "days_in_title": 40}}
     # No People leader found: nothing is written (a verified-email search can miss one), so
     # "First People hire" (count = 0) never fires on a gap in the search.
     assert pick.people_facts(account(), [people[1]], ctx.settings, date.today(), ctx.now) == []

@@ -30,7 +30,10 @@ SPEC 10 had step 1 carry one link only, the privacy page; Harry asked for the de
 every email and the industry page in the sequence (docs/pipeline.md, "Copy").
 
 content_violations() is the word-level part on its own: render.py uses it to test an
-opener before choosing it, and reply drafts (SPEC 11) can use it too.
+opener before choosing it, and reply drafts (SPEC 11) can use it too. opener_violations() adds
+the email-1 rules that read every word of the body (spam phrases, a demo, call or meeting ask, bare
+addresses), so an opener filled with a posting like "Call Center Agent" is dropped rather than
+blocking the email.
 """
 
 from __future__ import annotations
@@ -422,3 +425,17 @@ def email_violations(
         if _norm_link(url) not in known and not url.startswith(SPILL_PAGES):
             out.append(f'links to "{url}"; emails link only to the demo page, the industry page or spill.chat')
     return list(dict.fromkeys(out))
+
+
+def opener_violations(text: str, *, exempt: Iterable[str] = ()) -> list[str]:
+    """The email-1 rules that read every word of the body, on an opener alone: spam phrases, an ask for a
+    demo, call or meeting, and bare addresses (render.pick_opener; Harry, 2 Oct 2026).
+
+    A filled opener that breaks one of these would block email 1 at render time, so it is dropped first.
+    """
+    masked = _mask(text, exempt)
+    out = [f'says "{_quoted(m)}", which reads as spam' for rx in SPAM_PHRASES for m in rx.finditer(masked)]
+    out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
+            for m in _STEP1_ASK.finditer(masked)]
+    out += [f'has the bare address "{bare}"' for bare in links(masked)]
+    return out

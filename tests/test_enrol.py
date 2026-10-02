@@ -28,7 +28,7 @@ from tests.test_render import (
     make_settings,
 )
 from us_outbound import suppression
-from us_outbound.enrol import enrol, queue
+from us_outbound.enrol import enrol, openers, queue
 from us_outbound.logs import hash_email
 
 NOW = datetime(2026, 10, 27, 11, 0, tzinfo=UTC)  # Tuesday 11:00 UK, 07:00 ET (ISO week 2026-W44)
@@ -46,11 +46,12 @@ CAMPAIGN_OWNER = {"c-hannah": "Hannah Spalding", "c-sam": "Sam Jackson", "c-harr
 
 @pytest.fixture(autouse=True)
 def default_openers(monkeypatch):
-    """Openers come from scoring (another module); here each angle's default opener."""
+    """Openers come from enrol/openers.py (tested in test_openers.py); here each angle's default opener."""
 
-    def opener(ctx, a):
+    def opener(ctx, a, c, check=None):
         angle = ctx.settings.angle(str(a.get("angle") or ""))
-        return (angle.default_opener if angle else ""), ""
+        text = angle.default_opener if angle else ""
+        return openers.Opener(text, openers.OPENER if text else openers.NONE, "angle default" if text else ""), ""
 
     monkeypatch.setattr(enrol, "account_opener", opener)
 
@@ -645,7 +646,8 @@ def test_render_violation_skips_the_account_and_says_why():
 
 
 def test_an_opener_that_breaks_a_rule_is_dropped(monkeypatch):
-    monkeypatch.setattr(enrol, "account_opener", lambda ctx, a: ("Saw your benefits page mentions unlimited PTO", ""))
+    bad = openers.Opener("Saw your benefits page mentions unlimited PTO", openers.OPENER, "Progressive benefits / opener")
+    monkeypatch.setattr(enrol, "account_opener", lambda ctx, a, c, check=None: (bad, ""))
     ctx, t = make(live=True, accounts=[account()], contacts=[contact()])
     out = enrol.run(ctx)
     assert out["enrolled"] == 1
@@ -654,6 +656,8 @@ def test_an_opener_that_breaks_a_rule_is_dropped(monkeypatch):
     [post] = instantly_posts(t)
     body = post.json["leads"][0]["custom_variables"]["s1_body"]
     assert "unlimited" not in body.lower() and "<p>Hi Jane,</p><p>In most agencies" in body
+    # The contact records that it went out with no opener (the readout's arm), not as an opener.
+    assert ctx.store.get("contacts", contact_id=contact()["contact_id"])["opener_arm"] == openers.NONE
 
 
 def test_created_ids_match_by_index_then_email():

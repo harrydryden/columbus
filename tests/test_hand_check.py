@@ -15,7 +15,9 @@ from us_outbound.enrol import enrol, hand_check
 
 NOW = datetime(2026, 10, 26, 7, 0, tzinfo=UTC)  # Monday 08:00 UK (GMT+0 after 25 Oct), ISO week 2026-W44
 WEEK = "2026-W44"
-SETTINGS = dataclasses.replace(make_settings(live_sending=True, approver_slack_ids=("U_HARRY",)), signals=(EAP_NAMED,))
+EAP_LINE = "I saw {company} already offers its team an employee assistance program."
+SETTINGS = dataclasses.replace(make_settings(live_sending=True, approver_slack_ids=("U_HARRY",)),
+                               signals=(dataclasses.replace(EAP_NAMED, role_openers={"People leader": EAP_LINE}),))
 
 
 def acct(i: int, group: str, status: str = "verified", **kw) -> dict:
@@ -99,7 +101,15 @@ def test_the_facts_harry_checks():
     f = hand_check.facts(ctx, ctx.store.get("accounts", account_id="mar-00"), domains, hashes)
     assert (f["clean_name"], f["hq_state"], f["size_band"], f["industry_group"]) == ("Mar Co 0", "IL", "20-49", AGENCIES)
     assert f["contact"] == {"role": "People leader", "title": "Head of People", "note": ""}
-    assert f["opener"] == "I saw your team already has an employee assistance program."
+    # The opener enrol would send this contact (enrol/openers.py): the EAP line for a People leader.
+    assert f["opener"] == "I saw Mar Co 0 already offers its team an employee assistance program."
+    assert (f["opener_arm"], f["opener_source"]) == ("opener", "EAP named / opener_people")
+    # A held-out account sends none, and Harry sees the line it would have had.
+    ctx.settings = dataclasses.replace(SETTINGS, general=dataclasses.replace(SETTINGS.general, opener_holdout_share=1.0))
+    held = hand_check.facts(ctx, ctx.store.get("accounts", account_id="mar-00"), domains, hashes)
+    assert held["opener_arm"] == "holdout"
+    assert hand_check._opener(held) == ("none (held out; would be: I saw Mar Co 0 already offers its team an "
+                                        "employee assistance program.)")
     [ev] = f["evidence"]
     assert (ev["signal"], ev["url"]) == ("EAP named", "https://mar0.com/careers")
     assert ev["quote"] == "Every employee gets our employee assistance program."

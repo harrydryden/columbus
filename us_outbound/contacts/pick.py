@@ -270,6 +270,7 @@ def account_size(account: Mapping[str, Any]) -> int | None:
 
 PEOPLE_SOURCE = "apollo_people"  # the source the People-leader signals read (settings/model.py SOURCE_FIELDS)
 PEOPLE_LEADER = "People leader"
+NEWEST_LEADER_FACT = "people_leader_newest"  # who the newest People leader is (enrol/openers.py)
 
 
 def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
@@ -280,25 +281,33 @@ def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]]
     people_leader_count and people_leader_days_in_title, which no other job writes. Only positive
     evidence is written: the search returns people with a verified email only, so a count of 0
     would not mean there is no People leader, and "First People hire" (count = 0) must not fire on it.
+    With the days in title goes people_leader_newest: that leader's Apollo person id and title, so
+    the opener can name the role, and congratulate the leader when they are the contact (Harry, 2 Oct 2026).
     """
     size, group = account_size(account), settings.industry_group_of(account)
-    days: list[int | None] = []
+    leaders: list[tuple[int | None, Mapping[str, Any]]] = []
     for p in people:
         if location_block(p):
             continue
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is not None and not r.junior and r.role.writes_as == PEOPLE_LEADER:
-            days.append(r.days_in_role)
-    if not days:
+            leaders.append((r.days_in_role, p))
+    if not leaders:
         return []
     aid = account["account_id"]
-    rows = [{"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE, "fact": "people_leader_count",
-             "value": len(days), "quote": "", "source_url": "", "observed_at": now}]
-    known = [d for d in days if d is not None]
+
+    def row(fact: str, value: Any) -> dict:
+        return {"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE, "fact": fact, "value": value,
+                "quote": "", "source_url": "", "observed_at": now}
+
+    rows = [row("people_leader_count", len(leaders))]
+    known = [(d, p) for d, p in leaders if d is not None]
     if known:
-        rows.append({"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE,
-                     "fact": "people_leader_days_in_title", "value": min(known), "quote": "", "source_url": "",
-                     "observed_at": now})
+        days, newest = min(known, key=lambda x: (x[0], str(x[1].get("id") or "")))
+        rows.append(row("people_leader_days_in_title", days))
+        rows.append(row(NEWEST_LEADER_FACT, {"apollo_person_id": str(newest.get("id") or ""),
+                                             "title": " ".join(str(newest.get("title") or "").split()),
+                                             "days_in_title": days}))
     return rows
 
 
@@ -507,7 +516,8 @@ def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run)
     value = {"outcome": out.outcome, "reason": out.reason, **out.detail}
     if out.outcome == PICKED and out.contact and out.candidate:
         value.update(contact_id=out.contact["contact_id"], row=out.candidate.ranked.role.role,
-                     role=out.contact["role"], seniority=SENIORITY[out.candidate.ranked.seniority])
+                     role=out.contact["role"], seniority=SENIORITY[out.candidate.ranked.seniority],
+                     apollo_person_id=out.candidate.id)  # the opener knows when the contact is the new leader
         batch.picked.append({"account_id": aid, "domain": account.get("domain"), "row": value["row"],
                              "role": value["role"], "seniority": value["seniority"]})
     else:

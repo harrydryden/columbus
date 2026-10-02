@@ -41,11 +41,13 @@ TEXT_SOURCES = frozenset({"clay_careers", "job_posts"})
 # Field facts each source writes to signal_events (fact = field name, value = scalar).
 # A condition on a signal may only use fields its sources provide; validation checks this.
 SOURCE_FIELDS: dict[str, frozenset[str]] = {
-    # technologies, keywords and apollo_industry: lists and text from Apollo's organization record
-    # (sources/apollo_universe.py); scoring/tiers.py reads keywords and apollo_industry for partners.
+    # technologies, keywords, apollo_industry and description: lists and text from Apollo's organization
+    # record (sources/apollo_universe.py); scoring/tiers.py reads keywords and apollo_industry for partners,
+    # and the opener's optional "what they do" phrase reads keywords and description (enrol/openers.py).
     "apollo_org": frozenset(
         {"employees", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
-         "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry"}
+         "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry",
+         "description"}
     ),
     "apollo_people": frozenset(
         {"people_leader_count", "people_leader_days_in_title", "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
@@ -77,6 +79,20 @@ EMAIL_FORMATS = ("html", "text")
 # The contacted roles (Roles tab) and the Copy-tab column holding each one's line for email 1.
 ROLE_LINE_COLUMNS = {"People leader": "people_leader_line", "Founder or executive": "founder_line",
                      "Operations": "operations_line"}
+# Tokenized openers (docs/roadmap.md §4 item 2; Harry, 2 Oct 2026): the Signals-tab column holding each
+# copy role's opener line, filled at enrol time from the account's stored facts (enrol/openers.py). A
+# blank cell falls back to the signal's plain opener. opener_self is the line for a contact who is the
+# person the signal is about (the new People leader).
+OPENER_COLUMNS = {"People leader": "opener_people", "Founder or executive": "opener_founder",
+                  "Operations": "opener_ops"}
+OPENER_SELF_COLUMN = "opener_self"
+# The tokens each kind of opener line may use. The plain opener column keeps SPEC 5's one placeholder.
+PLAIN_OPENER_TOKENS = ("evidence",)
+OPENER_TOKENS = ("company", "open_roles", "posting_title", "people_title", "funding_stage", "growth", "city",
+                 "evidence", "provider")
+FOCUS_LINE_TOKENS = ("company", "focus", "city")  # General opener_focus_line
+# Condition fields that make a signal about one person, so its opener_self line can apply.
+PERSON_FIELDS = frozenset({"people_leader_days_in_title"})
 # The Roles tab's two size columns and the range each covers (SPEC 5 "Who to contact first").
 ROLE_ORDER_COLUMNS = {"order_10_49": "10-49", "order_50_249": "50-249"}
 QA_VERDICTS = ("pass", "fail")
@@ -154,6 +170,11 @@ class General:
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0
     email_format: str = "html"  # (build) html: links and bullets; text: plain text, links written out
+    # (build) Tokenized openers (Harry, 2 Oct 2026; enrol/openers.py): the share of accounts held out with no
+    # opener, so replies can compare opener against none; and the optional "what they do" line.
+    opener_holdout_share: float = 0.3
+    opener_focus: bool = False
+    opener_focus_line: str = "I came across {company} and its work on {focus}."
 
 
 @dataclass(frozen=True)
@@ -174,10 +195,19 @@ class Signal:
     terms: tuple[str, ...] = ()
     condition: Condition | None = None
     context: ContextRules = field(default_factory=dict)
+    # Tokenized openers (Harry, 2 Oct 2026): {copy role: line} from the OPENER_COLUMNS, and the line for a
+    # contact who is the person the signal is about. A cell may hold alternatives, one per line.
+    role_openers: Mapping[str, str] = field(default_factory=dict)
+    opener_self: str = ""
 
     @property
     def is_condition(self) -> bool:
         return self.condition is not None
+
+    @property
+    def is_about_a_person(self) -> bool:
+        """True when the condition reads a fact about one person (PERSON_FIELDS), so opener_self can apply."""
+        return self.condition is not None and bool(self.condition.fields & PERSON_FIELDS)
 
 
 @dataclass(frozen=True)

@@ -167,15 +167,18 @@ def pick_opener(
     """(opener to use, why it was dropped or ""). An opener that breaks a copy rule is dropped.
 
     SPEC 9 step 5 fills the opener with evidence from the prospect's own pages, which can
-    carry words the copy may not use ("unlimited PTO", "100% employer-paid", "therapy").
-    Email 1 is written to read well without it (style.md), so its line simply goes.
+    carry words the copy may not use ("unlimited PTO", "100% employer-paid", "therapy"), and
+    the tokenized openers (enrol/openers.py) with posting titles ("Call Center Agent" would read
+    as an ask for a call). Email 1 is written to read well without it (style.md), so its line
+    simply goes. enrol/openers.py tries each filled line with this check and takes the first that
+    passes; the enrol job checks the chosen one again as it renders.
     """
     opener = (opener or "").strip()
     if not opener:
         return "", ""
     problems = copy_rules.content_violations(
         opener, sender_is_harry=sender_is_harry, demo_host=demo_host, exempt=exempt
-    ) + copy_rules.structure_violations(opener)
+    ) + copy_rules.structure_violations(opener) + copy_rules.opener_violations(opener, exempt=exempt)
     if problems:
         return "", "; ".join(problems)
     return opener, ""

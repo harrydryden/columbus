@@ -46,7 +46,9 @@ SPEC_COLUMNS: dict[str, set[str]] = {
     "settings": {"tab", "key", "values", "effective_from", "effective_to", "synced_at"},
 }
 # Columns the build adds to SPEC 6 tables.
-BUILD_ADDITIONS: dict[str, set[str]] = {"contacts": {"last_step_at", "enrolled_at"}, "suppression": {"expires_at"}}
+BUILD_ADDITIONS: dict[str, set[str]] = {
+    "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source"}, "suppression": {"expires_at"},
+}
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
     "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"},
@@ -92,6 +94,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
     ("contacts", "email_source"): {"apollo", "clay"},
+    ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated",
