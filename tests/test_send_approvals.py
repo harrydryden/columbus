@@ -243,6 +243,7 @@ def test_dry_run_writes_no_item_and_previews_five_cards_in_the_dev_channel():
     assert sum(out["by_owner"].values()) == 7 and items(ctx) == [] and instantly_posts(t) == []
     assert sl.cards() == [] and len(sl.cards("C_DEV")) == 5
     assert all(c["text"].startswith("[dry-run → #us-outbound] Send approval: Agency") for c in sl.cards("C_DEV"))
+    assert all("approvals approve" not in blocks_text(c) for c in sl.cards("C_DEV"))  # a preview has no item
     assert all(r["channel"] == "C_DEV" for r in sl.reacted) and len(sl.reacted) == 10
     assert all(len(sl.thread(c["ts"])) == 1 for c in sl.cards("C_DEV"))  # emails 2 to 4, in the preview's thread
     assert {w.target for w in ctx.guard.writes("slack", sent=True)} == {"#us-outbound-dev"}
@@ -279,6 +280,7 @@ def test_the_card_shows_what_harry_asked_for():
     assert "*Before:* no email to Acme Creative from us before" in text
     assert "*Today:* Harry: 1 of 15 today" in text
     assert "✅ send · ❌ don't send" in text
+    assert f"`us-outbound approvals approve {item_for(ctx, 'acc-1')['item_id'][:8]} --live`" in text
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
     assert card["text"].startswith("Send approval: Acme Creative · Jane Doe · from Harry Dryden:")
     # Without an Apollo id, the source's name and no link.

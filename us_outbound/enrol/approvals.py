@@ -24,13 +24,13 @@ Approving (poll_approvals, every 5 minutes, after the reply desk; poll below). O
 approver_slack_ids counts; anyone else, and the bot, is ignored. Thread replies are read in order,
 then the reactions on the message whose ✅ counts now (the card, or the latest edited version):
   ✅, or "send"                  re-check, then add the one lead to "US Outbound – {owner}" and record
-                                 the enrolment as enrol does (enrol._record_enrolled). The card says
+                                 the enrollment as enrol does (enrol._record_enrolled). The card says
                                  "✅ Approved by @Harry at 14:02 UK · added to US Outbound – Hannah
                                  Spalding" and the thread confirms. A compare-and-set "sending" status
                                  means it is never added twice; if Instantly fails, the thread says why
                                  and the item waits for a fresh ✅ on that note (or "send"); if a run
                                  dies mid-add, the thread asks a person to check the campaign first.
-                                 The re-check: live_sending yes, enrolment not stopped (operator stop,
+                                 The re-check: live_sending yes, enrollment not stopped (operator stop,
                                  the stop rule), the domain and contact not suppressed since (an
                                  opt-out), the account still verified and in a queue tier, the contact
                                  not enrolled by another path, the sender still has an Active mailbox.
@@ -509,8 +509,8 @@ def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, li
     if status:
         blocks.append(_context(status))
     else:
-        blocks.append(_context(f"✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread; without Slack, "
-                               f"`us-outbound approvals approve {short_id} --live`."))
+        cli_hint = f"; without Slack, `us-outbound approvals approve {short_id} --live`" if short_id else ""
+        blocks.append(_context(f"✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread{cli_hint}."))
     text = _esc(f"Send approval: {company} · {name} · from {owner}: {first.get('subject') or ''}")
     return (f"{status} {text}" if status else text), blocks  # status is mrkdwn already (it may mention)
 
@@ -603,7 +603,7 @@ def _update_card(ctx: Context, slack: Any, item: Item, status: str) -> None:
 def post_card(ctx: Context, slack: Any, item: Item) -> bool:
     """Post the card to the alert channel (dry-run: the dev channel), seed ✅ and ❌, and post emails 2 to 4
     in its thread. Live, the row records where. True when the card was posted."""
-    text, blocks = card(item.payload, item.short_id or "preview")
+    text, blocks = card(item.payload, item.short_id)  # a dry-run preview has no id
     posted = slack.post(ctx.settings.general.alert_channel, text, blocks=blocks)
     if not posted or not posted.get("ts"):
         return False
@@ -851,7 +851,7 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
 
 
 def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> dict:
-    """✅: re-check, then add the one lead to the owner's campaign and record the enrolment; close the item."""
+    """✅: re-check, then add the one lead to the owner's campaign and record the enrollment; close the item."""
     p = item.payload
     edited = bool(p.get("edited"))
     outcome = APPROVED_EDITED if edited else APPROVED
