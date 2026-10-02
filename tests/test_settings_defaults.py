@@ -177,22 +177,22 @@ def test_plain_openers_pass_the_copy_rules_and_signals_are_context_never_the_lin
     # Harry, 1 Oct 2026: email 1 opens on something personal and relevant, worded to read right to any of
     # the three roles. The page-reader signals say what the page says; Harry, 2 Oct 2026: the hiring,
     # People, growth and funding signals are context, never the line, so theirs speak to the pressure
-    # the situation tends to bring and name nothing that was observed.
-    people_role = "People issues tend to land on a few busy desks, and support helps most when it shares the load."
+    # the situation tends to bring, at work and at home, and name nothing that was observed.
+    people_role = "Work and home both ask a lot of people, and the best help is the kind nobody has to chase."
     funding = "Times of change tend to put more on everyone's plate, and that's when support matters most."
     assert openers == {
         "Mental health support listed": "I noticed your careers page mentions {evidence}.",
         "EAP named": "I noticed your benefits page lists an employee assistance program.",
         "Wellbeing app or perk named": "I noticed {evidence} is part of your benefits.",
         "Progressive benefits": "I noticed your benefits include {evidence}.",
-        "New People leader": "Setting a team's priorities takes time, and support for people is often one of the "
-                             "first things to get right.",
+        "New People leader": "When priorities shift at work, people often feel it at home too, and someone to talk "
+                             "to helps.",
         "First People hire": people_role,
         "People role open": people_role,
         "Funding in the last 6 months": funding,
         "Funding 6–12 months ago": funding,  # names no round and no time, so it fits any age of round
-        "Hiring and growth": "When many people join at once, managers and culture tend to feel the stretch, and "
-                             "support helps most early.",
+        "Hiring and growth": "Busy stretches tend to follow people home, and a sounding board outside the team can "
+                             "take the edge off.",
     }
     for opener in openers.values():
         filled = opener.replace("{evidence}", "parental leave")

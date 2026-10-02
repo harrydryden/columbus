@@ -356,10 +356,10 @@ def test_signals_load_brings_the_opener_columns_and_keeps_harry_s_edits():
     assert (funding["opener"], funding["weight"], funding["note"]) == ("I hope the quarter is going well.", "25",
                                                                        "Harry's note")
     assert funding["opener_founder"] == (  # the new column arrives
-        "Change tends to test a culture as much as a plan, and that's when taking care of people matters most.")
+        "When a lot is changing, even steady people can feel stretched, and it helps to know where to turn.")
     assert by["EAP named"]["opener"] == ""  # a cell Harry blanked stays blank
     assert by["New People leader"]["opener_self"] == (
-        "Shaping how a team is supported is often a lot to carry, and it helps when one piece is simple.")
+        "It's easy to put your own well-being last when you spend the day looking after everyone else's.")
     # A second load keeps Harry's edits to the new columns too, blanks included.
     again = [dict(r) for r in plan.rows]
     next(r for r in again if r["signal"] == "Hiring and growth")["opener_ops"] = ""
@@ -376,7 +376,7 @@ def test_signals_load_brings_the_opener_columns_and_keeps_harry_s_edits():
     settings, errors = validate_all(tabs)
     assert not any(errors.values())
     got = {s.signal: s for s in settings.signals}
-    assert got["Hiring and growth"].role_openers["Operations"].startswith("When many people join at once,")
+    assert got["Hiring and growth"].role_openers["Operations"].startswith("When the week is packed,")
     assert got["Funding in the last 6 months"].opener == "I hope the quarter is going well."
 
 

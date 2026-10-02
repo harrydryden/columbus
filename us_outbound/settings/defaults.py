@@ -241,44 +241,46 @@ _APPENDIX_A = "Design review Appendix A, 1 Oct 2026"
 
 # Signals are context, never the line (Harry, 2 Oct 2026: "these are just signals"; funding is a signal, never a
 # line). The openers of the hiring, People, growth and funding signals never name what was observed: no hiring,
-# recruiting, growth, growing, scaling, headcount, funding or money, no job or posting titles, no counts. Each
-# speaks to the pressure that situation tends to bring for people, then to support through it, hedged ("often",
-# "tends to") so it is true whether or not the observation was. None uses {company}: "at Brightline" would claim
-# to know their team. copy_rules.money_violations keeps funding and money out of every opener line.
+# recruiting, growth, growing, scaling, headcount, funding or money, no job or posting titles, no roles, no counts.
+# Each takes the pressure that situation tends to bring, at work and at home (Harry: "ever more pressure in our work
+# and personal lives"), and turns to having somewhere to turn, hedged ("often", "tends to") so it is true whether or
+# not the observation was. Each line has its own shape, so a batch doesn't read as one template (copy QA, 2 Oct
+# 2026). None uses {company}: "at Brightline" would claim to know their team. No booking words either: the ask
+# belongs to the body. copy_rules.money_violations keeps funding and money out of every opener line.
 # (opener, opener_people, opener_founder, opener_ops, opener_self)
 _CONTEXT_NOTE = "Openers: signals are context, never the line (Harry, 2 Oct 2026)."
-# A new People leader settling in: the first months, setting priorities. opener_self is warm without saying
+# A new People leader settling in: priorities shifting, new routines. opener_self is warm without saying
 # "congratulations on the new role", which would tell them we watched their start date.
 _NEW_LEADER_LINES = (
-    "Setting a team's priorities takes time, and support for people is often one of the first things to get right.",
-    "Setting new priorities tends to fill the first months, and support helps most when it's easy to roll out.",
-    "Getting support for a team right usually takes months, and it helps to have something people can use right away.",
-    "A new set of people priorities usually brings new processes too, and it helps when support is the simple part.",
-    "Shaping how a team is supported is often a lot to carry, and it helps when one piece is simple.",
+    "When priorities shift at work, people often feel it at home too, and someone to talk to helps.",
+    "While things settle, pressure from work and home tends to build, and people lean on help that's easy to reach.",
+    "Settling into new ways of working takes energy, and people cope better with somewhere private to turn.",
+    "New routines can follow people home, and the help that sticks is the kind that adds no admin.",
+    "It's easy to put your own well-being last when you spend the day looking after everyone else's.",
 )
-# A first or open People role: whoever carries people issues is carrying too much. Never "one person" for the
+# A first or open People role: whoever carries people issues is carrying a lot. Never "one person" for the
 # People leader: Startups' hook already says "the people function is often one person".
 _PEOPLE_ROLE_LINES = (
-    "People issues tend to land on a few busy desks, and support helps most when it shares the load.",
-    "People issues tend to pile up on whoever handles them, and it helps when support doesn't rest on one desk.",
-    "People issues tend to find the busiest desk, and it helps when support doesn't depend on one person.",
-    "People questions tend to pile up alongside everything else, and support helps most when it takes no extra admin.",
+    "Work and home both ask a lot of people, and the best help is the kind nobody has to chase.",
+    "Plenty of people carry worries from home into work, and they tend to use help that feels private and easy.",
+    "Being the person everyone looks to can weigh heavily, and it eases when people have somewhere else to turn.",
+    "Questions about people pile up alongside everything else, so help that runs itself is worth a lot.",
     "",
 )
-# A lot of new people: onboarding, managers stretched, culture under strain.
+# A busy stretch: onboarding, managers stretched, little slack at work or at home.
 _HIRING_LINES = (
-    "When many people join at once, managers and culture tend to feel the stretch, and support helps most early.",
-    "When many people join at once, managers are often stretched thin, and support matters most in those first months.",
-    "When many people join at once, culture tends to come under strain, and support helps people settle in.",
-    "When many people join at once, onboarding often fills the week, and it helps when support is easy to reach.",
+    "Busy stretches tend to follow people home, and a sounding board outside the team can take the edge off.",
+    "When managers are stretched thin, a private place for their teams to turn can take some of the weight.",
+    "A busy stretch asks a lot at work and at home, and people hold up better knowing where to turn.",
+    "When the week is packed, there's little slack at work or home, so help has to fit in without fuss.",
     "",
 )
 # A round: a period of change, more on everyone's plate, priorities and routines shifting. The same lines at any
 # age of round, since they name no round and no time.
 _FUNDING_LINES = (
     "Times of change tend to put more on everyone's plate, and that's when support matters most.",
-    "The pressure of change often lands on managers first, and support helps most when it comes early.",
-    "Change tends to test a culture as much as a plan, and that's when taking care of people matters most.",
+    "The pressure of change often lands on managers first, and it helps when teams have a second place to go.",
+    "When a lot is changing, even steady people can feel stretched, and it helps to know where to turn.",
     "Change often brings new routines and more to coordinate, and support works best when it's already in place.",
     "",
 )

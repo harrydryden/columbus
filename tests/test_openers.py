@@ -92,33 +92,34 @@ BENEFITS = [fact("clay_careers", "benefit", {"item": "Paid parental leave"})]
 PEOPLE, FOUNDER, OPS = "People leader", "Founder or executive", "Operations"
 
 # The context signals' default lines (Harry, 2 Oct 2026: signals are context, never the line): the pressure the
-# situation tends to bring, then support through it, and nothing that was observed. "" is the plain opener.
+# situation tends to bring, at work and at home, then somewhere to turn, and nothing that was observed. "" is the
+# plain opener.
 NEW_LEADER_LINES = {
-    "": "Setting a team's priorities takes time, and support for people is often one of the first things to get right.",
-    PEOPLE: "Setting new priorities tends to fill the first months, and support helps most when it's easy to roll out.",
-    FOUNDER: "Getting support for a team right usually takes months, and it helps to have something people can use "
-             "right away.",
-    OPS: "A new set of people priorities usually brings new processes too, and it helps when support is the simple part.",
-    "self": "Shaping how a team is supported is often a lot to carry, and it helps when one piece is simple.",
+    "": "When priorities shift at work, people often feel it at home too, and someone to talk to helps.",
+    PEOPLE: "While things settle, pressure from work and home tends to build, and people lean on help that's easy to "
+            "reach.",
+    FOUNDER: "Settling into new ways of working takes energy, and people cope better with somewhere private to turn.",
+    OPS: "New routines can follow people home, and the help that sticks is the kind that adds no admin.",
+    "self": "It's easy to put your own well-being last when you spend the day looking after everyone else's.",
 }
 PEOPLE_ROLE_LINES = {  # First People hire and People role open
-    "": "People issues tend to land on a few busy desks, and support helps most when it shares the load.",
-    PEOPLE: "People issues tend to pile up on whoever handles them, and it helps when support doesn't rest on one desk.",
-    FOUNDER: "People issues tend to find the busiest desk, and it helps when support doesn't depend on one person.",
-    OPS: "People questions tend to pile up alongside everything else, and support helps most when it takes no extra "
-         "admin.",
+    "": "Work and home both ask a lot of people, and the best help is the kind nobody has to chase.",
+    PEOPLE: "Plenty of people carry worries from home into work, and they tend to use help that feels private and "
+            "easy.",
+    FOUNDER: "Being the person everyone looks to can weigh heavily, and it eases when people have somewhere else to "
+             "turn.",
+    OPS: "Questions about people pile up alongside everything else, so help that runs itself is worth a lot.",
 }
 HIRING_LINES = {
-    "": "When many people join at once, managers and culture tend to feel the stretch, and support helps most early.",
-    PEOPLE: "When many people join at once, managers are often stretched thin, and support matters most in those first "
-            "months.",
-    FOUNDER: "When many people join at once, culture tends to come under strain, and support helps people settle in.",
-    OPS: "When many people join at once, onboarding often fills the week, and it helps when support is easy to reach.",
+    "": "Busy stretches tend to follow people home, and a sounding board outside the team can take the edge off.",
+    PEOPLE: "When managers are stretched thin, a private place for their teams to turn can take some of the weight.",
+    FOUNDER: "A busy stretch asks a lot at work and at home, and people hold up better knowing where to turn.",
+    OPS: "When the week is packed, there's little slack at work or home, so help has to fit in without fuss.",
 }
 FUNDING_LINES = {  # both funding rows
     "": "Times of change tend to put more on everyone's plate, and that's when support matters most.",
-    PEOPLE: "The pressure of change often lands on managers first, and support helps most when it comes early.",
-    FOUNDER: "Change tends to test a culture as much as a plan, and that's when taking care of people matters most.",
+    PEOPLE: "The pressure of change often lands on managers first, and it helps when teams have a second place to go.",
+    FOUNDER: "When a lot is changing, even steady people can feel stretched, and it helps to know where to turn.",
     OPS: "Change often brings new routines and more to coordinate, and support works best when it's already in place.",
 }
 # The generic line (General opener_generic_*): ever more pressure in our work and personal lives.
