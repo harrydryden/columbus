@@ -65,8 +65,10 @@ verification and contact choice write only the database; enrol, replies and post
 2. **Approvers.** Set `approver_slack_ids` = `U098X453UAG` on the General tab. To let Hannah and Sam
    approve replies to their own mailboxes, add their Slack ids in the Mailboxes `slack_id` column.
 3. **Mailboxes.** `mailbox check --live` promotes warm mailboxes to Active (all four still say
-   Warming on the sheet). Then `campaigns ensure --fix --live` creates the four "US Outbound – owner"
-   campaigns, paused, with the ramped daily limits.
+   Warming on the sheet). On 2 Oct Instantly showed hannah@ and sam@meetspill.org warm, and neither
+   of Harry's (harry@meetspill.org, harry@tryspill.org): they are promoted once Instantly shows them
+   warm. Then `campaigns ensure --live` creates the three "US Outbound – owner" campaigns (Hannah
+   Spalding, Harry Dryden, Sam Jackson), paused, with the ramped daily limits.
 4. **Opt-out test.** Send one test email from each campaign to a seed inbox. Confirm the
    `{{unsubscribe}}` link works in it and that a click shows the lead as unsubscribed in Instantly.
    Then set `optout_tested` = yes.
@@ -74,17 +76,14 @@ verification and contact choice write only the database; enrol, replies and post
    send. For the pilot that is the launch focus (Technology & Startups, Marketing & Creative
    Agencies, Legal Teams): about 25 industries × 3 roles. Every row has a QA pass stamped on it.
    Editing a row clears its stamp until `copy qa` runs again.
-   **Openers (2 Oct):** run `us-outbound settings load --tab Signals --live` to add the four opener
-   columns (your edits stay), read the lines on the Signals tab (§4 item 2), then `settings sync`.
-   Until the columns are on the sheet, each signal's plain opener is used. `--tab General` adds
-   `opener_holdout_share` (0.3), `opener_focus` (no) and `opener_focus_line`. The 30% holdout
-   applies from the deploy either way, because it is the default.
+   **Openers (2 Oct, done):** the Signals tab has every signal's lines by role, and the General tab
+   the generic lines (`opener_generic_*`), loaded and synced. Read them there; your edits win.
 6. **Hand-check.** Monday morning, `handcheck show --live`, then `handcheck approve --live`, pulling
    any account that looks wrong.
 7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It activates the
    paused campaigns once `campaigns ensure` reports no drift. Enrol runs at 12:00 UK (07:00 ET) on
    weekdays. `us-outbound stop --live` pauses everything again.
-8. **The page signals' new source.** `us-outbound settings load --tab Signals --tab General --live`, then
+8. **Done 2 Oct.** The page signals' new source. `us-outbound settings load --tab Signals --tab General --live`, then
    `us-outbound settings sync`. The five page signals then read `careers_pages` beside `clay_careers`,
    and the General tab gains `clay_email_fallback` = no. Until then settings_sync's summary says so
    (`signals_notice`), and so do `pages show` and the daily post. A Signals load keeps the sheet's
@@ -95,7 +94,7 @@ verification and contact choice write only the database; enrol, replies and post
    UK's Highest Rated EAP | Book a demo". Its description says "employee assistance programme". The
    US locale inherits both from the UK page (Webflow page 65c650592086330a300a3cf6). Every email 2–4
    links to this page. The signature's "Book a call here" goes to Harry's HubSpot meetings page instead.
-10. **Funding from Apollo's organization enrich (2 Oct).** `us-outbound settings load --tab General --live`, then
+10. **Done 2 Oct.** Funding from Apollo's organization enrich. `us-outbound settings load --tab General --live`, then
     `us-outbound settings sync`, adds `apollo_enrich_groups` = Technology & Startups (comma-separated industry
     groups; blank enriches none). The job runs on that default until then. It enriches up to about 15 accounts a
     weekday (15% of `apollo_monthly_credits`), each again after 180 days, and the daily post counts what it found.
