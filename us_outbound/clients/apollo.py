@@ -15,7 +15,8 @@ tool schemas. Auth is the master API key in the X-Api-Key header.
 
 Credits (Apollo's API docs, 1 Oct 2026): an organization search costs 1 credit for a page
 that returns at least one company and 0 for an empty one; job postings cost 1 credit per
-request. The jobs record what they spend in credit_ledger (budget.py); this client only
+request; organization enrichment, single or bulk, 1 credit per company found and 0 for one
+not found. The jobs record what they spend in credit_ledger (budget.py); this client only
 says which reads are paid (paid_reads), so none is resent after a timeout.
 """
 
@@ -32,6 +33,7 @@ from us_outbound.clients.http import ApiError, HttpClient
 MAX_PER_PAGE = 100
 MAX_PAGE = 500  # the display limit: 50,000 records = 500 pages of 100
 BULK_MATCH_MAX = 10  # people/bulk_match takes up to 10 details per call
+BULK_ENRICH_MAX = 10  # organizations/bulk_enrich takes up to 10 domains per call
 MAX_POSTINGS_PER_PAGE = 10_000  # job postings: a display limit of 10,000 records
 _PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")  # an Apollo id in a URL path
 
@@ -39,7 +41,10 @@ _PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")  # an Apollo id in a URL path
 READ_ENDPOINTS: dict[str, tuple[str, str]] = {
     "usage.credits": ("POST", "/usage_stats/credit_usage_stats"),  # 0 credits
     "organizations.search": ("POST", "/mixed_companies/search"),  # 1 credit per page with results
-    "organizations.enrich": ("GET", "/organizations/enrich"),  # 1 credit per organization
+    "organizations.enrich": ("GET", "/organizations/enrich"),  # 1 credit per organization found
+    # PHASE0-CONFIRM: Bulk Organization Enrichment's body. Apollo's docs list domains[] as query
+    # parameters; the JSON body {"domains": [...]} is what its own tools send (1 credit per company found).
+    "organizations.bulk_enrich": ("POST", "/organizations/bulk_enrich"),
     # PHASE0-CONFIRM: REST path of Organization Job Postings (the MCP tool
     # apollo_organizations_job_postings takes the organization id, page and per_page; 1 credit a request).
     "organizations.job_postings": ("GET", "/organizations/{organization_id}/job_postings"),
@@ -101,6 +106,18 @@ def organizations_in(page: Mapping[str, Any]) -> list[dict]:
     return out
 
 
+def enriched_in(body: Mapping[str, Any]) -> list[dict]:
+    """The organizations of an enrich() or bulk_enrich() answer, each with organization_id and domain set.
+
+    PHASE0-CONFIRM: organizations/enrich answers {"organization": {...}}, and bulk_enrich
+    {"organizations": [...]}, with a company Apollo does not know left out (or null).
+    """
+    rows = [body.get("organization")] if isinstance(body.get("organization"), Mapping) else []
+    rows += [o for o in body.get("organizations") or () if isinstance(o, Mapping)]
+    return [{**o, "organization_id": o.get("id") or o.get("organization_id"),
+             "domain": o.get("primary_domain") or o.get("domain")} for o in rows if o]
+
+
 def postings_in(page: Mapping[str, Any]) -> list[dict]:
     """The postings on one job_postings() page: {id, title, url, city, state, country, posted_at, ...}.
 
@@ -141,6 +158,10 @@ def credits_left(usage: Mapping[str, Any], credit_type: str = "lead_credit") -> 
     return float(stats["left_over"])
 
 
+def _enrich_domain(domain: str) -> str:
+    return str(domain or "").strip().lower().removeprefix("www.")
+
+
 def _yyyymmdd(value: date | datetime | str) -> str:
     if isinstance(value, str):
         return value.replace("-", "")
@@ -150,7 +171,8 @@ def _yyyymmdd(value: date | datetime | str) -> str:
 class Apollo(HttpClient):
     system = "apollo"
     base_url = "https://api.apollo.io/api/v1"
-    paid_reads = frozenset({"organizations.search", "organizations.enrich", "organizations.job_postings", "people.bulk_match"})
+    paid_reads = frozenset({"organizations.search", "organizations.enrich", "organizations.bulk_enrich",
+                            "organizations.job_postings", "people.bulk_match"})
 
     def headers(self) -> dict[str, str]:
         return {
@@ -194,9 +216,19 @@ class Apollo(HttpClient):
         return self._read("organizations.search", json=body, detail={"page": page, "filters": sorted(body)}) or {}
 
     def enrich_organization(self, domain: str) -> dict:
-        """Organization enrichment by root domain (1 credit)."""
-        d = domain.strip().lower().removeprefix("www.")
+        """Organization enrichment by root domain (1 credit if found). See enriched_in()."""
+        d = _enrich_domain(domain)
         return self._read("organizations.enrich", target=d, params={"domain": d}) or {}
+
+    def bulk_enrich_organizations(self, domains: Iterable[str]) -> dict:
+        """Bulk Organization Enrichment: up to BULK_ENRICH_MAX root domains in one call (1 credit per company found).
+
+        One call, so the caller reserves its credits before it; see enriched_in().
+        """
+        ds = list(dict.fromkeys(d for d in (_enrich_domain(x) for x in domains) if d))
+        if not 1 <= len(ds) <= BULK_ENRICH_MAX:
+            raise ValueError(f"bulk_enrich takes 1 to {BULK_ENRICH_MAX} domains, not {len(ds)}")
+        return self._read("organizations.bulk_enrich", json={"domains": ds}, detail={"count": len(ds)}) or {}
 
     def job_postings(self, organization_id: str, page: int = 1, per_page: int = 100) -> dict:
         """One page of an organization's current job postings (1 credit per request). See postings_in()."""

@@ -10,6 +10,8 @@ It covers the last send day (Mondays cover Friday to Sunday, so weekend replies 
     (limits.py, the same lines `us-outbound status` prints);
   * the careers and benefits page reader's coverage: its last run, every account read so far,
     and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`);
+  * what Apollo's organization enrich found: its last run and every account enriched so far,
+    found or not, with funding in the last 180 and 365 days (sources/apollo_enrich.py);
   * mailbox health: each mailbox's sends, its bounces over its last 100 sends
     (v_mailbox_health) and its place on the sending ramp (registry/ramp.py);
   * kill rules that fired, and the holds still in force (learn/kill_rules.py);
@@ -32,7 +34,7 @@ from us_outbound.learn import holds, kill_rules
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
-from us_outbound.sources import pages
+from us_outbound.sources import apollo_enrich, pages
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -167,6 +169,11 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     lines += pages.post_lines(ctx)
     total = pages.coverage(ctx.store, ctx.settings, ctx.today_uk())
     nums.update(pages_read=total.accounts, pages_benefits_text_share=round(total.share(total.with_text), 3))
+
+    # Funding and headcount from Apollo's organization enrich (Harry, 2 Oct 2026).
+    lines += apollo_enrich.post_lines(ctx)
+    enriched = apollo_enrich.tally(ctx.store, ctx.today_uk())
+    nums.update(enriched=enriched.accounts, enriched_with_funding=enriched.with_funding)
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
     lines.append("Mailboxes:")

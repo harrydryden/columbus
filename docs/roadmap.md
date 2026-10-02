@@ -11,8 +11,8 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Stage | Built | Not built yet |
 | :- | :- | :- |
 | Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (Spill's HubSpot customers as cells, a signal and an early exclusion of customer domains), `named` accounts | `site_visits`, `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
-| Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct) | `verify_in_clay`; Clay's cross-check of doubtful HQ state and size (the `verify.cross_check` hook) |
-| Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age, a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
+| Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct). For the groups `apollo_enrich` enriches, Apollo's exact employee count replaces the searched size band before verify runs | `verify_in_clay`; Clay's cross-check of doubtful HQ state and size (the `verify.cross_check` hook) |
+| Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
 | Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
 | Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
 | Send | `enrol` (scheduled, dry until `live_sending` = yes), the per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
@@ -95,6 +95,10 @@ verification and contact choice write only the database; enrol, replies and post
    UK's Highest Rated EAP | Book a demo". Its description says "employee assistance programme". The
    US locale inherits both from the UK page (Webflow page 65c650592086330a300a3cf6). Every email 2–4
    links to this page. The signature's "Book a call here" goes to Harry's HubSpot meetings page instead.
+10. **Funding from Apollo's organization enrich (2 Oct).** `us-outbound settings load --tab General --live`, then
+    `us-outbound settings sync`, adds `apollo_enrich_groups` = Technology & Startups (comma-separated industry
+    groups; blank enriches none). The job runs on that default until then. It enriches up to about 15 accounts a
+    weekday (15% of `apollo_monthly_credits`), each again after 180 days, and the daily post counts what it found.
 
 ### The pilot (week of 5 Oct)
 - **Volume:** the ramp holds each mailbox to 10 sends a day in its first sending week. Four
@@ -126,7 +130,10 @@ verification and contact choice write only the database; enrol, replies and post
 1. **Live checks of the `PHASE0-CONFIRM` items**, starting with the ones that gate sending and opt-outs:
    - Instantly: the `{{unsubscribe}}` tag; lead status codes; the reply and forward endpoints;
      stop-on-reply for replies Instantly classes as automatic.
-   - Apollo: organization and people search filters, job postings, credit charges.
+   - Apollo: organization and people search filters, job postings, credit charges. Organization enrich
+     (`sources/apollo_enrich.py`): the bulk call's body and answer (`organizations`, `unique_enriched_records`), the
+     single call's answer for a domain Apollo does not know (404 or an empty `organization`), and the funding fields
+     (`latest_funding_round_date`, `latest_funding_stage`, `funding_events[].amount` as text like "8M").
    - HubSpot: meetings and pipeline stage labels.
    - The job-board feeds (`sources/job_posts.py`): Greenhouse's `company_name` and escaped `content`,
      Lever's `lists`, Ashby's `descriptionHtml`, Workable's `details=true` descriptions.

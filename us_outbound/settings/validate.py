@@ -1174,6 +1174,19 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
         focus_rows.append((dataclasses.replace(f, industry_group=canonical), row))
     values["Focus"] = focus_rows
 
+    # General apollo_enrich_groups names industry groups on the Industries tab (sources/apollo_enrich.py).
+    general = values["General"]
+    enrich_row = next((i + FIRST_DATA_ROW for i, r in enumerate(raw["General"] or ())
+                       if _cell(r, "key") == "apollo_enrich_groups"), HEADER_ROW)
+    unknown = [g for g in general.apollo_enrich_groups if g.casefold() not in groups]
+    for g in unknown:
+        errors["General"].append(RowError("General", enrich_row, "value", f"apollo_enrich_groups: {g!r} is not an "
+                                          f"industry_group on the Industries tab{_hint(g, groups.values())}",
+                                          "apollo_enrich_groups"))
+    if not unknown and general.apollo_enrich_groups:
+        values["General"] = dataclasses.replace(general, apollo_enrich_groups=tuple(
+            dict.fromkeys(groups[g.casefold()] for g in general.apollo_enrich_groups)))
+
     if any(errors.values()):
         return None, errors
     settings = Settings(

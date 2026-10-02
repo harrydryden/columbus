@@ -35,13 +35,18 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "0 2 * * *", live=True, enabled=True, timeout_minutes=15, phase=0),
     # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
     # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
-    # weekday (sources/apollo_universe.py); then verify_accounts, all before pick_contacts at 05:30.
+    # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich and verify_accounts, all before
+    # pick_contacts at 05:30.
     ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
     ScheduledJob("apollo_signals", "30 3 * * 1-5", live=False, enabled=True, timeout_minutes=45, phase=1),
     # Harry, 2 Oct 2026: our own careers and benefits page reader, in place of Clay's. After apollo_signals and
     # before verify_accounts, whose rescore scores its facts; public GETs and database writes only, so no --live.
     # It stops starting accounts after 30 minutes (sources/pages.py RUN_SECONDS), well inside the timeout.
     ScheduledJob("read_pages", "45 3 * * 1-5", live=False, enabled=True, timeout_minutes=40, phase=1),
+    # Harry, 2 Oct 2026: funding and an exact headcount from Apollo's organization enrich, for apollo_enrich_groups.
+    # After read_pages starts and before verify_accounts, whose rescore scores its facts before pick_contacts;
+    # Apollo reads and database writes only, so no --live. At most 500 accounts a run, inside the timeout.
+    ScheduledJob("apollo_enrich", "10 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),

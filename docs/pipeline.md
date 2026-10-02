@@ -21,6 +21,12 @@ verify, and later a cross-check when Apollo's HQ state or size looks doubtful. `
 stays `skip` for the pilot. The reader measures its own coverage, so whether to enhance it is decided
 on numbers after the first batches (docs/roadmap.md).
 
+Harry's decision on 2 Oct 2026: funding is a sign that a company is in a period of change and growth.
+Apollo's organisation search rows carry no funding fields and no employee count (the first live run),
+so the funding comes from Apollo's organisation enrich (`apollo_enrich`, 1 credit per company found), for
+the industry groups named in the General `apollo_enrich_groups` (Technology & Startups, where funding is
+common), within 15% of the month's Apollo credits.
+
 The list of changes is at the end.
 
 ## The short answer
@@ -37,10 +43,10 @@ The list of changes is at the end.
 | Job | Owner | Fallback | Not used |
 | :- | :- | :- | :- |
 | Find companies (the universe) | Apollo organisation search | IRS BMF for nonprofits (January). New site visitors. The Named accounts tab. Great Place To Work and B Corp lists (phase 3) | Clay Find Companies, Instantly SuperSearch, Apollo lists and saved searches |
-| Company facts (size, HQ, NAICS, founded) | Apollo | Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check instead of being verified unseen. Later, Clay cross-checks HQ state and size (`verify.cross_check`) | Clay's other data providers; HubSpot auto-enrichment |
+| Company facts (size, HQ, NAICS, founded) | Apollo (an exact employee count from organisation enrich for `apollo_enrich_groups`; the searched size band otherwise) | Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check instead of being verified unseen. Later, Clay cross-checks HQ state and size (`verify.cross_check`) | Clay's other data providers; HubSpot auto-enrichment |
 | Clean company name | Clay AI, checked against the `clean/names.py` rules | The `clean/names.py` rules alone | |
 | Read careers, benefits and values pages | Our own reader, `read_pages` (source `careers_pages`; no credits; Harry, 2 Oct 2026) | Clay "US Outbound – Accounts" (`clay_careers`) if the reader's coverage falls short. A failed read is scored as "not read" | |
-| Funding | Apollo | Clay's Company Latest Funding, run only when Apollo has nothing | |
+| Funding | Apollo organisation enrich (`apollo_enrich`, for `apollo_enrich_groups`; Harry, 2 Oct 2026). Search rows carry none | Clay's Company Latest Funding, run only when Apollo has nothing | |
 | Hiring counts | Apollo organisation search with job filters (`apollo_jobs`) | | |
 | Job-posting text | The public Greenhouse, Lever, Ashby and Workable feeds (free), read by `read_pages` from the board the company's site links to | | |
 | People at the company (titles, locations) | Apollo people search (free) | | Clay Find People, Instantly SuperSearch |
@@ -95,6 +101,17 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   Greenhouse, Lever, Ashby or Workable board its site links to. The benefit sentences, with quote
   and URL, feed the EAP, mental-health, wellbeing-app, progressive-benefits and competitor signals.
   `us-outbound pages show` and the daily post give its coverage.
+- **apollo_enrich** (weekdays 04:10, 1 Apollo credit per company found, 0 for one Apollo doesn't know;
+  Harry, 2 Oct 2026): Apollo's organisation enrich, in bulk calls of up to 10 domains, for the queue
+  accounts in the General `apollo_enrich_groups` (Technology & Startups), never-enriched first, then
+  those enriched more than 180 days ago, in enrol's order. It writes the funding facts the funding
+  signals read (`days_since_funding`, aged to today at scoring, `funding_stage`, `funding_amount_usd`),
+  `employees` and `headcount_growth_12m`, and the description, technologies and keywords when none is
+  stored. An exact count replaces the searched size band on the account, unless an Overrides row or
+  Clay says otherwise; verify then treats a count outside 10–249 as usual (a verified account that
+  count puts outside goes back to `new`, so verify sees it again). A company Apollo has no
+  record for is "not found", not "no funding", and is not asked again for 180 days. The daily post
+  counts what it found.
 - **Site visits.**
 - **Layoffs.**
 - **IRS BMF.**
@@ -156,7 +173,7 @@ Credit budgets are monthly, a calendar month in UK time, because that's how Apol
 
 | Key | Default | Spent or used by | Checked |
 | :- | :- | :- | :- |
-| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages), `verify_in_clay` (enrich), `pick_contacts` (email reveals) | Before every batch: the month's balance, and today's share of it |
+| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages, at most 25%), `apollo_signals` (job postings, at most 25%), `apollo_enrich` (organisation enrich, at most 15%), `pick_contacts` (email reveals: the rest, at least 35%), `verify_in_clay` (enrich, once built) | Before every batch: the month's balance, and today's share of it (each source's share paced the same way) |
 | `clay_monthly_credits` | 2,000 (about 500 a week; 0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts) | The same |
 | `apollo_floor` | 5,000 | All Apollo spend | Stops Apollo spend if the account balance falls below it |
 | `claude_monthly_cap_usd` | $10 | Reply classification and drafts | A UTC month, as the Anthropic Console counts it |
@@ -185,9 +202,10 @@ The budgets are not part of today's enrolment number. The enrol job spends no cr
 - **What that leaves:** about 8,700, which is about 3,700 above the floor.
 
 The monthly 2,000 has to cover:
-- the sweep;
-- organisation enrichment for each account sent to Clay;
-- about 650 email reveals.
+- the sweep (`source_universe`, up to 25%: 500);
+- job postings (`apollo_signals`, up to 25%: 500);
+- organisation enrichment for funding and size (`apollo_enrich`, up to 15%: 300, about 15 accounts a weekday);
+- about 650 email reveals (`pick_contacts`, the rest: at least 35%, 700).
 
 Phase 1 measures the sweep.
 
@@ -374,6 +392,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | The send forecast replaces "caps ÷ 4", with Instantly's reports (limits, sends, sending status) and an "add a mailbox" flag | Harry | 9 | Done |
 | — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
+| — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
 | — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |
 | — | A link in every email: the industry page in email 1, the demo page in emails 2 to 4, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry, 30 Sep and 1 Oct | 10 | Done |
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |
@@ -393,12 +412,12 @@ Sources write facts only. One resolver sets the account's columns from the facts
 | legal_name | Override → Clay |
 | domain | It is the key. If Clay's `domain_confirmed` is a different root domain that is not a known alias, the account goes to the hand-check |
 | hq_state, hq_city | Override → Clay → Apollo. A state disagreement goes to the hand-check |
-| employees, size_band | Override → Clay → Apollo. A band disagreement goes to the hand-check |
+| employees, size_band | Override → Clay → Apollo (organisation enrich's exact count over the searched band). A band disagreement goes to the hand-check |
 | industry label | Override → Clay's label, if it is on the Industries tab → the label whose NAICS or keywords matched |
 | industry_group | Always from the label via the Industries tab, never a vendor's own category |
 | naics | Apollo |
 | founded_year | Override → Clay → Apollo |
-| Funding | The most recent round from Apollo or Clay |
+| Funding | The most recent round from Apollo (organisation enrich) or Clay |
 | US headcount, CA/WA/FL share, people leaders | Apollo people (the only source) |
 
 Each fact name has one owning source. `open_roles` comes from `apollo_jobs` only, and `job_posts` supplies posting text only. The default "Hiring and growth" signal reads `apollo_jobs` (open_roles) and `apollo_org` (headcount_growth_12m).

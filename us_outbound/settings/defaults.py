@@ -166,6 +166,14 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed.",
     ),
     ("apollo_credits_per_account", "1", "Estimate until measured."),
+    (
+        "apollo_enrich_groups",
+        "Technology & Startups",
+        "Industry groups whose queued accounts apollo_enrich enriches through Apollo for funding and an exact "
+        "employee count, comma-separated (1 credit per company found, within 15% of apollo_monthly_credits; again "
+        "after 180 days). Blank enriches none. Harry, 2 Oct 2026: funding as a sign of change and growth, where "
+        "funding is common. Added by the build.",
+    ),
     ("claude_model", "claude-opus-5-5",
      "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),
     ("claude_task_model", "claude-sonnet-5-5",

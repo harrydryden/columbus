@@ -34,7 +34,8 @@ runs after the sources), so the new accounts and the sources' new facts have a t
 before pick_contacts at 05:30.
 
 An account verified here has clay_checked_at empty, which is how to find them once Clay is built.
-Weekdays at 04:30 UK, after source_universe (03:00) and apollo_signals (03:30).
+Weekdays at 04:30 UK, after source_universe (03:00), apollo_signals (03:30), read_pages (03:45) and
+apollo_enrich (04:10), whose exact headcounts it checks like any other.
 
 Dry-run: the HubSpot calls are reads, so they happen. Statuses and HubSpot exclusions are database
 writes, which dry-run makes too (SPEC 0.3), as enrol does with the exclusions it finds; enrolment
