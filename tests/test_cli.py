@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import dataclasses
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -84,6 +85,7 @@ class Harness:
         (["hubspot", "setup", "--live"], {"action": "setup", "live": True}),
         (["hubspot", "ids"], {"action": "ids"}),
         (["campaigns", "ensure", "--fix"], {"action": "ensure", "fix": True}),
+        (["campaigns", "show"], {"action": "show"}),
         (["suppression", "load"], {"action": "load"}),
         (["pages", "show"], {"command": "pages", "action": "show"}),
         (["schedule"], {"command": "schedule"}),
@@ -317,6 +319,16 @@ def test_stop_pauses_every_us_campaign_and_enrolment():
     assert hannah["status"] == 2 and harry["status"] == 0 and eu["status"] == 1
     assert not [r for r in h.transport.requests if f"/{eu['id']}" in r.url]
     assert [b["status"] for b in h.beats(hb.OPERATOR_STOP)] == ["ok", "ok"]
+
+
+def test_campaigns_show_prints_each_owner_campaign_as_instantly_holds_it(capsys):
+    h = Harness(SETTINGS)
+    h.instantly.standard(C_HANNAH, [HANNAH], 30)
+    assert h.run("campaigns", "show") == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{"campaign"')]
+    by = {line["campaign"]: line["instantly"] for line in lines}
+    assert by[C_HANNAH]["name"] == C_HANNAH and by[C_SAM] is None  # Sam's is not created yet
+    assert not [r for r in h.transport.requests if r.method != "GET"]  # read-only
 
 
 def test_start_needs_live_sending_and_checks_drift():

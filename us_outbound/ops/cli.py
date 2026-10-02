@@ -23,7 +23,7 @@ SPEC 13 commands:
 Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
 Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
 (mailbox_health by hand), settings sync|bootstrap|load, db apply, hubspot setup|ids,
-campaigns ensure [--fix], suppression load, lookalikes show [--top N] [--all] (the cells the
+campaigns ensure [--fix] | show, suppression load, lookalikes show [--top N] [--all] (the cells the
 lookalikes job last stored, sources/lookalikes.py), pages show (what the careers and benefits page
 reader has found and its coverage, sources/pages.py). On Railway, run a command inside the worker
 with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
@@ -931,8 +931,17 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
-    from us_outbound.registry.mailboxes import ensure_campaigns
+    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns
 
+    if args.action == "show":
+        # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
+        # Instantly kept of the settings and step templates it was given (PHASE0-CONFIRM items).
+        ctx = factory("campaigns_show", False)
+        for owner in ctx.settings.owners():
+            name = campaign_name(owner)
+            body = ctx.clients.instantly.get_campaign(name)
+            print(json.dumps({"campaign": name, "instantly": body}, sort_keys=True, default=str))
+        return 0
     ctx = factory("campaigns_ensure", args.live, operator=True)
     _print(run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix)))
     _dry_note(ctx, "no campaign was created or changed.")
@@ -1187,7 +1196,7 @@ def build_parser() -> argparse.ArgumentParser:
     hs.set_defaults(fn=cmd_hubspot)
 
     cp = sub.add_parser("campaigns", parents=[live], help="create the sender campaigns (paused) and check drift")
-    cp.add_argument("action", choices=["ensure"])
+    cp.add_argument("action", choices=["ensure", "show"])
     cp.add_argument("--fix", action="store_true", help="put drifted settings and sending lists right")
     cp.set_defaults(fn=cmd_campaigns)
 
