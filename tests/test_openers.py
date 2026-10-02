@@ -88,14 +88,14 @@ PEOPLE, FOUNDER, OPS = "People leader", "Founder or executive", "Operations"
     (LEADER, "New People leader", FOUNDER, "I saw Brightline has a new Head of People in place."),
     (LEADER, "New People leader", OPS, "I saw there's a new Head of People at Brightline."),
     (FIRST_HIRE, "First People hire", PEOPLE, "I saw Brightline is hiring a People Operations Manager."),
-    (FIRST_HIRE, "First People hire", FOUNDER, "I saw Brightline is hiring its first People Operations Manager."),
-    (FIRST_HIRE, "First People hire", OPS, "I saw Brightline is looking for its first People Operations Manager."),
+    (FIRST_HIRE, "First People hire", FOUNDER, "I saw Brightline is recruiting a People Operations Manager."),
+    (FIRST_HIRE, "First People hire", OPS, "I saw Brightline is looking to hire a People Operations Manager."),
     (PEOPLE_ROLE, "People role open", PEOPLE, "I saw Brightline is adding an HR Generalist to the team."),
     (PEOPLE_ROLE, "People role open", FOUNDER, "I saw Brightline is hiring an HR Generalist right now."),
     (PEOPLE_ROLE, "People role open", OPS, "I saw Brightline has an HR Generalist role open."),
-    (FUNDING, "Funding in the last 6 months", PEOPLE, "Congratulations to everyone at Brightline on the Series A."),
+    (FUNDING, "Funding in the last 6 months", PEOPLE, "I saw Brightline recently raised a Series A."),
     (FUNDING, "Funding in the last 6 months", FOUNDER, "Congratulations on the Series A."),
-    (FUNDING, "Funding in the last 6 months", OPS, "Congratulations to the Brightline team on the Series A."),
+    (FUNDING, "Funding in the last 6 months", OPS, "I saw Brightline recently closed a Series A."),
     (HIRING, "Hiring and growth", PEOPLE, "I saw Brightline has six roles open, including a Senior Product Designer."),
     (HIRING, "Hiring and growth", FOUNDER, "I saw Brightline is hiring for six roles, including a Senior Product Designer."),
     (HIRING, "Hiring and growth", OPS, "I saw Brightline is recruiting for six roles, including a Senior Product Designer."),
@@ -105,14 +105,14 @@ PEOPLE, FOUNDER, OPS = "People leader", "Founder or executive", "Operations"
     (EAP, "EAP named", PEOPLE, "I saw Brightline offers its team an employee assistance program through ComPsych."),
     (EAP, "EAP named", FOUNDER, "I saw Brightline offers an employee assistance program through ComPsych."),
     (EAP, "EAP named", OPS, "I saw Brightline provides an employee assistance program through ComPsych."),
-    (MENTAL_HEALTH, "Mental health support listed", PEOPLE, "I saw mental health comes up when Brightline talks about working there."),
-    (MENTAL_HEALTH, "Mental health support listed", FOUNDER, "I saw Brightline mentions mental health when it talks about working there."),
-    (MENTAL_HEALTH, "Mental health support listed", OPS, "I saw mental health is part of how Brightline describes working there."),
+    (MENTAL_HEALTH, "Mental health support listed", PEOPLE, "I saw Brightline mentions mental health on its careers page."),
+    (MENTAL_HEALTH, "Mental health support listed", FOUNDER, "I saw Brightline mentions mental health when it recruits."),
+    (MENTAL_HEALTH, "Mental health support listed", OPS, "I saw Brightline talks about mental health on its careers page."),
     (APP, "Wellbeing app or perk named", PEOPLE, "I saw Brightline offers Headspace as part of its benefits."),
     (APP, "Wellbeing app or perk named", FOUNDER, "I saw Headspace is one of the perks at Brightline."),
     (APP, "Wellbeing app or perk named", OPS, "I saw Brightline includes Headspace in its benefits."),
     (BENEFITS, "Progressive benefits", PEOPLE, "I saw Brightline lists parental leave among its benefits."),
-    (BENEFITS, "Progressive benefits", FOUNDER, "I saw parental leave is one of the benefits at Brightline."),
+    (BENEFITS, "Progressive benefits", FOUNDER, "I saw Brightline offers parental leave as part of its benefits."),
     (BENEFITS, "Progressive benefits", OPS, "I saw the benefits at Brightline include parental leave."),
 ])
 def test_each_signal_and_role_fills_from_the_account_s_facts(facts, signal, role, line):
@@ -143,50 +143,58 @@ def test_a_line_whose_token_has_no_fact_falls_back_to_the_next_line_then_the_pla
     # Hiring and growth fired on growth alone: the open-roles line has no {open_roles}, so the growth line.
     op = opener(GROWTH, FOUNDER)
     assert op.source == "Hiring and growth / opener_founder" and "grown by about a third" in op.text
-    assert op.notes == ("Hiring and growth, opener_founder line 1: no {open_roles}, {posting_title}",)
-    # Six roles but no posting that cleans to a title, and no growth: the signal's plain opener.
+    assert op.notes == ("Hiring and growth, opener_founder line 1: no {open_roles}, {posting_title}",
+                        "Hiring and growth, opener_founder line 2: no {open_roles}")
+    # Six roles but no posting that cleans to a title: the roles-only middle line keeps the count (copy QA).
     junk = [fact("apollo_jobs", "open_roles", 6), fact("apollo_jobs", "posting_titles", ["Summer Intern", "R-1234"])]
     op = opener(junk, OPS)
-    assert (op.text, op.source) == ("I saw the team has been growing.", "Hiring and growth / opener")
-    assert op.notes == ("Hiring and growth, opener_ops line 1: no {posting_title}",
-                        "Hiring and growth, opener_ops line 2: no {growth}")
+    assert (op.text, op.source) == ("I saw Brightline is recruiting for six roles right now.",
+                                    "Hiring and growth / opener_ops")
+    assert op.notes == ("Hiring and growth, opener_ops line 1: no {posting_title}",)
+    # A count past 99 is not believed, and there is no growth: the signal's plain opener.
+    op = opener([fact("apollo_jobs", "open_roles", 150)], OPS)
+    assert (op.text, op.source) == ("I saw you've been hiring lately.", "Hiring and growth / opener")
+    assert op.notes == ("Hiring and growth, opener_ops line 1: no {open_roles}, {posting_title}",
+                        "Hiring and growth, opener_ops line 2: no {open_roles}",
+                        "Hiring and growth, opener_ops line 3: no {growth}")
 
 
 def test_a_token_that_fails_its_check_is_missing():
-    # A round that does not read as one ("Venture (Round not Specified)") gets the plain line.
+    # A round that does not read as one ("Venture (Round not Specified)", debt) gets the plain line.
     venture = [fact("apollo_org", "days_since_funding", 60), fact("apollo_org", "funding_stage", "Venture (Round not Specified)")]
-    assert opener(venture, FOUNDER).text == "Congratulations on the recent funding round."
-    # One open role never reads "has one roles open"; growth below 10% is not worth a line.
+    assert opener(venture, FOUNDER).text == "I saw your company recently took on new funding."
+    # The only posting is refused by the copy rules, and growth below 10% is not worth a line: the count alone.
     few = [fact("apollo_jobs", "open_roles", 3), fact("apollo_jobs", "posting_titles", ["Licensed Therapist"]),
            fact("apollo_org", "headcount_growth_12m", 0.04)]
-    op = opener(few, PEOPLE)
-    assert op.source == "Hiring and growth / opener"  # the therapist posting is refused by the copy rules
+    assert opener(few, PEOPLE).text == "I saw Brightline has three roles open right now."
     many = [fact("apollo_jobs", "open_roles", 14), fact("apollo_jobs", "posting_titles", POSTINGS)]
     assert opener(many, PEOPLE).text == "I saw Brightline has 14 roles open, including a Senior Product Designer."
 
 
 def test_a_filled_line_that_breaks_a_copy_rule_falls_back():
-    # "Call Center Agent" would read as asking for a call in email 1, so the next line, then the plain opener.
-    calls = [fact("apollo_jobs", "open_roles", 5), fact("apollo_jobs", "posting_titles", ["Call Center Agent"])]
-    op = opener(calls, PEOPLE)
-    assert op.text == "I saw the team has been growing."
-    assert "email 1 asks only for a visit" in op.notes[0]
-    # Evidence the copy may not use ("therapy") drops the role line and the plain line: none.
+    # Evidence the copy may not use ("therapy") drops every line and the plain line: none.
     therapy = [fact("clay_careers", "benefit", {"item": "Free therapy sessions"})]
     op = opener(therapy, OPS)
     assert (op.text, op.arm) == ("", openers.NONE) and any("therapy" in n for n in op.notes)
+    # A line that fills but breaks a rule is passed over for the next.
+    s = dataclasses.replace(S, signals=tuple(
+        dataclasses.replace(x, role_openers={**x.role_openers, OPS: "I saw {company} offers unlimited {evidence}.\n"
+                                             "I saw the benefits at {company} include {evidence}."})
+        if x.signal == "Progressive benefits" else x for x in S.signals))
+    op = opener(BENEFITS, OPS, settings=s)
+    assert op.text == "I saw the benefits at Brightline include parental leave."
+    assert 'says "unlimited"' in op.notes[0]
 
 
 def test_british_evidence_is_spelled_the_american_way():
     wellbeing = [fact("clay_careers", "benefit", {"item": "Wellbeing support for everyone"})]
-    assert opener(wellbeing, FOUNDER).text == "I saw Brightline mentions well-being support when it talks about working there."
+    assert opener(wellbeing, FOUNDER).text == "I saw Brightline mentions well-being support when it recruits."
 
 
 def test_no_line_and_no_plain_opener_means_none():
     s = dataclasses.replace(S, signals=tuple(dataclasses.replace(x, opener="") if x.signal == "Hiring and growth" else x
                                              for x in S.signals))
-    junk = [fact("apollo_jobs", "open_roles", 6), fact("apollo_jobs", "posting_titles", ["Intern"])]
-    op = opener(junk, OPS, settings=s)
+    op = opener([fact("apollo_jobs", "open_roles", 150)], OPS, settings=s)
     assert (op.text, op.arm, op.source) == ("", openers.NONE, "")
 
 
@@ -203,6 +211,137 @@ def test_old_facts_the_signal_no_longer_counts_are_not_quoted():
     assert opener(stale, PEOPLE).source == "Funding in the last 6 months / opener_people"
     s = next(x for x in S.signals if x.signal == "Hiring and growth")
     assert "posting_title" not in openers.tokens(acct(), s, None, stale, S, TODAY)
+
+
+def test_the_page_token_says_where_the_evidence_was_read():
+    def mh(source, url=""):
+        return [fact(source, "benefit", {"item": "Mental health support"}, quote="We care about mental health.")
+                | {"source_url": url}]
+
+    assert opener(mh("careers_pages", "https://brightline.com/careers"), PEOPLE).text == \
+        "I saw Brightline mentions mental health on its careers page."
+    assert opener(mh("careers_pages", "https://brightline.com/benefits"), OPS).text == \
+        "I saw Brightline talks about mental health on its benefits page."
+    assert opener(mh("job_posts"), PEOPLE).text == "I saw Brightline mentions mental health in its job postings."
+
+
+# -- the copy QA's code findings (2 Oct 2026), each with the QA's samples ------------------------------------------
+
+
+@pytest.mark.parametrize("raw, clean", [
+    ("VP, People Operations", "VP of People Operations"),
+    ("Director, Human Resources", "Director of Human Resources"),
+    ("SVP, Engineering", "SVP of Engineering"),
+    ("Head, People", "Head of People"),
+    ("Senior Manager, People & Culture", "Senior Manager of People & Culture"),
+    ("Account Executive, Mid-Market", "Account Executive"),  # the first part is a whole title: kept as it was
+    ("Product Manager, Growth", "Product Manager"),
+    ("VP, New York", None),  # a seniority and a place: no function to name
+    ("VP", None),
+    ("Senior", None),
+])
+def test_bug1_a_seniority_takes_its_function_with_of_or_the_title_is_dropped(raw, clean):
+    assert openers.clean_title(raw) == clean
+
+
+def test_bug1_the_rendered_lines_name_the_function():
+    leader = [*LEADER[:2], fact("apollo_people", "people_leader_newest",
+                                {"apollo_person_id": "p-dana", "title": "Director, Human Resources", "days_in_title": 40})]
+    assert opener(leader, OPS).text == "I saw there's a new Director of Human Resources at Brightline."
+    hiring = [*FIRST_HIRE[:2], fact("apollo_jobs", "posting_titles", ["VP, People Operations"]), FIRST_HIRE[3]]
+    assert opener(hiring, PEOPLE).text == "I saw Brightline is hiring a VP of People Operations."
+
+
+def test_bug2_organisational_is_british_and_never_reaches_email_1():
+    from us_outbound.enrol import copy_rules
+
+    assert copy_rules.content_violations("Organisational Development Lead") == [
+        'has the British spelling "Organisational" (American: "organizational")']
+    assert copy_rules.content_violations("organizational development") == []
+    assert openers.clean_title("Organisational Development Lead") is None
+    six = [fact("apollo_jobs", "open_roles", 6), fact("apollo_jobs", "posting_titles", ["Organisational Development Lead"])]
+    assert opener(six, PEOPLE).text == "I saw Brightline has six roles open right now."
+
+
+@pytest.mark.parametrize("raw, clean", [
+    ("Sr. Software Engineer II - Payments", "Senior Software Engineer"),
+    ("Software Engineer III", "Software Engineer"),
+    ("Jr. Designer", "Junior Designer"),
+    ("Office Mgr", "Office Manager"),
+    ("Exec Asst", "Exec Assistant"),
+    ("Data Analyst Level 2", "Data Analyst"),
+    ("Software Engineer L5", "Software Engineer"),
+    ("Account Executive 2", "Account Executive"),
+])
+def test_bug3_abbreviations_are_written_out_and_levels_dropped(raw, clean):
+    assert openers.clean_title(raw) == clean
+
+
+def test_bug3_the_rendered_line_has_no_mid_sentence_full_stop():
+    six = [fact("apollo_jobs", "open_roles", 6), fact("apollo_jobs", "posting_titles", ["Sr. Software Engineer II - Payments"])]
+    assert opener(six, PEOPLE).text == "I saw Brightline has six roles open, including a Senior Software Engineer."
+
+
+def test_bug4_the_posting_named_is_one_email_1_can_carry():
+    assert openers.best_posting(["Call Center Agent", "Account Executive"]) == "Account Executive"
+    assert openers.best_posting(["Demo Engineer", "Meeting Planner", "Booking Coordinator"]) is None
+    calls = [fact("apollo_jobs", "open_roles", 5), fact("apollo_jobs", "posting_titles", ["Call Center Agent", "Account Executive"])]
+    assert opener(calls, PEOPLE).text == "I saw Brightline has five roles open, including an Account Executive."
+    # A People posting the email-1 rules block is passed over the same way.
+    people = [*PEOPLE_ROLE[:2], fact("apollo_jobs", "posting_titles", ["HR Call Center Lead", "HR Generalist"])]
+    assert opener(people, OPS).text == "I saw Brightline has an HR Generalist role open."
+
+
+def test_bug5_evidence_skips_a_term_the_copy_rules_block():
+    therapy = [fact("careers_pages", "benefit", {"item": "Therapy and counseling covered"})]
+    assert opener(therapy, PEOPLE).text == "I saw Brightline mentions counseling on its careers page."
+    pto = [fact("careers_pages", "benefit", {"item": "Unlimited PTO and parental leave"})]
+    assert opener(pto, PEOPLE).text == "I saw Brightline lists parental leave among its benefits."
+    # The plain opener (a contact with no copy role) takes the same evidence.
+    assert opener(pto, "").text == "I noticed your benefits include parental leave."
+    # {provider} skips blocked terms too: a provider whose name breaks a rule is never named.
+    signal = next(x for x in S.signals if x.signal == "EAP named")
+    from us_outbound.scoring.score import Evidence, Match
+
+    match = Match(signal, 5, [Evidence("Unlimited Care", term="Unlimited Care"), Evidence("ComPsych", term="ComPsych")])
+    got = openers.tokens(acct(), signal, match, [], S, TODAY)
+    assert (got["evidence"], got["provider"]) == ("ComPsych", "ComPsych")
+
+
+@pytest.mark.parametrize("item, shown", [
+    ("A wellness stipend every month", "wellness stipends"),
+    ("Wellness stipends", "wellness stipends"),
+    ("A paid sabbatical after five years", "sabbaticals"),
+    ("We work a four-day week", "four-day weeks"),
+    ("Two mental health days a quarter", "mental health days"),
+    ("Paid parental leave", "parental leave"),
+])
+def test_bug6_benefit_evidence_is_plural_or_mass(item, shown):
+    facts = [fact("careers_pages", "benefit", {"item": item})]
+    op = opener(facts, OPS)
+    if shown == "mental health days":
+        assert op.source.startswith("Mental health support listed")  # the broader signal wins, as the QA noted
+        return
+    assert op.text == f"I saw the benefits at Brightline include {shown}."
+    assert opener(facts, FOUNDER).text == f"I saw Brightline offers {shown} as part of its benefits."
+    assert opener(facts, "").text == f"I noticed your benefits include {shown}."
+
+
+def test_bug7_ambiguous_eap_provider_names_count_only_near_eap_words():
+    from us_outbound.scoring.score import match_signal
+
+    eap = next(x for x in S.signals if x.signal == "EAP named")
+    assert {"magellan", "telus health"} <= set(eap.context)
+
+    def page(text):
+        return [fact("careers_pages", "benefit", {"item": text})]
+
+    assert match_signal(eap, page("Our Magellan platform team ships weekly."), TODAY) is None
+    assert match_signal(eap, page("We partner with TELUS Health for virtual care."), TODAY) is None
+    assert opener(page("Our Magellan platform team ships weekly."), PEOPLE).arm == openers.NONE
+    assert opener(page("Our employee assistance program is run by Magellan."), PEOPLE).text == \
+        "I saw Brightline offers its team an employee assistance program through Magellan."
+    assert match_signal(eap, page("TELUS Health runs our EAP for every employee."), TODAY) is not None
 
 
 # -- the contact who is the new People leader --------------------------------------------------------------------
@@ -449,7 +588,7 @@ def test_the_plain_opener_is_one_line_and_role_cells_may_hold_alternatives():
     got, errs = validate_tab("Signals", signals_rows())
     assert errs == []
     hiring = next(s for s in got if s.signal == "Hiring and growth")
-    assert len(openers.lines_of(hiring.role_openers[OPS])) == 2
+    assert len(openers.lines_of(hiring.role_openers[OPS])) == 3
 
 
 def test_a_sheet_without_the_new_columns_reads_them_as_blank():

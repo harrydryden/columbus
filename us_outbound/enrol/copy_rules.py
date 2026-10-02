@@ -95,7 +95,7 @@ def _our(w: str) -> str:
 
 
 def _ise(w: str) -> str:
-    return re.sub(r"is(e|ed|es|ing|ation|ations|er|ers)$", r"iz\1", w)
+    return re.sub(r"is(e|ed|es|ing|ation|ations|ational|ationally|er|ers)$", r"iz\1", w)
 
 
 def _yse(w: str) -> str:
@@ -149,7 +149,7 @@ BRITISH_WORDS: dict[str, str] = {
 BRITISH: tuple[tuple[re.Pattern[str], Callable[[str], str]], ...] = (
     (_rx(r"\b(?:" + "|".join(re.escape(w) for w in BRITISH_WORDS).replace(r"\ ", r"\s+") + r")\b"),
      lambda w: BRITISH_WORDS.get(re.sub(r"\s+", " ", w), w)),
-    (_rx(rf"\b(?:re|de|un|over)?(?:{_ISE_STEMS})is(?:e|ed|es|ing|ation|ations|er|ers)\b"), _ise),
+    (_rx(rf"\b(?:re|de|un|over)?(?:{_ISE_STEMS})is(?:e|ed|es|ing|ation|ations|ational|ationally|er|ers)\b"), _ise),
     (_rx(r"\b(?:anal|paral|catal)ys(?:e|ed|ing)\b"), _yse),  # "analyses" is also the American plural noun
     (_rx(rf"\b(?:dis|un|mis|re)?(?:{_OUR_STEMS})our(?:s|ed|ing|al|ally|ful|fully|ite|ites|able|ably|er|ers|hood|less)?\b"), _our),
     (_rx(rf"\b(?:{_RE_STEMS})re(?:s|d)?\b"), _re),
