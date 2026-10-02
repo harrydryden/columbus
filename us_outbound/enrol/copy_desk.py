@@ -21,8 +21,9 @@ Copy reaches a prospect only through every one of these gates, in order:
 preview() renders a row as one prospect would see it, for Harry to read before approving: the sample
 prospect with a real opener line from the Signals tab filled with sample facts (sample_opener), or a
 stored account with the opener enrol would give its contact (`copy preview --account DOMAIN`).
-check_openers() is the sheet check of the Signals tab's opener lines (enrol/openers.py): each filled
-with sample facts and run through the rules an opener must pass; `copy check` reports it too.
+check_openers() is the sheet check of the opener lines (enrol/openers.py): the Signals tab's, and the General
+tab's generic and focus lines, each filled with sample facts and run through the rules an opener must pass,
+no funding or money among them; `copy check` reports it too.
 """
 
 from __future__ import annotations
@@ -149,7 +150,7 @@ def check_all(settings: Settings, versions: Iterable[str] | None = None) -> list
             if c.status != "retired" and (wanted is None or c.copy_version.casefold() in wanted)]
 
 
-# -- opener lines (the Signals tab's tokenized openers; enrol/openers.py) --------------------------
+# -- opener lines (the Signals tab's tokenized openers, General's generic and focus lines; enrol/openers.py) ----
 
 OPENER_MAX_WORDS = 25  # style.md: one sentence, under about 20 words
 
@@ -161,15 +162,22 @@ def _opener_check(settings: Settings) -> Callable[[str], str]:
 
 
 def check_openers(settings: Settings) -> Check:
-    """Every opener line on the Signals tab, filled for the sample prospect with sample facts and run
-    through the copy rules an opener must pass (render.pick_opener), and the style's length."""
+    """Every opener line (the Signals tab's, and General's generic and focus lines; openers.sample_lines), filled
+    for the sample prospect with sample facts and run through the copy rules an opener must pass
+    (render.pick_opener, which never lets one mention funding or money), and the style's length.
+
+    A line that does not fill (it needs a fact the sample has not got, like a named provider, or has a
+    retired token) is still read as written for funding or money (copy_rules.money_violations; Harry,
+    2 Oct 2026: funding is a signal, never a line).
+    """
     from us_outbound.enrol import openers
 
-    out = Check("Signals openers")
+    out = Check("Openers")
     check = _opener_check(settings)
     for signal, col, line, filled in openers.sample_lines(settings):
-        if filled is None:
-            continue  # it needs a fact the sample has not got (a named provider, say); validation checked its tokens
+        if filled is None:  # validation checked its tokens; the money rule reads it as written
+            out.problems += [f"{signal}, {col}: {line!r} {v}" for v in copy_rules.money_violations(line)]
+            continue
         where = f"{signal}, {col}: {filled!r}"
         if problem := check(filled):
             out.problems.append(f"{where} {problem}")
@@ -178,16 +186,23 @@ def check_openers(settings: Settings) -> Check:
     return out
 
 
-def sample_opener(settings: Settings, role: str, signal: str = "", *, leader: bool = False) -> tuple[str, str]:
-    """(a real opener line from the Signals tab, filled for the sample prospect with sample facts; where from).
+def sample_opener(settings: Settings, role: str, signal: str = "", *, leader: bool = False,
+                  generic: bool = False) -> tuple[str, str]:
+    """(a real opener line, filled for the sample prospect with sample facts; where from).
 
     signal names the Signals row (default: the first active one with a line for the role); leader shows
-    the line for a contact who is the new People leader themself (opener_self).
+    the line for a contact who is the new People leader themself (opener_self); generic shows the line an
+    account with no signal line gets, Control accounts among them (General opener_generic_*).
     """
     from datetime import UTC, datetime
 
     from us_outbound.enrol import openers
 
+    if generic:
+        op = openers.generic_opener(SAMPLE_ACCOUNT, {"role": role}, settings, _opener_check(settings))
+        if op.text:
+            return op.text, op.source
+        return "", "no generic line fills for the sample prospect" + (f" ({'; '.join(op.notes)})" if op.notes else "")
     rows = [s for s in settings.signals if s.active and (s.role_openers or s.opener_self or s.opener)]
     if signal:
         rows = [s for s in settings.signals if s.signal.casefold() == signal.casefold()]

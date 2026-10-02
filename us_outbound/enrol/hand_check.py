@@ -199,8 +199,13 @@ def _size(a: Mapping[str, Any]) -> str:
 
 
 def _opener(a: Mapping[str, Any]) -> str:
-    """The opener as enrol would send it; a held-out account sends none, and shows the line it would have had."""
+    """The opener as enrol would send it; a held-out account sends none, and shows the line it would have had.
+
+    The generic line (General opener_generic_*) says nothing about the account, so it is marked: there is
+    no evidence for Harry to check behind it."""
     line = a.get("opener") or ""
+    if line and str(a.get("opener_source") or "").startswith(openers.GENERIC_OPENER_KEY):
+        line += " (the generic line)"
     if a.get("opener_arm") == openers.HOLDOUT:
         return f"none (held out; would be: {line})" if line else "none (held out)"
     return line or "none"
@@ -211,7 +216,7 @@ def _evidence(a: Mapping[str, Any]) -> str:
     for e in a.get("evidence") or ():
         text = f"{e['signal']}: “{e['quote'] or e['text']}”"
         parts.append(text + (f" ({e['url']})" if e.get("url") else ""))
-    return "; ".join(parts) or "no signal evidence (General opener)"
+    return "; ".join(parts) or "no signal evidence"
 
 
 def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:

@@ -44,9 +44,9 @@ line (Harry, 1 Oct 2026). The signature, the data-source notice and the unsubscr
 system after that; never write them.
 
 1. **Day 0: inform and plant a seed (60 to 110 words; Harry, 1 Oct 2026).** Personal, relevant data and
-   a hook, not a sales pitch. "{{opener}}" alone on the line after the greeting: it is filled with
-   evidence about their company (hiring, growth, new funding, a first People hire, what their site
-   says) and disappears when there is none, so the email must read well without it. Then the hook: a
+   a hook, not a sales pitch. "{{opener}}" alone on the line after the greeting: it is filled at enrol
+   time (Openers, below) with a line a signal about their company points to, what their site says, or
+   the generic line, and disappears for the 30% holdout, so the email must read well without it. Then the hook: a
    sharp, true observation about a pressure in this industry as it lands on this role, from the
    industry's page. Then one or two sentences on how Spill helps with exactly that, for this role.
    Then one soft line that invites a visit to the industry page:
@@ -83,39 +83,67 @@ Rows with no role (General and group fallbacks) have three role lines, one sente
 words), shown in email 1 by the contact's role. Each speaks to that role's stake in this industry and
 must read naturally after the hook.
 
-## Openers (Signals tab; Harry, 2 Oct 2026)
+## Openers (Signals and General tabs; Harry, 2 Oct 2026)
 
 The {{opener}} line comes from the Signals tab, not the Copy tab. Each signal has a line for each
 copy role (opener_people, opener_founder, opener_ops), and New People leader also has opener_self,
 for when the contact is the new leader. The system fills the line at enrol time with the account's
 own stored facts (enrol/openers.py). A line with a token that has no fact is skipped, never guessed:
-the next line in the cell is tried, then the signal's plain opener, then none. 30% of accounts get
-no opener, so we can measure whether openers help.
+the next line in the cell is tried, then the signal's plain opener, then the generic line (below),
+then none. 30% of accounts get no opener at all, so we can measure whether openers help.
 
-- One observed fact, said plainly: "I saw Brightline has six roles open, including a Senior Product
-  Designer." "Congratulations on the Series A." Nothing about the reader's company beyond the fact,
-  and no inference from it (never "which must mean a busy onboarding season").
-- One sentence, under about 20 words, warm and plain. It must read naturally as the first line
-  after "Hi Dana," and before the industry hook.
-- "I saw", never "I noticed you're struggling". No exclamation marks, no statistic (growth is
-  said in words: "grown by about a third"), no "therapy", "therapist", "licensed" or "unlimited".
-  No demo, call, meeting or booking words: email 1 asks only for a visit to the site.
-- Speak to the role lightly. Only a founder is congratulated on a round; a People leader or
-  operations reader hears the fact ("I saw Brightline recently raised a Series A."). A People leader
-  hears what touches their work, and operations hears the fact. Never imply the reader's own team
-  owns something unless the fact says so.
-- Write a promotion and a hire alike ("named a new Head of People", "Congratulations on the new
-  role"): Apollo's start date does not say which it was.
-- Never "first" (a first People hire): the facts show only that Apollo knows no People leader. Never
-  "already offers" an EAP: it hints at their current one (facts.md). Never say the team "has been
-  growing" on open roles alone.
+**Signals are context, never the line** (Harry, 2 Oct 2026: "these are just signals"). For the hiring,
+People, growth and funding signals (New People leader, First People hire, People role open, Hiring and
+growth, and both funding rows), the signal tells us what the team is probably going through, and the
+line speaks to the pressure that tends to bring, then to support through it:
+
+- a lot of new people: onboarding, managers stretched, culture under strain;
+- a first or open People role: whoever carries people issues carrying too much;
+- a new People leader settling in: the first months, setting priorities. Their own line (opener_self)
+  is warm without "congratulations on the new role", which would tell them we watched their start date;
+- funding: a period of change, more on everyone's plate, priorities and routines shifting.
+
+These lines never name what was observed: no hiring, recruiting, growth, growing, scaling, headcount,
+funding or money; no job or posting titles; no counts. They are hedged ("often", "tends to", "usually")
+and true whether or not the observation was, so they never read as surveillance. Use {company} at most
+once, and only where it does not claim to know their team ("at Brightline, a lot is changing" does).
+
+**Funding is a signal, never a line.** A line about the round reads as money grabbing, so the round only
+tells us the team is likely changing fast, and the line speaks to what that brings for people. No opener
+line, as written or as filled, may mention funding or money: funding, fund, raise, round, investors,
+investment, capital, valuation, Series A, seed round, backed, IPO, money, cash, dollars or a dollar
+figure. The check refuses it (copy_rules.money_violations; `copy check` names the line, and at enrol
+time the line is passed over for the next). Email bodies are not held to this: nonprofit copy says
+"funding cycles". {funding_stage} is retired: a line that still has it never fills.
+
+**The generic line** (General tab: opener_generic_people, opener_generic_founder, opener_generic_ops,
+then opener_generic). An account with no signal line gets it: the General angle, Control accounts among
+it, and an account whose signal lines all fall through. Its theme is the ever-growing pressure in our
+work and personal lives. It reads general first, so the industry hook after it can get specific, and
+must not make the hook's point. Tokens: {company}, {city}. The optional "what they do" line comes first
+when it is on (below).
+
+The page-reader signals (EAP named, Mental health support listed, Wellbeing app or perk named,
+Progressive benefits) still say what the page says, as one observed fact:
+
+- One observed fact, said plainly: "I saw Brightline mentions counseling on its careers page."
+  Nothing about the reader's company beyond the fact, and no inference from it.
+- "I saw", never "I noticed you're struggling". Never "already offers" an EAP: it hints at their
+  current one (facts.md).
 - The evidence is the object, not the subject ("I saw Brightline mentions counseling on its careers
   page", not "I saw counseling comes up when..."). A benefit reads plural or mass ("wellness
   stipends", "parental leave").
+
+Every opener:
+
+- One sentence, under about 20 words, warm and plain. It must read naturally as the first line
+  after "Hi Dana," and before the industry hook, without repeating the hook's point or wording.
+- No exclamation marks, no statistic, no "therapy", "therapist", "licensed" or "unlimited". No demo,
+  call, meeting or booking words: email 1 asks only for a visit to the site.
 - Tokens, in single braces: {company}, {city}, {open_roles}, {posting_title}, {people_title},
-  {funding_stage}, {growth}, {evidence}, {provider}, {page} ("on its careers page", "on its benefits
-  page" or "in its job postings"). "a {posting_title}" becomes "an" where the title needs it. The
-  plain opener column takes {evidence} only.
+  {growth}, {evidence}, {provider}, {page} ("on its careers page", "on its benefits page" or "in its
+  job postings"). "a {posting_title}" becomes "an" where the title needs it. The plain opener column
+  takes {evidence} only. The context signals' default lines use none of them.
 - The optional "what they do" line (General opener_focus_line, off until Harry turns on
   opener_focus) uses {focus}. That is a short lower-case phrase the task model takes from Apollo's
   description, like "payroll software for restaurants".

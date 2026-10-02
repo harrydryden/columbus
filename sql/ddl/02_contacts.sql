@@ -47,5 +47,5 @@ COMMENT ON COLUMN us_outbound.contacts.mailbox IS 'The sender''s address that se
 COMMENT ON COLUMN us_outbound.contacts.instantly_campaign IS 'The sender''s campaign, named ''US Outbound – '' plus the owner name (SPEC 9).';
 COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent (build addition, for retention).';
 COMMENT ON COLUMN us_outbound.contacts.opener_arm IS 'Email 1''s opener arm at enrollment (build addition; enrol/openers.py). One of: opener, holdout, none. holdout: the opener_holdout_share of accounts held out with no opener, by account hash, so replies compare opener against none.';
-COMMENT ON COLUMN us_outbound.contacts.opener_source IS 'The opener line used, or for a holdout the one it would have had: the signal and Signals-tab column (e.g. New People leader / opener_self), or focus (build addition).';
+COMMENT ON COLUMN us_outbound.contacts.opener_source IS 'The opener line used, or for a holdout the one it would have had: the signal and Signals-tab column (e.g. New People leader / opener_self), focus, or the generic line''s General key (e.g. opener_generic_ops) (build addition).';
 COMMENT ON COLUMN us_outbound.contacts.enrolled_at IS 'When the lead was added to its sender''s campaign (build addition). The send forecast dates each lead''s later steps from it, and the weekly target counts it.';

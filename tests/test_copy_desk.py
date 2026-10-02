@@ -346,18 +346,20 @@ def test_signals_load_brings_the_opener_columns_and_keeps_harry_s_edits():
     new = ("opener_people", "opener_founder", "opener_ops", "opener_self")
     sheet = [{c: v for c, v in r.items() if c not in new} for r in build["Signals"]]  # the sheet before 2 Oct
     edited = next(r for r in sheet if r["signal"] == "Funding in the last 6 months")
-    edited.update(opener="Congratulations on the new round.", weight="25", note="Harry's note")
+    edited.update(opener="I hope the quarter is going well.", weight="25", note="Harry's note")
     blanked = next(r for r in sheet if r["signal"] == "EAP named")
     blanked["opener"] = ""
     plan = plan_tab("Signals", sheet, build["Signals"])
     assert plan.new_columns == list(new)
     by = {r["signal"]: r for r in plan.rows}
     funding = by["Funding in the last 6 months"]
-    assert (funding["opener"], funding["weight"], funding["note"]) == ("Congratulations on the new round.", "25",
+    assert (funding["opener"], funding["weight"], funding["note"]) == ("I hope the quarter is going well.", "25",
                                                                        "Harry's note")
-    assert funding["opener_founder"] == "Congratulations on the {funding_stage}."  # the new column arrives
+    assert funding["opener_founder"] == (  # the new column arrives
+        "Change tends to test a culture as much as a plan, and that's when taking care of people matters most.")
     assert by["EAP named"]["opener"] == ""  # a cell Harry blanked stays blank
-    assert by["New People leader"]["opener_self"] == "Congratulations on the new role at {company}."
+    assert by["New People leader"]["opener_self"] == (
+        "Shaping how a team is supported is often a lot to carry, and it helps when one piece is simple.")
     # A second load keeps Harry's edits to the new columns too, blanks included.
     again = [dict(r) for r in plan.rows]
     next(r for r in again if r["signal"] == "Hiring and growth")["opener_ops"] = ""
@@ -374,8 +376,8 @@ def test_signals_load_brings_the_opener_columns_and_keeps_harry_s_edits():
     settings, errors = validate_all(tabs)
     assert not any(errors.values())
     got = {s.signal: s for s in settings.signals}
-    assert got["Hiring and growth"].role_openers["Operations"].startswith("I saw {company} is recruiting for")
-    assert got["Funding in the last 6 months"].opener == "Congratulations on the new round."
+    assert got["Hiring and growth"].role_openers["Operations"].startswith("When many people join at once,")
+    assert got["Funding in the last 6 months"].opener == "I hope the quarter is going well."
 
 
 def test_take_lets_the_build_value_win_for_a_kept_column():

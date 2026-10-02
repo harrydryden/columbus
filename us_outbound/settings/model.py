@@ -92,9 +92,18 @@ OPENER_COLUMNS = {"People leader": "opener_people", "Founder or executive": "ope
 OPENER_SELF_COLUMN = "opener_self"
 # The tokens each kind of opener line may use. The plain opener column keeps SPEC 5's one placeholder.
 PLAIN_OPENER_TOKENS = ("evidence",)
-OPENER_TOKENS = ("company", "open_roles", "posting_title", "people_title", "funding_stage", "growth", "city",
-                 "evidence", "provider", "page")
+OPENER_TOKENS = ("company", "open_roles", "posting_title", "people_title", "growth", "city", "evidence", "provider",
+                 "page")
+# Tokens retired from the lines (Harry, 2 Oct 2026: funding is a signal, never a line). A sheet line that still
+# has one validates, so the settings in force stay usable, but it never fills, and `copy check` names it.
+RETIRED_OPENER_TOKENS = ("funding_stage",)
 FOCUS_LINE_TOKENS = ("company", "focus", "city")  # General opener_focus_line
+# The generic opener (Harry, 2 Oct 2026): General keys holding the line for an account with no signal line (the
+# General angle, Control among it, or a signal whose lines all fall through), by copy role, then the plain one.
+GENERIC_OPENER_KEYS = {"People leader": "opener_generic_people", "Founder or executive": "opener_generic_founder",
+                       "Operations": "opener_generic_ops"}
+GENERIC_OPENER_KEY = "opener_generic"
+GENERIC_LINE_TOKENS = ("company", "city")
 # Condition fields that make a signal about one person, so its opener_self line can apply.
 PERSON_FIELDS = frozenset({"people_leader_days_in_title"})
 # The Roles tab's two size columns and the range each covers (SPEC 5 "Who to contact first").
@@ -181,6 +190,15 @@ class General:
     # (build) Tokenized openers (Harry, 2 Oct 2026; enrol/openers.py): the share of accounts held out with no
     # opener, so replies can compare opener against none; and the optional "what they do" line.
     opener_holdout_share: float = 0.3
+    # (build) The generic opener (Harry, 2 Oct 2026: "ever more pressure in our work and personal lives"), for an
+    # account with no signal line: the contact's copy role's line, then the plain one (GENERIC_OPENER_KEYS).
+    opener_generic: str = "Pressure at work and at home seems to keep rising, and most teams feel it somewhere."
+    opener_generic_people: str = (
+        "Pressure at work and at home seems to keep rising, and the two rarely stay separate for long.")
+    opener_generic_founder: str = (
+        "Work and life both seem to ask more of people every year, and even the strongest teams feel it.")
+    opener_generic_ops: str = (
+        "Pressure in work and life seems to keep rising, and it hardly ever waits for a convenient week.")
     opener_focus: bool = False
     opener_focus_line: str = "I came across {company} and its work on {focus}."
 
