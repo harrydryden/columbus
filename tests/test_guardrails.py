@@ -87,7 +87,7 @@ HS_SIX = {"company": HS_COMPANY_PROPS, "contact": HS_CONTACT_PROPS}
 HS_DEAL_PROPS = {"dealname", "pipeline", "dealstage", "hubspot_owner_id"}
 HS_WARM = {"positive", "referral"}
 HS_FREE_WRITES = {"note.create", "task.create", "association.create", "communication.unsubscribe"}
-SLACK_WRITES = {"chat.postMessage", "chat.update"}
+SLACK_WRITES = {"chat.postMessage", "chat.update", "reactions.add"}  # reactions: a send approval's seeded ✅ / ❌
 SLACK_DMS = {f"@{APPROVER}"}  # direct messages: only to approvers (escalation, SPEC 11)
 SETTINGS_TITLE = "US Outbound – Settings"
 DB_SCHEMA = "us_outbound"  # the database: schema us_outbound only (SPEC 1.2)
@@ -356,6 +356,8 @@ def install_routes(t: FakeTransport) -> None:
     t.route("GET", "conversations.replies", {"ok": True, "messages": [{"ts": "1.1"}, {"ts": "1.2", "text": "send"}]})
     t.route("GET", "reactions.get", {"ok": True, "message": {"reactions": [{"name": "white_check_mark", "users": [APPROVER]}]}})
     t.route("GET", "chat.getPermalink", {"ok": True, "permalink": "https://spill.slack.com/archives/C_ALERT/p11"})
+    t.route("POST", "reactions.add", {"ok": True})
+    t.route("GET", "auth.test", {"ok": True, "user_id": "U_BOT"})
     # Sheets.
     t.route("POST", "sheets.googleapis.com/v4/spreadsheets", {"spreadsheetId": "new-sheet"})
     t.route("POST", ":append", {})
@@ -513,6 +515,8 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "reactions": lambda c, w: c.reactions(ALERT, "1.1"),
         "permalink": lambda c, w: c.permalink(ALERT, "1.1"),
         "dm": lambda c, w: c.dm(APPROVER, "A positive reply has waited 24 hours."),
+        "react": lambda c, w: (c.react(ALERT, "1.1", "white_check_mark"), c.react(DEV, "1.1", "x")),
+        "bot_user_id": lambda c, w: c.bot_user_id(),
     },
     "Sheets": {
         "read_tabs": lambda c, w: c.read_tabs(SHEET, ["General"]),
@@ -815,6 +819,7 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     # Slack: only #us-outbound and #us-outbound-dev.
     "slack post to #general": lambda w: w.clients["Slack"].post("#general", "hello"),
     "slack update in #general": lambda w: w.clients["Slack"].update("#general", "1.1", "hello"),
+    "slack reaction in #general": lambda w: w.clients["Slack"].react("#general", "1.1", "white_check_mark"),
     "slack DM to someone who is not an approver": lambda w: w.clients["Slack"].dm("U_SAM", "hello"),
     "slack channel create": lambda w: w.clients["Slack"].request(
         "POST", "conversations.create", Op("conversations.create", target=ALERT, write=True)),
@@ -936,8 +941,8 @@ def test_dry_run_slack_posts_only_to_the_dev_channel(dry_world):
     w = dry_world
     posts = [r for r in w.transport.requests if _system_of(r.url) == "slack" and r.method == "POST"]
     assert posts, "the dry-run exercise posted nothing to Slack"
-    assert {r.json["channel"] for r in posts} == {"C_DEV"}
-    redirected = [r for r in posts if r.json["text"].startswith(f"[dry-run → {ALERT}] ")]
+    assert {r.json["channel"] for r in posts} == {"C_DEV"}  # reactions too: only the dev channel's
+    redirected = [r for r in posts if str(r.json.get("text") or "").startswith(f"[dry-run → {ALERT}] ")]
     assert redirected, "the alert-channel post was not redirected with its dry-run prefix"
     refused = [c for c in w.guard.calls if c.system == "slack" and c.write and not c.sent]
     assert refused and {c.target for c in refused} == {ALERT} | SLACK_DMS  # the DM went to dev instead

@@ -36,6 +36,10 @@ Then escalation (SPEC 11), for every kind of human-in-the-loop item:
      recorded and its thread says so. Other kinds keep their status, so the jobs that own them still
      find them; escalated_at marks them. Enrolment pauses while a positive reply waits longer than
      escalation_hours (enrol.reply_pause reads the same items: replies/items.positive_waiting).
+Then send approvals (Harry, 2 Oct 2026; while auto_send = no every email waits for an approver's ✅
+before its lead is added to Instantly): enrol/approvals.poll reads their cards' threads and
+reactions and acts, with the patterns above. They are never re-posted or escalated: an item not
+approved by the end of its next send day expires instead.
 
 Without Slack (no US_OUTBOUND_SLACK_BOT_TOKEN, as may be so for the pilot), steps 2 and 4 are left
 out and logged, escalation still forwards (or tasks) to escalation_email, and the command line does
@@ -80,6 +84,7 @@ from us_outbound.replies.items import (
 from us_outbound.settings.model import Settings
 
 JOB = "poll_approvals"
+SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals.py KIND: never re-posted or escalated here
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
 APPROVE_REACTIONS = frozenset({"white_check_mark", "heavy_check_mark"})  # ✅ (and ✔️)
@@ -618,11 +623,14 @@ def _escalate_other(ctx: Context, row: Mapping[str, Any], slack: Any) -> str:
 
 
 def escalate(ctx: Context, slack: Any, run: _Run) -> None:
-    """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11)."""
+    """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11).
+
+    Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals.py).
+    """
     g = ctx.settings.general
     cutoff = ctx.now - timedelta(hours=g.escalation_hours)
     for row in ctx.store.select(TABLE, {"status": OPEN}):
-        if row.get("escalated_at"):
+        if row.get("escalated_at") or row.get("kind") == SEND_APPROVAL_KIND:
             continue
         reply = is_reply(row)
         item = ReplyItem(row)
@@ -660,6 +668,8 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
 
 def poll_approvals(ctx: Context) -> dict:
     """The poll_approvals job (JOB CONTRACT: run(ctx) -> summary)."""
+    from us_outbound.enrol import approvals  # send approvals (Harry, 2 Oct 2026): their own module
+
     slack = slack_or_none(ctx)
     run = _Run()
     items = reply_items(ctx.store, WAITING)
@@ -672,16 +682,19 @@ def poll_approvals(ctx: Context) -> dict:
         except (ApiError, LookupError) as exc:  # one item's trouble never stops the others
             run.errors.append(f"{item.short_id}: {type(exc).__name__}: {str(exc)[:160]}")
     escalate(ctx, slack, run)
+    sends = approvals.poll(ctx, slack)
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "slack": slack is not None, "items": len(items),
         "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited,
         "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck,
         "hubspot": dict(run.hubspot), "ignored_non_approvers": sum(run.ignored.values()), "errors": run.errors,
+        "send_approvals": sends,
     }
     if ctx.dry_run:
         summary["would"] = run.would
-    log("poll_approvals_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k not in ("sent", "would")},
-        sent=len(run.sent))
+    log("poll_approvals_done", run_id=ctx.run_id,
+        **{k: v for k, v in summary.items() if k not in ("sent", "would", "send_approvals")},
+        sent=len(run.sent), send_approvals={k: v for k, v in sends.items() if k != "would"})
     return summary
 
 

@@ -79,12 +79,14 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     assert got["Campaigns"].startswith("FAIL  Campaigns: 3 missing")
     assert got["Apollo budget"].startswith("PASS  Apollo budget: 2,000 of 2,000 credits left this month")
     assert got["Queue"] == "FAIL  Queue: no verified account has a sendable contact"
-    assert got["Hand-check"].startswith(f"FAIL  Hand-check: this week's hand-check ({WEEK}) has not been posted")
+    # auto_send = no by default (Harry, 2 Oct 2026): every email waits for approval, so no hand-check is needed.
+    assert got["auto_send"] == "PASS  auto_send: auto_send = no: every email waits for approval in Slack"
+    assert got["Hand-check"] == "PASS  Hand-check: auto_send = no: every email is approved in Slack"
     assert got["Enrollment"].startswith("PASS")
     assert got["Jobs"].startswith("PASS")  # every job a live send needs is built and scheduled
     assert got["clay_verification"].startswith("WARN  clay_verification: 'skip'")  # the pilot (Harry, 1 Oct 2026)
     assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of {{unsubscribe}} not done")
-    assert out.splitlines()[-1].startswith("NO-GO: 8 FAIL, 1 WARN, 5 PASS.")
+    assert out.splitlines()[-1].startswith("NO-GO: 7 FAIL, 1 WARN, 7 PASS.")
     # Read-only: no write was attempted anywhere.
     assert f.ctx.guard.writes() == [] and f.ctx.store.select("heartbeats") == []
 
@@ -129,9 +131,23 @@ def test_golive_is_a_go_when_every_blocker_is_cleared(monkeypatch, capsys):
     assert got["Copy"].startswith("WARN  Copy: 2 of 5 active industries have their own approved copy; 3 use the General row")
     assert "Fintech: falls back to General (general-v1) for People leader, Founder or executive, Operations" in out
     assert got["Queue"].startswith("PASS  Queue: 40 ready (verified with a sendable contact)")
-    assert got["Hand-check"] == f"PASS  Hand-check: {WEEK} approved"
+    assert got["auto_send"] == "PASS  auto_send: auto_send = no: every email waits for approval in Slack"
+    assert got["Hand-check"] == "PASS  Hand-check: auto_send = no: every email is approved in Slack"
     assert got["clay_verification"].startswith("WARN  clay_verification: 'skip'")  # the pilot (Harry, 1 Oct 2026)
     assert out.splitlines()[-1].startswith("GO: 0 FAIL, 2 WARN")
+
+
+def test_with_auto_send_on_the_hand_check_is_needed_and_the_switch_warns(monkeypatch, capsys):
+    f = ready_world(monkeypatch)
+    f.ctx.settings = dataclasses.replace(f.settings, general=dataclasses.replace(f.settings.general, auto_send=True))
+    assert cli.main(["golive"], context_factory=f) == 0
+    got = lines_of(capsys.readouterr().out)
+    assert got["auto_send"] == "WARN  auto_send: auto_send = yes: emails are added without approval"
+    assert got["Hand-check"] == f"PASS  Hand-check: {WEEK} approved"
+    f.ctx.store.update("hitl_items", {"item_id": f"hand_check-{WEEK}"}, {"status": "open"})
+    assert cli.main(["golive"], context_factory=f) == 1
+    out = capsys.readouterr().out
+    assert lines_of(out)["Hand-check"].startswith(f"FAIL  Hand-check: this week's hand-check ({WEEK}) is not approved yet")
 
 
 def test_campaigns_still_at_30_a_day_drift_from_the_ramp(monkeypatch, capsys):

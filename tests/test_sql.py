@@ -97,18 +97,20 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
-        "escalated",
+        "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
     },
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
     },
-    ("events", "approval"): {"approved", "edited", "skipped"},
+    # A reply's approval, then a send approval's outcome (enrol/approvals.py).
+    ("events", "approval"): {"approved", "edited", "skipped", "approved_edited", "contact_rejected", "company_rejected",
+                             "expired", "blocked"},
     ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
     ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
-    ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule"},
-    ("hitl_items", "status"): {"open", "handled", "escalated"},
+    ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule", "send_approval"},
+    ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
     ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
 }
 

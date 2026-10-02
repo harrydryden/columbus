@@ -15,6 +15,11 @@ SPEC 13 commands:
                                       items waiting, approve one (--edit "text" sends that instead),
                                       or skip one; the same send, HubSpot and close path as a Slack
                                       approval, with approved_by "cli"
+  approvals list|approve|reject [ID]  send approvals without Slack (enrol/approvals.py; Harry, 2 Oct
+    [--contact|--company]             2026: while auto_send = no every email waits for approval): list
+                                      them, approve one (its lead goes to Instantly), or reject one,
+                                      not this person (--contact) or not this company (--company); the
+                                      same close path as Slack, with approved_by "cli"
 Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
 Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
 (mailbox_health by hand), settings sync|bootstrap|load, db apply, hubspot setup|ids,
@@ -32,9 +37,10 @@ Dry-run is the default everywhere. Two kinds of live:
     live_sending = yes, as SPEC 0.3 says;
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
     test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
-    handcheck show|approve, killrules clear, replies skip): --live alone, so the phase-0 setup and
-    the kill switch work while live_sending is still no. `replies approve` sends to a prospect,
-    so it is live like a job: --live AND live_sending = yes.
+    handcheck show|approve, killrules clear, replies skip, approvals reject): --live alone, so the
+    phase-0 setup and the kill switch work while live_sending is still no. `replies approve` sends
+    to a prospect, and `approvals approve` adds one to Instantly, so they are live like a job:
+    --live AND live_sending = yes.
     copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
 Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
@@ -838,6 +844,61 @@ def cmd_replies(args: argparse.Namespace, factory: Factory) -> int:
     return 0 if summary.get("sent") or ctx.dry_run else 2
 
 
+def _print_send_approvals(items: list[dict]) -> None:
+    if not items:
+        print("No send approvals are waiting.")
+        return
+    print(f"{len(items)} send approval{'s' if len(items) != 1 else ''} waiting, oldest first:")
+    for i in items:
+        who = ", ".join(x for x in (i["person"], i["title"]) if x)
+        expired = " (expired: poll_approvals closes it)" if i["expired"] else ""
+        print(f"\n{i['id']}  {i['company']} ({i['domain']}) · {who}")
+        print(f"  from {i['owner']} ({i['mailbox'] or 'mailbox unknown'}) · {i['state']}{' · edited' if i['edited'] else ''}"
+              f" · posted {i['send_day']}, until the end of {i['expires_on']}{expired} · in Slack: "
+              f"{'yes' if i['in_slack'] else 'no'}")
+        print(f"  Subject: {i['subject']}")
+        print(f"  Send it: us-outbound approvals approve {i['id']} --live")
+        print(f"  Not this person: us-outbound approvals reject {i['id']} --contact --live"
+              f"   Not this company: ... --company --live")
+
+
+def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
+    """Send approvals at the command line (enrol/approvals.py): the same close path as Slack, approved_by "cli"."""
+    from us_outbound.enrol import approvals
+
+    if args.action == "list":
+        _print_send_approvals(approvals.list_items(factory("approvals_list", False, operator=True)))
+        return 0
+    if not args.item_id:
+        raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
+    if args.action == "reject":
+        if args.contact == args.company:
+            raise Refused("approvals reject needs one of --contact (not this person) or --company (not this company)")
+        # Rejecting reaches no prospect (a contact suppressed, or an account excluded): --live alone.
+        ctx = factory("approvals_reject", args.live, operator=True)
+        try:
+            summary = run_job(ctx, lambda c: approvals.reject_item(c, args.item_id,
+                                                                   "contact" if args.contact else "company"))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "the item, the contact and the account are unchanged.")
+        return 0 if summary.get("done") or ctx.dry_run else 2
+    if args.contact or args.company:
+        raise Refused("--contact and --company go with reject, not approve")
+    # approve adds the lead to Instantly, so it is live like a job: --live and live_sending = yes (SPEC 0.3).
+    ctx = factory(approvals.APPROVALS_CLI_JOB, args.live)
+    if args.live and ctx.dry_run:
+        print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
+    try:
+        summary = run_job(ctx, lambda c: approvals.approve(c, args.item_id))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the lead was not added to Instantly and the item is unchanged.")
+    return 0 if summary.get("added") or ctx.dry_run else 2
+
+
 def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
     """The DDL in sql/ (ops/ddl.py): printed in dry-run; run against DATABASE_URL with --live."""
     from us_outbound.clients.guard import Guard
@@ -950,8 +1011,9 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         summary = run_job(ctx, show)
         payload = holder.get("payload") or {}
         if not hand_check.has_work(payload):
-            print(f"Hand-check {summary['iso_week']}: nothing to check (no queued or verified account in an active "
-                  "industry group).")
+            why = (f"{hand_check.AUTO_SEND_OFF}, and no account is held for doubtful facts"
+                   if not ctx.settings.general.auto_send else "no queued or verified account in an active industry group")
+            print(f"Hand-check {summary['iso_week']}: nothing to check ({why}).")
             return 0
         print(hand_check.text(payload, detailed=True))
         if summary["status"] == "not recorded":
@@ -1107,6 +1169,14 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("item_id", nargs="?", help="approve, skip: the id `replies list` shows (or its first characters)")
     rp.add_argument("--edit", help="approve: send this text instead of the draft (recorded as edited)")
     rp.set_defaults(fn=cmd_replies)
+
+    ap = sub.add_parser("approvals", parents=[live],
+                        help="send approvals without Slack: list, approve or reject the emails waiting (auto_send = no)")
+    ap.add_argument("action", choices=["list", "approve", "reject"])
+    ap.add_argument("item_id", nargs="?", help="approve, reject: the id `approvals list` shows (or its first characters)")
+    ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
+    ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")
+    ap.set_defaults(fn=cmd_approvals)
 
     db = sub.add_parser("db", parents=[live], help="create the tables and views in DATABASE_URL (prints them unless --live)")
     db.add_argument("action", choices=["apply"])

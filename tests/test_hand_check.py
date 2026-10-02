@@ -16,7 +16,9 @@ from us_outbound.enrol import enrol, hand_check
 NOW = datetime(2026, 10, 26, 7, 0, tzinfo=UTC)  # Monday 08:00 UK (GMT+0 after 25 Oct), ISO week 2026-W44
 WEEK = "2026-W44"
 EAP_LINE = "I saw {company} already offers its team an employee assistance program."
-SETTINGS = dataclasses.replace(make_settings(live_sending=True, approver_slack_ids=("U_HARRY",)),
+# auto_send = yes: the weekly sample is enrol's gate. With auto_send = no (Harry, 2 Oct 2026) only the
+# doubtful-fact accounts are posted (tests at the end of this file).
+SETTINGS = dataclasses.replace(make_settings(live_sending=True, approver_slack_ids=("U_HARRY",), auto_send=True),
                                signals=(dataclasses.replace(EAP_NAMED, role_openers={"People leader": EAP_LINE}),))
 
 
@@ -194,3 +196,33 @@ def test_hand_check_post_runs_as_a_job_from_the_cli():
     assert h.run("run", "hand_check_post") == 0
     [beat] = h.beats("hand_check_post")
     assert beat["status"] == "ok" and beat["detail"]["status"] == "recorded"
+
+
+# -- auto_send = no (Harry, 2 Oct 2026): every email is approved in Slack, so no weekly sample -----------------
+
+
+def _approving(ctx):
+    ctx.settings = dataclasses.replace(SETTINGS, general=dataclasses.replace(SETTINGS.general, auto_send=False))
+
+
+def test_with_auto_send_off_the_job_skips_when_no_account_is_held_for_doubts():
+    ctx, t = world()
+    _approving(ctx)
+    out = hand_check.post(ctx)
+    assert out["skipped"] is True and out["reason"].startswith("auto_send = no: every email is approved in Slack")
+    assert ctx.store.select("hitl_items", {"kind": "hand_check"}) == [] and posts(t) == []
+
+
+def test_with_auto_send_off_the_doubtful_accounts_still_go_to_a_person():
+    from us_outbound import verify
+
+    ctx, t = world()
+    _approving(ctx)
+    held = acct(70, AGENCIES, "queued", employees=None, size_band="", hq_state="")
+    ctx.store.insert("accounts", [held])
+    ctx.store.insert("signal_events", [verify.doubt_fact(ctx, held, ["no HQ state"])])
+    out = hand_check.post(ctx)
+    assert out["status"] == "recorded" and out["accounts"] == 0 and out["doubtful"] == 1 and out["groups"] == {}
+    [post] = posts(t)
+    assert "the accounts held back for doubtful Apollo facts" in post.json["text"]
+    assert "mar-70" in post.json["text"] and "The held accounts wait until it is approved." in post.json["text"]

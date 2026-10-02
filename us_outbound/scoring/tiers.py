@@ -13,6 +13,8 @@ Hard exclusions are fixed in code, not in the settings sheet:
     providers, found by NAICS or by keywords in the industry label and Apollo keywords;
   * anything HubSpot marks: a customer (or a former one), an open deal, an active sequence, an
     opted-out or bounced contact, an owner other than Harry, or another user's activity in 90 days;
+  * a company an approver dropped at a send approval (🚫 or "company" in Slack, or `approvals reject
+    --company`; enrol/approvals.py, Harry, 2 Oct 2026), kept as a declined_in_slack fact;
   * more than 20% of US-located staff in CA or WA (or in FL, until FL is switched on);
   * fewer than 5 US-located people found;
   * founded less than 2 years ago;
@@ -100,6 +102,10 @@ HUBSPOT_EXCLUSIONS = (
     ("hubspot_other_owner", "owned by someone else in HubSpot"),
     ("hubspot_other_activity_90d", "activity by another HubSpot user in the last 90 days"),
 )
+# Decisions people made about an account, kept as facts so a rescore keeps them (enrol.mark_excluded writes
+# them). declined_in_slack: an approver dropped the company at a send approval (enrol/approvals.py).
+DECLINED_IN_SLACK = "declined_in_slack"
+DECISION_EXCLUSIONS = ((DECLINED_IN_SLACK, "dropped by an approver at a send approval in Slack"),)
 
 
 # -- small parsers -------------------------------------------------------------
@@ -198,11 +204,11 @@ def hard_exclusion(
         category, what = partner
         return f"{PARTNER_LABELS[category]}, a partner ({what})"
 
-    for fact, reason in HUBSPOT_EXCLUSIONS:
+    for fact, reason in HUBSPOT_EXCLUSIONS + DECISION_EXCLUSIONS:
         if _truthy(facts.get(fact)):
             return reason
 
-    active = {s.upper() for s in settings.active_states()}
+    active ={s.upper() for s in settings.active_states()}
     state = str(_first(account, facts, "hq_state") or "").strip().upper()
     if not state:
         return "HQ state unknown"

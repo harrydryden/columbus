@@ -23,10 +23,10 @@ CREATE INDEX IF NOT EXISTS events_contact_id_idx ON us_outbound.events (contact_
 CREATE INDEX IF NOT EXISTS events_occurred_at_idx ON us_outbound.events (occurred_at);
 COMMENT ON TABLE us_outbound.events IS 'One row per send, reply, visit, meeting, deal or escalation (SPEC 6). event_id is the idempotency key. Reply text is purged after 90 days by the retention job.';
 COMMENT ON COLUMN us_outbound.events.event_id IS 'Idempotency key: the Instantly email id or the HubSpot object id (SPEC 6).';
-COMMENT ON COLUMN us_outbound.events.type IS 'One of: sent, bounced, replied, unsubscribed, site_visit, meeting_booked, demo_held, deal_created, escalated.';
+COMMENT ON COLUMN us_outbound.events.type IS 'One of: sent, bounced, replied, unsubscribed, site_visit, meeting_booked, demo_held, deal_created, escalated, send_approval. send_approval: the closing decision on a send approval, event_id send-approval:{item_id}, step 1 (enrol/approvals.py; Harry, 2 Oct 2026).';
 COMMENT ON COLUMN us_outbound.events.step IS 'Sequence step, 1 to 4 (SPEC 10).';
 COMMENT ON COLUMN us_outbound.events.mailbox IS 'The registry mailbox that sent or received it.';
 COMMENT ON COLUMN us_outbound.events.reply_class IS 'One of: positive, referral, objection, not_now, negative, out_of_office, wrong_person, unsubscribe, other (SPEC 11).';
 COMMENT ON COLUMN us_outbound.events.reply_text IS 'Purged after 90 days (SPEC 6) by the retention job.';
 COMMENT ON COLUMN us_outbound.events.language_terms IS 'JSON: the list of language terms from classification (SPEC 11).';
-COMMENT ON COLUMN us_outbound.events.approval IS 'One of: approved, edited, skipped.';
+COMMENT ON COLUMN us_outbound.events.approval IS 'One of: approved, edited, skipped, approved_edited, contact_rejected, company_rejected, expired, blocked. A reply is approved, edited or skipped; a send approval has its outcome: approved, approved_edited, contact_rejected, company_rejected, expired or blocked, with approved_by a Slack user id, cli or system.';

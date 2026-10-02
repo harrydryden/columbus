@@ -139,6 +139,9 @@ class General:
     """The General tab. Defaults are SPEC 5's; keys marked (build) were added by the build."""
 
     live_sending: bool = False
+    # (build) Harry, 2 Oct 2026: no, every email waits for an approver's ✅ in Slack before its lead is added
+    # to Instantly (enrol/approvals.py); yes, enrol adds leads straight away, as before.
+    auto_send: bool = False
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
     control_share: float = 0.15
     priority_threshold: int = 50

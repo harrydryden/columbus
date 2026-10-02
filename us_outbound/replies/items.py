@@ -17,6 +17,9 @@ changed, except draft when an approver edits it (the first version is kept as dr
 Status: open → handled (sent or skipped), or → escalated after escalation_hours (still open to
 approval). "sending" is held only while a reply goes out (a compare-and-set on status, so a
 scheduled run and `us-outbound replies approve` can never both send it).
+
+Send approvals (kind send_approval; Harry, 2 Oct 2026) share the table: enrol/approvals.py holds
+their contract, and nothing here reads them.
 """
 
 from __future__ import annotations

@@ -113,6 +113,9 @@ PHASE0_GENERAL = {
     "clay_monthly_credits": "2000",
     "clay_credits_per_account": "5",
     "approver_slack_ids": "U_HARRY",
+    # The flow checks the lead enrol hands Instantly, so it runs with auto_send = yes; the send approvals that
+    # auto_send = no makes instead (Harry, 2 Oct 2026) run through this wiring in tests/test_send_approvals.py.
+    "auto_send": "yes",
 }
 PROOF = "Creative agencies in the UK use Spill so their teams get same-day support (a UK example)."
 

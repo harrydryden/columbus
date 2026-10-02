@@ -155,6 +155,48 @@ def test_dm_goes_only_to_an_approver():
     assert len(t.requests) == 1
 
 
+def test_react_seeds_a_reaction_on_the_alert_channel_and_in_dry_run_only_on_dev():
+    """Send approvals (Harry, 2 Oct 2026): the bot puts ✅ and ❌ on each card, so approving is one click."""
+    slack, t, guard = make(live=True)
+    t.route("POST", "reactions.add", body={"ok": True})
+    assert slack.react("#us-outbound", "1.0", "white_check_mark") == {"channel": "#us-outbound", "ts": "1.0",
+                                                                       "name": "white_check_mark"}
+    [req] = t.writes()
+    assert req.url == "https://slack.com/api/reactions.add"
+    assert req.json == {"channel": "C_ALERT", "timestamp": "1.0", "name": "white_check_mark"}
+    t.route("POST", "reactions.add", body={"ok": False, "error": "already_reacted"})
+    assert slack.react("#us-outbound", "1.0", "white_check_mark")  # already there: not an error
+    t.route("POST", "reactions.add", body={"ok": False, "error": "message_not_found"})
+    with pytest.raises(ApiError, match="message_not_found"):
+        slack.react("#us-outbound", "1.0", "x")
+    with pytest.raises(GuardViolation):
+        slack.react("#general", "1.0", "x")
+
+    slack, t, guard = make(live=False)
+    t.route("POST", "reactions.add", body={"ok": True})
+    assert slack.react("#us-outbound", "1.0", "x") is None  # dry-run: never on the alert channel
+    assert slack.react("#us-outbound-dev", "2.0", "x")["channel"] == "#us-outbound-dev"
+    assert [r.json["channel"] for r in t.writes()] == ["C_DEV"]
+    assert [(r.target, r.sent) for r in guard.writes("slack")] == [("#us-outbound", False), ("#us-outbound-dev", True)]
+
+
+def test_bot_user_id_is_asked_once_and_never_raises():
+    slack, t, _ = make()
+    t.route("GET", "auth.test", body={"ok": True, "user_id": "U_BOT"})
+    assert slack.bot_user_id() == "U_BOT" and slack.bot_user_id() == "U_BOT"
+    assert len([r for r in t.requests if "auth.test" in r.url]) == 1
+    slack, t, _ = make()
+    t.route("GET", "auth.test", body={"ok": False, "error": "invalid_auth"})
+    assert slack.bot_user_id() == ""
+
+
+def test_slack_off_reacts_to_the_log():
+    from us_outbound.clients.slack import SlackOff
+
+    off = SlackOff()
+    assert off.react("#us-outbound", "1.0", "x") is None and off.bot_user_id() == ""
+
+
 def test_dm_in_dry_run_goes_to_the_dev_channel():
     slack, t, guard = approver_slack()
     guard.configure(live=False)
