@@ -28,6 +28,7 @@ SOURCE_KEYS = (
     "apollo_jobs",
     "site_visits",
     "clay_careers",
+    "careers_pages",  # our own read of the company's careers and benefits pages (sources/pages.py; Harry, 2 Oct 2026)
     "clay_funding",
     "job_posts",
     "irs_bmf",
@@ -37,7 +38,7 @@ SOURCE_KEYS = (
     "lookalike",  # Spill's HubSpot customers in the account's industry group and size band (sources/lookalikes.py)
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
-TEXT_SOURCES = frozenset({"clay_careers", "job_posts"})
+TEXT_SOURCES = frozenset({"clay_careers", "careers_pages", "job_posts"})
 # Field facts each source writes to signal_events (fact = field name, value = scalar).
 # A condition on a signal may only use fields its sources provide; validation checks this.
 SOURCE_FIELDS: dict[str, frozenset[str]] = {
@@ -55,6 +56,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "apollo_jobs": frozenset({"open_people_roles", "open_roles", "posting_titles"}),  # sources/apollo_jobs.py
     "site_visits": frozenset({"us_visits_30d", "pricing_or_demo_visits_30d", "top_paths", "days_since_first_visit"}),
     "clay_careers": frozenset({"values_page", "read_status"}),
+    "careers_pages": frozenset({"values_page", "read_status"}),  # the facts clay_careers writes (docs/pipeline.md)
     "clay_funding": frozenset({"days_since_funding", "funding_stage", "funding_amount_usd"}),
     "job_posts": frozenset({"open_roles"}),
     "irs_bmf": frozenset(
@@ -165,6 +167,7 @@ class General:
     clay_contacts_function_id: str = ""  # (build) "US Outbound – Contacts"
     clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
     clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
+    clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification

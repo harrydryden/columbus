@@ -142,5 +142,14 @@ the Clay functions exist; `required` once they do). `source_universe` and `apoll
 weekday (03:00, 03:30) rather than monthly and on Mondays, to keep the queue two weeks deep with
 Apollo credits paced by the weekday (`us_outbound/sources/`).
 
+Clay narrowed (Harry, 2 Oct 2026): `read_pages` (weekdays 03:45) is our own careers and benefits
+page reader, in place of Clay's: each queued account's own careers, jobs and benefits pages and
+its public Greenhouse, Lever, Ashby or Workable board, with no Clay credits (`sources/pages.py`,
+source `careers_pages`, and `sources/job_posts.py`). `us-outbound pages show` and the daily post
+report its coverage for the decision on enhancing it. Clay is kept for the email waterfall: with
+the General key `clay_email_fallback` = yes (default no), `pick_contacts` asks Clay's Work Email
+for a person Apollo has no verified email for. `verify_accounts` sends accounts with doubtful
+Apollo facts (no HQ state or size, a count near a size edge) to the weekly hand-check.
+
 `sync_outcomes` runs every 15 minutes (SPEC 9: 01:00 daily), so the kill rules, the send forecast
 and same-day opt-outs (SPEC 13) see today's sends, bounces and unsubscribes.

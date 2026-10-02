@@ -29,6 +29,10 @@ command merges them into the sheet without losing Harry's own edits:
     the sheet does not have yet, like the tokenized openers' opener_people, opener_founder,
     opener_ops and opener_self, arrive with the build's lines. `--take weight` (any column) lets the
     build's value win for one load, as the design review's did on 1 Oct.
+    The source column is the build's (BUILD_OWNS): it names the code that produces a signal's
+    facts, so the page signals' careers_pages source (Harry, 2 Oct 2026: our own page reader,
+    sources/pages.py) arrives with a plain `--tab Signals` load; until it does, settings_sync's
+    summary says so.
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -53,6 +57,9 @@ KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_
 # have yet take the build's values; `--take COLUMN` lets the build win for one column, as the design
 # review's load did for the weights on 1 Oct.
 SHEET_WINS = frozenset({"Signals"})
+# Columns that name code, not a judgment, so the build always wins there even on a SHEET_WINS tab: a
+# Signals row's source keys are the source modules that produce its facts (careers_pages, 2 Oct 2026).
+BUILD_OWNS: dict[str, tuple[str, ...]] = {"Signals": ("source",)}
 KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
        "Focus": "industry_group"}
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
@@ -171,7 +178,8 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
 
     keep = tuple(c for c in KEEP.get(tab, ()) if c not in take)
     if tab in SHEET_WINS:
-        keep = tuple(c for c in cols if c in present and c != KEY[tab] and c not in take)
+        keep = tuple(c for c in cols if c in present and c != KEY[tab] and c not in take
+                     and c not in BUILD_OWNS.get(tab, ()))
     for k, r in build.items():
         row = {c: str(r.get(c, "")) for c in cols}
         old = sheet.get(k)

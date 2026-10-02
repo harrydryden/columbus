@@ -121,7 +121,8 @@ class Boundaries:
     registry_owners: frozenset[str] = frozenset()  # mailbox owner names
     hubspot_pipeline_id: str = ""
     hubspot_deal_stage_id: str = ""
-    clay_function_ids: frozenset[str] = frozenset()  # the two US Outbound functions
+    # The two US Outbound functions, and Work Email while clay_email_fallback is yes (context.boundaries_for).
+    clay_function_ids: frozenset[str] = frozenset()
     settings_sheet_id: str = ""
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
@@ -408,6 +409,15 @@ class Guard:
             raise GuardViolation("public sources are read only")
         if op.action == "resolve_redirect":
             return True  # HEAD on a prospect's own domain to follow one redirect (SPEC 13 data cleaning)
+        if op.action == "site.get":
+            # A GET of a page on the account's own site (sources/pages.py; Harry, 2 Oct 2026): the host
+            # must be the account's root domain or one of its subdomains, never anywhere else.
+            domain = str(op.detail.get("domain") or "").strip().lower().rstrip(".")
+            if not domain or "." not in domain:
+                raise GuardViolation("a site read names the account's domain")
+            if op.target != domain and not op.target.endswith("." + domain):
+                raise GuardViolation(f"site read of {op.target!r} is not on the account's domain {domain!r}")
+            return True
         if op.action != "get":
             raise GuardViolation("public sources are read with GET only")
         if op.target not in PUBLIC_HOSTS:

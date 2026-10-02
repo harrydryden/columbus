@@ -79,13 +79,13 @@ def test_an_account_that_passes_every_check_is_verified_and_scored():
 @pytest.mark.parametrize("change, reason", [
     ({"domain": None}, "no domain"),
     ({"domain": "gmail.com"}, "a personal email domain"),
-    ({"hq_state": None}, "HQ state unknown"),
+    ({"hq_state": None}, verify.DOUBTFUL),  # Harry, 2 Oct 2026: to the hand-check, not dropped unseen
     ({"hq_state": "CA"}, "HQ in CA or WA"),
     ({"hq_state": "Washington"}, "HQ in CA or WA"),
     ({"hq_state": "OH"}, "HQ state not active"),
     ({"employees": 300, "size_band": None}, "outside 10 to 249 employees"),
     ({"employees": 6}, "outside 10 to 249 employees"),
-    ({"employees": None, "size_band": None}, "employee count unknown"),
+    ({"employees": None, "size_band": None}, verify.DOUBTFUL),
     ({"industry": "Staffing agencies"}, "industry switched off"),
     ({"industry": "Underwater basket weaving"}, "no Industries label"),
     ({"naics": "561330"}, "a partner, never prospected"),  # a PEO
@@ -265,3 +265,80 @@ def test_from_apollo_to_a_verified_scored_account():
     jobs = {e["fact"]: e["value"] for e in ctx.store.select("signal_events", {"source": "apollo_jobs"})}
     assert (jobs["open_roles"], jobs["open_people_roles"]) == (3, 1)
     assert {r["job"] for r in ctx.store.select("credit_ledger")} == {"source_universe", "apollo_signals"}
+
+
+# -- doubtful Apollo facts go to the weekly hand-check (Harry, 2 Oct 2026) ------------------------------
+
+
+@pytest.mark.parametrize("change, reasons", [
+    ({}, []),
+    ({"hq_state": None}, ["Apollo gives no HQ state"]),
+    ({"employees": None, "size_band": None}, ["Apollo gives no employee count or size band"]),
+    ({"employees": None, "size_band": "20-49"}, []),  # a band from Apollo's size filter is not in doubt
+    ({"employees": 64, "size_band": "20-49"}, ["the employee count (64) and the size band (20-49) disagree"]),
+    ({"employees": 49, "size_band": "20-49"}, ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"]),
+    ({"employees": 51}, ["Apollo's estimate of 51 staff is within 2 of the 50-staff edge"]),
+    ({"employees": 52}, []),
+    ({"employees": 11, "size_band": "10-19"}, ["Apollo's estimate of 11 staff is within 2 of the 10-staff edge"]),
+    ({"employees": 248, "size_band": "100-249"}, ["Apollo's estimate of 248 staff is within 2 of the 250-staff edge"]),
+])
+def test_what_counts_as_a_doubtful_apollo_fact(change, reasons):
+    assert verify.doubts(account(**change)) == reasons
+
+
+def test_a_doubtful_account_goes_to_the_hand_check_once_instead_of_being_verified():
+    ctx, t = make([account(employees=49, size_band="20-49"), account("a2")])
+    out = verify.run(ctx)
+    assert (out["verified"], out["to_hand_check"]) == (1, 1)
+    assert out["not_verified"] == {verify.DOUBTFUL: 1} and status(ctx) == "new" and status(ctx, "a2") == "verified"
+    assert out["to_hand_check_accounts"] == [
+        {"account_id": "a1", "domain": "a1co.com", "reasons": ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"]}]
+    assert [r for r in hubspot_requests(t) if "a1co.com" in str(r.json)] == []  # nothing asked about it meanwhile
+    [fact] = ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE, "fact": verify.DOUBT_FACT})
+    assert fact["value"] == {"reasons": ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"],
+                             "facts": {"hq_state": "NY", "employees": 49, "size_band": "20-49"}}
+    verify.run(ctx)  # the same doubt is not recorded twice
+    assert len(ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE})) == 1
+    assert [d["account_id"] for d in verify.open_doubts(ctx)] == ["a1"]
+
+
+def test_the_hand_check_lists_doubts_and_approving_it_clears_them_so_the_next_run_verifies():
+    from us_outbound.enrol import hand_check
+
+    accounts = [account(employees=49, size_band="20-49"), account("a2", hq_state=None), account("a3", employees=50)]
+    ctx, _ = make(accounts)
+    verify.run(ctx)
+    live = dataclasses.replace(ctx, job="handcheck_show")
+    live.guard.configure(live=True)
+    item, payload = hand_check.show(live)
+    assert item is not None and hand_check.has_work(payload)
+    assert [d["account_id"] for d in payload["doubtful"]] == ["a1", "a2", "a3"]
+    words = hand_check.text(payload)
+    assert "Doubtful Apollo facts (3), not verified until this is approved" in words
+    assert "(a1co.com) · HQ NY · 20-49 (49 staff) · Apollo's estimate of 49 staff is within 2 of the 50-staff edge" in words
+    out = hand_check.approve(live, ["a3co.com"], "harry")
+    assert out["doubts_cleared"] == ["a1", "a2"] and out["pulled_account_ids"] == ["a3"]
+    live.guard.configure(live=False)
+    again = verify.run(ctx)
+    assert status(ctx, "a1") == "verified"  # checked by Harry: verified on its facts
+    assert status(ctx, "a2") == "new" and again["not_verified"]["HQ state unknown"] == 1  # needs an Overrides row
+    assert status(ctx, "a3") == "new" and again["to_hand_check"] == 1  # pulled: still held
+
+
+def test_an_overrides_row_settles_a_doubt():
+    s = settings_with(overrides=(Override("a1co.com", "employees", "45"),))
+    ctx, _ = make([account(employees=49, size_band="20-49")], settings=s)
+    assert verify.run(ctx)["verified"] == 1
+
+
+def test_the_cross_check_hook_can_settle_a_doubt(monkeypatch):
+    seen = []
+
+    def clay_agrees(ctx, account, found):
+        seen.append((account["account_id"], list(found)))
+        return []
+
+    monkeypatch.setattr(verify, "cross_check", clay_agrees)
+    ctx, _ = make([account(employees=49, size_band="20-49")])
+    assert verify.run(ctx)["verified"] == 1
+    assert seen == [("a1", ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"])]

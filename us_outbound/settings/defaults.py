@@ -158,6 +158,13 @@ _GENERAL: list[tuple[str, str, str]] = [
         "skip: verify_accounts verifies an account on its Apollo data and HubSpot instead. "
         "Harry, 1 Oct 2026: go live on 5 Oct before the Clay functions exist; set to required once they do.",
     ),
+    (
+        "clay_email_fallback",
+        "no",
+        "yes: when Apollo has no verified email for the chosen person (a miss or a catch-all), pick_contacts asks "
+        "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
+        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed.",
+    ),
     ("apollo_credits_per_account", "1", "Estimate until measured."),
     ("claude_model", "claude-opus-5-5",
      "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),
@@ -207,7 +214,7 @@ _APPENDIX_A = "Design review Appendix A, 1 Oct 2026"
 # active, note: the Signals tab's columns in order, but for the opener lines by role (_OPENERS, below).
 _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]] = [
     (
-        "Mental health support listed", "clay_careers, job_posts",
+        "Mental health support listed", "clay_careers, careers_pages, job_posts",
         "mental health; therapy; counseling; counselling; wellbeing support; well-being support",
         "", "15", "", "Score", "Progressive employer", "I noticed your careers page mentions {evidence}.", "540", "yes",
         "A budget-and-brand signal: wellbeing is part of the employer's brand, never an exclusion. "
@@ -215,7 +222,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "longer counted twice (it scored +35 with the EAP named row); job posts read too.",
     ),
     (
-        "EAP named", "clay_careers, job_posts",
+        "EAP named", "clay_careers, careers_pages, job_posts",
         "EAP; employee assistance; ComPsych; GuidanceResources; Magellan; Optum; Carelon; Cigna; "
         "Aetna Resources For Living; TELUS Health; Health Advocate",
         _EAP_CONTEXT, "5", "", "Score", "Upgrade the EAP",
@@ -227,7 +234,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "as an EAP and the opener stays true.",
     ),
     (
-        "Modern mental-health vendor named", "clay_careers, job_posts",
+        "Modern mental-health vendor named", "clay_careers, careers_pages, job_posts",
         "Talkspace; Lyra; Modern Health; Spring Health; BetterUp; Nivati; Tava; Wellbound",
         "", "0", "", "Hold", "Switch from a competitor", "", "540", "yes",
         "Held for review: a direct competitor is already in place. "
@@ -237,7 +244,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "row. Teletherapy companies themselves are partners, never prospected (scoring/tiers.py).",
     ),
     (
-        "Wellbeing app or perk named", "clay_careers, job_posts",
+        "Wellbeing app or perk named", "clay_careers, careers_pages, job_posts",
         "Headspace; Calm; Wellhub; Gympass",
         _APP_CONTEXT, "5", "", "Score", "Progressive employer", "I noticed {evidence} is part of your benefits.", "540", "yes",
         f"New ({_APPENDIX_A}): apps and fitness perks complement counseling, and Calm and Headspace buyers "
@@ -245,7 +252,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "context terms.",
     ),
     (
-        "Progressive benefits", "clay_careers, job_posts",
+        "Progressive benefits", "clay_careers, careers_pages, job_posts",
         "wellness stipend; wellness stipends; mental health day; mental health days; unlimited PTO; "
         "four-day week; four-day weeks; 4-day week; 4-day weeks; parental leave; sabbatical; sabbaticals; "
         "100% employer-paid",
@@ -255,7 +262,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "a modern vendor; plurals added (terms match whole words).",
     ),
     (
-        "Culture or values page", "clay_careers", "values_page = true",
+        "Culture or values page", "clay_careers, careers_pages", "values_page = true",
         "", "0", "", "Score", "Progressive employer", "", "540", "no",
         f"{_APPENDIX_A}: 0 and inactive, because nearly every company has one.",
     ),

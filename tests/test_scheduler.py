@@ -481,6 +481,7 @@ SPEC9_CRONS = {
     "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
     "lookalikes": "30 2 * * 1",  # Monday, after settings_sync (02:00) and before source_universe (03:00)
     "hand_check_post": "0 8 * * 1",
+    "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after apollo_signals (03:30), before verify_accounts (04:30)
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
@@ -502,7 +503,7 @@ def test_the_table_matches_the_job_registry_and_spec9():
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
-    assert enabled == ["settings_sync", "source_universe", "apollo_signals", "verify_accounts", "pick_contacts",
+    assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "verify_accounts", "pick_contacts",
                        "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes", "mailbox_health",
                        "kill_rules", "daily_post", "heartbeat_check", "suppression_load", "lookalikes",
                        "hand_check_post"]

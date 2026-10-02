@@ -16,7 +16,7 @@ from us_outbound.clients.clay import (
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 
 US_ACCOUNTS, US_CONTACTS = "t_usAccounts01", "t_usContacts01"
-WORK_EMAIL = "t_0tk0v4lhJ895hhhhTHJ"  # existing workspace function: never called directly
+WORK_EMAIL = "t_0tk0v4lhJ895hhhhTHJ"  # existing workspace function: only while clay_email_fallback is yes
 BASE = "https://api.clay.com/public/v0"
 
 # The SPEC 8 example, with one value picked for each enum.

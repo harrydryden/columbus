@@ -107,7 +107,11 @@ def test_every_default_signal(settings):
 
 def test_signal_sources_and_parsing(settings):
     got = {s.signal: s for s in settings.signals}
-    assert got["Modern mental-health vendor named"].sources == ("clay_careers", "job_posts")
+    # Harry, 2 Oct 2026: our own page reader (careers_pages) beside Clay's, which stays for when Clay returns.
+    assert got["Modern mental-health vendor named"].sources == ("clay_careers", "careers_pages", "job_posts")
+    for name in ("Mental health support listed", "EAP named", "Wellbeing app or perk named", "Progressive benefits"):
+        assert got[name].sources == ("clay_careers", "careers_pages", "job_posts"), name
+    assert got["Culture or values page"].sources == ("clay_careers", "careers_pages")
     assert got["Funding in the last 6 months"].sources == ("apollo_org", "clay_funding")
     # people_leader_count comes from apollo_people, so that source is listed too.
     assert got["First People hire"].sources == ("apollo_jobs", "apollo_people")
@@ -123,7 +127,7 @@ def test_a_carrier_eap_is_counted_once(settings):
     """Appendix A: "EAP" and "employee assistance" were in both rows, so a carrier EAP alone scored 25 + 10."""
     got = {s.signal: s for s in settings.signals}
     mh, eap = got["Mental health support listed"], got["EAP named"]
-    assert mh.sources == eap.sources == ("clay_careers", "job_posts")  # job posts read too
+    assert mh.sources == eap.sources == ("clay_careers", "careers_pages", "job_posts")  # job posts read too
     assert not {t.casefold() for t in mh.terms} & {t.casefold() for t in eap.terms}
     assert "EAP" not in mh.terms and "employee assistance" not in mh.terms
     for vendor in ("Optum", "Carelon", "Cigna", "Aetna Resources For Living", "TELUS Health", "Health Advocate"):

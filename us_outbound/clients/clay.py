@@ -1,9 +1,11 @@
-"""Clay client (SPEC 1.2, 8): the two US Outbound functions, called through the Routines API.
+"""Clay client (SPEC 1.2, 8): the US Outbound functions, called through the Routines API.
 
-Only "US Outbound – Accounts" and "US Outbound – Contacts" may be run: the guard refuses
-any other function id (the existing workspace functions such as Work Email are wrapped
-inside ours, never called directly). Clay verification runs in dry-run too; budgets are
-checked by the caller before each batch (SPEC 8).
+Only "US Outbound – Accounts" and "US Outbound – Contacts" may be run, and, while General
+clay_email_fallback is yes, the existing workspace function Work Email (WORK_EMAIL_FUNCTION_ID),
+called as it is and never modified (SPEC 1.2; Harry, 2 Oct 2026: Clay narrowed to the email
+waterfall for contacts Apollo can't verify, contacts/pick.py). The guard refuses any other
+function id (context.boundaries_for). Clay runs in dry-run too; budgets are checked by the
+caller before each batch (SPEC 8).
 
 Routines API (Clay Public HTTP API, beta, per Clay University docs Sep 2026):
   POST {base}/routines/{routine_id}/run   body {"items": [{"id", "inputs"}]}  -> a run id
@@ -15,7 +17,8 @@ ticked in its Integrations settings, or calls return 403.
 If the plan does not allow the API, SPEC 8's CSV fallback applies: write_import_csv()
 for the import, read_export_csv() for Clay's export.
 
-parse_accounts_output() and parse_contacts_output() validate the strict JSON of SPEC 8.
+parse_accounts_output() and parse_contacts_output() validate the strict JSON of SPEC 8;
+parse_work_email_output() reads Work Email's own output.
 """
 
 from __future__ import annotations
@@ -41,6 +44,19 @@ PROVISION_TYPES = frozenset(
     {"eap", "carrier_eap", "named_vendor", "therapy_stipend", "general_support", "mental_health_days"}
 )
 EMAIL_STATUSES = frozenset({"valid", "catch_all_valid", "invalid", "not_found"})
+# The existing workspace function "Work Email" (docs/phase0-facts.md), which charges only when it finds an email.
+WORK_EMAIL_FUNCTION_ID = "t_0tk0v4lhJ895hhhhTHJ"
+UNVERIFIED = "unverified"  # Work Email found an address but said nothing of its validity: never used
+# PHASE0-CONFIRM: Work Email's output fields. Its waterfall result is read under any of these names, and
+# its validation status mapped onto SPEC 8's statuses; anything else that came with an email is UNVERIFIED.
+WORK_EMAIL_KEYS = ("email", "work_email", "Work Email", "workEmail")
+WORK_EMAIL_STATUS_KEYS = ("status", "email_status", "validation_status", "verification_status", "result")
+WORK_EMAIL_STATUS = {
+    "valid": "valid", "verified": "valid", "deliverable": "valid",
+    "catch_all_valid": "catch_all_valid", "catch_all": "catch_all_valid", "catch-all": "catch_all_valid",
+    "catchall": "catch_all_valid", "accept_all": "catch_all_valid", "accept-all": "catch_all_valid",
+    "invalid": "invalid", "undeliverable": "invalid", "not_found": "not_found", "not found": "not_found",
+}
 
 # PHASE0-CONFIRM: status values in the results response. Run-level terminal statuses are
 # documented (complete, validation_failed, processing_failed); item-level ones are not.
@@ -378,4 +394,29 @@ def parse_contacts_output(obj: Any) -> dict:
         if not email or email.count("@") != 1 or "." not in email.split("@")[1]:
             raise ClayError(f"status {status} needs an email address")
     return {"email": email, "status": status, "provider": _opt_str(o, "provider"), "credits_used": _credits(o)}
+
+
+def parse_work_email_output(obj: Any) -> dict:
+    """Work Email's output as {email, status, provider, credits_used}; credits_used None when it gives none.
+
+    The SPEC 8 Contacts shape is read as it is. Otherwise status is SPEC 8's (valid,
+    catch_all_valid, invalid, not_found) when Work Email names one, UNVERIFIED when it gave an
+    email and no status, and not_found when it gave no email. Raises ClayError on a malformed email.
+    """
+    o = _as_obj(obj, "Work Email")
+    if o.get("status") in EMAIL_STATUSES and "credits_used" in o:
+        return parse_contacts_output(o)
+    email = next((v.strip().lower() for k in WORK_EMAIL_KEYS if isinstance(v := o.get(k), str) and v.strip()), None)
+    raw = next((str(v).strip().lower() for k in WORK_EMAIL_STATUS_KEYS if isinstance(v := o.get(k), str) and v.strip()), "")
+    status = WORK_EMAIL_STATUS.get(raw, UNVERIFIED if email else "not_found")
+    if email and (email.count("@") != 1 or "." not in email.split("@")[1]):
+        raise ClayError(f"Work Email returned a malformed address ({len(email)} characters)")
+    if status in {"valid", "catch_all_valid"} and not email:
+        status = "not_found"
+    credits = o.get("credits_used")
+    if isinstance(credits, bool) or not isinstance(credits, (int, float)) or credits < 0:
+        credits = None
+    provider = next((v.strip() for k in ("provider", "source") if isinstance(v := o.get(k), str) and v.strip()), None)
+    return {"email": email, "status": status, "provider": provider,
+            "credits_used": None if credits is None else float(credits)}
 

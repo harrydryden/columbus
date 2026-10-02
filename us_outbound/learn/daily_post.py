@@ -8,6 +8,8 @@ It covers the last send day (Mondays cover Friday to Sunday, so weekend replies 
     enrolled accounts that visited the US site (SPEC 11);
   * today's number and what limits it, each sender's capacity, and the credit budgets
     (limits.py, the same lines `us-outbound status` prints);
+  * the careers and benefits page reader's coverage: its last run, every account read so far,
+    and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`);
   * mailbox health: each mailbox's sends, its bounces over its last 100 sends
     (v_mailbox_health) and its place on the sending ramp (registry/ramp.py);
   * kill rules that fired, and the holds still in force (learn/kill_rules.py);
@@ -30,6 +32,7 @@ from us_outbound.learn import holds, kill_rules
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
+from us_outbound.sources import pages
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -159,6 +162,11 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     lines.append("Credit budgets this month:")
     lines += [f"  {line}" for line in lim.budget_lines]
     nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
+
+    # The careers and benefits page reader's coverage, for Harry's call on enhancing it (2 Oct 2026).
+    lines += pages.post_lines(ctx)
+    total = pages.coverage(ctx.store, ctx.settings, ctx.today_uk())
+    nums.update(pages_read=total.accounts, pages_benefits_text_share=round(total.share(total.with_text), 3))
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
     lines.append("Mailboxes:")

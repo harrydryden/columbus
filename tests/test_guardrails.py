@@ -574,6 +574,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
     "Public": {
         "get": lambda c, w: c.get("https://boards-api.greenhouse.io/v1/boards/acme/jobs", params={"content": "true"}),
         "resolve_redirect": lambda c, w: c.resolve_redirect("https://acmecreative.com"),
+        "site_get": lambda c, w: c.site_get("https://www.acmecreative.com/careers", "acmecreative.com"),
     },
     "Claude": {
         "json": lambda c, w: c.json("Classify the reply.", "Sounds good", SCHEMA, now=NOW),
@@ -831,6 +832,10 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "clay table write": lambda w: w.clients["Clay"].request("POST", "/tables/t1/rows", Op("table.write", write=True)),
     # Public sources: allowlisted GETs only.
     "public unlisted host": lambda w: w.clients["Public"].get("https://evil.example/jobs"),
+    "public site read off the account's domain": lambda w: w.clients["Public"].site_get(
+        "https://evil.example/careers", "acmecreative.com"),
+    "public site read of a look-alike domain": lambda w: w.clients["Public"].site_get(
+        "https://notacmecreative.com/careers", "acmecreative.com"),
     "public POST": lambda w: w.clients["Public"].request(
         "POST", "https://boards-api.greenhouse.io/x", Op("post", target="boards-api.greenhouse.io", write=True)),
     # The database: schema us_outbound only, and query() is read only.

@@ -74,15 +74,21 @@ class Secrets:
 
 
 def boundaries_for(settings: Settings, settings_sheet_id: str = "") -> Boundaries:
+    from us_outbound.clients.clay import WORK_EMAIL_FUNCTION_ID
+
     g = settings.general
     live_mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
+    # The US Outbound functions, and Clay's own Work Email while clay_email_fallback is yes (Harry, 2 Oct 2026).
+    clay_functions = {x for x in (g.clay_accounts_function_id, g.clay_contacts_function_id) if x}
+    if g.clay_email_fallback:
+        clay_functions.add(WORK_EMAIL_FUNCTION_ID)
     return Boundaries(
         registry_addresses=frozenset(m.address.lower() for m in live_mailboxes),
         registry_account_ids=frozenset(m.instantly_account_id for m in live_mailboxes if m.instantly_account_id),
         registry_owners=frozenset(m.owner_name for m in live_mailboxes),
         hubspot_pipeline_id=g.hubspot_pipeline_id,
         hubspot_deal_stage_id=g.hubspot_deal_stage_id,
-        clay_function_ids=frozenset(x for x in (g.clay_accounts_function_id, g.clay_contacts_function_id) if x),
+        clay_function_ids=frozenset(clay_functions),
         settings_sheet_id=settings_sheet_id or os.environ.get("US_OUTBOUND_SETTINGS_SHEET_ID", ""),
         alert_channel=g.alert_channel,
         dev_channel=g.dev_channel,
@@ -179,6 +185,21 @@ class Clients:
         from us_outbound.clients.public import Public
 
         return Public(self.guard, self.transport)
+
+    @cached_property
+    def sites(self):
+        """Public reads for the page reader (sources/pages.py): one attempt each, redirects handed back.
+
+        A prospect's site that times out is not asked again in the same run, and each redirect
+        is checked against the guard and robots.txt before it is followed.
+        """
+        from us_outbound.clients.http import RequestsTransport
+        from us_outbound.clients.public import Public
+
+        transport = self.transport
+        if isinstance(transport, RequestsTransport):
+            transport = RequestsTransport(attempts=1, follow_redirects=False)
+        return Public(self.guard, transport)
 
 
 @dataclass

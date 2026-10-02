@@ -14,9 +14,15 @@ hand_check_post, Mondays 08:00 UK and on demand (`us-outbound run hand_check_pos
      HQ state, size band, role title and opener evidence are right in 90% or more"). The
      opener is the one enrol would give that contact (enrol/openers.py), worked out with no
      model call; a held-out account shows none, with the line it would have had;
-  3. posts it to the alert channel (in dry-run, the dev channel), or logs it with no Slack
+  3. adds the accounts verify_accounts held back for doubtful Apollo facts (verify.open_doubts:
+     no HQ state, a size near a band edge, and so on; Harry, 2 Oct 2026), each with its reasons,
+     in payload.doubtful. They are not verified until this hand-check is approved: approving
+     clears the doubts of each one not pulled, and the next verify_accounts run decides on its
+     facts as usual (an Overrides row corrects one that is wrong). A pulled one stays held;
+  4. posts it to the alert channel (in dry-run, the dev channel), or logs it with no Slack
      token. A live run posts an item a dry run or `handcheck show --live` recorded unposted.
 A week with nothing to check records no item: run it again once accounts are queued.
+Doubts found after the week's item is recorded wait for the next week's hand-check.
 
 Without Slack (Harry, 1 Oct 2026; operator commands, live with --live alone):
   us-outbound handcheck show [--live]      prints this week's sample; --live records it if
@@ -37,6 +43,7 @@ import random
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from us_outbound import verify
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
@@ -156,15 +163,21 @@ def facts(ctx: Context, account: Mapping[str, Any], domains: set[str], hashes: s
 
 
 def build(ctx: Context, week: str, per_group: int = PER_GROUP) -> dict[str, Any]:
-    """The week's payload: the draw and each account's facts."""
+    """The week's payload: the draw and each account's facts, and the accounts held for doubtful facts."""
     domains, hashes = enrol.suppressed(ctx)
     sample = draw(ctx, week, per_group)
     return {
         "iso_week": week, "per_group": per_group,
         "groups": {g: [a["account_id"] for a in accts] for g, accts in sample.items()},
         "accounts": [facts(ctx, a, domains, hashes) for accts in sample.values() for a in accts],
+        "doubtful": verify.open_doubts(ctx),
         "pulled_account_ids": [], "dry_run": ctx.dry_run, "posted": False,
     }
+
+
+def has_work(payload: Mapping[str, Any]) -> bool:
+    """Whether the payload has anything for Harry to check."""
+    return bool(payload.get("accounts") or payload.get("doubtful"))
 
 
 # -- the text Harry reads ------------------------------------------------------------------------------
@@ -223,6 +236,14 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
             else:
                 lines.append(f"• {a.get('clean_name') or '?'} ({a.get('domain')}) · {a.get('hq_state') or '?'} · "
                              f"{a.get('size_band') or '?'} · {_who(a)} · {_evidence(a)} · id {aid}")
+    doubtful = payload.get("doubtful") or []
+    if doubtful:
+        lines.append(f"Doubtful Apollo facts ({len(doubtful)}), not verified until this is approved; pull any that "
+                     "is wrong, or correct it with an Overrides row:")
+        for d in doubtful:
+            n += 1
+            lines.append(f"  {n}. {d.get('clean_name') or '?'} ({d.get('domain')}) · HQ {d.get('hq_state') or '?'} · "
+                         f"{_size(d)} · {'; '.join(d.get('reasons') or ())} · id {d.get('account_id')}")
     pulled = payload.get("pulled_account_ids") or []
     if pulled:
         lines.append(f"Pulled: {', '.join(pulled)}")
@@ -278,7 +299,7 @@ def post(ctx: Context) -> dict:
                            else "recorded; a live run posts it")
         return summary
     payload = build(ctx, week)
-    if not payload["accounts"]:
+    if not has_work(payload):
         summary.update(status="nothing to check: no queued or verified account in an active industry group",
                        groups=active_groups(ctx.settings))
         log("hand_check_post", **summary)
@@ -286,7 +307,8 @@ def post(ctx: Context) -> dict:
     item = _record(ctx, payload)
     sent = _post(ctx, item)
     summary.update(item_id=item["item_id"], status="recorded", accounts=len(payload["accounts"]),
-                   groups={g: len(ids) for g, ids in payload["groups"].items()}, alert=sent)
+                   doubtful=len(payload["doubtful"]), groups={g: len(ids) for g, ids in payload["groups"].items()},
+                   alert=sent)
     log("hand_check_post", **{k: v for k, v in summary.items() if k != "alert"})
     return summary
 
@@ -298,14 +320,15 @@ def show(ctx: Context) -> tuple[dict | None, dict]:
     if item is not None:
         return item, dict(item.get("payload") or {})
     payload = build(ctx, week)
-    if ctx.live and payload["accounts"]:
+    if ctx.live and has_work(payload):
         return _record(ctx, payload), payload
     return None, payload
 
 
 def _resolve(payload: Mapping[str, Any], wanted: Iterable[str], known: set[str]) -> tuple[list[str], list[str]]:
     """(account ids for these ids or domains, the values matching no account)."""
-    by_domain = {str(a.get("domain") or "").lower(): a["account_id"] for a in payload.get("accounts") or ()}
+    by_domain = {str(a.get("domain") or "").lower(): a["account_id"]
+                 for a in [*(payload.get("accounts") or ()), *(payload.get("doubtful") or ())]}
     ids, unknown = [], []
     for w in wanted:
         v = str(w).strip()
@@ -328,7 +351,7 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
         raise LookupError(f"no hand-check is recorded for {week}: run `us-outbound handcheck show --live` "
                           "(or `us-outbound run hand_check_post --live`) first")
     payload = dict(item.get("payload") or {})
-    sample = {a["account_id"] for a in payload.get("accounts") or ()}
+    sample = {a["account_id"] for a in [*(payload.get("accounts") or ()), *(payload.get("doubtful") or ())]}
     wanted = [str(p).strip() for p in pulled if str(p).strip()]
     on_file = {str(a["account_id"]) for a in ctx.store.select("accounts", {"account_id": wanted})} if wanted else set()
     ids, unknown = _resolve(payload, wanted, sample | on_file)
@@ -337,16 +360,20 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
     rows = [r for r in ctx.store.select("hitl_items", {"kind": KIND}) if enrol._item_week(r) == week]
     before = [x for r in rows for x in ((r.get("payload") or {}).get("pulled_account_ids") or ())]
     all_pulled = list(dict.fromkeys([*before, *ids]))
+    cleared = [d for r in rows for d in ((r.get("payload") or {}).get("doubtful") or ())
+               if d.get("account_id") not in all_pulled]
     if ctx.live:
         ctx.store.upsert("hitl_items", [
             {"item_id": r["item_id"], "status": "handled", "handled_at": ctx.now, "handled_by": by,
              "payload": {**dict(r.get("payload") or {}), "pulled_account_ids": all_pulled}}
             for r in rows
         ])
+        verify.clear_doubts(ctx, cleared, by, week)  # the next verify_accounts run decides on their facts
         if item.get("slack_ts"):
             notify.alert(ctx, f"Hand-check {week} approved by {by}"
                          + (f"; pulled: {', '.join(all_pulled)}" if all_pulled else "; nothing pulled")
                          + ". Enrollment can go ahead.")
     return {"dry_run": ctx.dry_run, "iso_week": week, "item_id": item["item_id"], "approved": ctx.live,
             "was": item.get("status"), "pulled_account_ids": all_pulled,
+            "doubts_cleared": [d["account_id"] for d in cleared] if ctx.live else [],
             "outside_sample": [i for i in ids if i not in sample], "checked": len(sample)}

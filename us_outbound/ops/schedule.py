@@ -38,6 +38,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # weekday (sources/apollo_universe.py); then verify_accounts, all before pick_contacts at 05:30.
     ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
     ScheduledJob("apollo_signals", "30 3 * * 1-5", live=False, enabled=True, timeout_minutes=45, phase=1),
+    # Harry, 2 Oct 2026: our own careers and benefits page reader, in place of Clay's. After apollo_signals and
+    # before verify_accounts, whose rescore scores its facts; public GETs and database writes only, so no --live.
+    # It stops starting accounts after 30 minutes (sources/pages.py RUN_SECONDS), well inside the timeout.
+    ScheduledJob("read_pages", "45 3 * * 1-5", live=False, enabled=True, timeout_minutes=40, phase=1),
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),

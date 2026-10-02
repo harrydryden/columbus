@@ -18,6 +18,17 @@ The checks, cheapest first. An account that fails one keeps its status and is ch
      or hard-bounced (SPEC 9 hard exclusions). A HubSpot exclusion is kept as a hubspot fact with the
      account tiered Excluded (enrol.mark_excluded), so the rescore keeps it out and it is not looked up
      again. A HubSpot error leaves the account for the next run.
+Doubtful Apollo facts (Harry, 2 Oct 2026): an account whose HQ state or size Apollo leaves in
+doubt is not verified silently, nor dropped silently. It goes to the weekly hand-check
+(enrol/hand_check.py) with the reason, as a doubtful_facts fact, and waits:
+  * Apollo gives no HQ state, or no employee count and no size band;
+  * the employee count and the size band disagree;
+  * Apollo's count (an estimate) is within EDGE_MARGIN of a SIZE_EDGES edge, where what we do
+    changes: 10 staff (the floor), 50 (the Roles order, so whom we write to) and 250 (the ceiling).
+When Harry approves the hand-check without pulling it, its doubts are cleared (a doubt_cleared
+fact) and the checks above decide as usual; an Overrides row corrects a fact that was wrong.
+cross_check() is the hook for Clay's cross-check of HQ state and size (docs/roadmap.md): today
+nothing confirms a doubt, so every one goes to the hand-check.
 Overrides win over the account's columns, as in scoring. Then the score job runs (SPEC 9: score
 runs after the sources), so the new accounts and the sources' new facts have a tier and an angle
 before pick_contacts at 05:30.
@@ -33,11 +44,13 @@ itself stays dry until --live and live_sending = yes.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from us_outbound.clean.domains import is_personal_domain
-from us_outbound.clean.people import state_code
+from us_outbound.clean.people import size_band, state_code
+from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, focus, queue
@@ -58,6 +71,14 @@ ID_CHUNK = 1000
 OPTED_OUT_REASON = "a contact at the domain opted out or bounced in HubSpot"
 CLAY_NOT_BUILT = ("clay_verification is required and verify_in_clay is not built yet (phase 1), so accounts "
                   "wait in new and queued; set clay_verification to skip to verify them on Apollo data and HubSpot")
+# Doubtful Apollo facts (Harry, 2 Oct 2026): to the weekly hand-check instead of verified silently.
+DOUBT_SOURCE = JOB  # signal_events.source of the doubt facts; not a SPEC 7 source key, so no signal scores them
+DOUBT_FACT, CLEARED_FACT = "doubtful_facts", "doubt_cleared"
+SIZE_EDGES = (10, 50, 250)  # the first headcount where what we do changes: the floor, the Roles order, the ceiling
+EDGE_MARGIN = 2  # Apollo's count is an estimate: this close to an edge it could be either side
+DOUBTFUL = "doubtful Apollo facts, waiting for the weekly hand-check"
+# check() reasons a doubt can stand behind: the hand-check sees the account rather than it failing unseen.
+DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "outside 10 to 249 employees"})
 
 
 def _lower(v: Any) -> str:
@@ -113,6 +134,103 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
     return None
 
 
+def doubts(account: Mapping[str, Any]) -> list[str]:
+    """What in the account's Apollo facts is too doubtful to verify on unseen (Overrides already applied)."""
+    out: list[str] = []
+    if not state_code(str(account.get("hq_state") or "")):
+        out.append("Apollo gives no HQ state")
+    employees = tiers.as_number(account.get("employees"))
+    band = account.get("size_band")
+    if employees is None:
+        if band not in SIZE_BANDS:
+            out.append("Apollo gives no employee count or size band")
+        return out
+    n = int(employees)
+    if band in SIZE_BANDS and size_band(n) not in (None, band):
+        out.append(f"the employee count ({n}) and the size band ({band}) disagree")
+    edge = next((e for e in SIZE_EDGES if e - EDGE_MARGIN <= n < e + EDGE_MARGIN), None)
+    if edge is not None:
+        out.append(f"Apollo's estimate of {n} staff is within {EDGE_MARGIN} of the {edge}-staff edge")
+    return out
+
+
+def cross_check(ctx: Context, account: Mapping[str, Any], found: Sequence[str]) -> list[str]:
+    """The doubts a second source leaves standing: the hook for Clay's cross-check (docs/roadmap.md).
+
+    Once Clay's Accounts function exists, its HQ state and size confirm or correct Apollo's here,
+    and a doubt they settle is dropped. Today nothing cross-checks, so every doubt stands.
+    """
+    return list(found)
+
+
+def _when(v: Any) -> datetime:
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=UTC)
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime(1970, 1, 1, tzinfo=UTC)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
+
+
+def doubt_history(ctx: Context, account_ids: Iterable[str] | None = None) -> tuple[dict[str, dict], dict[str, set[str]]]:
+    """(account_id -> its latest doubtful_facts value; account_id -> the doubts a hand-check cleared)."""
+    where: dict[str, Any] = {"source": DOUBT_SOURCE}
+    ids = list(account_ids) if account_ids is not None else None
+    rows: list[dict] = []
+    if ids is None:
+        rows = ctx.store.select("signal_events", where)
+    else:
+        for i in range(0, len(ids), ID_CHUNK):
+            rows += ctx.store.select("signal_events", {**where, "account_id": ids[i : i + ID_CHUNK]})
+    latest: dict[str, tuple[datetime, dict]] = {}
+    cleared: dict[str, set[str]] = defaultdict(set)
+    for e in rows:
+        aid, value = str(e.get("account_id")), e.get("value")
+        if not isinstance(value, Mapping):
+            continue
+        if e.get("fact") == DOUBT_FACT:
+            t = _when(e.get("observed_at"))
+            if aid not in latest or t >= latest[aid][0]:
+                latest[aid] = (t, dict(value))
+        elif e.get("fact") == CLEARED_FACT:
+            cleared[aid] |= {str(r) for r in value.get("reasons") or ()}
+    return {aid: v for aid, (_, v) in latest.items()}, cleared
+
+
+def open_doubts(ctx: Context) -> list[dict]:
+    """The accounts waiting in new or queued for the hand-check, each with its uncleared doubts."""
+    recorded, cleared = doubt_history(ctx)
+    if not recorded:
+        return []
+    out = []
+    for a in ctx.store.select("accounts", {"account_id": sorted(recorded), "status": list(WAITING_STATUSES)}):
+        reasons = [r for r in recorded[a["account_id"]].get("reasons") or () if r not in cleared.get(a["account_id"], set())]
+        if reasons:
+            out.append({"account_id": a["account_id"], "domain": a.get("domain") or "", "clean_name": a.get("clean_name") or "",
+                        "hq_state": a.get("hq_state") or "", "employees": a.get("employees"),
+                        "size_band": a.get("size_band") or "", "reasons": reasons})
+    return sorted(out, key=lambda d: str(d["domain"]))
+
+
+def doubt_fact(ctx: Context, account: Mapping[str, Any], reasons: Sequence[str]) -> dict:
+    """A doubtful_facts row: the reasons, and the facts as Apollo (and any Overrides) gave them."""
+    seen = {k: account.get(k) for k in ("hq_state", "employees", "size_band")}
+    return {"event_id": new_id(), "account_id": account["account_id"], "source": DOUBT_SOURCE, "fact": DOUBT_FACT,
+            "value": {"reasons": list(reasons), "facts": seen}, "quote": "; ".join(reasons)[:300], "source_url": "",
+            "observed_at": ctx.now}
+
+
+def clear_doubts(ctx: Context, items: Iterable[Mapping[str, Any]], by: str, week: str) -> int:
+    """Record that a hand-check cleared each item's doubts (enrol/hand_check.approve)."""
+    rows = [{"event_id": new_id(), "account_id": d["account_id"], "source": DOUBT_SOURCE, "fact": CLEARED_FACT,
+             "value": {"reasons": list(d.get("reasons") or ()), "by": by, "iso_week": week}, "quote": "",
+             "source_url": "", "observed_at": ctx.now} for d in items]
+    if rows:
+        ctx.store.insert("signal_events", rows)
+    return len(rows)
+
+
 def hubspot_check(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str] | None:
     """(fact, reason) when HubSpot excludes the company; None when it is clear."""
     block = enrol.hubspot_company_block(ctx, account)
@@ -159,15 +277,26 @@ def run(ctx: Context) -> dict:
     errors: list[str] = []
     verified: list[str] = []
     pending: list[dict] = []
+    doubtful: list[dict] = []
 
     def fail(account: Mapping[str, Any], why: str) -> None:
         failed[why] += 1
         if len(examples) < LIST_LIMIT:
             examples.append({"account_id": account["account_id"], "domain": account.get("domain"), "reason": why})
 
+    recorded, cleared = doubt_history(ctx, [a["account_id"] for a in todo])
+    doubt_rows: list[dict] = []
     for a in todo:
         acct = with_overrides(a, s)
         why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
+        if why is None or why in DOUBTABLE:
+            standing = [d for d in cross_check(ctx, acct, doubts(acct)) if d not in cleared.get(a["account_id"], set())]
+            if standing:
+                if (recorded.get(a["account_id"]) or {}).get("reasons") != standing:
+                    doubt_rows.append(doubt_fact(ctx, acct, standing))
+                fail(a, DOUBTFUL)
+                doubtful.append({"account_id": a["account_id"], "domain": a.get("domain"), "reasons": standing})
+                continue
         if why:
             fail(a, why)
             continue
@@ -190,10 +319,13 @@ def run(ctx: Context) -> dict:
             pending = []
     if pending:
         ctx.store.upsert("accounts", pending)
+    if doubt_rows:
+        ctx.store.insert("signal_events", doubt_rows)
 
     scored = _rescore(ctx)
     summary.update(
         status="ok", waiting=len(waiting), checked=len(todo), verified=len(verified), excluded=excluded[:LIST_LIMIT],
+        to_hand_check=len(doubtful), to_hand_check_accounts=doubtful[:LIST_LIMIT],
         not_verified=dict(failed), not_verified_accounts=examples, errors=errors[:20],
         left_for_next_run=max(0, len(waiting) - len(todo)), rescore=scored,
     )
