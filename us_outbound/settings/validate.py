@@ -31,9 +31,15 @@ from us_outbound.settings.model import (
     COPY_STATUSES,
     COPY_STEPS,
     EMAIL_FORMATS,
+    FOCUS_LINE_TOKENS,
     GENERAL_COPY,
     MAILBOX_STATUSES,
+    OPENER_COLUMNS,
+    OPENER_SELF_COLUMN,
+    OPENER_TOKENS,
     PAGE_FIELDS,
+    PERSON_FIELDS,
+    PLAIN_OPENER_TOKENS,
     QA_VERDICTS,
     ROLE_LINE_COLUMNS,
     ROLE_ORDER_COLUMNS,
@@ -71,6 +77,7 @@ TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Copy": frozenset({"qa_notes", "sources"}),
     "Roles": frozenset({"copy_role", "industry_groups"}),
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
+    "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -90,7 +97,12 @@ COPY_VARIABLES = frozenset(
      "industry_url", "site_url", "sender_first_name", "proof"}
 )
 SPILL_PAGE = re.compile(r"https://(?:www\.)?spill\.chat/\S*")
-OPENER_PLACEHOLDERS = frozenset({"evidence"})  # SPEC 5: "Saw your benefits page mentions {evidence}"
+OPENER_PLACEHOLDERS = frozenset(PLAIN_OPENER_TOKENS)  # SPEC 5: "Saw your benefits page mentions {evidence}"
+# The tokens each opener column may use (enrol/openers.py fills them from stored facts).
+OPENER_COLUMN_TOKENS: dict[str, tuple[str, ...]] = {
+    "opener": PLAIN_OPENER_TOKENS,
+    **{col: OPENER_TOKENS for col in (*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN)},
+}
 # The sheet row whose key names each tab's rows; settings_sync versions rows by it.
 KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     "General": ("key",),
@@ -474,6 +486,16 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError("is a share: between 0 and 1, like 0.15")
     if key in ("stop_rule_bounce_rate", "stop_rule_complaint_rate") and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
+    if key == "opener_holdout_share" and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")
+    if key == "opener_focus_line" and value:
+        problems = opener_token_problems(value, FOCUS_LINE_TOKENS)
+        if "\n" in value:
+            problems.append("is one line")
+        if not problems and "{focus}" not in value.replace(" ", ""):
+            problems.append("must use {focus}, the phrase it exists for")
+        if problems:
+            raise ValueError("; ".join(problems))
     if key == "escalation_hours" and value < 1:
         raise ValueError("must be at least 1")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
@@ -558,14 +580,30 @@ def _general(rows: list[_Row]) -> General:
 # -- the other tabs -----------------------------------------------------------------
 
 
+def opener_token_problems(text: str, allowed: Iterable[str]) -> list[str]:
+    """What is wrong with the tokens of an opener line: an unknown {token} (with a "did you mean"), or {{braces}}."""
+    allowed = tuple(allowed)
+    listed = ", ".join(f"{{{t}}}" for t in allowed)
+    out: list[str] = []
+    for name in _SINGLE_BRACE.findall(text):
+        token = name.strip()
+        if token not in allowed:
+            close = difflib.get_close_matches(token, list(allowed), n=1, cutoff=0.6)
+            hint = f" (did you mean {{{close[0]}}}?)" if close else ""
+            out.append(f"unknown token {{{name}}}{hint}; this column can use {listed}")
+    if _VARIABLE.search(text):
+        out.append(f"opener tokens take single braces, like {{{allowed[0]}}}; this column can use {listed}")
+    return list(dict.fromkeys(out))
+
+
 def _check_opener(r: _Row, col: str) -> str:
+    """An opener cell: one line, or (role columns) alternatives one per line; every token one the column allows."""
     opener = r.text(col)
-    for name in _SINGLE_BRACE.findall(opener):
-        if name.strip() not in OPENER_PLACEHOLDERS:
-            r.fail(col, f"unknown placeholder {{{name}}}; openers can use {{evidence}}")
-    if _VARIABLE.search(opener):
-        r.fail(col, "openers take one placeholder, {evidence}, in single braces")
-    return opener
+    for problem in opener_token_problems(opener, OPENER_COLUMN_TOKENS[col]):
+        r.fail(col, problem)
+    if col == "opener" and "\n" in opener:
+        r.fail(col, "the plain opener is one line; put alternatives in the opener_people, opener_founder and opener_ops columns")
+    return "\n".join(line.strip() for line in opener.splitlines() if line.strip())
 
 
 def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
@@ -586,6 +624,8 @@ def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
             r.fail("counts_for_days", "must be at least 1")
         active = r.parse("active", parse_bool)
         opener = _check_opener(r, "opener")
+        role_openers = {role: line for role, col in OPENER_COLUMNS.items() if (line := _check_opener(r, col))}
+        opener_self = _check_opener(r, OPENER_SELF_COLUMN)
         context_rule = r.text("context_rule")
 
         terms: tuple[str, ...] = ()
@@ -613,13 +653,17 @@ def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
                         context = parse_context_rule(context_rule, terms)
                     except ConditionError as exc:
                         r.fail("context_rule", str(exc))
+        if opener_self and r.ok and not (condition is not None and condition.fields & PERSON_FIELDS):
+            r.fail(OPENER_SELF_COLUMN, "is for a signal about one person, whose condition reads "
+                   f"{', '.join(sorted(PERSON_FIELDS))}; leave it blank on this row")
         if r.ok:
             out.append((
                 Signal(
                     signal=name, sources=sources, looks_for=looks_for, weight=weight, action=action,
                     counts_for_days=days, active=active, context_rule=context_rule, max_weight=max_weight,
                     suggests_angle=r.text("suggests_angle"), opener=opener, note=r.text("note"),
-                    terms=terms, condition=condition, context=context,
+                    terms=terms, condition=condition, context=context, role_openers=role_openers,
+                    opener_self=opener_self,
                 ),
                 r.number,
             ))

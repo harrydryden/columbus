@@ -317,9 +317,11 @@ def test_signals_load_brings_the_build_weights_and_focus_is_added_when_missing()
 
     build = default_tabs()
     old = [{**r, "weight": "99"} for r in build["Signals"]] + [{"signal": "Harry's own", "source": "named"}]
-    plan = plan_tab("Signals", old, build["Signals"])
+    plan = plan_tab("Signals", old, build["Signals"], take=("weight",))
     by = {r["signal"]: r for r in plan.rows}
-    assert by["EAP named"]["weight"] == "5" and "Harry's own" in by  # build wins; Harry's extra row stays
+    assert by["EAP named"]["weight"] == "5" and "Harry's own" in by  # --take weight: build wins; Harry's row stays
+    # Without --take the sheet's weights stay (Harry, 2 Oct 2026: a load never undoes his edits).
+    assert {r["signal"]: r for r in plan_tab("Signals", old, build["Signals"]).rows}["EAP named"]["weight"] == "99"
     # The old funding row the build split by age stays on the sheet, switched off, so funding scores once.
     old_funding = {"signal": "Recent funding", "source": "apollo_org, clay_funding",
                    "looks_for": "days_since_funding <= 540",
@@ -333,6 +335,47 @@ def test_signals_load_brings_the_build_weights_and_focus_is_added_when_missing()
     focus = plan_tab("Focus", [], build["Focus"])
     assert [r["industry_group"] for r in focus.rows] == ["Technology & Startups", "Marketing & Creative Agencies",
                                                           "Legal Teams"]
+
+
+def test_signals_load_brings_the_opener_columns_and_keeps_harry_s_edits():
+    """Harry, 2 Oct 2026: `settings load --tab Signals` adds the tokenized openers' columns to the live
+    sheet without undoing his edits: the sheet's values win for every column it already has."""
+    from us_outbound.settings.load import load, plan_tab
+
+    build = default_tabs()
+    new = ("opener_people", "opener_founder", "opener_ops", "opener_self")
+    sheet = [{c: v for c, v in r.items() if c not in new} for r in build["Signals"]]  # the sheet before 2 Oct
+    edited = next(r for r in sheet if r["signal"] == "Funding in the last 6 months")
+    edited.update(opener="Congratulations on the new round.", weight="25", note="Harry's note")
+    blanked = next(r for r in sheet if r["signal"] == "EAP named")
+    blanked["opener"] = ""
+    plan = plan_tab("Signals", sheet, build["Signals"])
+    assert plan.new_columns == list(new)
+    by = {r["signal"]: r for r in plan.rows}
+    funding = by["Funding in the last 6 months"]
+    assert (funding["opener"], funding["weight"], funding["note"]) == ("Congratulations on the new round.", "25",
+                                                                       "Harry's note")
+    assert funding["opener_founder"] == "Congratulations on the {funding_stage}."  # the new column arrives
+    assert by["EAP named"]["opener"] == ""  # a cell Harry blanked stays blank
+    assert by["New People leader"]["opener_self"] == "Congratulations on the new role at {company}."
+    # A second load keeps Harry's edits to the new columns too, blanks included.
+    again = [dict(r) for r in plan.rows]
+    next(r for r in again if r["signal"] == "Hiring and growth")["opener_ops"] = ""
+    plan2 = plan_tab("Signals", again, build["Signals"])
+    assert {r["signal"]: r for r in plan2.rows}["Hiring and growth"]["opener_ops"] == ""
+    assert plan2.new_columns == []
+    # The live load validates and writes the merged tab.
+    tabs = default_tabs()
+    tabs["Signals"] = sheet
+    ctx, _ = ctx_with(live=True, tabs=tabs)
+    ctx.guard.configure(live=True)
+    out = load(ctx, ["Signals"])
+    assert ctx.clients.sheets.writes == ["replace Signals"] and out["tabs"][0]["new_columns"] == list(new)
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values())
+    got = {s.signal: s for s in settings.signals}
+    assert got["Hiring and growth"].role_openers["Operations"].startswith("I saw {company} is recruiting for")
+    assert got["Funding in the last 6 months"].opener == "Congratulations on the new round."
 
 
 def test_take_lets_the_build_value_win_for_a_kept_column():

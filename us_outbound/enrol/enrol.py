@@ -20,8 +20,10 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
      contact's role, else its group's, else General; the running test's hash split takes
-     half of version_a's accounts), its four rendered emails (any copy-rule violation skips
-     it), and a HubSpot
+     half of version_a's accounts), its opener for that contact (enrol/openers.py: the angle
+     setter's line for the contact's copy role, filled with the account's stored facts, or none,
+     and the opener_holdout_share held out with none), its four rendered emails (any copy-rule
+     violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the rendered steps as
      custom variables.
@@ -30,14 +32,15 @@ Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is m
 enrolled. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
 contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
-campaign and lead id.
+campaign and lead id, and its opener arm and source (opener, holdout or none; which line), so the
+readout can compare opener against none.
 Sent events come later, from sync_outcomes.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -48,10 +51,10 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
-from us_outbound.enrol import focus, queue, render
+from us_outbound.enrol import focus, openers, queue, render
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
-from us_outbound.scoring.score import score_account
+from us_outbound.scoring.angle import legal_overlay
 from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
 
 
@@ -69,7 +72,6 @@ HS_OPEN_DEAL = "hubspot_open_deal"
 HS_OTHER_OWNER = "hubspot_other_owner"
 HS_OPTED_OUT = "hubspot_opted_out_or_bounced"
 LIST_LIMIT = 100  # per-account lists in the summary
-GENERAL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
 ID_CHUNK = 1000
 
 
@@ -387,20 +389,21 @@ def choose_copy(
 # -- opener -------------------------------------------------------------------------------------
 
 
-def account_opener(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str]:
-    """(opener, legal_overlay) for the account's angle, worked out as scoring does (SPEC 9 steps 4-5).
+def account_opener(
+    ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any], check: Callable[[str], str] | None = None,
+) -> tuple[openers.Opener, str]:
+    """(opener, legal_overlay) for the account and its contact: the tokenized opener (enrol/openers.py).
 
-    The opener is not stored on accounts, so it is recomputed from the account's facts. The
-    General angle's opener is generic, and the industry copy carries the hook, so General
-    accounts (Control among them) get none: email 1's opener line disappears.
+    The opener is worked out at enrol time, when the contact and their copy role are known: the
+    angle setter's line for the role, filled with the account's stored facts, else the signal's
+    plain opener, else none; a deterministic share of accounts is held out with none. The General
+    angle (Control among it) has no signal line: with opener_focus on it gets the "what they do"
+    line, else none, and email 1's opener line disappears. check(text) is the copy-rule check each
+    filled line must pass.
     """
-    angle = ctx.settings.angle(str(account.get("angle") or ""))
-    if angle is None or angle.angle == GENERAL_ANGLE:
-        return "", ""
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
-    r = score_account(account, events, ctx.settings, ctx.today_uk())
-    opener = r.opener if r.angle == account.get("angle") and r.opener else angle.default_opener
-    return opener, r.legal_overlay
+    op = openers.for_account(ctx, account, contact, events, check=check)
+    return op, legal_overlay(ctx.settings.industry_group_of(account))
 
 
 # -- HubSpot re-check (SPEC 9 enrol "re-checks HubSpot"; hard exclusions) ---------------------------
@@ -467,8 +470,10 @@ class Prepared:
     angle: str
     test_id: str
     lead: dict
-    opener_note: str = ""
+    opener_note: str = ""  # the opener lines passed over, and why (enrol/openers.py)
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
+    opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
+    opener_source: str = ""  # the line's signal and column, or "focus"
 
 
 @dataclass
@@ -499,12 +504,16 @@ def prepare(
     if row is None:
         return Skip("no approved copy", [why, copy_note] if copy_note else [why])
 
-    opener, overlay = account_opener(ctx, a)
     host = render.is_demo_host(mb, s)
-    opener, note = render.pick_opener(
-        opener, sender_is_harry=host, demo_host=g.demo_host,
-        exempt=(str(a.get("clean_name") or ""), str(c.get("first_name") or "")),
-    )
+    exempt = (str(a.get("clean_name") or ""), str(c.get("first_name") or ""))
+
+    def check(text: str) -> str:
+        return render.pick_opener(text, sender_is_harry=host, demo_host=g.demo_host, exempt=exempt)[1]
+
+    op, overlay = account_opener(ctx, a, c, check)
+    opener, note = render.pick_opener(op.text, sender_is_harry=host, demo_host=g.demo_host, exempt=exempt)
+    if note:  # every filled opener goes through the copy rules once more, as it will be sent
+        op = openers.Opener("", openers.NONE, "", (*op.notes, note))
     values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
     rendered = render.render_sequence(row, values, mailbox=mb, settings=s)
     problems = render.violations(rendered)
@@ -529,7 +538,7 @@ def prepare(
     return Prepared(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
-        opener_note=note, copy_note=copy_note,
+        opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
     )
 
 
@@ -542,6 +551,8 @@ class _Run:
     skipped_accounts: list[dict] = field(default_factory=list)
     excluded: list[dict] = field(default_factory=list)
     opener_fallbacks: list[dict] = field(default_factory=list)
+    opener_arms: Counter[str] = field(default_factory=Counter)  # opener, holdout, none
+    opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus"
     copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 
@@ -589,6 +600,9 @@ def _walk(
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
+        run.opener_arms[p.opener_arm] += 1
+        if p.opener_source:
+            run.opener_sources[p.opener_source] += 1
         if p.copy_note:
             run.copy_fallbacks[f"sent {p.copy_version}: {p.copy_note}"] += 1
     return out
@@ -628,6 +642,8 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "mailbox": p.mailbox or None,
             "instantly_campaign": campaign,
             "instantly_lead_id": ids[i],
+            "opener_arm": p.opener_arm,
+            "opener_source": p.opener_source or None,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
@@ -719,6 +735,7 @@ def run(ctx: Context) -> dict:
         skipped_accounts=r.skipped_accounts,
         excluded=r.excluded,
         opener_fallbacks=r.opener_fallbacks,
+        openers={"arms": dict(r.opener_arms), "sources": dict(r.opener_sources)},
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
         errors=r.errors,

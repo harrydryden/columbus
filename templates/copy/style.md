@@ -83,6 +83,35 @@ Rows with no role (General and group fallbacks) have three role lines, one sente
 words), shown in email 1 by the contact's role. Each speaks to that role's stake in this industry and
 must read naturally after the hook.
 
+## Openers (Signals tab; Harry, 2 Oct 2026)
+
+The {{opener}} line comes from the Signals tab, not the Copy tab. Each signal has a line for each
+copy role (opener_people, opener_founder, opener_ops), and New People leader also has opener_self,
+for when the contact is the new leader. The system fills the line at enrol time with the account's
+own stored facts (enrol/openers.py). A line with a token that has no fact is skipped, never guessed:
+the next line in the cell is tried, then the signal's plain opener, then none. 30% of accounts get
+no opener, so we can measure whether openers help.
+
+- One observed fact, said plainly: "I saw Brightline has six roles open, including a Senior Product
+  Designer." "Congratulations on the Series A." Nothing about the reader's company beyond the fact,
+  and no inference from it (never "which must mean a busy onboarding season").
+- One sentence, under about 20 words, warm and plain. It must read naturally as the first line
+  after "Hi Dana," and before the industry hook.
+- "I saw", never "I noticed you're struggling". No exclamation marks, no statistic (growth is
+  said in words: "grown by about a third"), no "therapy", "therapist", "licensed" or "unlimited".
+  No demo, call, meeting or booking words: email 1 asks only for a visit to the site.
+- Speak to the role lightly. A founder can be congratulated; a People leader hears what touches
+  their work; operations hears the fact. Never imply the reader's own team owns something unless the
+  fact says so.
+- Write a promotion and a hire alike ("named a new Head of People", "Congratulations on the new
+  role"): Apollo's start date does not say which it was.
+- Tokens, in single braces: {company}, {city}, {open_roles}, {posting_title}, {people_title},
+  {funding_stage}, {growth}, {evidence}, {provider}. "a {posting_title}" becomes "an" where the title
+  needs it. The plain opener column takes {evidence} only.
+- The optional "what they do" line (General opener_focus_line, off until Harry turns on
+  opener_focus) uses {focus}. That is a short lower-case phrase the task model takes from Apollo's
+  description, like "payroll software for restaurants".
+
 ## Markup
 
 The Copy tab is written in a small markup the system turns into an email:

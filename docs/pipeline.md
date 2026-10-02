@@ -252,7 +252,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 - **How it is personal:**
   - Industry-specific copy throughout.
   - The role line in email 1.
-  - The evidence opener from the account's signals, which is left out for the General angle and for Control accounts.
+  - The opener: the line for the contact's role from the signal that set the angle, filled at enrol time with the account's own facts. It is left out for the General angle and for Control accounts, and for the 30% holdout (Signals tab `opener_people`, `opener_founder`, `opener_ops`, `opener_self`; `enrol/openers.py`; Harry, 2 Oct 2026).
   - The company, first name and place.
 - **Email 1 links the industry's spill.chat page and asks for nothing** (`{{industry_url}}`; Harry, 1 Oct 2026: a demo ask in the first email is too presumptive). The Industries tab's `landing_page_url` is the page: `https://www.spill.chat/us/industry/` plus its slug. An industry with no page yet (Small Businesses, still a draft on the site) links Spill's US site instead (General `site_url`, https://www.spill.chat/us; Harry, 1 Oct 2026).
 - **"Trusted by over 50,000 employees"** in email 2's "What is Spill?" links the US site (`{{site_url}}`; Harry, 1 Oct 2026).

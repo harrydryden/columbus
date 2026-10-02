@@ -18,14 +18,18 @@ Copy reaches a prospect only through every one of these gates, in order:
   5. Render-time check. The enrol job renders every email for the lead it is going to and
      runs the rules again (render.render_step); any violation skips the lead.
 
-preview() renders a row as one prospect would see it, for Harry to read before approving.
+preview() renders a row as one prospect would see it, for Harry to read before approving: the sample
+prospect with a real opener line from the Signals tab filled with sample facts (sample_opener), or a
+stored account with the opener enrol would give its contact (`copy preview --account DOMAIN`).
+check_openers() is the sheet check of the Signals tab's opener lines (enrol/openers.py): each filled
+with sample facts and run through the rules an opener must pass; `copy check` reports it too.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -145,15 +149,71 @@ def check_all(settings: Settings, versions: Iterable[str] | None = None) -> list
             if c.status != "retired" and (wanted is None or c.copy_version.casefold() in wanted)]
 
 
+# -- opener lines (the Signals tab's tokenized openers; enrol/openers.py) --------------------------
+
+OPENER_MAX_WORDS = 25  # style.md: one sentence, under about 20 words
+
+
+def _opener_check(settings: Settings) -> Callable[[str], str]:
+    exempt = (SAMPLE_ACCOUNT["clean_name"], SAMPLE_CONTACT["first_name"])
+    return lambda text: render.pick_opener(text, sender_is_harry=False, demo_host=settings.general.demo_host,
+                                           exempt=exempt)[1]
+
+
+def check_openers(settings: Settings) -> Check:
+    """Every opener line on the Signals tab, filled for the sample prospect with sample facts and run
+    through the copy rules an opener must pass (render.pick_opener), and the style's length."""
+    from us_outbound.enrol import openers
+
+    out = Check("Signals openers")
+    check = _opener_check(settings)
+    for signal, col, line, filled in openers.sample_lines(settings):
+        if filled is None:
+            continue  # it needs a fact the sample has not got (a named provider, say); validation checked its tokens
+        where = f"{signal}, {col}: {filled!r}"
+        if problem := check(filled):
+            out.problems.append(f"{where} {problem}")
+        if len(filled.split()) > OPENER_MAX_WORDS:
+            out.problems.append(f"{where} is {len(filled.split())} words; style.md asks for under about 20")
+    return out
+
+
+def sample_opener(settings: Settings, role: str, signal: str = "", *, leader: bool = False) -> tuple[str, str]:
+    """(a real opener line from the Signals tab, filled for the sample prospect with sample facts; where from).
+
+    signal names the Signals row (default: the first active one with a line for the role); leader shows
+    the line for a contact who is the new People leader themself (opener_self).
+    """
+    from datetime import UTC, datetime
+
+    from us_outbound.enrol import openers
+
+    rows = [s for s in settings.signals if s.active and (s.role_openers or s.opener_self or s.opener)]
+    if signal:
+        rows = [s for s in settings.signals if s.signal.casefold() == signal.casefold()]
+        if not rows:
+            raise ValueError(f"no Signals row is called {signal!r}")
+    else:
+        rows.sort(key=lambda s: role not in s.role_openers)
+    for s in rows:
+        op = openers.sample_opener(s, role, SAMPLE_ACCOUNT, settings, datetime.now(UTC), subject=leader,
+                                   check=_opener_check(settings))
+        if op.text:
+            return op.text, op.source
+    return "", "no opener line fills for the sample prospect" + (f" ({'; '.join(op.notes)})" if rows and op.notes else "")
+
+
 @dataclass
 class Preview:
     copy_version: str
     role: str
     sender: str
     emails: list[render.Rendered]
+    opener_note: str = ""  # where the preview's opener came from
 
     def text(self) -> str:
-        parts = [f"{self.copy_version}, {self.role}, sent by {self.sender}"]
+        parts = [f"{self.copy_version}, {self.role}, sent by {self.sender}"
+                 + (f"\nOpener: {self.opener_note}" if self.opener_note else "")]
         for r in self.emails:
             parts.append(f"--- Email {r.step} (day {render_day(r.step)}) ---\nSubject: {r.subject}\n\n{r.text}")
             if r.violations:
@@ -190,13 +250,27 @@ def render_day(step: int) -> int:
     return STEP_DAYS[step - 1]
 
 
-def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "", opener: str = "") -> Preview:
+def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "", opener: str = "",
+            opener_note: str = "", account: Mapping[str, Any] | None = None,
+            contact: Mapping[str, Any] | None = None) -> Preview:
+    """The row as one prospect reads it: the sample prospect, or a stored account and contact (account, contact)."""
     role = role or (row.role or next(iter(ROLE_LINE_COLUMNS)))
     boxes = sample_mailboxes(settings)
     mb = next((m for m in settings.mailboxes if sender and m.owner_name.casefold() == sender.casefold()), boxes[0])
-    values = _values(row, settings, mb, role, opener=opener)
+    if account is not None:
+        person = {**SAMPLE_CONTACT, **(contact or {}), "role": role}
+        values = render.variables(account, person, mb, settings, copy_row=row, opener=opener,
+                                  legal_overlay=render_overlay(account, settings))
+    else:
+        values = _values(row, settings, mb, role, opener=opener)
     emails = render.render_sequence(row, values, mailbox=mb, settings=settings, for_send=False)
-    return Preview(row.copy_version, role, mb.owner_name, emails)
+    return Preview(row.copy_version, role, mb.owner_name, emails, opener_note)
+
+
+def render_overlay(account: Mapping[str, Any], settings: Settings) -> str:
+    from us_outbound.scoring.angle import legal_overlay
+
+    return legal_overlay(settings.industry_group_of(account))
 
 
 # -- the page, the facts and the style, for the models -----------------------------------------

@@ -14,7 +14,7 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip` | `verify_in_clay` (the Clay functions don't exist yet, and Clay's REST API is unconfirmed) |
 | Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age, a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus | Careers and benefits pages (they need Clay), so the EAP, benefits and wellbeing openers can't fire yet |
 | Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees | A second contact at 50–249 |
-| Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Nine data-led openers. Render-time rules, plus QA by Sonnet against facts.md and each industry page | Per-account openers written by Claude (below) |
+| Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
 | Send | `enrol` (scheduled, dry until `live_sending` = yes), the per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
 | Hand-off | `poll_approvals`: Slack ✅/edit/❌ from Harry or the mailbox owner, or `us-outbound replies list|approve|skip` without Slack. HubSpot company, contact, note, task and deal on positive or referral replies. 24-hour escalation. `hubspot_readback` for booked meetings | — |
@@ -74,6 +74,11 @@ verification and contact choice write only the database; enrol, replies and post
    send. For the pilot that is the launch focus (Technology & Startups, Marketing & Creative
    Agencies, Legal Teams): about 25 industries × 3 roles. Every row has a QA pass stamped on it.
    Editing a row clears its stamp until `copy qa` runs again.
+   **Openers (2 Oct):** run `us-outbound settings load --tab Signals --live` to add the four opener
+   columns (your edits stay), read the lines on the Signals tab (§4 item 2), then `settings sync`.
+   Until the columns are on the sheet, each signal's plain opener is used. `--tab General` adds
+   `opener_holdout_share` (0.3), `opener_focus` (no) and `opener_focus_line`. The 30% holdout
+   applies from the deploy either way, because it is the default.
 6. **Hand-check.** Monday morning, `handcheck show --live`, then `handcheck approve --live`, pulling
    any account that looks wrong.
 7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It activates the
@@ -117,25 +122,45 @@ verification and contact choice write only the database; enrol, replies and post
    - Apollo: organization and people search filters, job postings, credit charges.
    - HubSpot: meetings and pipeline stage labels.
    Fix whatever the first runs show.
-2. **Tokenized openers: one template per signal and role, filled with the account's own facts.**
-   This is the biggest remaining lever on Harry's "personalised, relevant data and hook". Today
-   an opener is a fixed sentence per signal ("I saw the team has been growing"), and only
-   accounts with a matched signal get one.
-   - Each firing signal gets a line per copy role, with tokens filled from stored facts: the
-     posting title, the number of open roles, the funding round, the 12-month growth rounded, and
-     whether the new People leader is the contact. For example: "I saw {company} has six roles open,
-     including a Senior Product Designer."
-   - About 18 lines now, and more when Clay's page signals arrive. Opus writes them once, Sonnet
-     checks them, and Harry approves them on the Signals tab. They are filled at render time and
-     checked by the same rules.
-   - No cost per account, nothing invented (every token is a stored fact), and each line can be
-     tested.
-   - Claude fills only the one token templates can't: a short "what they do" phrase taken from the
-     company's description and keywords, checked for length and banned words. That costs pennies
-     a month in Batch.
-   - A 30% holdout measures opener against no opener. Per-account sentences written freely by Claude
-     are not planned: Harry couldn't approve them, they can't be tested line by line, and they can
-     invent.
+2. **Tokenized openers: built (2 Oct).** One line per signal and copy role, filled with the
+   account's own stored facts (`enrol/openers.py`). This is the biggest remaining lever on Harry's
+   "personalised, relevant data and hook".
+   - The Signals tab has four new columns: `opener_people`, `opener_founder`, `opener_ops` and
+     `opener_self` (the new People leader, when the contact is that person). A cell may hold
+     alternatives, one per line. The tokens are `{company}`, `{city}`, `{open_roles}` (in words
+     through nine), `{posting_title}` (the most senior current posting, cleaned of locations, req
+     ids and "(Remote)"), `{people_title}`, `{funding_stage}`, `{growth}` (in words, never a
+     percentage), `{evidence}` and `{provider}`. An unknown token is a sheet error, with a "did you
+     mean". `us-outbound settings load --tab Signals` adds the columns, and the sheet's values win in
+     every column it already has.
+   - 34 lines: Hiring and growth, Funding in the last 6 months, People role open, First People
+     hire and New People leader, which can fire without Clay, plus the four page-reader signals,
+     each for three roles, and a self line. For example: "I saw Brightline has six roles open,
+     including a Senior Product Designer.", "Congratulations on the Series A." and "Congratulations
+     on the new role at Brightline." The contact is the new leader only when Apollo's person ids
+     match (`pick_contacts` now records them); a title is never taken as proof.
+   - The opener is chosen at enrol time, when the contact's role is known. It comes from the signal
+     that set the angle. The first line that fills and passes the copy rules wins, then the
+     signal's plain opener, then none. Nothing is invented and there is no cost per account. The
+     General angle, and so Control, has no signal line.
+   - A 30% holdout (`opener_holdout_share`, by account hash) gets no opener. Each contact records
+     `opener_arm` (opener, holdout or none) and `opener_source` (the line, or for a holdout the line
+     it would have had), and `v_account_outcomes` carries both, so a readout can compare like with
+     like.
+   - Optional and off (`opener_focus` = no): for an account with no firing signal, `opener_focus_line`
+     ("I came across {company} and its work on {focus}.") uses a short "what they do" phrase. Sonnet
+     takes it once, in a live run, from Apollo's keywords and description (now stored by
+     `source_universe`). It costs about $0.002 an account, within the monthly cap. The phrase is checked for length, claims,
+     names, the banned words, and every word appearing in Apollo's own text.
+   - `copy check` checks every line with sample facts. `copy preview --opener [--signal NAME]
+     [--leader]` shows a real line, and `copy preview --account DOMAIN` shows a stored account's
+     opener. The weekly hand-check shows the opener enrol would send.
+   - Still needs live data: Apollo's `short_description` on search rows (PHASE0-CONFIRM). The
+     `latest_funding_stage` spellings ("Series A", "Seed") and the shape of `posting_titles`
+     should be read on the first real accounts. Is `headcount_growth_12m` a fraction? The page-reader
+     signals' facts arrive with item 3. Then the holdout's first read, after enough replies.
+     Per-account sentences written freely by Claude are still not planned: Harry couldn't approve
+     them, they can't be tested line by line, and they can invent.
 3. **Careers and benefits pages without Clay:** a direct read of each account's careers and
    benefits pages, so the EAP, benefits and wellbeing signals and their openers can fire. Clay
    replaces it when its functions exist.

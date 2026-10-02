@@ -23,8 +23,9 @@ universe is every company that fits the sheet's Industries, States and size band
   3. Facts: every apollo_org field scoring reads (settings/model.py SOURCE_FIELDS) goes to
      signal_events with a quote, the Apollo page and observed_at: employees, naics, hq_state,
      headcount_growth_12m, days_since_funding, funding_stage, funding_amount_usd, founded_year,
-     technologies, keywords and apollo_industry. open_roles is not one of them: it belongs to
-     apollo_jobs (docs/pipeline.md, change 4).
+     technologies, keywords, apollo_industry and description (Apollo's short description, which
+     the opener's optional "what they do" phrase reads; enrol/openers.py). open_roles is not one of
+     them: it belongs to apollo_jobs (docs/pipeline.md, change 4).
 
 When to stop. The queue (accounts new, queued or verified, not Excluded or Held) should hold two
 weeks of the weekly target, 2 × weekly_enrol_cap (SPEC 2: "a two-week queue"). The Focus tab's groups
@@ -91,6 +92,7 @@ NAICS_DIGITS = 5
 NAICS = "naics"  # a search by NAICS codes; otherwise it is a label's keyword search
 MAX_PAGES_PER_RUN = 200  # well inside the 60-minute timeout
 QUOTE_LIMIT = 300  # SPEC 6
+DESCRIPTION_LIMIT = 600  # the description fact, for the opener's "what they do" phrase
 APOLLO_ORG_URL = "https://app.apollo.io/#/organizations/{}"
 US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
 # Account columns an Overrides row may set (SPEC 5: an override wins over every source).
@@ -330,6 +332,16 @@ def org_technologies(org: Mapping[str, Any]) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+def org_description(org: Mapping[str, Any]) -> str:
+    """Apollo's short description of the company, whitespace folded, at most DESCRIPTION_LIMIT characters.
+
+    The opener's optional "what they do" phrase is taken from it and the keywords (enrol/openers.py).
+    PHASE0-CONFIRM: organization search rows carry short_description, as enrichment does.
+    """
+    text = " ".join(str(org.get("short_description") or org.get("description") or "").split())
+    return text if len(text) <= DESCRIPTION_LIMIT else text[: DESCRIPTION_LIMIT - 1] + "…"
+
+
 def in_us(org: Mapping[str, Any]) -> bool:
     country = str(org.get("country") or "").strip().casefold()
     return not country or country in US_COUNTRIES
@@ -442,6 +454,8 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
     add("keywords", words, "Apollo keywords: " + ", ".join(words))
     industry = str(org.get("industry") or "").strip()
     add("apollo_industry", industry, f"Apollo industry: {industry}")
+    about = org_description(org)
+    add("description", about, f"Apollo description: {about}")
     return out
 
 
