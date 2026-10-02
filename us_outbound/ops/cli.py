@@ -899,6 +899,16 @@ def cmd_pages(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_data(args: argparse.Namespace, factory: Factory) -> int:
+    """What the sources have stored, in aggregate (the database only; ops/data_health.py)."""
+    from us_outbound.ops import data_health
+
+    ctx = factory("data_show", False)
+    for line in data_health.report(ctx):
+        print(line)
+    return 0
+
+
 # -- go-live (Harry, 1 Oct 2026) ------------------------------------------------------------------
 
 
@@ -1118,6 +1128,10 @@ def build_parser() -> argparse.ArgumentParser:
     pg.set_defaults(fn=cmd_pages)
 
     sub.add_parser("golive", help="the read-only go/no-go check before the first sends").set_defaults(fn=cmd_golive)
+
+    dt = sub.add_parser("data", help="what the sources have stored, in aggregate (read-only)")
+    dt.add_argument("action", choices=["show"])
+    dt.set_defaults(fn=cmd_data)
 
     hc = sub.add_parser("handcheck", parents=[live], help="this week's hand-check: show it, or approve it")
     hc.add_argument("action", choices=["show", "approve"])
