@@ -134,7 +134,7 @@ def test_a_carrier_eap_is_counted_once(settings):
         assert vendor in eap.terms, vendor
     # The medical carriers count only near words that make them the EAP, so the opener stays true.
     assert set(eap.context) == {"optum", "cigna", "carelon", "health advocate", "magellan", "telus health"}
-    assert eap.opener == "When people are struggling, they tend to reach for the help that feels quickest and most personal."
+    assert eap.opener == "Pressure lands differently on everyone, so it helps to have a choice of who to talk to."
 
 
 def test_competitors_hold_and_complements_score(settings):
@@ -183,12 +183,11 @@ def test_plain_openers_pass_the_copy_rules_and_signals_are_context_never_the_lin
     assert openers == {
         "Mental health support listed": "Most teams know pressure from work and home adds up, and the hard part is "
                                         "making help easy to use.",
-        "EAP named": "When people are struggling, they tend to reach for the help that feels quickest and most "
-                     "personal.",
-        "Wellbeing app or perk named": "Looking after the everyday helps a lot, and some weeks people also need a "
-                                       "real person to talk to.",
-        "Progressive benefits": "Even teams with good balance feel it when work and home get heavy at once, and "
-                                "talking it through helps.",
+        "EAP named": "Pressure lands differently on everyone, so it helps to have a choice of who to talk to.",
+        "Wellbeing app or perk named": "Life and work have a way of landing all at once, and a good listener can "
+                                       "ease those weeks.",
+        "Progressive benefits": "Stress rarely stays in one place, and talking it through tends to help wherever "
+                                "it started.",
         "New People leader": "When priorities shift at work, people often feel it at home too, and someone to talk "
                              "to helps.",
         "First People hire": people_role,

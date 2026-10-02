@@ -129,9 +129,12 @@ way"). The page tells us they already look after their people, and the line spea
 still finds people, at work and at home, and to help that's there when it does:
 
 - mental health support listed: they already speak up for well-being; the hard weeks are where it counts;
-- an EAP: support is in place; people reach for the help that feels quickest and most personal;
-- a well-being app or perk: the everyday is looked after; some weeks need a person to talk to;
-- progressive benefits: they care about balance; life at home still doesn't keep office hours.
+- an EAP: support is in place; a choice of who to talk to, being listened to. Never quicker, more
+  personal or better used than theirs: a reader with an EAP hears that as a comparison;
+- a well-being app or perk: weeks when work and life land at once, and a listener. Never "the
+  everyday", "self-care" or "a real person", which name the app and say it falls short;
+- progressive benefits: life at home doesn't keep office hours. Never "good balance" or "breathing
+  room", which echo the time off they offer.
 
 They never echo the page: no mental health, counseling, EAP, employee assistance, app, perk, benefit,
 stipend, time off, leave or sabbatical, and no provider. Never a word against what they offer: no "on

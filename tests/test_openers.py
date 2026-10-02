@@ -128,25 +128,25 @@ FUNDING_LINES = {  # both funding rows
 MENTAL_HEALTH_LINES = {
     "": "Most teams know pressure from work and home adds up, and the hard part is making help easy to use.",
     PEOPLE: "Looking after a team well is a long game, and the hard weeks at home are where it counts most.",
-    FOUNDER: "Teams that look out for each other still feel the squeeze when work and home get busy at once.",
-    OPS: "Help counts most on the hard weeks, when people want something quick to find and simple to use.",
+    FOUNDER: "Few people switch off fully when they get home, and it's good to have someone in their corner.",
+    OPS: "Days fill up fast, so people tend to value support that's simple to find when they need it.",
 }
 EAP_LINES = {
-    "": "When people are struggling, they tend to reach for the help that feels quickest and most personal.",
-    PEOPLE: "Worries from home often surface at work first, and people open up most where help feels personal.",
-    FOUNDER: "Most people look for help only on a hard day, and that's when it needs to be quick to find.",
-    OPS: "The help people use most is usually the kind they can reach in the middle of a busy day.",
+    "": "Pressure lands differently on everyone, so it helps to have a choice of who to talk to.",
+    PEOPLE: "Worries from home often show up at work first, and people open up more when they feel listened to.",
+    FOUNDER: "Good people tend to carry more than they show, and knowing support is there goes a long way.",
+    OPS: "A workplace tends to run best when people feel supported on the days life at home gets complicated.",
 }
 APP_LINES = {
-    "": "Looking after the everyday helps a lot, and some weeks people also need a real person to talk to.",
-    PEOPLE: "Good habits carry people through most weeks, and the harder ones go better with a person to lean on.",
-    FOUNDER: "Staying well day to day matters, and when work and home pile up at once, people often need more.",
-    OPS: "Day-to-day self-care covers a lot, but a rough week at home or work is easier with someone to talk to.",
+    "": "Life and work have a way of landing all at once, and a good listener can ease those weeks.",
+    PEOPLE: "Managers can't be everything to everyone, and a second trusted voice often makes a difference.",
+    FOUNDER: "Leaders tend to learn that heavy weeks go easier when no one has to face them alone.",
+    OPS: "Deadlines and life at home tend to collide sooner or later, and someone who gets it helps.",
 }
 BENEFITS_LINES = {
-    "": "Even teams with good balance feel it when work and home get heavy at once, and talking it through helps.",
+    "": "Stress rarely stays in one place, and talking it through tends to help wherever it started.",
     PEOPLE: "The moments that weigh on people rarely keep office hours, so it matters when help is quick to reach.",
-    FOUNDER: "A team can have plenty of breathing room and still hit weeks when work and home both pile on.",
+    FOUNDER: "A rough night at home can shape a whole week at work, and having someone to confide in helps.",
     OPS: "Big moments at home tend to land mid-week, and people cope better with someone to talk to.",
 }
 # The generic line (General opener_generic_*): ever more pressure in our work and personal lives.
