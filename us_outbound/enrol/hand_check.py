@@ -24,6 +24,12 @@ hand_check_post, Mondays 08:00 UK and on demand (`us-outbound run hand_check_pos
 A week with nothing to check records no item: run it again once accounts are queued.
 Doubts found after the week's item is recorded wait for the next week's hand-check.
 
+With the General key auto_send = no (the default; Harry, 2 Oct 2026) every email is approved in
+Slack before it is sent (enrol/approvals.py), so there is no random sample and enrol does not wait
+for the hand-check. The accounts held for doubtful Apollo facts are not covered by that (they are
+not verified, so no email of theirs is proposed), so a week with any of them still records and posts
+an item holding only those; a week without any skips, saying why.
+
 Without Slack (Harry, 1 Oct 2026; operator commands, live with --live alone):
   us-outbound handcheck show [--live]      prints this week's sample; --live records it if
                                            this week has none yet, so it can be approved
@@ -59,8 +65,17 @@ EVIDENCE_LIMIT = 3
 QUOTE_LIMIT = 160
 
 
+AUTO_SEND_OFF = ("auto_send = no: every email is approved in Slack before it is sent, so there is no weekly "
+                 "sample (Harry, 2 Oct 2026)")
+
+
 def item_id(week: str) -> str:
     return f"{KIND}-{week}"
+
+
+def sample_size(ctx: Context) -> int:
+    """Accounts drawn per active group: PER_GROUP, or none while every email is approved in Slack (auto_send = no)."""
+    return PER_GROUP if ctx.settings.general.auto_send else 0
 
 
 def this_week(ctx: Context) -> str:
@@ -222,8 +237,12 @@ def _evidence(a: Mapping[str, Any]) -> str:
 def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
     """The sample as Harry reads it: in Slack (compact) or from `handcheck show` (detailed)."""
     by_id = {a["account_id"]: a for a in payload.get("accounts") or ()}
-    lines = [f"Weekly hand-check {payload.get('iso_week')} (SPEC 11): is each right? Clean name, HQ state, "
-             "size band, the contact's role and title, and the opener's evidence."]
+    if payload.get("per_group") == 0:  # auto_send = no: the held accounts only
+        lines = [f"Hand-check {payload.get('iso_week')}: the accounts held back for doubtful Apollo facts. "
+                 f"{AUTO_SEND_OFF}."]
+    else:
+        lines = [f"Weekly hand-check {payload.get('iso_week')} (SPEC 11): is each right? Clean name, HQ state, "
+                 "size band, the contact's role and title, and the opener's evidence."]
     n = 0
     for group, ids in (payload.get("groups") or {}).items():
         lines.append(f"{group} ({len(ids)}):")
@@ -252,8 +271,10 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
     pulled = payload.get("pulled_account_ids") or []
     if pulled:
         lines.append(f"Pulled: {', '.join(pulled)}")
+    waits = ("The held accounts wait until it is approved." if payload.get("per_group") == 0
+             else "Enrollment waits until it is approved.")
     lines.append("Approve: `us-outbound handcheck approve --live`, adding `--pull ACCOUNT_ID ...` for any account "
-                 "that is wrong. Enrollment waits until it is approved.")
+                 f"that is wrong. {waits}")
     return "\n".join(lines)
 
 
@@ -303,7 +324,11 @@ def post(ctx: Context) -> dict:
             summary.update(item_id=item["item_id"], status="posted already" if (item.get("payload") or {}).get("posted")
                            else "recorded; a live run posts it")
         return summary
-    payload = build(ctx, week)
+    payload = build(ctx, week, sample_size(ctx))
+    if not has_work(payload) and not ctx.settings.general.auto_send:
+        summary.update(skipped=True, reason=f"{AUTO_SEND_OFF}; no account is held for doubtful facts")
+        log("hand_check_post", **summary)
+        return summary
     if not has_work(payload):
         summary.update(status="nothing to check: no queued or verified account in an active industry group",
                        groups=active_groups(ctx.settings))
@@ -324,7 +349,7 @@ def show(ctx: Context) -> tuple[dict | None, dict]:
     item = current(ctx, week)
     if item is not None:
         return item, dict(item.get("payload") or {})
-    payload = build(ctx, week)
+    payload = build(ctx, week, sample_size(ctx))
     if ctx.live and has_work(payload):
         return _record(ctx, payload), payload
     return None, payload

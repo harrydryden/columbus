@@ -131,8 +131,12 @@ jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; tu
 reviewed code change.
 
 Before the first send: `us-outbound golive` prints PASS, WARN or FAIL for each blocker and exits
-1 while any FAILs. The weekly hand-check without Slack: `us-outbound handcheck show --live`, then
-`us-outbound handcheck approve --live` (with `--pull ACCOUNT_ID ...` for accounts that are wrong).
+1 while any FAILs. While `auto_send = no` (the default; Harry, 2 Oct 2026) every email waits for an
+approver's ✅ on its card in #us-outbound, so the Slack app needs the `reactions:write` scope in
+`deploy/slack-app-manifest.yaml`; without Slack, `us-outbound approvals list`, then `us-outbound
+approvals approve ID --live`. With `auto_send = yes`, enrol waits for the weekly hand-check instead:
+without Slack, `us-outbound handcheck show --live`, then `us-outbound handcheck approve --live` (with
+`--pull ACCOUNT_ID ...` for accounts that are wrong).
 After the seed-inbox test of the unsubscribe link, set `optout_tested = yes` on the General tab
 (`us-outbound settings load --live --set optout_tested=yes` adds the row if it is missing).
 

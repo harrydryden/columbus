@@ -74,6 +74,13 @@ HARRY_TO_FILL = "Harry to fill"
 
 _GENERAL: list[tuple[str, str, str]] = [
     ("live_sending", "no", "Live needs yes here and the --live flag. Stays no until Harry signs off (SPEC 0.3)."),
+    (
+        "auto_send",
+        "no",
+        "no: every email waits for an approver's ✅ in Slack before it is added to Instantly, and the weekly "
+        "hand-check is not needed (Harry, 2 Oct 2026). yes: enrol adds leads straight away, as before, once "
+        "the weekly hand-check is approved. live_sending stays the master switch. Added by the build.",
+    ),
     ("weekly_enrol_cap", "150", "Most new accounts enrolled in a week (Monday to Sunday, UK time). Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
     ("priority_threshold", "50", "Score at or above this is Priority."),

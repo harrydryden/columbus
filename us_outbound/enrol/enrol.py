@@ -5,13 +5,17 @@ SPEC 9 ("enrol", "Daily enrolment number", "Test assignment", "Instantly campaig
 SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; no positive reply waiting longer than
-     escalation_hours (SPEC 11); this week's hand-check approved (SPEC 11); no stop rule in
-     force (SPEC 12, learn/kill_rules.py).
+     escalation_hours (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while
+     the General key auto_send is yes, this week's hand-check approved (SPEC 11). With auto_send
+     = no every email is approved in Slack before it is sent, so the hand-check is not a gate
+     (Harry, 2 Oct 2026); accounts pulled at an approved hand-check are still left out.
   2. Today's number (queue.daily_number): the weekly target's share for today, each
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
      accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
+     Send approvals still waiting in Slack count towards the week and hold their sender's slots.
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
-     suppressed or a partner, whose industry is on, with one sendable contact: a verified
+     suppressed or a partner, whose industry is on, with no send approval waiting in Slack, and
+     with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
      pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
@@ -25,11 +29,17 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      and the opener_holdout_share held out with none), its four rendered emails (any copy-rule
      violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
-  5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the rendered steps as
-     custom variables.
+  5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
+     rendered steps as custom variables.
+     auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
+     comes to this channel first for approval"): each account becomes a send approval instead,
+     a hitl_items row and a card in the alert channel showing every email of the sequence, and
+     its lead is added only when an approver's ✅ is read (enrol/approvals.py, poll_approvals).
+     A live run without US_OUTBOUND_SLACK_BOT_TOKEN refuses, as there is nowhere to approve.
 
 Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is marked
-enrolled. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
+enrolled. With auto_send = no no item is written; a few cards are posted to the dev channel
+as a preview. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
 contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
 campaign and lead id, and its opener arm and source (opener, holdout or none; which line), so the
@@ -40,7 +50,7 @@ Sent events come later, from sync_outcomes.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -278,8 +288,14 @@ def pick_contact(
     return None, first_reason
 
 
-def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], Counter[str]]:
-    """Every account that could be enrolled today, with its contact; and why the others cannot."""
+def candidates(
+    ctx: Context, pulled: frozenset[str], waiting: Collection[str] = frozenset(),
+) -> tuple[list[Candidate], Counter[str]]:
+    """Every account that could be enrolled today, with its contact; and why the others cannot.
+
+    waiting: accounts with a send approval still waiting in Slack (enrol/approvals.py), which are not
+    proposed again until it is approved, declined or expires.
+    """
     s, store = ctx.settings, ctx.store
     skipped: Counter[str] = Counter()
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
@@ -293,6 +309,8 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     out: list[Candidate] = []
     for a in accounts:
         why = account_block(a, s, domains, partners, pulled)
+        if why is None and str(a["account_id"]) in waiting:
+            why = "waiting for approval in Slack"
         if why is None and s.industry_group_of(a).casefold() in stopped:
             why = "industry group stopped by a kill rule"
         contact = None
@@ -447,13 +465,18 @@ def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str
     return None
 
 
-def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: str) -> None:
-    """Tier Excluded now, and a hubspot fact so the next rescore keeps it excluded (the database, so dry-run too)."""
+def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: str,
+                  source: str = HUBSPOT_SOURCE) -> None:
+    """Tier Excluded now, and a fact so the next rescore keeps it excluded (the database, so dry-run too).
+
+    fact is one scoring/tiers.py reads as a hard exclusion: a hubspot one, or declined_in_slack (an
+    approver dropped the company at a send approval, source send_approval; enrol/approvals.py).
+    """
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
     ctx.store.insert(
         "signal_events",
-        [{"event_id": new_id(), "account_id": aid, "source": HUBSPOT_SOURCE, "fact": fact, "value": True,
+        [{"event_id": new_id(), "account_id": aid, "source": source, "fact": fact, "value": True,
           "quote": "", "source_url": "", "observed_at": ctx.now}],
     )
 
@@ -475,6 +498,11 @@ class Prepared:
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
     opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
+    # What a send approval's card shows and an edit re-renders with (enrol/approvals.py): the four emails
+    # as rendered, the variables they were filled with, and the mailbox they were rendered for.
+    rendered: list[render.Rendered] = field(default_factory=list)
+    values: dict[str, str] = field(default_factory=dict)
+    render_mailbox: str = ""
 
 
 @dataclass
@@ -540,6 +568,7 @@ def prepare(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
+        rendered=rendered, values=values, render_mailbox=mb.address,
     )
 
 
@@ -653,21 +682,33 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
 
 def run(ctx: Context) -> dict:
     """The enrol job (JOB CONTRACT: run(ctx) -> summary)."""
+    from us_outbound.enrol import approvals  # it builds on this module
+
     s = ctx.settings
     today = ctx.now_et().date()
-    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "date": today.isoformat()}
+    # Harry, 2 Oct 2026: with auto_send = no every email waits for an approver's ✅ in Slack.
+    approve = not s.general.auto_send
+    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "date": today.isoformat(),
+                               "auto_send": s.general.auto_send}
 
     why = gate(ctx, today)
     pulled: frozenset[str] = frozenset()
     if why is None:
-        why, pulled = hand_check(ctx, today)
+        waits, pulled = hand_check(ctx, today)
+        why = None if approve else waits  # every email is approved anyway, so no weekly gate
+    slack = None
+    if why is None and approve:
+        slack, why = approvals.slack_for(ctx)  # a live run needs the token
     if why:
         summary.update(status="skipped", reason=why)
         log("enrol_done", run_id=ctx.run_id, **summary)
         return summary
 
-    cands, skipped = candidates(ctx, pulled)
-    lim = limits.today(ctx, today, ready_accounts=len(cands))
+    # Send approvals still waiting (in either mode: auto_send may have been switched on since) are
+    # not proposed again, and hold their sender's slots and their place in the week.
+    held = approvals.waiting(ctx)
+    cands, skipped = candidates(ctx, pulled, held.accounts)
+    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner)
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
     pace = {owner: c.pace for owner, c in lim.senders.items()}
@@ -700,6 +741,12 @@ def run(ctx: Context) -> dict:
     enrolled: Counter[str] = Counter()
     would: Counter[str] = Counter()
     month = today.strftime("%Y-%m")
+    proposed: dict[str, Any] | None = None
+    if approve:  # each account becomes a send approval instead of a lead (enrol/approvals.py)
+        proposed = approvals.propose(ctx, prepared, lim, slack)
+        would = Counter(proposed["by_owner"])
+        r.errors += proposed["errors"]
+        by_owner = {}
     for owner, items in by_owner.items():
         campaign = queue.campaign_name(owner)
         leads = [p.lead for p in items]
@@ -741,5 +788,7 @@ def run(ctx: Context) -> dict:
         copy_sendable=len(approved),
         errors=r.errors,
     )
+    if proposed is not None:  # by_owner: the cards posted (live) or that would be (dry-run)
+        summary.update(by_owner=dict(would), send_approvals=proposed)
     log("enrol_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "skipped_accounts"})
     return summary

@@ -20,7 +20,11 @@ missing key, an API error) FAILs with the reason.
                     registry and the ramp (the daily drift check; fix: campaigns ensure --fix --live)
   Apollo budget     credits left this month for finding emails
   Queue             verified accounts with a sendable contact, against today's number
-  Hand-check        this week's hand-check approved (enrol waits for it)
+  auto_send         the General switch (Harry, 2 Oct 2026): no PASSes, as every email then waits for
+                    an approver's ✅ in Slack (enrol/approvals.py; the Slack line checks the token);
+                    yes WARNs, as emails are then added to Instantly without approval
+  Hand-check        this week's hand-check approved (enrol waits for it while auto_send = yes; with
+                    auto_send = no it PASSes, since every email is approved in Slack)
   Enrollment        not stopped by an operator, the stop rule, or a positive reply waiting
   Jobs              the jobs a live send needs are built and scheduled: enrol, sync_outcomes (the
                     kill rules' data), poll_replies (replies and opt-outs), poll_approvals,
@@ -270,12 +274,21 @@ def check_queue(ctx: Context) -> Check:
 
 
 def check_hand_check(ctx: Context) -> Check:
+    if not ctx.settings.general.auto_send:
+        return Check(PASS, "Hand-check", "auto_send = no: every email is approved in Slack")
     week = enrol.iso_week(ctx.now_et().date())
     why, pulled = enrol.hand_check(ctx, ctx.now_et().date())
     if why is None:
         return Check(PASS, "Hand-check", f"{week} approved" + (f"; {len(pulled)} accounts pulled" if pulled else ""))
     return Check(FAIL, "Hand-check", f"{why}: `us-outbound handcheck show --live` (prints and records the sample), "
                                      "then `us-outbound handcheck approve --live`")
+
+
+def check_auto_send(ctx: Context) -> Check:
+    """The switch (Harry, 2 Oct 2026). With no, approvals need Slack, which the Slack line checks."""
+    if ctx.settings.general.auto_send:
+        return Check(WARN, "auto_send", "auto_send = yes: emails are added without approval")
+    return Check(PASS, "auto_send", "auto_send = no: every email waits for approval in Slack")
 
 
 def check_enrolment(ctx: Context) -> Check:
@@ -337,6 +350,7 @@ CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
     ("Campaigns", check_campaigns),
     ("Apollo budget", check_apollo),
     ("Queue", check_queue),
+    ("auto_send", check_auto_send),
     ("Hand-check", check_hand_check),
     ("Enrollment", check_enrolment),
     ("Jobs", check_jobs),

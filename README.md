@@ -17,9 +17,10 @@ Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
   only with `--live` **and** `live_sending = yes` in the settings sheet.
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
   `erase`, `test start`, `settings bootstrap`, `hubspot setup`, `campaigns ensure`,
-  `handcheck show|approve`, `killrules clear`, `replies skip`) are live with `--live` alone, so the
-  phase-0 setup and the kill switch work while `live_sending` is still `no`. `replies approve`
-  sends to a prospect, so it needs both, like a job.
+  `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals reject`) are live with
+  `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is still `no`.
+  `replies approve` sends to a prospect and `approvals approve` adds one to Instantly, so they need
+  both, like a job.
 
 ## Commands
 
@@ -43,6 +44,9 @@ us-outbound suppression load [--live]              HubSpot opt-outs and bounces,
 us-outbound replies list                           reply items waiting for a human: class, account, role, excerpt, draft
 us-outbound replies approve <id> [--edit "text"] [--live]   send the draft (or that text), as a Slack approval would
 us-outbound replies skip <id> [--live]             handled, nothing sent
+us-outbound approvals list                         emails waiting for approval (auto_send = no): company, contact, sender, subject
+us-outbound approvals approve <id> [--live]        add its lead to Instantly, as a ✅ in Slack would
+us-outbound approvals reject <id> --contact|--company [--live]   not this person (another is picked) / not this company
 us-outbound golive                                 the read-only go/no-go check before sending (exits 1 on a FAIL)
 us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack (SPEC 11)
 us-outbound killrules show|clear <item> [--live]   the kill-rule holds in force; lift one once checked (SPEC 12)
@@ -118,12 +122,24 @@ tab, its keys in sheet order, so the jobs keep the sheet's order. General keys a
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
 Clay function ids, the credits-per-account estimates, `stop_rule_bounce_rate` and
 `stop_rule_complaint_rate` (the stop rule's account-level thresholds) and `optout_tested` (the
-seed-inbox test of the unsubscribe link, which `golive` checks).
+seed-inbox test of the unsubscribe link, which `golive` checks) and `auto_send` (no: every email
+waits for approval in Slack; Harry, 2 Oct 2026).
 
 The reply desk (decision D11, Harry, 1 Oct 2026): approvers are `approver_slack_ids` plus a
 mailbox's owner for replies to that mailbox, from an optional `slack_id` column on the Mailboxes
 tab; approvals are ✅ or "send", "send: <text>", "edit: <text>", ❌ or "skip"; unanswered alerts
 are re-posted until 23:00 UK. `us-outbound replies list|approve|skip` does the same without Slack.
+
+Send approvals (Harry, 2 Oct 2026: "every single message that gets sent out comes to this channel
+first for approval"): while the General key `auto_send` is `no` (the default), `enrol` posts each
+account as a card in #us-outbound instead of adding its lead to Instantly: the company and its
+domain, the recipient linked to Apollo, the sender, email 1's subject and body, the count of emails,
+and emails 2 to 4 in the thread. An approver's ✅ (seeded by the bot, so it is one click) adds the
+lead; ❌ offers ✏️ edit (a thread reply, re-rendered and checked against the copy rules, then
+approved again), 👤 another contact, or 🚫 drop the company. A card not approved by the end of its
+next send day expires. With `auto_send` = `yes`, `enrol` adds leads straight away after the weekly
+hand-check, as before. `us_outbound/enrol/approvals.py` has the hitl_items and events contract the
+daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
 
 Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack),
 `suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (Mondays: Spill's

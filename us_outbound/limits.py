@@ -5,6 +5,8 @@ Today's number is the smallest of three terms (enrol/queue.py):
   * sending_capacity: the senders' free slots after follow-ups already due (enrol/capacity.py),
                       each mailbox at its place on the sending ramp (registry/ramp.py);
   * ready_accounts:   verified accounts with a sendable email.
+Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026) count as enrolled
+this week for the weekly target, and each takes one of its sender's slots today.
 The budgets sit behind ready_accounts: Clay credits verify accounts and Apollo credits find
 emails, each within its monthly budget and today's share of it (budget.py). When
 ready_accounts binds, the explanation says which of them, or which earlier stage, is the reason,
@@ -18,6 +20,7 @@ daily post (phase 3) will carry the limited_by line to Slack.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -53,25 +56,38 @@ def _count(ctx: Context, status: str) -> int:
     return len(ctx.store.select("accounts", {"status": status}))
 
 
-def today(ctx: Context, day: date, *, ready_accounts: int) -> Limits:
-    """Today's number, its terms and why, for the send day `day` (a US Eastern date)."""
+def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str, int] | None = None) -> Limits:
+    """Today's number, its terms and why, for the send day `day` (a US Eastern date).
+
+    pending: owner -> send approvals still waiting in Slack (enrol/approvals.waiting); they count as
+    enrolled this week and hold their sender's slots.
+    """
     s = ctx.settings
+    pending = {o: n for o, n in (pending or {}).items() if n > 0}
     enrolled_contacts = [c for c in ctx.store.select("contacts") if c.get("enrolled_at")]
     done = budget.enrolled_this_week(enrolled_contacts, ctx.now)
     days_left = budget.send_days_left_in_week(day, s)
-    target = budget.weekly_target_today(s, done, days_left)
+    target = budget.weekly_target_today(s, done + sum(pending.values()), days_left)
     senders = capacity.sending_capacity(ctx.store, s, day)
+    for owner, c in senders.items():
+        c.hold(pending.get(owner, 0))
     free = sum(c.free for c in senders.values())
     n, terms = queue.daily_number(weekly_target=target, sending_capacity=free, ready_accounts=ready_accounts)
     budgets = {sys: budget.monthly(ctx.store, s, sys, ctx.now) for sys in ("clay", "apollo")}
     terms.update(
         weekly_enrol_cap=s.general.weekly_enrol_cap,
         enrolled_this_week=done,
+        awaiting_approval=sum(pending.values()),
         send_days_left_in_week=days_left,
-        senders={o: {"cap": c.cap, "free": c.free} for o, c in senders.items()},
+        senders={o: {"cap": c.cap, "free": c.free, **({"pending": c.pending} if c.pending else {})}
+                 for o, c in senders.items()},
         budgets={sys: b.as_dict() for sys, b in budgets.items()},
     )
     explanation, detail = explain(ctx, n, terms, senders, budgets)
+    if pending:
+        each = ", ".join(f"{o} {k}" for o, k in sorted(pending.items()))
+        detail.insert(1, f"Waiting for approval in Slack: {sum(pending.values())} emails ({each}); each counts "
+                         "towards the week and holds its sender's slot until it is approved or expires.")
     q = focus.today(ctx, days_left)
     if q.active:
         detail.insert(1, q.describe())
@@ -94,8 +110,8 @@ def explain(
     if not senders:
         detail.append("Sending capacity: no Active mailbox.")
     detail += [f"Sending capacity, {c.describe()}." for c in senders.values()]
-    if binding == "ready_accounts":
-        detail.append(behind_ready(ctx, terms["ready_accounts"], budgets))
+    if binding == "ready_accounts":  # accounts waiting for approval are ready too, just not today's
+        detail.append(behind_ready(ctx, terms["ready_accounts"] + terms.get("awaiting_approval", 0), budgets))
     elif binding == "sending_capacity" and senders:
         detail += add_a_mailbox(senders, terms["ready_accounts"] - terms["sending_capacity"])
     return head, detail
@@ -122,6 +138,10 @@ def add_a_mailbox(senders: dict[str, capacity.SenderCapacity], waiting: int) -> 
         return ["More sends need another Active mailbox (`us-outbound mailbox add`), or higher daily caps once the inboxes are warm."]
     lines = []
     for c in full:
+        if c.pending and c.slots > 0 and not c.at_limit:  # held by its own cards, not by a lack of mailboxes
+            lines.append(f"{c.owner}'s slots today are held by {c.pending} emails waiting for approval in Slack: "
+                         "approve or decline them there (`us-outbound approvals list`).")
+            continue
         if c.ramping:
             lines.append(_ramp_line(c))
             continue

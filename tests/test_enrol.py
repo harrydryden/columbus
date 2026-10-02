@@ -87,8 +87,12 @@ def contacts3() -> list[dict]:
     ]
 
 
-def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None):
+def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None,
+         auto_send=True):
+    """The enrol world. auto_send = yes by default: leads go straight to Instantly, as before Harry's 2 Oct 2026
+    switch; tests/test_send_approvals.py runs it with auto_send = no."""
     s = settings or make_settings(live_sending=live)
+    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send))
     t = transport or FakeTransport()
     t.route("GET", "/campaigns", CAMPAIGNS)
     t.route("POST", "/crm/v3/objects/companies/search", {"results": []})
