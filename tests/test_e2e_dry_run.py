@@ -292,10 +292,10 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
         assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
         # The signature; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
         assert f'Book a call <a href="{g.booking_link}">here</a>' in body and "{{unsubscribe}}" not in body
-    # Tokenized openers (Harry, 2 Oct 2026): Jane is a People leader, so EAP named's opener_people line, filled
-    # with the company and the provider the benefits page names (ComPsych, from the stored evidence).
-    assert ("<p>Hi Jane,</p><p>I saw Acme Creative offers its team an employee assistance program through ComPsych.</p>"
-            in cv["s1_body"])
+    # Openers (Harry, 2 Oct 2026): Jane is a People leader, so EAP named's opener_people line, which names
+    # nothing the benefits page said (signals are context, never the line).
+    assert ("<p>Hi Jane,</p><p>Worries from home often surface at work first, and people open up most where help "
+            "feels personal.</p>" in cv["s1_body"])
     assert detail["openers"] == {"arms": {"opener": 1}, "sources": {"EAP named / opener_people": 1}}
     assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
     page = s.industry("Advertising agencies").landing_page_url

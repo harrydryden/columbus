@@ -284,6 +284,44 @@ _FUNDING_LINES = (
     "Change often brings new routines and more to coordinate, and support works best when it's already in place.",
     "",
 )
+# The page-reader signals (sources/pages.py) follow the same rule (Harry, 2 Oct 2026: "rework the benefits-page
+# lines the same way"). The page tells us they already look after their people; the line speaks to the pressure
+# that still finds people, at work and at home, and to help that's there when it does. It never echoes the page:
+# no mental health, counseling, EAP, employee assistance, app, perk, benefit, stipend, time off, leave or
+# sabbatical, no provider and no token. Never a word against what they offer: the Upgrade the EAP angle is
+# "alongside or instead, never disparaging", and an app or perk complements counseling.
+# Mental health support listed: they already speak up for well-being; the hard weeks are where it counts.
+_MENTAL_HEALTH_LINES = (
+    "Most teams know pressure from work and home adds up, and the hard part is making help easy to use.",
+    "Looking after a team well is a long game, and the hard weeks at home are where it counts most.",
+    "Teams that look out for each other still feel the squeeze when work and home get busy at once.",
+    "Help counts most on the hard weeks, when people want something quick to find and simple to use.",
+    "",
+)
+# EAP named: support is in place; people reach for help that feels quick and personal.
+_EAP_LINES = (
+    "When people are struggling, they tend to reach for the help that feels quickest and most personal.",
+    "Worries from home often surface at work first, and people open up most where help feels personal.",
+    "Most people look for help only on a hard day, and that's when it needs to be quick to find.",
+    "The help people use most is usually the kind they can reach in the middle of a busy day.",
+    "",
+)
+# Wellbeing app or perk named: the everyday is looked after; some weeks need a person.
+_APP_LINES = (
+    "Looking after the everyday helps a lot, and some weeks people also need a real person to talk to.",
+    "Good habits carry people through most weeks, and the harder ones go better with a person to lean on.",
+    "Staying well day to day matters, and when work and home pile up at once, people often need more.",
+    "Day-to-day self-care covers a lot, but a rough week at home or work is easier with someone to talk to.",
+    "",
+)
+# Progressive benefits: they care about balance; life at home still doesn't keep office hours.
+_BENEFITS_LINES = (
+    "Even teams with good balance feel it when work and home get heavy at once, and talking it through helps.",
+    "The moments that weigh on people rarely keep office hours, so it matters when help is quick to reach.",
+    "A team can have plenty of breathing room and still hit weeks when work and home both pile on.",
+    "Big moments at home tend to land mid-week, and people cope better with someone to talk to.",
+    "",
+)
 
 # signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, opener, counts_for_days,
 # active, note: the Signals tab's columns in order, but for the opener lines by role (_OPENERS, below).
@@ -291,7 +329,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     (
         "Mental health support listed", "clay_careers, careers_pages, job_posts",
         "mental health; therapy; counseling; counselling; wellbeing support; well-being support",
-        "", "15", "", "Score", "Progressive employer", "I noticed your careers page mentions {evidence}.", "540", "yes",
+        "", "15", "", "Score", "Progressive employer", _MENTAL_HEALTH_LINES[0], "540", "yes",
         "A budget-and-brand signal: wellbeing is part of the employer's brand, never an exclusion. "
         f"{_APPENDIX_A}: +25 to +15, and EAP and employee assistance moved out, so a carrier EAP is no "
         "longer counted twice (it scored +35 with the EAP named row); job posts read too.",
@@ -301,7 +339,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "EAP; employee assistance; ComPsych; GuidanceResources; Magellan; Optum; Carelon; Cigna; "
         "Aetna Resources For Living; TELUS Health; Health Advocate",
         _EAP_CONTEXT, "5", "", "Score", "Upgrade the EAP",
-        "I noticed your benefits page lists an employee assistance program.", "540", "yes",
+        _EAP_LINES[0], "540", "yes",
         f"Kept as the Upgrade the EAP angle trigger, alongside or instead, never disparaging. {_APPENDIX_A}: "
         "+10 to +5, because Spill won 32% of deals where an EAP was in place against 46% with nothing "
         "(05 §3.6); the carrier EAP names and job posts added. Not in Appendix A: Optum, Cigna, Carelon, "
@@ -321,7 +359,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     (
         "Wellbeing app or perk named", "clay_careers, careers_pages, job_posts",
         "Headspace; Calm; Wellhub; Gympass",
-        _APP_CONTEXT, "5", "", "Score", "Progressive employer", "I noticed {evidence} is part of your benefits.", "540", "yes",
+        _APP_CONTEXT, "5", "", "Score", "Progressive employer", _APP_LINES[0], "540", "yes",
         f"New ({_APPENDIX_A}): apps and fitness perks complement counseling, and Calm and Headspace buyers "
         "buy counseling too, so they score instead of being held. Headspace and Calm count only near the "
         "context terms.",
@@ -331,7 +369,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "wellness stipend; wellness stipends; mental health day; mental health days; unlimited PTO; "
         "four-day week; four-day weeks; 4-day week; 4-day weeks; parental leave; sabbatical; sabbaticals; "
         "100% employer-paid",
-        "", "5", "15", "Score", "Progressive employer", "I noticed your benefits include {evidence}.", "540", "yes",
+        "", "5", "15", "Score", "Progressive employer", _BENEFITS_LINES[0], "540", "yes",
         f"+5 for each benefit found, at most +15. {_APPENDIX_A}: from +10 each and at most +30, since these are "
         "standard tech perks and +30 skewed Priority toward VC-backed startups that most often already have "
         "a modern vendor; plurals added (terms match whole words).",
@@ -454,8 +492,8 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
 # time from the account's stored facts (enrol/openers.py, which documents each token). A line whose token has
 # no fact, or a fact that fails its check, falls back to the next line in the cell, then to the signal's plain
 # opener, then to the generic line (General opener_generic_*), then to none. opener_self is for a contact who is
-# the new People leader. Written to style.md: US English, one sentence, no statistic; the page-reader lines say
-# one observed fact, the context signals' lines none (_CONTEXT_NOTE).
+# the new People leader. Written to style.md: US English, one sentence, no statistic, and no default line names
+# what was observed (_CONTEXT_NOTE, _MENTAL_HEALTH_LINES); the tokens are for lines Harry writes on the sheet.
 # signal: (opener_people, opener_founder, opener_ops, opener_self)
 _OPENERS: dict[str, tuple[str, str, str, str]] = {
     # The context signals (_CONTEXT_NOTE, above): no tokens, so every line fills for every account.
@@ -465,38 +503,11 @@ _OPENERS: dict[str, tuple[str, str, str, str]] = {
     "Funding in the last 6 months": _FUNDING_LINES[1:],
     "Funding 6–12 months ago": _FUNDING_LINES[1:],
     "Hiring and growth": _HIRING_LINES[1:],
-    # The page-reader signals (sources/pages.py). {page} says where the evidence was read; without it,
-    # "when it recruits" is true of a careers page, a benefits page and a job board alike.
-    "Mental health support listed": (
-        "I saw {company} mentions {evidence} {page}.\n"
-        "I saw {company} mentions {evidence} when it recruits.",
-        "I saw {company} mentions {evidence} when it recruits.",
-        "I saw {company} talks about {evidence} {page}.\n"
-        "I saw {company} talks about {evidence} when it recruits.",
-        "",
-    ),
-    "EAP named": (
-        "I saw {company} offers its team an employee assistance program through {provider}.\n"
-        "I saw {company} offers its team an employee assistance program.",
-        "I saw {company} offers an employee assistance program through {provider}.\n"
-        "I saw {company} offers an employee assistance program as part of its benefits.",
-        "I saw {company} provides an employee assistance program through {provider}.\n"
-        "I saw an employee assistance program is part of the benefits at {company}.",
-        "",
-    ),
-    "Wellbeing app or perk named": (
-        "I saw {company} offers {evidence} as part of its benefits.",
-        "I saw {evidence} is one of the perks at {company}.",
-        "I saw {company} includes {evidence} in its benefits.",
-        "",
-    ),
-    # {evidence} is plural or mass here ("wellness stipends", "parental leave"; openers.BENEFIT_FORMS).
-    "Progressive benefits": (
-        "I saw {company} lists {evidence} among its benefits.",
-        "I saw {company} offers {evidence} as part of its benefits.",
-        "I saw the benefits at {company} include {evidence}.",
-        "",
-    ),
+    # The page-reader signals (_MENTAL_HEALTH_LINES, above): no tokens either.
+    "Mental health support listed": _MENTAL_HEALTH_LINES[1:],
+    "EAP named": _EAP_LINES[1:],
+    "Wellbeing app or perk named": _APP_LINES[1:],
+    "Progressive benefits": _BENEFITS_LINES[1:],
 }
 _OPENER_COLUMNS = ("opener_people", "opener_founder", "opener_ops", "opener_self")
 

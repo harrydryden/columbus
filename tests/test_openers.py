@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from itertools import count
 
@@ -122,6 +123,32 @@ FUNDING_LINES = {  # both funding rows
     FOUNDER: "When a lot is changing, even steady people can feel stretched, and it helps to know where to turn.",
     OPS: "Change often brings new routines and more to coordinate, and support works best when it's already in place.",
 }
+# The page-reader signals' default lines (Harry, 2 Oct 2026: "rework the benefits-page lines the same way"): the
+# pressure that still finds people, and nothing the page said.
+MENTAL_HEALTH_LINES = {
+    "": "Most teams know pressure from work and home adds up, and the hard part is making help easy to use.",
+    PEOPLE: "Looking after a team well is a long game, and the hard weeks at home are where it counts most.",
+    FOUNDER: "Teams that look out for each other still feel the squeeze when work and home get busy at once.",
+    OPS: "Help counts most on the hard weeks, when people want something quick to find and simple to use.",
+}
+EAP_LINES = {
+    "": "When people are struggling, they tend to reach for the help that feels quickest and most personal.",
+    PEOPLE: "Worries from home often surface at work first, and people open up most where help feels personal.",
+    FOUNDER: "Most people look for help only on a hard day, and that's when it needs to be quick to find.",
+    OPS: "The help people use most is usually the kind they can reach in the middle of a busy day.",
+}
+APP_LINES = {
+    "": "Looking after the everyday helps a lot, and some weeks people also need a real person to talk to.",
+    PEOPLE: "Good habits carry people through most weeks, and the harder ones go better with a person to lean on.",
+    FOUNDER: "Staying well day to day matters, and when work and home pile up at once, people often need more.",
+    OPS: "Day-to-day self-care covers a lot, but a rough week at home or work is easier with someone to talk to.",
+}
+BENEFITS_LINES = {
+    "": "Even teams with good balance feel it when work and home get heavy at once, and talking it through helps.",
+    PEOPLE: "The moments that weigh on people rarely keep office hours, so it matters when help is quick to reach.",
+    FOUNDER: "A team can have plenty of breathing room and still hit weeks when work and home both pile on.",
+    OPS: "Big moments at home tend to land mid-week, and people cope better with someone to talk to.",
+}
 # The generic line (General opener_generic_*): ever more pressure in our work and personal lives.
 GENERIC = {
     PEOPLE: "Pressure at work and at home seems to keep rising, and the two rarely stay separate for long.",
@@ -133,6 +160,7 @@ GENERIC_KEY = {PEOPLE: "opener_generic_people", FOUNDER: "opener_generic_founder
                "": "opener_generic"}
 CONTEXT_SIGNALS = ("New People leader", "First People hire", "People role open", "Funding in the last 6 months",
                    "Funding 6–12 months ago", "Hiring and growth")
+PAGE_SIGNALS = ("Mental health support listed", "EAP named", "Wellbeing app or perk named", "Progressive benefits")
 COLUMN = {PEOPLE: "opener_people", FOUNDER: "opener_founder", OPS: "opener_ops"}
 MONEY = copy_rules.MONEY_ADVICE
 
@@ -166,9 +194,46 @@ TOKEN_LINES = {
              "I saw the {company} team has {growth} over the past year.",
     },
 }
-T = dataclasses.replace(S, signals=tuple(
-    dataclasses.replace(x, role_openers={**x.role_openers, **TOKEN_LINES[x.signal]}) if x.signal in TOKEN_LINES else x
-    for x in S.signals))
+# The page-reader signals' lines before 2 Oct, for the {evidence}, {provider} and {page} tests: the plain
+# opener and each role's.
+TOKEN_LINES |= {
+    "Mental health support listed": {
+        "": "I noticed your careers page mentions {evidence}.",
+        PEOPLE: "I saw {company} mentions {evidence} {page}.\nI saw {company} mentions {evidence} when it recruits.",
+        FOUNDER: "I saw {company} mentions {evidence} when it recruits.",
+        OPS: "I saw {company} talks about {evidence} {page}.\nI saw {company} talks about {evidence} when it recruits.",
+    },
+    "EAP named": {
+        "": "I noticed your benefits page lists an employee assistance program.",
+        PEOPLE: "I saw {company} offers its team an employee assistance program through {provider}.\n"
+                "I saw {company} offers its team an employee assistance program.",
+        FOUNDER: "I saw {company} offers an employee assistance program through {provider}.\n"
+                 "I saw {company} offers an employee assistance program as part of its benefits.",
+        OPS: "I saw {company} provides an employee assistance program through {provider}.\n"
+             "I saw an employee assistance program is part of the benefits at {company}.",
+    },
+    "Wellbeing app or perk named": {
+        "": "I noticed {evidence} is part of your benefits.",
+        PEOPLE: "I saw {company} offers {evidence} as part of its benefits.",
+        FOUNDER: "I saw {evidence} is one of the perks at {company}.",
+        OPS: "I saw {company} includes {evidence} in its benefits.",
+    },
+    "Progressive benefits": {
+        "": "I noticed your benefits include {evidence}.",
+        PEOPLE: "I saw {company} lists {evidence} among its benefits.",
+        FOUNDER: "I saw {company} offers {evidence} as part of its benefits.",
+        OPS: "I saw the benefits at {company} include {evidence}.",
+    },
+}
+
+
+def _with_token_lines(x):
+    lines = TOKEN_LINES[x.signal]
+    roles = {k: v for k, v in lines.items() if k}
+    return dataclasses.replace(x, role_openers={**x.role_openers, **roles}, opener=lines.get("", x.opener))
+
+
+T = dataclasses.replace(S, signals=tuple(_with_token_lines(x) if x.signal in TOKEN_LINES else x for x in S.signals))
 
 
 # -- every signal × role (the default lines, filled from stored facts) ----------------------------------------
@@ -188,6 +253,20 @@ CONTEXT_CASES = [
 
 @pytest.mark.parametrize("facts, signal, role, line", [
     *CONTEXT_CASES,
+    *[(facts, signal, role, lines[role])
+      for facts, signal, lines in ((EAP, "EAP named", EAP_LINES),
+                                   (MENTAL_HEALTH, "Mental health support listed", MENTAL_HEALTH_LINES),
+                                   (APP, "Wellbeing app or perk named", APP_LINES),
+                                   (BENEFITS, "Progressive benefits", BENEFITS_LINES))
+      for role in (PEOPLE, FOUNDER, OPS)],
+])
+def test_each_signal_and_role_fills_from_the_account_s_facts(facts, signal, role, line):
+    op = opener(facts, role)
+    assert (op.text, op.arm, op.source) == (line, openers.OPENER, f"{signal} / {COLUMN[role]}")
+    assert check(op.text) == "" and len(op.text.split()) <= 20  # style.md: one sentence, under about 20 words
+
+
+@pytest.mark.parametrize("facts, signal, role, line", [
     (EAP, "EAP named", PEOPLE, "I saw Brightline offers its team an employee assistance program through ComPsych."),
     (EAP, "EAP named", FOUNDER, "I saw Brightline offers an employee assistance program through ComPsych."),
     (EAP, "EAP named", OPS, "I saw Brightline provides an employee assistance program through ComPsych."),
@@ -201,10 +280,11 @@ CONTEXT_CASES = [
     (BENEFITS, "Progressive benefits", FOUNDER, "I saw Brightline offers parental leave as part of its benefits."),
     (BENEFITS, "Progressive benefits", OPS, "I saw the benefits at Brightline include parental leave."),
 ])
-def test_each_signal_and_role_fills_from_the_account_s_facts(facts, signal, role, line):
-    op = opener(facts, role)
+def test_a_sheet_line_with_evidence_tokens_fills_from_the_page_facts(facts, signal, role, line):
+    """The defaults name nothing the page said, but a line Harry writes may: {evidence}, {provider}, {page}."""
+    op = opener(facts, role, settings=T)
     assert (op.text, op.arm, op.source) == (line, openers.OPENER, f"{signal} / {COLUMN[role]}")
-    assert check(op.text) == "" and len(op.text.split()) <= 20  # style.md: one sentence, under about 20 words
+    assert check(op.text) == ""
 
 
 def test_the_default_lines_cover_every_signal_that_can_fire_and_pass_the_rules():
@@ -235,6 +315,16 @@ def test_signals_are_context_never_the_line():
         for line in (s.opener, *s.role_openers.values(), s.opener_self):
             assert not any(w in line.lower() for w in observed), (name, line)
             assert line == "" or line.count(".") == 1 and len(line.split()) <= 20, (name, line)
+    # Harry, 2 Oct 2026: the benefits-page lines the same way. Nothing the page said, and no token.
+    page_words = re.compile(r"\b(mental health|counsel\w*|therap\w*|eap|employee assistance|apps?|perks?|benefits?|"
+                            r"stipends?|pto|time off|leave|parental|sabbaticals?|four-day|4-day|careers|page|"
+                            r"noticed|i saw|headspace|calm|wellhub|gympass|provider|spill)\b")
+    for name in PAGE_SIGNALS:
+        s = by[name]
+        assert s.opener_self == "" and set(s.role_openers) == {PEOPLE, FOUNDER, OPS}
+        for line in (s.opener, *s.role_openers.values()):
+            assert not any(w in line.lower() for w in observed) and not page_words.search(line.lower()), (name, line)
+            assert line.count(".") == 1 and line.endswith(".") and len(line.split()) <= 20, (name, line)
     assert by["Funding 6–12 months ago"].role_openers == by["Funding in the last 6 months"].role_openers
     assert by["First People hire"].role_openers == by["People role open"].role_openers
     for role, key in GENERIC_KEY.items():
@@ -277,7 +367,7 @@ def test_a_token_that_fails_its_check_is_missing():
 def test_a_filled_line_that_breaks_a_copy_rule_falls_back():
     # Evidence the copy may not use ("therapy") drops every line and the plain line: the generic line.
     therapy = [fact("clay_careers", "benefit", {"item": "Free therapy sessions"})]
-    op = opener(therapy, OPS)
+    op = opener(therapy, OPS, settings=T)
     assert (op.text, op.arm, op.source) == (GENERIC[OPS], openers.OPENER, "opener_generic_ops")
     assert any("therapy" in n for n in op.notes)
     # A line that fills but breaks a rule is passed over for the next.
@@ -290,7 +380,7 @@ def test_a_filled_line_that_breaks_a_copy_rule_falls_back():
 
 def test_british_evidence_is_spelled_the_american_way():
     wellbeing = [fact("clay_careers", "benefit", {"item": "Wellbeing support for everyone"})]
-    assert opener(wellbeing, FOUNDER).text == "I saw Brightline mentions well-being support when it recruits."
+    assert opener(wellbeing, FOUNDER, settings=T).text == "I saw Brightline mentions well-being support when it recruits."
 
 
 def test_no_signal_line_and_no_plain_opener_means_the_generic_line_and_with_none_of_those_none():
@@ -324,11 +414,12 @@ def test_the_page_token_says_where_the_evidence_was_read():
         return [fact(source, "benefit", {"item": "Mental health support"}, quote="We care about mental health.")
                 | {"source_url": url}]
 
-    assert opener(mh("careers_pages", "https://brightline.com/careers"), PEOPLE).text == \
+    assert opener(mh("careers_pages", "https://brightline.com/careers"), PEOPLE, settings=T).text == \
         "I saw Brightline mentions mental health on its careers page."
-    assert opener(mh("careers_pages", "https://brightline.com/benefits"), OPS).text == \
+    assert opener(mh("careers_pages", "https://brightline.com/benefits"), OPS, settings=T).text == \
         "I saw Brightline talks about mental health on its benefits page."
-    assert opener(mh("job_posts"), PEOPLE).text == "I saw Brightline mentions mental health in its job postings."
+    assert opener(mh("job_posts"), PEOPLE, settings=T).text == \
+        "I saw Brightline mentions mental health in its job postings."
 
 
 # -- funding is a signal, never a line: no opener mentions funding or money (Harry, 2 Oct 2026) ---------------------
@@ -557,11 +648,11 @@ def test_bug4_the_posting_named_is_one_email_1_can_carry():
 
 def test_bug5_evidence_skips_a_term_the_copy_rules_block():
     therapy = [fact("careers_pages", "benefit", {"item": "Therapy and counseling covered"})]
-    assert opener(therapy, PEOPLE).text == "I saw Brightline mentions counseling on its careers page."
+    assert opener(therapy, PEOPLE, settings=T).text == "I saw Brightline mentions counseling on its careers page."
     pto = [fact("careers_pages", "benefit", {"item": "Unlimited PTO and parental leave"})]
-    assert opener(pto, PEOPLE).text == "I saw Brightline lists parental leave among its benefits."
+    assert opener(pto, PEOPLE, settings=T).text == "I saw Brightline lists parental leave among its benefits."
     # The plain opener (a contact with no copy role) takes the same evidence.
-    assert opener(pto, "").text == "I noticed your benefits include parental leave."
+    assert opener(pto, "", settings=T).text == "I noticed your benefits include parental leave."
     # {provider} skips blocked terms too: a provider whose name breaks a rule is never named.
     signal = next(x for x in S.signals if x.signal == "EAP named")
     from us_outbound.scoring.score import Evidence, Match
@@ -581,13 +672,13 @@ def test_bug5_evidence_skips_a_term_the_copy_rules_block():
 ])
 def test_bug6_benefit_evidence_is_plural_or_mass(item, shown):
     facts = [fact("careers_pages", "benefit", {"item": item})]
-    op = opener(facts, OPS)
+    op = opener(facts, OPS, settings=T)
     if shown == "mental health days":
         assert op.source.startswith("Mental health support listed")  # the broader signal wins, as the QA noted
         return
     assert op.text == f"I saw the benefits at Brightline include {shown}."
-    assert opener(facts, FOUNDER).text == f"I saw Brightline offers {shown} as part of its benefits."
-    assert opener(facts, "").text == f"I noticed your benefits include {shown}."
+    assert opener(facts, FOUNDER, settings=T).text == f"I saw Brightline offers {shown} as part of its benefits."
+    assert opener(facts, "", settings=T).text == f"I noticed your benefits include {shown}."
 
 
 def test_bug7_ambiguous_eap_provider_names_count_only_near_eap_words():
@@ -602,7 +693,7 @@ def test_bug7_ambiguous_eap_provider_names_count_only_near_eap_words():
     assert match_signal(eap, page("Our Magellan platform team ships weekly."), TODAY) is None
     assert match_signal(eap, page("We partner with TELUS Health for virtual care."), TODAY) is None
     assert opener(page("Our Magellan platform team ships weekly."), PEOPLE).source == "opener_generic_people"
-    assert opener(page("Our employee assistance program is run by Magellan."), PEOPLE).text == \
+    assert opener(page("Our employee assistance program is run by Magellan."), PEOPLE, settings=T).text == \
         "I saw Brightline offers its team an employee assistance program through Magellan."
     assert match_signal(eap, page("TELUS Health runs our EAP for every employee."), TODAY) is not None
 
@@ -848,7 +939,8 @@ def test_opener_self_is_only_for_a_signal_about_one_person():
 def test_the_plain_opener_is_one_line_and_role_cells_may_hold_alternatives():
     errs = errors_of("Signals", signals_rows(**{"EAP named": {"opener": "One line.\nTwo lines."}}))
     assert "the plain opener is one line" in errs[0]
-    got, errs = validate_tab("Signals", signals_rows())
+    two = "When people are struggling, help that's close matters.\nThe help people use most is the kind they can reach."
+    got, errs = validate_tab("Signals", signals_rows(**{"EAP named": {"opener_ops": two}}))
     assert errs == []
     eap = next(s for s in got if s.signal == "EAP named")
     assert len(openers.lines_of(eap.role_openers[OPS])) == 2

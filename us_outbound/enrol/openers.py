@@ -27,8 +27,9 @@ opener is chosen here, once the contact and their copy role are known (enrol.pre
      (opener_generic_people, opener_generic_founder, opener_generic_ops), then opener_generic; then
      none, and email 1 reads well without it (style.md). Its source is the key ("opener_generic_ops").
 Signals are context, never the line (Harry, 2 Oct 2026): the default lines of the hiring, People, growth and
-funding signals speak to the pressure the situation tends to bring and to support through it, so they use no
-token but {company} at most; the page-reader signals still say what the page says.
+funding signals, and of the page-reader signals too, speak to the pressure the situation tends to bring and to
+support through it, so they use no token but {company} at most. The tokens below stay for lines Harry writes on
+the sheet, the page-reader ones ({evidence}, {provider}, {page}) among them.
 
 Tokens, each from a stored fact. A token with no fact, or with one that fails its check, is missing,
 and a line with a missing token is skipped; nothing is guessed.

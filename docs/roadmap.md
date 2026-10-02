@@ -161,6 +161,14 @@ verification and contact choice write only the database; enrol, replies and post
      middle line. In code: "VP, People Operations" reads "VP of People Operations"; "Sr." and "II"
      go; "Organisational" is caught as British; a posting or term the email-1 rules block is passed
      over for the next. Magellan and TELUS Health count only near EAP words.
+   - Signals are context, never the line (Harry, 2 Oct, after the examples above): no default line
+     names what was observed, so the titles, counts, rounds and congratulations are gone. Each signal's
+     lines take the pressure that situation tends to bring, at work and at home, and turn to having
+     somewhere to turn; the benefits-page lines too ("rework the benefits-page lines the same way"),
+     never echoing the page and never a word against an EAP or app they offer. No opener may mention
+     funding or money (`copy_rules.money_violations`). An account with no signal line, Control
+     among them, gets the generic line (General `opener_generic_*`). The tokens stay for lines Harry
+     writes on the sheet. The lines are in `settings/defaults.py` and `templates/copy/style.md`.
    - The opener is chosen at enrol time, when the contact's role is known. It comes from the signal
      that set the angle. The first line that fills and passes the copy rules wins, then the
      signal's plain opener, then none. Nothing is invented and there is no cost per account. The

@@ -124,15 +124,20 @@ must not make the hook's point. Tokens: {company}, {city}. The optional "what th
 when it is on (below).
 
 The page-reader signals (EAP named, Mental health support listed, Wellbeing app or perk named,
-Progressive benefits) still say what the page says, as one observed fact:
+Progressive benefits) follow the same rule (Harry, 2 Oct 2026: "rework the benefits-page lines the same
+way"). The page tells us they already look after their people, and the line speaks to the pressure that
+still finds people, at work and at home, and to help that's there when it does:
 
-- One observed fact, said plainly: "I saw Brightline mentions counseling on its careers page."
-  Nothing about the reader's company beyond the fact, and no inference from it.
-- "I saw", never "I noticed you're struggling". Never "already offers" an EAP: it hints at their
-  current one (facts.md).
-- The evidence is the object, not the subject ("I saw Brightline mentions counseling on its careers
-  page", not "I saw counseling comes up when..."). A benefit reads plural or mass ("wellness
-  stipends", "parental leave").
+- mental health support listed: they already speak up for well-being; the hard weeks are where it counts;
+- an EAP: support is in place; people reach for the help that feels quickest and most personal;
+- a well-being app or perk: the everyday is looked after; some weeks need a person to talk to;
+- progressive benefits: they care about balance; life at home still doesn't keep office hours.
+
+They never echo the page: no mental health, counseling, EAP, employee assistance, app, perk, benefit,
+stipend, time off, leave or sabbatical, and no provider. Never a word against what they offer: no "on
+paper", no phone numbers or logins, no "actually use". An EAP is "alongside or instead, never
+disparaging" (the Upgrade the EAP angle), and an app or perk complements counseling. {evidence},
+{provider} and {page} stay for a line Harry writes on the sheet; the defaults use no token.
 
 Every opener:
 

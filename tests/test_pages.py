@@ -292,7 +292,7 @@ def test_a_site_and_its_linked_board_are_read_into_facts_scoring_matches(world):
     assert out["run"]["signals"]["EAP named"] == 1 and out["run"]["signals"]["Modern mental-health vendor named"] == 1
 
 
-def test_the_opener_quotes_what_the_page_said(world):
+def test_the_opener_names_nothing_the_page_said(world):
     ctx, web = world
     benefits_only = "<h2>Perks</h2><ul><li>A free Calm app subscription</li><li>Counseling for the whole team</li></ul>"
     site(web, home=f"<a href='/careers'>Careers</a>{benefits_only}", careers=None, benefits=None)
@@ -300,7 +300,8 @@ def test_the_opener_quotes_what_the_page_said(world):
     pages.run(ctx)
     r = score_account(account(), events(ctx), ctx.settings, NOW.date())
     assert (r.score, r.tier, r.angle) == (35, "Standard", "Progressive employer")  # 15 + 5, + Team of 10–49 (its band)
-    assert r.opener == "I noticed your careers page mentions counseling."
+    # Harry, 2 Oct 2026: the benefits-page lines are context too, never "your careers page mentions counseling".
+    assert r.opener == "Most teams know pressure from work and home adds up, and the hard part is making help easy to use."
 
 
 def test_robots_disallow_reads_nothing_and_a_failed_read_adds_no_points_and_keeps_a_hold(world):

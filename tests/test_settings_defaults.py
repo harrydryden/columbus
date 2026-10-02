@@ -134,7 +134,7 @@ def test_a_carrier_eap_is_counted_once(settings):
         assert vendor in eap.terms, vendor
     # The medical carriers count only near words that make them the EAP, so the opener stays true.
     assert set(eap.context) == {"optum", "cigna", "carelon", "health advocate", "magellan", "telus health"}
-    assert eap.opener == "I noticed your benefits page lists an employee assistance program."
+    assert eap.opener == "When people are struggling, they tend to reach for the help that feels quickest and most personal."
 
 
 def test_competitors_hold_and_complements_score(settings):
@@ -175,16 +175,20 @@ def test_plain_openers_pass_the_copy_rules_and_signals_are_context_never_the_lin
 
     openers = {s.signal: s.opener for s in settings.signals if s.opener}
     # Harry, 1 Oct 2026: email 1 opens on something personal and relevant, worded to read right to any of
-    # the three roles. The page-reader signals say what the page says; Harry, 2 Oct 2026: the hiring,
-    # People, growth and funding signals are context, never the line, so theirs speak to the pressure
-    # the situation tends to bring, at work and at home, and name nothing that was observed.
+    # the three roles. Harry, 2 Oct 2026: signals are context, never the line, so every signal's line, the
+    # page-reader ones too, speaks to the pressure the situation tends to bring, at work and at home, and
+    # names nothing that was observed.
     people_role = "Work and home both ask a lot of people, and the best help is the kind nobody has to chase."
     funding = "Times of change tend to put more on everyone's plate, and that's when support matters most."
     assert openers == {
-        "Mental health support listed": "I noticed your careers page mentions {evidence}.",
-        "EAP named": "I noticed your benefits page lists an employee assistance program.",
-        "Wellbeing app or perk named": "I noticed {evidence} is part of your benefits.",
-        "Progressive benefits": "I noticed your benefits include {evidence}.",
+        "Mental health support listed": "Most teams know pressure from work and home adds up, and the hard part is "
+                                        "making help easy to use.",
+        "EAP named": "When people are struggling, they tend to reach for the help that feels quickest and most "
+                     "personal.",
+        "Wellbeing app or perk named": "Looking after the everyday helps a lot, and some weeks people also need a "
+                                       "real person to talk to.",
+        "Progressive benefits": "Even teams with good balance feel it when work and home get heavy at once, and "
+                                "talking it through helps.",
         "New People leader": "When priorities shift at work, people often feel it at home too, and someone to talk "
                              "to helps.",
         "First People hire": people_role,

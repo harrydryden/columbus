@@ -49,7 +49,7 @@ from us_outbound.settings.model import (
 SAMPLE_ACCOUNT = {"account_id": "sample", "domain": "harborfinch.com", "clean_name": "Harbor & Finch",
                   "hq_city": "Boston", "hq_state": "MA", "employees": 40}
 SAMPLE_CONTACT = {"contact_id": "sample", "first_name": "Dana", "last_name": "Reyes"}
-SAMPLE_OPENER = "I saw your team already has an employee assistance program."
+SAMPLE_OPENER = "Pressure at work and at home seems to keep rising, and most teams feel it somewhere."  # the generic line
 ROLE_LINE_MAX = 220  # characters; style.md asks for under 30 words
 QA_MAX_TOKENS = 3000
 DRAFT_MAX_TOKENS = 16000
