@@ -56,8 +56,10 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
     text = post.json["text"]
     lines = text.splitlines()
-    assert lines[0] == "Daily post, Tue 27 Oct"
-    assert "Yesterday, Mon 26 Oct (UK):" in lines
+    assert lines[0] == "*Daily post, Tue 27 Oct*"
+    assert lines[1] == ("Yesterday: 8 sent · 4 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
+                        " · 0 ready to send")
+    assert "*Sent and outcomes* · Yesterday, Mon 26 Oct (UK)" in lines
     assert "  Sent: 8 (step 1 5, step 2 3)" in lines  # Sunday's send is not yesterday's
     assert "  Replies: 4 (not classified 1, objection 1, out_of_office 1, positive 1)" in lines
     assert "  Positive or referral: 1 · Acme Creative (positive, hannah@meetspill.org)" in lines
@@ -104,7 +106,7 @@ def test_dry_run_posts_to_the_dev_channel():
     ctx, t = world(live=False)
     daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith("[dry-run → #us-outbound] Daily post")
+    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith("[dry-run → #us-outbound] *Daily post")
 
 
 def test_daily_post_runs_as_a_job_from_the_cli():

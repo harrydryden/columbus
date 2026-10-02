@@ -1,21 +1,32 @@
 """daily_post, 09:00 UK (SPEC 9, 11 "Daily post"): one message on yesterday's outbound and what waits for Harry.
 
-It covers the last send day (Mondays cover Friday to Sunday, so weekend replies are not lost):
-  * sends by step, replies by class, positive and referral replies, bounces, unsubscribes,
-    demos booked and held (the events table; sync_outcomes, poll_replies and hubspot_readback
-    write it);
-  * objections, negatives and "other" replies, out-of-office replies, and warm accounts:
-    enrolled accounts that visited the US site (SPEC 11);
-  * today's number and what limits it, each sender's capacity, and the credit budgets
-    (limits.py, the same lines `us-outbound status` prints);
-  * the careers and benefits page reader's coverage: its last run, every account read so far,
-    and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`);
-  * what Apollo's organization enrich found: its last run and every account enriched so far,
-    found or not, with funding in the last 180 and 365 days (sources/apollo_enrich.py);
-  * mailbox health: each mailbox's sends, its bounces over its last 100 sends
-    (v_mailbox_health) and its place on the sending ramp (registry/ramp.py);
-  * kill rules that fired, and the holds still in force (learn/kill_rules.py);
-  * the human-in-the-loop items waiting for approval, by kind, and the oldest.
+Harry, 2 Oct 2026: "the number of emails sent, the number of companies and contacts identified, the
+pipeline of companies to send to, the [un]subscribes, the replies, and anything else important to
+surface to make the system better over time". It covers the last send day (Mondays cover Friday to
+Sunday, so weekend replies are not lost), and reads top to bottom:
+  * the headline: sent, replies (positive or referral among them), unsubscribes, companies and
+    contacts found, and accounts ready to send, on one line;
+  * Sent and outcomes: sends by step, replies by class, positive and referral replies, bounces,
+    unsubscribes, demos booked and held (the events table; sync_outcomes, poll_replies and
+    hubspot_readback write it); objections, negatives and "other" replies, out-of-office replies,
+    and warm accounts: enrolled accounts that visited the US site (SPEC 11);
+  * Approvals, Found, Pipeline and To improve (learn/daily_report.py): the Slack send approvals
+    (left out until they exist), the companies and contacts identified in the period, what is
+    ready to send now and what stands behind it, and what the data says to tune, each line only
+    once there is enough data;
+  * Today's number: what limits it, each sender's capacity, and the credit budgets (limits.py,
+    the same lines `us-outbound status` prints);
+  * Sources: the careers and benefits page reader's coverage, its last run, every account read so
+    far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
+    what Apollo's organization enrich found, with funding in the last 180 and 365 days
+    (sources/apollo_enrich.py);
+  * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
+    its place on the sending ramp (registry/ramp.py);
+  * Kill rules and items waiting: rules that fired and the holds still in force
+    (learn/kill_rules.py), and the human-in-the-loop items waiting for approval, by kind, and the oldest.
+Each section has a bold title (Slack mrkdwn) after a blank line, and no table. It is one plain-text
+message, as before, well under Slack's 40,000-character limit on text (about 5,000 in the tests):
+account lists stop at LIST_LIMIT, and the funnel sections are aggregates that name no company or person.
 It posts to the alert channel (the dev channel in dry-run), or to the log with no Slack token
 (ops/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
 """
@@ -30,7 +41,7 @@ from typing import Any
 from us_outbound import budget, limits
 from us_outbound.context import UK, Context
 from us_outbound.enrol import enrol
-from us_outbound.learn import holds, kill_rules
+from us_outbound.learn import daily_report, holds, kill_rules
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
@@ -43,7 +54,7 @@ LISTED_CLASSES = ("objection", "negative", "other")
 LIST_LIMIT = 10  # accounts listed per section
 QUOTE = 120  # characters of reply text quoted
 KIND_LABELS = {"reply_approval": "reply approvals", "hand_check": "hand-checks", "manual_merge": "manual merges",
-               "kill_rule": "kill-rule holds"}
+               "kill_rule": "kill-rule holds", daily_report.KIND: "send approvals"}
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
 
 
@@ -128,8 +139,8 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "unsubscribed": len(by_type.get("unsubscribed", [])), "demos_booked": len(by_type.get("meeting_booked", [])),
         "demos_held": len(by_type.get("demo_held", [])),
     }
-    lines = [f"Daily post, {ctx.now.astimezone(UK):%a %d %b}" + (" (dry-run)" if ctx.dry_run else "")]
-    lines.append(f"{label} (UK):")
+    lines = [f"*Daily post, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else "")]
+    lines += ["", f"*Sent and outcomes* · {label} (UK)"]
     step_text = _counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), "step ")
     lines.append(f"  Sent: {len(sent)}" + (f" ({step_text})" if step_text else ""))
     lines.append(f"  Replies: {len(replies)}" + (f" ({_counts(classes)})" if replies else ""))
@@ -152,21 +163,38 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     if enrolled:
         lines.append("Warm accounts (enrolled, visited the US site): " + ", ".join(sorted(names.get(a, a) for a in enrolled)[:LIST_LIMIT]))
 
-    # Today's number, each sender, the budgets (limits.py).
+    # Today's number is the enrol job's own, from its candidates (limits.py). The Pipeline's ready count
+    # also leaves out the accounts already waiting for a send approval, so none is counted twice.
     today_et = ctx.now_et().date()
     why, pulled = enrol.hand_check(ctx, today_et)
-    ready, _ = enrol.candidates(ctx, pulled)
-    lim = limits.today(ctx, today_et, ready_accounts=len(ready))
-    lines.append(lim.explanation)
+    candidates, _ = enrol.candidates(ctx, pulled)
+    awaiting = daily_report.awaiting_approval(ctx.store)
+    ready = [c for c in candidates if str(c.account.get("account_id")) not in awaiting]
+    lim = limits.today(ctx, today_et, ready_accounts=len(candidates))
+    nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(candidates))
+
+    # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.
+    data = daily_report.Rows.load(ctx)
+    section, more = daily_report.approvals(ctx, start, end)
+    lines += ["", *section] if section else []
+    nums.update(more)
+    for section, more in (daily_report.found(ctx, data, start, end, label),
+                          daily_report.pipeline(ctx, data, ready, awaiting, lim),
+                          daily_report.to_improve(ctx, data)):
+        lines += ["", *section]
+        nums.update(more)
+    lines.insert(1, daily_report.headline(label.split(",")[0], nums))
+
+    # Today's number, each sender, the budgets (limits.py).
+    lines += ["", "*Today's number*", lim.explanation]
     lines += [f"  {line}" for line in lim.detail]
     if why:
         lines.append(f"  Enrollment waits: {why}.")
     lines.append("Credit budgets this month:")
     lines += [f"  {line}" for line in lim.budget_lines]
-    nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
 
     # The careers and benefits page reader's coverage, for Harry's call on enhancing it (2 Oct 2026).
-    lines += pages.post_lines(ctx)
+    lines += ["", "*Sources*", *pages.post_lines(ctx)]
     total = pages.coverage(ctx.store, ctx.settings, ctx.today_uk())
     nums.update(pages_read=total.accounts, pages_benefits_text_share=round(total.share(total.with_text), 3))
 
@@ -176,7 +204,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     nums.update(enriched=enriched.accounts, enriched_with_funding=enriched.with_funding)
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
-    lines.append("Mailboxes:")
+    lines += ["", "*Mailboxes*"]
     last100 = mailbox_last_100(ctx)
     ramps = ramp.ramps(ctx.store, ctx.settings, today_et)
     sent_by = Counter(str(e.get("mailbox") or "").lower() for e in sent)
@@ -193,6 +221,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         lines.append(line)
 
     # Kill rules (SPEC 11: "any kill rule that fired").
+    lines += ["", "*Kill rules and items waiting*"]
     fired = [i for i in ctx.store.select("hitl_items", {"kind": holds.KIND})
              if (t := _ts(i.get("created_at"))) is not None and start <= t < ctx.now]
     in_force = holds.in_force(ctx.store)
