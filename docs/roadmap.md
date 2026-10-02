@@ -58,10 +58,11 @@ verification and contact choice write only the database; enrol, replies and post
 ### Harry, before Monday (the go-live checklist)
 `us-outbound golive` prints PASS or FAIL for each line and exits non-zero until every FAIL is cleared.
 
-1. **Slack.** Create the app from `deploy/slack-app-manifest.yaml`, create #us-outbound and
+1. **Slack.** Create the app, Columbus, from `deploy/slack-app-manifest.yaml` (it includes
+   `reactions:write`, so the bot seeds ✅/❌ on each card), create #us-outbound and
    #us-outbound-dev, invite the bot, and add the bot token to Railway as
    `US_OUTBOUND_SLACK_BOT_TOKEN`. Without it, live runs refuse to start, and reply alerts and
-   approvals have only the `replies` commands.
+   approvals have only the `replies` and `approvals` commands.
 2. **Approvers.** Set `approver_slack_ids` = `U098X453UAG` on the General tab. To let Hannah and Sam
    approve replies to their own mailboxes, add their Slack ids in the Mailboxes `slack_id` column.
 3. **Mailboxes.** `mailbox check --live` promotes warm mailboxes to Active (all four still say
@@ -78,8 +79,10 @@ verification and contact choice write only the database; enrol, replies and post
    Editing a row clears its stamp until `copy qa` runs again.
    **Openers (2 Oct, done):** the Signals tab has every signal's lines by role, and the General tab
    the generic lines (`opener_generic_*`), loaded and synced. Read them there; your edits win.
-6. **Hand-check.** Monday morning, `handcheck show --live`, then `handcheck approve --live`, pulling
-   any account that looks wrong.
+6. **Send approvals (2 Oct).** With `auto_send` = no (the default), every email waits for your ✅ on
+   its card in #us-outbound (`enrol/approvals.py`), so the weekly hand-check is needed only for
+   accounts held with doubtful Apollo facts. With `auto_send` = yes, the hand-check is as before:
+   Monday morning, `handcheck show --live`, then `handcheck approve --live`.
 7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It activates the
    paused campaigns once `campaigns ensure` reports no drift. Enrol runs at 12:00 UK (07:00 ET) on
    weekdays. `us-outbound stop --live` pauses everything again.
@@ -98,6 +101,32 @@ verification and contact choice write only the database; enrol, replies and post
     `us-outbound settings sync`, adds `apollo_enrich_groups` = Technology & Startups (comma-separated industry
     groups; blank enriches none). The job runs on that default until then. It enriches up to about 15 accounts a
     weekday (15% of `apollo_monthly_credits`), each again after 180 days, and the daily post counts what it found.
+
+### Send approvals and the daily report (Harry, 2 Oct)
+- **Every email is approved in Slack** while General `auto_send` = no. The 12:00 enrol run posts a
+  card per contact to #us-outbound instead of adding the lead. Each card shows:
+  - the company, with a link to its domain, plus its tier, score, angle and signal;
+  - the recipient, with an Apollo link, or "email from Clay";
+  - the sender, and email 1's subject and body;
+  - "Email 1 of 4", with the follow-ups in the thread, what the company has had from us before,
+    and the sender's approvals today.
+- **✅** adds the lead within 5 minutes, after re-checking live_sending, pauses, opt-outs, the
+  account and the sender.
+- **❌** offers three choices:
+  - ✏️ edit: a thread reply, re-rendered and checked by the copy rules, then posted for a fresh ✅;
+  - 👤 another contact: the contact is suppressed and the next pick proposes the next-ranked person;
+  - 🚫 drop the company: a `declined_in_slack` exclusion.
+- **Waiting cards** hold their sender's slots and expire after the next send day.
+- **Without Slack**, `approvals list | approve | reject` does the same.
+- **auto_send = yes** adds leads straight away, as before.
+- **The daily post** (09:00) opens with a headline line, then Sent and outcomes, Approvals, Found
+  (companies and contacts identified), Pipeline (ready to send by tier and focus group, waiting
+  for a contact or verification, days of supply, in sequence) and To improve. To improve shows
+  only once there is enough data: where ❌ concentrates, the copy rows most edited, opener vs
+  holdout replies, bounces by email source, angles and copy versions, and data gaps
+  (`learn/daily_report.py`).
+- **Watch:** `poll_approvals` reads two Slack calls per waiting card every 5 minutes. At about 60
+  open cards that nears Slack's rate limits, though the client retries.
 
 ### The pilot (week of 5 Oct)
 - **Volume:** the ramp holds each mailbox to 10 sends a day in its first sending week. Four

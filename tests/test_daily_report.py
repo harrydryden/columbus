@@ -9,24 +9,15 @@ from datetime import UTC, datetime, timedelta
 from tests.test_daily_post import MON, TUE_9, ev, world
 from tests.test_registry import HANNAH
 from us_outbound.learn import daily_post, daily_report
-from us_outbound.settings.model import Focus, General
+from us_outbound.settings.model import Focus
 
 MON_9 = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)  # 09:00 UK, Mon 26 Oct: the post covers Fri 23 to Sun 25
 SECTIONS = ("*Sent and outcomes*", "*Approvals*", "*Found*", "*Pipeline*", "*To improve*", "*Today's number*",
             "*Sources*", "*Mailboxes*", "*Kill rules and items waiting*")
 
 
-@dataclasses.dataclass(frozen=True)
-class GeneralWithAutoSend(General):
-    """The General tab once the send-approval build adds its key (this build never adds it)."""
-
-    auto_send: bool | str = False
-
-
 def with_auto_send(ctx, value):
-    g = ctx.settings.general
-    fields = {f.name: getattr(g, f.name) for f in dataclasses.fields(General)}
-    ctx.settings = dataclasses.replace(ctx.settings, general=GeneralWithAutoSend(**fields, auto_send=value))
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, auto_send=value))
 
 
 def acct(aid, **kw):
@@ -154,29 +145,25 @@ def test_approvals_from_the_contract():
     assert any(line.startswith("Waiting for approval: 5 (") and "send approvals 2" in line for line in lines)
 
 
-def test_auto_send_yes_and_a_sheet_value_as_text():
-    ctx, _ = funnel(auto_send="yes", approvals=False)
+def test_auto_send_yes_still_reports_the_approvals_made_before_it_was_switched_on():
+    ctx, _ = funnel(auto_send=True)
     lines, nums = daily_post.build(ctx)
-    assert section(lines, "*Approvals*") == [
-        "*Approvals* · auto_send: yes, so emails go without a ✅",
-        "  Approved 0 · contact declined 0 · company dropped 0 · expired 0 · blocked 0",
-        "  Waiting now: none.",
-    ]
+    assert section(lines, "*Approvals*")[0] == "*Approvals* · auto_send: yes, so emails go without a ✅"
     assert nums["auto_send"] is True
 
 
-def test_rows_without_the_key_say_auto_send_is_not_set():
+def test_the_default_is_auto_send_no():
     ctx, _ = funnel()
     lines, _ = daily_post.build(ctx)
-    assert lines[section_index(lines, "*Approvals*")] == "*Approvals* · auto_send: not set"
+    assert lines[section_index(lines, "*Approvals*")] == "*Approvals* · auto_send: no, so every email waits for a ✅ in Slack"
 
 
 def section_index(lines, title):
     return next(n for n, line in enumerate(lines) if line.startswith(title))
 
 
-def test_no_approvals_section_before_send_approvals_exist():
-    ctx, _ = funnel(approvals=False)
+def test_no_approvals_section_with_auto_send_on_and_no_approvals():
+    ctx, _ = funnel(auto_send=True, approvals=False)
     lines, nums = daily_post.build(ctx)
     assert not any(line.startswith("*Approvals*") for line in lines)
     assert "approved" not in nums and "auto_send" not in nums

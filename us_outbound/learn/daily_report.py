@@ -227,11 +227,11 @@ def auto_send(settings: Settings) -> bool | None:
 
 
 def approvals(ctx: Context, start: datetime, end: datetime) -> tuple[list[str], dict[str, Any]]:
-    """The Approvals section and its numbers; ([], {}) before send approvals exist."""
+    """The Approvals section and its numbers; ([], {}) with auto_send on and no send approval ever made."""
     items = ctx.store.select("hitl_items", {"kind": KIND})
     events = ctx.store.select("events", {"type": KIND})
     auto = auto_send(ctx.settings)
-    if auto is None and not items and not events:
+    if auto is not False and not items and not events:  # approvals off and none ever made: nothing to say
         return [], {}
     state = ("auto_send: not set" if auto is None else
              "auto_send: yes, so emails go without a ✅" if auto else
