@@ -14,9 +14,10 @@ The Claude cap is monthly too, a UTC month as the Anthropic Console counts it (c
 Unspent credits do not carry over to the next month.
 
 A share for some jobs (share_for_jobs; build, 1 Oct 2026, for the 5 Oct pilot): source_universe
-runs at 03:00 and apollo_signals at 03:30, before pick_contacts at 05:30, so each may spend only
-its share of apollo_monthly_credits, paced by the weekday like the whole budget. Today's room is
-the smaller of what is left of the whole budget today and of the share today.
+runs at 03:00, apollo_signals at 03:30 and apollo_enrich at 04:10 (2 Oct 2026), before pick_contacts
+at 05:30, so each may spend only its share of apollo_monthly_credits (sources/apollo_credits.py),
+paced by the weekday like the whole budget. Today's room is the smaller of what is left of the
+whole budget today and of the share today.
 """
 
 from __future__ import annotations

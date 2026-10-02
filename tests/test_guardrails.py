@@ -104,6 +104,7 @@ READS_OVER_POST = {
         ("organizations.search", "/mixed_companies/search"),
         ("people.search", "/mixed_people/api_search"),
         ("people.bulk_match", "/people/bulk_match"),
+        ("organizations.bulk_enrich", "/organizations/bulk_enrich"),
     },
     "clay": {("function.run", "/run")},  # SPEC 8: only the two US Outbound functions (checked below)
 }
@@ -559,6 +560,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "credit_usage": lambda c, w: c.credit_usage(),
         "search_organizations": lambda c, w: c.search_organizations({"organization_locations[]": ["Illinois, US"]}),
         "enrich_organization": lambda c, w: c.enrich_organization("acmecreative.com"),
+        "bulk_enrich_organizations": lambda c, w: c.bulk_enrich_organizations(["acmecreative.com", "brightfin.com"]),
         "job_postings": lambda c, w: c.job_postings("org-1"),
         "search_people": lambda c, w: c.search_people({"person_titles[]": ["Head of People"]}),
         "bulk_match": lambda c, w: c.bulk_match([{"first_name": "Jane", "last_name": "Doe", "domain": "acmecreative.com"}]),

@@ -10,6 +10,7 @@ from us_outbound.clients.apollo import (
     READ_ENDPOINTS,
     Apollo,
     credits_left,
+    enriched_in,
     normalize_filters,
     organizations_in,
 )
@@ -20,6 +21,7 @@ READ_METHODS = {
     "credit_usage",
     "search_organizations",
     "enrich_organization",
+    "bulk_enrich_organizations",
     "job_postings",
     "search_people",
     "bulk_match",
@@ -37,6 +39,7 @@ def exercise(apollo):
     apollo.credit_usage()
     apollo.search_organizations({"organization_locations[]": ["new york"]})
     apollo.enrich_organization("acme.example")
+    apollo.bulk_enrich_organizations(["acme.example", "beta.example"])
     apollo.job_postings("org1")
     apollo.search_people({"person_titles": ["Head of People"]})
     apollo.bulk_match([{"id": "p1"}])
@@ -119,6 +122,28 @@ def test_search_people_and_enrich():
     assert people.json["person_titles"] == ["Head of People"] and people.json["per_page"] == 25
     assert people.json["organization_ids"] == ["o1"] and people.json["q_organization_domains_list"] == ["acme.example"]
     assert (enrich.method, enrich.url, enrich.params) == ("GET", f"{BASE}/organizations/enrich", {"domain": "acme.example"})
+
+
+def test_bulk_enrich_is_one_paid_call_of_up_to_ten_root_domains():
+    apollo, t, guard = make()
+    t.route("POST", "/organizations/bulk_enrich", body={
+        "organizations": [{"id": "o1", "primary_domain": "acme.example", "estimated_num_employees": 64}, None],
+        "unique_enriched_records": 1, "missing_records": 1})
+    body = apollo.bulk_enrich_organizations(["WWW.Acme.example", "beta.example", "acme.example"])
+    [req] = t.requests
+    assert (req.method, req.url) == ("POST", f"{BASE}/organizations/bulk_enrich")
+    assert req.json == {"domains": ["acme.example", "beta.example"]} and req.idempotent is False  # never resent
+    assert guard.calls[-1].action == "organizations.bulk_enrich" and guard.calls[-1].detail == {"count": 2}
+    assert [(o["organization_id"], o["domain"]) for o in enriched_in(body)] == [("o1", "acme.example")]
+    for bad in ([], [f"c{i}.example" for i in range(11)]):
+        with pytest.raises(ValueError):
+            apollo.bulk_enrich_organizations(bad)
+    assert len(t.requests) == 1
+
+
+def test_enriched_in_reads_a_single_answer_and_an_empty_one():
+    assert [o["organization_id"] for o in enriched_in({"organization": {"id": "o9", "primary_domain": "x.example"}})] == ["o9"]
+    assert enriched_in({}) == enriched_in({"organization": {}}) == enriched_in({"organization": None}) == []
 
 
 def test_bulk_match_chunks_of_ten_and_no_personal_emails():

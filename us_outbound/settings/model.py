@@ -171,6 +171,9 @@ class General:
     clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
     clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
+    # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
+    # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.
+    apollo_enrich_groups: tuple[str, ...] = ("Technology & Startups",)
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0

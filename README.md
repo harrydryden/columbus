@@ -151,5 +151,12 @@ the General key `clay_email_fallback` = yes (default no), `pick_contacts` asks C
 for a person Apollo has no verified email for. `verify_accounts` sends accounts with doubtful
 Apollo facts (no HQ state or size, a count near a size edge) to the weekly hand-check.
 
+Funding from Apollo's organization enrich (Harry, 2 Oct 2026): Apollo's search rows carry no
+funding and no employee count, so `apollo_enrich` (weekdays 04:10, before `verify_accounts`)
+enriches the queue accounts in the General key `apollo_enrich_groups` (default Technology &
+Startups), 1 credit per company found, within 15% of `apollo_monthly_credits`, each again after
+180 days (`sources/apollo_enrich.py`). Its facts fire the funding signals, and its exact employee
+count replaces the searched size band unless an Overrides row or Clay says otherwise.
+
 `sync_outcomes` runs every 15 minutes (SPEC 9: 01:00 daily), so the kill rules, the send forecast
 and same-day opt-outs (SPEC 13) see today's sends, bounces and unsubscribes.

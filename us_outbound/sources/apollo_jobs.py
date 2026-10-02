@@ -49,7 +49,7 @@ from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIER
 
 JOB = "apollo_signals"
 SOURCE = "apollo_jobs"
-SIGNALS_SHARE = 0.25  # of apollo_monthly_credits (source_universe has as much; the rest is for reveals)
+SIGNALS_SHARE = 0.25  # of apollo_monthly_credits (source_universe as much, apollo_enrich 0.15; the 0.35 left for reveals)
 REFRESH_DAYS = 30  # read an account again after this; the hiring signals count facts for 90 days
 SCREEN_BATCH = MAX_PER_PAGE  # accounts per screening search: one page holds them all
 POSTINGS_PER_PAGE = 100  # one request (1 credit) per account; a larger count is taken from pagination

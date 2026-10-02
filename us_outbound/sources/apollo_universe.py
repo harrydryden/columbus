@@ -25,7 +25,9 @@ universe is every company that fits the sheet's Industries, States and size band
      headcount_growth_12m, days_since_funding, funding_stage, funding_amount_usd, founded_year,
      technologies, keywords, apollo_industry and description (Apollo's short description, which
      the opener's optional "what they do" phrase reads; enrol/openers.py). open_roles is not one of
-     them: it belongs to apollo_jobs (docs/pipeline.md, change 4).
+     them: it belongs to apollo_jobs (docs/pipeline.md, change 4). Search rows carry no funding and
+     no employee count (2 Oct 2026), so apollo_enrich (sources/apollo_enrich.py) writes those from
+     Apollo's organization enrich, through org_facts, for the General apollo_enrich_groups.
 
 When to stop. The queue (accounts new, queued or verified, not Excluded or Held) should hold two
 weeks of the weekly target, 2 × weekly_enrol_cap (SPEC 2: "a two-week queue"). The Focus tab's groups
@@ -54,6 +56,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -79,7 +82,7 @@ from us_outbound.sources import apollo_credits as credits
 JOB = "source_universe"
 SOURCE = "apollo_org"
 ACCOUNT_SOURCE = "apollo"
-SOURCING_SHARE = 0.25  # of apollo_monthly_credits; the rest is for apollo_signals, enrichment and email reveals
+SOURCING_SHARE = 0.25  # of apollo_monthly_credits; apollo_signals 0.25, apollo_enrich 0.15, the 0.35 left for email reveals
 QUEUE_WEEKS = 2  # SPEC 2: a two-week queue
 OPEN_STATUSES = ("new", "queued", "verified")  # waiting to be enrolled
 OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
@@ -99,6 +102,9 @@ BACKFILL_BATCH = 100  # accounts per size-band backfill search (one page; Apollo
 QUOTE_LIMIT = 300  # SPEC 6
 DESCRIPTION_LIMIT = 600  # the description fact, for the opener's "what they do" phrase
 APOLLO_ORG_URL = "https://app.apollo.io/#/organizations/{}"
+USD = frozenset({"$", "USD", "US$"})  # funding_events[].currency read as dollars
+AMOUNT = re.compile(r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*([KMB])?", re.I)  # "8M", "$1.5B", "750K", "2,500,000"
+AMOUNT_UNITS = {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
 US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
 # Account columns an Overrides row may set (SPEC 5: an override wins over every source).
 OVERRIDABLE = ("clean_name", "legal_name", "hq_city", "hq_state", "industry", "industry_group", "naics",
@@ -360,16 +366,34 @@ def _date(v: Any) -> date | None:
         return None
 
 
+def funding_usd(event: Mapping[str, Any]) -> int | None:
+    """A funding event's amount in dollars: a number, or text like "8M", "$1.5B" or "750K"; None otherwise.
+
+    PHASE0-CONFIRM: organization enrich gives funding_events[].amount as text ("8M") with a
+    currency ("$"); an amount in another currency is not taken as dollars.
+    """
+    if str(event.get("currency") or "$").strip().upper() not in USD:
+        return None
+    v = event.get("amount")
+    n = _int(v)
+    if n is None and isinstance(v, str):
+        m = AMOUNT.fullmatch(v.strip())
+        if m:
+            n = int(float(m.group(1).replace(",", "")) * AMOUNT_UNITS[m.group(2).upper() if m.group(2) else ""])
+    return n if n and n > 0 else None
+
+
 def org_funding(org: Mapping[str, Any], today: date) -> dict[str, Any]:
     """days_since_funding (as of today), funding_stage and funding_amount_usd of the latest round.
 
+    The amount is the latest round's own (an event on its date), never an earlier round's.
     PHASE0-CONFIRM: latest_funding_round_date, latest_funding_stage and funding_events[].amount.
     """
     events = sorted((e for e in org.get("funding_events") or () if isinstance(e, Mapping) and _date(e.get("date"))),
                     key=lambda e: _date(e.get("date")), reverse=True)
     when = _date(org.get("latest_funding_round_date")) or (_date(events[0].get("date")) if events else None)
     stage = str(org.get("latest_funding_stage") or (events[0].get("type") if events else "") or "").strip()
-    amount = next((_int(e.get("amount")) for e in events if _int(e.get("amount"))), None)
+    amount = next((a for e in events if _date(e.get("date")) == when and (a := funding_usd(e))), None)
     out: dict[str, Any] = {}
     if when is not None and when <= today:
         out["days_since_funding"] = (today - when).days
