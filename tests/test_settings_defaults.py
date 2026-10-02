@@ -133,7 +133,7 @@ def test_a_carrier_eap_is_counted_once(settings):
     for vendor in ("Optum", "Carelon", "Cigna", "Aetna Resources For Living", "TELUS Health", "Health Advocate"):
         assert vendor in eap.terms, vendor
     # The medical carriers count only near words that make them the EAP, so the opener stays true.
-    assert set(eap.context) == {"optum", "cigna", "carelon", "health advocate"}
+    assert set(eap.context) == {"optum", "cigna", "carelon", "health advocate", "magellan", "telus health"}
     assert eap.opener == "I noticed your benefits page lists an employee assistance program."
 
 
@@ -182,10 +182,10 @@ def test_openers_are_one_observed_fact_and_pass_the_copy_rules(settings):
         "Wellbeing app or perk named": "I noticed {evidence} is part of your benefits.",
         "Progressive benefits": "I noticed your benefits include {evidence}.",
         "New People leader": "I saw the team recently added a new People leader.",
-        "First People hire": "I saw you're hiring your first People role.",
+        "First People hire": "I saw you're hiring for a People role.",  # never "first" (copy QA, 2 Oct 2026)
         "People role open": "I saw you're hiring for a People role right now.",
-        "Funding in the last 6 months": "Congratulations on the recent funding round.",
-        "Hiring and growth": "I saw the team has been growing.",
+        "Funding in the last 6 months": "I saw your company recently took on new funding.",  # debt too
+        "Hiring and growth": "I saw you've been hiring lately.",  # open roles alone do not show growth
     }
     for opener in openers.values():
         filled = opener.replace("{evidence}", "parental leave")

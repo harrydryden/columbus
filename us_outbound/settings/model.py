@@ -91,7 +91,7 @@ OPENER_SELF_COLUMN = "opener_self"
 # The tokens each kind of opener line may use. The plain opener column keeps SPEC 5's one placeholder.
 PLAIN_OPENER_TOKENS = ("evidence",)
 OPENER_TOKENS = ("company", "open_roles", "posting_title", "people_title", "funding_stage", "growth", "city",
-                 "evidence", "provider")
+                 "evidence", "provider", "page")
 FOCUS_LINE_TOKENS = ("company", "focus", "city")  # General opener_focus_line
 # Condition fields that make a signal about one person, so its opener_self line can apply.
 PERSON_FIELDS = frozenset({"people_leader_days_in_title"})

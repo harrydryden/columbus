@@ -139,15 +139,21 @@ verification and contact choice write only the database; enrol, replies and post
      alternatives, one per line. The tokens are `{company}`, `{city}`, `{open_roles}` (in words
      through nine), `{posting_title}` (the most senior current posting, cleaned of locations, req
      ids and "(Remote)"), `{people_title}`, `{funding_stage}`, `{growth}` (in words, never a
-     percentage), `{evidence}` and `{provider}`. An unknown token is a sheet error, with a "did you
-     mean". `us-outbound settings load --tab Signals` adds the columns, and the sheet's values win in
-     every column it already has.
-   - 34 lines: Hiring and growth, Funding in the last 6 months, People role open, First People
+     percentage), `{evidence}`, `{provider}` and `{page}` (where the evidence was read). An unknown
+     token is a sheet error, with a "did you mean". `us-outbound settings load --tab Signals` adds the
+     columns, and the sheet's values win in every column it already has.
+   - 39 lines: Hiring and growth, Funding in the last 6 months, People role open, First People
      hire and New People leader, which can fire without Clay, plus the four page-reader signals,
      each for three roles, and a self line. For example: "I saw Brightline has six roles open,
      including a Senior Product Designer.", "Congratulations on the Series A." and "Congratulations
      on the new role at Brightline." The contact is the new leader only when Apollo's person ids
      match (`pick_contacts` now records them); a title is never taken as proof.
+   - Copy QA (2 Oct): 18 of the 38 templates were rewritten. Only founders are congratulated on a
+     round, and there is no "first" People hire and no "already offers" an EAP. The evidence is the
+     object of the sentence, and benefits read plural or mass. Hiring and growth gains a roles-only
+     middle line. In code: "VP, People Operations" reads "VP of People Operations"; "Sr." and "II"
+     go; "Organisational" is caught as British; a posting or term the email-1 rules block is passed
+     over for the next. Magellan and TELUS Health count only near EAP words.
    - The opener is chosen at enrol time, when the contact's role is known. It comes from the signal
      that set the angle. The first line that fills and passes the copy rules wins, then the
      signal's plain opener, then none. Nothing is invented and there is no cost per account. The

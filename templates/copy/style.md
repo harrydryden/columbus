@@ -100,14 +100,22 @@ no opener, so we can measure whether openers help.
 - "I saw", never "I noticed you're struggling". No exclamation marks, no statistic (growth is
   said in words: "grown by about a third"), no "therapy", "therapist", "licensed" or "unlimited".
   No demo, call, meeting or booking words: email 1 asks only for a visit to the site.
-- Speak to the role lightly. A founder can be congratulated; a People leader hears what touches
-  their work; operations hears the fact. Never imply the reader's own team owns something unless the
-  fact says so.
+- Speak to the role lightly. Only a founder is congratulated on a round; a People leader or
+  operations reader hears the fact ("I saw Brightline recently raised a Series A."). A People leader
+  hears what touches their work, and operations hears the fact. Never imply the reader's own team
+  owns something unless the fact says so.
 - Write a promotion and a hire alike ("named a new Head of People", "Congratulations on the new
   role"): Apollo's start date does not say which it was.
+- Never "first" (a first People hire): the facts show only that Apollo knows no People leader. Never
+  "already offers" an EAP: it hints at their current one (facts.md). Never say the team "has been
+  growing" on open roles alone.
+- The evidence is the object, not the subject ("I saw Brightline mentions counseling on its careers
+  page", not "I saw counseling comes up when..."). A benefit reads plural or mass ("wellness
+  stipends", "parental leave").
 - Tokens, in single braces: {company}, {city}, {open_roles}, {posting_title}, {people_title},
-  {funding_stage}, {growth}, {evidence}, {provider}. "a {posting_title}" becomes "an" where the title
-  needs it. The plain opener column takes {evidence} only.
+  {funding_stage}, {growth}, {evidence}, {provider}, {page} ("on its careers page", "on its benefits
+  page" or "in its job postings"). "a {posting_title}" becomes "an" where the title needs it. The
+  plain opener column takes {evidence} only.
 - The optional "what they do" line (General opener_focus_line, off until Harry turns on
   opener_focus) uses {focus}. That is a short lower-case phrase the task model takes from Apollo's
   description, like "payroll software for restaurants".

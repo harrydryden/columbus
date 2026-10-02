@@ -200,13 +200,18 @@ _GENERAL: list[tuple[str, str, str]] = [
 # Openers are one observed fact with no inference about the reader (Appendix A.2).
 
 _APP_CONTEXT = "Headspace: for Work, app, subscription; Calm: app, premium, business, subscription"
-# Optum, Cigna and Carelon are mainly medical carriers, and "health advocate" is an everyday phrase: each
-# counts only near words that make it the EAP, so the EAP opener never claims an EAP the page doesn't list.
+# Optum, Cigna and Carelon are mainly medical carriers, "health advocate" is an everyday phrase, Magellan is an
+# ordinary word and many products' name (and Magellan Health a health plan), and TELUS Health sells virtual care
+# and benefits as well as the EAP: each counts only near words that make it the EAP, so the EAP opener never
+# claims an EAP the page doesn't list (copy QA, 2 Oct 2026). ComPsych, GuidanceResources and Aetna Resources For
+# Living name only an EAP.
 _EAP_CONTEXT = (
     "Optum: EAP, employee assistance, emotional wellbeing, emotional well-being; "
     "Cigna: EAP, employee assistance, life assistance; "
     "Carelon: EAP, employee assistance, behavioral health; "
-    "Health Advocate: EAP, employee assistance, work-life"
+    "Health Advocate: EAP, employee assistance, work-life; "
+    "Magellan: EAP, employee assistance, behavioral health; "
+    "TELUS Health: EAP, employee assistance, life assistance"
 )
 _APPENDIX_A = "Design review Appendix A, 1 Oct 2026"
 
@@ -229,9 +234,9 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "I noticed your benefits page lists an employee assistance program.", "540", "yes",
         f"Kept as the Upgrade the EAP angle trigger, alongside or instead, never disparaging. {_APPENDIX_A}: "
         "+10 to +5, because Spill won 32% of deals where an EAP was in place against 46% with nothing "
-        "(05 §3.6); the carrier EAP names and job posts added. Not in Appendix A: Optum, Cigna, Carelon and "
-        "Health Advocate count only near their context words, so a medical plan through Cigna is not read "
-        "as an EAP and the opener stays true.",
+        "(05 §3.6); the carrier EAP names and job posts added. Not in Appendix A: Optum, Cigna, Carelon, "
+        "Health Advocate, Magellan and TELUS Health count only near their context words, so a medical plan "
+        "through Cigna or a product called Magellan is not read as an EAP and the opener stays true.",
     ),
     (
         "Modern mental-health vendor named", "clay_careers, careers_pages, job_posts",
@@ -279,7 +284,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "First People hire", "apollo_jobs, apollo_people", "open_people_roles >= 1 AND people_leader_count = 0",
-        "", "25", "", "Score", "Growing team", "I saw you're hiring your first People role.", "90", "yes",
+        "", "25", "", "Score", "Growing team", "I saw you're hiring for a People role.", "90", "yes",
         "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it. "
         "A missing people_leader_count never matches, so People role open below fires anyway.",
     ),
@@ -291,7 +296,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "Funding in the last 6 months", "apollo_org, clay_funding", "days_since_funding <= 180",
-        "", "20", "", "Score", "Growing team", "Congratulations on the recent funding round.", "180", "yes",
+        "", "20", "", "Score", "Growing team", "I saw your company recently took on new funding.", "180", "yes",
         f"{_APPENDIX_A}: Recent funding (+20 for 540 days) split so funding decays without code: +20 up to "
         "180 days, +10 from 181 to 365 days (the next row), nothing after. days_since_funding is aged to "
         "today, so a round read months ago still counts its true age.",
@@ -305,7 +310,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "Hiring and growth", "apollo_jobs, apollo_org", "open_roles >= 3 OR headcount_growth_12m >= 0.10",
-        "", "15", "", "Score", "Growing team", "I saw the team has been growing.", "90", "yes",
+        "", "15", "", "Score", "Growing team", "I saw you've been hiring lately.", "90", "yes",
         f"{_APPENDIX_A}: reads apollo_jobs too, which owns open_roles (docs/pipeline.md, one owning source per "
         "fact); it read apollo_org only, so 5 open roles from apollo_jobs scored 0. headcount_growth_12m is "
         "apollo_org's.",
@@ -386,10 +391,11 @@ _OPENERS: dict[str, tuple[str, str, str, str]] = {
         "I saw there's a new {people_title} at {company}.",
         "Congratulations on the new role at {company}.",
     ),
+    # Never "its first": people_leader_count = 0 says only that Apollo knows no People leader (copy QA, 2 Oct).
     "First People hire": (
         "I saw {company} is hiring a {people_title}.",
-        "I saw {company} is hiring its first {people_title}.",
-        "I saw {company} is looking for its first {people_title}.",
+        "I saw {company} is recruiting a {people_title}.",
+        "I saw {company} is looking to hire a {people_title}.",
         "",
     ),
     "People role open": (
@@ -398,31 +404,39 @@ _OPENERS: dict[str, tuple[str, str, str, str]] = {
         "I saw {company} has a {people_title} role open.",
         "",
     ),
+    # Only the founder is congratulated: a People leader or operations reader did not raise the money (copy QA).
     "Funding in the last 6 months": (
-        "Congratulations to everyone at {company} on the {funding_stage}.",
+        "I saw {company} recently raised a {funding_stage}.",
         "Congratulations on the {funding_stage}.",
-        "Congratulations to the {company} team on the {funding_stage}.",
+        "I saw {company} recently closed a {funding_stage}.",
         "",
     ),
+    # The roles-only middle line keeps the count when no posting title can be named (copy QA, 2 Oct 2026).
     "Hiring and growth": (
         "I saw {company} has {open_roles} roles open, including a {posting_title}.\n"
+        "I saw {company} has {open_roles} roles open right now.\n"
         "I saw the team at {company} has {growth} in the last year.",
         "I saw {company} is hiring for {open_roles} roles, including a {posting_title}.\n"
+        "I saw {company} is hiring for {open_roles} roles right now.\n"
         "I saw {company} has {growth} in headcount over the last year.",
         "I saw {company} is recruiting for {open_roles} roles, including a {posting_title}.\n"
+        "I saw {company} is recruiting for {open_roles} roles right now.\n"
         "I saw the {company} team has {growth} over the past year.",
         "",
     ),
-    # The page-reader signals: they fire once the careers and benefits pages are read (roadmap §4 item 3).
+    # The page-reader signals (sources/pages.py). {page} says where the evidence was read; without it,
+    # "when it recruits" is true of a careers page, a benefits page and a job board alike.
     "Mental health support listed": (
-        "I saw {evidence} comes up when {company} talks about working there.",
-        "I saw {company} mentions {evidence} when it talks about working there.",
-        "I saw {evidence} is part of how {company} describes working there.",
+        "I saw {company} mentions {evidence} {page}.\n"
+        "I saw {company} mentions {evidence} when it recruits.",
+        "I saw {company} mentions {evidence} when it recruits.",
+        "I saw {company} talks about {evidence} {page}.\n"
+        "I saw {company} talks about {evidence} when it recruits.",
         "",
     ),
     "EAP named": (
         "I saw {company} offers its team an employee assistance program through {provider}.\n"
-        "I saw {company} already offers its team an employee assistance program.",
+        "I saw {company} offers its team an employee assistance program.",
         "I saw {company} offers an employee assistance program through {provider}.\n"
         "I saw {company} offers an employee assistance program as part of its benefits.",
         "I saw {company} provides an employee assistance program through {provider}.\n"
@@ -435,9 +449,10 @@ _OPENERS: dict[str, tuple[str, str, str, str]] = {
         "I saw {company} includes {evidence} in its benefits.",
         "",
     ),
+    # {evidence} is plural or mass here ("wellness stipends", "parental leave"; openers.BENEFIT_FORMS).
     "Progressive benefits": (
         "I saw {company} lists {evidence} among its benefits.",
-        "I saw {evidence} is one of the benefits at {company}.",
+        "I saw {company} offers {evidence} as part of its benefits.",
         "I saw the benefits at {company} include {evidence}.",
         "",
     ),
