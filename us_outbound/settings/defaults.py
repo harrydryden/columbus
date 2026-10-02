@@ -342,13 +342,13 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "accounts apart and shifted every tier on 1 January. Seasonality is handled by reading in February.",
     ),
     (
-        "Team of 10–49", "apollo_org", "employees >= 10 AND employees <= 49",
+        "Team of 10–49", "apollo_org", 'employees >= 10 AND employees <= 49 OR size_band in ["10-19", "20-49"]',
         "", "15", "", "Score", "", "", "365", "yes",
         f"New ({_APPENDIX_A}): Spill wins 44% of deals at 10-49 staff, 28% at 50-99 and 24% at 100-249 "
-        "(05 §3.1). Matches only once the Apollo source writes employees as an apollo_org fact.",
+        "(05 §3.1). Apollo's search sends no employee count (2 Oct 2026), so the size band searched counts too.",
     ),
     (
-        "Team of 50–99", "apollo_org", "employees >= 50 AND employees <= 99",
+        "Team of 50–99", "apollo_org", 'employees >= 50 AND employees <= 99 OR size_band = "50-99"',
         "", "10", "", "Score", "", "", "365", "yes",
         f"New ({_APPENDIX_A}): see Team of 10–49. 100-249 gets nothing.",
     ),

@@ -260,7 +260,7 @@ def test_the_account_scores_priority_with_the_eap_angle_and_evidence(flow):
     a = flow["scored"]
     # Mental health support 15, EAP named 5, Progressive benefits 5 (mental health days), People leader
     # in place 10, New People leader 30, Hiring and growth 15; the values page no longer scores.
-    assert (a["score"], a["tier"], a["angle"]) == (80, "Priority", "Upgrade the EAP")
+    assert (a["score"], a["tier"], a["angle"]) == (90, "Priority", "Upgrade the EAP")  # + Team of 50–99 (its band)
     assert "capped" not in a["tier_reason"] and "New People leader (+30)" in a["tier_reason"]
     matched = [e["value"]["signal"] for e in flow["world"].store.select("signal_events", {"source": "scoring"})]
     assert "EAP named" in matched and "New People leader" in matched

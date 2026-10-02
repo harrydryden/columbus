@@ -28,7 +28,7 @@ def settings():
 
 def account(**kw) -> dict:
     row = {"account_id": "a1", "domain": "acme.com", "hq_state": "NY", "industry": "Fintech",
-           "industry_group": "Technology & Startups", "size_band": "50-99", "status": "queued"}
+           "industry_group": "Technology & Startups", "size_band": "100-249", "status": "queued"}
     row.update(kw)
     return row
 

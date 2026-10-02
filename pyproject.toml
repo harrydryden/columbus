@@ -27,3 +27,4 @@ packages = ["us_outbound"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["banded: a source_universe test run with the default size-band searches (START_BANDS)"]

@@ -79,7 +79,11 @@ class FakeApollo:
     def search(self, req):
         body = req.json
         self.searches.append(body)
-        if "organization_ids" in body:  # the apollo_jobs screen: the ids with a current posting
+        if "organization_ids" in body and "organization_num_employees_ranges" in body:  # the size-band backfill
+            ids, ranges = set(body["organization_ids"]), body["organization_num_employees_ranges"]
+            found = [{"id": o["id"]} for o in self.orgs
+                     if o["id"] in ids and (o.get("_band") or "").replace("-", ",") in ranges]
+        elif "organization_ids" in body:  # the apollo_jobs screen: the ids with a current posting
             found = [{"id": i} for i in body["organization_ids"] if self.postings.get(i)]
         else:
             found = [o for o in self.orgs if self._found(o, body)]
@@ -93,6 +97,15 @@ class FakeApollo:
         posts = [{"id": f"{org_id}-{n}", "title": t, "url": f"https://jobs.example/{org_id}/{n}"}
                  for n, t in enumerate(self.postings.get(org_id, ()))]
         return {"organization_job_postings": posts, "pagination": {"total_entries": len(posts)}}
+
+
+@pytest.fixture(autouse=True)
+def unbanded_first_page(request, monkeypatch):
+    """Most tests here were written for searches that start without a size filter, a path the job
+    still takes for a search split over 50,000 companies. Since 2 Oct 2026 every search starts by
+    size band (START_BANDS); tests marked `banded` run with that default."""
+    if "banded" not in request.keywords:
+        monkeypatch.setattr(uni, "START_BANDS", ("",))
 
 
 def make(orgs=(), *, settings=None, now=NOW, live=False, store=None, **apollo):
@@ -333,6 +346,45 @@ def test_without_employee_counts_the_size_band_comes_from_a_size_band_search():
     assert got == {"company1.com": (None, "20-49"), "company2.com": (None, "100-249")}
     assert out["created"] == 2 and json.loads(ledger(ctx)[0]["note"])["why"] == "no employee counts"
     assert len(ctx.store.select("signal_events", {"fact": "founded_year"})) == 2  # facts once per company a run
+
+
+@pytest.mark.banded
+def test_every_search_starts_by_size_band_so_no_account_lacks_one():
+    """2 Oct 2026: Apollo's search rows carry no employee count, so a search with no size filter gave
+    accounts no size band. Every search is now one per band, and the band is the filter's."""
+    s = settings_with(states=("NY",))
+    ctx, _, fake = make([org(1, employees=None, _band="20-49"), org(2, employees=None, _band="100-249")], settings=s)
+    out = uni.run(ctx)
+    assert all(len(b["organization_num_employees_ranges"]) == 1 for b in fake.searches)
+    got = {d: (a["employees"], a["size_band"]) for d, a in accounts_by_domain(ctx).items()}
+    assert got == {"company1.com": (None, "20-49"), "company2.com": (None, "100-249")}
+    assert out["created"] == 2 and out["size_bands_backfilled"] == 0
+
+
+def test_a_page_with_no_employee_counts_is_not_taken_unbanded():
+    s = settings_with(states=("NY",))
+    ctx, _, _ = make([org(1, employees=None, _band="20-49")], settings=s)
+    uni.run(ctx)
+    assert all(a["size_band"] for a in ctx.store.select("accounts"))  # only the band searches made accounts
+
+
+@pytest.mark.banded
+def test_accounts_left_with_no_size_band_get_one_from_a_search_by_their_ids():
+    s = settings_with(states=("NY",), weekly_enrol_cap=1)  # the queue is already full: no new searches
+    old = [org(1, employees=None, _band="20-49"), org(2, employees=None, _band="50-99"), org(3, employees=None)]
+    ctx, _, fake = make(old, settings=s)
+    ctx.store.insert("accounts", [
+        {"account_id": f"a{i}", "domain": f"company{i}.com", "apollo_org_id": f"org{i:03d}", "status": "new",
+         "industry": "Fintech", "industry_group": "Technology & Startups", "size_band": None, "employees": None,
+         "first_seen": NOW}
+        for i in (1, 2, 3)])
+    out = uni.run(ctx)
+    bands = {a["account_id"]: a["size_band"] for a in ctx.store.select("accounts")}
+    assert bands == {"a1": "20-49", "a2": "50-99", "a3": None}  # no band search returned company 3
+    assert out["size_bands_backfilled"] == 2 and out["stopped_by"] == "the queue already holds two weeks"
+    backfill = [b for b in fake.searches if "organization_ids" in b]
+    assert len(backfill) == 4 and all(len(b["organization_num_employees_ranges"]) == 1 for b in backfill)
+    assert out["credits"] == 2.0  # a page with results costs 1; the two empty bands cost nothing
 
 
 def test_dry_run_reads_apollo_and_writes_only_the_database():

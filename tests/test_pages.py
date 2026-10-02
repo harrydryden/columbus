@@ -299,7 +299,7 @@ def test_the_opener_quotes_what_the_page_said(world):
     ctx.store.insert("accounts", [account()])
     pages.run(ctx)
     r = score_account(account(), events(ctx), ctx.settings, NOW.date())
-    assert (r.score, r.tier, r.angle) == (20, "Standard", "Progressive employer")  # 15 + 5
+    assert (r.score, r.tier, r.angle) == (35, "Standard", "Progressive employer")  # 15 + 5, + Team of 10–49 (its band)
     assert r.opener == "I noticed your careers page mentions counseling."
 
 

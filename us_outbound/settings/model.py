@@ -45,8 +45,10 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     # technologies, keywords, apollo_industry and description: lists and text from Apollo's organization
     # record (sources/apollo_universe.py); scoring/tiers.py reads keywords and apollo_industry for partners,
     # and the opener's optional "what they do" phrase reads keywords and description (enrol/openers.py).
+    # employees and size_band are also read from the account's own columns when no fact carries them
+    # (scoring/score.py ACCOUNT_FACTS): Apollo's search sends no employee count, only the band searched.
     "apollo_org": frozenset(
-        {"employees", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
+        {"employees", "size_band", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
          "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry",
          "description"}
     ),

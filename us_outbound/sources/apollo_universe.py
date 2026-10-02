@@ -91,6 +91,11 @@ MAX_RESULTS = MAX_PAGE * MAX_PER_PAGE  # Apollo shows at most 50,000 companies p
 NAICS_DIGITS = 5
 NAICS = "naics"  # a search by NAICS codes; otherwise it is a label's keyword search
 MAX_PAGES_PER_RUN = 200  # well inside the 60-minute timeout
+# Apollo's search rows carry no estimated_num_employees (2 Oct 2026, the first live run: none on 432
+# accounts), so a search without a size filter gives accounts no size band at all. Every search is
+# therefore read by size band from the start, and the band comes from the search's own filter.
+START_BANDS: tuple[str, ...] = SIZE_BANDS
+BACKFILL_BATCH = 100  # accounts per size-band backfill search (one page; Apollo's per_page limit)
 QUOTE_LIMIT = 300  # SPEC 6
 DESCRIPTION_LIMIT = 600  # the description fact, for the opener's "what they do" phrase
 APOLLO_ORG_URL = "https://app.apollo.io/#/organizations/{}"
@@ -186,7 +191,8 @@ def plan(settings: Settings, groups: Sequence[str], states: Sequence[str]) -> di
         umbrella = next((i.industry for i in labels if i.industry == group), "")
         searches = [(NAICS, tuple(codes), umbrella)] if codes else []
         searches += [(i.industry, i.apollo_keywords, i.industry) for i in labels if not i.naics_prefixes]
-        out[group] = [Slice(group, st, what, terms, label) for what, terms, label in searches for st in states]
+        out[group] = [Slice(group, st, what, terms, label, band)
+                      for what, terms, label in searches for st in states for band in START_BANDS]
     return out
 
 
@@ -611,6 +617,8 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
     room.spend(spent)
     run.pages += 1
     run.credits += spent
+    if split and split_reason(orgs, total) == "no employee counts":
+        return True  # no size on these rows: the size-band searches that follow take the same companies
     rows: list[dict] = []
     events: list[dict] = []
     partners: dict[str, dict] = {}
@@ -618,6 +626,47 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
         take(ctx, org, sl, run, depth, rows, events, partners)
     _write(ctx, rows, events, partners, run)
     return True
+
+
+def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
+    """Give open accounts with no size band one, from size-band searches filtered to their Apollo ids.
+
+    Accounts made before START_BANDS (the 2 Oct 2026 run) came from searches with no size filter and
+    Apollo sent no employee count, so they have no band and verify_accounts cannot place them. Per
+    BACKFILL_BATCH accounts it runs one search per band, filtered to their organization ids; a
+    company a band's search returns is in that band. A page with results costs 1 credit, so about 4
+    per 100 accounts. Accounts no band search returns keep no band and are tried next run.
+    PHASE0-CONFIRM: organization_ids with organization_num_employees_ranges on mixed_companies/search
+    (apollo_jobs.screen pairs organization_ids with another filter the same way).
+    """
+    todo = [a for a in ctx.store.select("accounts", {"status": list(OPEN_STATUSES)})
+            if not a.get("size_band") and a.get("apollo_org_id") and a.get("employees") is None]
+    banded = 0
+    for i in range(0, len(todo), BACKFILL_BATCH):
+        batch = {str(a["apollo_org_id"]): a for a in todo[i : i + BACKFILL_BATCH]}
+        for band in SIZE_BANDS:
+            if not batch or not room.allows():
+                return banded
+            filters = {"organization_ids": list(batch), "organization_num_employees_ranges": [EMPLOYEE_RANGES[band]]}
+            try:
+                body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
+            except ApiError as exc:
+                if exc.status in (401, 403):
+                    raise
+                run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
+                return banded
+            found = [str(o.get("organization_id") or o.get("id") or "") for o in organizations_in(body)]
+            rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
+            spent = 1.0 if found else 0.0
+            credits.record(ctx, JOB, spent, note=json.dumps({"backfill": band, "asked": len(batch) + len(rows),
+                                                              "banded": len(rows)}))
+            room.spend(spent)
+            run.pages += 1
+            run.credits += spent
+            if rows:
+                ctx.store.upsert("accounts", rows)  # partial rows: only size_band changes
+                banded += len(rows)
+    return banded
 
 
 def split_reason(orgs: Sequence[Mapping[str, Any]], total: int | None) -> str:
@@ -651,10 +700,6 @@ def run(ctx: Context) -> dict:
     depth = queue_depth(ctx)
     todo = pools(s, groups, target)
     summary.update(target=target, queue_before=dict(depth))
-    if all(_depth(depth, g) >= t for g, t in todo):
-        summary.update(status="ok", stopped_by="the queue already holds two weeks", pages=0, credits=0.0, created=0)
-        log("source_universe_done", run_id=ctx.run_id, **summary)
-        return summary
     floor = credits.floor_reason(ctx)
     if floor:
         summary.update(skipped=True, reason=floor)
@@ -662,9 +707,16 @@ def run(ctx: Context) -> dict:
         return summary
 
     room = credits.room(ctx, JOB, SOURCING_SHARE)
+    r = _Run(states=frozenset(states))
+    # Before the queue check: accounts already queued with no size band are the ones it fills.
+    summary["size_bands_backfilled"] = backfill_bands(ctx, r, room)
+    if all(_depth(depth, g) >= t for g, t in todo):
+        summary.update(status="ok", stopped_by="the queue already holds two weeks", pages=r.pages,
+                       credits=r.credits, created=0, errors=r.errors[:20])
+        log("source_universe_done", run_id=ctx.run_id, **summary)
+        return summary
     progress = cursors(ctx)
     searches = plan(s, groups, states)
-    r = _Run(states=frozenset(states))
     halt, short = "", []
     for pool, pool_target in todo:
         lane = _lane((sl for g in pool for sl in searches.get(g, ())), progress)
