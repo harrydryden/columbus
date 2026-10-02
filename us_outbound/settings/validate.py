@@ -23,6 +23,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from us_outbound.clean.people import title_key
+from us_outbound.enrol.copy_rules import money_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
@@ -33,6 +34,9 @@ from us_outbound.settings.model import (
     EMAIL_FORMATS,
     FOCUS_LINE_TOKENS,
     GENERAL_COPY,
+    GENERIC_LINE_TOKENS,
+    GENERIC_OPENER_KEY,
+    GENERIC_OPENER_KEYS,
     MAILBOX_STATUSES,
     OPENER_COLUMNS,
     OPENER_SELF_COLUMN,
@@ -41,6 +45,7 @@ from us_outbound.settings.model import (
     PERSON_FIELDS,
     PLAIN_OPENER_TOKENS,
     QA_VERDICTS,
+    RETIRED_OPENER_TOKENS,
     ROLE_LINE_COLUMNS,
     ROLE_ORDER_COLUMNS,
     OPTIONAL_TABS,
@@ -478,6 +483,22 @@ def _blank_value(hint: Any) -> Any:
     return None
 
 
+_GENERIC_KEYS = frozenset({GENERIC_OPENER_KEY, *GENERIC_OPENER_KEYS.values()})
+
+
+def _line_problems(value: str, tokens: Iterable[str]) -> list[str]:
+    """A General opener line (opener_focus_line, the generic lines): its tokens, one line, no funding or money.
+
+    Refusing money here is safe: the generic lines are new and the focus line has none, so the General tab in
+    force stays valid. The Signals tab's lines may still hold the old funding lines, so `copy check` and the
+    render-time check read those instead (copy_rules.money_violations), and a refusal never empties settings.
+    """
+    problems = opener_token_problems(value, tokens)
+    if "\n" in value:
+        problems.append("is one line")
+    return problems + money_violations(value)
+
+
 def _check_general_value(key: str, value: Any) -> None:
     hint = _GENERAL_TYPES[key]
     if hint in (int, float) and value < 0:
@@ -489,11 +510,13 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "opener_holdout_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")
     if key == "opener_focus_line" and value:
-        problems = opener_token_problems(value, FOCUS_LINE_TOKENS)
-        if "\n" in value:
-            problems.append("is one line")
+        problems = _line_problems(value, FOCUS_LINE_TOKENS)
         if not problems and "{focus}" not in value.replace(" ", ""):
             problems.append("must use {focus}, the phrase it exists for")
+        if problems:
+            raise ValueError("; ".join(problems))
+    if key in _GENERIC_KEYS and value:
+        problems = _line_problems(value, GENERIC_LINE_TOKENS)
         if problems:
             raise ValueError("; ".join(problems))
     if key == "escalation_hours" and value < 1:
@@ -580,14 +603,17 @@ def _general(rows: list[_Row]) -> General:
 # -- the other tabs -----------------------------------------------------------------
 
 
-def opener_token_problems(text: str, allowed: Iterable[str]) -> list[str]:
-    """What is wrong with the tokens of an opener line: an unknown {token} (with a "did you mean"), or {{braces}}."""
+def opener_token_problems(text: str, allowed: Iterable[str], retired: Iterable[str] = ()) -> list[str]:
+    """What is wrong with the tokens of an opener line: an unknown {token} (with a "did you mean"), or {{braces}}.
+
+    retired: tokens a line may still have without failing the tab (RETIRED_OPENER_TOKENS); they never fill.
+    """
     allowed = tuple(allowed)
     listed = ", ".join(f"{{{t}}}" for t in allowed)
     out: list[str] = []
     for name in _SINGLE_BRACE.findall(text):
         token = name.strip()
-        if token not in allowed:
+        if token not in allowed and token not in retired:
             close = difflib.get_close_matches(token, list(allowed), n=1, cutoff=0.6)
             hint = f" (did you mean {{{close[0]}}}?)" if close else ""
             out.append(f"unknown token {{{name}}}{hint}; this column can use {listed}")
@@ -599,7 +625,8 @@ def opener_token_problems(text: str, allowed: Iterable[str]) -> list[str]:
 def _check_opener(r: _Row, col: str) -> str:
     """An opener cell: one line, or (role columns) alternatives one per line; every token one the column allows."""
     opener = r.text(col)
-    for problem in opener_token_problems(opener, OPENER_COLUMN_TOKENS[col]):
+    retired = RETIRED_OPENER_TOKENS if col != "opener" else ()  # a sheet with the old funding lines still loads
+    for problem in opener_token_problems(opener, OPENER_COLUMN_TOKENS[col], retired):
         r.fail(col, problem)
     if col == "opener" and "\n" in opener:
         r.fail(col, "the plain opener is one line; put alternatives in the opener_people, opener_founder and opener_ops columns")

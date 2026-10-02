@@ -643,8 +643,9 @@ def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, r
 
 
 def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: Any) -> Any:
-    """copy preview: the sample prospect (with --opener, a real Signals-tab line filled with sample facts),
-    or with --account a stored account, its contact and the opener enrol would give it (no model call)."""
+    """copy preview: the sample prospect (with --opener, a real Signals-tab line filled with sample facts, or
+    with --generic the General tab's generic line), or with --account a stored account, its contact and the
+    opener enrol would give it (no model call)."""
     from us_outbound.enrol import enrol, openers
     from us_outbound.settings.model import ROLE_LINE_COLUMNS
 
@@ -655,8 +656,11 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
         role = args.role or rows[0].role or next(iter(ROLE_LINE_COLUMNS))
         text, note = ("", "")
         if args.opener:
+            if args.generic and (args.signal or args.leader):
+                raise Refused("--generic shows the line for an account with no signal line; leave out --signal and --leader")
             try:
-                text, note = copy_desk.sample_opener(settings, role, args.signal or "", leader=args.leader)
+                text, note = copy_desk.sample_opener(settings, role, args.signal or "", leader=args.leader,
+                                                     generic=args.generic)
             except ValueError as exc:
                 raise Refused(str(exc)) from None
             note = f"{text or 'none'} ({note})"
@@ -713,10 +717,10 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
         print(f"{len(checks)} rows checked, {len(bad)} with problems. By status: "
               + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items()))
               + f". QA passed in the current wording: {qa_ok}. Sendable (approved and QA passed): {sendable}.")
-        lines = copy_desk.check_openers(settings)  # the Signals tab's opener lines (enrol/openers.py)
+        lines = copy_desk.check_openers(settings)  # the Signals tab's opener lines and General's (enrol/openers.py)
         for p in lines.problems:
-            print(f"Signals opener: {p}")
-        print(f"Signals opener lines: {len(lines.problems)} problems.")
+            print(f"Opener: {p}")
+        print(f"Opener lines (Signals tab, and General's generic and focus lines): {len(lines.problems)} problems.")
         return 1 if bad or not lines.ok else 0
     if args.action == "preview":
         p = _preview(ctx, settings, args, copy_desk)
@@ -1087,6 +1091,9 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--signal", help="preview --opener: the Signals row whose line to show (default: the first with one)")
     co.add_argument("--leader", action="store_true",
                     help="preview --opener: the line for a contact who is the new People leader (opener_self)")
+    co.add_argument("--generic", action="store_true",
+                    help="preview --opener: the generic line, for an account with no signal line (General "
+                         "opener_generic_*; Control accounts too)")
     co.add_argument("--account", metavar="DOMAIN",
                     help="preview: a stored account, its contact and the opener enrol would give it")
     co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")

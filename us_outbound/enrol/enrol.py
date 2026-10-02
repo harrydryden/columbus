@@ -396,10 +396,11 @@ def account_opener(
 
     The opener is worked out at enrol time, when the contact and their copy role are known: the
     angle setter's line for the role, filled with the account's stored facts, else the signal's
-    plain opener, else none; a deterministic share of accounts is held out with none. The General
-    angle (Control among it) has no signal line: with opener_focus on it gets the "what they do"
-    line, else none, and email 1's opener line disappears. check(text) is the copy-rule check each
-    filled line must pass.
+    plain opener; a deterministic share of accounts is held out with none. The General angle
+    (Control among it) has no signal line: with opener_focus on it gets the "what they do" line.
+    An account with no line by then gets the generic line for the contact's role, then the plain
+    generic line (General opener_generic_*; Harry, 2 Oct 2026), else none, and email 1's opener
+    line disappears. check(text) is the copy-rule check each filled line must pass.
     """
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
     op = openers.for_account(ctx, account, contact, events, check=check)
@@ -473,7 +474,7 @@ class Prepared:
     opener_note: str = ""  # the opener lines passed over, and why (enrol/openers.py)
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
     opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
-    opener_source: str = ""  # the line's signal and column, or "focus"
+    opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
 
 
 @dataclass
@@ -552,7 +553,7 @@ class _Run:
     excluded: list[dict] = field(default_factory=list)
     opener_fallbacks: list[dict] = field(default_factory=list)
     opener_arms: Counter[str] = field(default_factory=Counter)  # opener, holdout, none
-    opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus"
+    opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus", "opener_generic_ops"
     copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 

@@ -17,10 +17,18 @@ opener is chosen here, once the contact and their copy role are known (enrol.pre
        b. otherwise the contact's copy-role line (opener_people, opener_founder, opener_ops), each
           alternative in the cell in turn;
        c. the signal's plain opener, filled with {evidence} as scoring fills it (angle.fill_opener);
-       d. none: email 1 reads well without it (style.md).
+       d. the generic line (step 5).
   4. No firing signal (the General angle), and General opener_focus = yes: opener_focus_line with
      {focus}, a short "what they do" phrase the task model takes from Apollo's keywords and
-     description (focus_phrase). An account whose signal lines all fall through gets none, not this.
+     description (focus_phrase); then the generic line. An account whose signal lines all fall
+     through goes straight to the generic line, not this.
+  5. The generic line (Harry, 2 Oct 2026: "ever more pressure in our work and personal lives"), for an
+     account with no signal line, Control among them: the General key for the contact's copy role
+     (opener_generic_people, opener_generic_founder, opener_generic_ops), then opener_generic; then
+     none, and email 1 reads well without it (style.md). Its source is the key ("opener_generic_ops").
+Signals are context, never the line (Harry, 2 Oct 2026): the default lines of the hiring, People, growth and
+funding signals speak to the pressure the situation tends to bring and to support through it, so they use no
+token but {company} at most; the page-reader signals still say what the page says.
 
 Tokens, each from a stored fact. A token with no fact, or with one that fails its check, is missing,
 and a line with a missing token is skipped; nothing is guessed.
@@ -32,8 +40,6 @@ and a line with a missing token is skipped; nothing is guessed.
                    over, and so is a title email 1 could not carry ("Call Center Agent").
   {people_title}   for a signal about one person, the new People leader's title; otherwise the first
                    People posting (sources/apollo_jobs.py people_titles), cleaned the same way.
-  {funding_stage}  the round: "Series A", "seed round", "pre-seed round" or "angel round". Other kinds
-                   (debt, private equity, "venture") are missing, so the plain line is used.
   {growth}         headcount_growth_12m of at least GROWTH_MIN, rounded into words: "grown by about a
                    third", "nearly doubled". Never a percentage: the copy rules allow no statistic.
   {evidence}       the setter's first term match the copy rules let through, as it reads mid-sentence,
@@ -43,6 +49,10 @@ and a line with a missing token is skipped; nothing is guessed.
   {page}           where that match was read: "on its careers page", "on its benefits page" (the URL
                    says benefits) or "in its job postings".
   {focus}          the "what they do" phrase; opener_focus_line only.
+{funding_stage} is retired (Harry, 2 Oct 2026: funding is a signal, never a line). The funding signals'
+lines speak to what a period of change tends to bring for people, not to the round, and no opener may
+mention funding or money (copy_rules.money_violations, in the check). A sheet line that still has the
+token never fills, and `copy check` names it.
 Facts are read as scoring reads them: from the signal's own sources, within its counts_for_days, so a
 line never quotes a fact the signal no longer counts. "a" before a token becomes "an" before a vowel
 sound ("an HR Generalist"), and "{company}'s" is written "Acme Labs'" after an s.
@@ -69,7 +79,14 @@ from us_outbound.enrol import copy_rules
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring.score import Evidence, Match, fresh_facts, score_account
-from us_outbound.settings.model import OPENER_COLUMNS, OPENER_SELF_COLUMN, Settings, Signal
+from us_outbound.settings.model import (
+    GENERIC_OPENER_KEY,
+    GENERIC_OPENER_KEYS,
+    OPENER_COLUMNS,
+    OPENER_SELF_COLUMN,
+    Settings,
+    Signal,
+)
 
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
 PLAIN_COLUMN = "opener"
@@ -223,7 +240,8 @@ def _seniority(title: str) -> int:
 
 
 def usable_title(raw: Any) -> str | None:
-    """clean_title, and None for a title email 1 could not carry ("Call Center Agent" reads as asking for a call)."""
+    """clean_title, and None for a title email 1 could not carry ("Call Center Agent" reads as asking for a call)
+    or an opener could not ("Capital Markets Associate" mentions money)."""
     title = clean_title(raw)
     return title if title and not copy_rules.opener_violations(title) else None
 
@@ -255,16 +273,6 @@ def growth_words(value: Any) -> str | None:
     if g is None or g < GROWTH_MIN or g > GROWTH_MAX:
         return None
     return next((words for upper, words in GROWTH_WORDS if g < upper), "more than doubled")
-
-
-def funding_phrase(stage: Any) -> str | None:
-    """Apollo's latest_funding_stage as the round's name in a sentence, or None for a kind that does not read as one."""
-    s = " ".join(str(stage or "").replace("_", " ").split()).lower().removesuffix(" round")
-    m = re.fullmatch(r"series ([a-h])", s)
-    if m:
-        return f"Series {m[1].upper()}"
-    return {"seed": "seed round", "pre-seed": "pre-seed round", "pre seed": "pre-seed round",
-            "preseed": "pre-seed round", "angel": "angel round"}.get(s)
 
 
 def _number(v: Any) -> float | None:
@@ -407,8 +415,6 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
         people = next((t for raw in titles if is_people_title(raw, terms) and (t := usable_title(raw))), None)
     if people:
         out["people_title"] = people
-    if stage := funding_phrase(value("funding_stage")):
-        out["funding_stage"] = stage
     if growth := growth_words(value("headcount_growth_12m")):
         out["growth"] = growth
     # The first term match the copy rules let through ("Therapy and counseling covered" gives counseling).
@@ -560,6 +566,36 @@ def signal_opener(account: Mapping[str, Any], contact: Mapping[str, Any], signal
     return Opener("", NONE, "", tuple(notes))
 
 
+def generic_opener(account: Mapping[str, Any], contact: Mapping[str, Any], settings: Settings,
+                   check: Callable[[str], str]) -> Opener:
+    """The generic line (step 5): the General key for the contact's copy role, then opener_generic, else none."""
+    role = copy_role(contact)
+    keys = [GENERIC_OPENER_KEYS[role]] if role else []
+    values = tokens(account, None, None, (), settings, date.min)
+    notes: list[str] = []
+    for key in (*keys, GENERIC_OPENER_KEY):
+        line = str(getattr(settings.general, key) or "").strip()
+        if not line:
+            continue
+        text, missing = fill(line, values)
+        if text is None:
+            notes.append(f"{key}: no {', '.join('{' + t + '}' for t in missing)}")
+        elif problem := check(text):
+            notes.append(f"{key}: {problem}")
+        else:
+            return Opener(text, OPENER, key, tuple(notes))
+    return Opener(notes=tuple(notes))
+
+
+def _or_generic(op: Opener, account: Mapping[str, Any], contact: Mapping[str, Any], settings: Settings,
+                check: Callable[[str], str]) -> Opener:
+    """op when it has a line; otherwise the generic line, with op's notes kept ahead of its own."""
+    if op.text:
+        return op
+    gen = generic_opener(account, contact, settings, check)
+    return replace(gen, notes=(*op.notes, *gen.notes))
+
+
 def focus_opener(account: Mapping[str, Any], phrase: str, settings: Settings, check: Callable[[str], str]) -> Opener:
     """opener_focus_line with the account's "what they do" phrase, or none."""
     line = settings.general.opener_focus_line.strip()
@@ -586,23 +622,26 @@ def setter(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], sett
 def choose(account: Mapping[str, Any], contact: Mapping[str, Any], events: Sequence[Mapping[str, Any]],
            settings: Settings, today: date, *, check: Callable[[str], str] | None = None,
            focus: Callable[[], str] | None = None) -> Opener:
-    """The account's opener for this contact (steps 1 to 4 in the module docstring).
+    """The account's opener for this contact (steps 1 to 5 in the module docstring).
 
     check(text) returns why a filled line breaks the copy rules ("" when it is fine); focus() returns
     the "what they do" phrase, and is called only when the line would use it and the account is
-    not held out, so a held-out account never costs a model call.
+    not held out, so a held-out account never costs a model call. A held-out account gets no line,
+    and records the one it would have had (the generic line costs nothing to work out).
     """
     check = check or (lambda text: "")
     held = in_holdout(account.get("account_id"), settings.general.opener_holdout_share)
     match = setter(account, events, settings, today)
-    if match is not None:  # a firing signal: its lines or none, never the focus line
+    if match is not None:  # a firing signal: its lines, then the generic line, never the focus line
         op = signal_opener(account, contact, match.signal, match, events, settings, today, check)
-        return op.held_out() if held else op
-    if not settings.general.opener_focus or not settings.general.opener_focus_line.strip():
-        return Opener(arm=HOLDOUT if held else NONE)
-    if held:
-        return Opener(arm=HOLDOUT, source=FOCUS_SOURCE_NAME)
-    return focus_opener(account, focus() if focus else "", settings, check)
+    elif settings.general.opener_focus and settings.general.opener_focus_line.strip():
+        if held:  # the phrase would cost a model call, so the line it would have had is not worked out
+            return Opener(arm=HOLDOUT, source=FOCUS_SOURCE_NAME)
+        op = focus_opener(account, focus() if focus else "", settings, check)
+    else:
+        op = Opener()
+    op = _or_generic(op, account, contact, settings, check)
+    return op.held_out() if held else op
 
 
 # -- the "what they do" phrase (General opener_focus) ------------------------------------------------
@@ -775,7 +814,6 @@ SAMPLE_FACTS: dict[str, Any] = {
                        "People Operations Manager"],
     "open_people_roles": 1,
     "headcount_growth_12m": 0.34,
-    "funding_stage": "Series A",
     "people_leader_newest": {"apollo_person_id": SAMPLE_PERSON, "title": "Head of People", "days_in_title": 40},
 }
 
@@ -808,8 +846,14 @@ def sample_opener(signal: Signal, role: str, account: Mapping[str, Any], setting
                          check or (lambda text: ""))
 
 
+SAMPLE_FOCUS = "payroll software for restaurants"  # the sample "what they do" phrase
+GENERAL_TAB = "General"  # sample_lines' name for the General tab's lines
+
+
 def sample_lines(settings: Settings) -> list[tuple[str, str, str, str | None]]:
-    """(signal, column, line, filled with SAMPLE_FACTS or None) for every opener line on the Signals tab."""
+    """(signal, column, line, filled with SAMPLE_FACTS or None) for every opener line: on the Signals tab the plain
+    opener, each copy role's lines and opener_self; on the General tab (signal GENERAL_TAB, column its key) the
+    generic lines and opener_focus_line, the focus line filled with SAMPLE_FOCUS."""
     from us_outbound.enrol.copy_desk import SAMPLE_ACCOUNT
 
     now = datetime.now(UTC)
@@ -818,9 +862,14 @@ def sample_lines(settings: Settings) -> list[tuple[str, str, str, str | None]]:
         match = sample_match(s)
         events = sample_events(s, "sample", now)
         values = tokens(SAMPLE_ACCOUNT, s, match, events, settings, now.date())
-        cells = [(OPENER_COLUMNS[r], s.role_openers.get(r, "")) for r in OPENER_COLUMNS]
+        cells = [(PLAIN_COLUMN, s.opener)]
+        cells += [(OPENER_COLUMNS[r], s.role_openers.get(r, "")) for r in OPENER_COLUMNS]
         cells.append((OPENER_SELF_COLUMN, s.opener_self))
         for col, cell in cells:
             for line in lines_of(cell):
                 out.append((s.signal, col, line, fill(line, values)[0]))
+    values = {**tokens(SAMPLE_ACCOUNT, None, None, (), settings, now.date()), "focus": SAMPLE_FOCUS}
+    for key in (*GENERIC_OPENER_KEYS.values(), GENERIC_OPENER_KEY, "opener_focus_line"):
+        if line := str(getattr(settings.general, key) or "").strip():
+            out.append((GENERAL_TAB, key, line, fill(line, values)[0]))
     return out

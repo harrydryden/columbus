@@ -169,9 +169,10 @@ def pick_opener(
     SPEC 9 step 5 fills the opener with evidence from the prospect's own pages, which can
     carry words the copy may not use ("unlimited PTO", "100% employer-paid", "therapy"), and
     the tokenized openers (enrol/openers.py) with posting titles ("Call Center Agent" would read
-    as an ask for a call). Email 1 is written to read well without it (style.md), so its line
-    simply goes. enrol/openers.py tries each filled line with this check and takes the first that
-    passes; the enrol job checks the chosen one again as it renders.
+    as an ask for a call). An opener never mentions funding or money either (copy_rules.money_violations;
+    Harry, 2 Oct 2026: funding is a signal, never a line). Email 1 is written to read well without it
+    (style.md), so its line simply goes. enrol/openers.py tries each filled line with this check and
+    takes the first that passes; the enrol job checks the chosen one again as it renders.
     """
     opener = (opener or "").strip()
     if not opener:

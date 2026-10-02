@@ -33,7 +33,9 @@ content_violations() is the word-level part on its own: render.py uses it to tes
 opener before choosing it, and reply drafts (SPEC 11) can use it too. opener_violations() adds
 the email-1 rules that read every word of the body (spam phrases, a demo, call or meeting ask, bare
 addresses), so an opener filled with a posting like "Call Center Agent" is dropped rather than
-blocking the email.
+blocking the email, and the rule that is the opener's alone: it never mentions funding or money
+(money_violations; Harry, 2 Oct 2026: funding is a signal, never a line). Email bodies are not
+held to that one: nonprofit copy says "funding cycles" and fintech copy "a long fundraise".
 """
 
 from __future__ import annotations
@@ -429,13 +431,45 @@ def email_violations(
 
 def opener_violations(text: str, *, exempt: Iterable[str] = ()) -> list[str]:
     """The email-1 rules that read every word of the body, on an opener alone: spam phrases, an ask for a
-    demo, call or meeting, and bare addresses (render.pick_opener; Harry, 2 Oct 2026).
+    demo, call or meeting, and bare addresses (render.pick_opener; Harry, 2 Oct 2026); and the opener's
+    own rule, no funding or money (money_violations).
 
-    A filled opener that breaks one of these would block email 1 at render time, so it is dropped first.
+    A filled opener that breaks one of the email-1 rules would block email 1 at render time, so it is
+    dropped first; one that mentions funding or money is dropped the same way.
     """
     masked = _mask(text, exempt)
     out = [f'says "{_quoted(m)}", which reads as spam' for rx in SPAM_PHRASES for m in rx.finditer(masked)]
     out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
             for m in _STEP1_ASK.finditer(masked)]
     out += [f'has the bare address "{bare}"' for bare in links(masked)]
+    out += money_violations(masked)
     return out
+
+
+# -- openers never mention funding or money (Harry, 2 Oct 2026) -----------------------------------
+# Funding is a signal, never a line. A round tells us a team is going through a period of change, and
+# the opener speaks to what that change tends to bring for people, never to the money: a line about
+# the round reads as money grabbing (style.md, "Openers"). Openers only, as written on the sheet
+# (copy_desk.check_openers) and as filled (render.pick_opener); never email bodies.
+MONEY_ADVICE = "an opener never mentions funding or money: funding is a signal, never a line (style.md)"
+MONEY: tuple[re.Pattern[str], ...] = (
+    _rx(r"\{\s*funding\w*\s*\}"),  # a funding token as written on the sheet: {funding_stage}
+    _rx(
+        r"\b(?:fund(?:s|ed|ing|er|ers)?|fundrais(?:e|es|ed|er|ers|ing)|rais(?:e|es|ed|ing)"
+        r"|(?:pre-)?seed(?:\s+rounds?|[- ]stage)|pre-seed|rounds?|investors?|investments?|capital|valuations?"
+        r"|backed|backing|backers?|ipos?|vcs?|financ(?:ed|ing)|money|cash|dollars?)(?![a-z_])"
+    ),  # "seed" alone is a crop in agritech, and "finance" a team: neither is a round
+    re.compile(r"\b[Ss]eries\s+[A-Z](?![A-Za-z])"),  # Series A; "a series of changes" is not a round
+    re.compile(r"\$\s?\d[\d,.]*(?:\s?(?:[KMB]|million|billion)(?![A-Za-z]))?", re.IGNORECASE),
+)
+
+
+def money_violations(text: str, *, exempt: Iterable[str] = ()) -> list[str]:
+    """Every mention of funding or money in an opener line ("raised", "Series A", "seed round", "investors",
+    "{funding_stage}"), as written or as filled. exempt: proper nouns that are not our wording, like a
+    company called Summit Capital."""
+    masked = _mask(text, exempt)
+    found: list[re.Match[str]] = []
+    for rx in MONEY:  # one mention once: "{funding_stage}" is not also "funding"
+        found += [m for m in rx.finditer(masked) if not any(m.start() < f.end() and f.start() < m.end() for f in found)]
+    return [f'says "{_quoted(m)}"; {MONEY_ADVICE}' for m in sorted(found, key=lambda m: m.start())]

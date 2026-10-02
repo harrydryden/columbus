@@ -15,7 +15,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from us_outbound.settings.model import TABS
+from us_outbound.settings.model import TABS, General
 
 COLUMNS: dict[str, list[str]] = {
     "General": ["key", "value", "note"],
@@ -180,6 +180,21 @@ _GENERAL: list[tuple[str, str, str]] = [
         "can compare opener against none (contacts.opener_arm). Added by the build (Harry, 2 Oct 2026).",
     ),
     (
+        "opener_generic",
+        General.opener_generic,
+        "The generic opener (Harry, 2 Oct 2026: ever more pressure in our work and personal lives) for an account "
+        "with no signal line: the General angle, Control among it, or a signal whose lines all fall through. The "
+        "contact's role line below comes first; this one is for a contact with no copy role, or when that line "
+        "is blank. After opener_focus_line when opener_focus is yes. Tokens: {company}, {city}. Blank: none. "
+        "Added by the build.",
+    ),
+    ("opener_generic_people", General.opener_generic_people,
+     "The generic opener for a People leader; it leads into email 1's industry hook. Added by the build."),
+    ("opener_generic_founder", General.opener_generic_founder,
+     "The generic opener for a founder or executive. Added by the build."),
+    ("opener_generic_ops", General.opener_generic_ops,
+     "The generic opener for operations. Added by the build."),
+    (
         "opener_focus",
         "no",
         "yes: an account with no signal line gets opener_focus_line, with a short \"what they do\" phrase the "
@@ -197,7 +212,8 @@ _GENERAL: list[tuple[str, str, str]] = [
 # The weights are the design review's Appendix A.2 (docs/gtm-review/README.md, 1 Oct 2026), which
 # reworked SPEC 5's defaults against Spill's own HubSpot win data (docs/gtm-review/05-spill-evidence.md).
 # Each row's note says what changed and why; where these rows differ from Appendix A, the note says so.
-# Openers are one observed fact with no inference about the reader (Appendix A.2).
+# Openers: the page-reader signals say what the page says (Appendix A.2); the hiring, People, growth and funding
+# signals are context, never the line (Harry, 2 Oct 2026; _CONTEXT_NOTE, below).
 
 _APP_CONTEXT = "Headspace: for Work, app, subscription; Calm: app, premium, business, subscription"
 # Optum, Cigna and Carelon are mainly medical carriers, "health advocate" is an everyday phrase, Magellan is an
@@ -214,6 +230,50 @@ _EAP_CONTEXT = (
     "TELUS Health: EAP, employee assistance, life assistance"
 )
 _APPENDIX_A = "Design review Appendix A, 1 Oct 2026"
+
+# Signals are context, never the line (Harry, 2 Oct 2026: "these are just signals"; funding is a signal, never a
+# line). The openers of the hiring, People, growth and funding signals never name what was observed: no hiring,
+# recruiting, growth, growing, scaling, headcount, funding or money, no job or posting titles, no counts. Each
+# speaks to the pressure that situation tends to bring for people, then to support through it, hedged ("often",
+# "tends to") so it is true whether or not the observation was. None uses {company}: "at Brightline" would claim
+# to know their team. copy_rules.money_violations keeps funding and money out of every opener line.
+# (opener, opener_people, opener_founder, opener_ops, opener_self)
+_CONTEXT_NOTE = "Openers: signals are context, never the line (Harry, 2 Oct 2026)."
+# A new People leader settling in: the first months, setting priorities. opener_self is warm without saying
+# "congratulations on the new role", which would tell them we watched their start date.
+_NEW_LEADER_LINES = (
+    "Setting a team's priorities takes time, and support for people is often one of the first things to get right.",
+    "Setting new priorities tends to fill the first months, and support helps most when it's easy to roll out.",
+    "Getting support for a team right usually takes months, and it helps to have something people can use right away.",
+    "A new set of people priorities usually brings new processes too, and it helps when support is the simple part.",
+    "Shaping how a team is supported is often a lot to carry, and it helps when one piece is simple.",
+)
+# A first or open People role: whoever carries people issues is carrying too much. Never "one person" for the
+# People leader: Startups' hook already says "the people function is often one person".
+_PEOPLE_ROLE_LINES = (
+    "People issues tend to land on a few busy desks, and support helps most when it shares the load.",
+    "People issues tend to pile up on whoever handles them, and it helps when support doesn't rest on one desk.",
+    "People issues tend to find the busiest desk, and it helps when support doesn't depend on one person.",
+    "People questions tend to pile up alongside everything else, and support helps most when it takes no extra admin.",
+    "",
+)
+# A lot of new people: onboarding, managers stretched, culture under strain.
+_HIRING_LINES = (
+    "When many people join at once, managers and culture tend to feel the stretch, and support helps most early.",
+    "When many people join at once, managers are often stretched thin, and support matters most in those first months.",
+    "When many people join at once, culture tends to come under strain, and support helps people settle in.",
+    "When many people join at once, onboarding often fills the week, and it helps when support is easy to reach.",
+    "",
+)
+# A round: a period of change, more on everyone's plate, priorities and routines shifting. The same lines at any
+# age of round, since they name no round and no time.
+_FUNDING_LINES = (
+    "Times of change tend to put more on everyone's plate, and that's when support matters most.",
+    "The pressure of change often lands on managers first, and support helps most when it comes early.",
+    "Change tends to test a culture as much as a plan, and that's when taking care of people matters most.",
+    "Change often brings new routines and more to coordinate, and support works best when it's already in place.",
+    "",
+)
 
 # signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, opener, counts_for_days,
 # active, note: the Signals tab's columns in order, but for the opener lines by role (_OPENERS, below).
@@ -277,43 +337,45 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "New People leader", "apollo_people", "people_leader_days_in_title <= 90",
-        "", "30", "", "Score", "Progressive employer", "I saw the team recently added a new People leader.", "90", "yes",
-        f"SPEC 5 weight, kept by {_APPENDIX_A}, which adds the opener. The opener is right only when the email "
-        "goes to anyone at the account (1 Oct 2026: worded so it reads right to the founder or to the new "
-        "People leader, since pick_contacts ranks by seniority, not by the signal).",
+        "", "30", "", "Score", "Progressive employer", _NEW_LEADER_LINES[0], "90", "yes",
+        f"SPEC 5 weight, kept by {_APPENDIX_A}, which adds the opener. The opener reads right to anyone at the "
+        "account, since pick_contacts ranks by seniority, not by the signal; opener_self is for the new People "
+        f"leader themself. {_CONTEXT_NOTE}",
     ),
     (
         "First People hire", "apollo_jobs, apollo_people", "open_people_roles >= 1 AND people_leader_count = 0",
-        "", "25", "", "Score", "Growing team", "I saw you're hiring for a People role.", "90", "yes",
+        "", "25", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "90", "yes",
         "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it. "
-        "A missing people_leader_count never matches, so People role open below fires anyway.",
+        f"A missing people_leader_count never matches, so People role open below fires anyway. {_CONTEXT_NOTE}",
     ),
     (
         "People role open", "apollo_jobs", "open_people_roles >= 1",
-        "", "15", "", "Score", "Growing team", "I saw you're hiring for a People role right now.", "60", "yes",
+        "", "15", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "60", "yes",
         f"New ({_APPENDIX_A}): a People role posted in the last 60 days, whether or not a People leader is "
-        "already known.",
+        f"already known. {_CONTEXT_NOTE}",
     ),
     (
         "Funding in the last 6 months", "apollo_org, clay_funding", "days_since_funding <= 180",
-        "", "20", "", "Score", "Growing team", "I saw your company recently took on new funding.", "180", "yes",
+        "", "20", "", "Score", "Growing team", _FUNDING_LINES[0], "180", "yes",
         f"{_APPENDIX_A}: Recent funding (+20 for 540 days) split so funding decays without code: +20 up to "
         "180 days, +10 from 181 to 365 days (the next row), nothing after. days_since_funding is aged to "
-        "today, so a round read months ago still counts its true age.",
+        f"today, so a round read months ago still counts its true age. {_CONTEXT_NOTE} Funding is a signal, "
+        "never a line: a line about the round reads as money grabbing.",
     ),
     (
         "Funding 6–12 months ago", "apollo_org, clay_funding",
         "days_since_funding > 180 AND days_since_funding <= 365",
-        "", "10", "", "Score", "Growing team", "", "365", "yes",
-        f"{_APPENDIX_A}: the second half of the funding split. No opener: a round six months old or more is "
-        "not \"recent\" (Appendix A gives the opener for the funding signal; it is on the 6-month row only).",
+        "", "10", "", "Score", "Growing team", _FUNDING_LINES[0], "365", "yes",
+        f"{_APPENDIX_A}: the second half of the funding split. It had no opener while the line said the round "
+        "was recent; the lines now name no round and no time, and the change they speak to usually runs well "
+        f"past six months, so it has the 6-month row's lines (2 Oct 2026). {_CONTEXT_NOTE}",
     ),
     (
         "Hiring and growth", "apollo_jobs, apollo_org", "open_roles >= 3 OR headcount_growth_12m >= 0.10",
-        "", "15", "", "Score", "Growing team", "I saw you've been hiring lately.", "90", "yes",
+        "", "15", "", "Score", "Growing team", _HIRING_LINES[0], "90", "yes",
         f"{_APPENDIX_A}: reads apollo_jobs too, which owns open_roles (docs/pipeline.md, one owning source per "
         "fact); it read apollo_org only, so 5 open roles from apollo_jobs scored 0. headcount_growth_12m is "
-        "apollo_org's.",
+        f"apollo_org's. {_CONTEXT_NOTE}",
     ),
     (
         "Visited the US site", "site_visits", "us_visits_30d >= 1",
@@ -381,49 +443,18 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
 # Tokenized openers (docs/roadmap.md §4 item 2; Harry, 2 Oct 2026): one line per copy role, filled at enrol
 # time from the account's stored facts (enrol/openers.py, which documents each token). A line whose token has
 # no fact, or a fact that fails its check, falls back to the next line in the cell, then to the signal's plain
-# opener, then to none. opener_self is for a contact who is the new People leader. Written to style.md: one
-# observed fact, US English, one sentence, no statistic, nothing about the reader's company beyond the fact.
+# opener, then to the generic line (General opener_generic_*), then to none. opener_self is for a contact who is
+# the new People leader. Written to style.md: US English, one sentence, no statistic; the page-reader lines say
+# one observed fact, the context signals' lines none (_CONTEXT_NOTE).
 # signal: (opener_people, opener_founder, opener_ops, opener_self)
 _OPENERS: dict[str, tuple[str, str, str, str]] = {
-    "New People leader": (
-        "I saw {company} recently named a new {people_title}.",
-        "I saw {company} has a new {people_title} in place.",
-        "I saw there's a new {people_title} at {company}.",
-        "Congratulations on the new role at {company}.",
-    ),
-    # Never "its first": people_leader_count = 0 says only that Apollo knows no People leader (copy QA, 2 Oct).
-    "First People hire": (
-        "I saw {company} is hiring a {people_title}.",
-        "I saw {company} is recruiting a {people_title}.",
-        "I saw {company} is looking to hire a {people_title}.",
-        "",
-    ),
-    "People role open": (
-        "I saw {company} is adding a {people_title} to the team.",
-        "I saw {company} is hiring a {people_title} right now.",
-        "I saw {company} has a {people_title} role open.",
-        "",
-    ),
-    # Only the founder is congratulated: a People leader or operations reader did not raise the money (copy QA).
-    "Funding in the last 6 months": (
-        "I saw {company} recently raised a {funding_stage}.",
-        "Congratulations on the {funding_stage}.",
-        "I saw {company} recently closed a {funding_stage}.",
-        "",
-    ),
-    # The roles-only middle line keeps the count when no posting title can be named (copy QA, 2 Oct 2026).
-    "Hiring and growth": (
-        "I saw {company} has {open_roles} roles open, including a {posting_title}.\n"
-        "I saw {company} has {open_roles} roles open right now.\n"
-        "I saw the team at {company} has {growth} in the last year.",
-        "I saw {company} is hiring for {open_roles} roles, including a {posting_title}.\n"
-        "I saw {company} is hiring for {open_roles} roles right now.\n"
-        "I saw {company} has {growth} in headcount over the last year.",
-        "I saw {company} is recruiting for {open_roles} roles, including a {posting_title}.\n"
-        "I saw {company} is recruiting for {open_roles} roles right now.\n"
-        "I saw the {company} team has {growth} over the past year.",
-        "",
-    ),
+    # The context signals (_CONTEXT_NOTE, above): no tokens, so every line fills for every account.
+    "New People leader": _NEW_LEADER_LINES[1:],
+    "First People hire": _PEOPLE_ROLE_LINES[1:],
+    "People role open": _PEOPLE_ROLE_LINES[1:],
+    "Funding in the last 6 months": _FUNDING_LINES[1:],
+    "Funding 6–12 months ago": _FUNDING_LINES[1:],
+    "Hiring and growth": _HIRING_LINES[1:],
     # The page-reader signals (sources/pages.py). {page} says where the evidence was read; without it,
     # "when it recruits" is true of a careers page, a benefits page and a job board alike.
     "Mental health support listed": (
