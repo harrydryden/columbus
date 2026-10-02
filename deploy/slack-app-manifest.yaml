@@ -1,4 +1,4 @@
-# Slack app for US Outbound (SPEC 3, 11, 14 phase 0). Create it at api.slack.com/apps →
+# Slack app for US Outbound, named Columbus (Harry, 2 Oct 2026; SPEC 3, 11, 14 phase 0). Create it at api.slack.com/apps →
 # "From an app manifest", install it to the workspace, invite the bot to #us-outbound and
 # #us-outbound-dev, and put the bot token (xoxb-…) in the sealed Railway variable
 # US_OUTBOUND_SLACK_BOT_TOKEN (docs/railway-setup.md). There is no public endpoint
@@ -9,12 +9,12 @@ _metadata:
   major_version: 1
   minor_version: 1
 display_information:
-  name: US Outbound
+  name: Columbus
   description: Alerts, approvals and readouts for Spill's US outbound engine.
   background_color: "#1d1c1d"
 features:
   bot_user:
-    display_name: US Outbound
+    display_name: columbus
     always_online: false
   app_home:
     messages_tab_enabled: true  # escalation DMs to the approvers (PHASE0-CONFIRM: posting by user id lands here)
