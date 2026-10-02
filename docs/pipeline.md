@@ -15,6 +15,12 @@ Harry's decisions on 30 Sep 2026:
 - The sheet gets an industry focus and named companies.
 - Lookalikes wait. (Superseded 1 Oct: lookalikes from Spill's HubSpot customers; see "How Harry can steer the system".)
 
+Harry's decision on 2 Oct 2026: Clay's page reading moves into our own code (`read_pages`, no Clay
+credits), and Clay is narrowed to what only it does: the email waterfall for contacts Apollo can't
+verify, and later a cross-check when Apollo's HQ state or size looks doubtful. `clay_verification`
+stays `skip` for the pilot. The reader measures its own coverage, so whether to enhance it is decided
+on numbers after the first batches (docs/roadmap.md).
+
 The list of changes is at the end.
 
 ## The short answer
@@ -31,14 +37,14 @@ The list of changes is at the end.
 | Job | Owner | Fallback | Not used |
 | :- | :- | :- | :- |
 | Find companies (the universe) | Apollo organisation search | IRS BMF for nonprofits (January). New site visitors. The Named accounts tab. Great Place To Work and B Corp lists (phase 3) | Clay Find Companies, Instantly SuperSearch, Apollo lists and saved searches |
-| Company facts (size, HQ, NAICS, founded) | Apollo | Clay confirms HQ state and size. If they disagree, the account goes to the hand-check | Clay's other data providers; HubSpot auto-enrichment |
+| Company facts (size, HQ, NAICS, founded) | Apollo | Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check instead of being verified unseen. Later, Clay cross-checks HQ state and size (`verify.cross_check`) | Clay's other data providers; HubSpot auto-enrichment |
 | Clean company name | Clay AI, checked against the `clean/names.py` rules | The `clean/names.py` rules alone | |
-| Read careers, benefits and values pages | Clay "US Outbound – Accounts" | None: a failed read is scored as "not read" | |
+| Read careers, benefits and values pages | Our own reader, `read_pages` (source `careers_pages`; no credits; Harry, 2 Oct 2026) | Clay "US Outbound – Accounts" (`clay_careers`) if the reader's coverage falls short. A failed read is scored as "not read" | |
 | Funding | Apollo | Clay's Company Latest Funding, run only when Apollo has nothing | |
 | Hiring counts | Apollo organisation search with job filters (`apollo_jobs`) | | |
-| Job-posting text | The public Greenhouse, Lever, Ashby and Workable feeds (free) | | |
+| Job-posting text | The public Greenhouse, Lever, Ashby and Workable feeds (free), read by `read_pages` from the board the company's site links to | | |
 | People at the company (titles, locations) | Apollo people search (free) | | Clay Find People, Instantly SuperSearch |
-| Work email | Apollo bulk match, verified emails only | Clay "US Outbound – Contacts" (the Work Email waterfall), for misses and catch-alls only | Apollo's own waterfall (its results arrive only by webhook, and there is no public endpoint); Instantly's lead finder |
+| Work email | Apollo bulk match, verified emails only | Clay's Work Email waterfall, for misses and catch-alls only, valid results only, behind `clay_email_fallback` (off until Clay's API is confirmed). "US Outbound – Contacts" replaces it once built | Apollo's own waterfall (its results arrive only by webhook, and there is no public endpoint); Instantly's lead finder |
 | Email verification | Whoever found the email: Apollo's status, or Clay's check | | Instantly verification, which would spend Instantly credits |
 | Site visits | Apollo website visitors | Harry's weekly CSV export | Instantly's website-visitor feature |
 | Score, tier and angle | Python and the Signals tab | | Apollo scoring, Clay scoring, HubSpot lead scoring and ICP tiers |
@@ -84,6 +90,11 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 **2. Free signals: daily and weekly.**
 - **apollo_people** (free): people leaders, US headcount by state, the CA/WA share, and the candidate contacts for the Roles tab.
 - **apollo_jobs**: open roles and open People roles.
+- **read_pages** (free; weekdays 03:45, before verify_accounts' rescore): the company's own careers,
+  jobs and benefits pages (up to six pages, robots.txt respected, no JavaScript), then the
+  Greenhouse, Lever, Ashby or Workable board its site links to. The benefit sentences, with quote
+  and URL, feed the EAP, mental-health, wellbeing-app, progressive-benefits and competitor signals.
+  `us-outbound pages show` and the daily post give its coverage.
 - **Site visits.**
 - **Layoffs.**
 - **IRS BMF.**
@@ -102,7 +113,11 @@ An account also needs at least one candidate contact: a person matching the Role
 - It runs Apollo organisation enrich (1 credit) first, only if the search record is missing a field Clay needs.
 - It then runs the Clay Accounts function in batches of up to 100. The function returns the clean name, confirmed HQ and size, an industry label, the pages it read, benefits, mental-health provision, culture statements, and funding (only when Apollo had none).
 - If Clay and Apollo disagree on HQ state or size band, the account goes to the hand-check.
-- Afterwards the job-post feeds read the careers URL that Clay found (free).
+- The careers pages and job boards are already read by `read_pages` (free). Clay's own page read
+  is for later, and only if the reader's coverage falls short (docs/roadmap.md).
+- Until Clay is built (`clay_verification` = `skip`), `verify_accounts` verifies on Apollo data and
+  HubSpot, and sends an account whose HQ state or size is in doubt to the weekly hand-check with
+  the reason; Harry's approval clears it, and an Overrides row corrects a wrong fact.
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
@@ -111,7 +126,11 @@ An account also needs at least one candidate contact: a person matching the Role
 - It ranks them (Harry, 1 Oct 2026: "the closer to seniority and decision maker the better"): the Roles-tab rank for the size, then seniority, then how well the title matches, then the newest in role. Junior titles come last, and never as a People leader.
 - It reveals the top person's email with Apollo bulk match (1 credit). The email must be verified, at the company's own domain, not a personal domain, a shared inbox, suppressed or already a contact, and the person not in CA or WA. If it fails, it reveals the next person: at most two reveals an account.
 - When nobody suitable is found, the account records why (a `contact_pick` fact), `us-outbound status` counts it, and it is tried again after 14 days. Nobody is paid for twice.
-- Not yet: the Clay Contacts function for misses and catch-alls.
+- With `clay_email_fallback` = yes (default no): when Apollo's reveal misses or gives an address it
+  doesn't call verified (a catch-all), that person goes once to Clay's Work Email waterfall (or the
+  "US Outbound – Contacts" function once its id is set), within today's share of the Clay budget and
+  never while a kill rule pauses the clay source. Only a `valid` result is kept, with
+  `email_source` = clay; `catch_all_valid` waits for change 8.
 
 | Rank | 10–49 staff | 50–249 staff |
 | :- | :- | :- |
@@ -400,14 +419,16 @@ Each fact name has one owning source. `open_roles` comes from `apollo_jobs` only
 
 Jobs talk only through tables and `accounts.status`, never by calling each other. Each one can be re-run safely.
 
-Swapping a vendor means rewriting one client and one source module. The fact names stay the same, so scoring and the sheet don't change. For example, if an in-house reader replaced Clay's page reading, it would write the same `benefit`, `mental_health_provision`, `culture_statement`, `values_page` and `read_status` facts.
+Swapping a vendor means rewriting one client and one source module. The fact names stay the same, so scoring and the sheet don't change. The in-house page reader (`sources/pages.py`, 2 Oct 2026) is the example: it writes the `benefit`, `mental_health_provision`, `values_page` and `read_status` facts Clay's function would, under its own source key `careers_pages`, and the page signals list both sources.
 
 ## To measure in phase 1
 
 - **Universe size per slice, and so the Apollo credits per sweep.** It has to fit in the month's 2,000 alongside enrichment and reveals.
 - **Clay credits per account** (SPEC 8), and so whether 2,000 a month keeps 150 accounts a week ready.
 - **How many accounts the free checks keep away from Clay.**
-- **Apollo's email hit rate**, which sets how often the Clay Contacts function runs.
+- **Apollo's email hit rate**, which sets how often the Clay email waterfall runs.
+- **The page reader's coverage** (`us-outbound pages show`): the share of accounts with benefits text,
+  with a job board, and matching each page signal. After 200 accounts it decides whether to enhance it.
 - **Instantly's real behaviour on the paused campaigns, before any send:**
   - the step timing, days 0, 7, 14 and 21;
   - the analytics fields;
