@@ -712,7 +712,7 @@ def run(ctx: Context) -> dict:
     summary["size_bands_backfilled"] = backfill_bands(ctx, r, room)
     if all(_depth(depth, g) >= t for g, t in todo):
         summary.update(status="ok", stopped_by="the queue already holds two weeks", pages=r.pages,
-                       credits=r.credits, created=0, errors=r.errors[:20])
+                       credits=r.credits, created=0, budget=room.as_dict(), errors=r.errors[:20])
         log("source_universe_done", run_id=ctx.run_id, **summary)
         return summary
     progress = cursors(ctx)

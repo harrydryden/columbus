@@ -22,6 +22,11 @@ QUERIES: dict[str, str] = {
     "size": ("SELECT industry_group, count(*) FILTER (WHERE employees IS NULL) AS no_employees, "
              "count(*) FILTER (WHERE size_band IS NULL) AS no_band, count(*) AS n "
              "FROM us_outbound.accounts GROUP BY 1 ORDER BY 4 DESC"),
+    "no_size_band": ("SELECT status, (apollo_org_id IS NOT NULL) AS has_apollo_id, count(*) AS n "
+                     "FROM us_outbound.accounts WHERE size_band IS NULL GROUP BY 1, 2 ORDER BY 1, 2"),
+    "credits_today": ("SELECT system, job, sum(coalesce(credits, 0)) AS credits, count(*) AS rows "
+                      "FROM us_outbound.credit_ledger WHERE occurred_at >= date_trunc('day', now()) "
+                      "GROUP BY 1, 2 ORDER BY 1, 2"),
     "facts": ("SELECT source, fact, count(DISTINCT account_id) AS accounts FROM us_outbound.signal_events "
               "WHERE source <> 'scoring' GROUP BY 1, 2 ORDER BY 1, 2"),
     "matched": ("SELECT value->>'signal' AS signal, count(DISTINCT account_id) AS accounts "
