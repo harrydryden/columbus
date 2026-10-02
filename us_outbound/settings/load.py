@@ -23,7 +23,9 @@ command merges them into the sheet without losing Harry's own edits:
     tab already in the new layout keeps its rows; only roles it does not have are added.
   * Signals and Focus (Harry, 1 Oct 2026): the build's rows win and Harry's own rows stay. A row
     the build replaced under another name (SUPERSEDED: Recent funding, now split by age) stays
-    on the sheet but is switched off, so it does not score alongside its replacements.
+    on the sheet but is switched off, so it does not score alongside its replacements. So
+    `--tab Signals` brings in the page signals' careers_pages source (Harry, 2 Oct 2026: our own
+    page reader, sources/pages.py); until it does, settings_sync's summary says so.
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.

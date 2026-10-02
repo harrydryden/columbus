@@ -49,6 +49,7 @@ EXPECTED: dict[str, int] = {
     "settings_sync": 26 * _H,  # 02:00 daily
     "source_universe": 26 * _H,  # 03:00 weekdays (weekday time; SPEC 9 had the 1st of the month)
     "apollo_signals": 26 * _H,  # 03:30 weekdays (weekday time; SPEC 9 had Mondays)
+    "read_pages": 26 * _H,  # 03:45 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
     "site_visits": 26 * _H,  # 06:00 daily
     "public_signals": 8 * _DAY,  # Mon 04:00
     "verify_in_clay": 26 * _H,  # 04:30 weekdays (weekday time)
@@ -69,7 +70,8 @@ EXPECTED: dict[str, int] = {
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
-WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "verify_in_clay", "verify_accounts", "pick_contacts", "enrol"})
+WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "verify_in_clay", "verify_accounts",
+                          "pick_contacts", "enrol"})
 OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 
 LATEST_SQL = (

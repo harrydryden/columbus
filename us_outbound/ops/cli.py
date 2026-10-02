@@ -19,7 +19,8 @@ Build support: run <job> [--live] (what the scheduler starts), scheduler (the al
 Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
 (mailbox_health by hand), settings sync|bootstrap|load, db apply, hubspot setup|ids,
 campaigns ensure [--fix], suppression load, lookalikes show [--top N] [--all] (the cells the
-lookalikes job last stored, sources/lookalikes.py). On Railway, run a command inside the worker
+lookalikes job last stored, sources/lookalikes.py), pages show (what the careers and benefits page
+reader has found and its coverage, sources/pages.py). On Railway, run a command inside the worker
 with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
 Go-live (Harry, 1 Oct 2026):
   golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
@@ -84,6 +85,7 @@ JOBS: dict[str, str] = {
     "settings_sync": "us_outbound.settings.sync:run",
     "source_universe": "us_outbound.sources.apollo_universe:run",
     "apollo_signals": "us_outbound.sources.apollo_jobs:run",
+    "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages without Clay
     "site_visits": "not built yet (phase 1)",
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
@@ -843,6 +845,16 @@ def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_pages(args: argparse.Namespace, factory: Factory) -> int:
+    """What the careers and benefits page reader has found (the database only): coverage and the decision rule."""
+    from us_outbound.sources import pages
+
+    ctx = factory("pages_show", False)
+    for line in pages.report(ctx):
+        print(line)
+    return 0
+
+
 # -- go-live (Harry, 1 Oct 2026) ------------------------------------------------------------------
 
 
@@ -873,11 +885,12 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
             item, payload = hand_check.show(c)
             holder["payload"] = payload
             return {"dry_run": c.dry_run, "iso_week": payload.get("iso_week"), "item_id": (item or {}).get("item_id"),
-                    "status": (item or {}).get("status") or "not recorded", "accounts": len(payload.get("accounts") or ())}
+                    "status": (item or {}).get("status") or "not recorded", "accounts": len(payload.get("accounts") or ()),
+                    "doubtful": len(payload.get("doubtful") or ())}
 
         summary = run_job(ctx, show)
         payload = holder.get("payload") or {}
-        if not payload.get("accounts"):
+        if not hand_check.has_work(payload):
             print(f"Hand-check {summary['iso_week']}: nothing to check (no queued or verified account in an active "
                   "industry group).")
             return 0
@@ -1048,6 +1061,10 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
     lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
     lk.set_defaults(fn=cmd_lookalikes)
+
+    pg = sub.add_parser("pages", help="what the careers and benefits page reader has found, and its coverage")
+    pg.add_argument("action", choices=["show"])
+    pg.set_defaults(fn=cmd_pages)
 
     sub.add_parser("golive", help="the read-only go/no-go check before the first sends").set_defaults(fn=cmd_golive)
 

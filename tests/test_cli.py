@@ -85,6 +85,7 @@ class Harness:
         (["hubspot", "ids"], {"action": "ids"}),
         (["campaigns", "ensure", "--fix"], {"action": "ensure", "fix": True}),
         (["suppression", "load"], {"action": "load"}),
+        (["pages", "show"], {"command": "pages", "action": "show"}),
         (["schedule"], {"command": "schedule"}),
         (["scheduler"], {"command": "scheduler", "list": False}),
         (["scheduler", "--list"], {"command": "scheduler", "list": True}),
@@ -107,9 +108,10 @@ def test_dry_run_takes_no_live_flag():
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
-                                               "hand_check_post"}
+                                               "hand_check_post", "read_pages"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
+    assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
     assert cli.JOBS["verify_accounts"] == "us_outbound.verify:run"
     assert cli.JOBS["lookalikes"] == "us_outbound.sources.lookalikes:run"
     assert cli.JOBS["settings_sync"] == "us_outbound.settings.sync:run"

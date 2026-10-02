@@ -343,6 +343,12 @@ def run(ctx: Context) -> dict:
     if sheet.get("Roles") and is_legacy_roles(set().union(*(set(r) for r in sheet["Roles"]))):
         summary["roles_notice"] = ("the Roles tab is still in SPEC 5's layout, so contacts follow the old order; "
                                    "run `us-outbound settings load --tab Roles --live` for Harry's 1 Oct order")
+    if settings is not None:
+        from us_outbound.sources.pages import sheet_notice
+
+        notice = sheet_notice(settings)
+        if notice:
+            summary["signals_notice"] = notice
     log("settings_sync", **summary)
     if alert_error is not None:
         raise alert_error
