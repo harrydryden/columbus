@@ -49,6 +49,10 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "is_evergreen": True,  # PHASE0-CONFIRM: that is_evergreen keeps the campaign open to new leads indefinitely
 }
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
+# Instantly's GET /campaigns/{id} (read 2 Oct 2026) leaves out a setting that is at its default, so a
+# setting we want false and that is missing is false. is_evergreen is never returned, so it cannot be
+# checked (PHASE0-CONFIRM above).
+NOT_RETURNED = frozenset({"is_evergreen"})
 # The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
 # of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly
 # fills its merge tags in the template, not inside a custom variable's value. A click stops the
@@ -240,8 +244,11 @@ def settings_drift(
     """{field: (expected, actual)} for every SPEC 9 setting the campaign no longer matches."""
     drift: dict[str, tuple[Any, Any]] = {}
     for key, want in campaign_settings(text_only).items():
-        if campaign.get(key) != want:
-            drift[key] = (want, campaign.get(key))
+        got = campaign.get(key)
+        if got is None and (want is False or key in NOT_RETURNED):
+            continue  # left out at its default (false), or never returned
+        if got != want:
+            drift[key] = (want, got)
     want_sched = instantly_schedule(window)["schedules"][0]
     got_scheds = (campaign.get("campaign_schedule") or {}).get("schedules") or [{}]
     got = got_scheds[0] or {}

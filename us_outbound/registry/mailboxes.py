@@ -68,11 +68,17 @@ SIGNATURE = "{owner}\nSpill\nspill.chat/us"  # SPEC 5 default signature
 
 
 def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
-    """Each step: the lead's rendered subject and body (custom variables, SPEC 9), then Instantly's unsubscribe link."""
-    return tuple(
-        {"subject": f"{{{{s{i}_subject}}}}", "body": f"{{{{s{i}_body}}}}{unsubscribe_line(text_only)}"}
-        for i in range(1, len(STEP_DAYS) + 1)
-    )
+    """Each step: the lead's rendered subject and body (custom variables, SPEC 9), then Instantly's unsubscribe link.
+
+    In HTML the body variable sits in a <div>: Instantly drops text that is outside any tag when it saves a
+    step, so a bare "{{s1_body}}<p>…</p>" was saved as the unsubscribe line alone (the first live create,
+    2 Oct 2026, read back with `us-outbound campaigns show`).
+    """
+    def body(i: int) -> str:
+        var = f"{{{{s{i}_body}}}}"
+        return f"{var}{unsubscribe_line(True)}" if text_only else f"<div>{var}</div>{unsubscribe_line(False)}"
+
+    return tuple({"subject": f"{{{{s{i}_subject}}}}", "body": body(i)} for i in range(1, len(STEP_DAYS) + 1))
 
 
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
