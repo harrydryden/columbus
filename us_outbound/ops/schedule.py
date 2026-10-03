@@ -33,26 +33,51 @@ class ScheduledJob:
 
 SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "0 2 * * *", live=True, enabled=True, timeout_minutes=15, phase=0),
-    ScheduledJob("source_universe", "0 3 1 * *", live=False, enabled=False, timeout_minutes=60, phase=1),
-    ScheduledJob("apollo_signals", "30 3 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
+    # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
+    # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
+    # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich and verify_accounts, all before
+    # pick_contacts at 05:30.
+    ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
+    ScheduledJob("apollo_signals", "30 3 * * 1-5", live=False, enabled=True, timeout_minutes=45, phase=1),
+    # Harry, 2 Oct 2026: our own careers and benefits page reader, in place of Clay's. After apollo_signals and
+    # before verify_accounts, whose rescore scores its facts; public GETs and database writes only, so no --live.
+    # It stops starting accounts after 30 minutes (sources/pages.py RUN_SECONDS), well inside the timeout.
+    ScheduledJob("read_pages", "45 3 * * 1-5", live=False, enabled=True, timeout_minutes=40, phase=1),
+    # Harry, 2 Oct 2026: funding and an exact headcount from Apollo's organization enrich, for apollo_enrich_groups.
+    # After read_pages starts and before verify_accounts, whose rescore scores its facts before pick_contacts;
+    # Apollo reads and database writes only, so no --live. At most 500 accounts a run, inside the timeout.
+    ScheduledJob("apollo_enrich", "10 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),
-    # score runs inside settings_sync, verify_in_clay and site_visits (SPEC 9); by hand: `us-outbound rescore`.
+    ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # score runs inside settings_sync, verify_in_clay, verify_accounts and site_visits (SPEC 9); by hand: `us-outbound rescore`.
     ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
-    ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=2),
-    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=False, timeout_minutes=30, phase=2),
-    ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=False, timeout_minutes=10, phase=2),
-    ScheduledJob("poll_approvals", "*/5 * * * *", live=True, enabled=False, timeout_minutes=4, phase=2),
-    ScheduledJob("hubspot_readback", "*/15 * * * *", live=True, enabled=False, timeout_minutes=10, phase=2),
-    ScheduledJob("sync_outcomes", "0 1 * * *", live=True, enabled=False, timeout_minutes=30, phase=2),
+    # On for the pilot from Mon 5 Oct 2026, ahead of enrol at 12:00. It writes only to the database
+    # (its Apollo calls are reads), so it never needs --live; reveals spend credits within the budget.
+    ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=2),
+    # Enabled for the 5 Oct go-live (Harry, 1 Oct 2026). It runs dry, writing only the database, until
+    # live_sending = yes on the General tab: that flag stays Harry's sign-off (SPEC 0.3, 14).
+    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=True, timeout_minutes=30, phase=2),
+    ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("poll_approvals", "*/5 * * * *", live=True, enabled=True, timeout_minutes=4, phase=2),
+    ScheduledJob("hubspot_readback", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    # Every 15 minutes, not SPEC 9's 01:00: the kill rules and the send forecast need today's sends and
+    # stops, and opt-outs are honored the same day (SPEC 13). Offset from poll_replies by 7 minutes.
+    ScheduledJob("sync_outcomes", "7-59/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
-    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
-    ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=False, timeout_minutes=10, phase=3),
+    # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
+    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("monday_readout", "0 9 * * 1", live=True, enabled=False, timeout_minutes=20, phase=3),
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
+    # Monday 02:30, after settings_sync and before source_universe and apollo_signals (Harry, 1 Oct 2026).
+    # It reads HubSpot and writes only the database, so it needs no --live.
+    ScheduledJob("lookalikes", "30 2 * * 1", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
+    ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
 )
 
 

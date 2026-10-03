@@ -46,7 +46,9 @@ SPEC_COLUMNS: dict[str, set[str]] = {
     "settings": {"tab", "key", "values", "effective_from", "effective_to", "synced_at"},
 }
 # Columns the build adds to SPEC 6 tables.
-BUILD_ADDITIONS: dict[str, set[str]] = {"contacts": {"last_step_at", "enrolled_at"}, "suppression": {"expires_at"}}
+BUILD_ADDITIONS: dict[str, set[str]] = {
+    "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source"}, "suppression": {"expires_at"},
+}
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
     "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"},
@@ -57,6 +59,10 @@ BUILD_TABLES: dict[str, set[str]] = {
     },
     "domain_aliases": {"alias", "root_domain", "source", "added_at"},
     "partners": {"domain", "name", "reason", "naics", "added_at"},
+    "lookalike_cells": {
+        "cell_id", "industry_label", "industry_group", "size_band", "active_customers", "churned_customers",
+        "us_active", "us_churned", "strength", "computed_at", "run_id",
+    },
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -68,8 +74,9 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
-INTS = {"employees", "us_employees", "founded_year", "score", "step"}
-FLOATS = {"clay_credits_used", "credits", "usd"}
+INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
+        "us_active", "us_churned"}
+FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 
 # Indexes the brief asks for (table -> leading columns); more are fine.
@@ -87,20 +94,24 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
     ("contacts", "email_source"): {"apollo", "clay"},
+    ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
-        "escalated",
+        "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
     },
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
     },
-    ("events", "approval"): {"approved", "edited", "skipped"},
+    # A reply's approval, then a send approval's outcome (enrol/approvals.py).
+    ("events", "approval"): {"approved", "edited", "skipped", "approved_edited", "contact_rejected", "company_rejected",
+                             "expired", "blocked"},
     ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
     ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
-    ("hitl_items", "kind"): {"reply_approval", "hand_check", "manual_merge", "kill_rule"},
-    ("hitl_items", "status"): {"open", "handled", "escalated"},
+    ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule", "send_approval"},
+    ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
+    ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
 }
 
 

@@ -13,7 +13,14 @@ import pytest
 
 from tests.fakes import TEST_SHEET_ID, FakeTransport, make_context
 from us_outbound.clients.guard import Op
-from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, instantly_schedule
+from us_outbound.clients.instantly import (
+    CAMPAIGN_SETTINGS,
+    UNSUBSCRIBE_HTML,
+    UNSUBSCRIBE_TAG,
+    campaign_settings,
+    instantly_schedule,
+    step_delays,
+)
 from us_outbound.registry import mailboxes as reg
 from us_outbound.settings.defaults import COLUMNS
 from us_outbound.settings.model import General, Mailbox, Settings
@@ -76,8 +83,8 @@ class FakeInstantly:
         """A campaign exactly as ensure_campaigns would create it."""
         from us_outbound.clients.instantly import sequences
 
-        return self.add_campaign(name, **{**CAMPAIGN_SETTINGS, "campaign_schedule": instantly_schedule(),
-                                          "sequences": sequences(reg.CAMPAIGN_STEPS), "email_list": accounts,
+        return self.add_campaign(name, **{**campaign_settings(), "campaign_schedule": instantly_schedule(),
+                                          "sequences": sequences(reg.campaign_steps()), "email_list": accounts,
                                           "daily_limit": limit, **over})
 
     def add_lead(self, campaign_id: str, email: str) -> dict:
@@ -176,10 +183,16 @@ def slack_routes(t: FakeTransport) -> FakeTransport:
     return t
 
 
-def setup(settings: Settings = SETTINGS, *, live: bool = True, accounts: dict | None = None, now: datetime = NOW):
+def setup(settings: Settings = SETTINGS, *, live: bool = True, accounts: dict | None = None, now: datetime = NOW,
+          ramp_done: bool = True):
+    """ramp_done: the mailboxes are past the sending ramp, so caps are the sheet's (tests/test_ramp.py covers the ramp)."""
     t = slack_routes(FakeTransport())
     inst = FakeInstantly(t, accounts)
     ctx = make_context(settings, live=live, transport=t, now=now)
+    if ramp_done:
+        from tests.test_ramp import past_ramp
+
+        past_ramp(ctx.store, settings.mailboxes, now)
     sheets = StubSheets(ctx.guard, {"Mailboxes": sheet_rows(settings)})
     ctx.clients.sheets = sheets
     return ctx, t, inst, sheets
@@ -231,7 +244,7 @@ def test_ensure_campaigns_creates_three_paused_campaigns():
     assert ours[C_HANNAH]["email_list"] == [HANNAH] and ours[C_HANNAH]["daily_limit"] == 30
     for c in ours.values():
         assert {k: c[k] for k in CAMPAIGN_SETTINGS} == CAMPAIGN_SETTINGS
-        assert c["open_tracking"] is False and c["link_tracking"] is False and c["text_only"] is True
+        assert c["open_tracking"] is False and c["link_tracking"] is False and c["text_only"] is False
         steps = c["sequences"][0]["steps"]
         assert [s["variants"][0]["subject"] for s in steps] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
     assert inst.by_name(C_EU)["status"] == 1  # the European campaign is untouched
@@ -279,7 +292,8 @@ def test_mailbox_add_warm_new_owner_gets_a_campaign():
     added = row(sheets, new)
     assert added["status"] == "Active" and added["owner_name"] == "Maria Lopez" and added["added_on"] == "2026-10-27"
     assert added["daily_cap"] == "30" and added["signature"] == "Maria Lopez\nSpill\nspill.chat/us"
-    assert set(added) == set(MAILBOX_HEADERS)
+    # slack_id is optional (D11) and Harry fills it in by hand, so a sheet without the column still takes the row.
+    assert set(added) == set(MAILBOX_HEADERS) - {"slack_id"}
     c = inst.by_name("US Outbound – Maria Lopez")
     assert c["email_list"] == [new] and c["status"] == 0
     assert out["campaign_action"] == "created (paused)" and out["warmup_turned_on"] is False
@@ -459,3 +473,37 @@ def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():
                                                       "at_limit": True}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert "Instantly says US Outbound – Harry Dryden is held back: the campaign reached its daily limit" in post["text"]
+
+
+def test_every_step_ends_with_instantly_s_unsubscribe_link():
+    # Harry, 1 Oct 2026: the opt-out is Instantly's own link, in the step template after the lead's
+    # rendered body (Instantly fills merge tags in the template, not inside a custom variable).
+    html, text = reg.campaign_steps(), reg.campaign_steps(text_only=True)
+    assert [s["subject"] for s in html] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
+    for i, (h, t) in enumerate(zip(html, text), start=1):
+        assert h["body"].startswith(f"<div>{{{{s{i}_body}}}}</div><p><a href=\"{UNSUBSCRIBE_TAG}\">")
+        assert t["body"] == f"{{{{s{i}_body}}}}\n\nTo stop hearing from us, unsubscribe here: {UNSUBSCRIBE_TAG}"
+    assert CAMPAIGN_SETTINGS["insert_unsubscribe_header"] is True  # and the mail client's one-click button
+
+
+def test_drift_reads_a_campaign_as_instantly_returns_it():
+    """The first live create (2 Oct 2026): Instantly's GET leaves out settings at their default and never returns
+    is_evergreen, and it had dropped the bare {{sN_body}} from each step. The first is no drift; the second is."""
+    steps = reg.campaign_steps()
+    returned = {
+        "name": C_HANNAH, "status": 0, "daily_limit": 10, "email_list": [HANNAH],
+        "open_tracking": False, "stop_for_company": True, "stop_on_reply": True, "insert_unsubscribe_header": True,
+        "campaign_schedule": instantly_schedule(SETTINGS.general.send_window),
+        "sequences": [{"steps": [{"type": "email", "delay": d, "delay_unit": "days",
+                                  "variants": [{"subject": s["subject"], "body": s["body"]}]}
+                                 for s, d in zip(steps, step_delays())]}],
+    }
+    caps = {HANNAH: 10}
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps) == {}
+    dropped = UNSUBSCRIBE_HTML
+    for st in returned["sequences"][0]["steps"]:
+        st["variants"][0]["body"] = dropped
+    drift = reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)
+    assert set(drift) == {"steps.1", "steps.2", "steps.3", "steps.4"}
+    returned["link_tracking"] = True  # a tracking setting turned on in Instantly is still drift
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["link_tracking"] == [False, True]

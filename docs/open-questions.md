@@ -5,11 +5,14 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
 ## A. Needed to finish Phase 0 (blocking)
 
 1. **Privacy and opt-out page.** `/us/legals/privacy-notice` is still a Webflow draft, and there is no US opt-out page. Every email links to it (SPEC 10), and render blocks any send while `privacy_url` is blank. What is the live URL?
-   *Deferred (Harry, 30 Sep): on the website; not needed yet. Render still blocks sends while `privacy_url` is blank, so this is needed before phase 2 goes live.*
+   *Deferred (Harry, 30 Sep): on the website; not needed yet.*
+   *Answered (Harry, 1 Oct): emails carry no privacy link, and none is needed. The opt-out is Instantly's own unsubscribe link, which the campaign's step template adds after every email (`clients/instantly.py` UNSUBSCRIBE_HTML), alongside the List-Unsubscribe header that was already on. `privacy_url` is retired: the sheet may keep the row, and `settings load` removes it. Email 1's Article 14 notice now points at the unsubscribe link instead of a privacy page. Note: Article 14 also lists identity, purposes, retention and the right to complain, which a privacy page usually carries; the notice no longer points to one.*
 2. **Postal address.** Please give Spill's UK registered address as it should appear in the footer (`postal_address`).
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
-3. **Footer and Article 14 text.** Please approve or edit `templates/copy/footer.txt` and `templates/copy/article14.txt` (SPEC 14: "For Harry to approve"). The notice names Apollo and Clay as sources for every contact, and gives the lawful basis as legitimate interests.
+   *Closed (Harry, 1 Oct, confirmed the same day): no postal address. Final; not to be raised again. `postal_address` is retired and no longer blocks sends.*
+3. **Footer and Article 14 text.** Please approve or edit `templates/copy/signature.txt` (was footer.txt) and `templates/copy/article14.txt` (SPEC 14: "For Harry to approve"). The signature is fixed text outside the copy rules (Harry, 1 Oct): its "Book a call here" link is allowed in email 1. The notice names Apollo and Clay as sources for every contact, and gives the lawful basis as legitimate interests.
    *Deferred (Harry, 30 Sep): not needed yet; needed before phase 2 goes live.*
+   *Answered (Harry, 1 Oct): "footer = signature". Every email ends with "Best wishes," and the sender's first name, then three lines: "Spill, on-demand counseling for your team" (Spill links to spill.chat/us, General `site_url`), "Book a call here" (here links to Harry's meeting link, General `booking_link`) and "Read our Trustpilot reviews from employees" (our Trustpilot reviews links to uk.trustpilot.com/review/spill.chat). The sender's full name and the "marketing email" line are gone. Email 1's data-source notice follows in small type, then Instantly's unsubscribe link.*
 4. **Instantly.** We have no connector or key in this session. Please add the API key to the sealed Railway variable `US_OUTBOUND_INSTANTLY_API_KEY` (docs/railway-setup.md, step c). The plan facts in SPEC 14 are still unconfirmed: plan tier, email and contact caps and current use, and whether the emails, reply, forward and accounts endpoints exist.
 5. **Where the system runs.** Which project and region should hold Cloud Run, Scheduler, Secret Manager and Artifact Registry?
    *Answered (Harry, 30 Sep): Railway, on Spill's existing paid plan, in EU West (Amsterdam).*
@@ -82,16 +85,13 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 34. Only EMEA and APAC titles are skipped, not APJ, LATAM, Europe, UK or Asia. [only EMEA and APAC]
 35. RevOps counts as sales ops and is skipped. A title is skipped if a skip word appears anywhere in it. [yes]
-36. The Roles tab has no CHRO, VP HR, Head of HR, Director of People, Owner or Principal, so those titles are never contacted. Should they be added to the sheet? [not added]
+36. The Roles tab has no CHRO, VP HR, Head of HR, Director of People, Owner or Principal, so those titles are never contacted. Should they be added to the sheet? [added, with a rank by size led by seniority: Harry, 1 Oct 2026; docs/pipeline.md, stage 4]
 37. Company-name casing is kept as given, so "acme creative" stays lower case. [kept]
 
 ### Copy and rendering
 
-38. The ask sentences are constants in render.py. [as below]
-    - People leader: "Would a 20-minute walkthrough be useful?"
-    - Founder or executive: "Worth a look for the team?"
-    - Operations: "Happy to send the one-pager if that's useful."
-39. Step 4 offers the one-pager on reply, because there is no link variable. Should there be a `{{one_pager}}` variable? [no variable]
+38. The asks by role are gone: every email's call to action is the demo page (Harry, 30 Sep 2026). The role now shows in email 1's role line. [demo link]
+39. Email 4 no longer offers the one-pager; it ends on the demo link too. Should one of the emails offer the one-pager instead? [no]
 40. Must every email mention same-day counseling? [not enforced]
 41. "therapy" and "therapist" are blocked even inside a quote from the prospect's page, and the opener then falls back to the default. [blocked]
 42. Please review the phrase lists for disparaging an EAP and for EAP in Spill's name, in `enrol/copy_rules.py`. [short lists]
@@ -116,7 +116,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 ### Instantly, Apollo and HubSpot details (PHASE0-CONFIRM)
 
 57. Instantly has no America/New_York in its time-zone list, so campaigns use America/Detroit (same rules). Check that a created campaign shows Mon–Fri and steps on days 0, 3, 8 and 15.
-58. Instantly: confirm the custom-variable length limit (worst case for s1_body is about 1,500 characters), that newlines survive in text-only mode, that the forward endpoint and is_evergreen behave as expected, and that step 2–4 sends stay on the step-1 address.
+58. Instantly: confirm the custom-variable length limit (worst case: s2_body about 2,350 characters of HTML, s1_body about 1,950 with the longest opener), that HTML in a custom variable renders in a campaign with text_only off (email_format = html; text is the fallback), that the forward endpoint and is_evergreen behave as expected, and that step 2–4 sends stay on the step-1 address.
 59. Apollo: `apollo_floor` and the monthly budget (`apollo_monthly_credits`, 2,000) count lead credits. Visitor discovery uses organization search with website-visitor filters (1 credit to confirm). bulk_match never runs the email waterfall; misses go to Clay.
 60. HubSpot: confirm the deal→company and contact→company association ids and the v4 unsubscribe-all endpoint. Suppression loads hard bounces only. Company match is on the primary domain and its www. form.
 
@@ -126,3 +126,39 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 62. Raw tables (including raw_clay_contacts, which holds names and emails) have no retention rule, but erase covers them. Should they follow the 12-month contacts rule? [kept]
 63. `erase` GDPR-deletes the HubSpot contact whoever created it, lists a manual Clay step, and deletes database rows even in dry-run. [yes]
 64. heartbeat_check alerts once when a job is newly missed and repeats at 09:00 UK. `test read` before the read date is labelled an early look. [yes]
+
+### Copy by industry (Harry, 30 Sep 2026)
+
+65. **The website and SPEC 10 disagree.** The industry pages say "licensed therapists" and quote statistics. SPEC 10 bans "licensed", "therapy" and "therapist", and allows no statistic but the 30% figure. The drafts follow SPEC 10: they say "professional counselors" and use no statistics. Keep SPEC 10's rules? [kept] **Answered 1 Oct: keep SPEC 10's ban.**
+66. **"Unlimited".** Your long-form email says "Counseling sessions are unlimited", which SPEC 10 bans. That bullet became "Sessions run early mornings, evenings and weekends". Should the ban go? [kept] **Answered 1 Oct: keep the ban.**
+67. **The price.** Three sources disagree:
+    - the website: "Packages from $250 a month", "priced per employee per month";
+    - your email: "Plans start from $195 per month";
+    - SPEC 4's size table: $195 up to 10 staff, $250 to 25, $350 to 50, $495 to 100, $995 to 200, then $5 an employee.
+
+    **Answered 1 Oct: "from $195 a month for the whole team"**, as the 1 October export of the pages says. Every email quotes it through `{{price_line}}` (General `price_from`).
+68. **"Trusted by tens of thousands of employees"** had a HubSpot-tracked link in your email, going somewhere unknown. Emails link only to the demo page, the industry page and spill.chat, with tracking off, so it has no link. Should it link a spill.chat page (reviews, customers)? [no link] **Answered 1 Oct: "trusted by over 50,000 employees", linking https://www.spill.chat/us (General `site_url`).** The pages' social proof still says "over 30,000 employees"; worth updating on the site.
+69. **Links in email 1.** SPEC 10 had step 1 carry one link only, the privacy page, for deliverability. Every email now carries the demo link, and email 2 carries the industry page. Watch spam placement in phase 2. [as you asked] **Answered 1 Oct: a link in every email. Email 1 links the industry page (or https://www.spill.chat/us when an industry has none) and asks for no demo; emails 2 to 4 link the demo page.**
+70. **The long form is email 2** (day 7), after a short hook on day 0, not email 1. [email 2] **Answered 1 Oct: yes.**
+71. **Sign-off.** Each email ends "Best," and the sender's first name; the footer then gives the full name. Would you prefer "Thanks," or no sign-off? [Best,] **Answered 1 Oct: "Best wishes," and the sender's first name.**
+72. **Page-only claims.** QA allows a claim that is on the industry's own page. The drafts use some to check are true for the US:
+    - HIPAA compliant;
+    - nothing reported to bar associations, boards or regulators;
+    - booking by text;
+    - sessions in several languages;
+    - post-incident sessions;
+    - manager training for team leads.
+
+    [allowed; confirm]
+73. **Pages with another page's copy on spill.chat.** These pages carry another page's intro and challenges:
+    - the churches page on Animal welfare, Arts & culture, Environmental nonprofits, Human rights, and International aid & relief;
+    - Social welfare on Emergency & rescue;
+    - Automotive & vehicles on Packaging;
+    - Private duty & live-in care on Supported living.
+
+    Many sub-industry pages also share their group's wording. The emails for these industries describe their own pressures, and QA checked them. [worth fixing on the site]
+    *Fixed (1 Oct, at Harry's request): corrections to these eight pages, and to Automotive & vehicles (which carried a packaging sentence), are saved in Webflow's US locale and await Harry's publish. The changes are in `docs/website/industry-pages-2026-10-01.md`, and the text from before them is in `industry-pages-2026-10-01-before.json`.*
+74. **The first test** (t1, the EAP opener against the General opener) names copy versions that no longer exist. With copy by industry, it could test two versions of one industry's row, or the opener on and off. [planned; decide before phase 3]
+75. **Role-specific copy** is a line per role in email 1. A row with `role` set (for example CPA firms for Operations) overrides it for that role, if you want to go further. [role lines]
+76. **Industries not contacted** (Insurance, HR consulting, Substance use treatment: partners) are on the Industries tab, off, with no copy. [no copy]
+77. **Duplicate page.** The 1 October export has a second Nonprofits item, `nonprofits-us`, a draft named "(duplicate item, archive)". The build ignores it; archive it on the site. Retail & E-commerce is now live, and only Small Businesses is still a draft. The eight pages with another page's copy (question 73) are unchanged.

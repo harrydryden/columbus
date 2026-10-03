@@ -54,13 +54,16 @@ class RequestsTransport:
     retried whatever it is. A timeout, dropped connection or 5xx can come after the server
     acted, so only an idempotent request is resent then; a write that may have happened is
     left to the caller, which can re-read state before trying again.
+
+    follow_redirects=False hands every redirect back to the caller as it came (the page reader,
+    sources/pages.py, puts each hop through the guard and robots.txt itself).
     """
 
-    def __init__(self, attempts: int = 4, backoff: float = 2.0):
+    def __init__(self, attempts: int = 4, backoff: float = 2.0, follow_redirects: bool = True):
         import requests
 
         self._session = requests.Session()
-        self.attempts, self.backoff = attempts, backoff
+        self.attempts, self.backoff, self.follow_redirects = attempts, backoff, follow_redirects
 
     def send(
         self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0, idempotent=True
@@ -70,7 +73,8 @@ class RequestsTransport:
         retry = RETRY_STATUSES if idempotent else {RATE_LIMITED}
         # HEAD is only used to see one redirect (Public.resolve_redirect), so never follow it;
         # and never let a redirect carry a key to another host.
-        follow = method.upper() != "HEAD" and not any(k.lower() in CREDENTIAL_HEADERS for k in headers)
+        follow = (self.follow_redirects and method.upper() != "HEAD"
+                  and not any(k.lower() in CREDENTIAL_HEADERS for k in headers))
         delay = self.backoff
         for attempt in range(1, self.attempts + 1):
             try:
@@ -131,18 +135,21 @@ class HttpClient:
         base_url: str | None = None,
         headers: dict[str, str] | None = None,
         raw: bool = False,
+        timeout: float | None = None,
     ) -> Any:
         """Authorize op, then send. Returns dry_result without sending when dry-run skips a write.
 
         raw=True returns the whole Response (status, body, headers) and leaves the status
-        to the caller, who then raises for errors itself.
+        to the caller, who then raises for errors itself. timeout (seconds) replaces the
+        transport's default for this request.
         """
         if not self.guard.authorize(self.system, op):
             return dry_result
         url = path if path.startswith("http") else (base_url or self.base_url) + path
+        extra = {"timeout": timeout} if timeout is not None else {}
         resp = self.transport.send(
             method, url, headers=headers or self.headers(), params=params, json=json, data=data,
-            idempotent=is_idempotent(method, op, self.paid_reads),
+            idempotent=is_idempotent(method, op, self.paid_reads), **extra,
         )
         if raw:
             return resp

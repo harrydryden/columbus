@@ -24,6 +24,13 @@ Sheet and Instantly writes happen only when live; dry-run reports what it would 
 "Warm" (PHASE0-CONFIRM: what Instantly reports for our four mailboxes): warmup is on,
 the account is active, and either Instantly's warmup score or health score is at least
 WARM_SCORE, or warmup (or the registry row) is at least WARM_DAYS old.
+
+The sending ramp (registry/ramp.py; Harry, 1 Oct 2026): a campaign's daily limit is the sum
+of its Active mailboxes' caps today, each the lower of the ramp (10 a day in a mailbox's
+first sending week, 20 in its second) and its daily_cap, and mailbox_health sets each
+Instantly account's own daily limit to the same number. So as the ramp moves, the daily drift
+check reports the campaign's limit and `campaigns ensure --fix --live` sets it. A mailbox a
+kill rule holds (learn/holds.py) counts as Paused here before the sheet catches up.
 """
 
 from __future__ import annotations
@@ -35,9 +42,18 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
-from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, STEP_DAYS, instantly_schedule, sequences, settings_drift
+from us_outbound.clients.instantly import (
+    STEP_DAYS,
+    campaign_settings,
+    instantly_schedule,
+    sequences,
+    settings_drift,
+    unsubscribe_line,
+)
 from us_outbound.context import UK, Context, boundaries_for
+from us_outbound.learn import holds
 from us_outbound.logs import log
+from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Mailbox, Settings
 from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
 
@@ -49,10 +65,22 @@ RETIRE_WAIT_DAYS = 30  # SPEC 9, 13: removed 30 days after retire, never within 
 DEFAULT_CAP = 30  # SPEC 13
 MAX_CAP = 30
 SIGNATURE = "{owner}\nSpill\nspill.chat/us"  # SPEC 5 default signature
-# Each step's subject and body are the lead's rendered custom variables (SPEC 9).
-CAMPAIGN_STEPS: tuple[dict[str, str], ...] = tuple(
-    {"subject": f"{{{{s{i}_subject}}}}", "body": f"{{{{s{i}_body}}}}"} for i in range(1, len(STEP_DAYS) + 1)
-)
+
+
+def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
+    """Each step: the lead's rendered subject and body (custom variables, SPEC 9), then Instantly's unsubscribe link.
+
+    In HTML the body variable sits in a <div>: Instantly drops text that is outside any tag when it saves a
+    step, so a bare "{{s1_body}}<p>…</p>" was saved as the unsubscribe line alone (the first live create,
+    2 Oct 2026, read back with `us-outbound campaigns show`).
+    """
+    def body(i: int) -> str:
+        var = f"{{{{s{i}_body}}}}"
+        return f"{var}{unsubscribe_line(True)}" if text_only else f"<div>{var}</div>{unsubscribe_line(False)}"
+
+    return tuple({"subject": f"{{{{s{i}_subject}}}}", "body": body(i)} for i in range(1, len(STEP_DAYS) + 1))
+
+
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
 _TAG = re.compile(r"<[^>]+>")
 
@@ -104,31 +132,47 @@ def warmup_to_status(warmup: Mapping[str, Any], *, today: date | None = None, ad
 # -- sending lists and campaigns -----------------------------------------------------
 
 
+def text_only(settings: Settings) -> bool:
+    """Instantly's text_only for the sheet's email_format: html (the default) sends links and bullets."""
+    return settings.general.email_format == "text"
+
+
 def sending_list(settings: Settings, owner: str) -> list[str]:
     return [m.address.lower() for m in settings.mailboxes_for(owner, ACTIVE)]
 
 
-def daily_limit(settings: Settings, owner: str) -> int:
-    return sum(m.daily_cap for m in settings.mailboxes_for(owner, ACTIVE))
+def daily_limit(settings: Settings, owner: str, caps: Mapping[str, int] | None = None) -> int:
+    """The owner's campaign limit: the sum of their Active mailboxes' caps today (caps: the ramp's, by address)."""
+    caps = caps or {}
+    return sum(caps.get(m.address.lower(), m.daily_cap) for m in settings.mailboxes_for(owner, ACTIVE))
+
+
+def _caps(ctx: Context, settings: Settings) -> dict[str, int]:
+    """Each mailbox's cap today, on the sending ramp (US Eastern date, as the send window)."""
+    return ramps_.caps(ctx.store, settings, ctx.now_et().date())
 
 
 def _plain(text: Any) -> str:
     return _TAG.sub("", str(text or "")).strip()
 
 
-def campaign_drift(campaign: Mapping[str, Any], settings: Settings, owner: str) -> dict[str, list]:
-    """{setting: [expected, actual]} where the campaign no longer matches SPEC 9, the sheet and the registry."""
+def campaign_drift(
+    campaign: Mapping[str, Any], settings: Settings, owner: str, caps: Mapping[str, int] | None = None
+) -> dict[str, list]:
+    """{setting: [expected, actual]} where the campaign no longer matches SPEC 9, the sheet, the registry and the ramp."""
     drift = settings_drift(
         campaign,
         accounts=sending_list(settings, owner),
-        daily_limit=daily_limit(settings, owner),
+        daily_limit=daily_limit(settings, owner, caps),
         window=settings.general.send_window,
+        text_only=text_only(settings),
     )
     out = {k: [want, got] for k, (want, got) in drift.items()}
     steps = ((campaign.get("sequences") or [{}])[0] or {}).get("steps") or []
-    for i, want in enumerate(CAMPAIGN_STEPS):
+    for i, step in enumerate(campaign_steps(text_only(settings))):
         variant = ((steps[i].get("variants") or [{}])[0] or {}) if i < len(steps) else {}
         # PHASE0-CONFIRM: Instantly may hand bodies back as HTML; tags are ignored here.
+        want = {k: _plain(v) for k, v in step.items()}
         got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body"))}
         if got != want:
             out[f"steps.{i + 1}"] = [dict(want), got]
@@ -139,7 +183,8 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
     """Make the owner's campaign carry their Active addresses; returns what was done."""
     inst = ctx.clients.instantly
     name = campaign_name(owner)
-    accounts, limit = sending_list(settings, owner), daily_limit(settings, owner)
+    settings = holds.with_holds(ctx.store, settings)
+    accounts, limit = sending_list(settings, owner), daily_limit(settings, owner, _caps(ctx, settings))
     campaign = inst.get_campaign(name)
     if campaign is None:
         if not accounts:
@@ -149,8 +194,8 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
             accounts=accounts,
             daily_limit=limit,
             schedule=settings.general.send_window,
-            steps=CAMPAIGN_STEPS,
-            options=dict(CAMPAIGN_SETTINGS),
+            steps=campaign_steps(text_only(settings)),
+            text_only=text_only(settings),
         )
         return "created (paused)"
     if not accounts:
@@ -163,14 +208,17 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
     return "sending list updated"
 
 
-def _fix_fields(drift: Mapping[str, Any], settings: Settings, owner: str) -> dict[str, Any]:
-    fields: dict[str, Any] = {k: CAMPAIGN_SETTINGS[k] for k in drift if k in CAMPAIGN_SETTINGS}
+def _fix_fields(
+    drift: Mapping[str, Any], settings: Settings, owner: str, caps: Mapping[str, int] | None = None
+) -> dict[str, Any]:
+    fixed = campaign_settings(text_only(settings))
+    fields: dict[str, Any] = {k: fixed[k] for k in drift if k in fixed}
     if any(k.startswith("schedule.") for k in drift):
         fields["campaign_schedule"] = instantly_schedule(settings.general.send_window)
     if any(k.startswith("steps") for k in drift):
-        fields["sequences"] = sequences(CAMPAIGN_STEPS)
+        fields["sequences"] = sequences(campaign_steps(text_only(settings)))
     if "daily_limit" in drift:
-        fields["daily_limit"] = daily_limit(settings, owner)
+        fields["daily_limit"] = daily_limit(settings, owner, caps)
     return fields
 
 
@@ -182,7 +230,8 @@ def ensure_campaigns(
     create=False only checks (missing campaigns are reported as pending). Campaigns named
     "US Outbound – " that match no registry owner are listed, never touched.
     """
-    settings = settings or ctx.settings
+    settings = holds.with_holds(ctx.store, settings or ctx.settings)
+    caps = _caps(ctx, settings)
     inst = ctx.clients.instantly
     found = {c["name"]: c for c in inst.list_campaigns()}
     owners = settings.owners()
@@ -198,7 +247,7 @@ def ensure_campaigns(
                 out["pending"].append(name)
             continue
         campaign = inst.get_campaign(name) or found[name]
-        drift = campaign_drift(campaign, settings, owner)
+        drift = campaign_drift(campaign, settings, owner, caps)
         if not accounts and campaign.get("status") in (0, 2):
             # Instantly cannot hold an empty sending list: a waiting (paused) campaign keeps its old one.
             drift.pop("email_list", None)
@@ -212,7 +261,7 @@ def ensure_campaigns(
                 inst.pause_campaign(name)
             else:
                 inst.update_campaign(
-                    name, _fix_fields(drift, settings, owner), accounts=accounts if "email_list" in drift else None
+                    name, _fix_fields(drift, settings, owner, caps), accounts=accounts if "email_list" in drift else None
                 )
             out["fixed"].append(name)
     out["unknown"] = sorted(n for n in found if n[len(US_CAMPAIGN_PREFIX):] not in owners)
@@ -370,7 +419,8 @@ def _as_int(v: Any) -> int:
 
 def _lower_limit(row: Mapping[str, Any]) -> bool:
     try:
-        return row.get("instantly_daily_limit") is not None and int(row["instantly_daily_limit"]) < int(row.get("daily_cap") or 0)
+        cap = row.get("cap_today", row.get("daily_cap"))  # the ramp's cap when it is lower than the sheet's
+        return row.get("instantly_daily_limit") is not None and int(row["instantly_daily_limit"]) < int(cap or 0)
     except (TypeError, ValueError):
         return False
 
@@ -387,10 +437,12 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
             + ("" if r.get("found") else ", not found in Instantly")
             + (f", Instantly limits it to {r['instantly_daily_limit']} a day (sheet cap {r['daily_cap']}; the lower is used)"
                if _lower_limit(r) else "")
+            + (f", {r['ramp']}" if r.get("ramp") else "")
         )
     for address, change in (out.get("limit_set") or {}).items():
         verb = "Would set" if ctx.dry_run else "Set"
-        lines.append(f"{verb} {address}'s Instantly daily limit from {change['from']} to {change['to']} (the Mailboxes tab's daily_cap)")
+        lines.append(f"{verb} {address}'s Instantly daily limit from {change['from']} to {change['to']} "
+                     "(the Mailboxes tab's daily_cap, or the ramp's when lower)")
     for owner, st in (out.get("campaign_status") or {}).items():
         if st.get("code") is not None:
             lines.append(f"Instantly says {campaign_name(owner)} is held back: {st['meaning']}"
@@ -436,7 +488,10 @@ def mailbox_health(ctx: Context) -> dict:
     #   sent_by_day:            campaign emails each mailbox sent on each of the last 7 days;
     #   campaign_status:        per owner, why Instantly says the campaign is not sending, if it is not.
     # The Mailboxes tab is where caps are set: a mailbox whose Instantly limit differs from its
-    # daily_cap is set back to the cap (live; reported in dry-run), as warmup is turned back on.
+    # cap today (its daily_cap, or the sending ramp's when lower) is set to it (live; reported
+    # in dry-run), as warmup is turned back on.
+    ramp = ramps_.ramps(ctx.store, settings, ctx.now_et().date())
+    out["ramp"] = {a: r.as_dict() for a, r in ramp.items()}
     out["instantly_daily_limits"] = {}
     out["limit_set"] = {}
     for m in registry:
@@ -444,8 +499,9 @@ def mailbox_health(ctx: Context) -> dict:
         if not w.get("found") or w.get("daily_limit") is None:
             continue
         out["instantly_daily_limits"][m.address.lower()] = w["daily_limit"]
-        if m.status != RETIRED and _as_int(w["daily_limit"]) != int(m.daily_cap or 0):
-            out["limit_set"][m.address.lower()] = {"from": w["daily_limit"], "to": int(m.daily_cap or 0)}
+        cap = ramp[m.address.lower()].cap if m.address.lower() in ramp else int(m.daily_cap or 0)
+        if m.status != RETIRED and _as_int(w["daily_limit"]) != cap:
+            out["limit_set"][m.address.lower()] = {"from": w["daily_limit"], "to": cap}
     present = [m.address.lower() for m in registry if warmups.get(m.address.lower(), {}).get("found")]
     out["sent_by_day"] = {}
     if present:
@@ -464,6 +520,8 @@ def mailbox_health(ctx: Context) -> dict:
             "address": m.address, "owner": m.owner_name, "status": m.status, "found": bool(w.get("found")),
             "warmup_enabled": bool(w.get("warmup_enabled")), "warmup_score": w.get("warmup_score"),
             "account_status": w.get("status"), "daily_cap": m.daily_cap, "instantly_daily_limit": w.get("daily_limit"),
+            "ramp": ramp[m.address.lower()].describe() if m.address.lower() in ramp else "",
+            "cap_today": ramp[m.address.lower()].cap if m.address.lower() in ramp else m.daily_cap,
         })
         if not w.get("found"):
             out["not_found"].append(m.address)
@@ -484,7 +542,7 @@ def mailbox_health(ctx: Context) -> dict:
     if out["warmup_turned_on"]:
         inst.enable_warmup(out["warmup_turned_on"])  # SPEC 13: warmup always on
     for address, change in out["limit_set"].items():
-        inst.set_daily_limit(address, change["to"])  # the sheet's daily_cap is the one place caps are set
+        inst.set_daily_limit(address, change["to"])  # the sheet's daily_cap (or the ramp's) is the one place caps are set
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new_settings = settings
     for m, status in changes:

@@ -1,28 +1,41 @@
-"""The render-time copy check (SPEC 10 "Rules"; SPEC 1.4; SPEC 13 CAN-SPAM).
+"""The copy rules (SPEC 10 "Rules"; SPEC 1.4; SPEC 13 CAN-SPAM; Harry, 30 Sep 2026).
 
-check() runs on every rendered email before it is handed to Instantly. Any violation
-blocks the send: SPEC 1.4 says the copy rules are enforced by a check at render time,
-not only by review. It returns every violation, not just the first.
+Every email is checked twice: on the sheet, when copy is written (enrol/copy_check.py renders
+every row with sample values), and at render time, for the lead it is going to. Any violation
+blocks the send: SPEC 1.4 says the copy rules are enforced by a check at render time, not only
+by review. Each check returns every violation, not just the first.
 
-The rules (SPEC 10):
+The word rules (content_violations; SPEC 10):
   * "counselor" and "counseling", never "therapy" or "therapist";
-  * "registered", never "licensed";
+  * never "licensed" (SPEC 10 says "registered"; facts.md says "professional counselors");
   * no "unlimited";
   * never disparage the prospect's existing EAP or benefits (a small phrase list, for
-    Harry to review);
-  * "EAP" is fine when naming theirs, but never in Spill's product name;
+    Harry to review); "EAP" is fine when naming theirs, but never in Spill's product name;
   * American spelling;
   * the 30% utilization figure is the only statistic allowed;
-  * no empty or unrendered {{variable}};
-  * no line over 300 characters;
-  * every copy row sent has status approved.
-Step 1 also carries exactly one link, the privacy and opt-out page (SPEC 10 "Sequence").
-
-A demo is always with Harry (SPEC 9 "Sender continuity"), so a sender who is not the demo
-host may not offer "a time with me", and the host may not call himself "my colleague".
+  * a sender who is not the demo host may not offer "a time with me" (SPEC 9).
+The rules on the copy as written (source_violations): it opens "Hi {{first_name}}," and ends
+"Best wishes," and {{sender_first_name}}; no exclamation marks; no dollar figures (the price comes
+from {{price_line}}, General price_from); no "Re:" or emoji in a subject; {{opener}} and
+{{legal_overlay}} alone on their lines.
+The rules on each email as sent (email_violations): a subject; no empty or unrendered
+{{variable}}; no line over 300 characters; the word count for its step; no spam phrases; no
+bare addresses; email 1 links the industry page and not the demo page (Harry, 1 Oct 2026: a demo
+ask first is too presumptive); emails 2 to 4 have exactly one link to the demo page, the call to
+action; links only to the demo page, the industry page or spill.chat. Harry, 1 Oct 2026: email 1
+informs and plants a seed, so its copy asks for nothing but a visit to the site (no demo, call or
+meeting words), and email 4 alludes to the free trial before it signs off ("free trial" is allowed
+there and nowhere else).
+SPEC 10 had step 1 carry one link only, the privacy page; Harry asked for the demo link in
+every email and the industry page in the sequence (docs/pipeline.md, "Copy").
 
 content_violations() is the word-level part on its own: render.py uses it to test an
-opener before choosing it, and reply drafts (SPEC 11) can use it too.
+opener before choosing it, and reply drafts (SPEC 11) can use it too. opener_violations() adds
+the email-1 rules that read every word of the body (spam phrases, a demo, call or meeting ask, bare
+addresses), so an opener filled with a posting like "Call Center Agent" is dropped rather than
+blocking the email, and the rule that is the opener's alone: it never mentions funding or money
+(money_violations; Harry, 2 Oct 2026: funding is a signal, never a line). Email bodies are not
+held to that one: nonprofit copy says "funding cycles" and fintech copy "a long fundraise".
 """
 
 from __future__ import annotations
@@ -30,7 +43,6 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 
-from us_outbound.settings.model import CopyRow
 
 MAX_LINE = 300  # SPEC 10: no line over 300 characters
 ALLOWED_STATISTIC = "30"  # SPEC 10: the 30% utilization figure is the only statistic allowed
@@ -85,7 +97,7 @@ def _our(w: str) -> str:
 
 
 def _ise(w: str) -> str:
-    return re.sub(r"is(e|ed|es|ing|ation|ations|er|ers)$", r"iz\1", w)
+    return re.sub(r"is(e|ed|es|ing|ation|ations|ational|ationally|er|ers)$", r"iz\1", w)
 
 
 def _yse(w: str) -> str:
@@ -139,7 +151,7 @@ BRITISH_WORDS: dict[str, str] = {
 BRITISH: tuple[tuple[re.Pattern[str], Callable[[str], str]], ...] = (
     (_rx(r"\b(?:" + "|".join(re.escape(w) for w in BRITISH_WORDS).replace(r"\ ", r"\s+") + r")\b"),
      lambda w: BRITISH_WORDS.get(re.sub(r"\s+", " ", w), w)),
-    (_rx(rf"\b(?:re|de|un|over)?(?:{_ISE_STEMS})is(?:e|ed|es|ing|ation|ations|er|ers)\b"), _ise),
+    (_rx(rf"\b(?:re|de|un|over)?(?:{_ISE_STEMS})is(?:e|ed|es|ing|ation|ations|ational|ationally|er|ers)\b"), _ise),
     (_rx(r"\b(?:anal|paral|catal)ys(?:e|ed|ing)\b"), _yse),  # "analyses" is also the American plural noun
     (_rx(rf"\b(?:dis|un|mis|re)?(?:{_OUR_STEMS})our(?:s|ed|ing|al|ally|ful|fully|ite|ites|able|ably|er|ers|hood|less)?\b"), _our),
     (_rx(rf"\b(?:{_RE_STEMS})re(?:s|d)?\b"), _re),
@@ -279,44 +291,185 @@ def structure_violations(text: str) -> list[str]:
     return out
 
 
-def check(
-    rendered_subject: str,
-    rendered_body: str,
+# -- one email, as copy (the sheet) and as sent (Harry, 30 Sep 2026) ----------------------------
+
+GREETING = re.compile(r"^Hi \{\{\s*first_name\s*\}\},$")
+SIGN_OFF_NAME = re.compile(r"^\{\{\s*sender_first_name\s*\}\}$")
+SIGN_OFFS = ("Best wishes,",)  # Harry, 1 Oct 2026
+# Words each email may have, not counting the greeting and the sign-off (style.md gives the
+# targets; these are the limits past which the email is blocked).
+STEP_WORDS: dict[int, tuple[int, int]] = {1: (40, 120), 2: (150, 300), 3: (30, 100), 4: (25, 90)}
+SUBJECT_MAX = 60  # characters, with a typical company name (the sheet check); style.md asks for under 50
+SUBJECT_MAX_SENT = 150  # characters as sent, whatever the company name
+SPAM_PHRASES: tuple[re.Pattern[str], ...] = tuple(
+    _rx(rf"\b{p}\b")
+    for p in (
+        r"click here", r"act now", r"limited time", r"risk[- ]free", r"guaranteed?", r"no obligation",
+        r"free trial", r"buy now", r"special offer", r"exclusive (?:deal|offer)", r"once in a lifetime",
+    )
+)
+# Harry, 1 Oct 2026: the last email alludes to a free trial before it signs off, so "free trial"
+# is allowed there (and required), and nowhere else.
+FREE_TRIAL = _rx(r"\bfree trial\b")
+TRIAL_STEP = 4
+# Harry, 1 Oct 2026: email 1 informs and plants a seed. It asks only for a visit to the site,
+# never for a demo, a call or a meeting (the signature's own booking line is not the copy).
+_STEP1_ASK = _rx(
+    r"\b(?:demo|demos|book(?:ing)?|(?<!on-)calls?(?!-)|meetings?|calendar|schedule|hop on|jump on|walkthrough"
+    r"|(?:15|20|30)[- ]minutes?)\b"
+)  # "on-call" and "call-outs" are industry words, not an ask
+POOR_ANCHORS = frozenset({"here", "click here", "this link", "link", "this", "click"})
+_DOLLARS = re.compile(r"\$\s?\d|\b\d[\d,]*\s?(?:dollars|USD)\b", _I)
+_EMOJI = re.compile("[\u2600-\u27bf\U0001f000-\U0001faff]")
+_REPLY_PREFIX = _rx(r"^\s*(?:re|fwd?)\s*:")
+SPILL_PAGES = ("https://www.spill.chat/", "https://spill.chat/")
+
+
+def source_violations(subject: str, body: str, *, step: int) -> list[str]:
+    """Rules on the copy as written in the sheet, before any value goes in."""
+    out: list[str] = []
+    lines = [line.strip() for line in body.replace("\r\n", "\n").split("\n") if line.strip()]
+    if not lines or not GREETING.match(lines[0]):
+        out.append('body must start with the line "Hi {{first_name}},"')
+    if len(lines) < 2 or not SIGN_OFF_NAME.match(lines[-1]) or lines[-2] not in SIGN_OFFS:
+        out.append('body must end with the line "Best wishes," and then "{{sender_first_name}}"')
+    for part, text in (("subject", subject), ("body", body)):
+        if "!" in text:
+            out.append(f"{part} has an exclamation mark; the style is calm, not salesy")
+        for m in _DOLLARS.finditer(text):
+            out.append(f'{part} has the price "{_quoted(m)}"; the price comes only from {{{{price_line}}}} (General price_from)')
+    if _REPLY_PREFIX.match(subject):
+        out.append('subject starts with "Re:" or "Fwd:" for an email that is neither')
+    if _EMOJI.search(subject):
+        out.append("subject has an emoji")
+    for name in ("opener", "legal_overlay"):
+        for line in body.split("\n"):
+            if re.search(rf"\{{\{{\s*{name}\s*\}}\}}", line) and not re.fullmatch(rf"\s*\{{\{{\s*{name}\s*\}}\}}\s*", line):
+                out.append(f"{{{{{name}}}}} must be alone on its line, so the line disappears when it is empty")
+    return out
+
+
+def email_violations(
+    subject: str,
+    words: str,
+    links_found: Iterable[tuple[str, str]],
     *,
-    copy_row: CopyRow | None,
-    step: int | None,
+    step: int,
+    demo_url: str,
+    industry_url: str = "",
     sender_is_harry: bool,
-    privacy_url: str | None = None,
     demo_host: str = "Harry Dryden",
     exempt: Iterable[str] = (),
+    uncounted: Iterable[str] = (),
+    site_url: str = "",
 ) -> list[str]:
-    """Every violation of the SPEC 10 rules in one rendered email; the send is blocked if any.
+    """Rules on one email as it will be sent: its subject, its words and its links (signature and notice excluded).
 
-    copy_row: the Copy-tab row it came from (None for a reply draft, which has no row).
-    step: 1 to 4, or None for a reply draft. Step 1 must carry exactly one link, the
-      privacy and opt-out page (privacy_url, when given).
-    exempt: literal strings the word rules skip (the prospect's name, company and place,
-      and our postal address); line length and variables still apply to them.
+    uncounted: filled-in lines that are not the copy's own words (the evidence opener, the legal
+    overlay), left out of the word count so a long opener never blocks an email.
     """
     exempt = tuple(exempt)
     out: list[str] = []
-    if copy_row is not None and copy_row.status != "approved":
-        out.append(f"copy {copy_row.copy_version} step {copy_row.step} is {copy_row.status or 'blank'}, not approved")
-    if step == 1 and not rendered_subject.strip():
+    if not subject.strip():
         out.append("subject is empty")
-    if not rendered_body.strip():
-        out.append("body is empty")
-    if "\n" in rendered_subject:
+    if "\n" in subject:
         out.append("subject has a line break")
-    for part, text in (("subject", rendered_subject), ("body", rendered_body)):
+    if len(subject) > SUBJECT_MAX_SENT:
+        out.append(f"subject is {len(subject)} characters (the limit is {SUBJECT_MAX_SENT})")
+    if not words.strip():
+        out.append("body is empty")
+    for part, text in (("subject", subject), ("body", words)):
         out.extend(f"{part} {v}" for v in content_violations(
             text, sender_is_harry=sender_is_harry, demo_host=demo_host, exempt=exempt
         ))
         out.extend(f"{part} {v}" for v in structure_violations(text))
+        masked = _mask(text, exempt)
+        for rx in SPAM_PHRASES:
+            for m in rx.finditer(masked):
+                if step == TRIAL_STEP and part == "body" and rx.pattern == FREE_TRIAL.pattern:
+                    continue  # the free trial belongs in the last email (Harry, 1 Oct 2026)
+                out.append(f'{part} says "{_quoted(m)}", which reads as spam')
+    if step == TRIAL_STEP and not FREE_TRIAL.search(words):
+        out.append("email 4 does not mention the free trial; the last email alludes to it before signing off")
     if step == 1:
-        found = links(rendered_subject) + links(rendered_body)
-        if len(found) != 1:
-            out.append(f"step 1 has {len(found)} links; it may have only one, the privacy and opt-out link")
-        elif privacy_url and _norm_link(found[0]) != _norm_link(privacy_url):
-            out.append(f'step 1\'s one link must be the privacy and opt-out page, not "{found[0]}"')
+        for m in _STEP1_ASK.finditer(_mask(words, exempt)):
+            out.append(f'email 1 says "{_quoted(m)}"; the first email asks only for a visit to the site, '
+                       "never a demo, call or meeting")
+    for bare in links(_mask(words, exempt)):
+        out.append(f'body has the bare address "{bare}"; write it as [anchor text](link)')
+    lines = [line for line in words.split("\n") if line.strip()]
+    counted = " ".join(lines[1:-2]) if len(lines) > 3 else " ".join(lines)
+    from us_outbound.enrol.copy_markup import word_count
+
+    n = word_count(counted) - sum(word_count(u) for u in uncounted if u and u in counted)
+    lo, hi = STEP_WORDS.get(step, (0, 10**6))
+    if not lo <= n <= hi:
+        out.append(f"email {step} has {n} words; it should have {lo} to {hi}")
+    found = list(links_found)
+    demo = [u for _, u in found if _norm_link(u) == _norm_link(demo_url)] if demo_url else []
+    page = [u for _, u in found if industry_url and _norm_link(u) == _norm_link(industry_url)]
+    if step == 1:
+        # Harry, 1 Oct 2026: a demo ask in the first email is too presumptive; it links the industry page.
+        if demo:
+            out.append("email 1 links the demo page; the first email links the industry page instead")
+        if industry_url and len(page) != 1:
+            out.append(f"email 1 has {len(page)} links to the industry page; it has exactly one")
+    elif len(demo) != 1:
+        out.append(f"has {len(demo)} links to the demo page; emails 2 to 4 have exactly one, the call to action")
+    # With no industry page, {{industry_url}} is the site, which the "trusted by" line also links.
+    if industry_url and _norm_link(industry_url) != _norm_link(site_url) \
+            and sum(1 for _, u in found if _norm_link(u) == _norm_link(industry_url)) > 1:
+        out.append("links the industry page more than once")
+    for anchor, url in found:
+        if anchor.strip().casefold().rstrip(".") in POOR_ANCHORS:
+            out.append(f'has the anchor text "{anchor}"; say where the link goes')
+        known = {_norm_link(u) for u in (demo_url, industry_url) if u}
+        if _norm_link(url) not in known and not url.startswith(SPILL_PAGES):
+            out.append(f'links to "{url}"; emails link only to the demo page, the industry page or spill.chat')
     return list(dict.fromkeys(out))
+
+
+def opener_violations(text: str, *, exempt: Iterable[str] = ()) -> list[str]:
+    """The email-1 rules that read every word of the body, on an opener alone: spam phrases, an ask for a
+    demo, call or meeting, and bare addresses (render.pick_opener; Harry, 2 Oct 2026); and the opener's
+    own rule, no funding or money (money_violations).
+
+    A filled opener that breaks one of the email-1 rules would block email 1 at render time, so it is
+    dropped first; one that mentions funding or money is dropped the same way.
+    """
+    masked = _mask(text, exempt)
+    out = [f'says "{_quoted(m)}", which reads as spam' for rx in SPAM_PHRASES for m in rx.finditer(masked)]
+    out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
+            for m in _STEP1_ASK.finditer(masked)]
+    out += [f'has the bare address "{bare}"' for bare in links(masked)]
+    out += money_violations(masked)
+    return out
+
+
+# -- openers never mention funding or money (Harry, 2 Oct 2026) -----------------------------------
+# Funding is a signal, never a line. A round tells us a team is going through a period of change, and
+# the opener speaks to what that change tends to bring for people, never to the money: a line about
+# the round reads as money grabbing (style.md, "Openers"). Openers only, as written on the sheet
+# (copy_desk.check_openers) and as filled (render.pick_opener); never email bodies.
+MONEY_ADVICE = "an opener never mentions funding or money: funding is a signal, never a line (style.md)"
+MONEY: tuple[re.Pattern[str], ...] = (
+    _rx(r"\{\s*funding\w*\s*\}"),  # a funding token as written on the sheet: {funding_stage}
+    _rx(
+        r"\b(?:fund(?:s|ed|ing|er|ers)?|fundrais(?:e|es|ed|er|ers|ing)|rais(?:e|es|ed|ing)"
+        r"|(?:pre-)?seed(?:\s+rounds?|[- ]stage)|pre-seed|rounds?|investors?|investments?|capital|valuations?"
+        r"|backed|backing|backers?|ipos?|vcs?|financ(?:ed|ing)|money|cash|dollars?)(?![a-z_])"
+    ),  # "seed" alone is a crop in agritech, and "finance" a team: neither is a round
+    re.compile(r"\b[Ss]eries\s+[A-Z](?![A-Za-z])"),  # Series A; "a series of changes" is not a round
+    re.compile(r"\$\s?\d[\d,.]*(?:\s?(?:[KMB]|million|billion)(?![A-Za-z]))?", re.IGNORECASE),
+)
+
+
+def money_violations(text: str, *, exempt: Iterable[str] = ()) -> list[str]:
+    """Every mention of funding or money in an opener line ("raised", "Series A", "seed round", "investors",
+    "{funding_stage}"), as written or as filled. exempt: proper nouns that are not our wording, like a
+    company called Summit Capital."""
+    masked = _mask(text, exempt)
+    found: list[re.Match[str]] = []
+    for rx in MONEY:  # one mention once: "{funding_stage}" is not also "funding"
+        found += [m for m in rx.finditer(masked) if not any(m.start() < f.end() and f.start() < m.end() for f in found)]
+    return [f'says "{_quoted(m)}"; {MONEY_ADVICE}' for m in sorted(found, key=lambda m: m.start())]

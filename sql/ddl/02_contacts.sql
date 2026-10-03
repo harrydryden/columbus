@@ -26,10 +26,14 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   created_at timestamptz,
   last_step_at timestamptz,
   enrolled_at timestamptz,
+  opener_arm text,
+  opener_source text,
   PRIMARY KEY (contact_id)
 );
--- For databases created before enrolled_at existed.
+-- For databases created before enrolled_at, opener_arm and opener_source existed.
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS enrolled_at timestamptz;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS opener_arm text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS opener_source text;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
@@ -42,4 +46,8 @@ COMMENT ON COLUMN us_outbound.contacts.enrolment_month IS 'YYYY-MM of first enro
 COMMENT ON COLUMN us_outbound.contacts.mailbox IS 'The sender''s address that sent step 1.';
 COMMENT ON COLUMN us_outbound.contacts.instantly_campaign IS 'The sender''s campaign, named ''US Outbound – '' plus the owner name (SPEC 9).';
 COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent (build addition, for retention).';
+COMMENT ON COLUMN us_outbound.contacts.opener_arm IS 'Email 1''s opener arm at enrollment (build addition; enrol/openers.py). One of: opener, holdout, none. holdout: the opener_holdout_share of accounts held out with no opener, by account hash, so replies compare opener against none.';
+COMMENT ON COLUMN us_outbound.contacts.opener_source IS 'The opener line used, or for a holdout the one it would have had: the signal and Signals-tab column (e.g. New People leader / opener_self), focus, or the generic line''s General key (e.g. opener_generic_ops) (build addition).';
+COMMENT ON COLUMN us_outbound.contacts.suppressed IS 'Never emailed: an opt-out or a bounce, or a person an approver declined at a send approval (enrol/approvals.py; Harry, 2 Oct 2026). A declined person is not added to the suppression table: they did not opt out.';
+COMMENT ON COLUMN us_outbound.contacts.suppressed_reason IS 'Why it is suppressed, e.g. declined in Slack by U01ABCDEF at a send approval (2 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.enrolled_at IS 'When the lead was added to its sender''s campaign (build addition). The send forecast dates each lead''s later steps from it, and the weekly target counts it.';

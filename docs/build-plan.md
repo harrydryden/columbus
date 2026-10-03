@@ -37,7 +37,8 @@ The Thanksgiving blackout (23–27 Nov) falls inside phase 3. Sends pause, but t
 | Mailboxes: warmup status | `registry/mailboxes.py` (mailbox_health) |
 | Suppression from HubSpot opt-outs and bounces | `suppression.py`, `us-outbound suppression load` |
 | Dry-run everywhere | `guard.py`. Live needs `--live` and `live_sending = yes`, also for the scheduler's `--live` jobs |
-| Footer, privacy link and legitimate-interests text for Harry to approve | `templates/copy/footer.txt`, `templates/copy/article14.txt` (drafts) |
+| Signature and legitimate-interests text for Harry to approve; Instantly's unsubscribe link in every step (no postal address or privacy link, Harry 1 Oct) | `templates/copy/signature.txt`, `templates/copy/article14.txt` (drafts), `clients/instantly.py` |
+| All 108 industry pages on the Industries tab; a four-email sequence per industry on the Copy tab, checked and QA'd, for Harry to approve (Harry, 30 Sep 2026) | `settings/data/`, `us-outbound settings load`; the copy desk (`enrol/copy_desk.py`, `us-outbound copy check\|preview\|qa\|draft`); `templates/copy/style.md`, `facts.md` |
 
 To support phase 0, the build also includes the pieces the end-to-end dry run exercises:
 - data cleaning
@@ -89,7 +90,7 @@ See `docs/phase0-runbook.md` for commands, and `docs/phase0-facts.md` for what h
    - Confirm the step days (0, 7, 14, 21) and what the analytics and sending-status endpoints return.
 8. **Clay:** create the "US Outbound" folder and the two functions (SPEC 8). Enable API access, set the budget, and try them on 20 hand-picked accounts.
 9. **Apollo tracker:** change "us/pricing" to "/us/pricing", add "/us/book-demo" as high intent, then confirm data arrives and the script is not on employee-facing pages.
-10. **Privacy:** publish the US privacy and opt-out page (the Webflow page is still a draft). Approve the footer and Article 14 text.
+10. **Signature:** approve the signature and Article 14 text. No privacy page or postal address is needed (Harry, 1 Oct); the opt-out is Instantly's unsubscribe link.
 11. **Suppression:** `us-outbound suppression load --live`.
 12. **Mailboxes:** check domain authentication (SPF, DKIM, DMARC p=none) for meetspill.org and tryspill.org.
 

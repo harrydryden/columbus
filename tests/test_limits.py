@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from tests.fakes import make_context
+from tests.test_ramp import past_ramp
 from tests.test_render import make_settings
 from us_outbound import limits
 
@@ -30,6 +31,7 @@ def spend(system, credits, ctx_now):
 
 def test_the_head_line_names_the_binding_term():
     ctx = ctx_with()
+    past_ramp(ctx.store, ctx.settings.mailboxes)
     lim = limits.today(ctx, TUE, ready_accounts=100)
     # 150 a week over 4 send days is 38; 4 mailboxes at 30 a day give 8 + 15 + 8 new today.
     assert lim.number == 31 and lim.terms["binding"] == "sending_capacity"
@@ -84,6 +86,7 @@ def test_a_full_sender_with_accounts_waiting_says_add_a_mailbox():
     from tests.test_render import HANNAH
 
     ctx = make_context(make_settings(mailboxes=(HANNAH,)))
+    past_ramp(ctx.store, ctx.settings.mailboxes)
     ctx.store.insert("heartbeats", [{"run_id": "mh", "job": "mailbox_health", "status": "ok",
                                      "started_at": datetime(2026, 10, 27, 7, tzinfo=UTC),
                                      "detail": {"campaign_status": {"Hannah Spalding": {

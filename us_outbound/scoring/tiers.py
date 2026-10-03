@@ -11,8 +11,10 @@ Hard exclusions are fixed in code, not in the settings sheet:
   * partners, never prospected and written to the partners table: brokers, insurers,
     HR-tech vendors, PEOs (NAICS 561330), HR consultancies (541612) and behavioral-health
     providers, found by NAICS or by keywords in the industry label and Apollo keywords;
-  * anything HubSpot marks: a customer, an open deal, an active sequence, an opted-out or
-    bounced contact, an owner other than Harry, or another user's activity in 90 days;
+  * anything HubSpot marks: a customer (or a former one), an open deal, an active sequence, an
+    opted-out or bounced contact, an owner other than Harry, or another user's activity in 90 days;
+  * a company an approver dropped at a send approval (🚫 or "company" in Slack, or `approvals reject
+    --company`; enrol/approvals.py, Harry, 2 Oct 2026), kept as a declined_in_slack fact;
   * more than 20% of US-located staff in CA or WA (or in FL, until FL is switched on);
   * fewer than 5 US-located people found;
   * founded less than 2 years ago;
@@ -81,20 +83,29 @@ PARTNER_KEYWORDS: dict[str, tuple[str, ...]] = {
         "behavioral health", "behavioural health", "mental health services", "mental health care",
         "mental healthcare", "therapy practice", "counseling practice", "counselling practice",
         "psychotherapy", "EAP provider", "employee assistance program",
+        # Teletherapy companies are competitors. Apollo rarely gives them a behavioral-health NAICS, so
+        # inside Digital health or Healthtech they were let in (design review Appendix A.4, 1 Oct 2026).
+        "teletherapy", "online therapy", "virtual therapy", "mental health platform",
     ),
 }
 # Where industry text lives: the account row, and apollo_org facts.
 KEYWORD_FIELDS = ("industry", "apollo_industry", "keywords", "apollo_keywords")
 
-# HubSpot facts (source "hubspot"): any true excludes the account.
+# HubSpot facts (source "hubspot"): any true excludes the account. enrol's HubSpot re-check writes
+# them, and so does the lookalikes job for every Spill customer it reads (sources/lookalikes.py).
 HUBSPOT_EXCLUSIONS = (
     ("hubspot_customer", "a customer in HubSpot"),
+    ("hubspot_former_customer", "a former customer in HubSpot"),
     ("hubspot_open_deal", "an open deal in HubSpot"),
     ("hubspot_active_sequence", "a contact in an active HubSpot sequence"),
     ("hubspot_opted_out_or_bounced", "a contact opted out or bounced in HubSpot"),
     ("hubspot_other_owner", "owned by someone else in HubSpot"),
     ("hubspot_other_activity_90d", "activity by another HubSpot user in the last 90 days"),
 )
+# Decisions people made about an account, kept as facts so a rescore keeps them (enrol.mark_excluded writes
+# them). declined_in_slack: an approver dropped the company at a send approval (enrol/approvals.py).
+DECLINED_IN_SLACK = "declined_in_slack"
+DECISION_EXCLUSIONS = ((DECLINED_IN_SLACK, "dropped by an approver at a send approval in Slack"),)
 
 
 # -- small parsers -------------------------------------------------------------
@@ -193,11 +204,11 @@ def hard_exclusion(
         category, what = partner
         return f"{PARTNER_LABELS[category]}, a partner ({what})"
 
-    for fact, reason in HUBSPOT_EXCLUSIONS:
+    for fact, reason in HUBSPOT_EXCLUSIONS + DECISION_EXCLUSIONS:
         if _truthy(facts.get(fact)):
             return reason
 
-    active = {s.upper() for s in settings.active_states()}
+    active ={s.upper() for s in settings.active_states()}
     state = str(_first(account, facts, "hq_state") or "").strip().upper()
     if not state:
         return "HQ state unknown"

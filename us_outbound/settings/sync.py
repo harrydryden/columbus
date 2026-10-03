@@ -12,7 +12,9 @@ Nightly at 02:00 UK and on demand:
      The tab's keys in sheet order are versioned the same way, in one row per tab with
      tab = ORDER_TAB, so the settings jobs load keep the sheet's order (roles listed first
      win a tie, the first approved copy version, and so on).
-  4. Bring the Named accounts tab in through the front door (sources/named.py).
+  4. Bring the Named accounts tab in through the front door (sources/named.py), and write
+     the lookalike facts from the cells the weekly lookalikes job stored, so an account
+     sourced since then is scored on them (sources/lookalikes.py; no HubSpot call).
   5. Rescore the queue with the settings now in force, so today's change shapes
      tomorrow's enrollment.
 
@@ -34,13 +36,25 @@ from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
-from us_outbound.settings.validate import HEADER_ROW, KEY_COLUMNS, MAY_BE_EMPTY, RowError, natural_key, validate_all
+from us_outbound.settings.validate import (
+    HEADER_ROW,
+    KEY_COLUMNS,
+    MAY_BE_EMPTY,
+    RowError,
+    is_legacy_copy,
+    is_legacy_roles,
+    natural_key,
+    validate_all,
+)
 
 TABLE = "settings"
 SLACK_ERROR_LINES = 20
 # Tabs whose rows name rows on another tab. If one of these has to keep its previous
 # version, the version of the tab it names that is now on the sheet may not fit it.
-DEPENDS_ON: dict[str, tuple[str, ...]] = {"Signals": ("Angles",), "Copy": ("Angles",), "Tests": ("Copy",)}
+DEPENDS_ON: dict[str, tuple[str, ...]] = {
+    "Signals": ("Angles",), "Copy": ("Industries", "Roles"), "Tests": ("Copy",), "Focus": ("Industries",),
+    "Roles": ("Industries",),  # industry_groups (Harry, 1 Oct 2026)
+}
 
 ORDER_TAB = "_order"  # key = a tab name, values = {"keys": [its keys in sheet order]}; views ignore it
 
@@ -227,6 +241,13 @@ def _named(ctx: Context) -> dict:
     return named.run(ctx)
 
 
+def _lookalikes(ctx: Context) -> dict:
+    """Lookalike facts from the stored cells, before the rescore scores them (sources/lookalikes.py)."""
+    from us_outbound.sources import lookalikes
+
+    return lookalikes.apply(ctx)
+
+
 def _rescore(ctx: Context) -> bool:
     """Rescore the queue with the settings now in force (SPEC 5). Imported here, as tests replace the module."""
     from us_outbound.scoring import score
@@ -294,12 +315,13 @@ def run(ctx: Context) -> dict:
             log("settings_sync_alert_failed", error=str(exc))
 
     settings, _ = load_current(ctx.store)
-    rescored, named = False, None
+    rescored, named, lookalike = False, None, None
     if settings is None:
         log("settings_sync_rescore_skipped", reason="settings unusable", unusable=unusable)
     else:
         current = dataclasses.replace(ctx, settings=settings)
         named = _named(current)
+        lookalike = _lookalikes(current)
         rescored = _rescore(current)
 
     summary = {
@@ -312,8 +334,21 @@ def run(ctx: Context) -> dict:
         "errors": sum(len(v) for v in report.values()),
         "alerted": alerted,
         "named_accounts": named,
+        "lookalike_facts": lookalike,
         "rescored": rescored,
     }
+    if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
+        summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
+                                  "run `us-outbound settings load --tab Copy --live`")
+    if sheet.get("Roles") and is_legacy_roles(set().union(*(set(r) for r in sheet["Roles"]))):
+        summary["roles_notice"] = ("the Roles tab is still in SPEC 5's layout, so contacts follow the old order; "
+                                   "run `us-outbound settings load --tab Roles --live` for Harry's 1 Oct order")
+    if settings is not None:
+        from us_outbound.sources.pages import sheet_notice
+
+        notice = sheet_notice(settings)
+        if notice:
+            summary["signals_notice"] = notice
     log("settings_sync", **summary)
     if alert_error is not None:
         raise alert_error

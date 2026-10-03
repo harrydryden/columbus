@@ -154,7 +154,8 @@ def test_the_named_signal_scores_a_named_account():
     events = [{"event_id": "e1", "account_id": "a1", "source": "named", "fact": "named", "value": True,
                "quote": "On the Named accounts tab", "observed_at": NOW}]
     acct = {"account_id": "a1", "domain": "acme.com", "hq_state": "NY"}
-    base = score_account(acct, [], settings, NOW.date()).score  # October: the Q4 plan-year window scores anyway
+    base = score_account(acct, [], settings, NOW.date()).score
+    assert base == 0  # October, and the Q4 plan-year window is off (design review Appendix A, 1 Oct 2026)
     r = score_account(acct, events, settings, NOW.date())
     assert "Named by Harry" in [m.signal.signal for m in r.matches] and r.score == base + 30
     events.append({"event_id": "e2", "account_id": "a1", "source": "named", "fact": "named", "value": False,

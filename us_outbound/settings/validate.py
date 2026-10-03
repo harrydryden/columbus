@@ -22,12 +22,32 @@ from datetime import date, time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from us_outbound.clean.people import title_key
+from us_outbound.enrol.copy_rules import money_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
     ACTIONS,
+    CLAY_VERIFICATION_MODES,
     COPY_STATUSES,
+    COPY_STEPS,
+    EMAIL_FORMATS,
+    FOCUS_LINE_TOKENS,
+    GENERAL_COPY,
+    GENERIC_LINE_TOKENS,
+    GENERIC_OPENER_KEY,
+    GENERIC_OPENER_KEYS,
     MAILBOX_STATUSES,
+    OPENER_COLUMNS,
+    OPENER_SELF_COLUMN,
+    OPENER_TOKENS,
+    PAGE_FIELDS,
+    PERSON_FIELDS,
+    PLAIN_OPENER_TOKENS,
+    QA_VERDICTS,
+    RETIRED_OPENER_TOKENS,
+    ROLE_LINE_COLUMNS,
+    ROLE_ORDER_COLUMNS,
     OPTIONAL_TABS,
     SOURCE_FIELDS,
     SOURCE_KEYS,
@@ -36,10 +56,12 @@ from us_outbound.settings.model import (
     TEXT_SOURCES,
     Angle,
     CopyRow,
+    CopyStep,
     DateRange,
     Focus,
     General,
     Industry,
+    IndustryPage,
     Mailbox,
     NamedAccount,
     Override,
@@ -54,18 +76,38 @@ from us_outbound.settings.model import (
 HEADER_ROW = 1
 FIRST_DATA_ROW = 2
 OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
+# Columns added after the sheet was first made (Harry, 30 Sep 2026): a tab without them reads them as blank.
+TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
+    "Industries": frozenset(f"page_{f}" for f in PAGE_FIELDS),
+    "Copy": frozenset({"qa_notes", "sources"}),
+    "Roles": frozenset({"copy_role", "industry_groups"}),
+    "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
+    "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
+}
+# The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
+LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
+# The Roles tab's layout before 1 Oct 2026 (SPEC 5): still read, as the same order, until
+# `us-outbound settings load --tab Roles` replaces it with the new rows.
+LEGACY_ROLES_COLUMNS = frozenset({"first_choice_for_size", "fallback_order"})
+MAX_ROLE_RANK = 20
 MAY_BE_EMPTY = frozenset({"Overrides", "Tests", *OPTIONAL_TABS})  # an empty tab anywhere else is almost surely a mistake
 NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
 CLAUDE_CAP_USD = 10.0  # SPEC 1.1
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
 CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
-COPY_STEPS = (1, 2, 3, 4)
-# Variables a copy row may use (SPEC 10, plus the lead's first name and company).
+# Variables a copy row may use (render.VARIABLES; style.md).
 COPY_VARIABLES = frozenset(
-    {"first_name", "company", "opener", "proof", "place", "ask", "price_line", "demo_line", "legal_overlay", "signature"}
+    {"first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
+     "industry_url", "site_url", "sender_first_name", "proof"}
 )
-OPENER_PLACEHOLDERS = frozenset({"evidence"})  # SPEC 5: "Saw your benefits page mentions {evidence}"
+SPILL_PAGE = re.compile(r"https://(?:www\.)?spill\.chat/\S*")
+OPENER_PLACEHOLDERS = frozenset(PLAIN_OPENER_TOKENS)  # SPEC 5: "Saw your benefits page mentions {evidence}"
+# The tokens each opener column may use (enrol/openers.py fills them from stored facts).
+OPENER_COLUMN_TOKENS: dict[str, tuple[str, ...]] = {
+    "opener": PLAIN_OPENER_TOKENS,
+    **{col: OPENER_TOKENS for col in (*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN)},
+}
 # The sheet row whose key names each tab's rows; settings_sync versions rows by it.
 KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     "General": ("key",),
@@ -74,7 +116,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
     "Industries": ("industry",),
     "States": ("state",),
     "Roles": ("role",),
-    "Copy": ("copy_version", "step"),
+    "Copy": ("copy_version",),
     "Mailboxes": ("address",),
     "Overrides": ("domain", "field"),
     "Tests": ("test_id",),
@@ -84,7 +126,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "clay_verification"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -259,11 +301,6 @@ def parse_size_range(text: str) -> str:
     return f"{lo}-{hi}"
 
 
-def _span(size_range: str) -> tuple[int, int]:
-    lo, _, hi = size_range.partition("-")
-    return int(lo), int(hi)
-
-
 def parse_fallback_order(text: str) -> dict[str, int]:
     """"10-49:2; 50-249:3" -> {"10-49": 2, "50-249": 3}. Rank 1 is the first choice, so ranks start at 2."""
     out: dict[str, int] = {}
@@ -321,8 +358,6 @@ def natural_key(tab: str, row: Mapping[str, Any]) -> str:
 
 
 def _label(tab: str, row: Mapping[str, Any]) -> str:
-    if tab == "Copy":
-        return f"{_cell(row, 'copy_version')} step {_cell(row, 'step')}".strip()
     return " ".join(_cell(row, c) for c in KEY_COLUMNS[tab]).strip()
 
 
@@ -354,6 +389,18 @@ class _Row:
             return default
 
 
+def is_legacy_copy(columns: Iterable[str]) -> bool:
+    """True for a Copy tab still in the one-row-per-step layout (before 30 Sep 2026)."""
+    cols = set(columns)
+    return LEGACY_COPY_COLUMNS <= cols and "s1_body" not in cols
+
+
+def is_legacy_roles(columns: Iterable[str]) -> bool:
+    """True for a Roles tab still in SPEC 5's layout (first_choice_for_size, fallback_order; before 1 Oct 2026)."""
+    cols = set(columns)
+    return bool(LEGACY_ROLES_COLUMNS & cols) and not set(ROLE_ORDER_COLUMNS) & cols
+
+
 def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[RowError]) -> list[_Row] | None:
     """Tab-level checks; None when the tab cannot be read row by row."""
     if rows is None:
@@ -367,7 +414,12 @@ def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[Ro
             errors.append(RowError(tab, HEADER_ROW, "", f"the {tab} tab has no rows"))
         return []
     present = set().union(*(set(r) for r in rows))
-    missing = [c for c in COLUMNS[tab] if c not in present and c not in OPTIONAL_COLUMNS]
+    if tab == "Copy" and is_legacy_copy(present):
+        return []  # the old one-row-per-step layout: no copy until the new tab is loaded (sync says so)
+    if tab == "Roles" and is_legacy_roles(present):
+        return [_Row(tab, i + FIRST_DATA_ROW, r, errors) for i, r in enumerate(rows)]  # read by _legacy_role_order
+    optional = OPTIONAL_COLUMNS | TAB_OPTIONAL_COLUMNS.get(tab, frozenset())
+    missing = [c for c in COLUMNS[tab] if c not in present and c not in optional]
     if missing:
         noun = "columns are" if len(missing) > 1 else "column is"
         errors.append(RowError(tab, HEADER_ROW, ", ".join(missing), f"the {noun} missing from the header row"))
@@ -394,6 +446,13 @@ RENAMED_GENERAL = {
     "daily_enrol_cap": ("weekly_enrol_cap", "the enrolment target is weekly, Monday to Sunday, UK time"),
     "clay_weekly_credits": ("clay_monthly_credits", "credit budgets are monthly, like Clay's own"),
     "apollo_weekly_credits": ("apollo_monthly_credits", "credit budgets are monthly, like Apollo's own"),
+}
+# Keys no longer used (Harry, 1 Oct 2026): emails carry no postal address and no privacy link, and
+# the opt-out is Instantly's own unsubscribe link. A sheet that still has these rows stays valid;
+# `us-outbound settings load` removes them.
+RETIRED_GENERAL = {
+    "postal_address": "emails carry no postal address (Harry, 1 Oct 2026)",
+    "privacy_url": "emails carry no privacy link; the opt-out is Instantly's unsubscribe link (Harry, 1 Oct 2026)",
 }
 
 
@@ -424,24 +483,65 @@ def _blank_value(hint: Any) -> Any:
     return None
 
 
+_GENERIC_KEYS = frozenset({GENERIC_OPENER_KEY, *GENERIC_OPENER_KEYS.values()})
+
+
+def _line_problems(value: str, tokens: Iterable[str]) -> list[str]:
+    """A General opener line (opener_focus_line, the generic lines): its tokens, one line, no funding or money.
+
+    Refusing money here is safe: the generic lines are new and the focus line has none, so the General tab in
+    force stays valid. The Signals tab's lines may still hold the old funding lines, so `copy check` and the
+    render-time check read those instead (copy_rules.money_violations), and a refusal never empties settings.
+    """
+    problems = opener_token_problems(value, tokens)
+    if "\n" in value:
+        problems.append("is one line")
+    return problems + money_violations(value)
+
+
 def _check_general_value(key: str, value: Any) -> None:
     hint = _GENERAL_TYPES[key]
     if hint in (int, float) and value < 0:
         raise ValueError("must not be negative")
     if key == "control_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.15")
+    if key in ("stop_rule_bounce_rate", "stop_rule_complaint_rate") and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
+    if key == "opener_holdout_share" and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")
+    if key == "opener_focus_line" and value:
+        problems = _line_problems(value, FOCUS_LINE_TOKENS)
+        if not problems and "{focus}" not in value.replace(" ", ""):
+            problems.append("must use {focus}, the phrase it exists for")
+        if problems:
+            raise ValueError("; ".join(problems))
+    if key in _GENERIC_KEYS and value:
+        problems = _line_problems(value, GENERIC_LINE_TOKENS)
+        if problems:
+            raise ValueError("; ".join(problems))
     if key == "escalation_hours" and value < 1:
         raise ValueError("must be at least 1")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
     if key == "escalation_email":
         _email(value)
-    if key == "claude_model" and not re.fullmatch(r"claude-[a-z0-9.-]+", value):
-        raise ValueError(f"must be a Claude model id like claude-haiku-4-5, not {value!r}")
+    # A model id the cap cannot price is refused at call time (clients/claude.py), not here, so a typo
+    # stops only the Claude calls, never the whole General tab. `us-outbound copy` names the ids it knows.
+    if key in ("claude_model", "claude_task_model") and not re.fullmatch(r"claude-[a-z0-9.-]+", value):
+        raise ValueError(f"must be a Claude model id like claude-opus-5-5 or claude-sonnet-5-5, not {value!r}")
+    if key == "email_format" and value not in EMAIL_FORMATS:
+        raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
+    if key == "clay_verification" and value not in CLAY_VERIFICATION_MODES:
+        raise ValueError(f"must be one of {', '.join(CLAY_VERIFICATION_MODES)} (required: every account goes "
+                         "through Clay; skip: verified on Apollo data and HubSpot)")
     if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
-    if key in ("booking_link", "booking_page", "privacy_url") and value:
+    if key in ("booking_link", "booking_page") and value:
         _https(value)
+    if key == "site_url":
+        _page_url(value)
+    if key == "price_from" and value < 1:
+        raise ValueError("is the starting price in dollars a month, like 195")
     if key == "approver_slack_ids":
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:
@@ -461,6 +561,8 @@ def _general(rows: list[_Row]) -> General:
             new, why = RENAMED_GENERAL[key]
             r.fail("key", f"{key!r} is now {new!r}: {why}")
             continue
+        if key in RETIRED_GENERAL:
+            continue  # no longer used; the row can be deleted
         if key not in _GENERAL_TYPES:
             r.fail("key", f"unknown key {key!r}{_hint(key, _GENERAL_TYPES)}")
             continue
@@ -493,24 +595,42 @@ def _general(rows: list[_Row]) -> General:
         err("standard_threshold", f"must not be above priority_threshold ({g.priority_threshold})")
     if g.dev_channel.lstrip("#").lower() == g.alert_channel.lstrip("#").lower():
         err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
-    if g.live_sending:
-        missing = [k for k in ("postal_address", "privacy_url", "approver_slack_ids") if not getattr(g, k)]
-        if missing:
-            err("live_sending", f"cannot be yes while {', '.join(missing)} is blank")
+    if g.live_sending and not g.approver_slack_ids:
+        err("live_sending", "cannot be yes while approver_slack_ids is blank")
     return g
 
 
 # -- the other tabs -----------------------------------------------------------------
 
 
+def opener_token_problems(text: str, allowed: Iterable[str], retired: Iterable[str] = ()) -> list[str]:
+    """What is wrong with the tokens of an opener line: an unknown {token} (with a "did you mean"), or {{braces}}.
+
+    retired: tokens a line may still have without failing the tab (RETIRED_OPENER_TOKENS); they never fill.
+    """
+    allowed = tuple(allowed)
+    listed = ", ".join(f"{{{t}}}" for t in allowed)
+    out: list[str] = []
+    for name in _SINGLE_BRACE.findall(text):
+        token = name.strip()
+        if token not in allowed and token not in retired:
+            close = difflib.get_close_matches(token, list(allowed), n=1, cutoff=0.6)
+            hint = f" (did you mean {{{close[0]}}}?)" if close else ""
+            out.append(f"unknown token {{{name}}}{hint}; this column can use {listed}")
+    if _VARIABLE.search(text):
+        out.append(f"opener tokens take single braces, like {{{allowed[0]}}}; this column can use {listed}")
+    return list(dict.fromkeys(out))
+
+
 def _check_opener(r: _Row, col: str) -> str:
+    """An opener cell: one line, or (role columns) alternatives one per line; every token one the column allows."""
     opener = r.text(col)
-    for name in _SINGLE_BRACE.findall(opener):
-        if name.strip() not in OPENER_PLACEHOLDERS:
-            r.fail(col, f"unknown placeholder {{{name}}}; openers can use {{evidence}}")
-    if _VARIABLE.search(opener):
-        r.fail(col, "openers take one placeholder, {evidence}, in single braces")
-    return opener
+    retired = RETIRED_OPENER_TOKENS if col != "opener" else ()  # a sheet with the old funding lines still loads
+    for problem in opener_token_problems(opener, OPENER_COLUMN_TOKENS[col], retired):
+        r.fail(col, problem)
+    if col == "opener" and "\n" in opener:
+        r.fail(col, "the plain opener is one line; put alternatives in the opener_people, opener_founder and opener_ops columns")
+    return "\n".join(line.strip() for line in opener.splitlines() if line.strip())
 
 
 def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
@@ -531,6 +651,8 @@ def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
             r.fail("counts_for_days", "must be at least 1")
         active = r.parse("active", parse_bool)
         opener = _check_opener(r, "opener")
+        role_openers = {role: line for role, col in OPENER_COLUMNS.items() if (line := _check_opener(r, col))}
+        opener_self = _check_opener(r, OPENER_SELF_COLUMN)
         context_rule = r.text("context_rule")
 
         terms: tuple[str, ...] = ()
@@ -558,13 +680,17 @@ def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
                         context = parse_context_rule(context_rule, terms)
                     except ConditionError as exc:
                         r.fail("context_rule", str(exc))
+        if opener_self and r.ok and not (condition is not None and condition.fields & PERSON_FIELDS):
+            r.fail(OPENER_SELF_COLUMN, "is for a signal about one person, whose condition reads "
+                   f"{', '.join(sorted(PERSON_FIELDS))}; leave it blank on this row")
         if r.ok:
             out.append((
                 Signal(
                     signal=name, sources=sources, looks_for=looks_for, weight=weight, action=action,
                     counts_for_days=days, active=active, context_rule=context_rule, max_weight=max_weight,
                     suggests_angle=r.text("suggests_angle"), opener=opener, note=r.text("note"),
-                    terms=terms, condition=condition, context=context,
+                    terms=terms, condition=condition, context=context, role_openers=role_openers,
+                    opener_self=opener_self,
                 ),
                 r.number,
             ))
@@ -605,24 +731,35 @@ def _naics(text: str) -> tuple[str, ...]:
     return codes
 
 
+def _page_url(text: str) -> str:
+    """An industry page: emails link it, and emails link only to spill.chat."""
+    _https(text)
+    if not SPILL_PAGE.fullmatch(text):
+        raise ValueError(f"must be a page on https://www.spill.chat (emails link only there), not {text!r}")
+    return text
+
+
 def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
     out: list[tuple[Industry, int]] = []
     seen: dict[str, int] = {}
     for r in rows:
         label = r.parse("industry", str)
         _unique(r, "industry", label.casefold() if label else None, seen, f"industry {label!r}")
+        if label and label.casefold() == GENERAL_COPY.casefold():
+            r.fail("industry", f"{GENERAL_COPY!r} is kept for the Copy tab's fallback sequence; name the industry")
         group = r.parse("industry_group", str)
         active = r.parse("active", parse_bool)
         naics = r.parse("naics_prefixes", _naics, required=False, default=())
         exclude = r.parse("exclude_naics", _naics, required=False, default=())
         keywords = split_list(r.text("apollo_keywords"), ";")
-        landing = r.parse("landing_page_url", _https, required=False, default="")
+        landing = r.parse("landing_page_url", _page_url, required=False, default="")
         priority = r.parse("priority", parse_int, required=False, default=Industry.priority)
         if priority is not None and priority < 1:
             r.fail("priority", "must be 1 or more")
+        page = IndustryPage(**{f: r.text(f"page_{f}") for f in PAGE_FIELDS})
         if r.ok:
             out.append((
-                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority),
+                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority, page),
                 r.number,
             ))
     return out
@@ -649,43 +786,78 @@ def _states(rows: list[_Row]) -> list[tuple[State, int]]:
     return out
 
 
+def _role_rank(text: str) -> int:
+    n = parse_int(text)
+    if not 1 <= n <= MAX_ROLE_RANK:
+        raise ValueError(f"must be a rank from 1 (contacted first) to {MAX_ROLE_RANK}, or blank (not contacted)")
+    return n
+
+
+def _legacy_role_order(r: _Row) -> dict[str, int]:
+    """SPEC 5's first_choice_for_size and fallback_order as one {size range: rank}."""
+    first = r.parse(
+        "first_choice_for_size", lambda t: tuple(parse_size_range(x) for x in split_list(t, ";,")),
+        required=False, default=(),
+    )
+    order = dict.fromkeys(first or (), 1)
+    for rng, rank in (r.parse("fallback_order", parse_fallback_order, required=False, default={}) or {}).items():
+        if rng in order:
+            r.fail("fallback_order", f"{rng} is already this role's first choice")
+        order[rng] = rank
+    return order
+
+
+def _role_order(r: _Row) -> dict[str, int]:
+    """{size range: rank} from the order_10_49 and order_50_249 columns; a blank one is not contacted."""
+    order: dict[str, int] = {}
+    for col, rng in ROLE_ORDER_COLUMNS.items():
+        rank = r.parse(col, _role_rank, required=False)
+        if rank is not None:
+            order[rng] = rank
+    return order
+
+
 def _roles(rows: list[_Row]) -> list[tuple[Role, int]]:
+    """Roles (Harry, 1 Oct 2026): one row per group of titles, its copy role, and its rank at each size.
+
+    Two rows may share a rank (a founder and a law firm's partner both come first at 10 to
+    49 staff): seniority then decides (clean/people.rank_person). A title may not be on two
+    rows, however it is spelled ("Head of HR", "Head of Human Resources"). A row that is
+    contacted at some size needs a copy role with a line on the Copy tab. Every size needs at
+    least one row that is contacted there. The SPEC 5 layout (first_choice_for_size,
+    fallback_order) is still read, as the same order.
+    """
     out: list[tuple[Role, int]] = []
     names: dict[str, int] = {}
     titles_seen: dict[str, tuple[str, int]] = {}
-    first_seen: list[tuple[str, str, int]] = []  # (range, role, row)
-    ranks_seen: dict[tuple[str, int], tuple[str, int]] = {}
+    legacy = bool(rows) and is_legacy_roles(set().union(*(set(r.raw) for r in rows)))
+    copy_roles = {k.casefold() for k in ROLE_LINE_COLUMNS}
     for r in rows:
         role = r.parse("role", str)
         _unique(r, "role", role.casefold() if role else None, names, f"role {role!r}")
         titles = r.parse("titles", lambda t: split_list(t, ";") or _fail("lists no titles"))
         for t in titles or ():
-            other = titles_seen.get(t.casefold())
+            other = titles_seen.get(title_key(t))
             if other and other[0] != role:
                 r.fail("titles", f"{t!r} is also a title of {other[0]} (row {other[1]})")
             else:
-                titles_seen[t.casefold()] = (role, r.number)
-        first = r.parse(
-            "first_choice_for_size", lambda t: tuple(parse_size_range(x) for x in split_list(t, ";,")),
-            required=False, default=(),
-        )
-        fallback = r.parse("fallback_order", parse_fallback_order, required=False, default={})
-        for rng in first or ():
-            if rng in (fallback or {}):
-                r.fail("fallback_order", f"{rng} is already this role's first choice")
-            lo, hi = _span(rng)
-            for other_rng, other_role, other_row in first_seen:
-                olo, ohi = _span(other_rng)
-                if lo <= ohi and olo <= hi:
-                    r.fail("first_choice_for_size", f"{rng} overlaps {other_role}'s first choice {other_rng} (row {other_row})")
-            first_seen.append((rng, role, r.number))
-        for rng, rank in (fallback or {}).items():
-            other = ranks_seen.get((rng, rank))
-            if other:
-                r.fail("fallback_order", f"{rng}:{rank} is also {other[0]}'s rank (row {other[1]})")
-            ranks_seen[(rng, rank)] = (role, r.number)
+                titles_seen[title_key(t)] = (role, r.number)
+        if legacy:
+            order, copy_role, groups = _legacy_role_order(r), "", ()
+        else:
+            order = _role_order(r)
+            copy_role = r.parse("copy_role", one_of(ROLE_LINE_COLUMNS), required=False, default="")
+            groups = r.parse("industry_groups", lambda t: split_list(t, ";,"), required=False, default=())
+        if order and role and not r.text("copy_role") and role.casefold() not in copy_roles:
+            r.fail("copy_role", f"a row that is contacted gets the copy of one of {', '.join(ROLE_LINE_COLUMNS)}; "
+                                "set copy_role to one of them")
         if r.ok:
-            out.append((Role(role, titles, first, fallback), r.number))
+            out.append((Role(role, titles, order, copy_role, groups), r.number))
+    if rows and not legacy:
+        contacted = {rng for role, _ in out for rng in role.order}
+        for col, rng in ROLE_ORDER_COLUMNS.items():
+            if rng not in contacted and all(r.ok for r in rows):
+                rows[0].errors.append(RowError("Roles", HEADER_ROW, col, f"no row is contacted at {rng} staff"))
     return out
 
 
@@ -698,37 +870,44 @@ def _check_copy_text(r: _Row, col: str) -> None:
         r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
 
 
-def _step(text: str) -> int:
-    n = parse_int(text)
-    if n not in COPY_STEPS:
-        raise ValueError(f"must be one of {', '.join(map(str, COPY_STEPS))}")
-    return n
+def _qa(text: str) -> str:
+    parts = text.split()
+    if parts[0].lower() not in QA_VERDICTS or len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{8}", parts[1].lower()):
+        raise ValueError('is written by `us-outbound copy qa`: "pass" or "fail" and the copy\'s check code, like "pass 1a2b3c4d"')
+    return f"{parts[0].lower()} {parts[1].lower()}"
 
 
 def _copy(rows: list[_Row]) -> list[tuple[CopyRow, int]]:
     out: list[tuple[CopyRow, int]] = []
-    seen: dict[tuple[str, int], int] = {}
-    version_angle: dict[str, tuple[str, int]] = {}
+    seen: dict[str, int] = {}
     for r in rows:
         version = r.parse("copy_version", str)
-        angle = r.parse("angle", str)
-        step = r.parse("step", _step)
-        if version and step is not None:
-            _unique(r, "step", (version, step), seen, f"{version} step {step}")
-        subject = r.parse("subject", str, required=step == 1, default="")
-        body = r.parse("body", str)
+        _unique(r, "copy_version", version.casefold() if version else None, seen, f"copy_version {version!r}")
+        industry = r.parse("industry", str)
+        role = r.text("role")
         status = r.parse("status", one_of(COPY_STATUSES))
         approved_by = r.text("approved_by")
         if status == "approved" and not approved_by:
             r.fail("approved_by", "is required once a row is approved")
-        _check_copy_text(r, "subject")
-        _check_copy_text(r, "body")
-        if version and angle:
-            first = version_angle.setdefault(version, (angle, r.number))
-            if first[0] != angle:
-                r.fail("angle", f"{version} is already the {first[0]} angle on row {first[1]}")
+        qa = r.parse("qa", _qa, required=False, default="")
+        steps = []
+        for n in COPY_STEPS:
+            subject = r.parse(f"s{n}_subject", str, default="")
+            body = r.parse(f"s{n}_body", str, default="")
+            _check_copy_text(r, f"s{n}_subject")
+            _check_copy_text(r, f"s{n}_body")
+            steps.append(CopyStep(subject or "", body or ""))
+        lines = {name: r.text(col) for name, col in ROLE_LINE_COLUMNS.items()}
+        uses_line = any("role_line" in _VARIABLE.findall(st.body) for st in steps)
+        for name, col in ROLE_LINE_COLUMNS.items():
+            if uses_line and not lines[name] and (not role or role.casefold() == name.casefold()):
+                r.fail(col, f"is required: the emails use {{{{role_line}}}}, and this is the {name} line")
+            for v in _VARIABLE.findall(lines[name]):
+                if v not in ("company",):
+                    r.fail(col, f"a role line may use only {{{{company}}}}, not {{{{{v}}}}}")
         if r.ok:
-            out.append((CopyRow(version, angle, step, subject, body, status, approved_by, r.text("sources")), r.number))
+            out.append((CopyRow(version, industry, status, tuple(steps), role, lines, approved_by, qa,
+                                r.text("qa_notes"), r.text("sources")), r.number))
     return out
 
 
@@ -738,10 +917,20 @@ def is_spill_domain(domain: str) -> bool:
     return d == SPILL_DOMAIN or d.endswith("." + SPILL_DOMAIN)
 
 
+def _slack_user(text: str) -> str:
+    if not _SLACK_USER.fullmatch(text):
+        raise ValueError(f"{text!r} is not a Slack user id (they look like U01ABCDEF)")
+    return text
+
+
 def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
     out: list[tuple[Mailbox, int]] = []
     seen: dict[str, int] = {}
     ids: dict[str, int] = {}
+    # slack_id (D11): one Slack id per owner and one owner per Slack id, so an approval in Slack
+    # names exactly one person, and only for that person's own mailboxes.
+    slack_owner: dict[str, str] = {}
+    owner_slack: dict[str, str] = {}
     for r in rows:
         address = r.parse("address", _email)
         _unique(r, "address", address, seen, address or "")
@@ -761,12 +950,19 @@ def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
         account_id = r.text("instantly_account_id")
         if account_id:
             _unique(r, "instantly_account_id", account_id, ids, account_id)
+        slack_id = r.parse("slack_id", _slack_user, required=False, default="")
+        if slack_id and owner:
+            if slack_owner.setdefault(slack_id, owner) != owner:
+                r.fail("slack_id", f"{slack_id} is already {slack_owner[slack_id]}'s; one person per Slack id")
+            elif owner_slack.setdefault(owner, slack_id) != slack_id:
+                r.fail("slack_id", f"{owner} already has Slack id {owner_slack[owner]} on another row")
         if r.ok:
             out.append((
                 Mailbox(
                     address=address, domain=domain, owner_name=owner, status=status, daily_cap=cap,
                     instantly_account_id=account_id, provider=r.text("provider"), owner_role=r.text("owner_role"),
                     signature=r.text("signature"), added_on=added_on, retire_after=retire_after,
+                    slack_id=slack_id or "",
                 ),
                 r.number,
             ))
@@ -938,34 +1134,54 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
         signals.append((s, row))
     values["Signals"] = signals
 
+    # A Copy row names an Industries label, an industry group, or General; and a role or none.
+    labels = _names(raw["Industries"], "industry")
+    groups = _names(raw["Industries"], "industry_group")
+    roles = _names(raw["Roles"], "role")
     copy_rows = []
     for c, row in values["Copy"]:
-        canonical = angles.get(c.angle.casefold())
+        target = c.industry.casefold()
+        canonical = (GENERAL_COPY if target == GENERAL_COPY.casefold() else labels.get(target) or groups.get(target))
         if canonical is None:
             errors["Copy"].append(RowError(
-                "Copy", row, "angle", f"{c.angle!r} is not on the Angles tab{_hint(c.angle, angles.values())}",
-                f"{c.copy_version} step {c.step}",
+                "Copy", row, "industry",
+                f"{c.industry!r} is not an industry or industry_group on the Industries tab, nor {GENERAL_COPY!r}"
+                f"{_hint(c.industry, [*labels.values(), *groups.values()])}", c.copy_version,
             ))
             continue
-        copy_rows.append((dataclasses.replace(c, angle=canonical), row))
+        role = c.role
+        if role:
+            role = roles.get(role.casefold())
+            if role is None:
+                errors["Copy"].append(RowError("Copy", row, "role", f"{c.role!r} is not on the Roles tab"
+                                               f"{_hint(c.role, roles.values())}", c.copy_version))
+                continue
+        copy_rows.append((dataclasses.replace(c, industry=canonical, role=role), row))
     values["Copy"] = copy_rows
 
-    versions = {_cell(r, "copy_version") for r in raw["Copy"] or ()}
-    approved = {
-        (_cell(r, "copy_version"), _cell(r, "step"))
-        for r in raw["Copy"] or ()
-        if _cell(r, "status").lower() == "approved"
-    }
+    # A Roles row's industry_groups are groups on the Industries tab ("Partner" at law firms).
+    role_rows = []
+    for role, row in values["Roles"]:
+        unknown = [g for g in role.industry_groups if g.casefold() not in groups]
+        for g in unknown:
+            errors["Roles"].append(RowError("Roles", row, "industry_groups", f"{g!r} is not an industry_group on the "
+                                            f"Industries tab{_hint(g, groups.values())}", role.role))
+        if not unknown:
+            role = dataclasses.replace(role, industry_groups=tuple(groups[g.casefold()] for g in role.industry_groups))
+            role_rows.append((role, row))
+    values["Roles"] = role_rows
+
+    # A test's versions may be written after it is planned; a running test needs both approved.
+    versions = {_cell(r, "copy_version").casefold(): _cell(r, "status").lower() for r in raw["Copy"] or ()}
     for t, row in values["Tests"]:
+        if t.status != "running":
+            continue
         for col, version in (("version_a", t.version_a), ("version_b", t.version_b)):
-            if version not in versions:
+            status = versions.get(version.casefold())
+            if status is None:
                 errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
-            elif t.status == "running":
-                missing = [str(s) for s in COPY_STEPS if (version, str(s)) not in approved]
-                if missing:
-                    errors["Tests"].append(RowError(
-                        "Tests", row, col, f"a running test needs {version} approved for steps {', '.join(missing)}", t.test_id,
-                    ))
+            elif status != "approved":
+                errors["Tests"].append(RowError("Tests", row, col, f"a running test needs {version} approved", t.test_id))
 
     # A Focus row names an industry group on the Industries tab that has an active industry.
     groups = _names(raw["Industries"], "industry_group")
@@ -984,6 +1200,19 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             continue
         focus_rows.append((dataclasses.replace(f, industry_group=canonical), row))
     values["Focus"] = focus_rows
+
+    # General apollo_enrich_groups names industry groups on the Industries tab (sources/apollo_enrich.py).
+    general = values["General"]
+    enrich_row = next((i + FIRST_DATA_ROW for i, r in enumerate(raw["General"] or ())
+                       if _cell(r, "key") == "apollo_enrich_groups"), HEADER_ROW)
+    unknown = [g for g in general.apollo_enrich_groups if g.casefold() not in groups]
+    for g in unknown:
+        errors["General"].append(RowError("General", enrich_row, "value", f"apollo_enrich_groups: {g!r} is not an "
+                                          f"industry_group on the Industries tab{_hint(g, groups.values())}",
+                                          "apollo_enrich_groups"))
+    if not unknown and general.apollo_enrich_groups:
+        values["General"] = dataclasses.replace(general, apollo_enrich_groups=tuple(
+            dict.fromkeys(groups[g.casefold()] for g in general.apollo_enrich_groups)))
 
     if any(errors.values()):
         return None, errors

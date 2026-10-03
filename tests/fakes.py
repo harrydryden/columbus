@@ -24,6 +24,7 @@ class SentRequest:
     json: Any
     data: Any
     idempotent: bool = True
+    timeout: float | None = None
 
 
 @dataclass
@@ -54,7 +55,7 @@ class FakeTransport:
     def send(
         self, method, url, *, headers, params=None, json=None, data=None, timeout=30.0, idempotent=True
     ) -> Response:
-        req = SentRequest(method.upper(), url, dict(headers), params, json, data, idempotent)
+        req = SentRequest(method.upper(), url, dict(headers), params, json, data, idempotent, timeout)
         self.requests.append(req)
         for r in reversed(self.routes):
             if r.method == req.method and r.url_part in url:

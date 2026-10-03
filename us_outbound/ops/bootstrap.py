@@ -9,10 +9,11 @@ Environment (on Railway: service variables, the keys sealed; docs/railway-setup.
                                           Default Credentials, for local development
   US_OUTBOUND_*_API_KEY / _TOKEN          the six keys (context.SECRET_NAMES), read when used
 
-Order: a guard that starts in dry-run, the database store, the settings in force, and
+Order: a guard that starts in dry-run, the database store, the settings in force (with any
+mailbox a kill rule holds shown as Paused, learn/holds.py), and
 only then the live decision and the boundaries, so nothing can be sent before the
-settings are known. If the settings are unusable, jobs refuse to run; settings_sync
-(and the sheet bootstrap) start from the General defaults so they can repair them.
+settings are known. If the settings are unusable, jobs refuse to run; settings_sync, the
+sheet bootstrap and `settings load` start from the General defaults so they can repair them.
 
 Live (SPEC 0.3) needs the --live flag and live_sending = yes. Operator commands that
 never reach a prospect (setup, pause, erase; see ops/cli.py) pass operator=True and are
@@ -30,12 +31,13 @@ from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Guard
 from us_outbound.clients.http import Transport
 from us_outbound.context import Clients, ConfigError, Context, Secrets, boundaries_for, effective_live
+from us_outbound.learn.holds import with_holds
 from us_outbound.logs import log
 from us_outbound.settings.model import General, Settings
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 # Jobs that may start from the General defaults when no valid settings are in force.
-DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap"})
+DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap", "settings_load"})
 DATABASE_VAR = "DATABASE_URL"
 GOOGLE_KEY_VAR = "US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON"
 # ConfigError (the environment is missing something) lives in context.py, beside Secrets;
@@ -70,7 +72,9 @@ def database_url(env: Mapping[str, str]) -> str:
 def _load_settings(store: Store) -> tuple[Settings | None, Mapping[str, list[Any]]]:
     from us_outbound.settings.sync import load_current  # built alongside; imported when used
 
-    return load_current(store)
+    settings, errors = load_current(store)
+    # A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (learn/holds.py).
+    return (with_holds(store, settings) if settings is not None else None), errors
 
 
 def sheets_credentials(env: Mapping[str, str]) -> Any:

@@ -77,10 +77,24 @@ An earlier decision the same day put the system in its own Google Cloud project,
 | Fact | Status | Value |
 | :- | :- | :- |
 | US locale | Confirmed | en-US subdirectory `/us` (locale 6a7b1a45465079bd9e1fe40f) |
-| Book-demo page | Confirmed | `/us/book-demo` is live. Its US SEO title still reads "The UK's Highest Rated EAP" |
-| US privacy and opt-out page | **Open: blocks sending** | `/us/legals/privacy-notice` exists only as a draft, and there is no opt-out page. `privacy_url` must point at a live page before any send |
+| Book-demo page | Confirmed | `/us/book-demo` is live. Its SEO title (tab, Google, link previews), inherited by the US locale, reads "Spill \| The UK's Highest Rated EAP \| Book a demo" (checked 1 Oct) |
+| US privacy and opt-out page | Not needed (Harry, 1 Oct) | Emails carry no privacy link and no postal address. The opt-out is Instantly's unsubscribe link in every campaign step, plus the List-Unsubscribe header. `/us/legals/privacy-notice` is still a draft |
+
+## Instantly (read back from the first live campaigns, 2–3 Oct)
+
+Seen with `us-outbound campaigns show` (read-only), after `mailbox check --live` created the Hannah Spalding and Sam
+Jackson campaigns, paused, with no leads.
+
+| Fact | Status | Value |
+| :- | :- | :- |
+| Warmup | Confirmed 2 Oct | hannah@ and sam@meetspill.org warm and promoted to Active. harry@meetspill.org and harry@tryspill.org not warm yet, so Harry's campaign waits |
+| Daily limits | Confirmed | Set from 30 to the first-week ramp of 10 on all four mailboxes |
+| Step bodies | Confirmed, fixed 3 Oct | Instantly drops text outside any tag when it saves a step: a bare `{{s1_body}}` before the unsubscribe `<p>` was lost, leaving the unsubscribe line alone. The template is now `<div>{{sN_body}}</div><p>…unsubscribe…</p>`, and Instantly keeps it (read back 3 Oct). Subjects (`{{sN_subject}}`) were kept from the start |
+| Settings in GET | Confirmed | Settings at their default are left out (link_tracking, stop_on_auto_reply, text_only, allow_risky_contacts). open_tracking false, stop_on_reply, stop_for_company and insert_unsubscribe_header true are returned. is_evergreen is never returned |
+| Schedule and delays | Confirmed | Mon–Fri 09:00–16:00 America/Detroit kept as sent; step delays read 7, 7, 7, 0 (the delay before the next email) |
+| HTML in a custom variable | Open | Whether Instantly puts the rendered HTML of `{{s1_body}}` into the email as HTML (not escaped). The seed-inbox test of the unsubscribe link shows this too: the body should read as formatted text with working links |
 
 ## Not reachable from here
 
-- **Instantly:** there is no connector and no key in this session. Still to check: the plan, email and uploaded-contact caps and current use, whether the emails, reply, forward and accounts endpoints exist, the custom-variable length limit, same-address follow-ups, and the warmup status of the four mailboxes.
+- **Instantly:** no connector in this session; the jobs reach it with the sealed key, and `campaigns show` prints what it holds. Still to check: the plan, email and uploaded-contact caps and current use, whether the emails, reply and forward endpoints exist, the custom-variable length limit, and same-address follow-ups.
 - **Secrets:** they will live in sealed Railway variables. None exist yet.

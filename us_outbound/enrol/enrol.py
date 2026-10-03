@@ -5,48 +5,67 @@ SPEC 9 ("enrol", "Daily enrolment number", "Test assignment", "Instantly campaig
 SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; no positive reply waiting longer than
-     escalation_hours (SPEC 11); this week's hand-check approved (SPEC 11).
+     escalation_hours (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while
+     the General key auto_send is yes, this week's hand-check approved (SPEC 11). With auto_send
+     = no every email is approved in Slack before it is sent, so the hand-check is not a gate
+     (Harry, 2 Oct 2026); accounts pulled at an approved hand-check are still left out.
   2. Today's number (queue.daily_number): the weekly target's share for today, each
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
-     accounts. The Clay and Apollo budgets are weekly and applied where credits are spent.
+     accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
+     Send approvals still waiting in Slack count towards the week and hold their sender's slots.
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
-     suppressed or a partner, whose industry is on, with one sendable contact: a verified
+     suppressed or a partner, whose industry is on, with no send approval waiting in Slack, and
+     with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
-     domain or shared inbox, not enrolled before.
+     domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
+     pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
+     hold back an industry group or an email source (learn/holds.py).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
-     wait), its copy version (the running test's hash split, else the approved version for
-     its angle), its four rendered steps (any copy-rule violation skips it), and a HubSpot
+     wait), its Copy row (the most specific approved, QA-passed row for its industry and its
+     contact's role, else its group's, else General; the running test's hash split takes
+     half of version_a's accounts), its opener for that contact (enrol/openers.py: the angle
+     setter's line for the contact's copy role, filled with the account's stored facts, or none,
+     and the opener_holdout_share held out with none), its four rendered emails (any copy-rule
+     violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
-  5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the rendered steps as
-     custom variables.
+  5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
+     rendered steps as custom variables.
+     auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
+     comes to this channel first for approval"): each account becomes a send approval instead,
+     a hitl_items row and a card in the alert channel showing every email of the sequence, and
+     its lead is added only when an approver's ✅ is read (enrol/approvals.py, poll_approvals).
+     A live run without US_OUTBOUND_SLACK_BOT_TOKEN refuses, as there is nowhere to approve.
 
 Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is marked
-enrolled. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
+enrolled. With auto_send = no no item is written; a few cards are posted to the dev channel
+as a preview. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
 contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
-campaign and lead id.
+campaign and lead id, and its opener arm and source (opener, holdout or none; which line), so the
+readout can compare opener against none.
 Sent events come later, from sync_outcomes.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
-from us_outbound.clean.people import state_code
+from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
-from us_outbound.enrol import focus, queue, render
+from us_outbound.enrol import focus, openers, queue, render
+from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
-from us_outbound.scoring.score import score_account
-from us_outbound.settings.model import Mailbox, Settings
+from us_outbound.scoring.angle import legal_overlay
+from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
 
 
 JOB = "enrol"
@@ -55,6 +74,7 @@ EXCLUDED = "Excluded"
 SENDABLE_EMAIL_STATUSES = frozenset({"verified", "valid", "catch_all_valid"})  # Apollo verified; Clay (SPEC 8)
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.5
 WAITING = ("open", "escalated")  # hitl_items still waiting for Harry
+REPLY_KIND = "reply"  # hitl_items.kind of a reply waiting for a person (replies/poll.py KIND)
 HUBSPOT_SOURCE = "hubspot"
 # signal_events facts that scoring/tiers.py reads as hard exclusions, so a rescore keeps them.
 HS_CUSTOMER = "hubspot_customer"
@@ -99,7 +119,7 @@ def iso_week(d: date) -> str:
 
 
 def operator_pause(ctx: Context) -> str | None:
-    """Why enrollment is paused by the stop command (SPEC 13); kill-rule pauses are added in phase 3."""
+    """Why enrollment is paused by the stop command (SPEC 13); the stop rule's pause is holds.enrolment_stop."""
     from us_outbound.ops.heartbeat import enrolment_paused
 
     stop = enrolment_paused(ctx.store)
@@ -109,11 +129,15 @@ def operator_pause(ctx: Context) -> str | None:
 
 
 def reply_pause(ctx: Context) -> str | None:
-    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses."""
+    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
+
+    The reply items are poll_replies' (kind "reply"; replies/items.py reads them, and the first kind
+    name too): positive or referral, not yet handled, escalated included.
+    """
+    from us_outbound.replies.items import positive_waiting
+
     hours = ctx.settings.general.escalation_hours
-    cutoff = ctx.now - timedelta(hours=hours)
-    rows = ctx.store.select("hitl_items", {"kind": "reply_approval", "status": list(WAITING)})
-    old = [r for r in rows if (t := _ts(r.get("created_at"))) is not None and t <= cutoff]
+    old = positive_waiting(ctx.store, ctx.now, hours)
     if not old:
         return None
     return f"{len(old)} positive {'reply has' if len(old) == 1 else 'replies have'} waited over {hours} hours for approval"
@@ -157,7 +181,7 @@ def gate(ctx: Context, today: date) -> str | None:
         return f"{today} is not a send day"
     if ctx.live and not s.general.live_sending:
         return "live_sending is no"
-    return operator_pause(ctx) or reply_pause(ctx)
+    return operator_pause(ctx) or holds.enrolment_stop(ctx.store) or reply_pause(ctx)
 
 
 # -- candidates --------------------------------------------------------------------------------
@@ -235,10 +259,27 @@ def contact_block(contact: Mapping[str, Any], domains: set[str], hashes: set[str
     return None
 
 
-def pick_contact(contacts: Iterable[Mapping[str, Any]], domains: set[str], hashes: set[str]) -> tuple[dict | None, str]:
-    """The account's one contact in v1: the first sendable one by created_at; else why none is."""
+def contact_order(
+    contact: Mapping[str, Any], account: Mapping[str, Any] | None, settings: Settings | None
+) -> tuple:
+    """Where a stored contact comes for its account: as pick_contacts ranks people (clean/people.rank_person,
+    Harry, 1 Oct 2026), then the first created. A title the Roles tab does not contact at the account's
+    size comes after every one it does."""
+    ranked = None
+    if account is not None and settings is not None and settings.roles:
+        size = company_size(account.get("employees"), account.get("size_band"))
+        ranked = rank_person(contact.get("title"), settings.roles, size, settings.industry_group_of(account))
+    rank = (0, ranked.key) if ranked else (1, ())
+    return (*rank, str(contact.get("created_at") or ""), str(contact.get("contact_id")))
+
+
+def pick_contact(
+    contacts: Iterable[Mapping[str, Any]], domains: set[str], hashes: set[str],
+    account: Mapping[str, Any] | None = None, settings: Settings | None = None,
+) -> tuple[dict | None, str]:
+    """The account's one contact in v1: the best-ranked sendable one (contact_order); else why the best is not."""
     first_reason = "no contact"
-    for i, c in enumerate(sorted(contacts, key=lambda c: (str(c.get("created_at") or ""), str(c.get("contact_id"))))):
+    for i, c in enumerate(sorted(contacts, key=lambda c: contact_order(c, account, settings))):
         why = contact_block(c, domains, hashes)
         if why is None:
             return dict(c), ""
@@ -247,13 +288,20 @@ def pick_contact(contacts: Iterable[Mapping[str, Any]], domains: set[str], hashe
     return None, first_reason
 
 
-def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], Counter[str]]:
-    """Every account that could be enrolled today, with its contact; and why the others cannot."""
+def candidates(
+    ctx: Context, pulled: frozenset[str], waiting: Collection[str] = frozenset(),
+) -> tuple[list[Candidate], Counter[str]]:
+    """Every account that could be enrolled today, with its contact; and why the others cannot.
+
+    waiting: accounts with a send approval still waiting in Slack (enrol/approvals.py), which are not
+    proposed again until it is approved, declined or expires.
+    """
     s, store = ctx.settings, ctx.store
     skipped: Counter[str] = Counter()
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
     domains, hashes = suppressed(ctx)
     partners = {_lower(p.get("domain")) for p in store.select("partners")}
+    stopped, sources = holds.stopped_groups(store), holds.paused_sources(store)  # kill rules (SPEC 12)
     contacts: dict[str, list[dict]] = defaultdict(list)
     for chunk in _chunks([a["account_id"] for a in accounts]):
         for c in store.select("contacts", {"account_id": list(chunk)}):
@@ -261,9 +309,17 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     out: list[Candidate] = []
     for a in accounts:
         why = account_block(a, s, domains, partners, pulled)
+        if why is None and str(a["account_id"]) in waiting:
+            why = "waiting for approval in Slack"
+        if why is None and s.industry_group_of(a).casefold() in stopped:
+            why = "industry group stopped by a kill rule"
         contact = None
         if why is None:
-            contact, why = pick_contact(contacts.get(a["account_id"], []), domains, hashes)
+            mine = contacts.get(a["account_id"], [])
+            usable = [c for c in mine if _lower(c.get("email_source")) not in sources]
+            contact, why = pick_contact(usable, domains, hashes, a, s)
+            if contact is None and mine and not usable:
+                why = "email source paused by a kill rule"
         if contact is None:
             skipped[why] += 1
             continue
@@ -271,21 +327,47 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     return out, skipped
 
 
-# -- copy version (SPEC 9 "Test assignment", SPEC 12) -----------------------------------------------
+# -- copy (SPEC 9 "Test assignment", SPEC 12; Harry, 30 Sep 2026: by industry and role) -------------
 
 
-def approved_versions(settings: Settings) -> list[str]:
-    """Copy versions with all four steps approved, in sheet order."""
-    out = []
-    for version in dict.fromkeys(c.copy_version for c in settings.copy):
-        rows = render.copy_rows(settings, version)
-        if all(step in rows and rows[step].status == "approved" for step in render.STEPS):
-            out.append(version)
+def sendable_copy(settings: Settings) -> dict[str, CopyRow]:
+    """Copy rows that may be sent: approved, and passed QA in their current wording; in sheet order."""
+    return {c.copy_version: c for c in settings.copy if c.status == "approved" and c.qa_current}
+
+
+def copy_targets(account: Mapping[str, Any], role: str, settings: Settings) -> list[tuple[str, str]]:
+    """(industry, role) from the most specific Copy row an account could get to the least:
+    its label for its role, its label, its group for its role, its group, General for its role, General."""
+    label = str(account.get("industry") or "").strip()
+    group = settings.industry_group_of(account)
+    out: list[tuple[str, str]] = []
+    for industry in (label, group, GENERAL_COPY):
+        for r in (role, ""):
+            key = (industry.casefold(), r.casefold())
+            if industry and key not in {(i.casefold(), x.casefold()) for i, x in out}:
+                out.append((industry, r))
     return out
 
 
-def version_angle(settings: Settings, version: str) -> str:
-    return next((c.angle for c in settings.copy if c.copy_version == version), "")
+def _find(rows: Iterable[CopyRow], industry: str, role: str) -> CopyRow | None:
+    return next((c for c in rows if c.industry.casefold() == industry.casefold()
+                 and c.role.casefold() == role.casefold()), None)
+
+
+def pick_copy(account: Mapping[str, Any], role: str, settings: Settings,
+              rows: Mapping[str, CopyRow]) -> tuple[CopyRow | None, str]:
+    """(the most specific sendable row, a note when a more specific row exists but cannot be sent yet)."""
+    note = ""
+    for target in copy_targets(account, role, settings):
+        row = _find(rows.values(), *target)
+        if row is not None:
+            return row, note
+        waiting = next((c for c in settings.copy if c.status != "retired" and c.industry.casefold() == target[0].casefold()
+                        and c.role.casefold() == target[1].casefold()), None)
+        if waiting is not None and not note:
+            why = "a draft" if waiting.status == "draft" else "approved but has not passed QA in its current wording"
+            note = f"{waiting.copy_version} is {why}"
+    return None, note
 
 
 def running_test_counts(ctx: Context) -> Counter[str]:
@@ -299,51 +381,56 @@ def running_test_counts(ctx: Context) -> Counter[str]:
     return Counter({v: len(ids) for v, ids in seen.items()})
 
 
-
 def choose_copy(
-    account: Mapping[str, Any], settings: Settings, counts: Mapping[str, int], approved: Sequence[str]
-) -> tuple[str | None, str, str]:
-    """(copy_version, test_id or "", why there is none).
+    account: Mapping[str, Any], role: str, settings: Settings, counts: Mapping[str, int], rows: Mapping[str, CopyRow]
+) -> tuple[CopyRow | None, str, str, str]:
+    """(Copy row, test_id or "", why there is none, fallback note).
 
-    The running test takes accounts whose angle is its version_a's angle (the first test:
-    "Upgrade the EAP" accounts, split between an EAP and a General opener), other than
-    Control, while each version has fewer than accounts_per_version. Everyone else gets the
-    first approved version for their angle.
+    The account gets the most specific sendable row for its industry and its contact's role
+    (copy_targets). The running test takes accounts that would get its version_a, other than
+    Control, and sends half of them (by account hash) version_b instead, while each version
+    has fewer than accounts_per_version.
     """
-    angle = str(account.get("angle") or "")
+    row, note = pick_copy(account, role, settings, rows)
+    if row is None:
+        label = str(account.get("industry") or settings.industry_group_of(account) or "its industry")
+        return None, "", f"no approved copy that has passed QA for {label}, its group or General", note
     t = settings.running_test()
-    if t and angle and account.get("tier") != queue.CONTROL and version_angle(settings, t.version_a) == angle:
+    if t and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
         v = t.version_a if queue.test_version(str(account["account_id"]), t.test_id) == "a" else t.version_b
-        if v in approved and (t.accounts_per_version <= 0 or counts.get(v, 0) < t.accounts_per_version):
-            return v, t.test_id, ""
-    for v in approved:
-        if version_angle(settings, v) == angle:
-            return v, "", ""
-    return None, "", f"no approved copy for the {angle or 'blank'} angle"
+        chosen = rows.get(v)
+        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(v, 0) < t.accounts_per_version):
+            return chosen, t.test_id, "", note
+    return row, "", "", note
 
 
 # -- opener -------------------------------------------------------------------------------------
 
 
-def account_opener(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str]:
-    """(opener, legal_overlay) for the account's angle, worked out as scoring does (SPEC 9 steps 4-5).
+def account_opener(
+    ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any], check: Callable[[str], str] | None = None,
+) -> tuple[openers.Opener, str]:
+    """(opener, legal_overlay) for the account and its contact: the tokenized opener (enrol/openers.py).
 
-    The opener is not stored on accounts, so it is recomputed from the account's facts.
+    The opener is worked out at enrol time, when the contact and their copy role are known: the
+    angle setter's line for the role, filled with the account's stored facts, else the signal's
+    plain opener; a deterministic share of accounts is held out with none. The General angle
+    (Control among it) has no signal line: with opener_focus on it gets the "what they do" line.
+    An account with no line by then gets the generic line for the contact's role, then the plain
+    generic line (General opener_generic_*; Harry, 2 Oct 2026), else none, and email 1's opener
+    line disappears. check(text) is the copy-rule check each filled line must pass.
     """
-    angle = ctx.settings.angle(str(account.get("angle") or ""))
-    default = angle.default_opener if angle else ""
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
-    r = score_account(account, events, ctx.settings, ctx.today_uk())
-    opener = r.opener if r.angle == account.get("angle") and r.opener else default
-    return opener, r.legal_overlay
+    op = openers.for_account(ctx, account, contact, events, check=check)
+    return op, legal_overlay(ctx.settings.industry_group_of(account))
 
 
 # -- HubSpot re-check (SPEC 9 enrol "re-checks HubSpot"; hard exclusions) ---------------------------
 
 
-def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any]) -> tuple[str, str] | None:
-    """(fact, reason) when HubSpot now excludes the account: a customer, another owner, an open deal,
-    or the contact opted out there. None when it is clear."""
+def hubspot_company_block(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str] | None:
+    """(fact, reason) when HubSpot excludes the company: a customer, another owner or an open deal.
+    None when it is clear. verify_accounts makes the same check before an account is verified."""
     hs = ctx.clients.hubspot
     harry = ctx.settings.general.hubspot_owner_id.strip()
     for co in hs.search_companies_by_domain(str(account.get("domain") or "")):
@@ -355,6 +442,17 @@ def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str
             return HS_OTHER_OWNER, "owned by someone else in HubSpot"
         if hs.open_deals_for_company(str(co["id"])):
             return HS_OPEN_DEAL, "an open deal in HubSpot"
+    return None
+
+
+def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any]) -> tuple[str, str] | None:
+    """(fact, reason) when HubSpot now excludes the account: a customer, another owner, an open deal,
+    or the contact opted out there. None when it is clear."""
+    block = hubspot_company_block(ctx, account)
+    if block:
+        return block
+    hs = ctx.clients.hubspot
+    harry = ctx.settings.general.hubspot_owner_id.strip()
     for hc in hs.search_contacts_by_email(str(contact.get("email") or "")):
         p = hc.get("properties") or {}
         if _lower(p.get("hs_email_optout")) == "true":
@@ -367,13 +465,18 @@ def hubspot_block(ctx: Context, account: Mapping[str, Any], contact: Mapping[str
     return None
 
 
-def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: str) -> None:
-    """Tier Excluded now, and a hubspot fact so the next rescore keeps it excluded (the database, so dry-run too)."""
+def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: str,
+                  source: str = HUBSPOT_SOURCE) -> None:
+    """Tier Excluded now, and a fact so the next rescore keeps it excluded (the database, so dry-run too).
+
+    fact is one scoring/tiers.py reads as a hard exclusion: a hubspot one, or declined_in_slack (an
+    approver dropped the company at a send approval, source send_approval; enrol/approvals.py).
+    """
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
     ctx.store.insert(
         "signal_events",
-        [{"event_id": new_id(), "account_id": aid, "source": HUBSPOT_SOURCE, "fact": fact, "value": True,
+        [{"event_id": new_id(), "account_id": aid, "source": source, "fact": fact, "value": True,
           "quote": "", "source_url": "", "observed_at": ctx.now}],
     )
 
@@ -388,10 +491,18 @@ class Prepared:
     owner: str
     mailbox: str  # the address that sends step 1, when the owner has one Active mailbox; else ""
     copy_version: str
-    copy_angle: str
+    angle: str
     test_id: str
     lead: dict
-    opener_note: str = ""
+    opener_note: str = ""  # the opener lines passed over, and why (enrol/openers.py)
+    copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
+    opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
+    opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
+    # What a send approval's card shows and an edit re-renders with (enrol/approvals.py): the four emails
+    # as rendered, the variables they were filled with, and the mailbox they were rendered for.
+    rendered: list[render.Rendered] = field(default_factory=list)
+    values: dict[str, str] = field(default_factory=dict)
+    render_mailbox: str = ""
 
 
 @dataclass
@@ -401,13 +512,8 @@ class Skip:
     exclude_fact: str = ""  # set when HubSpot excludes the account
 
 
-def _default_opener(settings: Settings, angle: str) -> str:
-    a = settings.angle(angle)
-    return a.default_opener if a else ""
-
-
 def prepare(
-    ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], approved: Sequence[str],
+    ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], rows: Mapping[str, CopyRow],
     pace: Mapping[str, int] | None = None,
 ) -> Prepared | Skip:
     s, g = ctx.settings, ctx.settings.general
@@ -423,24 +529,25 @@ def prepare(
     boxes: tuple[Mailbox, ...] = s.mailboxes_for(owner, "Active")
     mb = boxes[0]
 
-    version, test_id, why = choose_copy(a, s, counts, approved)
-    if version is None:
-        return Skip("no approved copy", [why])
-    copy_angle = version_angle(s, version)
+    row, test_id, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
+    if row is None:
+        return Skip("no approved copy", [why, copy_note] if copy_note else [why])
 
-    opener, overlay = account_opener(ctx, a)
-    if copy_angle != a.get("angle"):
-        opener = _default_opener(s, copy_angle)  # a test version on another angle uses that angle's opener
     host = render.is_demo_host(mb, s)
-    opener, note = render.pick_opener(
-        opener, _default_opener(s, copy_angle), sender_is_harry=host, demo_host=g.demo_host,
-        exempt=(str(a.get("clean_name") or ""), str(c.get("first_name") or "")),
-    )
-    values = render.variables(a, c, mb, s, opener=opener, legal_overlay=overlay)
-    rendered = render.render_sequence(version, values, mailbox=mb, settings=s)
+    exempt = (str(a.get("clean_name") or ""), str(c.get("first_name") or ""))
+
+    def check(text: str) -> str:
+        return render.pick_opener(text, sender_is_harry=host, demo_host=g.demo_host, exempt=exempt)[1]
+
+    op, overlay = account_opener(ctx, a, c, check)
+    opener, note = render.pick_opener(op.text, sender_is_harry=host, demo_host=g.demo_host, exempt=exempt)
+    if note:  # every filled opener goes through the copy rules once more, as it will be sent
+        op = openers.Opener("", openers.NONE, "", (*op.notes, note))
+    values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
+    rendered = render.render_sequence(row, values, mailbox=mb, settings=s)
     problems = render.violations(rendered)
     if problems:
-        return Skip("copy blocked", problems)
+        return Skip("copy blocked", [f"{row.copy_version}: {p}" for p in problems])
 
     try:
         block = hubspot_block(ctx, a, c)
@@ -459,7 +566,9 @@ def prepare(
     }
     return Prepared(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
-        copy_version=version, copy_angle=copy_angle, test_id=test_id, lead=lead, opener_note=note,
+        copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
+        opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
+        rendered=rendered, values=values, render_mailbox=mb.address,
     )
 
 
@@ -472,6 +581,9 @@ class _Run:
     skipped_accounts: list[dict] = field(default_factory=list)
     excluded: list[dict] = field(default_factory=list)
     opener_fallbacks: list[dict] = field(default_factory=list)
+    opener_arms: Counter[str] = field(default_factory=Counter)  # opener, holdout, none
+    opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus", "opener_generic_ops"
+    copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 
     def skip(self, account: Mapping[str, Any], reason: str, detail: Sequence[str] = ()) -> None:
@@ -485,7 +597,7 @@ class _Run:
 
 def _walk(
     ctx: Context, lane: Iterator[Candidate], target: int, free: Counter[str], counts: Counter[str],
-    approved: Sequence[str], run: _Run, pace: Mapping[str, int] | None = None,
+    rows: Mapping[str, CopyRow], run: _Run, pace: Mapping[str, int] | None = None,
     quota: focus.Quota | None = None, held: list[Candidate] | None = None,
 ) -> list[Prepared]:
     """Prepare accounts in queue order until target are ready; skipped ones make way for the next.
@@ -503,7 +615,7 @@ def _walk(
             if held is not None:
                 held.append(cand)
             continue
-        p = prepare(ctx, cand, free, counts, approved, pace)
+        p = prepare(ctx, cand, free, counts, rows, pace)
         if isinstance(p, Skip):
             run.skip(cand.account, p.reason, p.detail)
             if p.exclude_fact:
@@ -518,6 +630,11 @@ def _walk(
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
+        run.opener_arms[p.opener_arm] += 1
+        if p.opener_source:
+            run.opener_sources[p.opener_source] += 1
+        if p.copy_note:
+            run.copy_fallbacks[f"sent {p.copy_version}: {p.copy_note}"] += 1
     return out
 
 
@@ -549,12 +666,14 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "contact_id": p.contact["contact_id"],
             "enrolment_month": month,
             "enrolled_at": ctx.now,
-            "angle": p.copy_angle,
+            "angle": p.angle,
             "copy_version": p.copy_version,
             "test_id": p.test_id or None,
             "mailbox": p.mailbox or None,
             "instantly_campaign": campaign,
             "instantly_lead_id": ids[i],
+            "opener_arm": p.opener_arm,
+            "opener_source": p.opener_source or None,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
@@ -563,21 +682,33 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
 
 def run(ctx: Context) -> dict:
     """The enrol job (JOB CONTRACT: run(ctx) -> summary)."""
+    from us_outbound.enrol import approvals  # it builds on this module
+
     s = ctx.settings
     today = ctx.now_et().date()
-    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "date": today.isoformat()}
+    # Harry, 2 Oct 2026: with auto_send = no every email waits for an approver's ✅ in Slack.
+    approve = not s.general.auto_send
+    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "date": today.isoformat(),
+                               "auto_send": s.general.auto_send}
 
     why = gate(ctx, today)
     pulled: frozenset[str] = frozenset()
     if why is None:
-        why, pulled = hand_check(ctx, today)
+        waits, pulled = hand_check(ctx, today)
+        why = None if approve else waits  # every email is approved anyway, so no weekly gate
+    slack = None
+    if why is None and approve:
+        slack, why = approvals.slack_for(ctx)  # a live run needs the token
     if why:
         summary.update(status="skipped", reason=why)
         log("enrol_done", run_id=ctx.run_id, **summary)
         return summary
 
-    cands, skipped = candidates(ctx, pulled)
-    lim = limits.today(ctx, today, ready_accounts=len(cands))
+    # Send approvals still waiting (in either mode: auto_send may have been switched on since) are
+    # not proposed again, and hold their sender's slots and their place in the week.
+    held = approvals.waiting(ctx)
+    cands, skipped = candidates(ctx, pulled, held.accounts)
+    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner)
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
     pace = {owner: c.pace for owner, c in lim.senders.items()}
@@ -589,7 +720,7 @@ def run(ctx: Context) -> dict:
     n_control = sum(c.account.get("tier") == queue.CONTROL for c in in_order)
     control = iter([c for c in in_order if c.account.get("tier") == queue.CONTROL])
     main = iter([c for c in in_order if c.account.get("tier") != queue.CONTROL])
-    counts, approved = running_test_counts(ctx), approved_versions(s)
+    counts, approved = running_test_counts(ctx), sendable_copy(s)
     # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
     # accounts, the rest of the day in queue order whatever the group.
     quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
@@ -610,6 +741,12 @@ def run(ctx: Context) -> dict:
     enrolled: Counter[str] = Counter()
     would: Counter[str] = Counter()
     month = today.strftime("%Y-%m")
+    proposed: dict[str, Any] | None = None
+    if approve:  # each account becomes a send approval instead of a lead (enrol/approvals.py)
+        proposed = approvals.propose(ctx, prepared, lim, slack)
+        would = Counter(proposed["by_owner"])
+        r.errors += proposed["errors"]
+        by_owner = {}
     for owner, items in by_owner.items():
         campaign = queue.campaign_name(owner)
         leads = [p.lead for p in items]
@@ -646,7 +783,12 @@ def run(ctx: Context) -> dict:
         skipped_accounts=r.skipped_accounts,
         excluded=r.excluded,
         opener_fallbacks=r.opener_fallbacks,
+        openers={"arms": dict(r.opener_arms), "sources": dict(r.opener_sources)},
+        copy_fallbacks=dict(r.copy_fallbacks),
+        copy_sendable=len(approved),
         errors=r.errors,
     )
+    if proposed is not None:  # by_owner: the cards posted (live) or that would be (dry-run)
+        summary.update(by_owner=dict(would), send_approvals=proposed)
     log("enrol_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "skipped_accounts"})
     return summary

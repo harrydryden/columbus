@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import dataclasses
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -14,7 +15,7 @@ from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
 from us_outbound.ops import heartbeat as hb
-from us_outbound.settings.model import CopyRow, General, Settings
+from us_outbound.settings.model import General, Settings
 from us_outbound.settings.model import Test as CopyTest
 
 SPEC9_JOBS = [
@@ -84,7 +85,9 @@ class Harness:
         (["hubspot", "setup", "--live"], {"action": "setup", "live": True}),
         (["hubspot", "ids"], {"action": "ids"}),
         (["campaigns", "ensure", "--fix"], {"action": "ensure", "fix": True}),
+        (["campaigns", "show"], {"action": "show"}),
         (["suppression", "load"], {"action": "load"}),
+        (["pages", "show"], {"command": "pages", "action": "show"}),
         (["schedule"], {"command": "schedule"}),
         (["scheduler"], {"command": "scheduler", "list": False}),
         (["scheduler", "--list"], {"command": "scheduler", "list": True}),
@@ -106,14 +109,27 @@ def test_dry_run_takes_no_live_flag():
 
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
-    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load"}
+    assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
+                                               "hand_check_post", "read_pages", "apollo_enrich"}
+    assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
+    assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
+    assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
+    assert cli.JOBS["apollo_enrich"] == "us_outbound.sources.apollo_enrich:run"
+    assert cli.JOBS["verify_accounts"] == "us_outbound.verify:run"
+    assert cli.JOBS["lookalikes"] == "us_outbound.sources.lookalikes:run"
     assert cli.JOBS["settings_sync"] == "us_outbound.settings.sync:run"
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
     assert cli.JOBS["mailbox_health"] == "us_outbound.registry.mailboxes:mailbox_health"
     assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:check_heartbeats"
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
-    assert cli.JOBS["poll_replies"] == "not built yet (phase 2)"
+    assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
+    assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
+    assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_approvals"
+    assert cli.JOBS["hubspot_readback"] == "us_outbound.crm.readback:hubspot_readback"
+    assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
+    assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
+    assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 
@@ -129,7 +145,7 @@ def test_schedule_lists_every_job_with_its_next_run(capsys):
     lines = {line.split()[0]: line for line in out.splitlines() if line.split() and line.split()[0] in cli.JOBS}
     assert set(lines) == set(cli.JOBS)
     assert "0 2 * * *" in lines["settings_sync"] and "--live" in lines["settings_sync"]
-    assert "disabled until phase 2" in lines["enrol"] and "on demand only" in lines["score"]
+    assert "disabled until phase 3" in lines["monday_readout"] and "on demand only" in lines["score"]
     assert re.search(r"(BST|GMT)$", lines["heartbeat_check"])
     assert "live_sending = yes" in out
     assert cli.main(["scheduler", "--list"]) == 0
@@ -204,9 +220,8 @@ def test_live_needs_both_the_flag_and_the_setting():
 
 
 @pytest.mark.parametrize("job, message", [
-    ("poll_replies", "not built yet (phase 2)"),
-    ("kill_rules", "not built yet (phase 3)"),
-    ("source_universe", "not built yet (phase 1)"),
+    ("monday_readout", "not built yet (phase 3)"),
+    ("verify_in_clay", "not built yet (phase 1)"),
     ("no_such_job", "unknown job"),
 ])
 def test_unbuilt_jobs_exit_non_zero(job, message, capsys):
@@ -306,10 +321,23 @@ def test_stop_pauses_every_us_campaign_and_enrolment():
     assert [b["status"] for b in h.beats(hb.OPERATOR_STOP)] == ["ok", "ok"]
 
 
+def test_campaigns_show_prints_each_owner_campaign_as_instantly_holds_it(capsys):
+    h = Harness(SETTINGS)
+    h.instantly.standard(C_HANNAH, [HANNAH], 30)
+    assert h.run("campaigns", "show") == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{"campaign"')]
+    by = {line["campaign"]: line["instantly"] for line in lines}
+    assert by[C_HANNAH]["name"] == C_HANNAH and by[C_SAM] is None  # Sam's is not created yet
+    assert not [r for r in h.transport.requests if r.method != "GET"]  # read-only
+
+
 def test_start_needs_live_sending_and_checks_drift():
     h = Harness(SETTINGS)
     for name, accounts, limit in ((C_HANNAH, [HANNAH], 30), (C_SAM, [SAM], 30), (C_HARRY, [HARRY, HARRY2], 60)):
         h.instantly.standard(name, accounts, limit)
+    from tests.test_ramp import past_ramp
+
+    past_ramp(h.store, SETTINGS.mailboxes, datetime(2026, 10, 27, 12, 0, tzinfo=UTC))  # campaigns at full caps
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())
@@ -390,8 +418,9 @@ def _tests_tab(**over):
 
 
 def _approved():
-    return tuple(CopyRow(v, a, step, "s", "b", "approved", "Harry Dryden")
-                 for v, a in (("eap-v1", "Upgrade the EAP"), ("general-v1", "General")) for step in (1, 2, 3, 4))
+    from tests.test_render import copy_row
+
+    return (copy_row("eap-v1", "Marketing & Creative Agencies"), copy_row("general-v1", "General"))
 
 
 def test_test_start_sets_running_and_refuses_a_second():
@@ -472,6 +501,7 @@ def test_build_context_refuses_unusable_settings_except_for_sync():
         _build("mailbox_health", False, None)
     ctx = _build("settings_sync", True, None)
     assert ctx.settings.general == General() and ctx.dry_run  # defaults: live_sending is no
+    assert _build("settings_load", True, None, operator=True).live  # it repairs the sheet: --live alone
     with pytest.raises(bootstrap.ConfigError, match="DATABASE_URL"):
         _build("status", False, SETTINGS, env={})
 

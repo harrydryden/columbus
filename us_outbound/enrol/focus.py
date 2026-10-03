@@ -41,6 +41,15 @@ def shares(settings: Settings) -> dict[str, float]:
     return out
 
 
+def group_rank(group: str, settings: Settings) -> int:
+    """0, 1, ... for the Focus tab's groups, largest share first; len(focus) for every other group.
+
+    The source jobs and verify_accounts work in this order, so the Focus tab's industries come first.
+    """
+    ranked = sorted(settings.focus, key=lambda f: -f.share)  # stable: equal shares keep sheet order
+    return next((i for i, f in enumerate(ranked) if f.industry_group == group), len(ranked))
+
+
 def done_this_week(ctx: Context) -> Counter[str]:
     """Accounts enrolled this week per share (by the account's group now)."""
     ids = {c.get("account_id") for c in ctx.store.select("contacts") if budget.in_week(c.get("enrolled_at"), ctx.now)}

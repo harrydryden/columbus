@@ -12,13 +12,19 @@ Harry, 30 Sep 2026:
     is made up later in the same week.
 The Claude cap is monthly too, a UTC month as the Anthropic Console counts it (clients/claude.py).
 Unspent credits do not carry over to the next month.
+
+A share for some jobs (share_for_jobs; build, 1 Oct 2026, for the 5 Oct pilot): source_universe
+runs at 03:00, apollo_signals at 03:30 and apollo_enrich at 04:10 (2 Oct 2026), before pick_contacts
+at 05:30, so each may spend only its share of apollo_monthly_credits (sources/apollo_credits.py),
+paced by the weekday like the whole budget. Today's room is the smaller of what is left of the
+whole budget today and of the share today.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -154,11 +160,13 @@ def _n(x: float) -> str:
     return f"{x:,.0f}" if abs(x) >= 100 or abs(x - round(x)) < 0.05 else f"{x:,.1f}"
 
 
-def spent_in(store: Store, system: str, start: datetime, end: datetime) -> float:
+def spent_in(store: Store, system: str, start: datetime, end: datetime, jobs: Collection[str] | None = None) -> float:
+    """Credits credit_ledger records for system in [start, end); only those jobs' rows when jobs is given."""
     return sum(
         float(r.get("credits") or 0)
         for r in store.select("credit_ledger", {"system": system})
         if (t := _ts(r.get("occurred_at"))) is not None and start <= t < end
+        and (jobs is None or r.get("job") in jobs)
     )
 
 
@@ -177,6 +185,28 @@ def monthly(store: Store, settings: Settings, system: str, now: datetime) -> Bud
         month_end=end.date() - timedelta(days=1),
         today_is_weekday=today.weekday() < 5,
     )
+
+
+def share_for_jobs(store: Store, settings: Settings, system: str, now: datetime, *,
+                   jobs: Collection[str], share: float) -> Budget:
+    """`share` of the system's monthly budget, kept for `jobs`, with what they spent; paced the same way."""
+    whole = monthly(store, settings, system, now)
+    start, end = month_bounds(now)
+    today = _uk_midnight(now.astimezone(UK).date())
+    return replace(
+        whole,
+        budget=whole.budget * share,
+        used=spent_in(store, system, start, end, jobs),
+        used_today=spent_in(store, system, today, today + timedelta(days=1), jobs),
+    )
+
+
+def room_today(store: Store, settings: Settings, system: str, now: datetime, *,
+               jobs: Collection[str], share: float) -> tuple[float, Budget, Budget]:
+    """(credits jobs may still spend today, the whole budget, their share): the smaller of the two's left_today."""
+    whole = monthly(store, settings, system, now)
+    part = share_for_jobs(store, settings, system, now, jobs=jobs, share=share)
+    return min(whole.left_today, part.left_today), whole, part
 
 
 # -- the week (the enrolment target) ------------------------------------------------------------

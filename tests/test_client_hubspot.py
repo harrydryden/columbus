@@ -295,3 +295,74 @@ def test_iter_opted_out_or_bounced_pages_on_object_id():
         "propertyName": "hs_email_hard_bounce_reason_enum", "operator": "HAS_PROPERTY"
     }
     assert all("after" not in r.json for r in t.requests)
+
+
+# -- the lookalikes job's reads (sources/lookalikes.py) --------------------------------------------------
+
+
+def test_iter_companies_ors_the_groups_and_pages_on_object_id():
+    hs, t, guard = make()
+    rows = [{"id": str(i), "properties": {"domain": f"c{i}.com"}} for i in range(1, 151)]
+
+    def search(req):
+        gts = {g["filters"][-1]["value"] for g in req.json["filterGroups"]}
+        assert len(gts) == 1  # every group pages from the same id
+        last = int(gts.pop())
+        after = [r for r in rows if int(r["id"]) > last]
+        return {"results": after[: req.json["limit"]]}
+
+    t.route("POST", "/crm/v3/objects/companies/search", fn=search)
+    groups = [[{"propertyName": "lifecyclestage", "operator": "EQ", "value": "customer"}],
+              [{"propertyName": "subscription_status", "operator": "HAS_PROPERTY"}]]
+    found = list(hs.iter_companies(groups, ["domain", "country"]))
+
+    assert [c["id"] for c in found] == [str(i) for i in range(1, 151)]
+    first = t.requests[0].json
+    assert first["properties"] == ["country", "domain", "hs_object_id"]  # only what the caller asks for
+    assert [g["filters"] for g in first["filterGroups"]] == [
+        [{"propertyName": "lifecyclestage", "operator": "EQ", "value": "customer"},
+         {"propertyName": "hs_object_id", "operator": "GT", "value": "0"}],
+        [{"propertyName": "subscription_status", "operator": "HAS_PROPERTY"},
+         {"propertyName": "hs_object_id", "operator": "GT", "value": "0"}],
+    ]
+    assert first["sorts"] == [{"propertyName": "hs_object_id", "direction": "ASCENDING"}]
+    assert [r.json["filterGroups"][0]["filters"][-1]["value"] for r in t.requests] == ["0", "100"]
+    assert {c.action for c in guard.calls} == {"company.search"} and not guard.writes("hubspot")
+    with pytest.raises(ValueError):
+        list(hs.iter_companies([[]] * 6, ["domain"]))  # HubSpot takes five filter groups at most
+
+
+def test_iter_deals_and_their_companies():
+    hs, t, guard = make()
+    t.route("POST", "/crm/v3/objects/deals/search",
+            body={"results": [{"id": "77", "properties": {"dealstage": "won"}}]})
+    pages = {None: {"results": [{"toObjectId": 5}, {"toObjectId": 6}], "paging": {"next": {"after": "a1"}}},
+             "a1": {"results": [{"toObjectId": 7}]}}
+    t.route("GET", "/crm/v4/objects/deals/77/associations/companies", fn=lambda req: pages[req.params.get("after")])
+
+    deals = list(hs.iter_deals([[{"propertyName": "pipeline", "operator": "EQ", "value": "p3"}]], ["dealstage"]))
+    assert deals == [{"id": "77", "properties": {"dealstage": "won"}}]
+    assert hs.deal_company_ids("77") == ["5", "6", "7"]
+    gets = [r for r in t.requests if r.method == "GET"]
+    assert [r.params for r in gets] == [{"limit": 500}, {"limit": 500, "after": "a1"}]
+    assert [c.action for c in guard.calls] == ["deal.search", "association.list", "association.list"]
+    assert not guard.writes("hubspot")
+
+
+def test_companies_by_id_searches_100_ids_at_a_time():
+    hs, t, _ = make()
+    asked: list[list[str]] = []
+
+    def search(req):
+        flt, gt = req.json["filterGroups"][0]["filters"]
+        asked.append(flt["values"])
+        ids = sorted((i for i in flt["values"] if int(i) > int(gt["value"])), key=int)  # ascending, as HubSpot sorts
+        return {"results": [{"id": i, "properties": {}} for i in ids]}
+
+    t.route("POST", "/crm/v3/objects/companies/search", fn=search)
+    ids = [str(i) for i in range(1, 251)] + ["3", " "]
+    found = hs.companies_by_id(ids, ["domain"])
+    # A full page of 100 asks once more past its last id, and gets nothing.
+    assert len(found) == 250 and [len(a) for a in asked] == [100, 100, 100, 100, 50]
+    assert {c["id"] for c in found} == {str(i) for i in range(1, 251)}
+    assert t.requests[0].json["filterGroups"][0]["filters"][0]["operator"] == "IN"

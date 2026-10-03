@@ -47,26 +47,32 @@ _DAY = 24 * _H
 # Longest gap between healthy runs before a job counts as missed (SPEC 9 schedules plus slack).
 EXPECTED: dict[str, int] = {
     "settings_sync": 26 * _H,  # 02:00 daily
-    "source_universe": 32 * _DAY,  # 1st of the month
-    "apollo_signals": 8 * _DAY,  # Mon 03:30
+    "source_universe": 26 * _H,  # 03:00 weekdays (weekday time; SPEC 9 had the 1st of the month)
+    "apollo_signals": 26 * _H,  # 03:30 weekdays (weekday time; SPEC 9 had Mondays)
+    "read_pages": 26 * _H,  # 03:45 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
+    "apollo_enrich": 26 * _H,  # 04:10 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
     "site_visits": 26 * _H,  # 06:00 daily
     "public_signals": 8 * _DAY,  # Mon 04:00
     "verify_in_clay": 26 * _H,  # 04:30 weekdays (weekday time)
+    "verify_accounts": 26 * _H,  # 04:30 weekdays (weekday time; build addition)
     "pick_contacts": 26 * _H,  # 05:30 weekdays (weekday time)
     "enrol": 26 * _H,  # 12:00 weekdays (weekday time)
     "poll_replies": 45,  # every 15 min
     "poll_approvals": 20,  # every 5 min
     "hubspot_readback": 45,  # every 15 min
-    "sync_outcomes": 26 * _H,  # 01:00 daily
+    "sync_outcomes": 45,  # every 15 min (SPEC 9 had 01:00 daily)
     "mailbox_health": 26 * _H,  # 07:00 daily
     "kill_rules": 150,  # hourly
     "heartbeat_check": 150,  # hourly (nothing watches this one; the daily post reports it)
     "daily_post": 26 * _H,  # 09:00 daily
     "monday_readout": 8 * _DAY,  # Mon 09:00
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
+    "lookalikes": 8 * _DAY,  # Mon 02:30 (build addition)
+    "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
 }
-# score has no schedule of its own: it runs inside settings_sync, verify_in_clay and site_visits.
-WEEKDAY_JOBS = frozenset({"verify_in_clay", "pick_contacts", "enrol"})
+# score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
+WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "verify_in_clay",
+                          "verify_accounts", "pick_contacts", "enrol"})
 OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 
 LATEST_SQL = (
