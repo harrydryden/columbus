@@ -225,21 +225,33 @@ def check_campaigns(ctx: Context) -> Check:
                      for c in ctx.clients.instantly.list_campaigns()}
     except (ConfigError, ApiError, LookupError) as exc:
         return Check(FAIL, "Campaigns", f"cannot read Instantly: {redact(str(exc))[:200]}")
+    # A campaign can only be created once its owner has an Active (warm) mailbox, and `start` skips an owner
+    # without one, so that owner's missing campaign waits rather than blocks: the others can send (2 Oct 2026,
+    # Harry's mailboxes still warming while Hannah's and Sam's were ready).
+    settings = holds.with_holds(ctx.store, ctx.settings)
+    no_mailbox = {reg.campaign_name(o) for o in settings.owners() if not reg.sending_list(settings, o)}
+    waiting = [n for n in out["pending"] if n in no_mailbox]
+    missing = [n for n in out["pending"] if n not in no_mailbox]
     detail = [f"{name}: {', '.join(f'{k} {v[1]!r}, expected {v[0]!r}' for k, v in sorted(d.items()))}"
               for name, d in out["drift"].items()]
-    detail += [f"{name}: missing" for name in out["pending"]]
+    detail += [f"{name}: missing" for name in missing]
+    detail += [f"{name}: waits for a warm mailbox (created by mailbox_health once one is Active)" for name in waiting]
     detail += [f"{name}: matches ({status_of.get(name, '?')})" for name in out["ok"]]
     detail += [f"{name}: not an owner in the registry (left alone)" for name in out.get("unknown") or ()]
-    if out["drift"] or out["pending"]:
+    if out["drift"] or missing:
         fix = "`us-outbound campaigns ensure --fix --live`" if out["drift"] else "`us-outbound campaigns ensure --live`"
         what = []
         if out["drift"]:
             what.append(f"{len(out['drift'])} drifted")
-        if out["pending"]:
-            what.append(f"{len(out['pending'])} missing")
+        if missing:
+            what.append(f"{len(missing)} missing")
         return Check(FAIL, "Campaigns", f"{' and '.join(what)}; run {fix}, then `us-outbound start --live` to send", detail)
-    if out.get("unknown"):
-        return Check(WARN, "Campaigns", f"all {len(out['ok'])} match; unknown US Outbound campaigns exist", detail)
+    if not out["ok"]:
+        return Check(FAIL, "Campaigns", "no campaign yet: every owner waits for a warm mailbox", detail)
+    if waiting or out.get("unknown"):
+        why = [f"{len(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a warm mailbox"] if waiting else []
+        why += ["unknown US Outbound campaigns exist"] if out.get("unknown") else []
+        return Check(WARN, "Campaigns", f"{len(out['ok'])} exist and match; {'; '.join(why)}", detail)
     return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; `us-outbound start --live` activates them", detail)
 
 

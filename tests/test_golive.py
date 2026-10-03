@@ -76,7 +76,7 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     assert got["live_sending"].startswith("FAIL  live_sending: no")
     assert got["Approvers"].startswith("FAIL  Approvers: approver_slack_ids is blank")
     assert got["Slack"] == "PASS  Slack: token set; the bot can see #us-outbound"
-    assert got["Campaigns"].startswith("FAIL  Campaigns: 3 missing")
+    assert got["Campaigns"].startswith("FAIL  Campaigns: no campaign yet: every owner waits for a warm mailbox")
     assert got["Apollo budget"].startswith("PASS  Apollo budget: 2,000 of 2,000 credits left this month")
     assert got["Queue"] == "FAIL  Queue: no verified account has a sendable contact"
     # auto_send = no by default (Harry, 2 Oct 2026): every email waits for approval, so no hand-check is needed.
@@ -157,6 +157,20 @@ def test_campaigns_still_at_30_a_day_drift_from_the_ramp(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert lines_of(out)["Campaigns"].startswith("FAIL  Campaigns: 1 drifted; run `us-outbound campaigns ensure --fix --live`")
     assert "US Outbound – Hannah Spalding: daily_limit 30, expected 10" in out
+
+
+def test_an_owner_whose_mailboxes_are_still_warming_waits_without_blocking(monkeypatch, capsys):
+    # 2 Oct 2026: Hannah's and Sam's mailboxes were warm, Harry's two were not, so his campaign could not be
+    # created yet. `start` skips him, and golive warns instead of failing.
+    f = ready_world(monkeypatch)
+    harry = {"harry@meetspill.org", "harry@tryspill.org"}
+    f.ctx.settings = dataclasses.replace(f.ctx.settings, mailboxes=tuple(
+        dataclasses.replace(m, status="Warming") if m.address in harry else m for m in f.ctx.settings.mailboxes))
+    del f.instantly.campaigns[f.instantly.by_name("US Outbound – Harry Dryden")["id"]]
+    assert cli.main(["golive"], context_factory=f) == 0
+    out = capsys.readouterr().out
+    assert lines_of(out)["Campaigns"] == "WARN  Campaigns: 2 exist and match; 1 waits for a warm mailbox"
+    assert "US Outbound – Harry Dryden: waits for a warm mailbox" in out
 
 
 def test_an_active_mailbox_that_is_not_warm_fails(monkeypatch, capsys):
