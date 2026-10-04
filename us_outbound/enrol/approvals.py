@@ -498,7 +498,7 @@ def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, li
     counts = "\n".join([
         f"*Emails:* Email 1 of {len(render.STEPS)} · follow-ups on days {days} (in the thread)",
         f"*Before:* {_before_line(p)}",
-        f"*Today:* {_esc(_first(owner))}: {p.get('slot', '?')} of {p.get('slots', '?')} today",
+        f"*{_esc(_first(owner)) or 'The sender'} today:* card {p.get('slot', '?')} of {p.get('slots', '?')}",
     ])
     blocks = []
     if status:
@@ -509,8 +509,7 @@ def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, li
     if status:
         blocks.append(_context(status))
     else:
-        cli_hint = f"; without Slack, `us-outbound approvals approve {short_id} --live`" if short_id else ""
-        blocks.append(_context(f"✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread{cli_hint}."))
+        blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread."))
     text = _esc(f"Send approval: {company} · {name} · from {owner}: {first.get('subject') or ''}")
     return (f"{status} {text}" if status else text), blocks  # status is mrkdwn already (it may mention)
 
@@ -535,7 +534,7 @@ def choices_text(p: Mapping[str, Any], by: str) -> str:
     name = _esc(" ".join(x for x in (_text(c.get("first_name")), _text(c.get("last_name"))) if x) or "this person")
     return (f"❌ Not sent ({_who(by)}). What next? React to this message, or reply with the word:\n"
             "✏️ *edit*: change the email (or a follow-up), then approve it again\n"
-            f"👤 *contact*: not {name}; pick_contacts finds the next-ranked person at {company}\n"
+            f"👤 *contact*: not {name}; you'll get a card for the next person at {company}\n"
             f"🚫 *company*: drop {company}\n"
             f"If nothing is chosen, it expires at the end of {_day(_date(p.get('expires_on')))} (UK) and "
             f"{company} goes back to the queue.")
@@ -885,8 +884,9 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         raise
     except (ApiError, LookupError, ValueError, ConfigError) as exc:
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
-        note = _thread(slack, item, f"Not added: Instantly answered {_esc(why)}. Check {_esc(campaign)} in Instantly "
-                                    f"for {_esc(item.email)} before you approve it again: ✅ this message, or reply \"send\".")
+        note = _thread(slack, item, f"Not added: Instantly refused: {_esc(str(exc)[:200])}. Check {_esc(campaign)} in "
+                                    f"Instantly for {_esc(item.email)} before you approve it again: ✅ this message, or "
+                                    "reply \"send\".")
         _seed(slack, item.channel, note, SEED_APPROVE[:1])
         p.update(state=WAITING, approve_ts=note, failed={**p.pop("sending", {}), "error": why})
         _cas(ctx, item, OPEN)
@@ -1076,10 +1076,11 @@ def _first_by(reactions: Sequence[Mapping[str, Any]], names: frozenset[str], app
         if r.get("name") not in names:
             continue
         for u in r.get("users") or ():
+            if bot and u == bot:
+                continue  # its own seeded ✅ and ❌, even if its id were on approver_slack_ids
             if u in approvers:
                 return str(u)
-            if u != bot:
-                run.ignored += 1
+            run.ignored += 1
     return ""
 
 
