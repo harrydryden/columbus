@@ -483,13 +483,15 @@ def _kill_rule_pauses(store: Any, since: datetime) -> dict[str, list[dict]]:
     return out
 
 
-def start_waiting(ctx: Context, settings: Settings, created: Collection[str]) -> dict:
+def start_waiting(ctx: Context, settings: Settings, created: Collection[str],
+                  drifted: Collection[str] = ()) -> dict:
     """Start the campaigns nothing else would, once sending has gone live; before that, say a new one is ready.
 
     For each owner with an Active mailbox (kill-rule holds count as Paused): after go-live, a campaign
     created this run, a draft, or one a kill rule's pause left with no Active mailbox is activated
-    (it holds only approved leads, so this sends nothing by itself); a campaign paused for another
-    reason is reported. Before go-live a campaign created this run is reported as ready.
+    (it holds only approved leads, so this sends nothing by itself), unless it has drift left that
+    was not put right (drifted: `start` would refuse it too); a campaign paused for another reason is
+    reported. Before go-live a campaign created this run is reported as ready.
     """
     live_since = went_live(ctx.store)
     settings = holds.with_holds(ctx.store, settings)
@@ -511,6 +513,9 @@ def start_waiting(ctx: Context, settings: Settings, created: Collection[str]) ->
         if not (name in created or status == DRAFT or (status == PAUSED_CAMPAIGN and name in kill_paused)):
             if status == PAUSED_CAMPAIGN:
                 out["paused"].append(owner)
+            continue
+        if name in drifted:  # the summary's drift line says what to fix first
+            out["ready"].append(owner)
             continue
         if ctx.dry_run:
             out["would_start"].append(name)
@@ -712,8 +717,10 @@ def mailbox_health(ctx: Context) -> dict:
     }
     # The daily limit follows the ramp and the sending list the sheet: those are put right here; other drift is reported.
     out["campaigns"] = ensure_campaigns(ctx, settings=new_settings, fix=True, fix_only=AUTO_FIX)
-    created = {n for n, a in out["campaign_actions"].items() if a == CREATED} | set(out["campaigns"]["created"])
-    out["campaign_start"] = start_waiting(ctx, new_settings, created)
+    found = out["campaigns"]
+    created = {n for n, a in out["campaign_actions"].items() if a == CREATED} | set(found["created"])
+    drifted = {n for n, d in found["drift"].items() if set(d) - set(found["fixed_fields"].get(n, ()))}
+    out["campaign_start"] = start_waiting(ctx, new_settings, created, drifted)
     out["post_reasons"] = _noteworthy(out)
     out["posted"] = bool(out["post_reasons"])
     if out["posted"]:  # otherwise nothing changed and nothing is wrong: the log and the heartbeat have it

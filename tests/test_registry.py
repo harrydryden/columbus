@@ -502,6 +502,19 @@ def test_a_campaign_a_kill_rule_emptied_starts_again_once_its_mailbox_is_active(
     assert reg.mailbox_health(ctx)["campaign_start"]["paused"] == ["Hannah Spalding", "Sam Jackson"]
 
 
+def test_a_campaign_with_drift_left_is_not_started():
+    """`start` refuses a campaign whose settings drifted; mailbox_health does not start one either."""
+    settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding"),))
+    ctx, t, inst, sheets = setup(settings)
+    go_live(ctx)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=0, link_tracking=True)
+    out = reg.mailbox_health(ctx)
+    assert out["campaign_start"]["started"] == [] and out["campaign_start"]["ready"] == ["Hannah Spalding"]
+    assert inst.by_name(C_HANNAH)["status"] == 0
+    [post] = posts(t)
+    assert "Campaign drift, US Outbound – Hannah Spalding: link_tracking" in post["text"]
+
+
 def test_a_held_mailbox_keeps_its_campaign_paused():
     settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding"),))
     ctx, t, inst, sheets = setup(settings)
