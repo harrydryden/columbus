@@ -95,6 +95,7 @@ class ReplyWorld:
     slack_posts: list[dict] = field(default_factory=list)
     slack_reactions: list[dict] = field(default_factory=list)
     lead_patches: list[tuple[str, dict]] = field(default_factory=list)
+    honor_until: bool = False  # GET /emails applies max_timestamp_created (PHASE0-CONFIRM; off: Instantly ignores it)
 
     # -- building the world --
 
@@ -160,9 +161,10 @@ class ReplyWorld:
         if path == "/emails":
             p = req.params or {}
             since = p.get("min_timestamp_created") or ""
+            until = (p.get("max_timestamp_created") or "") if self.honor_until else ""
             items = [public(e) for e in self.emails
                      if e["eaccount"] == p.get("eaccount") and (not p.get("email_type") or e["_type"] == p["email_type"])
-                     and e["timestamp_created"] >= since]
+                     and e["timestamp_created"] >= since and (not until or e["timestamp_created"] <= until)]
             return {"items": items}
         eid = path.rsplit("/", 1)[1]
         return next((public(e) for e in self.emails if e["id"] == eid), {})

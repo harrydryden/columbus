@@ -739,10 +739,14 @@ class Instantly(HttpClient):
         since: datetime | str | None = None,
         *,
         email_type: str | None = None,
+        until: datetime | str | None = None,
     ) -> list[dict]:
         """Emails of the registry accounts, one filtered request series per account (eaccount=).
 
         email_type: "received", "sent" or "manual" (Instantly's filter); None for all.
+        until: created at or before this time (max_timestamp_created), for a run that catches up a
+        long gap a week at a time. PHASE0-CONFIRM: that Instantly applies it; if it does not, the
+        run reads up to now, as before, and the events stay idempotent.
         Results whose eaccount is not the account asked for are dropped.
         """
         accs = self._registry("email.list", accounts)
@@ -755,6 +759,8 @@ class Instantly(HttpClient):
                 params: dict[str, Any] = {"eaccount": acct, "limit": PAGE}
                 if since:
                     params["min_timestamp_created"] = _timestamp(since)
+                if until:
+                    params["max_timestamp_created"] = _timestamp(until)
                 if email_type:
                     params["email_type"] = email_type
                 if cursor:

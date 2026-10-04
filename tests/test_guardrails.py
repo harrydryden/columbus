@@ -453,6 +453,7 @@ def _store_exercises() -> dict[str, Ex]:
         "upsert": lambda s, w: s.upsert("accounts", ACCOUNT_ROWS),
         "select": lambda s, w: s.select("accounts", {"domain": ["acmecreative.com"]}),
         "get": lambda s, w: s.get("accounts", account_id="acc-1"),
+        "latest": lambda s, w: s.latest("heartbeats", "started_at", {"job": "sync_outcomes", "status": "ok"}),
         "update": lambda s, w: s.update("accounts", {"account_id": "acc-1"}, {"score": 55}),
         "delete": lambda s, w: s.delete("signal_events", {"account_id": "acc-1", "source": "scoring"}),
         "query": lambda s, w: s.query("SELECT * FROM us_outbound.v_queue"),

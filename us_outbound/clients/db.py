@@ -113,6 +113,15 @@ class Store(ABC):
         rows = self.select(table, key)
         return rows[0] if rows else None
 
+    def latest(self, table: str, column: str, where: Where | None = None) -> dict | None:
+        """The matching row whose `column` is greatest (NULLs left out), or None.
+
+        One row, not the whole table: PostgresStore asks for it with ORDER BY ... LIMIT 1, so a job
+        that only needs its last run's heartbeat does not read every run it ever had.
+        """
+        rows = [r for r in self.select(table, where) if r.get(column) is not None]
+        return max(rows, key=lambda r: r[column]) if rows else None
+
     def close(self) -> None:
         """Release the connection, if the store holds one; the next call opens a new one."""
 
@@ -322,6 +331,15 @@ class PostgresStore(Store):
         cond, params = self._where(table, where)
         query = SQL("SELECT * FROM {} WHERE {}").format(self._table(table), cond)
         return self._connection().execute(query, params).fetchall()
+
+    def latest(self, table, column, where=None):
+        ident = Identifier(_column(column))
+        self._authorize("select", table, write=False)
+        cond, params = self._where(table, where)
+        query = SQL("SELECT * FROM {} WHERE {} AND {} IS NOT NULL ORDER BY {} DESC LIMIT 1").format(
+            self._table(table), cond, ident, ident
+        )
+        return self._connection().execute(query, params).fetchone()
 
     def update(self, table, where, values):
         self._authorize("update", table, write=True)
