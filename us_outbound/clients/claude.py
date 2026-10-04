@@ -51,10 +51,6 @@ PRICES: dict[str, Price] = {
     "claude-opus-5-5": Price(input=4.0, output=20.0, cache_read=0.20),
     "claude-fable-5-1": Price(input=10.0, output=50.0, cache_read=0.25),
 }
-# Which General-tab key names the model for each kind of work (Harry, 30 Sep 2026: Opus writes
-# the emails; Sonnet does the well-defined tasks). Orchestration is the scheduler's code, not a model.
-WRITING, TASK = "writing", "task"
-MODEL_KEYS = {WRITING: "claude_model", TASK: "claude_task_model"}
 
 CHARS_PER_TOKEN = 3.5  # deliberately low, so the estimate errs high
 OVERHEAD_TOKENS = 300  # the system prompt structured outputs adds, plus message framing

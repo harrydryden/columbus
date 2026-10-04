@@ -123,12 +123,12 @@ CAMPAIGN_STATUS = {
     0: "draft", 1: "active", 2: "paused", 3: "completed", 4: "running_subsequences",
     -99: "account_suspended", -1: "accounts_unhealthy", -2: "bounce_protect",
 }
-# A lead's `status` (the v2 Lead schema). sync_outcomes reads bounced and unsubscribed from it:
+# A lead's `status` (the v2 Lead schema: 1 active, 2 paused, 3 completed, -1 bounced, -2 unsubscribed,
+# -3 skipped). sync_outcomes reads bounced and unsubscribed from it:
 # a click on the {{unsubscribe}} link stops the lead and marks it unsubscribed (Harry, 1 Oct 2026:
 # the opt-out is Instantly's own link). PHASE0-CONFIRM: the codes, read from a lead in a paused
 # campaign, and that an unsubscribe click (and the List-Unsubscribe header) sets -2 on the lead.
 LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
-LEAD_STATUS = {1: "active", 2: "paused", 3: "completed", -1: "bounced", -2: "unsubscribed", -3: "skipped"}
 # PHASE0-CONFIRM: that PATCH /leads/{id} takes status 2 (paused) and 1 (active), and that a lead set
 # back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused:
 # an out-of-office reply only records the return date (replies/poll.py).
