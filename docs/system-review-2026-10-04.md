@@ -126,9 +126,17 @@ Harry's steps, in order. `us-outbound golive` shows what is still open.
 
 1. **Opt-out test.** Send the unsubscribe link to a seed inbox and check it works. Then set
    `optout_tested` = yes on the General tab.
-2. **Copy.** Approve the copy rows still waiting on the Copy tab.
+2. **Copy.** Approve the copy rows still waiting on the Copy tab: 84 rows, for 28 active
+   industries × 3 roles.
 3. **Switch on.** Set `live_sending` = yes. Then run `us-outbound start --live`, which syncs the sheet first.
 4. **First card.** The first ✅ should be a seed-inbox lead. Use it to check that the email body
    renders and the unsubscribe link works before approving prospects.
+
+**Harry's two mailboxes** show warm in Instantly now. `us-outbound mailbox check --live` promotes
+them, and the mailbox check creates his campaign. With them, week 1 gives about 11 cards a day; without
+them, about 6. That is your call.
+
+`golive` on Railway, 4 Oct 19:26 UK: NO-GO, with 3 FAILs, 2 WARNs and 10 PASSes. The 3 FAILs are steps 1
+to 3 above. The 2 WARNs are Harry's mailboxes and the campaign waiting for them.
 
 If anything looks wrong: `us-outbound stop --live`.
