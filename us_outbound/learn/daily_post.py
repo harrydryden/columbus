@@ -237,7 +237,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     hand_check_waits, pulled = enrol.hand_check(ctx, today_et)
     held = approvals.waiting(ctx)
     ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, today_et, ready_accounts=len(ready), pending=held.by_owner)
+    lim = limits.today(ctx, today_et, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
     nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
 
     # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.

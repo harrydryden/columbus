@@ -391,11 +391,15 @@ def _waiting_for_you(ctx: Context) -> str:
 def _status_limits(ctx: Context) -> None:
     """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
     from us_outbound import limits
-    from us_outbound.enrol import enrol
+    from us_outbound.enrol import approvals, enrol
 
     try:
-        ready, _ = enrol.candidates(ctx, frozenset())
-        lim = limits.today(ctx, ctx.now_et().date(), ready_accounts=len(ready))
+        # As enrol.run: pulled accounts and waiting cards stay out, and the cards hold their senders' slots.
+        day = ctx.now_et().date()
+        _, pulled = enrol.hand_check(ctx, day)
+        held = approvals.waiting(ctx)
+        ready, _ = enrol.candidates(ctx, pulled, held.accounts)
+        lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
@@ -1006,9 +1010,9 @@ def _print_send_approvals(items: list[dict]) -> None:
               f" · posted {i['send_day']}, until the end of {i['expires_on']}{expired} · in Slack: "
               f"{'yes' if i['in_slack'] else 'no'}")
         print(f"  Subject: {i['subject']}")
-        print(f"  Send it: us-outbound approvals approve {i['id']} --live")
-        print(f"  Not this person: us-outbound approvals reject {i['id']} --contact --live"
-              f"   Not this company: ... --company --live")
+        print(f"  Send it: us-outbound approvals send {i['id']} --live")
+        print(f"  Not this person: us-outbound approvals contact {i['id']} --live"
+              f"   Not this company: us-outbound approvals company {i['id']} --live")
 
 
 def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
@@ -1050,6 +1054,11 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused(str(exc)) from exc
     _print(summary)
     _dry_note(ctx, "the lead was not added to Instantly and the item is unchanged.")
+    if summary.get("held"):
+        print("Held, not sent yet: " + "; ".join(summary["held"]) + ". The approval stands: poll_approvals adds the "
+              "lead within 5 minutes of that clearing, unless the card expires first.")
+    elif summary.get("outcome") == approvals.BLOCKED:
+        print("Not sent, and closed: " + "; ".join(summary.get("why") or ()) + ".")
     return 0 if summary.get("added") or ctx.dry_run else 2
 
 
@@ -1183,7 +1192,7 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
             return 0
         print(hand_check.text(payload, detailed=True))
         if summary["status"] == "not recorded":
-            print("Not recorded yet: `us-outbound handcheck show --live` records this sample so it can be approved.")
+            print("Not recorded yet: `us-outbound handcheck approve --live` records this sample and approves it.")
         else:
             print(f"Item {summary['item_id']}: {summary['status']}.")
         return 0

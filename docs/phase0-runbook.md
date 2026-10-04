@@ -93,7 +93,7 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
-| The three sender campaigns, paused | jobs | `us-outbound campaigns ensure`, then `--live`. Creates "US Outbound – Hannah Spalding", "US Outbound – Sam Jackson" and "US Outbound – Harry Dryden" (Harry's two addresses) with the SPEC 9 settings, in Draft; nothing activates them but `start`. An owner with no Active mailbox yet waits. | Three campaigns in Draft; `campaigns ensure` reports no drift |
+| The three sender campaigns, paused | jobs | `us-outbound campaigns ensure`, then `--live`. Creates "US Outbound – Hannah Spalding", "US Outbound – Sam Jackson" and "US Outbound – Harry Dryden" (Harry's two addresses) with the SPEC 9 settings, in Draft. `start --live` activates them; after that, the morning mailbox check activates a campaign created later (it holds only approved leads). An owner with no Active mailbox yet waits. | Three campaigns in Draft; `campaigns ensure` reports no drift |
 | Custom-variable length limit | Harry | Add one test lead by hand with a long `s1_body`; record the longest value kept intact | `CUSTOM_VARIABLE_LIMIT` set in `clients/instantly.py` |
 | Follow-ups stay on the step-1 address | Harry | Two seed leads in Harry's campaign; check steps 2 to 4 come from the step-1 address | Noted in phase0-facts.md |
 | Forward endpoint | Harry | Check `POST /emails/forward` works on our plan | Noted in phase0-facts.md |
@@ -136,9 +136,9 @@ Before the first send: `us-outbound golive` prints PASS, WARN or FAIL for each b
 1 while any FAILs. While `auto_send = no` (the default; Harry, 2 Oct 2026) every email waits for an
 approver's ✅ on its card in #us-outbound, so the Slack app needs the `reactions:write` scope in
 `deploy/slack-app-manifest.yaml`; without Slack, `us-outbound approvals list`, then `us-outbound
-approvals approve ID --live`. With `auto_send = yes`, enrol waits for the weekly hand-check instead:
-without Slack, `us-outbound handcheck show --live`, then `us-outbound handcheck approve --live` (with
-`--pull ACCOUNT_ID ...` for accounts that are wrong).
+approvals send ID --live`. With `auto_send = yes`, enrol waits for the weekly hand-check instead:
+without Slack, `us-outbound handcheck show`, then `us-outbound handcheck approve --live` (with
+`--pull ACCOUNT_ID ...` for accounts that are wrong; it records the sample and approves it).
 After the seed-inbox test of the unsubscribe link, set `optout_tested = yes` on the General tab
 yourself, then `us-outbound sync`. (`us-outbound settings load --tab General --live` adds the row,
 as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sending`, `auto_send`,

@@ -17,8 +17,11 @@ def ev(i, type_, **kw):
     return {"event_id": f"e{i}", "type": type_, "occurred_at": kw.pop("at", MON + timedelta(minutes=i)), **kw}
 
 
-def world(now=TUE_9, live=True, **kw):
+def world(now=TUE_9, live=True, drafts=(), **kw):
+    """drafts: owners whose campaign is still a draft; the others are active (`us-outbound start --live` has run)."""
     ctx, t, inst, sheets = setup(now=now, live=live, ramp_done=False, **kw)
+    for owner in ("Hannah Spalding", "Sam Jackson", "Harry Dryden"):
+        inst.add_campaign(f"US Outbound – {owner}", status=0 if owner in drafts else 1)
     ctx.store.insert("accounts", [
         {"account_id": "a1", "clean_name": "Acme Creative", "status": "engaged"},
         {"account_id": "a2", "clean_name": "Brightfin", "status": "enrolled"},
@@ -48,6 +51,14 @@ def world(now=TUE_9, live=True, **kw):
          "payload": {"action": "pause_source", "target": "clay", "reason": "emails found by clay: 4 of 100 sends bounced"}},
     ])
     return ctx, t
+
+
+def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
+    ctx, _ = world(drafts=("Hannah Spalding",))
+    lines, _ = daily_post.build(ctx)
+    [line] = [x for x in lines if x.startswith("  Sending capacity, Hannah Spalding")]
+    assert "no new leads today" in line and "not active in Instantly (draft)" in line
+    assert any("Hannah Spalding's campaign is not active in Instantly" in x for x in lines)
 
 
 def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approvals():

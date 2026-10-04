@@ -63,6 +63,14 @@ above this.
   `us-outbound killrules clear ID --live` lifts the hold.
 - **A mailbox misbehaves:** `us-outbound mailbox pause ADDRESS --live` takes it off its campaign's
   sending list.
+- **A card says "Not sent":** the re-check at your ✅ found the person or company can no longer be
+  emailed (an unsubscribe, a customer or open deal in HubSpot, a suppressed domain). Nothing was
+  sent and the card is closed; there is nothing to do. A card that is only *held* (sending stopped,
+  a reply waiting too long) stays open and your ✅ stands: the lead is added within 5 minutes of the
+  hold clearing, unless the card expires first.
+- **The daily post says a campaign is not active:** that sender gets no new cards until
+  `us-outbound start --live` activates it. The 07:00 mailbox check activates a newly created
+  campaign by itself once sending has gone live.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual

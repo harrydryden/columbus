@@ -260,7 +260,7 @@ Instantly decides the moment each email goes. The jobs decide how many new leads
 | Limit or report | How the jobs use it |
 | :- | :- |
 | Each mailbox's daily cap | Set on the Mailboxes tab (`daily_cap`, 30). The morning check reads Instantly's own limit on each inbox and sets it back to the sheet's cap when they differ (live; reported in dry-run). Caps are changed in the sheet, never in Instantly |
-| The campaign's daily limit | Set to the sum of the owner's Active caps, and checked for drift every morning (`campaigns ensure --fix`) |
+| The campaign's daily limit | Set to the sum of the owner's Active caps. The morning mailbox check puts the daily limit and the sending list right itself; other drift is reported for `us-outbound campaigns ensure --fix --live` |
 | Sends per inbox per day | `GET /accounts/analytics/daily`, filtered to the registry inboxes, read each morning for the last 7 days. If yesterday's sends fall short of what the forecast had due, Instantly is behind, and the shortfall comes off today's room |
 | Why a campaign isn't sending | `GET /campaigns/{id}/sending-status`, read each morning. "Daily limit reached" (the campaign's, or every inbox's) marks the sender as full |
 | The send window | Mon–Fri 09:00–16:00 ET. No sends at weekends or on blackout dates |

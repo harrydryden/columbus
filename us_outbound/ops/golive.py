@@ -309,7 +309,7 @@ def check_queue(ctx: Context) -> Check:
     # As enrol.run: the send approvals still waiting keep their accounts out and hold their senders' slots.
     held = approvals.waiting(ctx)
     ready, skipped = enrol.candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner)
+    lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
     t = lim.terms
     detail = [lim.explanation, *lim.detail]
     if skipped:
@@ -335,8 +335,8 @@ def check_hand_check(ctx: Context) -> Check | None:
     why, pulled = enrol.hand_check(ctx, ctx.now_et().date())
     if why is None:
         return Check(PASS, "Hand-check", f"{week} approved" + (f"; {len(pulled)} accounts pulled" if pulled else ""))
-    return Check(FAIL, "Hand-check", f"{why}: `us-outbound handcheck show --live` (prints and records the sample), "
-                                     "then `us-outbound handcheck approve --live`")
+    return Check(FAIL, "Hand-check", f"{why}: `us-outbound handcheck show` (prints the sample), "
+                                     "then `us-outbound handcheck approve --live` (records and approves it)")
 
 
 def check_auto_send(ctx: Context) -> Check:

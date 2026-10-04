@@ -756,7 +756,8 @@ def test_cli_list_shows_each_waiting_email(capsys):
     assert f"{h.short('acc-1')}  Acme Creative (acmecreative.com) · Jane Doe, Head of People" in out
     assert "from Harry Dryden (harry@meetspill.org or harry@tryspill.org) · waiting" in out
     assert "Subject: Support for the Acme Creative team" in out
-    assert f"us-outbound approvals approve {h.short('acc-1')} --live" in out
+    assert f"Send it: us-outbound approvals send {h.short('acc-1')} --live" in out
+    assert f"Not this company: us-outbound approvals company {h.short('acc-1')} --live" in out
 
 
 def test_cli_approve_takes_the_same_path(capsys):
