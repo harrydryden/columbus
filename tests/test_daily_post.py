@@ -59,6 +59,8 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     assert lines[0] == "*Daily post, Tue 27 Oct*"
     assert lines[1] == ("Yesterday: 8 sent · 4 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
                         " · 0 ready to send")
+    assert lines[2] == ("*Needs you:* 1 reply (waited 30 hours) · 1 kill-rule hold (`us-outbound killrules show`) · "
+                        "this week's hand-check (`us-outbound handcheck show`)")
     assert "*Sent and outcomes* · Yesterday, Mon 26 Oct (UK)" in lines
     assert "  Sent: 8 (step 1 5, step 2 3)" in lines  # Sunday's send is not yesterday's
     assert "  Replies: 4 (not classified 1, objection 1, out_of_office 1, positive 1)" in lines
@@ -71,15 +73,15 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     # The limiter and each sender (limits.py), with the ramp: Hannah first sent on Monday.
     assert any(line.startswith("Today: 0, limited by ready accounts") for line in lines)
     assert any(line.startswith("  Sending capacity, Hannah Spalding: 3 new leads today, 10 sends a day") for line in lines)
-    assert "  Enrollment waits: this week's hand-check (2026-W44) is not approved yet." in lines
+    assert "  Enrollment waits: live_sending is no." in lines  # enrol's own gate (this test context is live)
     assert any(line.startswith("  Apollo: 0 of 2,000 credits used this month") for line in lines)
     assert ("  • hannah@meetspill.org (Active): 5 sent; bounces 1 of its last 6 sends (16.7%); ramp week 1 "
             "(first send Sun 25 Oct): 10 a day of its 30; 20 from Sun 01 Nov") in lines
     assert "Funding (Apollo enrich, Technology & Startups): no account enriched yet (apollo_enrich, weekdays 04:10)." in lines
     assert "Kill rules fired: emails found by clay: 4 of 100 sends bounced" in lines
     assert "  Holds in force: 1 (`us-outbound killrules show`)" in lines
-    assert ("Waiting for approval: 3 (hand-checks 1, kill-rule holds 1, reply approvals 1); "
-            "the oldest has waited 30 hours.") in lines
+    # A kill-rule hold is listed as a hold, not as waiting for approval.
+    assert "Waiting for approval: 2 (hand-checks 1, reply approvals 1); the oldest has waited 30 hours." in lines
     # Posted to the alert channel; the summary keeps the numbers, never the reply text (SPEC 6 purges it).
     assert post.json["channel"] == "C_ALERT"
     assert (out["sent"], out["replies"], out["positive"], out["bounced"], out["demos_booked"]) == (8, 4, 1, 1, 1)
@@ -99,7 +101,7 @@ def test_with_no_slack_token_the_post_goes_to_the_log(capsys):
     assert out["alert"]["posted"] is False and out["alert"]["error"] == "no Slack token: posted to the log"
     logged = [line for line in capsys.readouterr().out.splitlines() if '"event": "slack_off"' in line]
     assert len(logged) == 1  # the whole post, line by line, not clipped to 200 characters
-    assert "Waiting for approval: 3" in logged[0] and "hannah@meetspill.org" not in logged[0]  # emails hashed
+    assert "Waiting for approval: 2" in logged[0] and "hannah@meetspill.org" not in logged[0]  # emails hashed
 
 
 def test_dry_run_posts_to_the_dev_channel():
@@ -116,3 +118,64 @@ def test_daily_post_runs_as_a_job_from_the_cli():
     assert h.run("dry-run", "daily_post") == 0
     [beat] = h.beats("daily_post")
     assert beat["status"] == "ok" and beat["detail"]["sent"] == 0 and "text" not in beat["detail"]
+
+
+# -- why enrollment waits, and what needs Harry (4 Oct 2026) -------------------------------------------------------
+
+
+def with_general(ctx, **values):
+    import dataclasses
+
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, **values))
+
+
+def waits(lines):
+    return [line for line in lines if line.startswith(("  Enrollment waits", "  Running dry"))]
+
+
+def test_enrollment_waits_on_enrol_s_own_gates_and_the_hand_check_only_with_auto_send_on():
+    ctx, _ = world()
+    with_general(ctx, live_sending=True, approver_slack_ids=("U_HARRY",))
+    lines, _ = daily_post.build(ctx)
+    # auto_send = no: the open hand-check does not hold anything back; the positive reply waiting 30 hours does.
+    assert waits(lines) == ["  Enrollment waits: 1 positive reply has waited over 24 hours for approval."]
+    ctx.store.delete("hitl_items", {"item_id": "r1"})
+    lines, _ = daily_post.build(ctx)
+    assert waits(lines) == []
+    with_general(ctx, auto_send=True)  # now enrol waits for the weekly hand-check
+    lines, _ = daily_post.build(ctx)
+    assert waits(lines) == ["  Enrollment waits: this week's hand-check (2026-W44) is not approved yet."]
+
+
+def test_with_live_sending_no_the_post_says_enrol_runs_dry():
+    ctx, _ = world(live=False)
+    ctx.store.delete("hitl_items", {"item_id": "r1"})
+    lines, _ = daily_post.build(ctx)
+    assert waits(lines) == ["  Running dry: live_sending is no, so enrol reaches nobody (a few cards go to the dev "
+                            "channel as a preview)."]
+
+
+def test_needs_you_says_nothing_when_nothing_waits():
+    ctx, _ = world()
+    ctx.store.delete("hitl_items", {"kind": ["reply_approval", "hand_check", "kill_rule"]})
+    lines, nums = daily_post.build(ctx)
+    assert lines[2] == "*Needs you:* nothing"
+    assert nums["needs_you"] == {"send_approvals": 0, "replies": 0, "kill_rule_holds": 0, "hand_checks": 0}
+    assert "Waiting for approval: nothing." in lines
+
+
+def test_reply_items_are_labelled_replies_and_a_lapsed_card_needs_nobody():
+    ctx, _ = world()
+    ctx.store.insert("hitl_items", [
+        {"item_id": "r2", "kind": "reply", "status": "escalated", "created_at": TUE_9 - timedelta(hours=3),
+         "payload": {"reply_class": "objection"}},
+        {"item_id": "s1", "kind": "send_approval", "status": "open", "account_id": "a9", "created_at": MON,
+         "payload": {"state": "waiting", "owner": "Hannah Spalding", "send_day": "2026-10-23",
+                     "expires_on": "2026-10-26"}},  # lapsed at the end of Monday: poll_approvals closes it
+    ])
+    lines, nums = daily_post.build(ctx)
+    assert lines[2].startswith("*Needs you:* 2 replies (the oldest has waited 30 hours) · 1 kill-rule hold")
+    assert nums["needs_you"]["send_approvals"] == 0
+    [line] = [x for x in lines if x.startswith("Waiting for approval:")]
+    assert line.startswith("Waiting for approval: 4 (") and "replies 1" in line and "reply approvals 1" in line
+    assert "send approvals 1" in line and "kill-rule" not in line

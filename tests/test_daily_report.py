@@ -85,13 +85,16 @@ def funnel(now=TUE_9, auto_send=None, approvals=True):
          "detail": {"verified": 9}},  # Friday's run, not yesterday's
     ])
     if approvals:
+        # As enrol/approvals.py writes them: posted today, approvable through the next send day, for a sender.
+        card = {"owner": "Hannah Spalding", "send_day": now.date().isoformat(),
+                "expires_on": (now + timedelta(days=1)).date().isoformat()}
         ctx.store.insert("hitl_items", [
             {"item_id": "ap1", "kind": "send_approval", "status": "open", "account_id": "r4", "contact_id": "c_r4",
-             "created_at": now - timedelta(hours=5), "payload": {"state": "waiting", "copy_version": "LEG-1"}},
+             "created_at": now - timedelta(hours=5), "payload": {**card, "state": "waiting", "copy_version": "LEG-1"}},
             {"item_id": "ap2", "kind": "send_approval", "status": "open", "account_id": "y9", "contact_id": "c_y9",
-             "created_at": now - timedelta(hours=2), "payload": {"state": "editing"}},
+             "created_at": now - timedelta(hours=2), "payload": {**card, "state": "editing"}},
             {"item_id": "ap3", "kind": "send_approval", "status": "sending", "account_id": "y10", "contact_id": "c_y10",
-             "created_at": now - timedelta(hours=1), "payload": {}},
+             "created_at": now - timedelta(hours=1), "payload": {**card, "state": "sending"}},
             {"item_id": "ap4", "kind": "send_approval", "status": "handled", "account_id": "y11", "contact_id": "c_y11",
              "created_at": now - timedelta(days=2), "handled_at": now - timedelta(days=2), "payload": {}},
         ])
@@ -140,9 +143,16 @@ def test_approvals_from_the_contract():
         "  Waiting now: 2 (editing 1, waiting 1); the oldest has waited 5 hours · sending 1.",
     ]
     assert (nums["approved"], nums["approved_edited"], nums["approvals_waiting"], nums["auto_send"]) == (4, 1, 2, False)
-    # The waiting accounts are not ready again, and the waiting items list says what they are.
+    # The waiting accounts are not ready again, and the waiting items list says what they are (a kill-rule
+    # hold is a hold, not an approval).
     assert "  Ready to send: 3 (Priority 1, Standard 1, Control 1); 3 more wait for a ✅" in lines
-    assert any(line.startswith("Waiting for approval: 5 (") and "send approvals 2" in line for line in lines)
+    assert ("Waiting for approval: 4 (send approvals 2, hand-checks 1, reply approvals 1); the oldest has waited "
+            "30 hours.") in lines
+    # Right under the headline: what needs Harry now.
+    assert lines[2] == ("*Needs you:* 2 send approvals (the oldest has waited 5 hours; a card lapses at the end of the "
+                        "next send day) · 1 reply (waited 30 hours) · 1 kill-rule hold (`us-outbound killrules show`) · "
+                        "this week's hand-check (`us-outbound handcheck show`)")
+    assert nums["needs_you"] == {"send_approvals": 2, "replies": 1, "kill_rule_holds": 1, "hand_checks": 1}
 
 
 def test_auto_send_yes_still_reports_the_approvals_made_before_it_was_switched_on():
@@ -201,7 +211,11 @@ def test_pipeline_counts_now():
     ctx, _ = funnel()
     lines, nums = daily_post.build(ctx)
     pace = nums["supply_pace"]
-    assert pace == min(11, 38)  # the smaller of sending capacity and the weekly target (limits.py)
+    # The smaller of sending capacity and the weekly target (limits.py), net of the three cards waiting, as enrol
+    # works them out: Hannah's 3 slots are held, and they count towards the week.
+    assert pace == min(11 - 3, 37)
+    assert nums["limited_by"] == ("Today: 3, limited by ready accounts (weekly target 37, sending capacity 8, ready "
+                                  "accounts 3).")
     assert section(lines, "*Pipeline*") == [
         "*Pipeline* · now",
         "  Ready to send: 3 (Priority 1, Standard 1, Control 1); 3 more wait for a ✅",
@@ -214,8 +228,9 @@ def test_pipeline_counts_now():
     assert (nums["ready_by_tier"], nums["waiting_for_contact"], nums["waiting_for_verification"]) == (
         {"Priority": 1, "Standard": 1, "Control": 1}, 2, 5)
     assert (nums["in_sequence"], nums["finished"], nums["stopped"]) == (1, 1, 1)
-    # Today's number stays the enrol job's own (limits.py, from its candidates, r4 among them).
-    assert nums["ready_accounts"] == 4
+    # Today's number is the enrol job's own: its candidates leave out r4, waiting for a ✅, and the three cards
+    # still waiting hold Hannah's slots (limits.today's pending, as enrol.run passes it).
+    assert nums["ready_accounts"] == 3
 
 
 def test_pipeline_by_the_focus_tab_s_groups():
