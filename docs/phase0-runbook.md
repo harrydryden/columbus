@@ -140,7 +140,9 @@ approvals approve ID --live`. With `auto_send = yes`, enrol waits for the weekly
 without Slack, `us-outbound handcheck show --live`, then `us-outbound handcheck approve --live` (with
 `--pull ACCOUNT_ID ...` for accounts that are wrong).
 After the seed-inbox test of the unsubscribe link, set `optout_tested = yes` on the General tab
-(`us-outbound settings load --live --set optout_tested=yes` adds the row if it is missing).
+yourself, then `us-outbound sync`. (`us-outbound settings load --tab General --live` adds the row,
+as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sending`, `auto_send`,
+`optout_tested` and `approver_slack_ids`: those are set by hand on the sheet.)
 
 ## 11. For Harry to approve (SPEC 14)
 
