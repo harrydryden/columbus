@@ -244,6 +244,29 @@ def test_an_account_found_again_keeps_its_source_and_status_and_overrides_win():
     assert [e["value"] for e in hq] == ["NY"]  # the fact is what Apollo said; scoring applies the override
 
 
+@pytest.mark.banded
+def test_a_row_with_no_count_never_blanks_a_size_the_account_already_has():
+    """A13: apollo_enrich (or an earlier row) gave an exact count; a later search row has none. The count and its
+    band stay; a blank size is still filled from the search's band; an Overrides row still wins."""
+    s = settings_with(states=("NY",), overrides=(Override("company3.com", "employees", "30"),))
+    orgs = [org(1, employees=None, _band="20-49"), org(2, employees=None, _band="20-49"),
+            org(3, employees=None, _band="20-49")]
+    ctx, _, _ = make(orgs, settings=s)
+    ctx.store.insert("accounts", [
+        {"account_id": "q1", "domain": "company1.com", "source": "apollo", "status": "queued", "employees": 64,
+         "size_band": "50-99"},
+        {"account_id": "q2", "domain": "company2.com", "source": "apollo", "status": "verified", "employees": None,
+         "size_band": None},
+        {"account_id": "q3", "domain": "company3.com", "source": "apollo", "status": "new", "employees": 64,
+         "size_band": "50-99"},
+    ])
+    out = uni.run(ctx)
+    assert out["updated"] == 3
+    got = {d: (a["employees"], a["size_band"]) for d, a in accounts_by_domain(ctx).items()}
+    assert got == {"company1.com": (64, "50-99"), "company2.com": (None, "20-49"), "company3.com": (30, "20-49")}
+    assert accounts_by_domain(ctx)["company1.com"]["industry"] == "Fintech"  # the other columns are Apollo's latest
+
+
 def test_an_enrolled_account_gets_facts_but_keeps_its_columns():
     ctx, _, _ = make([org(1, employees=80)])
     ctx.store.insert("accounts", [{"account_id": "e1", "domain": "company1.com", "status": "enrolled", "employees": 64,

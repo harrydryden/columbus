@@ -19,7 +19,8 @@ universe is every company that fits the sheet's Industries, States and size band
      companies with no website, HQs outside the active states and sizes outside 10 to 249 are
      skipped. A new account has source apollo and status new; an account still in the queue that is
      found again gets Apollo's latest columns. Overrides win; fields Clay has confirmed are kept
-     (docs/pipeline.md, "Which value wins").
+     (docs/pipeline.md, "Which value wins"). A row with no employee count only fills a blank size: the
+     exact count apollo_enrich (or an earlier row) gave, and its size band, stay.
   3. Facts: every apollo_org field scoring reads (settings/model.py SOURCE_FIELDS) goes to
      signal_events with a quote, the Apollo page and observed_at: employees, naics, hq_state,
      headcount_growth_12m, days_since_funding, funding_stage, funding_amount_usd, founded_year,
@@ -508,6 +509,23 @@ def with_overrides(row: Mapping[str, Any], domain: str, settings: Settings) -> d
     return out
 
 
+SIZE_COLUMNS = ("employees", "size_band")
+
+
+def _keep_size(cols: Mapping[str, Any], account: Mapping[str, Any], overrides: Mapping[str, Any]) -> dict:
+    """A search row with no employee count, for an account already in the queue: its size columns only fill
+    blanks. An exact count from apollo_enrich or an earlier row, and the band that came with it, are never
+    overwritten by None or by the band of the search that found it again. An Overrides row still wins."""
+    out = dict(cols)
+    overridden = set(overrides) | ({"size_band"} if "employees" in overrides else set())  # its band follows (with_overrides)
+    for f in SIZE_COLUMNS:
+        if f in overridden:
+            continue
+        if account.get(f) not in (None, "") or out.get(f) is None:
+            out.pop(f, None)
+    return out
+
+
 def columns(org: Mapping[str, Any], label: Industry, state: str, band: str) -> dict:
     """The accounts columns Apollo gives (SPEC 6)."""
     employees = _int(org.get("estimated_num_employees"))
@@ -596,6 +614,8 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     elif account.get("status") in OPEN_STATUSES:
         if account.get("clay_checked_at"):
             cols = {k: v for k, v in cols.items() if k not in CLAY_OWNED}
+        if employees is None:
+            cols = _keep_size(cols, account, s.overrides_for(got.domain or domain))
         clean, legal = clean_company_name(str(org.get("name") or ""))
         if not account.get("clean_name") and clean:
             cols["clean_name"] = clean
