@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 
 from tests.fakes import FakeTransport, make_context
+from tests.test_cli import LIVE_SETTINGS, SETTINGS, Harness
 from tests.test_registry import FakeInstantly, StubSheets, slack_routes
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
@@ -163,3 +165,55 @@ def test_a_live_job_that_runs_dry_says_how_to_bring_a_sheet_edit_in(capsys):
     lines = report(capsys.readouterr().out)
     assert lines[0] == ("Running dry: live_sending is no in the settings in force (synced Mon 05 Oct 11:00 UK). "
                         "If you have just set it to yes on the sheet, run `us-outbound sync` and try again.")
+
+
+# -- status ------------------------------------------------------------------------------------------------------
+
+
+def status_lines(h, capsys):
+    assert h.run("status") == 0
+    return [line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event')]
+
+
+def test_status_opens_with_the_switches_the_sync_and_what_waits(capsys):
+    h = Harness(SETTINGS)
+    lines = status_lines(h, capsys)
+    assert lines[0] == ("Switches: live_sending no · auto_send no (dry: nothing new reaches Instantly or a prospect; "
+                        "`us-outbound stop --live` pauses what already sends)")
+    assert lines[1] == ("Settings synced: never (sheet edits apply at 02:00 and 11:30 UK on weekdays, or now with "
+                        "`us-outbound sync`)")
+    assert lines[2] == "Waiting for you: 0 send approvals, 0 replies, 0 kill-rule holds"
+
+    h = Harness(LIVE_SETTINGS)
+    h.store.insert("hitl_items", [
+        {"item_id": "s1", "kind": "send_approval", "status": "open", "created_at": NOW,
+         "payload": {"state": "waiting", "expires_on": "2026-10-28"}},
+        {"item_id": "r1", "kind": "reply", "status": "escalated", "created_at": NOW, "payload": {}},
+        {"item_id": "k1", "kind": "kill_rule", "status": "open", "created_at": NOW, "payload": {}},
+        {"item_id": "k2", "kind": "kill_rule", "status": "open", "created_at": NOW, "payload": {}},
+    ])
+    lines = status_lines(h, capsys)
+    assert lines[0].startswith("Switches: live_sending yes · auto_send no (live: every email waits for an approver's ✅")
+    assert lines[2] == "Waiting for you: 1 send approval, 1 reply, 2 kill-rule holds"
+    auto = dataclasses.replace(LIVE_SETTINGS, general=dataclasses.replace(LIVE_SETTINGS.general, auto_send=True))
+    assert status_lines(Harness(auto), capsys)[0].endswith(
+        "(live: emails go straight to Instantly once the weekly hand-check is approved)")
+
+
+def test_status_lists_only_the_jobs_that_need_a_look(capsys):
+    h = Harness(SETTINGS)
+    t = datetime(2026, 10, 27, 2, 0, tzinfo=UTC)
+    h.store.upsert("heartbeats", [
+        {"run_id": "a", "job": "settings_sync", "started_at": t, "finished_at": t, "status": "ok", "dry_run": True},
+        {"run_id": "b", "job": "suppression_load", "started_at": t, "finished_at": t, "status": "error",
+         "dry_run": True, "error": "RuntimeError: HubSpot is down"},
+        {"run_id": "c", "job": "poll_replies", "started_at": t, "finished_at": t, "status": "ok", "dry_run": True},
+    ])
+    lines = status_lines(h, capsys)
+    jobs = lines[lines.index("Jobs:") + 1:lines.index("Mailboxes:")]
+    assert jobs[0] == "  poll_replies       ok Tue 27 Oct 02:00 UK (dry-run)  MISSED its heartbeat"  # every 15 minutes
+    assert jobs[1] == "  suppression_load   error Tue 27 Oct 02:00 UK (dry-run)  MISSED its heartbeat"  # never ok
+    assert jobs[2].strip() == "error: RuntimeError: HubSpot is down"
+    assert jobs[3] == "  1 job ok"
+    assert jobs[4].startswith("  Not run yet: source_universe, ") and "enrol" in jobs[4]
+    assert not any("not built yet" in line or "never run" in line for line in lines)

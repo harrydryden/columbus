@@ -404,7 +404,8 @@ def test_status_prints_jobs_and_mailboxes(capsys):
                                    "finished_at": datetime(2026, 10, 27, 2, 1, tzinfo=UTC), "status": "ok", "dry_run": True}])
     assert h.run("status") == 0
     out = capsys.readouterr().out
-    assert "live_sending: no" in out and "settings_sync" in out and "poll_replies" in out
+    assert any(line.startswith("Switches: live_sending no · auto_send no (dry: ") for line in out.splitlines())
+    assert "  1 job ok" in out and "Not run yet: " in out and "poll_replies" in out  # settings_sync ran ok
     assert HANNAH in out and "Campaigns:" in out
     assert "Credit budgets this month (UK time):" in out and "Enrolment this week (Monday to Sunday, UK time):" in out
     assert "Today: 0, limited by ready accounts" in out

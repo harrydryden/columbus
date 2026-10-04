@@ -313,26 +313,56 @@ def _fmt_time(v: Any) -> str:
 
 
 def _status_heartbeats(store: Any, now: datetime) -> None:
+    """Only the jobs that need a look (the latest run failed, or the heartbeat is missed), then how many are ok."""
     runs = latest_runs(store)
-    built = set(built_jobs())
     scheduled = set(scheduled_jobs())
+    ok, never = 0, []
     print("Jobs:")
-    for job, target in JOBS.items():
+    for job in built_jobs():
         run = runs.get(job)
-        if job not in built:
-            print(f"  {job:<18} {target if not _is_target(target) else 'not built yet'}")
-            continue
         if not run:
-            print(f"  {job:<18} never run")
+            if job in scheduled:
+                never.append(job)
             continue
-        flag = ""
-        if job in scheduled:
-            over = overdue_minutes(job, run, now)
-            flag = "  MISSED" if over is not None and over > 0 else ""
+        over = overdue_minutes(job, run, now) if job in scheduled else None
+        missed = over is not None and over > 0
+        if run.get("status") != "error" and not missed:
+            ok += 1
+            continue
         mode = "dry-run" if run.get("dry_run") else "live"
-        print(f"  {job:<18} {run.get('status')} {_fmt_time(run.get('started_at'))} ({mode}){flag}")
+        print(f"  {job:<18} {run.get('status')} {_fmt_time(run.get('started_at'))} ({mode})"
+              f"{'  MISSED its heartbeat' if missed else ''}")
         if run.get("status") == "error" and run.get("error"):
             print(f"  {'':<18} error: {str(run['error'])[:160]}")
+    print(f"  {ok} job{'s' if ok != 1 else ''} ok")
+    if never:
+        print(f"  Not run yet: {', '.join(never)}")
+
+
+def _switches(g: Any) -> str:
+    """The two General switches and what they mean together."""
+    if not g.live_sending:
+        meaning = "dry: nothing new reaches Instantly or a prospect; `us-outbound stop --live` pauses what already sends"
+    elif g.auto_send:
+        meaning = "live: emails go straight to Instantly once the weekly hand-check is approved"
+    else:
+        meaning = "live: every email waits for an approver's ✅ in Slack"
+    return (f"Switches: live_sending {'yes' if g.live_sending else 'no'} · auto_send {'yes' if g.auto_send else 'no'} "
+            f"({meaning})")
+
+
+def _waiting_for_you(ctx: Context) -> str:
+    """"Waiting for you: 2 send approvals, 1 reply, 0 kill-rule holds" (learn/daily_post.for_you)."""
+    from us_outbound.learn import daily_post
+
+    w = daily_post.for_you(ctx)
+
+    def n(count: int, one: str, many: str) -> str:
+        return f"{count} {one if count == 1 else many}"
+
+    line = (f"Waiting for you: {n(len(w.send_approvals), 'send approval', 'send approvals')}, "
+            f"{n(len(w.replies), 'reply', 'replies')}, {n(len(w.holds), 'kill-rule hold', 'kill-rule holds')}")
+    return line + (", and this week's hand-check" if w.hand_checks else "")
 
 
 def _status_limits(ctx: Context) -> None:
@@ -367,8 +397,13 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
             _status_heartbeats(exc.store, datetime.now(UTC))
         return 2
     s, g = ctx.settings, ctx.settings.general
-    print(f"live_sending: {'yes' if g.live_sending else 'no'} (jobs are live only with --live and live_sending = yes)")
-    print(f"Settings synced: {_fmt_time(s.synced_at)}")
+    print(_switches(g))
+    print(f"Settings synced: {_synced(ctx)} (sheet edits apply at 02:00 and 11:30 UK on weekdays, or now with "
+          "`us-outbound sync`)")
+    try:
+        print(_waiting_for_you(ctx))
+    except Exception as exc:  # status still prints what it can
+        print(f"Waiting for you: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     paused = enrolment_paused(ctx.store)
     if paused:
         print(f"Enrollment: STOPPED since {_fmt_time(paused.get('started_at'))} (run `us-outbound start --live` to resume)")
@@ -403,11 +438,6 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
             print("  none yet")
     except Exception as exc:  # status still prints what it can
         print(f"Campaigns: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
-    try:
-        open_items = ctx.store.select("hitl_items", {"status": "open"})
-        print(f"Open human-in-the-loop items: {len(open_items)}")
-    except Exception as exc:
-        print(f"Open human-in-the-loop items: unavailable ({type(exc).__name__})")
     return 0
 
 
