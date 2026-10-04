@@ -58,6 +58,29 @@ def test_a_late_listed_send_renumbers_the_steps(world):
     assert world.ctx.store.get("events", event_id="S2")["step"] == 2
 
 
+def test_a_reply_sent_from_the_desk_is_never_a_step(world):
+    """The desk records its replies as reply_sent; even listed among the sent emails, they are no campaign step."""
+    world.ctx.store.insert("events", [
+        {"event_id": "R1", "type": "reply_sent", "contact_id": "k-jane", "account_id": "acc-acme", "mailbox": HANNAH,
+         "step": None, "approval": "approved", "approved_by": "U_HARRY", "occurred_at": NOW - timedelta(days=2)},
+        # One written before desk replies had their own type: a sent row with an approval.
+        {"event_id": "R0", "type": "sent", "contact_id": "k-jane", "account_id": "acc-acme", "mailbox": HANNAH,
+         "step": None, "approval": "edited", "approved_by": "U_HARRY", "occurred_at": NOW - timedelta(days=4)},
+    ])
+    world.sent("S1", at=NOW - timedelta(days=10))
+    world.sent("R1", at=NOW - timedelta(days=2))  # Instantly lists the desk's reply as a sent email
+    world.sent("S2", at=NOW - timedelta(days=1))
+    out = run(world)
+    events = {e["event_id"]: e for e in world.events()}
+    assert (events["S1"]["step"], events["S2"]["step"]) == (1, 2)
+    assert (events["R1"]["type"], events["R1"]["step"]) == ("reply_sent", None)
+    assert (events["R0"]["type"], events["R0"]["step"]) == ("sent", None)  # left as it was, not renumbered
+    assert out["sent"] == 2 and out["dropped"] == {"sent: a reply sent from the reply desk": 1}
+    world.reply("E1", at=NOW - timedelta(hours=1))
+    run(world)
+    assert world.ctx.store.get("events", event_id="E1")["step"] == 2  # the reply answers step 2, not the desk's reply
+
+
 def test_sends_outside_our_campaigns_or_contacts_are_dropped(world):
     world.sent("S1", campaign="cmp-eu")
     world.sent("S2", "someone@else.com")
@@ -192,6 +215,89 @@ def test_it_reads_from_the_last_good_run_and_at_least_two_days_back(world):
         {"run_id": "r3", "job": "sync_outcomes", "status": "ok", "started_at": NOW - timedelta(days=90), "dry_run": False}])
     world.ctx.store.delete("heartbeats", {"run_id": "r1"})
     assert outcomes.since(world.ctx, "sync_outcomes") == NOW - outcomes.MAX_LOOKBACK
+
+
+def test_the_last_good_run_is_read_as_one_row(world, monkeypatch):
+    """since() asks the store for the latest ok heartbeat, never for every run the job ever had."""
+    asked = []
+    original = world.ctx.store.latest
+    monkeypatch.setattr(world.ctx.store, "latest", lambda *a, **k: asked.append((a, k)) or original(*a, **k))
+    world.ctx.store.insert("heartbeats", [
+        {"run_id": f"r{i}", "job": "sync_outcomes", "status": "ok", "started_at": NOW - timedelta(hours=i),
+         "dry_run": False, "detail": {}} for i in range(1, 30)])
+    assert outcomes.since(world.ctx, "sync_outcomes") == NOW - outcomes.RECHECK
+    assert outcomes.since(world.ctx, "sync_outcomes", recheck=timedelta(0)) == NOW - timedelta(hours=2)
+    assert asked == [(("heartbeats", "started_at", {"job": "sync_outcomes", "status": "ok"}), {})] * 2
+    assert outcomes.last_run(world.ctx, "poll_replies", live_only=True) is None
+
+
+def _beat(world, ago: timedelta, *, dry_run: bool = False, **detail) -> None:
+    world.ctx.store.insert("heartbeats", [{"run_id": f"r-{ago}", "job": "sync_outcomes", "status": "ok",
+                                           "started_at": NOW - ago, "dry_run": dry_run, "detail": detail}])
+
+
+def _email_reads(world) -> list:
+    return [r for r in world.transport.requests if r.url.endswith("/api/v2/emails")]
+
+
+def _lead_reads(world) -> list:
+    return [r for r in world.transport.requests if r.url.endswith("/leads/list")]
+
+
+def test_lead_statuses_are_read_at_most_hourly(world):
+    world.lead("L-jane", JANE, LEAD_UNSUBSCRIBED)
+    _beat(world, timedelta(minutes=15), leads_read_at=(NOW - timedelta(minutes=20)).isoformat(),
+          recheck_at=(NOW - timedelta(hours=3)).isoformat())
+    out = run(world)
+    assert _lead_reads(world) == [] and out["leads_read"] is False and out["unsubscribed"] == {}
+    assert out["leads_read_at"] == (NOW - timedelta(minutes=20)).isoformat()  # carried to the next run
+    _beat(world, timedelta(minutes=5), leads_read_at=(NOW - timedelta(minutes=61)).isoformat())
+    out = run(world)
+    assert len(_lead_reads(world)) == 3 and out["leads_read"] is True and out["unsubscribed"] == {"done": 1}
+    assert out["leads_read_at"] == NOW.isoformat()  # an hour on: the opt-out is honored the same day
+
+
+def test_the_first_live_run_after_dry_runs_reads_lead_statuses(world):
+    _beat(world, timedelta(minutes=15), dry_run=True, leads_read_at=(NOW - timedelta(minutes=10)).isoformat())
+    assert run(world)["leads_read"] is True and len(_lead_reads(world)) == 3
+
+
+def test_the_last_two_days_are_re_read_once_a_day_and_six_hours_otherwise(world):
+    _beat(world, timedelta(minutes=15), recheck_at=(NOW - timedelta(hours=3)).isoformat(),
+          leads_read_at=NOW.isoformat())
+    out = run(world)
+    start = NOW - timedelta(minutes=15) - outcomes.SYNC_OVERLAP
+    assert out["since"] == start.isoformat() and out["until"] is None
+    assert {r.params["min_timestamp_created"] for r in _email_reads(world)} == {start.isoformat().replace("+00:00", "Z")}
+    assert out["recheck_at"] == (NOW - timedelta(hours=3)).isoformat()  # carried
+    _beat(world, timedelta(minutes=5), recheck_at=(NOW - timedelta(hours=25)).isoformat())
+    out = run(world)
+    assert out["since"] == (NOW - outcomes.RECHECK).isoformat() and out["recheck_at"] == NOW.isoformat()
+
+
+def test_a_long_outage_is_caught_up_a_week_a_run(world):
+    from us_outbound.ops.heartbeat import run_job
+
+    world.honor_until = True
+    _beat(world, timedelta(days=20))  # the last good run, before an outage
+    world.sent("S1", at=NOW - timedelta(days=18))
+    world.sent("S2", at=NOW - timedelta(days=3))
+    first = run_job(world.ctx, outcomes.run)
+    start = NOW - timedelta(days=20) - outcomes.SYNC_OVERLAP
+    assert (first["since"], first["until"]) == (start.isoformat(), (start + outcomes.CATCH_UP).isoformat())
+    assert first["resume_from"] == first["until"] and first["recheck_at"] is None
+    assert {r.params["max_timestamp_created"] for r in _email_reads(world)} == {
+        (start + outcomes.CATCH_UP).isoformat().replace("+00:00", "Z")}
+    assert [e["event_id"] for e in world.events("sent")] == ["S1"]
+    world.at(NOW + timedelta(minutes=15))
+    second = run_job(world.ctx, outcomes.run)
+    assert second["since"] == (start + outcomes.CATCH_UP - outcomes.SYNC_OVERLAP).isoformat() and second["until"]
+    world.at(NOW + timedelta(minutes=30))
+    third = run_job(world.ctx, outcomes.run)
+    assert third["until"] is None and "resume_from" not in third and third["recheck_at"] == world.ctx.now.isoformat()
+    sent = {e["event_id"]: e["step"] for e in world.events("sent")}
+    assert sent == {"S1": 1, "S2": 2}
+    assert [b["status"] for b in world.ctx.store.select("heartbeats", {"job": "sync_outcomes"})].count("ok") == 4
 
 
 def test_every_instantly_read_is_filtered_by_registry_mailbox_or_us_campaign(world):

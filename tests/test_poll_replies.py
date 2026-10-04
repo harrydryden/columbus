@@ -74,9 +74,13 @@ def test_a_positive_reply_becomes_an_item_with_a_draft_and_an_alert(world):
     assert "*Positive reply · Acme Creative (Chicago, IL) · Marketing agencies · Priority* <@U_HARRY>" in text
     assert "From: Jane Doe, Head of People → hannah@meetspill.org" in text
     assert "Draft reply (signed Hannah Spalding; hands the demo to Harry):\n> Hi Jane," in text
-    assert '"send" to send the draft' in text
+    assert text.endswith('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: &lt;new text&gt;" '
+                         'to change it, then ✅ the new version · "send: &lt;text&gt;" sends your text now')
     assert item["slack_channel"] == p["slack_channel"] == "#us-outbound"
     assert item["slack_ts"] == p["slack_ts"] == "1700000001.0001"
+    # The bot's ✅ and ❌ on the alert, so deciding is one click.
+    assert [(r["channel"], r["timestamp"], r["name"]) for r in world.slack_reactions] == [
+        ("C_ALERT", "1700000001.0001", "white_check_mark"), ("C_ALERT", "1700000001.0001", "x")]
     # The event, and the account engaged.
     [ev] = world.events("replied")
     assert ev["reply_class"] == "positive" and ev["reply_text"].startswith("Sounds good")
@@ -417,6 +421,17 @@ def test_the_cap_refuses_the_call_and_the_reply_still_reaches_a_person(world):
     assert item["status"] == "open" and out["claude_cap_reached"] == 1
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
     assert "No draft" in text and "read the reply yourself" in text
+    # With no draft there is nothing for ✅ to send: only ❌ is offered and seeded.
+    assert "✅" not in text and text.endswith('❌ skips it (you\'ll answer yourself) · "send: &lt;text&gt;" sends your text now')
+    assert [r["name"] for r in world.slack_reactions] == ["x"]
+
+
+def test_a_reaction_the_bot_cannot_add_never_stops_the_alert(world, capsys):
+    world.transport.route("POST", "reactions.add", body={"ok": False, "error": "missing_scope"})
+    world.reply("E1")
+    out = run(world)
+    assert out["alerts_posted"] == 1 and only_item(world)["slack_ts"]
+    assert '"event": "desk_react_failed"' in capsys.readouterr().out
 
 
 def test_the_cap_never_blocks_an_opt_out(world):
@@ -507,6 +522,28 @@ def test_the_job_runs_from_the_cli_with_a_heartbeat(default_settings):
     assert hb["status"] == "ok" and hb["job"] == "poll_replies"
     assert summary["items"] == {"positive": 1}
     assert "Sounds good" not in str(hb["detail"])  # the summary carries counts, never reply text
+
+
+def test_a_backlog_stops_at_the_time_budget_and_the_next_run_takes_the_rest(world, monkeypatch):
+    """Each draft can take a minute: past RUN_SECONDS no new reply is started, and none is lost."""
+    import itertools
+
+    from us_outbound.ops.heartbeat import run_job
+
+    world.reply("E1", at=NOW - timedelta(days=5))
+    world.reply("E2", at=NOW - timedelta(days=4))  # older than the two days every run re-reads
+    world.reply("E3", at=NOW - timedelta(minutes=10))
+    ticks = itertools.chain([0.0, 0.0], itertools.repeat(poll.RUN_SECONDS + 1.0))  # the start, E1, then past it
+    monkeypatch.setattr(poll, "_clock", lambda: next(ticks))
+    first = run_job(world.ctx, poll.run)
+    assert [i["item_id"] for i in world.items()] == ["reply:E1"] and first["alerts_posted"] == 1
+    assert first["left_for_next_run"] == 2 and first["resume_from"] == (NOW - timedelta(days=4)).isoformat()
+    monkeypatch.setattr(poll, "_clock", lambda: 0.0)
+    world.at(NOW + timedelta(minutes=15))
+    second = run_job(world.ctx, poll.run)
+    assert second["since"] == (NOW - timedelta(days=4, hours=1)).isoformat()
+    assert sorted(i["item_id"] for i in world.items()) == ["reply:E1", "reply:E2", "reply:E3"]
+    assert second["left_for_next_run"] == 0 and "resume_from" not in second and second["received"] == 2
 
 
 def test_the_contract_is_written_in_the_module_docstring():

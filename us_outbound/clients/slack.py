@@ -7,16 +7,24 @@ NAME, since that is what the guard checks; request bodies carry the resolved id.
 Slack answers errors with HTTP 200 and ok: false, which raises ApiError here.
 
 Approvals (SPEC 11, poll_approvals) read thread replies and the reactions on one message.
+Both callers (the reply desk and enrol/approvals.py) read a thread with replies() and then the
+reactions on a message in it, so replies() keeps the reactions conversations.replies already
+returned with each message (the parent too), and reactions() answers from them when Slack listed
+every user of every reaction (count == len(users)), instead of one reactions.get per open item: at
+a hundred or so open cards those calls alone passed Slack's per-minute limit and poll_approvals'
+timeout. A message read without a reactions list, or read more than REACTIONS_FRESH seconds ago,
+is asked for with reactions.get as before; the bot's own react() forgets that message's reactions.
 The bot adds reactions of its own (react) only on the two US Outbound channels: it seeds ✅ and
-❌ on a send approval's card (enrol/approvals.py; Harry, 2 Oct 2026) so approving is one click,
-and bot_user_id tells the approvals pass which reactions are its own. In dry-run a reaction
-lands only on the dev channel.
+❌ on a send approval's card (enrol/approvals.py; Harry, 2 Oct 2026) and on a reply alert
+(replies/poll.py) so deciding is one click, and bot_user_id tells the approvals pass which
+reactions are its own. In dry-run a reaction lands only on the dev channel.
 Direct messages (dm) go only to the approvers in approver_slack_ids (the guard checks), for
 escalation when the forward endpoint is missing; in dry-run they go to the dev channel instead.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from us_outbound.clients.guard import Op
@@ -24,6 +32,7 @@ from us_outbound.clients.http import ApiError, HttpClient
 from us_outbound.logs import log
 
 LIST_PAGE = 200  # Slack recommends no more than 200 per page
+REACTIONS_FRESH = 60.0  # seconds a thread read's reactions answer reactions() for its messages
 
 
 def channel_key(name: str) -> str:
@@ -39,6 +48,9 @@ class Slack(HttpClient):
         super().__init__(guard, transport, token)
         self._ids: dict[str, str] = {}
         self._bot_user: str | None = None
+        # (channel id, message ts) -> (when read, its reactions), kept by replies() for reactions().
+        self._reactions: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+        self._clock = time.monotonic  # tests replace it
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json; charset=utf-8"}
@@ -80,7 +92,10 @@ class Slack(HttpClient):
         return self._ids[key]
 
     def replies(self, channel: str, ts: str) -> list[dict]:
-        """Replies in the thread under message ts, oldest first; the parent message is left out."""
+        """Replies in the thread under message ts, oldest first; the parent message is left out.
+
+        The reactions on every message read, the parent's included, are kept for reactions().
+        """
         cid = self.channel_id(channel)
         out: list[dict] = []
         cursor = ""
@@ -89,18 +104,41 @@ class Slack(HttpClient):
             if cursor:
                 params["cursor"] = cursor
             body = self._api("GET", "conversations.replies", Op("conversations.replies", target=channel), params=params) or {}
-            out.extend(m for m in body.get("messages", []) if m.get("ts") != ts)
+            messages = body.get("messages", [])
+            self._keep_reactions(cid, messages)
+            out.extend(m for m in messages if m.get("ts") != ts)
             cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
             if not cursor:
                 return out
 
+    def _keep_reactions(self, cid: str, messages: list[dict]) -> None:
+        """Keep each message's reactions when Slack listed every user of each (a long list may carry only some)."""
+        now = self._clock()
+        for m in messages:
+            if not isinstance(m, dict) or not m.get("ts"):
+                continue
+            key = (cid, str(m["ts"]))
+            reactions = m.get("reactions")
+            complete = isinstance(reactions, list) and all(
+                isinstance(r, dict) and isinstance(r.get("users"), list) and r.get("count") == len(r["users"])
+                for r in reactions
+            )
+            if complete:
+                self._reactions[key] = (now, [{**r, "users": list(r["users"])} for r in reactions])
+            else:  # no list (Slack leaves it out when there is none, but nothing is assumed) or a cut one
+                self._reactions.pop(key, None)
+
     def reactions(self, channel: str, ts: str) -> list[dict]:
         """The reactions on message ts: [{"name": "white_check_mark", "users": [...], "count": n}].
 
+        From the thread replies() has just read, when Slack listed them all there; otherwise
         reactions.get with full=true, so every user is listed. Needs the reactions:read scope.
         PHASE0-CONFIRM: the scope is on the installed app (deploy/slack-app-manifest.yaml).
         """
         cid = self.channel_id(channel)
+        kept = self._reactions.get((cid, str(ts)))
+        if kept is not None and self._clock() - kept[0] <= REACTIONS_FRESH:
+            return [{**r, "users": list(r["users"])} for r in kept[1]]
         body = self._api(
             "GET", "reactions.get", Op("reactions.get", target=channel),
             params={"channel": cid, "timestamp": ts, "full": "true"},
@@ -212,6 +250,7 @@ class Slack(HttpClient):
         op = Op("reactions.add", target=channel, write=True, detail={"ts": ts, "name": name})
         self._preflight(op)
         payload = {"channel": self.channel_id(channel), "timestamp": ts, "name": name}
+        self._reactions.pop((payload["channel"], str(ts)), None)  # changed now: asked again next time
         body = self.request("POST", "reactions.add", op, json=payload)
         if body is None:
             return None

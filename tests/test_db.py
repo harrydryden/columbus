@@ -392,6 +392,21 @@ def test_where_semantics(store):
     assert ids(store.select("accounts")) == ["a1", "a2", "a3"]
 
 
+def test_latest_is_one_row_by_the_greatest_value(store):
+    store.insert("heartbeats", [
+        {"run_id": "r1", "job": "sync_outcomes", "status": "ok", "started_at": T0, "dry_run": False, "detail": {"n": 1}},
+        {"run_id": "r2", "job": "sync_outcomes", "status": "ok", "started_at": T0 + timedelta(hours=1), "dry_run": True},
+        {"run_id": "r3", "job": "sync_outcomes", "status": "error", "started_at": T0 + timedelta(hours=2)},
+        {"run_id": "r4", "job": "sync_outcomes", "status": "ok", "started_at": None},
+        {"run_id": "r5", "job": "poll_replies", "status": "ok", "started_at": T0 + timedelta(hours=3)},
+    ])
+    assert store.latest("heartbeats", "started_at", {"job": "sync_outcomes", "status": "ok"})["run_id"] == "r2"
+    live = store.latest("heartbeats", "started_at", {"job": "sync_outcomes", "status": "ok", "dry_run": [False, None]})
+    assert live["run_id"] == "r1" and live["detail"] == {"n": 1} and live["started_at"] == T0
+    assert store.latest("heartbeats", "started_at", {"job": "nothing"}) is None
+    assert store.latest("heartbeats", "started_at")["run_id"] == "r5"
+
+
 def test_insert_rows_with_different_columns(store):
     store.insert("contacts", [{"contact_id": "k1", "first_name": "Jane"}, {"contact_id": "k2", "last_name": "Roe"}])
     rows = {r["contact_id"]: r for r in store.select("contacts")}
@@ -528,6 +543,10 @@ def test_unknown_tables_bad_columns_and_callables_are_refused_before_any_sql():
         s.upsert("raw_layoffs", [{"key": "x"}])
     with pytest.raises(GuardViolation, match="read only"):
         s.query("UPDATE us_outbound.accounts SET tier = 'x'")
+    with pytest.raises(ValueError, match="bad column"):
+        s.latest("heartbeats", "started_at DESC; DROP TABLE x --")
+    with pytest.raises(GuardViolation, match="unknown table"):
+        s.latest("hubspot_contacts", "id")
     assert s.insert("accounts", []) == 0 and s.upsert("accounts", []) == 0  # nothing to write: no connection
 
 

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.hitl_items (
   PRIMARY KEY (item_id)
 );
 CREATE INDEX IF NOT EXISTS hitl_items_account_id_idx ON us_outbound.hitl_items (account_id);
+CREATE INDEX IF NOT EXISTS hitl_items_kind_status_idx ON us_outbound.hitl_items (kind, status);
 COMMENT ON TABLE us_outbound.hitl_items IS 'One row per human-in-the-loop item (build addition): reply approvals, hand-checks, manual merges and kill-rule alerts, re-posted at 2 hours and escalated at escalation_hours (SPEC 11); and send approvals (Harry, 2 Oct 2026: while auto_send = no every email waits for an approver in Slack), which are never re-posted or escalated but expire at the end of their next send day.';
 COMMENT ON COLUMN us_outbound.hitl_items.kind IS 'One of: reply, out_of_office, hand_check, manual_merge, kill_rule, send_approval. reply: a reply waiting for a person (replies/poll.py holds the payload contract); out_of_office: a return date and its re-timing, status handled; send_approval: one proposed contact and its four emails, waiting for an approver before the lead is added to Instantly (enrol/approvals.py holds the payload contract: state, outcome, owner, mailbox, campaign, lead, send_day, edited, original, reason and more).';
 COMMENT ON COLUMN us_outbound.hitl_items.event_id IS 'The events row it is about, e.g. the reply.';

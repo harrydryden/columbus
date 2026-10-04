@@ -84,6 +84,11 @@ INDEXES = {
     ("contacts", "account_id"), ("signal_events", "account_id"), ("events", "account_id"),
     ("events", "occurred_at"), ("signal_events", "observed_at"),
 }
+# The jobs' hot reads (table -> its index's columns, in order).
+HOT_INDEXES = {
+    ("accounts", ("status",)), ("events", ("type", "occurred_at")), ("signal_events", ("source", "fact")),
+    ("hitl_items", ("kind", "status")), ("heartbeats", ("job", "started_at")),
+}
 
 # Enum columns: their comment lists exactly these values after "One of: ".
 ENUMS: dict[tuple[str, str], set[str]] = {
@@ -98,6 +103,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
+        "reply_sent",  # replies/desk.py: a desk reply is no campaign send
     },
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
@@ -321,6 +327,7 @@ def test_column_types(tables):
 def test_indexes(tables):
     have = {(t.name, idx[0]) for t in tables.values() for idx in t.indexes}
     assert INDEXES <= have
+    assert HOT_INDEXES <= {(t.name, idx) for t in tables.values() for idx in t.indexes}
 
 
 def test_enum_columns_list_their_values(tables):

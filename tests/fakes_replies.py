@@ -93,7 +93,9 @@ class ReplyWorld:
     blocked: list[list[str]] = field(default_factory=list)
     hubspot_unsubscribed: list[str] = field(default_factory=list)
     slack_posts: list[dict] = field(default_factory=list)
+    slack_reactions: list[dict] = field(default_factory=list)
     lead_patches: list[tuple[str, dict]] = field(default_factory=list)
+    honor_until: bool = False  # GET /emails applies max_timestamp_created (PHASE0-CONFIRM; off: Instantly ignores it)
 
     # -- building the world --
 
@@ -159,9 +161,10 @@ class ReplyWorld:
         if path == "/emails":
             p = req.params or {}
             since = p.get("min_timestamp_created") or ""
+            until = (p.get("max_timestamp_created") or "") if self.honor_until else ""
             items = [public(e) for e in self.emails
                      if e["eaccount"] == p.get("eaccount") and (not p.get("email_type") or e["_type"] == p["email_type"])
-                     and e["timestamp_created"] >= since]
+                     and e["timestamp_created"] >= since and (not until or e["timestamp_created"] <= until)]
             return {"items": items}
         eid = path.rsplit("/", 1)[1]
         return next((public(e) for e in self.emails if e["id"] == eid), {})
@@ -194,6 +197,10 @@ class ReplyWorld:
         self.slack_posts.append(dict(req.json))
         return {"ok": True, "channel": req.json["channel"], "ts": f"17000000{len(self.slack_posts):02d}.0001"}
 
+    def _react(self, req: SentRequest) -> Any:
+        self.slack_reactions.append(dict(req.json))
+        return {"ok": True}
+
     def fail_blocklist(self, status: int) -> None:
         self.transport.route("POST", "/block-lists-entries/bulk-create", {"error": "boom"}, status=status)
 
@@ -212,6 +219,7 @@ class ReplyWorld:
         t.route("GET", "conversations.list", {"ok": True, "channels": [{"id": "C_ALERT", "name": "us-outbound"},
                                                                        {"id": "C_DEV", "name": "us-outbound-dev"}]})
         t.route("POST", "chat.postMessage", fn=self._post)
+        t.route("POST", "reactions.add", fn=self._react)
         return self
 
 

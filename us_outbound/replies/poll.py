@@ -44,6 +44,7 @@ Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a h
       Harry; the mailbox owner has no Slack id in the sheet, so is named). SPEC 11 sends objection,
       negative and other to the daily post only; the daily post is phase 3, so until it exists they
       are alerted too, without the mention, so that every reply reaches a person from day one.
+      The bot puts ✅ and ❌ on each alert (only ❌ when there is no draft), so deciding is one click.
   unsubscribe, or a reply asking to stop
       opted out everywhere (replies/optout.py): suppression (hashed), the Instantly blocklist, and
       HubSpot's opt-out where HubSpot already has the contact. No item; a one-line note in Slack so a
@@ -70,6 +71,10 @@ Both count against claude_monthly_cap_usd. When the cap is used, a reply still r
 becomes "other" with no draft, and the stop rule still opts people out. Any other model error is
 retried on the next runs until the reply is RETRY old, then it goes to a person the same way.
 
+Time: a reply can take a minute of model calls, so the run starts no new reply after RUN_SECONDS
+(6 minutes; the scheduler stops it at 10). The rest wait: the summary's left_for_next_run counts
+them and its resume_from (the first one's time) makes the next run read from there.
+
 Dry-run reads Instantly, applies the stop rule (writing its suppression, which only protects), and
 reports how many replies it would classify and the most that would cost. It calls no model and
 writes no item or class, so a dry run never uses up a reply that a live run must still alert, opt
@@ -80,6 +85,7 @@ also retry pending opt-outs, set out-of-office leads going again, and post any i
 from __future__ import annotations
 
 import re
+import time
 from collections import Counter
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
@@ -93,7 +99,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import ET, ConfigError, Context
 from us_outbound.enrol import render
 from us_outbound.logs import log
-from us_outbound.replies import classify, draft, optout, outcomes
+from us_outbound.replies import classify, desk, draft, optout, outcomes
 from us_outbound.replies.outcomes import Directory, Match
 from us_outbound.settings.model import Settings
 
@@ -102,7 +108,6 @@ KIND = "reply"  # hitl_items.kind for a reply waiting for a person (the reply de
 OOO_KIND = "out_of_office"  # hitl_items.kind for an out-of-office record (status handled)
 OPEN, HANDLED = "open", "handled"
 REPLY_SOURCE = "reply"  # suppression.source for an opt-out by reply
-NEEDS_HUMAN = frozenset({"positive", "referral", "objection", "not_now", "wrong_person", "negative", "other"})
 LABELS = {
     "positive": "Positive", "referral": "Referral", "objection": "Objection", "not_now": "Not now",
     "negative": "Negative", "out_of_office": "Out of office", "wrong_person": "Wrong person",
@@ -113,10 +118,15 @@ SLACK_EXCERPT_CHARS = 300
 STORED_TEXT_CHARS = 5000  # events.reply_text
 SLACK_SECTION_CHARS = 2900  # Slack's section text limit is 3,000
 RETRY = timedelta(minutes=30)  # a model error is retried on later runs until the reply is this old
+# The run starts no new reply after this (a draft takes 15 to 40 seconds a call, up to two calls), so
+# it ends well inside the scheduler's 10-minute timeout; the rest are taken by the next run.
+RUN_SECONDS = 6 * 60
+_clock = time.monotonic  # tests replace it
 NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply gives none
 OOO_RESUME_SEND_DAYS = 2  # set going again two send days after the return date (gtm-review 03 §6)
-FOOTER = ('Reply in this thread: "send" to send the draft · "send: <your text>" to send your version · '
-          '"skip" to handle it yourself')
+FOOTER = ('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: <new text>" to change it, '
+          'then ✅ the new version · "send: <text>" sends your text now')
+NO_DRAFT_FOOTER = '❌ skips it (you\'ll answer yourself) · "send: <text>" sends your text now'
 
 
 def _lower(v: Any) -> str:
@@ -532,7 +542,7 @@ def alert(payload: Mapping[str, Any], settings: Settings) -> tuple[str, list[dic
     else:
         why = "; ".join(str(x) for x in (p.get("draft_problems") or [])[:3]) or "none written"
         sections.append(f"No draft ({_esc(why)}). Reply \"send: &lt;your text&gt;\" to answer, or \"skip\".")
-    sections.append(_esc(FOOTER))
+    sections.append(_esc(FOOTER if p.get("draft") else NO_DRAFT_FOOTER))
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": s[:SLACK_SECTION_CHARS]}} for s in sections]
     return _esc(f"{head}: \"{excerpt[:150]}\""), blocks
 
@@ -562,6 +572,8 @@ def _post_pending(ctx: Context, out: dict) -> None:
         ctx.store.update("hitl_items", {"item_id": row["item_id"]},
                          {"slack_channel": posted["channel"], "slack_ts": posted["ts"], "payload": payload})
         out["alerts_posted"] += 1
+        # The bot's ✅ and ❌ (only ❌ with no draft to send), so deciding is one click; never fatal.
+        desk.seed(slack, posted["channel"], posted["ts"], desk.SEED_REACTIONS if payload.get("draft") else ("x",))
 
 
 # -- the job --------------------------------------------------------------------------------------------
@@ -572,16 +584,26 @@ def run(ctx: Context) -> dict:
     registry = sorted(ctx.guard.bounds.registry_addresses)
     if not registry:
         return {"skipped": True, "reason": "no registry mailboxes"}
+    stop = _clock() + RUN_SECONDS
     d = Directory(ctx)
     start = outcomes.since(ctx, JOB, live_only=True, earliest=d.earliest_enrolled())
     out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry")}
     out.update({k: 0 for k in ("unmatched", "already_handled", "retry_later", "claude_cap_reached", "would_classify",
-                               "would_opt_out", "ooo_paused", "ooo_resumed", "alerts_posted", "slack_errors")})
+                               "would_opt_out", "ooo_paused", "ooo_resumed", "alerts_posted", "slack_errors",
+                               "left_for_next_run")})
     out["would_spend_usd_at_most"] = 0.0
     seen = _Seen(ctx)
     done = optout.done_markers(ctx.store)
     emails = ctx.clients.instantly.list_emails(registry, start, email_type="received")
-    for email in sorted(emails, key=lambda e: outcomes.email_time(e) or ctx.now):
+    ordered = sorted(emails, key=lambda e: outcomes.email_time(e) or ctx.now)
+    for i, email in enumerate(ordered):
+        if _clock() >= stop:  # the rest wait for the next run, which reads from the first of them
+            rest = ordered[i:]
+            out["left_for_next_run"] = len(rest)
+            first = min((outcomes.to_time(e.get("timestamp_created")) or outcomes.email_time(e) or ctx.now) for e in rest)
+            out["resume_from"] = first.isoformat()
+            log("poll_replies_time_budget", run_id=ctx.run_id, left=len(rest), resume_from=out["resume_from"])
+            break
         _process(ctx, d, email, seen, done, out)
     if ctx.live:
         _sweep_opt_outs(ctx, d, done, out)

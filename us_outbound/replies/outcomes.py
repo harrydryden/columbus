@@ -10,6 +10,8 @@ honors opt-outs the same day. Each run:
                   and Instantly's own step numbering is not confirmed. mailbox is the address
                   that sent it. The contact's last_step_at follows its latest send, and its mailbox
                   is set from step 1 when enrol could not know it (Harry has two addresses).
+                  A reply the reply desk sent is its own type, reply_sent (replies/desk.py): never
+                  a step, and dropped here if Instantly lists it among the sent emails.
   * replied:      each email one of our contacts, or anyone at the account's domain, sent to a
                   registry mailbox, unclassified (reply_class NULL) for poll_replies to classify.
                   The account becomes engaged. An email Instantly marks as an auto-reply is left to
@@ -29,6 +31,18 @@ Event ids are the idempotency keys (SPEC 6): the Instantly email id for sent and
 "bounced:{lead id}" and "unsubscribed:lead:{lead id}" for lead statuses, so a re-run adds nothing.
 enrol/capacity.py reads these event names (STOP_EVENTS). A replied row written here carries only
 the columns this job owns, so it never clears a class poll_replies has already set.
+
+What a run reads (it runs every 15 minutes, so each read is kept small):
+  * emails from SYNC_OVERLAP (6 hours) before the last good run started; once a day (RECHECK_EVERY)
+    the last two days (RECHECK) as well, in case Instantly lists an email late. recheck_at in the
+    run's summary (its heartbeat) says when that was last done.
+  * lead statuses (the full lead list of every US Outbound campaign) at most once an hour
+    (LEADS_EVERY), and on the first run after a switch between dry-run and live; leads_read_at in
+    the summary says when. An opt-out is still honored the same day.
+  * at most CATCH_UP (7 days) of email a run: after a long outage a run reads the oldest seven days
+    and its summary's resume_from tells the next run where to go on, so no run outgrows its timeout
+    and none is skipped for ever behind a dead one. Events stay idempotent whatever is re-read.
+The last good run is one row (Store.latest), not every heartbeat the job ever wrote.
 
 Every read is filtered by registry mailbox or by US Outbound campaign (SPEC 1.2), and an email
 or lead that belongs to no contact of ours is counted and dropped. Dry-run reads Instantly and
@@ -59,11 +73,18 @@ from us_outbound import suppression
 JOB = "sync_outcomes"
 # The event types enrol/capacity.py reads (STOP_EVENTS, and "sent" for the forecast). SPEC 6.
 SENT, BOUNCED, REPLIED, UNSUBSCRIBED = "sent", "bounced", "replied", "unsubscribed"
+# A reply the reply desk sent (replies/desk.py): it uses the mailbox, but it is no campaign step,
+# so it is never a "sent" row, never numbered as a step and never counted as a send.
+REPLY_SENT = "reply_sent"
 ENROLLED, ENGAGED = "enrolled", "engaged"
 BOUNCE_REASON, INSTANTLY_SOURCE = "bounce", "instantly"
-OVERLAP = timedelta(hours=1)  # each run re-reads from an hour before the last good run started
-RECHECK = timedelta(days=2)  # and always the last two days, in case Instantly lists an email late
+OVERLAP = timedelta(hours=1)  # poll_replies re-reads from an hour before its last good run started
+RECHECK = timedelta(days=2)  # and the last two days, in case Instantly lists an email late
 MAX_LOOKBACK = timedelta(days=45)  # leads leave Instantly 31 days after their last step (SPEC 13)
+SYNC_OVERLAP = timedelta(hours=6)  # sync_outcomes re-reads from six hours before its last good run started,
+RECHECK_EVERY = timedelta(days=1)  # and the last two days (RECHECK) once a day
+LEADS_EVERY = timedelta(hours=1)  # sync_outcomes reads lead statuses at most this often
+CATCH_UP = timedelta(days=7)  # the most email one sync_outcomes run reads; a longer gap takes several runs
 ID_CHUNK = 1000
 # System senders at a prospect's domain: a bounce notice there is not a reply from the account.
 SYSTEM_SENDERS = frozenset({"mailer-daemon", "postmaster", "noreply", "no-reply", "donotreply", "do-not-reply"})
@@ -260,22 +281,47 @@ class Directory:
 # -- shared with poll_replies --------------------------------------------------------------------
 
 
+_UNREAD: Any = object()  # since(): the last run not read yet
+
+
+def last_run(ctx: Context, job: str, *, live_only: bool = False) -> dict | None:
+    """The job's latest heartbeat that finished ok (one row, Store.latest), with its summary as detail.
+
+    live_only: count only live runs (poll_replies: a dry run classifies nothing).
+    """
+    where: dict[str, Any] = {"job": job, "status": "ok"}
+    if live_only:
+        where["dry_run"] = [False, None]
+    return ctx.store.latest("heartbeats", "started_at", where)
+
+
+def detail_of(run: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    d = (run or {}).get("detail")
+    return d if isinstance(d, Mapping) else {}
+
+
 def since(ctx: Context, job: str, *, live_only: bool = False, recheck: timedelta = RECHECK,
-          earliest: datetime | None = None) -> datetime:
-    """Where this run starts reading: an hour before the last good run began, and at least `recheck` back.
+          earliest: datetime | None = None, overlap: timedelta = OVERLAP, last: Any = _UNREAD) -> datetime:
+    """Where this run starts reading: `overlap` before the last good run began, and at least `recheck` back.
 
     live_only: count only live runs (poll_replies: a dry run classifies nothing, so it must not
-    move the start on). With no such run yet, it starts from the first enrollment.
+    move the start on). With no such run yet, it starts from the first enrollment. A run that
+    stopped before reading everything (its time budget, or sync_outcomes' CATCH_UP) left
+    resume_from in its summary: the start is never after that, less `overlap`. last: that run,
+    when the caller has already read it.
     """
-    runs = [r for r in ctx.store.select("heartbeats", {"job": job, "status": "ok"})
-            if not (live_only and r.get("dry_run"))]
-    last = max((t for r in runs if (t := to_time(r.get("started_at")))), default=None)
-    if last is not None:
-        start = last - OVERLAP
+    if last is _UNREAD:
+        last = last_run(ctx, job, live_only=live_only)
+    began = to_time((last or {}).get("started_at"))
+    if began is not None:
+        start = began - overlap
     elif earliest is not None:
-        start = earliest - OVERLAP
+        start = earliest - overlap
     else:
         start = ctx.now - recheck
+    resume = to_time(detail_of(last).get("resume_from"))
+    if resume is not None:
+        start = min(start, resume - overlap)
     return max(ctx.now - MAX_LOOKBACK, min(start, ctx.now - recheck))
 
 
@@ -292,9 +338,15 @@ def mark_engaged(ctx: Context, account_ids: Iterable[str]) -> list[str]:
 
 
 def sent_events(ctx: Context, contact_ids: Iterable[str]) -> dict[str, list[dict]]:
-    """contact id -> its sent events, oldest first."""
+    """contact id -> its campaign sends (sent events), oldest first.
+
+    A sent row with an approval is a desk reply written before desk replies had their own type
+    (reply_sent): it is left out, so it is never numbered as a step.
+    """
     out: dict[str, list[dict]] = defaultdict(list)
     for e in select_in(ctx, "events", "contact_id", contact_ids, {"type": SENT}):
+        if e.get("approval"):
+            continue
         out[str(e["contact_id"])].append(e)
     for evs in out.values():
         evs.sort(key=_send_order)
@@ -340,6 +392,11 @@ def _record_sent(ctx: Context, d: Directory, emails: Iterable[Mapping[str, Any]]
             continue
         new[eid] = {"event_id": eid, "contact_id": contact["contact_id"], "account_id": contact.get("account_id"),
                     "type": SENT, "mailbox": acct, "occurred_at": email_time(e) or ctx.now}
+    # A reply the desk sent may be listed as a sent email too: its own row stays as it is.
+    for r in select_in(ctx, "events", "event_id", new):
+        if r.get("type") == REPLY_SENT or (r.get("type") == SENT and r.get("approval")):
+            new.pop(str(r["event_id"]), None)
+            dropped["sent: a reply sent from the reply desk"] += 1
     if not new:
         return 0, set()
     by_contact = sent_events(ctx, {r["contact_id"] for r in new.values()})
@@ -449,6 +506,39 @@ def _lead_outcomes(ctx: Context, d: Directory, campaigns: Iterable[str], out: di
             out["unsubscribed"][result] += 1
 
 
+@dataclass(frozen=True)
+class Window:
+    """What one sync_outcomes run reads (see the module docstring)."""
+
+    start: datetime
+    end: datetime | None  # None: up to now; else a catch-up run, and the next goes on from here
+    recheck_at: str | None  # when the last two days were last re-read (ISO), carried run to run
+    read_leads: bool
+    leads_read_at: str | None  # when lead statuses were last read (ISO), carried run to run
+
+
+def window(ctx: Context, earliest: datetime | None) -> Window:
+    """This run's reads, from the last good run's summary (one heartbeat row)."""
+    last = last_run(ctx, JOB)
+    prev = detail_of(last)
+    now = ctx.now
+    rechecked = to_time(prev.get("recheck_at"))
+    recheck_due = rechecked is None or now - rechecked >= RECHECK_EVERY
+    start = since(ctx, JOB, earliest=earliest, recheck=RECHECK if recheck_due else timedelta(0),
+                  overlap=SYNC_OVERLAP, last=last)
+    end = start + CATCH_UP if now - start > CATCH_UP else None
+    leads_at = to_time(prev.get("leads_read_at"))
+    # The first run after a switch between dry-run and live reads them: a live run opts out what a dry run could not.
+    mode_changed = last is not None and bool(last.get("dry_run")) != ctx.dry_run
+    read_leads = leads_at is None or now - leads_at >= LEADS_EVERY or mode_changed
+    return Window(
+        start=start, end=end,
+        recheck_at=now.isoformat() if recheck_due and end is None else (rechecked.isoformat() if rechecked else None),
+        read_leads=read_leads,
+        leads_read_at=now.isoformat() if read_leads else (leads_at.isoformat() if leads_at else None),
+    )
+
+
 def run(ctx: Context) -> dict:
     """The sync_outcomes job (JOB CONTRACT: run(ctx) -> summary)."""
     registry = sorted(ctx.guard.bounds.registry_addresses)
@@ -457,14 +547,21 @@ def run(ctx: Context) -> dict:
     d = Directory(ctx)
     inst = ctx.clients.instantly
     campaigns = {str(c["id"]): str(c["name"]) for c in inst.list_campaigns()}
-    start = since(ctx, JOB, earliest=d.earliest_enrolled())
+    w = window(ctx, d.earliest_enrolled())
     dropped: Counter[str] = Counter()
-    out: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "since": start.isoformat(), "campaigns": len(campaigns),
-                           "bounced": 0, "unsubscribed": Counter()}
+    out: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "since": w.start.isoformat(),
+                           "until": w.end.isoformat() if w.end else None, "campaigns": len(campaigns),
+                           "bounced": 0, "unsubscribed": Counter(), "leads_read": w.read_leads,
+                           "leads_read_at": w.leads_read_at, "recheck_at": w.recheck_at}
+    if w.end is not None:
+        out["resume_from"] = w.end.isoformat()  # a catch-up run: the next run goes on from here
 
-    sent, touched = _record_sent(ctx, d, inst.list_emails(registry, start, email_type="sent"), set(campaigns), dropped)
-    replied, auto = _record_replies(ctx, d, inst.list_emails(registry, start, email_type="received"), dropped)
-    _lead_outcomes(ctx, d, campaigns.values(), out, dropped)
+    sent_emails = inst.list_emails(registry, w.start, email_type="sent", until=w.end)
+    sent, touched = _record_sent(ctx, d, sent_emails, set(campaigns), dropped)
+    received = inst.list_emails(registry, w.start, email_type="received", until=w.end)
+    replied, auto = _record_replies(ctx, d, received, dropped)
+    if w.read_leads:
+        _lead_outcomes(ctx, d, campaigns.values(), out, dropped)
 
     out.update(sent=sent, contacts_with_new_sends=len(touched), replied=replied, auto_replies_left_to_poll_replies=auto,
                unsubscribed=dict(out["unsubscribed"]), dropped=dict(dropped))

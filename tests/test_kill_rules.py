@@ -83,7 +83,7 @@ def test_a_mailbox_over_3_percent_is_paused_through_the_registry_path():
     out = kill_rules.run(ctx)
     [fired] = out["fired"]
     assert fired["rule"] == "mailbox_bounce_rate" and fired["target"] == HANNAH and fired["action"] == "pause_mailbox"
-    assert "2 of its last 40 sends bounced (5.0%, over 3%)" in fired["reason"]
+    assert "2 of its last 40 sends bounced (5.0%; the limit is 3%)" in fired["reason"]
     # The registry pause path: Paused on the Mailboxes tab, and off its campaign's sending list.
     assert row(sheets, HANNAH)["status"] == "Paused"
     assert inst.by_name(C_HANNAH)["status"] == 2
@@ -91,13 +91,18 @@ def test_a_mailbox_over_3_percent_is_paused_through_the_registry_path():
     # The hold is in force at once, whatever the synced settings still say.
     [item] = items(ctx, "open")
     assert item["payload"]["mailboxes"] == [HANNAH] and item["payload"]["dry_run"] is False
+    assert item["payload"]["campaigns_paused"] == [C_HANNAH]  # mailbox_health starts it again once she is back
     assert holds.held_mailboxes(ctx.store) == {HANNAH: fired["reason"]}
     assert [m.status for m in holds.with_holds(ctx.store, SETTINGS).mailboxes if m.address == HANNAH] == ["Paused"]
     assert "Hannah Spalding" not in capacity.sending_capacity(ctx.store, SETTINGS, ctx.now_et().date())
     # Alerted in the alert channel, mentioning the approver, with the item to clear.
     [post] = slack_posts(t)
-    assert post.json["channel"] == "C_ALERT" and post.json["text"].startswith("<@U_HARRY> Kill rules (SPEC 12)")
-    assert f"`us-outbound killrules clear {fired['item_id']} --live`" in post.json["text"]
+    assert post.json["channel"] == "C_ALERT"
+    assert post.json["text"] == (
+        "<@U_HARRY> 🛑 Safety stop, Tue 27 Oct 12:00 UK\n"
+        "• hannah@meetspill.org paused: 2 of its last 40 sends bounced (5.0%; the limit is 3%). Hannah's approved "
+        "leads wait; nothing else changes. To resume once fixed: set it Active on the Mailboxes tab, then "
+        f"`railway ssh -- us-outbound killrules clear {fired['item_id']} --live`.")
     assert item["slack_ts"] == "1.1"
     # Bounced contacts are suppressed.
     assert out["suppressed"] == 2
@@ -118,6 +123,19 @@ def test_the_rule_does_not_fire_twice_and_old_bounces_never_count_again():
     kill_rules.clear(again, item["item_id"], "harry")
     assert holds.held_mailboxes(ctx.store) == {}
     assert kill_rules.run(later(ctx, t, 1))["fired"] == []
+
+
+def test_replies_sent_from_the_desk_are_not_sends_in_a_bounce_rate():
+    """2 bounces in 50 campaign sends is 4%; counting 30 desk replies as sends would make it 2.5% and hide it."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 50, bounced=2)
+    ctx.store.insert("events", [{"event_id": f"r-{i}", "type": "reply_sent", "mailbox": HANNAH, "contact_id": f"k-{i}",
+                                 "approval": "approved", "occurred_at": RECENT + timedelta(hours=2, minutes=i)}
+                                for i in range(30)])
+    out = kill_rules.run(ctx)
+    [fired] = out["fired"]
+    assert fired["rule"] == "mailbox_bounce_rate" and "2 of its last 50 sends bounced (4.0%" in fired["reason"]
 
 
 def test_one_bounce_never_pauses_a_mailbox():
@@ -148,11 +166,11 @@ def test_a_block_bounce_pauses_for_14_days_and_the_hold_ends_by_itself():
     assert (fired["rule"], fired["target"], fired["until"]) == ("block_bounce", SAM, "2026-11-10")
     assert "1 block bounce (5.7.1)" in fired["reason"]
     assert row(sheets, SAM)["status"] == "Paused"
-    assert "The hold ends Tue 10 Nov" in slack_posts(t)[0].json["text"]
+    assert "after the hold ends on Tue 10 Nov" in slack_posts(t)[0].json["text"]
     # 14 days on, the hold lifts; the sheet still says Paused until Harry sets it Active.
     out = kill_rules.run(later(ctx, t, 14))
     assert [e["mailboxes"] for e in out["expired"]] == [[SAM]] and holds.held_mailboxes(ctx.store) == {}
-    assert "The 14-day pause of sam@meetspill.org (block_bounce) is over" in slack_posts(t)[-1].json["text"]
+    assert "The 14-day pause of sam@meetspill.org (a block bounce) is over" in slack_posts(t)[-1].json["text"]
     assert row(sheets, SAM)["status"] == "Paused"
 
 
@@ -165,6 +183,32 @@ def test_instantly_vitals_failing_pauses_for_14_days():
     assert (fired["rule"], fired["target"]) == ("vitals", HARRY2)
     assert "Instantly reports the account as sending_error" in fired["reason"]
     assert inst.by_name(C_HARRY)["email_list"] == [HARRY]  # off the sending list; Harry's other address sends on
+    [post] = slack_posts(t)
+    assert post.json["text"].splitlines()[1] == (
+        "• harry@tryspill.org paused for 14 days: Instantly reports the account as sending_error. Harry's campaign "
+        "goes on from harry@meetspill.org; nothing else changes. To resume once fixed: after the hold ends on Tue 10 "
+        f"Nov (or clear it sooner with `railway ssh -- us-outbound killrules clear {fired['item_id']} --live`), set it "
+        "Active on the Mailboxes tab.")
+
+
+def test_the_alert_names_each_address_once_and_cites_no_spec():
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 40, bounced=1)
+    sends(ctx, HARRY, 40, bounced=1)
+    sends(ctx, SAM, 40, bounced=2)
+    kill_rules.run(ctx)
+    [post] = slack_posts(t)
+    text = post.json["text"]
+    assert "SPEC" not in text and "Harry, " not in text
+    domain = next(line for line in text.splitlines() if "their domain" in line)
+    assert domain.startswith("• hannah@meetspill.org, harry@meetspill.org paused: their domain meetspill.org: 4 of its 120 "
+                             "sends in the last 7 days bounced (3.3%; the limit is 3%).")
+    assert "Hannah's approved leads wait; Harry's campaign goes on from harry@tryspill.org; nothing else changes." in domain
+    assert "set them Active on the Mailboxes tab" in domain
+    for line in text.splitlines()[1:]:
+        for box in (HANNAH, HARRY, SAM):
+            assert line.count(box) <= 1, line
 
 
 def test_a_spam_complaint_or_a_seed_inbox_in_spam_pauses_for_14_days():
@@ -193,7 +237,7 @@ def test_a_domain_over_3_percent_on_100_sends_pauses_its_mailboxes():
     by_rule = {f["rule"]: f for f in out["fired"]}
     assert by_rule["mailbox_bounce_rate"]["target"] == SAM
     assert by_rule["domain_bounce_rate"]["target"] == "meetspill.org"
-    assert "4 of its 120 sends in the last 7 days bounced (3.3%, over 3%)" in by_rule["domain_bounce_rate"]["reason"]
+    assert "4 of its 120 sends in the last 7 days bounced (3.3%; the limit is 3%)" in by_rule["domain_bounce_rate"]["reason"]
     assert set(out["paused"]) == {HANNAH, HARRY, SAM}
     assert inst.by_name(C_HARRY)["email_list"] == [HARRY2]  # tryspill.org sends on
     assert row(sheets, HARRY2)["status"] == "Active"
@@ -233,7 +277,7 @@ def test_an_industry_group_under_half_a_percent_after_400_delivered_stops_enroll
     [fired] = out["fired"]
     assert (fired["rule"], fired["target"], fired["action"]) == (
         "group_reply_rate", "Marketing & Creative Agencies", "stop_group")
-    assert "1 human replies from 400 accounts delivered (0.2%, under 0.5%)" in fired["reason"]
+    assert "1 human replies from 400 accounts delivered (0.2%; the floor is 0.5%)" in fired["reason"]
     ctx.store.insert("accounts", [{"account_id": "acc-y", "domain": "y.com", "status": "verified", "tier": "Priority",
                                    "industry_group": "Marketing & Creative Agencies"}])
     _, skipped = enrol.candidates(ctx, frozenset())
@@ -276,7 +320,7 @@ def test_account_level_bounces_raise_the_stop_rule():
     out = kill_rules.run(ctx)
     [fired] = out["fired"]
     assert (fired["rule"], fired["action"]) == ("stop_rule_bounce_rate", "pause_enrolment")
-    assert "4 of the 100 accounts sent step 1 in the last 30 days bounced (4.0%, over stop_rule_bounce_rate 3.0%)" \
+    assert "4 of the 100 accounts sent step 1 in the last 30 days bounced (4.0%; the limit, stop_rule_bounce_rate, is 3.0%)" \
         in fired["reason"]
     assert holds.enrolment_stop(ctx.store)
 
