@@ -384,13 +384,18 @@ def test_a_recheck_blocks_an_opt_out_after_the_card_was_posted():
     assert any("⛔ Not sent: Jane Doe: contact suppressed" in blocks_text(u) for u in sl.updates)
 
 
-def test_a_recheck_blocks_while_enrolment_is_stopped():
+def test_a_recheck_holds_while_enrolment_is_stopped():
+    """An operator stop is temporary: the card stays open and its ✅ goes through after `start --live` (A2)."""
     ctx, t, sl, _ = proposed()
     hb = {"dry_run": False, "status": "ok", "finished_at": NOW}
     ctx.store.insert("heartbeats", [{**hb, "run_id": "s-1", "job": "operator_stop", "started_at": NOW}])
     sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, "acc-1")["slack_ts"])
-    poll(ctx)
-    assert instantly_posts(t) == [] and "stopped by an operator" in item_for(ctx, "acc-1")["payload"]["reason"]
+    out = poll(ctx)
+    row = item_for(ctx, "acc-1")
+    assert instantly_posts(t) == [] and (row["status"], row["payload"]["outcome"]) == ("open", "")
+    assert "stopped by an operator" in out["held"][0]["why"][0]
+    ctx.store.insert("heartbeats", [{**hb, "run_id": "s-2", "job": "operator_start", "started_at": ctx.now}])
+    assert poll(ctx)["outcomes"] == {"approved": 1} and len(instantly_posts(t)) == 1
 
 
 def test_a_failed_add_waits_for_a_fresh_approval():

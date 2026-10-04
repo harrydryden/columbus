@@ -232,3 +232,225 @@ def test_limits_reads_instantly_only_when_asked():
     lim = limits.today(ctx, ctx.now_et().date(), ready_accounts=10, campaigns=True)
     assert lim.not_sending == {"Hannah Spalding": DRAFT} and lim.senders["Hannah Spalding"].free == 0
     assert lim.terms["senders"]["Hannah Spalding"]["not_sending"] == DRAFT
+
+
+# -- A2: holds keep the card open and the ✅ valid; blocks close it -------------------------------------------------
+
+
+def _approved(account_id="acc-1", **kw):
+    """Three cards posted (live, auto_send = no), and Harry's ✅ on one of them."""
+    from tests.test_send_approvals import HARRY_ID, item_for, proposed
+
+    ctx, t, sl, _ = proposed(**kw)
+    row = item_for(ctx, account_id)
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    return ctx, t, sl, row
+
+
+def _held_notes(sl, row) -> list[str]:
+    return [p["text"] for p in sl.thread(row["slack_ts"]) if p["text"].startswith("⏸")]
+
+
+def _stop(ctx, job="operator_stop", at=None):
+    ctx.store.insert("heartbeats", [{"run_id": f"{job}-{len(ctx.store.select('heartbeats'))}", "job": job,
+                                     "dry_run": False, "status": "ok", "started_at": at or ctx.now,
+                                     "finished_at": at or ctx.now}])
+
+
+def test_a_hold_posts_one_note_per_reason_and_the_tick_goes_through_once_every_hold_clears():
+    from tests.test_enrol import instantly_posts
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _stop(ctx)
+    out = poll(ctx)
+    assert out["outcomes"] == {} and out["held"][0]["item"] == row["item_id"][:8] and instantly_posts(t) == []
+    [note] = _held_notes(sl, row)
+    assert note.startswith("⏸ Approved by <@U_HARRY>, but not added yet: enrollment is stopped by an operator")
+    assert note.endswith("It goes through by itself once that clears, until the card expires at the end of "
+                         "Wed 28 Oct (UK). ❌ still stops it.")
+    for _ in range(3):  # every 5 minutes: no note again
+        poll(ctx)
+    assert len(_held_notes(sl, row)) == 1
+    # A second reason while the first still holds: one note for it, once.
+    ctx.store.insert("hitl_items", [{"item_id": "r-1", "kind": "reply", "status": "open", "created_at": NOW - timedelta(hours=30),
+                                     "payload": {"reply_class": "positive"}}])
+    poll(ctx)
+    poll(ctx)
+    notes = _held_notes(sl, row)
+    assert len(notes) == 2 and "new emails wait while 1 positive reply has waited over 24 hours" in notes[1]
+    p = item_for(ctx, "acc-1")["payload"]
+    assert p["held"]["noted"] == ["operator_stop", "reply_pause"] and p["held"]["by"] == "U_HARRY"
+    assert (item_for(ctx, "acc-1")["status"], p["state"], p["outcome"]) == ("open", "waiting", "")
+    # The first clears; the second still holds.
+    _stop(ctx, "operator_start")
+    assert poll(ctx)["outcomes"] == {} and instantly_posts(t) == []
+    ctx.store.update("hitl_items", {"item_id": "r-1"}, {"status": "handled"})
+    assert poll(ctx)["outcomes"] == {"approved": 1} and len(instantly_posts(t)) == 1
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", "U_HARRY", "approved")
+
+
+def test_a_held_send_reply_and_a_held_cli_approval_go_through_too():
+    """The ✅ on the card is read every run; a "send" reply is read once, so the held approval is kept for it."""
+    from tests.test_enrol import instantly_posts
+    from tests.test_send_approvals import HARRY_ID, item_for, poll, proposed
+
+    ctx, t, sl, _ = proposed()
+    _stop(ctx)
+    sl.say(HARRY_ID, "send", item_for(ctx, "acc-2")["slack_ts"])
+    poll(ctx)
+    assert item_for(ctx, "acc-2")["payload"]["held"]["via"] == "thread"
+    approvals.approve(ctx, item_for(ctx, "acc-3")["item_id"])  # the command line, approved_by "cli"
+    assert item_for(ctx, "acc-3")["payload"]["held"]["by"] == "cli"
+    poll(ctx)
+    assert instantly_posts(t) == []
+    _stop(ctx, "operator_start")
+    out = approvals.poll(ctx, None)  # no Slack token: the held approvals still go through
+    assert out["outcomes"] == {"approved": 2} and len(instantly_posts(t)) == 2
+    assert {item_for(ctx, a)["handled_by"] for a in ("acc-2", "acc-3")} == {HARRY_ID, "cli"}
+
+
+def test_a_cross_after_a_held_tick_stops_it():
+    from tests.test_enrol import instantly_posts
+    from tests.test_send_approvals import HARRY_ID, item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _stop(ctx)
+    poll(ctx)
+    sl.react("x", HARRY_ID, ts=row["slack_ts"])
+    poll(ctx)
+    p = item_for(ctx, "acc-1")["payload"]
+    assert p["state"] == "rejected" and "held" not in p
+    _stop(ctx, "operator_start")
+    poll(ctx)
+    assert instantly_posts(t) == [] and item_for(ctx, "acc-1")["payload"]["state"] == "rejected"
+
+
+def test_a_held_card_that_never_clears_expires_and_says_so():
+    from datetime import UTC, datetime
+
+    from tests.test_send_approvals import at, item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _stop(ctx)
+    poll(ctx)
+    at(ctx, datetime(2026, 10, 28, 23, 55, tzinfo=UTC))
+    out = poll(ctx)  # Thu 00:00 UK
+    assert out["outcomes"] == {"expired": 3}
+    reason = item_for(ctx, "acc-1")["payload"]["reason"]
+    assert reason.startswith("approved, but still held at the end of Wed 28 Oct (UK): enrollment is stopped by an operator")
+    assert item_for(ctx, "acc-2")["payload"]["reason"] == "not approved by the end of Wed 28 Oct (UK)"
+
+
+def test_holds_from_instantly_the_campaign_and_the_opt_out_test():
+    import dataclasses
+
+    from tests.test_enrol import CAMPAIGNS, instantly_posts
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, optout_tested=False))
+    poll(ctx)
+    assert _held_notes(sl, row)[-1].startswith("⏸ Approved by <@U_HARRY>, but not added yet: optout_tested is no")
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, optout_tested=True))
+    t.route("GET", "/campaigns", {"error": "down"}, status=503)
+    poll(ctx)
+    assert "Instantly could not be read (ApiError" in _held_notes(sl, row)[-1]
+    harry_paused = [dict(c, status=2) if c["id"] == "c-harry" else c for c in CAMPAIGNS["items"]]
+    t.route("GET", "/campaigns", {"items": harry_paused})
+    poll(ctx)
+    assert _held_notes(sl, row)[-1].endswith(
+        "not added yet: Harry Dryden's campaign is not active in Instantly (paused): run `us-outbound start --live`. "
+        "It goes through by itself once that clears, until the card expires at the end of Wed 28 Oct (UK). "
+        "❌ still stops it.")
+    assert item_for(ctx, "acc-1")["payload"]["held"]["noted"] == ["optout_tested", "instantly", "campaign"]
+    assert instantly_posts(t) == [] and item_for(ctx, "acc-1")["status"] == "open"
+    t.route("GET", "/campaigns", CAMPAIGNS)
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+
+
+def test_a_blackout_on_instantlys_next_send_day_holds_but_a_weekend_does_not():
+    import dataclasses
+    from datetime import UTC, date, datetime
+
+    from tests.test_send_approvals import item_for
+    from us_outbound.settings.model import DateRange
+
+    ctx, t, sl, row = _approved()
+    item = approvals.Item(item_for(ctx, "acc-1"))
+    # Tuesday 11:00 UK is 07:00 ET, before the window: Instantly sends today.
+    assert approvals.instantly_send_day(ctx) == date(2026, 10, 27)
+    ctx.now = datetime(2026, 10, 30, 21, 30, tzinfo=UTC)  # Friday 17:30 ET, after the window: Monday
+    assert approvals.instantly_send_day(ctx) == date(2026, 11, 2)
+    ctx.now = datetime(2026, 10, 31, 12, 0, tzinfo=UTC)  # Saturday: Monday too, and nothing holds
+    assert approvals.instantly_send_day(ctx) == date(2026, 11, 2)
+    assert approvals.recheck(ctx, item).holds == {}
+    blackout = (DateRange(date(2026, 11, 2), date(2026, 11, 2)),)
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
+                                                                                  blackout_dates=blackout))
+    held = approvals.recheck(ctx, item).holds
+    assert held == {"blackout": "Mon 2 Nov is a blackout date, and Instantly (which does not know our blackout dates) "
+                                "would send email 1 then"}
+
+
+def test_blocks_still_close_the_card_while_holds_keep_it_open():
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _stop(ctx)
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"tier": "Held", "tier_reason": "Held: no HQ state"})
+    out = poll(ctx)
+    assert out["outcomes"] == {"blocked": 1}
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["payload"]["outcome"]) == ("handled", "blocked")
+    assert row["payload"]["reason"] == "Acme Creative is Held now (Held: no HQ state)"
+
+
+# -- A5: HubSpot at the ✅ ------------------------------------------------------------------------------------------
+
+
+def test_a_hubspot_exclusion_at_the_tick_closes_the_card_and_excludes_the_account():
+    from tests.test_enrol import _company_route, instantly_posts
+    from tests.test_send_approvals import item_for, poll
+    from us_outbound.scoring import tiers
+
+    ctx, t, sl, row = _approved()
+    t.route("POST", "/crm/v3/objects/companies/search",
+            fn=_company_route("acmecreative.com", {"id": "co-1", "properties": {"lifecyclestage": "customer"}}))
+    out = poll(ctx)
+    assert out["outcomes"] == {"blocked": 1} and instantly_posts(t) == []
+    row = item_for(ctx, "acc-1")
+    assert row["payload"]["reason"] == "Acme Creative: a customer in HubSpot"
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    assert (acme["tier"], acme["tier_reason"]) == ("Excluded", "a customer in HubSpot")
+    [fact] = [e for e in ctx.store.select("signal_events", {"account_id": "acc-1"}) if e["source"] == "hubspot"]
+    assert fact["fact"] == "hubspot_customer" and fact["fact"] in dict(tiers.HUBSPOT_EXCLUSIONS)
+
+
+def test_a_hubspot_error_at_the_tick_holds():
+    from tests.test_enrol import instantly_posts
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    t.route("POST", "/crm/v3/objects/contacts/search", {"message": "boom"}, status=500)
+    out = poll(ctx)
+    assert out["outcomes"] == {} and instantly_posts(t) == []
+    assert "HubSpot could not be read for the re-check" in _held_notes(sl, row)[0]
+    assert item_for(ctx, "acc-1")["payload"]["held"]["noted"] == ["hubspot"]
+    t.route("POST", "/crm/v3/objects/contacts/search", {"results": []})
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+
+
+def test_a_dry_cli_approval_reports_the_holds_and_changes_nothing():
+    from tests.test_send_approvals import at, item_for, proposed
+
+    ctx, t, sl, _ = proposed()
+    before = item_for(ctx, "acc-1")
+    at(ctx, ctx.now, live=False)
+    import dataclasses
+
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, live_sending=False))
+    out = approvals.approve(ctx, before["item_id"])
+    assert out["dry_run"] is True and out["added"] is False and out["held"] == ["live_sending is no"]
+    assert item_for(ctx, "acc-1") == before
