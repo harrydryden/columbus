@@ -523,6 +523,24 @@ def test_a_tick_whose_lookup_fails_is_resolved_by_the_stuck_pass():
     assert (row["status"], row["handled_by"], row["payload"]["added"]["lead_id"]) == ("handled", HARRY_ID, "lead-found")
 
 
+def test_a_tick_whose_lookup_fails_and_whose_lead_is_not_there_later_was_refused():
+    """Instantly answered the add without creating the lead; a later lookup does not find it: refused, so the
+    contact is suppressed and the card closes, as if the lookup had worked at once."""
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _none_created(t)
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    poll(ctx)
+    assert item_for(ctx, "acc-1")["payload"]["sending"]["answered"] is True
+    _in_campaign(t, "someone-else@acmecreative.com")
+    out = poll(ctx, minutes=15)
+    assert out["outcomes"] == {"blocked": 1} and len(_adds(t)) == 1
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["handled_by"], row["payload"]["reason"]) == ("handled", "U_HARRY", enrol.NOT_ADDED)
+    assert ctx.store.get("contacts", contact_id="con-1")["suppressed_reason"] == enrol.NOT_ADDED
+
+
 def test_an_add_left_sending_whose_lead_is_in_the_campaign_resolves_itself():
     from tests.test_send_approvals import HARRY_ID, item_for, poll, proposed
 

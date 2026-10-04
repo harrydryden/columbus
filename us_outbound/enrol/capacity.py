@@ -140,7 +140,7 @@ def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
 
 def unreadable(exc: Exception) -> str:
     return (f"Instantly could not be read ({type(exc).__name__}: {str(exc)[:120]}), so no campaign is known to be "
-            "active; nothing is proposed until it can be")
+            "active: no new leads until it can be read")
 
 
 def campaigns_not_sending(ctx: Context, owners: Iterable[str]) -> dict[str, str]:

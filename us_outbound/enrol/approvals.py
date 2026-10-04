@@ -926,7 +926,7 @@ def recheck(ctx: Context, item: Item) -> Recheck:
         return out
     try:
         excluded = enrol.hubspot_block(ctx, account, contact)
-    except ApiError as exc:
+    except (ApiError, ConfigError) as exc:
         out.holds[HOLD_HUBSPOT] = f"HubSpot could not be read for the re-check ({str(exc)[:160]})"
         return out
     if excluded:
@@ -1040,6 +1040,8 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         try:
             found = enrol.campaign_lead_ids(ctx, campaign, [email])
         except (ApiError, LookupError, ConfigError) as exc:  # left "sending": _stuck looks again after STUCK_AFTER
+            p["sending"] = {**(p.get("sending") or {}), "answered": True}  # Instantly had the add, and did not create it
+            _save(ctx, item)
             why = f"Instantly did not confirm the lead and {campaign} could not be read ({str(exc)[:160]}); looked up again"
             log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
             result.update(added=False, why=[why])
@@ -1327,8 +1329,9 @@ def _work(ctx: Context, item: Item, slack: Any, bot: str, run: _Run) -> None:
 def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
     """An item left "sending" by a run that stopped, or whose lead Instantly did not confirm: the campaign is
     looked up (enrol.campaign_lead_ids). A lead found there is recorded and the item closed approved, by whoever
-    approved it. One not there goes back to waiting for a person's fresh ✅: it is never added again alone, as
-    the add may never have reached Instantly. If the campaign cannot be read, a person is asked to check."""
+    approved it. One not there, after Instantly answered the add (sending.answered), was refused (_refused);
+    otherwise it goes back to waiting for a person's fresh ✅: it is never added again alone, as the add may
+    never have reached Instantly. If the campaign cannot be read, a person is asked to check."""
     p = item.payload
     sending = dict(p.get("sending") or {})
     started = parse_ts(sending.get("at"))
@@ -1343,11 +1346,14 @@ def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
     except (ApiError, LookupError, ConfigError) as exc:
         found = None
         log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
+    by, via = _text(sending.get("by")) or SYSTEM, _text(sending.get("via"))
     if found and found.get(email):
-        res = _added(ctx, item, found[email], by=_text(sending.get("by")) or SYSTEM, via=_text(sending.get("via")),
-                     slack=slack)
+        res = _added(ctx, item, found[email], by=by, via=via, slack=slack)
         run.outcomes[res["outcome"]] += 1
         log("send_approval_found", item_id=item.id)
+        return
+    if found is not None and sending.get("answered"):  # Instantly had the add and did not take it: refused
+        run.outcomes[_refused(ctx, item, by=by, via=via, slack=slack)["outcome"]] += 1
         return
     if found is None:
         run.add("unsure", item.short_id)
