@@ -489,7 +489,7 @@ def _before_line(p: Mapping[str, Any]) -> str:
     return line
 
 
-def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, list[dict]]:
+def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     """The card: (plain-text fallback, Block Kit blocks). status, once decided, replaces the footer."""
     c = p.get("contact") or {}
     name = " ".join(x for x in (_text(c.get("first_name")), _text(c.get("last_name"))) if x) or "the contact"
@@ -613,7 +613,7 @@ def _seed(slack: Any, channel: str, ts: str, names: Iterable[str]) -> None:
 def _update_card(ctx: Context, slack: Any, item: Item, status: str) -> None:
     if slack is None or not item.channel or not item.ts or ctx.dry_run:
         return
-    text, blocks = card(item.payload, item.short_id, status=status)
+    text, blocks = card(item.payload, status=status)
     try:
         slack.update(item.channel, item.ts, text, blocks)
     except (ApiError, LookupError) as exc:
@@ -623,7 +623,7 @@ def _update_card(ctx: Context, slack: Any, item: Item, status: str) -> None:
 def post_card(ctx: Context, slack: Any, item: Item) -> bool:
     """Post the card to the alert channel (dry-run: the dev channel), seed ✅ and ❌, and post emails 2 to 4
     in its thread. Live, the row records where. True when the card was posted."""
-    text, blocks = card(item.payload, item.short_id)  # a dry-run preview has no id
+    text, blocks = card(item.payload)
     posted = slack.post(ctx.settings.general.alert_channel, text, blocks=blocks)
     if not posted or not posted.get("ts"):
         return False
