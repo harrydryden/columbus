@@ -161,16 +161,36 @@ def _item_week(item: Mapping[str, Any]) -> str:
     return iso_week(t.astimezone(UK).date()) if t else ""
 
 
+def has_sample(payload: Any) -> bool:
+    """Whether a hand_check item's payload holds the weekly random sample (per_group > 0). One recorded while
+    auto_send was no holds only the accounts with doubtful facts (per_group 0); an item from before per_group
+    was kept always had the sample."""
+    n = payload.get("per_group") if isinstance(payload, Mapping) else None
+    if n is None:
+        return True
+    try:
+        return int(n) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     """(why enrollment waits, or None; the account ids Harry pulled). SPEC 11 weekly hand-check.
 
     This ISO week's hand_check items (payload.iso_week, else created_at) must all be handled.
-    Accounts listed in a handled item's payload.pulled_account_ids are not enrolled.
+    Accounts listed in a handled item's payload.pulled_account_ids are not enrolled. While auto_send
+    is yes the week's items must hold the random sample too: one recorded while auto_send was no
+    (only the doubtful accounts) does not pass the gate until the sample is added (hand_check.py).
     """
     week = iso_week(today)
     items = [r for r in ctx.store.select("hitl_items", {"kind": "hand_check"}) if _item_week(r) == week]
     if not items:
         return f"this week's hand-check ({week}) has not been posted", frozenset()
+    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
+        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
+                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
+                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
+                "`us-outbound handcheck show`"), frozenset()
     if any(r.get("status") != "handled" for r in items):
         return f"this week's hand-check ({week}) is not approved yet", frozenset()
     pulled = {
