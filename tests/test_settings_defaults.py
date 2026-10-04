@@ -65,6 +65,29 @@ def test_general_spec_values(tabs, settings):
     assert g.claude_monthly_cap_usd == 10.0
 
 
+def test_the_general_notes_harry_reads(tabs):
+    """`settings load --tab General --take note` puts these on the sheet (4 Oct 2026): plain words, what to do."""
+    notes = {r["key"]: r["note"] for r in tabs["General"]}
+    assert notes["live_sending"].startswith("The master switch and Harry's sign-off. no: nothing reaches a prospect")
+    assert "02:00 and 11:30 UK on weekdays), or now with `us-outbound sync`" in notes["live_sending"]
+    assert notes["live_sending"].endswith("To stop sending that is already under way, run `us-outbound stop --live`.")
+    assert notes["auto_send"].endswith("Nothing goes out while live_sending is no.")
+    assert "Harry: U098X453UAG" in notes["approver_slack_ids"] and "slack_id (Mailboxes tab)" in notes["approver_slack_ids"]
+    assert notes["optout_tested"].endswith("Live sending waits for it.")
+    for key in ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id"):
+        assert notes[key].endswith("From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal.")
+    assert notes["booking_link"] == "Harry's HubSpot meetings link: the signature's 'Book a call here', and reply drafts."
+    assert notes["booking_page"] == "The demo page each email's call to action links to."
+    assert notes["apollo_floor"].startswith("Safety floor: no job spends Apollo credits")
+    assert notes["opener_generic"].endswith("Tokens: {company}, {city}. Blank: no opener.")
+    # Keys no code reads stay on the sheet (removing one would make a sheet that has it unusable).
+    for key in ("recontact_person_months", "recontact_account_months", "hubspot_deal_stage", "clay_credits_per_account",
+                "apollo_credits_per_account"):
+        assert notes[key] == "Not used yet; leave as it is.", key
+    assert not [k for k, n in notes.items() if k in ("live_sending", "auto_send", "approver_slack_ids", "optout_tested")
+                and "SPEC" in n]
+
+
 # signal, weight, max_weight, action, suggests_angle, counts_for_days, active: SPEC 5's rows as the design
 # review's Appendix A reworked them (docs/gtm-review/README.md, 1 Oct 2026), plus the build's two.
 DEFAULT_SIGNALS = [

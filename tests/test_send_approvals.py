@@ -180,8 +180,8 @@ def test_the_general_key_defaults_to_no_with_harrys_note():
 
     row = next(r for r in default_tabs()["General"] if r["key"] == "auto_send")
     assert row["value"] == "no" and General().auto_send is False
-    assert row["note"].startswith("no: every email waits for an approver's ✅ in Slack before it is added to Instantly")
-    assert "Harry, 2 Oct 2026" in row["note"] and "yes: enrol adds leads straight away, as before" in row["note"]
+    assert row["note"].startswith("no (the pilot): every email waits for an approver's ✅ on its card in #us-outbound")
+    assert "yes: emails go straight to Instantly once the weekly hand-check is approved" in row["note"]
     tabs = default_tabs()
     next(r for r in tabs["General"] if r["key"] == "auto_send")["value"] = "yes"
     assert validate_all(tabs)[0].general.auto_send is True

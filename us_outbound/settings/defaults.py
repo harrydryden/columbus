@@ -73,13 +73,21 @@ HARRY_TO_FILL = "Harry to fill"
 # -- General -----------------------------------------------------------------
 
 _GENERAL: list[tuple[str, str, str]] = [
-    ("live_sending", "no", "Live needs yes here and the --live flag. Stays no until Harry signs off (SPEC 0.3)."),
+    # The notes are what Harry reads on the sheet (`settings load --tab General --take note` refreshes them):
+    # plain words, no SPEC numbers (4 Oct 2026).
+    (
+        "live_sending",
+        "no",
+        "The master switch and Harry's sign-off. no: nothing reaches a prospect or Instantly. yes: emails go out "
+        "(each still waits for your ✅ while auto_send is no). Sheet edits apply at the next sync (02:00 and 11:30 "
+        "UK on weekdays), or now with `us-outbound sync`. To stop sending that is already under way, run "
+        "`us-outbound stop --live`.",
+    ),
     (
         "auto_send",
         "no",
-        "no: every email waits for an approver's ✅ in Slack before it is added to Instantly, and the weekly "
-        "hand-check is not needed (Harry, 2 Oct 2026). yes: enrol adds leads straight away, as before, once "
-        "the weekly hand-check is approved. live_sending stays the master switch. Added by the build.",
+        "no (the pilot): every email waits for an approver's ✅ on its card in #us-outbound. yes: emails go straight "
+        "to Instantly once the weekly hand-check is approved. Nothing goes out while live_sending is no.",
     ),
     ("weekly_enrol_cap", "150", "Most new accounts enrolled in a week (Monday to Sunday, UK time). Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
@@ -98,20 +106,22 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Apollo credits the jobs may spend each calendar month (UK time), about 500 a week. "
         "Each weekday may use what is left ÷ the weekdays left.",
     ),
-    ("apollo_floor", "5000", "New verification stops when Apollo credits fall below this."),
+    ("apollo_floor", "5000",
+     "Safety floor: no job spends Apollo credits once Apollo's own balance falls below this."),
     (
         "approver_slack_ids",
         "",
-        "Slack user ids allowed to approve replies, comma-separated. Harry is the only approver; "
-        "fill in his id once the Slack app is installed.",
+        "Slack member ids (U…) whose ✅ counts on send cards and reply drafts, comma-separated. Harry: U098X453UAG. "
+        "A mailbox owner's slack_id (Mailboxes tab) can also approve replies to their own mailbox.",
     ),
     ("escalation_email", "harry@spill.chat", "Where human-in-the-loop items go after escalation_hours."),
     ("escalation_hours", "24", "Hours before an open item is emailed to escalation_email."),
     ("alert_channel", "#us-outbound", "Alerts, approvals, the daily post and the Monday readout."),
     ("dev_channel", "#us-outbound-dev", "The only channel dry-run posts to. Added by the build."),
-    ("booking_link", "https://meetings.hubspot.com/harry336/us-demo-link", "Harry's own meeting link, for replies."),
+    ("booking_link", "https://meetings.hubspot.com/harry336/us-demo-link",
+     "Harry's HubSpot meetings link: the signature's 'Book a call here', and reply drafts."),
     ("booking_page", "https://www.spill.chat/us/book-demo",
-     "The demo page every email links as its call to action ({{demo_url}}; Harry, 30 Sep 2026)."),
+     "The demo page each email's call to action links to."),
     ("site_url", "https://www.spill.chat/us",
      "Spill's US site ({{site_url}}): the \"trusted by over 50,000 employees\" link, and the page linked when an industry has none (Harry, 1 Oct 2026)."),
     ("price_from", "195",
@@ -123,8 +133,8 @@ _GENERAL: list[tuple[str, str, str]] = [
         "2026-11-23..2026-11-27, 2026-12-18..2027-01-04",
         "No enrollment on these dates: comma-separated YYYY-MM-DD..YYYY-MM-DD ranges (Thanksgiving week; the holidays).",
     ),
-    ("recontact_person_months", "12", "Months before a person may be contacted again."),
-    ("recontact_account_months", "6", "Months before an account may be contacted again."),
+    ("recontact_person_months", "12", "Not used yet; leave as it is."),
+    ("recontact_account_months", "6", "Not used yet; leave as it is."),
     (
         "stop_rule_accounts",
         "1500",
@@ -147,17 +157,20 @@ _GENERAL: list[tuple[str, str, str]] = [
     (
         "optout_tested",
         "no",
-        "yes once a test send to a seed inbox shows Instantly's {{unsubscribe}} link renders and works in html and "
-        "text (go-live blocker; `us-outbound golive` checks it). Added by the build.",
+        "yes once a test email to a seed inbox shows Instantly's unsubscribe link working in HTML and plain text, "
+        "and the click marks the lead unsubscribed. Live sending waits for it.",
     ),
     ("hubspot_pipeline", "Spill 3.0", "Deals go in this pipeline."),
-    ("hubspot_pipeline_id", "", "Looked up through the HubSpot API in phase 0."),
-    ("hubspot_deal_stage", "", "SPEC: the first stage of Spill 3.0. Its label, looked up in phase 0."),
-    ("hubspot_deal_stage_id", "", "Looked up through the HubSpot API in phase 0."),
-    ("hubspot_owner_id", "", "Harry's HubSpot owner id, looked up in phase 0. Added by the build."),
+    ("hubspot_pipeline_id", "",
+     "The pipeline's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
+    ("hubspot_deal_stage", "", "Not used yet; leave as it is."),
+    ("hubspot_deal_stage_id", "",
+     "Its first stage's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
+    ("hubspot_owner_id", "",
+     "Harry's HubSpot owner id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
     ("clay_accounts_function_id", "", "Clay function \"US Outbound – Accounts\", once built in phase 0."),
     ("clay_contacts_function_id", "", "Clay function \"US Outbound – Contacts\", once built in phase 0."),
-    ("clay_credits_per_account", "0", "Estimate until measured on the first 100 accounts (SPEC 8)."),
+    ("clay_credits_per_account", "0", "Not used yet; leave as it is."),
     (
         "clay_verification",
         "skip",
@@ -172,7 +185,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
         "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed.",
     ),
-    ("apollo_credits_per_account", "1", "Estimate until measured."),
+    ("apollo_credits_per_account", "1", "Not used yet; leave as it is."),
     (
         "apollo_enrich_groups",
         "Technology & Startups",
@@ -197,11 +210,8 @@ _GENERAL: list[tuple[str, str, str]] = [
     (
         "opener_generic",
         General.opener_generic,
-        "The generic opener (Harry, 2 Oct 2026: ever more pressure in our work and personal lives) for an account "
-        "with no signal line: the General angle, Control among it, or a signal whose lines all fall through. The "
-        "contact's role line below comes first; this one is for a contact with no copy role, or when that line "
-        "is blank. After opener_focus_line when opener_focus is yes. Tokens: {company}, {city}. Blank: none. "
-        "Added by the build.",
+        "The opener for a company with no signal line, when the contact's role has no line of its own below. "
+        "Tokens: {company}, {city}. Blank: no opener.",
     ),
     ("opener_generic_people", General.opener_generic_people,
      "The generic opener for a People leader; it leads into email 1's industry hook. Added by the build."),
