@@ -35,7 +35,10 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
-     rendered steps as custom variables.
+     rendered steps as custom variables. A lead the add summary leaves out is looked up in the
+     campaign (campaign_lead_ids): there, it is recorded; not there, Instantly refused it (its
+     blocklist, or a lead in another campaign), so its contact is marked suppressed and
+     pick_contacts finds the next person (mark_not_added) instead of the same one failing daily.
      auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
      comes to this channel first for approval"): each account becomes a send approval instead,
      a hitl_items row and a card in the alert channel showing every email of the sequence, and
@@ -87,6 +90,7 @@ HS_OTHER_OWNER = "hubspot_other_owner"
 HS_OPTED_OUT = "hubspot_opted_out_or_bounced"
 LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
+NOT_ADDED = "not added by Instantly (blocklist, or already in another campaign)"  # contacts.suppressed_reason
 OPTOUT_UNTESTED = ("optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so nothing "
                    "is sent; once it is, set optout_tested = yes on the General tab")
 
@@ -734,6 +738,32 @@ def _created_ids(result: Mapping[str, Any], leads: Sequence[Mapping[str, Any]]) 
     return out
 
 
+def campaign_lead_ids(ctx: Context, campaign: str, emails: Iterable[str]) -> dict[str, str]:
+    """email (lower case) -> Instantly lead id, for these emails among the campaign's own leads (list_leads).
+
+    The add summary's created_leads leaves out a lead Instantly did not create, and also one that is in the
+    campaign already (an earlier add whose run stopped before recording it), so a lead missing from it is
+    looked up here before anything is concluded. Raises ApiError or LookupError when the campaign cannot be read.
+    """
+    want = {_lower(e) for e in emails if _lower(e)}
+    out: dict[str, str] = {}
+    if not want:
+        return out
+    for lead in ctx.clients.instantly.list_leads(campaign):
+        email = _lower(lead.get("email"))
+        if email in want and lead.get("id") and email not in out:
+            out[email] = str(lead["id"])
+    return out
+
+
+def mark_not_added(ctx: Context, contact_id: Any) -> None:
+    """Instantly would not take this contact (its blocklist, or a lead in another campaign of the workspace):
+    marked suppressed, so pick_contacts finds the next person at the account and the account goes on. Not the
+    suppression table: they did not opt out."""
+    if contact_id:
+        ctx.store.update("contacts", {"contact_id": contact_id}, {"suppressed": True, "suppressed_reason": NOT_ADDED})
+
+
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
     """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast)."""
     accounts, contacts = [], []
@@ -847,9 +877,25 @@ def run(ctx: Context) -> dict:
             would[owner] = len(items)
             continue
         ids = _created_ids(result, leads)
-        for i, p in enumerate(items):
-            if i not in ids:
-                r.skip(p.account, "not added by Instantly", ["no created lead in the add summary (in blocklist, or already in the workspace)"])
+        missing = [i for i in range(len(items)) if i not in ids]
+        found: dict[str, str] | None = {}
+        if missing:  # in the campaign after all (recorded), or refused (the contact suppressed, so the next is found)
+            try:
+                found = campaign_lead_ids(ctx, campaign, [leads[i]["email"] for i in missing])
+            except (ApiError, LookupError) as exc:
+                found = None
+                r.errors.append(f"{campaign}: the leads Instantly left out could not be looked up ({str(exc)[:160]})")
+        for i in missing:
+            email = _lower(leads[i]["email"])
+            if found is None:
+                r.skip(items[i].account, "not added by Instantly",
+                       ["not in the add summary, and the campaign could not be read: the next run tries again"])
+            elif email in found:
+                ids[i] = found[email]
+            else:
+                mark_not_added(ctx, items[i].contact.get("contact_id"))
+                r.skip(items[i].account, "not added by Instantly",
+                       [f"{NOT_ADDED}: the contact is suppressed, so pick_contacts finds the next person"])
         _record_enrolled(ctx, items, ids, campaign, month)
         enrolled[owner] = len(ids)
 

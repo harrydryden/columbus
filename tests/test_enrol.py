@@ -218,10 +218,49 @@ def test_instantly_skipping_a_lead_leaves_it_unenrolled():
     t = FakeTransport()
     ctx, _ = make(live=True, transport=t)
     t.route("POST", "/leads/add", fn=partial)
+    t.route("POST", "/leads/list", {"items": []})  # not in the campaign either: Instantly refused it
     out = enrol.run(ctx)
     assert out["enrolled"] == 2 and out["skipped"]["not added by Instantly"] == 1
     assert ctx.store.get("accounts", account_id="acc-3")["status"] == "verified"
-    assert not ctx.store.get("contacts", contact_id="con-3").get("instantly_lead_id")
+    lee = ctx.store.get("contacts", contact_id="con-3")
+    assert not lee.get("instantly_lead_id")
+    # A3: suppressed, so pick_contacts finds the next person instead of trying Lee every day.
+    assert (lee["suppressed"], lee["suppressed_reason"]) == (True, enrol.NOT_ADDED)
+    [skip] = [x for x in out["skipped_accounts"] if x["account_id"] == "acc-3"]
+    assert skip["detail"] == [f"{enrol.NOT_ADDED}: the contact is suppressed, so pick_contacts finds the next person"]
+
+
+def test_a_lead_left_out_of_the_summary_but_in_the_campaign_is_recorded():
+    """A3: created_leads leaves out a lead the campaign already has; the lookup finds its id."""
+    def partial(req):
+        body = added(req)
+        body["created_leads"] = [c for c in body["created_leads"] if c["email"] != "lee@loopstudio.com"]
+        return body
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("POST", "/leads/add", fn=partial)
+    t.route("POST", "/leads/list", fn=lambda req: {"items": [
+        {"id": "lead-old", "email": "Lee@LoopStudio.com", "campaign": req.json["campaign"]}]})
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and "not added by Instantly" not in out["skipped"]
+    lee = ctx.store.get("contacts", contact_id="con-3")
+    assert (lee["instantly_lead_id"], lee.get("suppressed")) == ("lead-old", None)
+    assert ctx.store.get("accounts", account_id="acc-3")["status"] == "enrolled"
+
+
+def test_a_left_out_lead_whose_campaign_cannot_be_read_waits_for_the_next_run():
+    def none_created(req):
+        return {**added(req), "created_leads": []}
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("POST", "/leads/add", fn=none_created)
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 0 and out["skipped"]["not added by Instantly"] == 3
+    assert any("could not be looked up" in e for e in out["errors"])
+    assert not any(c.get("suppressed") for c in ctx.store.select("contacts"))  # nothing concluded
 
 
 def test_instantly_api_error_is_recorded_and_marks_nothing():

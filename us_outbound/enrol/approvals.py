@@ -28,8 +28,15 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
                                  "✅ Approved by @Harry at 14:02 UK · added to US Outbound – Hannah
                                  Spalding" and the thread confirms. A compare-and-set "sending" status
                                  means it is never added twice; if Instantly fails, the thread says why
-                                 and the item waits for a fresh ✅ on that note (or "send"); if a run
-                                 dies mid-add, the thread asks a person to check the campaign first.
+                                 and the item waits for a fresh ✅ on that note (or "send"). A lead
+                                 Instantly leaves out of its add summary is looked up in the campaign
+                                 (enrol.campaign_lead_ids): there, it is recorded and approved; not
+                                 there, Instantly refused it (its blocklist, or a lead in another
+                                 campaign), so the card closes blocked and the contact is marked
+                                 suppressed, and pick_contacts finds the next person. If a run dies
+                                 mid-add (or the lookup fails), a later run looks it up: there, it is
+                                 approved; not there, a person approves it again; Instantly unreadable,
+                                 the thread asks a person to check the campaign first.
                                  The re-check (recheck) tells holds from blocks. A hold is temporary:
                                  live_sending or optout_tested no, an operator stop, the stop rule, the
                                  reply pause, a blackout date on Instantly's next send day, the owner's
@@ -977,8 +984,7 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
 def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> dict:
     """✅: re-check, then add the one lead to the owner's campaign and record the enrollment; close the item."""
     p = item.payload
-    edited = bool(p.get("edited"))
-    outcome = APPROVED_EDITED if edited else APPROVED
+    outcome = APPROVED_EDITED if p.get("edited") else APPROVED
     result: dict[str, Any] = {"item": item.short_id, "account_id": item.account_id, "by": by, "via": via}
     check = recheck(ctx, item)
     if check.blocks:
@@ -1028,24 +1034,52 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         result.update(added=False, why=[why])
         return result
     lead = dict(p.get("lead") or {})
+    email = _text(lead.get("email")).lower()
     ids = enrol._created_ids(added or {}, [lead])
-    if 0 not in ids:
-        why = "Instantly did not add the lead (in its blocklist, or already in the workspace)"
-        _close(ctx, item, BLOCKED, by, slack, reason=why, via=via, status=f"⛔ Not sent: {why}",
-               note=f"⛔ {why}. Closed: nothing was sent.")
-        result.update(added=False, outcome=BLOCKED, why=[why])
-        return result
-    enrol._record_enrolled(ctx, [_prepared(ctx, item)], ids, campaign, ctx.now_et().date().strftime("%Y-%m"))
+    if 0 not in ids:  # not created: in the campaign after all, or refused (enrol.campaign_lead_ids)
+        try:
+            found = enrol.campaign_lead_ids(ctx, campaign, [email])
+        except (ApiError, LookupError, ConfigError) as exc:  # left "sending": _stuck looks again after STUCK_AFTER
+            why = f"Instantly did not confirm the lead and {campaign} could not be read ({str(exc)[:160]}); looked up again"
+            log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
+            result.update(added=False, why=[why])
+            return result
+        if email not in found:
+            return {**result, **_refused(ctx, item, by=by, via=via, slack=slack)}
+        ids = {0: found[email]}
+    return {**result, **_added(ctx, item, ids[0], by=by, via=via, slack=slack)}
+
+
+def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: Any) -> dict:
+    """The lead is in the owner's campaign: record the enrollment as enrol does, and close the item approved."""
+    p = item.payload
+    edited = bool(p.get("edited"))
+    outcome = APPROVED_EDITED if edited else APPROVED
+    campaign = _text(p.get("campaign"))
+    enrol._record_enrolled(ctx, [_prepared(ctx, item)], {0: lead_id}, campaign, ctx.now_et().date().strftime("%Y-%m"))
     at = _uk_time(ctx)
-    p["added"] = {"lead_id": ids[0], "at": ctx.now.isoformat(), "by": by, "campaign": campaign}
+    p["added"] = {"lead_id": lead_id, "at": ctx.now.isoformat(), "by": by, "campaign": campaign}
     first = _esc((p.get("contact") or {}).get("first_name") or "they")
     days = ", ".join(str(d) for d in FOLLOW_UP_DAYS[:-1]) + f" and {FOLLOW_UP_DAYS[-1]}"
     _close(ctx, item, outcome, by, slack, via=via,
            status=f"✅ Approved{' (edited)' if edited else ''} {_who(by)} at {at} UK · added to {_esc(campaign)}",
            note=f"Added to {_esc(campaign)} at {at} UK{' (edited)' if edited else ''}, approved {_who(by)}. Email 1 goes "
                 f"out in the next send window, and the follow-ups on days {days} unless {first} replies.")
-    result.update(added=True, outcome=outcome, campaign=campaign, at=f"{at} UK")
-    return result
+    return {"added": True, "outcome": outcome, "campaign": campaign, "at": f"{at} UK"}
+
+
+def _refused(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> dict:
+    """Instantly did not create the lead and the campaign does not have it: its blocklist, or a lead in another
+    campaign of the workspace. Closed as blocked, and the contact marked suppressed (enrol.mark_not_added) so
+    pick_contacts finds the next person and a later enrol proposes them."""
+    why = enrol.NOT_ADDED
+    company = _esc(item.company)
+    if _close(ctx, item, BLOCKED, by, slack, reason=why, via=via, status=f"⛔ Not sent: {why}",
+              note=f"⛔ Instantly did not add {_esc(item.email)} (in its blocklist, or already in another campaign). "
+                   f"Closed: nothing was sent. {_esc(item.person)} won't be proposed again; you'll get a card for the "
+                   f"next person at {company}."):
+        enrol.mark_not_added(ctx, item.contact_id)
+    return {"added": False, "outcome": BLOCKED, "why": [why]}
 
 
 def reject(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> None:
@@ -1291,21 +1325,44 @@ def _work(ctx: Context, item: Item, slack: Any, bot: str, run: _Run) -> None:
 
 
 def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
-    """An item left "sending" by a run that stopped: back to waiting for a person, never added again alone."""
-    started = parse_ts((item.payload.get("sending") or {}).get("at"))
+    """An item left "sending" by a run that stopped, or whose lead Instantly did not confirm: the campaign is
+    looked up (enrol.campaign_lead_ids). A lead found there is recorded and the item closed approved, by whoever
+    approved it. One not there goes back to waiting for a person's fresh ✅: it is never added again alone, as
+    the add may never have reached Instantly. If the campaign cannot be read, a person is asked to check."""
+    p = item.payload
+    sending = dict(p.get("sending") or {})
+    started = parse_ts(sending.get("at"))
     if started is not None and ctx.now - started < STUCK_AFTER:
         return  # an add may still be going
-    run.add("unsure", item.short_id)
     if ctx.dry_run:
+        run.add("unsure", item.short_id)
         return
-    p = item.payload
-    note = _thread(slack, item, f"I can't tell whether {_esc(item.email)} was added to {_esc(p.get('campaign'))} (the run "
-                                "adding it stopped). Check the campaign in Instantly; if the lead is not there, ✅ this "
-                                "message or reply \"send\" to add it.")
+    campaign, email = _text(p.get("campaign")), item.email.lower()
+    try:
+        found: dict[str, str] | None = enrol.campaign_lead_ids(ctx, campaign, [email]) if campaign and email else {}
+    except (ApiError, LookupError, ConfigError) as exc:
+        found = None
+        log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
+    if found and found.get(email):
+        res = _added(ctx, item, found[email], by=_text(sending.get("by")) or SYSTEM, via=_text(sending.get("via")),
+                     slack=slack)
+        run.outcomes[res["outcome"]] += 1
+        log("send_approval_found", item_id=item.id)
+        return
+    if found is None:
+        run.add("unsure", item.short_id)
+        text = (f"I can't tell whether {_esc(item.email)} was added to {_esc(campaign)} (the run adding it stopped, "
+                "and Instantly could not be read). Check the campaign in Instantly; if the lead is not there, ✅ this "
+                "message or reply \"send\" to add it.")
+    else:
+        run.add("not_added", {"item": item.short_id, "why": ["the run adding it stopped before Instantly had it"]})
+        text = (f"{_esc(item.email)} is not in {_esc(campaign)}: the run adding it stopped before Instantly had it, so "
+                "nothing was sent. ✅ this message or reply \"send\" to add it.")
+    note = _thread(slack, item, text)
     _seed(slack, item.channel, note, SEED_APPROVE[:1])
     p.update(state=WAITING, approve_ts=note, unsure=p.pop("sending", None))
     _cas(ctx, item, OPEN)
-    log("send_approval_unsure", item_id=item.id)
+    log("send_approval_unsure", item_id=item.id, looked_up=found is not None)
 
 
 def _post_missing(ctx: Context, slack: Any, run: _Run) -> None:

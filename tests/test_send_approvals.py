@@ -418,19 +418,35 @@ def test_a_failed_add_waits_for_a_fresh_approval():
     assert poll(ctx)["outcomes"] == {"approved": 1} and len(instantly_posts(t)) == 2
 
 
-def test_an_add_left_sending_goes_back_to_a_person():
+def test_an_add_left_sending_and_not_in_the_campaign_goes_back_to_a_person():
+    """The campaign is looked up first (A3): the lead is not there, so a person approves it again."""
     ctx, t, sl, _ = proposed()
     row = item_for(ctx, "acc-1")
     payload = {**row["payload"], "state": "sending", "sending": {"at": (NOW - timedelta(minutes=20)).isoformat()}}
     ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"status": "sending", "payload": payload})
     sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    t.route("POST", "/leads/list", {"items": [], "next_starting_after": None})
     out = poll(ctx)
-    assert out["unsure"] == [row["item_id"][:8]] and instantly_posts(t) == []
+    assert out["not_added"][0]["item"] == row["item_id"][:8] and out["unsure"] == []
+    assert [r.url.rsplit("/", 1)[1] for r in instantly_posts(t)] == ["list"]  # looked up, not added
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["payload"]["state"]) == ("open", "waiting")
-    assert any("I can't tell whether jane@acmecreative.com was added" in x for x in sl.texts())
+    assert any(x.startswith("jane@acmecreative.com is not in US Outbound – Harry Dryden: the run adding it stopped")
+               for x in sl.texts())
     poll(ctx)
-    assert instantly_posts(t) == []  # the old ✅ does not add it
+    assert not [r for r in instantly_posts(t) if r.url.endswith("/leads/add")]  # the old ✅ does not add it
+
+
+def test_an_add_left_sending_when_instantly_cannot_be_read_goes_back_to_a_person():
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    payload = {**row["payload"], "state": "sending", "sending": {"at": (NOW - timedelta(minutes=20)).isoformat()}}
+    ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"status": "sending", "payload": payload})
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    out = poll(ctx)
+    assert out["unsure"] == [row["item_id"][:8]]
+    assert (item_for(ctx, "acc-1")["status"], item_for(ctx, "acc-1")["payload"]["state"]) == ("open", "waiting")
+    assert any("I can't tell whether jane@acmecreative.com was added" in x for x in sl.texts())
 
 
 # -- ❌ and the three choices ----------------------------------------------------------------------------------

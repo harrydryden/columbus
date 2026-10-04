@@ -454,3 +454,87 @@ def test_a_dry_cli_approval_reports_the_holds_and_changes_nothing():
     out = approvals.approve(ctx, before["item_id"])
     assert out["dry_run"] is True and out["added"] is False and out["held"] == ["live_sending is no"]
     assert item_for(ctx, "acc-1") == before
+
+
+# -- A3: a lead Instantly leaves out of its add summary is looked up, never lost ------------------------------------
+
+
+def _adds(t):
+    return [r for r in t.requests if r.url.endswith("/leads/add")]
+
+
+def _none_created(t):
+    from tests.test_enrol import added
+
+    t.route("POST", "/leads/add", fn=lambda req: {**added(req), "created_leads": []})
+
+
+def _in_campaign(t, *emails, lead_id="lead-found"):
+    t.route("POST", "/leads/list", fn=lambda req: {"items": [
+        {"id": lead_id, "email": e, "campaign": req.json["campaign"]} for e in emails]})
+
+
+def test_a_tick_whose_lead_is_in_the_campaign_after_all_is_recorded_and_approved():
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _none_created(t)
+    _in_campaign(t, "Jane@AcmeCreative.com")
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["payload"]["outcome"], row["payload"]["added"]["lead_id"]) == (
+        "handled", "approved", "lead-found")
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert (jane["instantly_lead_id"], jane["enrolment_month"]) == ("lead-found", "2026-10")
+
+
+def test_a_tick_whose_lead_instantly_refused_suppresses_the_contact_and_blocks():
+    from tests.test_send_approvals import item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _none_created(t)
+    _in_campaign(t, "someone-else@acmecreative.com")
+    assert poll(ctx)["outcomes"] == {"blocked": 1} and len(_adds(t)) == 1
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["payload"]["outcome"], row["payload"]["reason"]) == ("handled", "blocked", enrol.NOT_ADDED)
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert (jane["suppressed"], jane["suppressed_reason"], jane.get("instantly_lead_id")) == (True, enrol.NOT_ADDED, None)
+    assert ctx.store.get("accounts", account_id="acc-1")["status"] == "verified"  # the account goes on
+    assert any("you'll get a card for the next person at Acme Creative" in x for x in sl.texts())
+    _, skipped = enrol.candidates(ctx, frozenset())
+    assert skipped["contact suppressed"] == 1  # pick_contacts finds the next person at 05:30
+
+
+def test_a_tick_whose_lookup_fails_is_resolved_by_the_stuck_pass():
+    from tests.test_send_approvals import HARRY_ID, item_for, poll
+
+    ctx, t, sl, row = _approved()
+    _none_created(t)
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    out = poll(ctx)
+    assert out["outcomes"] == {} and "could not be read" in out["not_added"][0]["why"][0]
+    assert item_for(ctx, "acc-1")["status"] == "sending"  # nothing concluded yet
+    poll(ctx)  # 5 minutes later: an add may still be going, so it waits
+    assert item_for(ctx, "acc-1")["status"] == "sending" and len(_adds(t)) == 1
+    _in_campaign(t, "jane@acmecreative.com")
+    out = poll(ctx, minutes=10)
+    assert out["outcomes"] == {"approved": 1} and len(_adds(t)) == 1  # found, never added twice
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["handled_by"], row["payload"]["added"]["lead_id"]) == ("handled", HARRY_ID, "lead-found")
+
+
+def test_an_add_left_sending_whose_lead_is_in_the_campaign_resolves_itself():
+    from tests.test_send_approvals import HARRY_ID, item_for, poll, proposed
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    sending = {"at": (NOW - timedelta(minutes=20)).isoformat(), "by": HARRY_ID, "via": "✅"}
+    ctx.store.update("hitl_items", {"item_id": row["item_id"]},
+                     {"status": "sending", "payload": {**row["payload"], "state": "sending", "sending": sending}})
+    _in_campaign(t, "jane@acmecreative.com", lead_id="lead-before")
+    out = poll(ctx)
+    assert out["outcomes"] == {"approved": 1} and out["unsure"] == [] and _adds(t) == []
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", HARRY_ID, "approved")
+    assert ctx.store.get("contacts", contact_id="con-1")["instantly_lead_id"] == "lead-before"
+    assert ctx.store.get("events", event_id=f"send-approval:{row['item_id']}")["approval"] == "approved"
