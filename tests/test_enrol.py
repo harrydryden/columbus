@@ -33,12 +33,12 @@ from us_outbound.logs import hash_email
 
 NOW = datetime(2026, 10, 27, 11, 0, tzinfo=UTC)  # Tuesday 11:00 UK, 07:00 ET (ISO week 2026-W44)
 INSTANTLY = "https://api.instantly.ai/api/v2"
-CAMPAIGNS = {
+CAMPAIGNS = {  # status 1: active (`us-outbound start --live` has run)
     "items": [
-        {"id": "c-hannah", "name": "US Outbound – Hannah Spalding"},
-        {"id": "c-sam", "name": "US Outbound – Sam Jackson"},
-        {"id": "c-harry", "name": "US Outbound – Harry Dryden"},
-        {"id": "c-eu", "name": "EU Outbound – Anna"},
+        {"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1},
+        {"id": "c-sam", "name": "US Outbound – Sam Jackson", "status": 1},
+        {"id": "c-harry", "name": "US Outbound – Harry Dryden", "status": 1},
+        {"id": "c-eu", "name": "EU Outbound – Anna", "status": 1},
     ]
 }
 CAMPAIGN_OWNER = {"c-hannah": "Hannah Spalding", "c-sam": "Sam Jackson", "c-harry": "Harry Dryden"}
@@ -88,11 +88,11 @@ def contacts3() -> list[dict]:
 
 
 def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None,
-         auto_send=True):
+         auto_send=True, optout_tested=True):
     """The enrol world. auto_send = yes by default: leads go straight to Instantly, as before Harry's 2 Oct 2026
-    switch; tests/test_send_approvals.py runs it with auto_send = no."""
+    switch; tests/test_send_approvals.py runs it with auto_send = no. The opt-out test is done (optout_tested)."""
     s = settings or make_settings(live_sending=live)
-    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send))
+    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send, optout_tested=optout_tested))
     t = transport or FakeTransport()
     t.route("GET", "/campaigns", CAMPAIGNS)
     t.route("POST", "/crm/v3/objects/companies/search", {"results": []})
@@ -186,11 +186,27 @@ def test_live_records_enrollment_and_keeps_senders():
     assert omar["copy_version"] == "general-v1"  # Fintech has no row of its own, nor has its group
 
 
-def test_live_flag_without_live_sending_does_nothing():
-    ctx, t = make(live=True, settings=make_settings(live_sending=False))
+def test_live_flag_without_live_sending_runs_dry():
+    """A job is live only with --live and live_sending = yes (bootstrap.resolve_live), so enrol never sees a live
+    context without live_sending, and its gate does not check it again."""
+    from us_outbound.ops import bootstrap
+
+    s = make_settings(live_sending=False)
+    ctx, t = make(live=bootstrap.resolve_live(True, s), settings=s)
     out = enrol.run(ctx)
-    assert out["status"] == "skipped" and out["reason"] == "live_sending is no"
-    assert instantly_posts(t) == []
+    assert out["status"] == "ok" and out["dry_run"] is True and out["enrolled"] == 0
+    assert instantly_posts(t) == [] and ctx.guard.writes("instantly", sent=True) == []
+
+
+def test_a_live_run_waits_for_the_opt_out_test_and_a_dry_run_still_previews():
+    """A6: until optout_tested = yes nothing is enrolled; a dry run (the scheduler's state until then) still runs."""
+    ctx, t = make(live=True, optout_tested=False)
+    out = enrol.run(ctx)
+    assert out["status"] == "skipped" and out["reason"].startswith("optout_tested is no")
+    assert instantly_posts(t) == [] and enrol.gate(ctx, ctx.now_et().date()) == enrol.OPTOUT_UNTESTED
+    ctx, t = make(optout_tested=False)
+    out = enrol.run(ctx)
+    assert out["status"] == "ok" and out["prepared"] == 3 and enrol.gate(ctx, ctx.now_et().date()) is None
 
 
 def test_instantly_skipping_a_lead_leaves_it_unenrolled():
@@ -327,9 +343,6 @@ def test_positive_reply_waiting_over_24_hours_pauses_enrollment():
 
 def test_only_warm_replies_waiting_pause_enrollment():
     """poll_replies writes a reply item for every class a person answers; only positive and referral pause (SPEC 11)."""
-    from us_outbound.replies.poll import KIND
-
-    assert enrol.REPLY_KIND == KIND
     ctx, _ = make()
     ctx.store.insert("hitl_items", [
         {"item_id": f"r-{c}", "kind": "reply", "status": "open", "payload": {"reply_class": c},

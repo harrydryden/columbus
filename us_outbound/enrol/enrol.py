@@ -74,7 +74,6 @@ EXCLUDED = "Excluded"
 SENDABLE_EMAIL_STATUSES = frozenset({"verified", "valid", "catch_all_valid"})  # Apollo verified; Clay (SPEC 8)
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.5
 WAITING = ("open", "escalated")  # hitl_items still waiting for Harry
-REPLY_KIND = "reply"  # hitl_items.kind of a reply waiting for a person (replies/poll.py KIND)
 HUBSPOT_SOURCE = "hubspot"
 # signal_events facts that scoring/tiers.py reads as hard exclusions, so a rescore keeps them.
 HS_CUSTOMER = "hubspot_customer"
@@ -83,6 +82,8 @@ HS_OTHER_OWNER = "hubspot_other_owner"
 HS_OPTED_OUT = "hubspot_opted_out_or_bounced"
 LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
+OPTOUT_UNTESTED = ("optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so nothing "
+                   "is sent; once it is, set optout_tested = yes on the General tab")
 
 
 # -- small helpers ----------------------------------------------------------------------
@@ -172,16 +173,26 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     return None, frozenset(pulled)
 
 
+def optout_untested(ctx: Context) -> str | None:
+    """Live only: why nothing may be sent while the seed-inbox test of Instantly's {{unsubscribe}} link is not
+    done (optout_tested, golive's "Opt-out tested"). A dry run still previews."""
+    if ctx.live and not ctx.settings.general.optout_tested:
+        return OPTOUT_UNTESTED
+    return None
+
+
 def gate(ctx: Context, today: date) -> str | None:
-    """Why the job does nothing today, or None."""
+    """Why the job does nothing today, or None.
+
+    live_sending is not checked here: a job is live only with --live and live_sending = yes
+    (bootstrap.resolve_live), so a live run always has it.
+    """
     s = ctx.settings
     if budget.is_blackout(today, s):
         return f"{today} is a blackout date"
     if today.weekday() not in s.general.send_window.days:
         return f"{today} is not a send day"
-    if ctx.live and not s.general.live_sending:
-        return "live_sending is no"
-    return operator_pause(ctx) or holds.enrolment_stop(ctx.store) or reply_pause(ctx)
+    return optout_untested(ctx) or operator_pause(ctx) or holds.enrolment_stop(ctx.store) or reply_pause(ctx)
 
 
 # -- candidates --------------------------------------------------------------------------------
