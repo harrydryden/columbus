@@ -15,10 +15,10 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
 | Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
 | Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
-| Send | `enrol` (scheduled, dry until `live_sending` = yes), the per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
+| Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
 | Hand-off | `poll_approvals`: Slack ✅/edit/❌ from Harry or the mailbox owner, or `us-outbound replies list|approve|skip` without Slack. HubSpot company, contact, note, task and deal on positive or referral replies. 24-hour escalation. `hubspot_readback` for booked meetings | — |
-| Safety | `kill_rules` (bounces, blocks, complaints), weekly `hand_check_post` and `handcheck show|approve`, `daily_post`, `golive`, heartbeats, the guard on every outbound call, dry-run by default | Retention jobs (deleting leads 31 days after their last step; Apollo deletion notices) |
+| Safety | Every email approved in Slack before it is sent (while `auto_send` = no), `kill_rules` (bounces, blocks, complaints), `stop --live` as the brake, `daily_post` with its "Needs you" line, `golive`, heartbeats, the guard on every outbound call, dry-run by default. The weekly `hand_check_post` covers only accounts with doubtful Apollo facts while `auto_send` = no; it is enrol's gate only with `auto_send` = yes | Retention jobs (deleting leads 31 days after their last step; Apollo deletion notices) |
 | Learn | The events table and the readout views | `monday_readout`, test reads with pre-registered looks, UTMs on links |
 
 About 70 API details are marked `PHASE0-CONFIRM` in the code: endpoint shapes and status codes we
@@ -63,44 +63,49 @@ verification and contact choice write only the database; enrol, replies and post
    #us-outbound-dev, invite the bot, and add the bot token to Railway as
    `US_OUTBOUND_SLACK_BOT_TOKEN`. Without it, live runs refuse to start, and reply alerts and
    approvals have only the `replies` and `approvals` commands.
-2. **Approvers.** Set `approver_slack_ids` = `U098X453UAG` on the General tab. To let Hannah and Sam
-   approve replies to their own mailboxes, add their Slack ids in the Mailboxes `slack_id` column.
-3. **Mailboxes.** `mailbox check --live` promotes warm mailboxes to Active (all four still say
-   Warming on the sheet). On 2 Oct Instantly showed hannah@ and sam@meetspill.org warm, and neither
-   of Harry's (harry@meetspill.org, harry@tryspill.org): they are promoted once Instantly shows them
-   warm. Then `campaigns ensure --live` creates the three "US Outbound – owner" campaigns (Hannah
-   Spalding, Harry Dryden, Sam Jackson), paused, with the ramped daily limits.
+2. **Approvers.** Set `approver_slack_ids` = `U098X453UAG` on the General tab, then `us-outbound sync`.
+   To let Hannah and Sam approve replies to their own mailboxes, add their Slack ids in the Mailboxes
+   `slack_id` column.
+3. **Mailboxes.** `mailbox check --live` promotes warm mailboxes to Active and creates each owner's
+   "US Outbound – owner" campaign, paused, with the ramped daily limits, once the owner has an Active
+   mailbox; the separate `campaigns ensure` step is not needed. On 2 Oct Instantly showed hannah@ and
+   sam@meetspill.org warm, and their campaigns were created; Harry's two (harry@meetspill.org,
+   harry@tryspill.org) are promoted, and his campaign created, once Instantly shows them warm.
 4. **Opt-out test.** Send one test email from each campaign to a seed inbox. Confirm the
    `{{unsubscribe}}` link works in it and that a click shows the lead as unsubscribed in Instantly.
-   Then set `optout_tested` = yes.
+   Then set `optout_tested` = yes, then `us-outbound sync`. No lead is added until it is yes.
 5. **Copy approval.** On the Copy tab, set status = approved and approved_by = Harry on the rows to
    send. For the pilot that is the launch focus (Technology & Startups, Marketing & Creative
    Agencies, Legal Teams): about 25 industries × 3 roles. Every row has a QA pass stamped on it.
-   Editing a row clears its stamp until `copy qa` runs again.
+   Editing a row clears its stamp until `copy qa` runs again. Then `us-outbound sync` (or wait for
+   the 11:30 UK sync, which is in time for the 12:00 enrol).
    **Openers (2 Oct, done):** the Signals tab has every signal's lines by role, and the General tab
    the generic lines (`opener_generic_*`), loaded and synced. Read them there; your edits win.
 6. **Send approvals (2 Oct).** With `auto_send` = no (the default), every email waits for your ✅ on
    its card in #us-outbound (`enrol/approvals.py`), so the weekly hand-check is needed only for
    accounts held with doubtful Apollo facts. With `auto_send` = yes, the hand-check is as before:
-   Monday morning, `handcheck show --live`, then `handcheck approve --live`.
-7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It activates the
-   paused campaigns once `campaigns ensure` reports no drift. Enrol runs at 12:00 UK (07:00 ET) on
-   weekdays. `us-outbound stop --live` pauses everything again.
-8. **Done 2 Oct.** The page signals' new source. `us-outbound settings load --tab Signals --tab General --live`, then
-   `us-outbound settings sync`. The five page signals then read `careers_pages` beside `clay_careers`,
-   and the General tab gains `clay_email_fallback` = no. Until then settings_sync's summary says so
-   (`signals_notice`), and so do `pages show` and the daily post. A Signals load keeps the sheet's
-   values (weights and lines Harry edited stay) except the `source` column, which names code and so
-   always takes the build's.
-9. **The demo page's SEO title.** https://www.spill.chat/us/book-demo looks right on the page itself.
+   Monday morning, `handcheck show`, then `handcheck approve --live` (it records the sample if
+   nothing has yet).
+7. **Sign-off.** Set `live_sending` = yes, then run `us-outbound start --live`. It syncs the sheet
+   first (so the edit counts without `us-outbound sync`), then activates the paused campaigns once
+   they show no drift. `us-outbound golive` should then say GO. Enrol runs at 12:00 UK (07:00 ET) on
+   weekdays. `us-outbound stop --live` pauses everything again: `live_sending` = no alone does not
+   stop Instantly. The day-to-day is in [daily.md](daily.md).
+8. **The demo page's SEO title.** https://www.spill.chat/us/book-demo looks right on the page itself.
    Its SEO title, which shows in the browser tab, in Google and in link previews, is "Spill | The
    UK's Highest Rated EAP | Book a demo". Its description says "employee assistance programme". The
    US locale inherits both from the UK page (Webflow page 65c650592086330a300a3cf6). Every email 2–4
    links to this page. The signature's "Book a call here" goes to Harry's HubSpot meetings page instead.
-10. **Done 2 Oct.** Funding from Apollo's organization enrich. `us-outbound settings load --tab General --live`, then
-    `us-outbound settings sync`, adds `apollo_enrich_groups` = Technology & Startups (comma-separated industry
-    groups; blank enriches none). The job runs on that default until then. It enriches up to about 15 accounts a
-    weekday (15% of `apollo_monthly_credits`), each again after 180 days, and the daily post counts what it found.
+
+### Done 2 Oct
+- **The page signals' new source.** `us-outbound settings load --tab Signals --tab General --live`, then
+  `us-outbound sync`. The five page signals read `careers_pages` beside `clay_careers`, and the General
+  tab has `clay_email_fallback` = no. A Signals load keeps the sheet's values (weights and lines Harry
+  edited stay) except the `source` column, which names code and so always takes the build's.
+- **Funding from Apollo's organization enrich.** `us-outbound settings load --tab General --live`, then
+  `us-outbound sync`, added `apollo_enrich_groups` = Technology & Startups (comma-separated industry
+  groups; blank enriches none). It enriches up to about 15 accounts a weekday (15% of
+  `apollo_monthly_credits`), each again after 180 days, and the daily post counts what it found.
 
 ### Send approvals and the daily report (Harry, 2 Oct)
 - **Every email is approved in Slack** while General `auto_send` = no. The 12:00 enrol run posts a
@@ -110,8 +115,10 @@ verification and contact choice write only the database; enrol, replies and post
   - the sender, and email 1's subject and body;
   - "Email 1 of 4", with the follow-ups in the thread, what the company has had from us before,
     and the sender's approvals today.
-- **✅** adds the lead within 5 minutes, after re-checking live_sending, pauses, opt-outs, the
-  account and the sender.
+- **✅** adds the lead within 5 minutes, after re-checking live_sending, pauses, opt-outs, HubSpot,
+  the account and the sender. A reason that passes (sending stopped, a positive reply waiting too
+  long, a campaign not active) holds the card open with a note in its thread; a lasting one (an
+  opt-out, the account excluded) closes it as blocked.
 - **❌** offers three choices:
   - ✏️ edit: a thread reply, re-rendered and checked by the copy rules, then posted for a fresh ✅;
   - 👤 another contact: the contact is suppressed and the next pick proposes the next-ranked person;
@@ -129,8 +136,10 @@ verification and contact choice write only the database; enrol, replies and post
   open cards that nears Slack's rate limits, though the client retries.
 
 ### The pilot (week of 5 Oct)
-- **Volume:** the ramp holds each mailbox to 10 sends a day in its first sending week. Four
-  mailboxes start at about 40 sends a day, nearly all step 1s, so 30 to 40 new accounts a day.
+- **Volume:** the ramp holds each mailbox to 10 sends a day in its first sending week, and each
+  sender takes new contacts at a quarter of its daily cap so the follow-ups always fit: about 3 new
+  contacts a day per mailbox. So about 6 new contacts (send cards) a day with Hannah's and Sam's
+  mailboxes, about 11 once Harry's two are warm, rising with the ramp ([daily.md](daily.md)).
 - **Mix:** Tech 50%, Agencies 30%, Legal 20% (the Focus tab).
 - **Watch daily:** bounces (kill rules pause a mailbox over 3%), complaints, the seed-inbox
   placement, replies reaching Slack within 15 minutes and being classified correctly, and
@@ -173,15 +182,15 @@ verification and contact choice write only the database; enrol, replies and post
      `opener_self` (the new People leader, when the contact is that person). A cell may hold
      alternatives, one per line. The tokens are `{company}`, `{city}`, `{open_roles}` (in words
      through nine), `{posting_title}` (the most senior current posting, cleaned of locations, req
-     ids and "(Remote)"), `{people_title}`, `{funding_stage}`, `{growth}` (in words, never a
-     percentage), `{evidence}`, `{provider}` and `{page}` (where the evidence was read). An unknown
-     token is a sheet error, with a "did you mean". `us-outbound settings load --tab Signals` adds the
-     columns, and the sheet's values win in every column it already has.
+     ids and "(Remote)"), `{people_title}`, `{growth}` (in words, never a percentage), `{evidence}`,
+     `{provider}` and `{page}` (where the evidence was read). No line may mention funding or money
+     (see "Signals are context" below). An unknown token is a sheet error, with a "did you mean".
+     `us-outbound settings load --tab Signals` adds the columns, and the sheet's values win in every
+     column it already has.
    - 39 lines: Hiring and growth, Funding in the last 6 months, People role open, First People
      hire and New People leader, which can fire without Clay, plus the four page-reader signals,
-     each for three roles, and a self line. For example: "I saw Brightline has six roles open,
-     including a Senior Product Designer.", "Congratulations on the Series A." and "Congratulations
-     on the new role at Brightline." The contact is the new leader only when Apollo's person ids
+     each for three roles, and a self line. What the lines say now is in "Signals are context" below:
+     no line names what was observed. The contact is the new leader only when Apollo's person ids
      match (`pick_contacts` now records them); a title is never taken as proof.
    - Copy QA (2 Oct): 18 of the 38 templates were rewritten. Only founders are congratulated on a
      round, and there is no "first" People hire and no "already offers" an EAP. The evidence is the
@@ -214,8 +223,7 @@ verification and contact choice write only the database; enrol, replies and post
      [--leader]` shows a real line, and `copy preview --account DOMAIN` shows a stored account's
      opener. The weekly hand-check shows the opener enrol would send.
    - Still needs live data: Apollo's `short_description` on search rows (PHASE0-CONFIRM). The
-     `latest_funding_stage` spellings ("Series A", "Seed") and the shape of `posting_titles`
-     should be read on the first real accounts. Is `headcount_growth_12m` a fraction? The page-reader
+     shape of `posting_titles` should be read on the first real accounts. Is `headcount_growth_12m` a fraction? The page-reader
      signals' facts arrive with item 3. Then the holdout's first read, after enough replies.
      Per-account sentences written freely by Claude are still not planned: Harry couldn't approve
      them, they can't be tested line by line, and they can invent.

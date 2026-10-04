@@ -1,5 +1,7 @@
 # Phase 0 runbook: Foundations (29 Sep – 9 Oct 2026)
 
+> **Setup history (done); for day-to-day see [docs/daily.md](daily.md).**
+
 The SPEC 14 phase-0 checklist, in the order to do it, with who does each step and the
 command to run. "Harry" means a step in a vendor's UI or a decision. "jobs" means a
 `us-outbound` command, run inside the Railway worker as `railway ssh -- us-outbound …`
@@ -43,7 +45,7 @@ prospect; see README "Dry-run and live".
 | :- | :- | :- | :- |
 | Tables and views (schema `us_outbound`) | jobs | `us-outbound db apply` (prints the DDL), then `us-outbound db apply --live` | `us-outbound status` runs without a database error |
 | Keys | Harry | Each one in its sealed variable on the us-outbound service (railway-setup.md, step c). Never in the repo, a chat, a shell history file or the database. | `us-outbound status` works; a job with a missing key says `set <VARIABLE>` |
-| The scheduler | Railway | The worker starts `us-outbound scheduler` on each deploy (the Dockerfile's default command) | Its log shows `scheduler_start` with the four phase-0 jobs |
+| The scheduler | Railway | The worker starts `us-outbound scheduler` on each deploy (the Dockerfile's default command) | Its log shows `scheduler_start` with every enabled job (`us-outbound schedule` lists them) |
 
 Key variables (SPEC 13): `US_OUTBOUND_APOLLO_API_KEY` (master key), `US_OUTBOUND_CLAY_API_KEY`,
 `US_OUTBOUND_INSTANTLY_API_KEY`, `US_OUTBOUND_HUBSPOT_TOKEN`, `US_OUTBOUND_SLACK_BOT_TOKEN`,
@@ -62,12 +64,11 @@ console), and `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON` (the Sheets service acco
 
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
-| Create "US Outbound – Settings" with the SPEC 5 defaults | jobs | `us-outbound settings bootstrap --live` (prints the new sheet id) | The sheet has ten tabs |
+| Create "US Outbound – Settings" with the SPEC 5 defaults | jobs | `us-outbound settings bootstrap --live` (prints the new sheet id) | The sheet has twelve tabs |
 | Point the jobs at it | Harry | Put the id in the sealed variable `US_OUTBOUND_SETTINGS_SHEET_ID` and deploy; share the sheet with `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com` as Editor (open question 8: who owns the sheet) | |
 | First sync | jobs | `us-outbound settings sync` (dry-run still writes the database; errors go to `#us-outbound-dev`) | `us-outbound status` shows "Settings synced" |
 | HubSpot ids on the General tab | Harry | `us-outbound hubspot ids`, then paste `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id` into the General tab (never written automatically) | Next sync carries them |
-| Load the General keys, the 108 industries and the Copy tab by industry (Harry, 30 Sep and 1 Oct 2026) | jobs | `railway ssh -- us-outbound settings load` to see the changes, then the same with `--live` (add `--set key=value` for General values Harry has decided), then `us-outbound settings sync`. It renames `daily_enrol_cap` to `weekly_enrol_cap` (150) and adds missing General keys with their defaults. Harry's `active`, `priority` and `proof_point` are kept; the old one-row-per-step Copy tab is replaced (docs/pipeline.md, "Where the copy lives") | The Industries tab has 108 rows with page columns; Copy has 106 draft rows |
-| New General keys | Harry | Add rows `claude_task_model` = `claude-sonnet-5-5`, `email_format` = `html`, `site_url` = `https://www.spill.chat/us` and `price_from` = `250` (missing keys use these defaults; `claude_model` stays `claude-opus-5-5`) | `us-outbound status` shows them |
+| Load the General keys, the 108 industries and the Copy tab by industry (Harry, 30 Sep and 1 Oct 2026) | jobs | `railway ssh -- us-outbound settings load` to see the changes, then the same with `--live` (add `--set key=value` for General values Harry has decided), then `us-outbound settings sync`. It renames `daily_enrol_cap` to `weekly_enrol_cap` (150) and adds missing General keys with their defaults. Harry's `active`, `priority` and `proof_point` are kept; the old one-row-per-step Copy tab is replaced (docs/pipeline.md, "Where the copy lives") | The Industries tab has 108 rows with page columns; Copy has 318 draft rows |
 
 ## 5. HubSpot
 
@@ -124,7 +125,8 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_post show a next run; later-phase jobs show "disabled" |
 | Heartbeats | jobs | After a day: `us-outbound status` | Every phase-0 job shows ok; `heartbeat_check` alerts `#us-outbound-dev` on a missed one |
 
-Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mailbox_health
+Scheduled in phase 0 (UK time): settings_sync 02:00 (and 11:30 on weekdays since 4 Oct, so morning
+sheet edits are in force for the 12:00 enrol), suppression_load 01:30, mailbox_health
 07:00, heartbeat_check hourly at :05; and, brought forward for the first sends (Harry, 1 Oct
 2026), kill_rules hourly at :00, daily_post 09:00 and hand_check_post Mondays 08:00. Later-phase
 jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; turning one on is a

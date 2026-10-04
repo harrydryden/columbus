@@ -161,8 +161,8 @@ railway ssh -- us-outbound dry-run suppression_load     # needs the HubSpot toke
 
 Then open the service's **Deployments → View logs**. You should see:
 
-- `scheduler_start` listing `settings_sync`, `mailbox_health`, `heartbeat_check` and
-  `suppression_load`;
+- `scheduler_start` listing every enabled job: the jobs `us-outbound schedule` shows with a next run
+  (settings_sync twice, at 02:00 and at 11:30 on weekdays), not only the first four of phase 0;
 - `scheduler_job_start` and `scheduler_job_end` with `"exit_code": 0` for
   `heartbeat_check` at five past each hour.
 
@@ -204,7 +204,8 @@ phase-0 steps are in [phase0-runbook.md](phase0-runbook.md).
     hour runs only the first time.
   - Jobs with `*` in the minute or hour, such as the polls and the hourly checks, keep
     their real-time rhythm.
-- A `--live` job is still dry until `live_sending = yes` in the settings sheet (SPEC 0.3).
+- A `--live` job is still dry until `live_sending = yes` in the synced settings (SPEC 0.3): a sheet
+  edit counts from the next settings_sync (02:00, and 11:30 on weekdays) or `us-outbound sync`.
 - Nothing inside the worker can report that the worker itself is down. Railway restarts it
   on failure, up to 10 times. To be alerted, add a project webhook that sends deployment
   status changes to a Slack incoming-webhook URL for `#us-outbound-dev` (**Project Settings

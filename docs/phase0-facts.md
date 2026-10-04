@@ -1,6 +1,6 @@
 # Phase 0: plan facts
 
-Read-only checks run on 29 Sep 2026 through the connected HubSpot, Clay, Apollo, Slack, Google Drive, Webflow and BigQuery tools. Nothing was created or changed, and no Apollo or Clay credits were spent.
+Read-only checks run on 29 Sep 2026 through the connected HubSpot, Clay, Apollo, Slack, Google Drive, Webflow and BigQuery tools. Nothing was created or changed, and no Apollo or Clay credits were spent. Rows marked "Confirmed absent" or "Open" are as of 29 Sep unless they say otherwise; the infrastructure rows were brought up to date on 4 Oct.
 
 Status key:
 - **Confirmed**: seen directly.
@@ -63,12 +63,12 @@ An earlier decision the same day put the system in its own Google Cloud project,
 
 | Fact | Status | Value |
 | :- | :- | :- |
-| Railway project | Not created yet | "Columbus", in Spill's workspace (docs/railway-setup.md) |
+| Railway project | Done (by 2 Oct) | "Columbus", in Spill's workspace (docs/railway-setup.md). Its worker ran the commands in the Instantly section below |
 | Region (data residency) | Decided | **EU West (Amsterdam)**, `europe-west4-drams3a`, for the worker and Postgres |
-| Database | Not created yet | Railway PostgreSQL; tables created by `us-outbound db apply --live` |
-| Secrets | Not added yet | Sealed variables on the us-outbound service: the six keys, the Sheets key, the sheet id and `DATABASE_URL` (`${{Postgres.DATABASE_URL}}`) |
+| Database | Done (by 2 Oct) | Railway PostgreSQL; tables created by `us-outbound db apply --live` |
+| Secrets | Added (by 2 Oct) | Sealed variables on the us-outbound service: the six keys, the Sheets key, the sheet id and `DATABASE_URL` (`${{Postgres.DATABASE_URL}}`). The Instantly key is in use (below) |
 | Google project | Created | `columbus-510209` (Columbus). Only the Google Sheets API is enabled. No billing is needed |
-| Sheets service account | Not created yet | `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com`, with no project roles. The settings sheet is shared with it as Editor. Its JSON key goes in `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON`. The spill.chat organization may block key creation (railway-setup.md, step d) |
+| Sheets service account | Done (by 2 Oct) | `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com`, with no project roles. The settings sheet is shared with it as Editor. Its JSON key goes in `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON`. The spill.chat organization may block key creation (railway-setup.md, step d) |
 | Railway config as code | Checked 30 Sep | `railway.json` and `railway.toml` are deprecated. New services cannot use them, and they stop being read on 1 Dec 2026. The Dockerfile holds the start command; the dashboard settings are listed in railway-setup.md |
 | Sealed variables | Checked 30 Sep | They are not passed to `railway run` or `railway shell`. Commands run inside the worker with `railway ssh -- us-outbound …` |
 
@@ -97,4 +97,4 @@ Jackson campaigns, paused, with no leads.
 ## Not reachable from here
 
 - **Instantly:** no connector in this session; the jobs reach it with the sealed key, and `campaigns show` prints what it holds. Still to check: the plan, email and uploaded-contact caps and current use, whether the emails, reply and forward endpoints exist, the custom-variable length limit, and same-address follow-ups.
-- **Secrets:** they will live in sealed Railway variables. None exist yet.
+- **Secrets:** in sealed Railway variables on the worker; never in this repository or a chat.

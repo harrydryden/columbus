@@ -13,45 +13,58 @@ database, but writes nothing to HubSpot, Instantly or the settings sheet, and po
 Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
 (`us_outbound/clients/guard.py`), which also enforces the guardrails of SPEC 1 in any mode.
 
-- **Jobs** (`run <job>`, `rescore`, `settings sync`, `suppression load`) and `start` are live
-  only with `--live` **and** `live_sending = yes` in the settings sheet.
+- **Jobs** (`run <job>`, `rescore`, `sync`, `suppression load`) and `start` are live
+  only with `--live` **and** `live_sending = yes` in the synced settings. Jobs read the copy of the
+  sheet that `settings_sync` brought in: at 02:00 UK, at 11:30 UK on weekdays, or now with
+  `us-outbound sync` (`start --live` syncs first by itself).
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
-  `erase`, `test start`, `settings bootstrap`, `hubspot setup`, `campaigns ensure`,
-  `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals reject`) are live with
-  `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is still `no`.
-  `replies approve` sends to a prospect and `approvals approve` adds one to Instantly, so they need
+  `erase`, `test start`, `settings bootstrap|load`, `hubspot setup`, `campaigns ensure`,
+  `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals contact|company`) are live
+  with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is still
+  `no`. `replies send` sends to a prospect and `approvals send` adds one to Instantly, so they need
   both, like a job.
+- **The brake** is `us-outbound stop --live`: `live_sending` = no stops nothing already active in
+  Instantly. Harry's day-to-day is in [docs/daily.md](docs/daily.md).
 
 ## Commands
 
+`us-outbound --help` lists what Harry uses; the build and duplicate commands still work but are left out
+of it (marked * below).
+
 ```
-us-outbound status                                 settings, heartbeats, mailboxes, campaigns
-us-outbound stop | start [--live]                  pause / resume every US Outbound campaign and enrollment
+us-outbound status                                 the switches, when settings synced, what waits, jobs that need a look
+us-outbound golive                                 the read-only go/no-go check before sending (exits 1 on a FAIL)
+us-outbound sync [--live]                          bring the sheet's edits into force now (= settings sync)
+us-outbound start | stop [--live]                  resume (syncing first) / pause every US Outbound campaign and enrollment
+us-outbound approvals list                         emails waiting for a ✅ (auto_send = no): company, contact, sender, subject
+us-outbound approvals send <id> [--live]           ✅: add its lead to Instantly (= approvals approve)
+us-outbound approvals contact|company <id> [--live]   👤 not this person / 🚫 not this company (= approvals reject --contact|--company)
+us-outbound replies list                           reply items waiting for a human: class, account, role, excerpt, draft
+us-outbound replies send <id> [--text "..."] [--live]   send the draft (or that text) (= replies approve [--edit])
+us-outbound replies skip <id> [--live]             handled, nothing sent
+us-outbound killrules show|clear <item> [--live]   the kill-rule holds in force; lift one once checked
 us-outbound mailbox add <address> --owner "Name" [--domain D] [--daily-cap N] [--live]
 us-outbound mailbox pause|retire <address> [--live]
-us-outbound mailbox check [--live]                 mailbox_health by hand
-us-outbound unenrol --month YYYY-MM [--live]       remove that month's leads from their campaigns
-us-outbound rescore [--live]
-us-outbound dry-run <job>
-us-outbound run <job> [--live]                     one job (what the scheduler starts)
-us-outbound erase --email <address> [--live]       an erasure request (SPEC 6)
-us-outbound test start|read <test_id> [--live]     the copy test (SPEC 12)
-us-outbound settings sync|bootstrap [--live]
-us-outbound db apply [--live]                      the DDL in sql/ against DATABASE_URL (prints it unless --live)
-us-outbound hubspot setup|ids [--live]             the six properties; ids for the General tab
+us-outbound mailbox check [--fix] [--live]         mailbox_health by hand; --fix also runs campaigns ensure --fix
+us-outbound campaigns show                         each owner's campaign as Instantly holds it (read-only)
 us-outbound campaigns ensure [--fix] [--live]      the sender campaigns (created paused) and drift
-us-outbound suppression load [--live]              HubSpot opt-outs and bounces, hashed
-us-outbound replies list                           reply items waiting for a human: class, account, role, excerpt, draft
-us-outbound replies approve <id> [--edit "text"] [--live]   send the draft (or that text), as a Slack approval would
-us-outbound replies skip <id> [--live]             handled, nothing sent
-us-outbound approvals list                         emails waiting for approval (auto_send = no): company, contact, sender, subject
-us-outbound approvals approve <id> [--live]        add its lead to Instantly, as a ✅ in Slack would
-us-outbound approvals reject <id> --contact|--company [--live]   not this person (another is picked) / not this company
-us-outbound golive                                 the read-only go/no-go check before sending (exits 1 on a FAIL)
-us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack (SPEC 11)
-us-outbound killrules show|clear <item> [--live]   the kill-rule holds in force; lift one once checked (SPEC 12)
-us-outbound scheduler                              the always-on worker: starts every job on its schedule
+us-outbound copy check|preview|qa|draft [...]      the copy desk: check every row, preview one, QA it, draft one
+us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (--tab, --set, --take note) into the sheet; create it
+us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
+us-outbound erase --email <address> [--live]       an erasure request
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)
+us-outbound run <job> [--live]                     one job (what the scheduler starts)
+us-outbound unenrol --month YYYY-MM [--live]     * remove that month's leads from their campaigns
+us-outbound rescore [--live]                     * the score job
+us-outbound dry-run <job>                        * one job, dry-run
+us-outbound test start|read <test_id> [--live]   * the copy test
+us-outbound db apply [--live]                    * the DDL in sql/ against DATABASE_URL (prints it unless --live)
+us-outbound hubspot setup|ids [--live]           * the six properties; ids for the General tab
+us-outbound suppression load [--live]            * HubSpot opt-outs and bounces, hashed
+us-outbound lookalikes show [--top N] [--all]    * the lookalike cells from Spill's HubSpot customers
+us-outbound pages show                           * the careers and benefits page reader's coverage
+us-outbound data show                            * what the sources have stored, in aggregate
+us-outbound scheduler                            * the always-on worker: starts every job on its schedule
 ```
 
 Jobs are listed in `us_outbound/ops/cli.py` (`JOBS`) and scheduled in `us_outbound/ops/schedule.py`
@@ -90,10 +103,10 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 
 | Phase | State |
 | :- | :- |
-| 0 Foundations | Being built: clients, guard, settings sync, DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the Railway scheduler |
-| 1 Universe | Scoring built early; the Apollo universe and job postings built, with `verify_accounts` until Clay verification is built; the other sources not built |
-| 2 First sends | Enrollment, the sending ramp, the weekly hand-check, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback` built |
-| 3 Learning loop | Kill rules and the daily post built early (Harry, 1 Oct 2026); readout not built |
+| 0 Foundations | Built and running on Railway: clients, guard, settings sync (02:00, and 11:30 on weekdays), DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the scheduler |
+| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), lookalikes, and `verify_accounts` while Clay verification is not built. Not built: site visits, public signals, `verify_in_clay` |
+| 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment with send approvals in Slack (`auto_send` = no), the sending ramp, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback` |
+| 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); readout not built |
 
 ## Deviations from the SPEC 13 layout
 
@@ -145,7 +158,9 @@ Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slac
 `suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (Mondays: Spill's
 HubSpot customers as lookalike cells, a signal and an early exclusion; `sources/lookalikes.py`,
 Harry, 1 Oct 2026; `us-outbound lookalikes show` lists the cells) and `hand_check_post` (Mondays
-08:00: SPEC 11's weekly hand-check, which enrol waits for). `stop` and `start` record the
+08:00: SPEC 11's weekly hand-check. Enrol waits for it only while `auto_send` = yes; with `auto_send`
+= no every email is approved in Slack, and the hand-check holds only accounts with doubtful Apollo
+facts). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
 fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
 enrollment until it is cleared (`learn/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
