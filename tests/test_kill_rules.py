@@ -91,6 +91,7 @@ def test_a_mailbox_over_3_percent_is_paused_through_the_registry_path():
     # The hold is in force at once, whatever the synced settings still say.
     [item] = items(ctx, "open")
     assert item["payload"]["mailboxes"] == [HANNAH] and item["payload"]["dry_run"] is False
+    assert item["payload"]["campaigns_paused"] == [C_HANNAH]  # mailbox_health starts it again once she is back
     assert holds.held_mailboxes(ctx.store) == {HANNAH: fired["reason"]}
     assert [m.status for m in holds.with_holds(ctx.store, SETTINGS).mailboxes if m.address == HANNAH] == ["Paused"]
     assert "Hannah Spalding" not in capacity.sending_capacity(ctx.store, SETTINGS, ctx.now_et().date())

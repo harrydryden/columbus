@@ -135,6 +135,7 @@ class Firing:
     numbers: dict[str, Any] = field(default_factory=dict)
     item_id: str = ""
     outcome: str = ""  # what the pause did
+    campaigns: list[str] = field(default_factory=list)  # campaigns the pause left with no Active mailbox
 
 
 @dataclass
@@ -454,28 +455,34 @@ def suppress_bounced(ctx: Context, ev: _Events) -> int:
 # -- acting on it --------------------------------------------------------------------------------
 
 
-def _pause(ctx: Context, settings: Settings, address: str) -> str:
-    """Pause through the registry path; if the sheet cannot be written, still take it off its sending list."""
+def _pause(ctx: Context, settings: Settings, address: str) -> tuple[str, str]:
+    """Pause through the registry path; if the sheet cannot be written, still take it off its sending list.
+
+    Returns (what happened, the campaign the pause left with no Active mailbox, or ""): mailbox_health
+    starts that campaign again once the mailbox is Active again (registry/mailboxes.start_waiting).
+    """
     from us_outbound.registry import mailboxes as reg
 
     try:
         out = reg.mailbox_pause(ctx, address, settings=settings)
-        return f"Paused on the Mailboxes tab; {out['campaign']}: {out['campaign_action']}"
+        emptied = out["campaign"] if out["campaign_action"] == reg.PAUSED_EMPTY else ""
+        return f"Paused on the Mailboxes tab; {out['campaign']}: {out['campaign_action']}", emptied
     except (reg.MailboxError, ApiError, LookupError, ValueError, ConfigError) as exc:
         m = next((x for x in settings.mailboxes if x.address.lower() == address), None)
         if m is None:
-            return f"not paused: {exc}"
+            return f"not paused: {exc}", ""
         try:
             action = reg._sync_campaign(ctx, reg._with(settings, dataclasses.replace(m, status=reg.PAUSED)), m.owner_name)
         except (ApiError, LookupError, ValueError, ConfigError) as exc2:
-            return f"NOT PAUSED: {exc}; {exc2}. Pause it by hand: `us-outbound mailbox pause {address} --live`"
-        return f"the Mailboxes tab was not changed ({exc}); {reg.campaign_name(m.owner_name)}: {action}"
+            return f"NOT PAUSED: {exc}; {exc2}. Pause it by hand: `us-outbound mailbox pause {address} --live`", ""
+        name = reg.campaign_name(m.owner_name)
+        return f"the Mailboxes tab was not changed ({exc}); {name}: {action}", name if action == reg.PAUSED_EMPTY else ""
 
 
 def _payload(ctx: Context, f: Firing) -> dict:
     return {"rule": f.rule, "scope": f.scope, "target": f.target, "action": f.action, "reason": f.reason,
             "mailboxes": f.mailboxes, "until": f.until.isoformat() if f.until else None, "numbers": f.numbers,
-            "dry_run": ctx.dry_run, "outcome": f.outcome}
+            "dry_run": ctx.dry_run, "outcome": f.outcome, "campaigns_paused": f.campaigns}
 
 
 def _record(ctx: Context, f: Firing) -> None:
@@ -554,7 +561,12 @@ def run(ctx: Context) -> dict:
             continue
         outcomes = []
         for a in f.mailboxes:
-            paused[a] = _pause(ctx, ctx.settings, a) if ctx.live else "dry-run: not paused in the sheet or Instantly"
+            if ctx.live:
+                paused[a], emptied = _pause(ctx, ctx.settings, a)
+                if emptied and emptied not in f.campaigns:
+                    f.campaigns.append(emptied)
+            else:
+                paused[a] = "dry-run: not paused in the sheet or Instantly"
             outcomes.append(paused[a])
         f.outcome = "; ".join(dict.fromkeys(outcomes))
         ctx.store.upsert("hitl_items", [{"item_id": f.item_id, "payload": _payload(ctx, f)}])
