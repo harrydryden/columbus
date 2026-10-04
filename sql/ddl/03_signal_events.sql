@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.signal_events (
 );
 CREATE INDEX IF NOT EXISTS signal_events_account_id_idx ON us_outbound.signal_events (account_id);
 CREATE INDEX IF NOT EXISTS signal_events_observed_at_idx ON us_outbound.signal_events (observed_at);
+CREATE INDEX IF NOT EXISTS signal_events_source_fact_idx ON us_outbound.signal_events (source, fact);
 COMMENT ON TABLE us_outbound.signal_events IS 'One row per observation with evidence (SPEC 6). Sources write facts; scoring matches them to the Signals tab, so adding a keyword signal needs no code (SPEC 7).';
 COMMENT ON COLUMN us_outbound.signal_events.source IS 'A SPEC 7 source key (apollo_org, apollo_people, apollo_jobs, site_visits, clay_careers, careers_pages, clay_funding, job_posts, irs_bmf, layoffs, calendar, named, lookalike), a job''s own facts (pick_contacts, verify_accounts), or scoring.';
 COMMENT ON COLUMN us_outbound.signal_events.fact IS 'The field name for field sources (SPEC 7), the kind of text for text sources, or signal_matched for scoring rows.';
