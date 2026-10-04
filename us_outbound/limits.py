@@ -8,7 +8,9 @@ Today's number is the smallest of three terms (enrol/queue.py):
 Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026) count as enrolled
 this week for the weekly target, and each takes one of its sender's slots today.
 The budgets sit behind ready_accounts: Clay credits verify accounts and Apollo credits find
-emails, each within its monthly budget and today's share of it (budget.py). When
+emails, each within its monthly budget and today's share of it (budget.py). While the General key
+clay_verification is skip (Harry, 1 Oct 2026), verify_accounts verifies accounts on Apollo data and
+HubSpot (weekdays 04:30 UK) and Clay stands behind nothing, so the line names that job instead. When
 ready_accounts binds, the explanation says which of them, or which earlier stage, is the reason,
 including verified accounts where pick_contacts found no suitable contact (contacts/pick.py).
 
@@ -28,7 +30,9 @@ from typing import Any
 from us_outbound import budget
 from us_outbound.context import Context
 from us_outbound.enrol import capacity, focus, queue
+from us_outbound.settings.model import CLAY_REQUIRED
 
+VERIFY_WAITING = ("new", "queued")  # what verify_accounts verifies while clay_verification = skip (verify.py)
 LABELS = {
     "weekly_target": "the weekly target",
     "sending_capacity": "sending capacity",
@@ -188,6 +192,14 @@ def behind_ready(ctx: Context, ready: int, budgets: dict[str, budget.Budget]) ->
                 f"{_until(apollo)}, so no more emails are looked up.")
     if no_email:
         return f"Behind it: {no_email} verified accounts are waiting for an email (pick_contacts)."
+    if ctx.settings.general.clay_verification != CLAY_REQUIRED:
+        # clay_verification = skip (Harry, 1 Oct 2026): verify_accounts verifies new and queued accounts on
+        # Apollo data and HubSpot, so neither Clay nor its budget stands behind them.
+        waiting = sum(_count(ctx, st) for st in VERIFY_WAITING)
+        if waiting:
+            return f"Behind it: {waiting} accounts are waiting for verify_accounts (weekdays 04:30 UK)."
+        return ("Behind it: no accounts are waiting to be verified, so the universe or the free checks are the limit "
+                "(source_universe, apollo_people).")
     if clay.budget <= 0:
         return "Behind it: Clay has no monthly budget (clay_monthly_credits is 0), so no account can be verified."
     if queued and (clay.spent or clay.left_today <= 0):
