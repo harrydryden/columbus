@@ -210,7 +210,7 @@ def test_live_flag_without_live_sending_stays_dry(capsys):
     h = Harness(SETTINGS)
     assert h.run("run", "suppression_load", "--live") == 0
     assert h.last.dry_run
-    out = capsys.readouterr().out
+    out = "\n".join(x for x in capsys.readouterr().out.splitlines() if not x.startswith('{"event"'))
     assert out.startswith("Running dry: live_sending is no in the settings in force (synced never). If you have "
                           "just set it to yes on the sheet, run `us-outbound sync` and try again.")
 

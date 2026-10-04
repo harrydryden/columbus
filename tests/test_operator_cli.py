@@ -169,6 +169,23 @@ def test_a_live_job_that_runs_dry_says_how_to_bring_a_sheet_edit_in(capsys):
                         "If you have just set it to yes on the sheet, run `us-outbound sync` and try again.")
 
 
+def test_the_synced_time_is_the_last_sync_run_even_when_nothing_changed(capsys):
+    """An unchanged sheet writes no settings row, so the time comes from the last settings_sync that ended ok."""
+    w = SheetWorld()
+    assert w.run("sync") == 0
+    later = datetime(2026, 10, 6, 1, 0, tzinfo=UTC)  # Tue 02:00 UK: a nightly sync that found nothing new
+    w.store.insert("heartbeats", [
+        {"run_id": "nightly", "job": "settings_sync", "status": "ok", "dry_run": True,
+         "started_at": later - timedelta(seconds=20), "finished_at": later},
+        {"run_id": "broken", "job": "settings_sync", "status": "error", "dry_run": True,
+         "started_at": later + timedelta(hours=1), "finished_at": later + timedelta(hours=1)},
+    ])
+    capsys.readouterr()
+    assert w.run("run", "suppression_load", "--live") == 0
+    lines = report(capsys.readouterr().out)
+    assert lines[0].startswith("Running dry: live_sending is no in the settings in force (synced Tue 06 Oct 02:00 UK).")
+
+
 # -- status ------------------------------------------------------------------------------------------------------
 
 

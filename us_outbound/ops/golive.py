@@ -93,7 +93,9 @@ def _when(v: Any) -> str:
 
 
 def check_settings(ctx: Context) -> Check:
-    return Check(PASS, "Settings", f"usable; synced {_when(ctx.settings.synced_at)}")
+    from us_outbound.settings import sync
+
+    return Check(PASS, "Settings", f"usable; synced {_when(sync.last_read(ctx.store, ctx.settings))}")
 
 
 def contacted_roles(ctx: Context) -> list[str]:

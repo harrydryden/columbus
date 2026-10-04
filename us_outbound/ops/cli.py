@@ -182,8 +182,11 @@ def _operator() -> str:
 
 
 def _synced(ctx: Context) -> str:
-    """When the settings in force were synced from the sheet, in UK time."""
-    return _fmt_time(ctx.settings.synced_at) if ctx.settings.synced_at else "never"
+    """When the sheet was last read into the settings in force (settings/sync.last_read), in UK time."""
+    from us_outbound.settings import sync
+
+    when = sync.last_read(ctx.store, ctx.settings)
+    return _fmt_time(when) if when else "never"
 
 
 def _live_sending_note(ctx: Context) -> str:
