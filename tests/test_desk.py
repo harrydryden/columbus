@@ -19,6 +19,7 @@ ITEM = "item-0001-aaaa"
 ALERT_TS = "100.000100"
 SAM = "sam@meetspill.org"
 HARRY_ID, HANNAH_ID, SAM_ID = "U_HARRY", "U_HANNAH", "U_SAM"
+BOT_ID = "U_BOT"
 
 
 @pytest.fixture
@@ -46,6 +47,8 @@ class Slack:
         t.route("GET", "chat.getPermalink", fn=lambda r: {
             "ok": True, "permalink": f"https://spill.slack.com/archives/{r.params['channel']}/p{r.params['message_ts']}"})
         t.route("POST", "chat.postMessage", fn=self._post)
+        t.route("GET", "auth.test", {"ok": True, "user_id": BOT_ID})
+        t.route("POST", "reactions.add", fn=lambda r: self.react(r.json["name"], BOT_ID, ts=r.json["timestamp"]) or {"ok": True})
 
     def _ts(self) -> str:
         """One clock for every message, as Slack's own ts: seconds and six digits of microseconds."""
@@ -362,10 +365,18 @@ def test_a_non_warm_reply_task_carries_nothing_about_the_prospect(settings):
     assert crm.linked("tasks", next(iter(crm.objects["tasks"])), "companies") == []
 
 
-def test_other_items_escalate_by_task_and_keep_their_status(settings):
-    ctx, t, crm, sl, inst = desk_world(settings)
+def _auto_send(settings, on: bool):
+    return dataclasses.replace(settings, general=dataclasses.replace(settings.general, auto_send=on))
+
+
+def _hand_check(ctx) -> None:
     ctx.store.upsert("hitl_items", [{"item_id": "hc-2026-W41", "kind": "hand_check", "status": "open",
                                      "created_at": NOW - timedelta(hours=30), "payload": {"summary": "This week's hand-check."}}])
+
+
+def test_other_items_escalate_by_task_and_keep_their_status(settings):
+    ctx, t, crm, sl, inst = desk_world(_auto_send(settings, True))  # enrol waits for the hand-check then
+    _hand_check(ctx)
     poll(ctx)
     hc = row_of(ctx, "hc-2026-W41")
     assert hc["status"] == "open" and hc["escalated_at"] == NOW  # the hand-check's own job still finds it
@@ -373,6 +384,40 @@ def test_other_items_escalate_by_task_and_keep_their_status(settings):
     assert task["hs_task_subject"] == "US Outbound: a hand check item has waited 24 hours"
     assert task["hs_timestamp"].startswith("2026-10-05T15:00")  # due now
     assert inst.forwards == []
+
+
+def test_the_hand_check_is_not_escalated_while_every_email_is_approved_in_slack(settings):
+    """auto_send = no: nothing waits for the weekly hand-check, so no task and no DM every week."""
+    ctx, t, crm, sl, inst = desk_world(_auto_send(settings, False))
+    _hand_check(ctx)
+    out = poll(ctx)
+    hc = row_of(ctx, "hc-2026-W41")
+    assert hc["status"] == "open" and not hc.get("escalated_at") and out["escalated"] == []
+    assert not [x for x in crm.objects["tasks"].values() if "hand check" in x["hs_task_subject"]]
+    assert not [p for p in sl.posts if p["channel"] == HARRY_ID]
+    assert ctx.store.get("events", event_id="escalated:hc-2026-W41") is None
+
+
+def test_the_bots_own_reactions_neither_decide_nor_count_as_ignored(settings):
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.react("white_check_mark", BOT_ID)  # seeded by poll_replies on the alert
+    sl.react("x", BOT_ID)
+    out = poll(ctx)
+    assert inst.replies == [] and row_of(ctx)["status"] == "open" and out["ignored_non_approvers"] == 0
+    sl.react("white_check_mark", HARRY_ID)  # the bot's ❌ does not beat Harry's ✅
+    poll(ctx)
+    assert len(inst.replies) == 1 and row_of(ctx)["handled_by"] == HARRY_ID
+    assert len([r for r in t.requests if r.url.endswith("auth.test")]) == 1  # asked once a run
+
+
+def test_a_changed_draft_gets_the_bots_tick_and_cross(settings):
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "edit: Hi Jane,\n\nWould Tuesday work?\n\nBest wishes,\nHannah")
+    poll(ctx)
+    repost = next(p for p in sl.posts if p["text"].startswith("Draft changed by"))
+    assert [(r["name"], r["users"]) for r in sl.reactions[repost["ts"]]] == [("white_check_mark", [BOT_ID]),
+                                                                            ("x", [BOT_ID])]
+    assert poll(ctx)["ignored_non_approvers"] == 0 and inst.replies == []
 
 
 def test_without_slack_approvals_wait_and_escalation_still_reaches_harry(settings, capsys):

@@ -93,6 +93,7 @@ class ReplyWorld:
     blocked: list[list[str]] = field(default_factory=list)
     hubspot_unsubscribed: list[str] = field(default_factory=list)
     slack_posts: list[dict] = field(default_factory=list)
+    slack_reactions: list[dict] = field(default_factory=list)
     lead_patches: list[tuple[str, dict]] = field(default_factory=list)
 
     # -- building the world --
@@ -194,6 +195,10 @@ class ReplyWorld:
         self.slack_posts.append(dict(req.json))
         return {"ok": True, "channel": req.json["channel"], "ts": f"17000000{len(self.slack_posts):02d}.0001"}
 
+    def _react(self, req: SentRequest) -> Any:
+        self.slack_reactions.append(dict(req.json))
+        return {"ok": True}
+
     def fail_blocklist(self, status: int) -> None:
         self.transport.route("POST", "/block-lists-entries/bulk-create", {"error": "boom"}, status=status)
 
@@ -212,6 +217,7 @@ class ReplyWorld:
         t.route("GET", "conversations.list", {"ok": True, "channels": [{"id": "C_ALERT", "name": "us-outbound"},
                                                                        {"id": "C_DEV", "name": "us-outbound-dev"}]})
         t.route("POST", "chat.postMessage", fn=self._post)
+        t.route("POST", "reactions.add", fn=self._react)
         return self
 
 

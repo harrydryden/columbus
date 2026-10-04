@@ -44,6 +44,7 @@ Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a h
       Harry; the mailbox owner has no Slack id in the sheet, so is named). SPEC 11 sends objection,
       negative and other to the daily post only; the daily post is phase 3, so until it exists they
       are alerted too, without the mention, so that every reply reaches a person from day one.
+      The bot puts ✅ and ❌ on each alert (only ❌ when there is no draft), so deciding is one click.
   unsubscribe, or a reply asking to stop
       opted out everywhere (replies/optout.py): suppression (hashed), the Instantly blocklist, and
       HubSpot's opt-out where HubSpot already has the contact. No item; a one-line note in Slack so a
@@ -93,7 +94,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import ET, ConfigError, Context
 from us_outbound.enrol import render
 from us_outbound.logs import log
-from us_outbound.replies import classify, draft, optout, outcomes
+from us_outbound.replies import classify, desk, draft, optout, outcomes
 from us_outbound.replies.outcomes import Directory, Match
 from us_outbound.settings.model import Settings
 
@@ -102,7 +103,6 @@ KIND = "reply"  # hitl_items.kind for a reply waiting for a person (the reply de
 OOO_KIND = "out_of_office"  # hitl_items.kind for an out-of-office record (status handled)
 OPEN, HANDLED = "open", "handled"
 REPLY_SOURCE = "reply"  # suppression.source for an opt-out by reply
-NEEDS_HUMAN = frozenset({"positive", "referral", "objection", "not_now", "wrong_person", "negative", "other"})
 LABELS = {
     "positive": "Positive", "referral": "Referral", "objection": "Objection", "not_now": "Not now",
     "negative": "Negative", "out_of_office": "Out of office", "wrong_person": "Wrong person",
@@ -115,8 +115,9 @@ SLACK_SECTION_CHARS = 2900  # Slack's section text limit is 3,000
 RETRY = timedelta(minutes=30)  # a model error is retried on later runs until the reply is this old
 NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply gives none
 OOO_RESUME_SEND_DAYS = 2  # set going again two send days after the return date (gtm-review 03 §6)
-FOOTER = ('Reply in this thread: "send" to send the draft · "send: <your text>" to send your version · '
-          '"skip" to handle it yourself')
+FOOTER = ('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: <new text>" to change it, '
+          'then ✅ the new version · "send: <text>" sends your text now')
+NO_DRAFT_FOOTER = '❌ skips it (you\'ll answer yourself) · "send: <text>" sends your text now'
 
 
 def _lower(v: Any) -> str:
@@ -532,7 +533,7 @@ def alert(payload: Mapping[str, Any], settings: Settings) -> tuple[str, list[dic
     else:
         why = "; ".join(str(x) for x in (p.get("draft_problems") or [])[:3]) or "none written"
         sections.append(f"No draft ({_esc(why)}). Reply \"send: &lt;your text&gt;\" to answer, or \"skip\".")
-    sections.append(_esc(FOOTER))
+    sections.append(_esc(FOOTER if p.get("draft") else NO_DRAFT_FOOTER))
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": s[:SLACK_SECTION_CHARS]}} for s in sections]
     return _esc(f"{head}: \"{excerpt[:150]}\""), blocks
 
@@ -562,6 +563,8 @@ def _post_pending(ctx: Context, out: dict) -> None:
         ctx.store.update("hitl_items", {"item_id": row["item_id"]},
                          {"slack_channel": posted["channel"], "slack_ts": posted["ts"], "payload": payload})
         out["alerts_posted"] += 1
+        # The bot's ✅ and ❌ (only ❌ with no draft to send), so deciding is one click; never fatal.
+        desk.seed(slack, posted["channel"], posted["ts"], desk.SEED_REACTIONS if payload.get("draft") else ("x",))
 
 
 # -- the job --------------------------------------------------------------------------------------------

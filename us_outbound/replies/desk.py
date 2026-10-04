@@ -14,7 +14,9 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
                                    ✅ on that message, or "send", then sends it;
        ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11).
      Thread replies count in order, then the reactions on the current draft message; ❌ beats ✅.
-     A ✅ on a draft that was edited since, or whose send failed, no longer counts.
+     A ✅ on a draft that was edited since, or whose send failed, no longer counts. The bot seeds ✅
+     and ❌ on each alert (replies/poll.py) and on a changed draft, so deciding is one click; its own
+     reactions and notes are neither decisions nor counted as ignored.
   3. Send, from the mailbox the prospect wrote to, in the thread, through Instantly's reply
      endpoint (clients/instantly.reply: a US Outbound campaign's thread and a registry mailbox; the
      guard checks the approver too). The text must pass the copy rules' word and line checks (SPEC
@@ -27,7 +29,8 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      channel, mentioning the approvers, between 13:00 and 23:00 UK (D11 moved the end from 21:00,
      which is 4 pm ET). Once per item.
 Then escalation (SPEC 11), for every kind of human-in-the-loop item:
-  5. Open longer than escalation_hours (24): a reply item is forwarded from the mailbox that
+  5. Open longer than escalation_hours (24), except the weekly hand-check while auto_send = no
+     (nothing waits for it then): a reply item is forwarded from the mailbox that
      received it to escalation_email (harry@spill.chat) through Instantly's forward endpoint, with
      the draft, the Slack link, the HubSpot link and how to act added. Anything else, or a reply
      whose forward fails (PHASE0-CONFIRM that the endpoint exists on our plan), becomes a HubSpot task
@@ -85,10 +88,12 @@ from us_outbound.settings.model import Settings
 
 JOB = "poll_approvals"
 SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals.py KIND: never re-posted or escalated here
+HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while auto_send = yes
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
 APPROVE_REACTIONS = frozenset({"white_check_mark", "heavy_check_mark"})  # ✅ (and ✔️)
 SKIP_REACTIONS = frozenset({"x"})  # ❌
+SEED_REACTIONS = ("white_check_mark", "x")  # the bot's own ✅ and ❌ on an alert or a changed draft: one click decides
 APPROVED, EDITED, SKIPPED = "approved", "edited", "skipped"  # events.approval (SPEC 6)
 ESCALATED_EVENT = "escalated:"  # events.event_id of an escalation: the item's id, prefixed
 SENT_EVENT = "reply-sent:"  # events.event_id of a sent reply when Instantly returns no id
@@ -210,7 +215,8 @@ class Decision:
     ignored: list[str] = field(default_factory=list)  # users who are not approvers for this item
 
 
-def read_decision(slack: Any, item: ReplyItem, approvers: frozenset[str]) -> Decision:
+def read_decision(slack: Any, item: ReplyItem, approvers: frozenset[str], bot: str = "") -> Decision:
+    """bot: the bot's own Slack user id; its notes and the ✅ and ❌ it seeds are neither decisions nor ignored."""
     desk = item.desk
     approve_ts = desk["approve_ts"] if "approve_ts" in desk else item.slack_ts  # "" after an edit or a failed send
     d = Decision(draft=item.draft, edited=item.draft_edited, seen_ts=str(desk.get("seen_ts") or ""),
@@ -220,7 +226,7 @@ def read_decision(slack: Any, item: ReplyItem, approvers: frozenset[str]) -> Dec
         if _num(m.get("ts")) <= _num(d.seen_ts):
             continue
         d.seen_ts = str(m.get("ts"))
-        if m.get("bot_id") or m.get("subtype") == "bot_message":
+        if m.get("bot_id") or m.get("subtype") == "bot_message" or (bot and m.get("user") == bot):
             continue  # the desk's own notes
         user = str(m.get("user") or "")
         cmd = parse_command(m.get("text"))
@@ -249,6 +255,8 @@ def read_decision(slack: Any, item: ReplyItem, approvers: frozenset[str]) -> Dec
             for r in reactions:
                 if r.get("name") in names:
                     for u in r.get("users") or ():
+                        if bot and u == bot:
+                            continue  # the ✅ and ❌ the bot seeds on the alert
                         if u in approvers:
                             return str(u)
                         d.ignored.append(str(u))
@@ -280,6 +288,19 @@ def _thread(slack: Any, item: ReplyItem, text: str, *, broadcast: bool = False) 
         log("desk_slack_failed", item_id=item.id, error=str(exc)[:200])
         return ""
     return str(out.get("ts") or "") if out and out.get("channel") == item.slack_channel else ""
+
+
+def seed(slack: Any, channel: str, slack_ts: str, names: Iterable[str] = SEED_REACTIONS) -> None:
+    """The bot's own reactions on a message (Slack.react), so deciding is one click. A failure is logged, never fatal."""
+    if slack is None or not channel or not slack_ts:
+        return
+    for name in names:
+        try:
+            slack.react(channel, slack_ts, name)
+        except GuardViolation:
+            raise
+        except Exception as exc:  # the approver can still add the reaction, or reply in the thread
+            log("desk_react_failed", ts=slack_ts, reaction=name, error=f"{type(exc).__name__}: {str(exc)[:200]}")
 
 
 def _who(by: str) -> str:
@@ -437,6 +458,7 @@ def _apply_reading(ctx: Context, item: ReplyItem, d: Decision, slack: Any) -> Re
         if not d.action:  # posted again so the new draft can get its ✅
             desk["approve_ts"] = _thread(slack, item, f"Draft changed by <@{user}>. React ✅ to this message or reply "
                                                       f"\"send\" to send it; ❌ or \"skip\" to leave it:\n>>> {d.draft}")
+            seed(slack, item.slack_channel, desk["approve_ts"])
     save_payload(ctx.store, item.id, desk=desk, **extra)
     return _reload(ctx, item)
 
@@ -480,6 +502,7 @@ class _Run:
     ignored: Counter[str] = field(default_factory=Counter)
     hubspot: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
+    bot: str | None = None  # the bot's own Slack user id, asked once when a thread is first read
 
     def add(self, name: str, entry: Any) -> None:
         bucket = getattr(self, name)
@@ -509,7 +532,9 @@ def _work(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
     if slack is None or not item.slack_channel or not item.slack_ts:
         return
     approvers = approvers_for(ctx.settings, item.mailbox)
-    d = read_decision(slack, item, approvers)
+    if run.bot is None:
+        run.bot = slack.bot_user_id()
+    d = read_decision(slack, item, approvers, run.bot)
     run.ignored.update(u for u in d.ignored if u)
     if ctx.dry_run:
         if d.action or d.edits:
@@ -626,11 +651,15 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
     """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11).
 
     Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals.py).
+    So is the weekly hand-check while auto_send = no: every email is approved in Slack then, and nothing
+    waits for the hand-check (enrol/hand_check.py), so a task and a DM every week would ask for nothing.
     """
     g = ctx.settings.general
     cutoff = ctx.now - timedelta(hours=g.escalation_hours)
     for row in ctx.store.select(TABLE, {"status": OPEN}):
         if row.get("escalated_at") or row.get("kind") == SEND_APPROVAL_KIND:
+            continue
+        if row.get("kind") == HAND_CHECK_KIND and not g.auto_send:
             continue
         reply = is_reply(row)
         item = ReplyItem(row)

@@ -74,9 +74,13 @@ def test_a_positive_reply_becomes_an_item_with_a_draft_and_an_alert(world):
     assert "*Positive reply · Acme Creative (Chicago, IL) · Marketing agencies · Priority* <@U_HARRY>" in text
     assert "From: Jane Doe, Head of People → hannah@meetspill.org" in text
     assert "Draft reply (signed Hannah Spalding; hands the demo to Harry):\n> Hi Jane," in text
-    assert '"send" to send the draft' in text
+    assert text.endswith('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: &lt;new text&gt;" '
+                         'to change it, then ✅ the new version · "send: &lt;text&gt;" sends your text now')
     assert item["slack_channel"] == p["slack_channel"] == "#us-outbound"
     assert item["slack_ts"] == p["slack_ts"] == "1700000001.0001"
+    # The bot's ✅ and ❌ on the alert, so deciding is one click.
+    assert [(r["channel"], r["timestamp"], r["name"]) for r in world.slack_reactions] == [
+        ("C_ALERT", "1700000001.0001", "white_check_mark"), ("C_ALERT", "1700000001.0001", "x")]
     # The event, and the account engaged.
     [ev] = world.events("replied")
     assert ev["reply_class"] == "positive" and ev["reply_text"].startswith("Sounds good")
@@ -417,6 +421,17 @@ def test_the_cap_refuses_the_call_and_the_reply_still_reaches_a_person(world):
     assert item["status"] == "open" and out["claude_cap_reached"] == 1
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
     assert "No draft" in text and "read the reply yourself" in text
+    # With no draft there is nothing for ✅ to send: only ❌ is offered and seeded.
+    assert "✅" not in text and text.endswith('❌ skips it (you\'ll answer yourself) · "send: &lt;text&gt;" sends your text now')
+    assert [r["name"] for r in world.slack_reactions] == ["x"]
+
+
+def test_a_reaction_the_bot_cannot_add_never_stops_the_alert(world, capsys):
+    world.transport.route("POST", "reactions.add", body={"ok": False, "error": "missing_scope"})
+    world.reply("E1")
+    out = run(world)
+    assert out["alerts_posted"] == 1 and only_item(world)["slack_ts"]
+    assert '"event": "desk_react_failed"' in capsys.readouterr().out
 
 
 def test_the_cap_never_blocks_an_opt_out(world):
