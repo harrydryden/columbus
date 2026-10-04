@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from tests.fakes import FakeTransport, make_context
 from tests.test_cli import LIVE_SETTINGS, SETTINGS, Harness
 from tests.test_registry import FakeInstantly, StubSheets, slack_routes
@@ -217,3 +219,102 @@ def test_status_lists_only_the_jobs_that_need_a_look(capsys):
     assert jobs[3] == "  1 job ok"
     assert jobs[4].startswith("  Not run yet: source_universe, ") and "enrol" in jobs[4]
     assert not any("not built yet" in line or "never run" in line for line in lines)
+
+
+# -- the Slack words, hidden build commands, --fix, read-only --live ------------------------------------------------
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["approvals", "send", "ab12cd34"], {"action": "send", "item_id": "ab12cd34", "live": False}),
+    (["approvals", "contact", "ab12cd34", "--live"], {"action": "contact", "live": True}),
+    (["approvals", "company", "ab12cd34"], {"action": "company"}),
+    (["approvals", "approve", "ab12cd34"], {"action": "approve"}),  # the old words still work
+    (["approvals", "reject", "ab12cd34", "--contact"], {"action": "reject", "contact": True}),
+    (["replies", "send", "item-000", "--text", "Thanks, Jane"], {"action": "send", "edit": "Thanks, Jane"}),
+    (["replies", "approve", "item-000", "--edit", "Thanks"], {"action": "approve", "edit": "Thanks"}),
+    (["mailbox", "check", "--fix", "--live"], {"action": "check", "fix": True, "live": True}),
+    (["mailbox", "check"], {"fix": False}),
+    (["settings", "bootstrap", "--force"], {"action": "bootstrap", "force": True}),
+])
+def test_the_slack_words_parse(argv, expected):
+    args = cli.build_parser().parse_args(argv)
+    for key, value in expected.items():
+        assert getattr(args, key) == value
+
+
+def test_build_commands_are_hidden_from_help_but_still_parse():
+    text = cli.build_parser().format_help()
+    for name in cli.HIDDEN:
+        assert f"\n    {name} " not in text and f",{name}," not in text and f"{{{name}," not in text, name
+    for name in ("status", "golive", "sync", "start", "stop", "approvals", "replies", "killrules", "mailbox",
+                 "campaigns", "copy", "settings", "handcheck", "erase", "schedule", "run"):
+        assert f"\n    {name} " in text, name
+    assert ("`--live` makes a command act. Anything that reaches a prospect (start, approvals send, replies send, every "
+            "scheduled job) also needs live_sending = yes in the synced settings.") in " ".join(text.split())
+    for argv in (["dry-run", "enrol"], ["rescore"], ["suppression", "load"], ["scheduler"], ["db", "apply"],
+                 ["hubspot", "ids"], ["lookalikes", "show"], ["pages", "show"], ["data", "show"],
+                 ["test", "read", "t1"], ["unenrol", "--month", "2026-11"]):
+        assert cli.build_parser().parse_args(argv).command == argv[0]
+
+
+def recorder(calls, result):
+    def fn(ctx, *args, **kw):
+        calls.append((ctx.job, args, kw))
+        return dict(result)
+    return fn
+
+
+def test_approvals_send_contact_and_company_take_the_approve_and_reject_paths(monkeypatch, capsys):
+    from us_outbound.enrol import approvals
+
+    calls = []
+    monkeypatch.setattr(approvals, "approve", recorder(calls, {"added": True}))
+    monkeypatch.setattr(approvals, "reject_item", recorder(calls, {"done": True}))
+    h = Harness(LIVE_SETTINGS)
+    assert h.run("approvals", "send", "ab12cd34", "--live") == 0
+    assert h.run("approvals", "contact", "ab12cd34", "--live") == 0
+    assert h.run("approvals", "company", "ab12cd34", "--live") == 0
+    assert calls == [(approvals.APPROVALS_CLI_JOB, ("ab12cd34",), {}),
+                     ("approvals_reject", ("ab12cd34", "contact"), {}),
+                     ("approvals_reject", ("ab12cd34", "company"), {})]
+    assert h.run("approvals", "contact", "ab12cd34", "--company") == 2
+    assert "takes no --contact or --company" in capsys.readouterr().err
+
+
+def test_replies_send_takes_the_approve_path_with_your_text(monkeypatch, capsys):
+    from us_outbound.replies import desk
+
+    calls = []
+    monkeypatch.setattr(desk, "approve", recorder(calls, {"sent": True}))
+    h = Harness(LIVE_SETTINGS)
+    assert h.run("replies", "send", "item-000", "--text", "Thanks, Jane", "--live") == 0
+    assert h.run("replies", "send", "item-000", "--live") == 0
+    assert [c[1:] for c in calls] == [(("item-000",), {"text": "Thanks, Jane"}), (("item-000",), {"text": None})]
+    assert h.run("replies", "skip", "item-000", "--text", "x") == 2
+    assert "--text (--edit) goes with send" in capsys.readouterr().err
+
+
+def test_mailbox_check_fix_also_puts_the_campaigns_right(monkeypatch, capsys):
+    from us_outbound.registry import mailboxes as reg
+
+    calls = []
+    monkeypatch.setattr(reg, "mailbox_health", recorder(calls, {"promoted": []}))
+    monkeypatch.setattr(reg, "ensure_campaigns", recorder(calls, {"ok": [], "drift": {}}))
+    h = Harness(SETTINGS)
+    assert h.run("mailbox", "check", "--fix", "--live") == 0
+    assert calls == [("mailbox_health", (), {}), ("campaigns_ensure", (), {"fix": True})]
+    assert h.contexts[-1].live  # an operator command: --live alone
+    assert h.run("mailbox", "check") == 0 and len(calls) == 3  # no --fix: mailbox_health only
+    assert h.run("mailbox", "pause", "sam@meetspill.org", "--fix") == 2
+    assert "--fix goes with check" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["approvals", "list"], ["replies", "list"], ["killrules", "show"],
+                                  ["copy", "check"], ["campaigns", "show"]])
+def test_live_on_a_read_only_action_says_it_does_nothing(argv, capsys):
+    h = Harness(SETTINGS)
+    h.run(*argv, "--live")
+    out = capsys.readouterr().out
+    assert cli.READS_ONLY in out
+    h.run(*argv)
+    assert cli.READS_ONLY not in capsys.readouterr().out
