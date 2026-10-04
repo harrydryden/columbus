@@ -202,8 +202,7 @@ def check_mailboxes(ctx: Context) -> Check:
 def check_live_sending(ctx: Context) -> Check:
     if ctx.settings.general.live_sending:
         return Check(PASS, "live_sending", "yes")
-    return Check(FAIL, "live_sending", f"no: set live_sending = yes on the General tab once Harry signs off{SYNC} "
-                                       "(`us-outbound start --live` syncs too)")
+    return Check(FAIL, "live_sending", f"no: set live_sending = yes on the General tab once Harry signs off{SYNC}")
 
 
 def check_approvers(ctx: Context) -> Check:

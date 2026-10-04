@@ -76,7 +76,9 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     assert "hannah@meetspill.org: Warming, not on a sending list" in out
     # Every FAIL that asks for a sheet edit says to sync it in (jobs read the synced copy of the sheet).
     assert got["live_sending"] == ("FAIL  live_sending: no: set live_sending = yes on the General tab once Harry signs "
-                                   "off, then `us-outbound sync` (`us-outbound start --live` syncs too)")
+                                   "off, then `us-outbound sync`")
+    assert all(line.endswith(", then `us-outbound sync`") for name, line in got.items()
+               if line.startswith("FAIL") and "tab" in line), got
     assert got["Approvers"] == ("FAIL  Approvers: approver_slack_ids is blank: nobody can approve an email or a reply "
                                 "in Slack; set it on the General tab, then `us-outbound sync`")
     assert got["Slack"] == "PASS  Slack: token set; the bot can see #us-outbound"
