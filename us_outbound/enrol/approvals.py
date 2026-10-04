@@ -103,7 +103,7 @@ from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import capacity, copy_markup, enrol, openers, queue, render
 from us_outbound.learn import holds
-from us_outbound.logs import log
+from us_outbound.logs import hash_email, log
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
 from us_outbound.replies.items import ts as parse_ts
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
@@ -800,6 +800,23 @@ def _close(ctx: Context, item: Item, outcome: str, by: str, slack: Any, *, statu
     return True
 
 
+def eligibility(ctx: Context, item: Item, account: Mapping[str, Any], contact: Mapping[str, Any]) -> str:
+    """Why the card's account or contact may no longer be emailed, or "": the enrol run's own check
+    (enrol.eligible: suppression, partners, the hand-check's pulls, industries switched off, kill-rule holds
+    on industry groups and email sources, the recipient rules), with suppression looked up for this domain
+    and email only (enrol.suppressed_for), not the whole table."""
+    email = _text(contact.get("email")).lower()
+    domains = [_text(account.get("domain")), email.rpartition("@")[2]]
+    hashes = [hash_email(email) if "@" in email else "", _text(contact.get("email_sha256"))]
+    _, pulled = enrol.hand_check(ctx, ctx.now_et().date())  # the pulls enrol leaves out, as it reads them
+    g = enrol.gates(ctx, pulled, enrol.suppressed_for(ctx, domains, hashes))
+    why = enrol.account_reason(account, g)
+    if why:
+        return f"{item.company}: {why}"
+    chosen, why = enrol.eligible(account, [contact], g)
+    return f"{item.person}: {why}" if chosen is None else ""
+
+
 def recheck(ctx: Context, item: Item) -> list[str]:
     """Why the lead may not be added now, just before adding it; [] when it may."""
     s = holds.with_holds(ctx.store, ctx.settings)
@@ -818,14 +835,9 @@ def recheck(ctx: Context, item: Item) -> list[str]:
     if account.get("tier") not in queue.QUEUE_TIERS:
         reason = _text(account.get("tier_reason"))
         out.append(f"{company} is {account.get('tier') or 'untiered'} now" + (f" ({reason})" if reason else ""))
-    domains, hashes = enrol.suppressed(ctx)
-    partners = {_text(r.get("domain")).lower() for r in ctx.store.select("partners")}
-    why = enrol.account_block(account, s, domains, partners, frozenset())
+    why = eligibility(ctx, item, account, contact)
     if why:
-        out.append(f"{company}: {why}")
-    why = enrol.contact_block(contact, domains, hashes)
-    if why:
-        out.append(f"{item.person}: {why}")
+        out.append(why)
     elif _text(contact.get("email")).lower() != item.email.lower():
         out.append(f"{item.person}'s email has changed since the card was posted")
     owner = _text(p.get("owner"))

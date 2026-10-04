@@ -19,7 +19,8 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
      pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
-     hold back an industry group or an email source (learn/holds.py).
+     hold back an industry group or an email source (learn/holds.py). This is one check (eligible),
+     and a send approval's ✅ runs it again for the card's contact (enrol/approvals.recheck).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
@@ -204,15 +205,12 @@ class Candidate:
     contact: dict
 
 
-def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
-    """(suppressed domains, suppressed email hashes) in force now. A suppressed alias suppresses its root.
-
-    A row with an email hash suppresses only that email; its domain is only recorded
-    (suppression.py). A domain row has no email hash.
-    """
+def _in_force(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
+    """(domains, email hashes) of these suppression rows that are in force now. A row with an email hash
+    suppresses only that email; its domain is only recorded (suppression.py). A domain row has no email hash."""
     domains: set[str] = set()
     hashes: set[str] = set()
-    for r in ctx.store.select("suppression"):
+    for r in rows:
         expires = _ts(r.get("expires_at"))
         if expires is not None and expires <= ctx.now:
             continue
@@ -220,13 +218,63 @@ def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
             domains.add(_lower(r["domain"]))
         if r.get("email_sha256"):
             hashes.add(_lower(r["email_sha256"]))
+    return domains, hashes
+
+
+def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
+    """(suppressed domains, suppressed email hashes) in force now. A suppressed alias suppresses its root.
+
+    The whole table, for a run over every account (candidates); suppressed_for looks up a few.
+    """
+    domains, hashes = _in_force(ctx, ctx.store.select("suppression"))
     aliases = {_lower(a.get("alias")): _lower(a.get("root_domain")) for a in ctx.store.select("domain_aliases")}
     domains |= {aliases[d] for d in list(domains) if aliases.get(d)}
     return domains, hashes
 
 
+def suppressed_for(ctx: Context, domains: Iterable[str], hashes: Iterable[str]) -> tuple[set[str], set[str]]:
+    """The part of suppressed() that concerns these domains and email hashes, by indexed lookups: the
+    suppression rows for each domain and for each of its aliases (a suppressed alias suppresses its root),
+    and the rows for each hash. A send approval's re-check reads this, not the whole table."""
+    want = sorted({_lower(d) for d in domains if _lower(d)})
+    want_hashes = sorted({_lower(h) for h in hashes if _lower(h)})
+    root_of = {_lower(a.get("alias")): _lower(a.get("root_domain"))
+               for a in (ctx.store.select("domain_aliases", {"root_domain": want}) if want else ())}
+    keys = sorted(set(want) | set(root_of))
+    rows = ctx.store.select("suppression", {"domain": keys, "email_sha256": None}) if keys else []
+    if want_hashes:
+        rows += ctx.store.select("suppression", {"email_sha256": want_hashes})
+    found, found_hashes = _in_force(ctx, rows)
+    found |= {root_of[d] for d in list(found) if root_of.get(d)}
+    return found & set(want), found_hashes & set(want_hashes)
+
+
+@dataclass(frozen=True)
+class Gates:
+    """What the account and contact checks read, loaded once: the enrol run's candidates and a send approval's
+    re-check (enrol/approvals.recheck) go through the same checks (account_reason, eligible)."""
+
+    settings: Settings
+    domains: Collection[str]  # suppressed domains, aliases' roots included
+    hashes: Collection[str]  # suppressed email hashes
+    partners: Collection[str]
+    pulled: frozenset[str] = frozenset()  # accounts pulled at this week's hand-check
+    stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (learn/holds.py)
+    sources: Collection[str] = frozenset()  # email sources a kill rule paused
+
+
+def gates(ctx: Context, pulled: frozenset[str] = frozenset(),
+          suppressed_now: tuple[set[str], set[str]] | None = None) -> Gates:
+    """The Gates in force now; suppressed_now when the caller looked up only what it needs (suppressed_for)."""
+    domains, hashes = suppressed(ctx) if suppressed_now is None else suppressed_now
+    partners = {_lower(p.get("domain")) for p in ctx.store.select("partners")}
+    return Gates(ctx.settings, domains, hashes, partners, pulled,
+                 frozenset(holds.stopped_groups(ctx.store)), frozenset(holds.paused_sources(ctx.store)))
+
+
 def account_block(
-    account: Mapping[str, Any], settings: Settings, domains: set[str], partners: set[str], pulled: frozenset[str]
+    account: Mapping[str, Any], settings: Settings, domains: Collection[str], partners: Collection[str],
+    pulled: Collection[str],
 ) -> str | None:
     domain = _lower(account.get("domain"))
     if not domain:
@@ -243,7 +291,7 @@ def account_block(
     return None
 
 
-def contact_block(contact: Mapping[str, Any], domains: set[str], hashes: set[str]) -> str | None:
+def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: Collection[str]) -> str | None:
     """Why this contact may not be emailed now (SPEC 1.5, 9 pick_contacts gate), or None."""
     email = _lower(contact.get("email"))
     if contact.get("enrolment_month") or contact.get("instantly_lead_id"):
@@ -285,7 +333,7 @@ def contact_order(
 
 
 def pick_contact(
-    contacts: Iterable[Mapping[str, Any]], domains: set[str], hashes: set[str],
+    contacts: Iterable[Mapping[str, Any]], domains: Collection[str], hashes: Collection[str],
     account: Mapping[str, Any] | None = None, settings: Settings | None = None,
 ) -> tuple[dict | None, str]:
     """The account's one contact in v1: the best-ranked sendable one (contact_order); else why the best is not."""
@@ -299,6 +347,34 @@ def pick_contact(
     return None, first_reason
 
 
+def account_reason(account: Mapping[str, Any], g: Gates, waiting: Collection[str] = frozenset()) -> str | None:
+    """Why the account may not be emailed now, or None: account_block, a send approval still waiting for it
+    (waiting), or a kill rule that stopped its industry group (SPEC 12)."""
+    why = account_block(account, g.settings, g.domains, g.partners, g.pulled)
+    if why is None and str(account.get("account_id")) in waiting:
+        why = "waiting for approval in Slack"
+    if why is None and g.settings.industry_group_of(account).casefold() in g.stopped:
+        why = "industry group stopped by a kill rule"
+    return why
+
+
+def eligible(
+    account: Mapping[str, Any], contacts: Sequence[Mapping[str, Any]], g: Gates, waiting: Collection[str] = frozenset(),
+) -> tuple[dict | None, str]:
+    """(the contact to email at the account, or None; why not): the one eligibility check. The account's checks
+    (account_reason), then its best-ranked sendable contact (pick_contact), leaving out an email source a kill
+    rule paused. The enrol run's candidates call it with every contact on file; a send approval's re-check calls
+    it with the card's contact (enrol/approvals.recheck)."""
+    why = account_reason(account, g, waiting)
+    if why is not None:
+        return None, why
+    usable = [c for c in contacts if _lower(c.get("email_source")) not in g.sources]
+    contact, why = pick_contact(usable, g.domains, g.hashes, account, g.settings)
+    if contact is None and contacts and not usable:
+        why = "email source paused by a kill rule"
+    return contact, why
+
+
 def candidates(
     ctx: Context, pulled: frozenset[str], waiting: Collection[str] = frozenset(),
 ) -> tuple[list[Candidate], Counter[str]]:
@@ -307,30 +383,17 @@ def candidates(
     waiting: accounts with a send approval still waiting in Slack (enrol/approvals.py), which are not
     proposed again until it is approved, declined or expires.
     """
-    s, store = ctx.settings, ctx.store
+    store = ctx.store
     skipped: Counter[str] = Counter()
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
-    domains, hashes = suppressed(ctx)
-    partners = {_lower(p.get("domain")) for p in store.select("partners")}
-    stopped, sources = holds.stopped_groups(store), holds.paused_sources(store)  # kill rules (SPEC 12)
+    g = gates(ctx, pulled)
     contacts: dict[str, list[dict]] = defaultdict(list)
     for chunk in _chunks([a["account_id"] for a in accounts]):
         for c in store.select("contacts", {"account_id": list(chunk)}):
             contacts[c["account_id"]].append(c)
     out: list[Candidate] = []
     for a in accounts:
-        why = account_block(a, s, domains, partners, pulled)
-        if why is None and str(a["account_id"]) in waiting:
-            why = "waiting for approval in Slack"
-        if why is None and s.industry_group_of(a).casefold() in stopped:
-            why = "industry group stopped by a kill rule"
-        contact = None
-        if why is None:
-            mine = contacts.get(a["account_id"], [])
-            usable = [c for c in mine if _lower(c.get("email_source")) not in sources]
-            contact, why = pick_contact(usable, domains, hashes, a, s)
-            if contact is None and mine and not usable:
-                why = "email source paused by a kill rule"
+        contact, why = eligible(a, contacts.get(a["account_id"], []), g, waiting)
         if contact is None:
             skipped[why] += 1
             continue
