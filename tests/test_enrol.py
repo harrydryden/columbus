@@ -233,14 +233,17 @@ def test_instantly_api_error_is_recorded_and_marks_nothing():
     assert {a["status"] for a in ctx.store.select("accounts")} == {"verified"}
 
 
-def test_missing_campaign_is_an_error_not_a_crash():
+def test_a_missing_campaign_gets_no_leads_and_says_how_to_create_it():
+    """A1: an owner with no campaign in Instantly has no capacity in a live run; new accounts go to the others."""
     t = FakeTransport()
     ctx, _ = make(live=True, transport=t)
-    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding"}]})
+    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1}]})
     out = enrol.run(ctx)
-    assert out["enrolled"] == 1 and any("US Outbound – Harry Dryden" in e for e in out["errors"])
-    assert any("US Outbound – Sam Jackson" in e for e in out["errors"])
-    assert ctx.store.get("accounts", account_id="acc-1")["status"] == "verified"
+    assert out["enrolled"] == 3 and out["by_owner"] == {"Hannah Spalding": 3} and out["errors"] == []
+    assert {r.json["campaign_id"] for r in instantly_posts(t)} == {"c-hannah"}
+    assert set(out["campaigns_not_sending"]) == {"Harry Dryden", "Sam Jackson"}
+    assert ("Harry Dryden's campaign (US Outbound – Harry Dryden) is not in Instantly: `us-outbound campaigns ensure "
+            "--live` creates it, then run `us-outbound start --live`.") in out["limited_by"]
 
 
 # -- test versions -------------------------------------------------------------------------------

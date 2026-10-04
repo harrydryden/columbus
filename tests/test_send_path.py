@@ -141,3 +141,94 @@ def test_a_card_for_an_account_pulled_or_stopped_since_is_blocked():
     sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, "acc-3")["slack_ts"])
     poll(ctx)
     assert item_for(ctx, "acc-3")["payload"]["reason"] == "Loop Studio: domain suppressed"
+
+
+# -- A1: a campaign that is not active in Instantly takes no leads ------------------------------------------------
+
+
+def _hannah_draft(t, status=0):
+    from tests.test_enrol import CAMPAIGNS
+
+    items = [dict(c, status=status) if c["id"] == "c-hannah" else c for c in CAMPAIGNS["items"]]
+    t.route("GET", "/campaigns", {"items": items})
+
+
+DRAFT = "Hannah Spalding's campaign is not active in Instantly (draft): run `us-outbound start --live`"
+
+
+def test_live_auto_send_adds_no_lead_to_a_campaign_that_is_not_active():
+    from tests.fakes import FakeTransport
+    from tests.test_enrol import instantly_posts, make
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    _hannah_draft(t)
+    out = enrol.run(ctx)
+    assert {r.json["campaign_id"] for r in instantly_posts(t)} == {"c-harry", "c-sam"}
+    assert "Hannah Spalding" not in out["by_owner"] and out["enrolled"] == 2
+    assert out["campaigns_not_sending"] == {"Hannah Spalding": DRAFT}
+    assert out["limited_by"].endswith(f" {DRAFT}.")
+    assert f"Sending capacity, Hannah Spalding: no new leads today: {DRAFT}." in out["limits"]
+    assert not any("Add a mailbox for Hannah" in line for line in out["limits"])
+    [skip] = [x for x in out["skipped_accounts"] if x["account_id"] == "acc-2"]  # Omar's account keeps Hannah
+    assert skip["reason"] == "sender's campaign not sending" and skip["detail"] == [
+        f"{DRAFT}; the account waits for Hannah Spalding"]
+    assert ctx.store.get("accounts", account_id="acc-2")["status"] == "verified"
+
+
+def test_live_approvals_propose_no_card_for_a_campaign_that_is_not_active():
+    from tests.test_send_approvals import items, world
+
+    ctx, t, sl = world()
+    _hannah_draft(t, status=2)
+    out = enrol.run(ctx)
+    assert out["send_approvals"]["posted"] == 2 and "Hannah Spalding" not in out["by_owner"]
+    assert {r["account_id"] for r in items(ctx)} == {"acc-1", "acc-3"}
+    assert "Hannah Spalding's campaign is not active in Instantly (paused)" in out["limited_by"]
+
+
+def test_a_dry_run_still_previews_and_says_a_live_run_would_not():
+    from tests.fakes import FakeTransport
+    from tests.test_enrol import make
+
+    t = FakeTransport()
+    ctx, _ = make(transport=t)
+    _hannah_draft(t)
+    out = enrol.run(ctx)
+    assert out["dry_run"] is True and out["prepared"] == 3 and out["by_owner"]["Hannah Spalding"] == 1
+    assert out["campaigns_not_sending"] == {"Hannah Spalding": DRAFT}
+    assert out["limited_by"].endswith(f" Counted anyway in this dry run, but a live run would not: {DRAFT}.")
+    line = next(x for x in out["limits"] if x.startswith("Sending capacity, Hannah Spalding:"))
+    assert line.endswith(f"; a live run would give none: {DRAFT}.") and "8 new leads today" in line
+
+
+def test_when_instantly_cannot_be_read_nothing_is_proposed_or_added():
+    from tests.fakes import FakeTransport
+    from tests.test_enrol import instantly_posts, make
+    from tests.test_send_approvals import items, world
+
+    ctx, t, sl = world()
+    t.route("GET", "/campaigns", {"error": "down"}, status=503)
+    out = enrol.run(ctx)
+    assert out["status"] == "ok" and out["number"] == 0 and out["send_approvals"]["posted"] == 0 and items(ctx) == []
+    assert "Instantly could not be read (ApiError" in out["limited_by"]
+    assert set(out["campaigns_not_sending"]) == {"Harry Dryden", "Hannah Spalding", "Sam Jackson"}
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("GET", "/campaigns", {"error": "down"}, status=503)
+    assert enrol.run(ctx)["enrolled"] == 0 and instantly_posts(t) == []
+
+
+def test_limits_reads_instantly_only_when_asked():
+    from tests.fakes import FakeTransport
+    from tests.test_enrol import make
+    from us_outbound import limits
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    _hannah_draft(t)
+    lim = limits.today(ctx, ctx.now_et().date(), ready_accounts=10)  # status, the daily post and golive
+    assert lim.not_sending == {} and not [r for r in t.requests if "/campaigns" in r.url]
+    lim = limits.today(ctx, ctx.now_et().date(), ready_accounts=10, campaigns=True)
+    assert lim.not_sending == {"Hannah Spalding": DRAFT} and lim.senders["Hannah Spalding"].free == 0
+    assert lim.terms["senders"]["Hannah Spalding"]["not_sending"] == DRAFT

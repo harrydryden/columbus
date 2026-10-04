@@ -13,6 +13,10 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
      accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
      Send approvals still waiting in Slack count towards the week and hold their sender's slots.
+     Each owner's "US Outbound – {owner}" campaign is read from Instantly: in a live run an owner
+     whose campaign is not active (only `us-outbound start --live` activates one), is missing, or
+     cannot be read has no slots, so no card is proposed and no lead added for them; a dry run counts
+     them and says so (enrol/capacity.campaigns_not_sending; summary campaigns_not_sending).
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
      suppressed or a partner, whose industry is on, with no send approval waiting in Slack, and
      with one sendable contact: a verified
@@ -588,8 +592,10 @@ class Skip:
 
 def prepare(
     ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], rows: Mapping[str, CopyRow],
-    pace: Mapping[str, int] | None = None,
+    pace: Mapping[str, int] | None = None, not_sending: Mapping[str, str] | None = None,
 ) -> Prepared | Skip:
+    """One account made ready to send, or why not. not_sending: owner -> why their campaign takes no new leads
+    (limits.Limits.not_sending); an account whose sender is held by it waits, and says so."""
     s, g = ctx.settings, ctx.settings.general
     a, c = cand.account, cand.contact
     owner = queue.assign_sender(a, s, free, pace)
@@ -597,6 +603,8 @@ def prepare(
         sender = str(a.get("sender") or "")
         if sender and not s.mailboxes_for(sender, "Active"):
             return Skip("sender paused", [f"{sender} has no Active mailbox; the account waits for them"])
+        if sender and (not_sending or {}).get(sender) and free.get(sender, 0) <= 0:
+            return Skip("sender's campaign not sending", [f"{not_sending[sender]}; the account waits for {sender}"])
         if sender:
             return Skip("sender full today", [f"{sender}'s inboxes are full with follow-ups today; the account waits for them"])
         return Skip("no sending capacity")
@@ -672,7 +680,7 @@ class _Run:
 def _walk(
     ctx: Context, lane: Iterator[Candidate], target: int, free: Counter[str], counts: Counter[str],
     rows: Mapping[str, CopyRow], run: _Run, pace: Mapping[str, int] | None = None,
-    quota: focus.Quota | None = None, held: list[Candidate] | None = None,
+    quota: focus.Quota | None = None, held: list[Candidate] | None = None, not_sending: Mapping[str, str] | None = None,
 ) -> list[Prepared]:
     """Prepare accounts in queue order until target are ready; skipped ones make way for the next.
 
@@ -689,7 +697,7 @@ def _walk(
             if held is not None:
                 held.append(cand)
             continue
-        p = prepare(ctx, cand, free, counts, rows, pace)
+        p = prepare(ctx, cand, free, counts, rows, pace, not_sending)
         if isinstance(p, Skip):
             run.skip(cand.account, p.reason, p.detail)
             if p.exclude_fact:
@@ -782,7 +790,9 @@ def run(ctx: Context) -> dict:
     # not proposed again, and hold their sender's slots and their place in the week.
     held = approvals.waiting(ctx)
     cands, skipped = candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner)
+    # campaigns=True: an owner whose Instantly campaign is not active gets no capacity in a live run (limits.py).
+    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner, campaigns=True)
+    stopped = lim.not_sending
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
     pace = {owner: c.pace for owner, c in lim.senders.items()}
@@ -800,11 +810,12 @@ def run(ctx: Context) -> dict:
     quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
     held_main: list[Candidate] = []
     held_control: list[Candidate] = []
-    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace, quota, held_control)
-    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace, quota, held_main)
-    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace, quota, held_control)
+    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace, quota,
+                     held_control, stopped)
+    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace, quota, held_main, stopped)
+    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace, quota, held_control, stopped)
     for held in (held_main, held_control):
-        fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace)
+        fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
         for p in fill:
             quota.take(p.account)
         prepared += fill
@@ -848,6 +859,7 @@ def run(ctx: Context) -> dict:
         number_terms=terms,
         limited_by=lim.explanation,
         limits=lim.lines,
+        campaigns_not_sending=stopped,
         focus=quota.describe() if quota.active else None,
         candidates=len(cands),
         prepared=len(prepared),

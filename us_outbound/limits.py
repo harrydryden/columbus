@@ -55,16 +55,24 @@ class Limits:
         """Everything, for the enrol summary and the log."""
         return [*self.detail, *self.budget_lines]
 
+    @property
+    def not_sending(self) -> dict[str, str]:
+        """owner -> why their campaign takes no new leads now (read only with campaigns=True)."""
+        return {o: c.not_sending for o, c in self.senders.items() if c.not_sending}
+
 
 def _count(ctx: Context, status: str) -> int:
     return len(ctx.store.select("accounts", {"status": status}))
 
 
-def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str, int] | None = None) -> Limits:
+def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str, int] | None = None,
+          campaigns: bool = False) -> Limits:
     """Today's number, its terms and why, for the send day `day` (a US Eastern date).
 
     pending: owner -> send approvals still waiting in Slack (enrol/approvals.waiting); they count as
     enrolled this week and hold their sender's slots.
+    campaigns: read each owner's campaign status from Instantly (capacity.campaigns_not_sending; the enrol
+    job does). In a live run an owner whose campaign is not active has no capacity today; a dry run says so.
     """
     s = ctx.settings
     pending = {o: n for o, n in (pending or {}).items() if n > 0}
@@ -75,6 +83,9 @@ def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str,
     senders = capacity.sending_capacity(ctx.store, s, day)
     for owner, c in senders.items():
         c.hold(pending.get(owner, 0))
+    if campaigns:
+        for owner, why in capacity.campaigns_not_sending(ctx, senders).items():
+            senders[owner].stop(why, live=ctx.live)
     free = sum(c.free for c in senders.values())
     n, terms = queue.daily_number(weekly_target=target, sending_capacity=free, ready_accounts=ready_accounts)
     budgets = {sys: budget.monthly(ctx.store, s, sys, ctx.now) for sys in ("clay", "apollo")}
@@ -83,7 +94,8 @@ def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str,
         enrolled_this_week=done,
         awaiting_approval=sum(pending.values()),
         send_days_left_in_week=days_left,
-        senders={o: {"cap": c.cap, "free": c.free, **({"pending": c.pending} if c.pending else {})}
+        senders={o: {"cap": c.cap, "free": c.free, **({"pending": c.pending} if c.pending else {}),
+                     **({"not_sending": c.not_sending} if c.not_sending else {})}
                  for o, c in senders.items()},
         budgets={sys: b.as_dict() for sys, b in budgets.items()},
     )
@@ -107,6 +119,10 @@ def explain(
     head = (f"Today: {n}, limited by {LABELS[binding]} "
             f"(weekly target {terms['weekly_target']}, sending capacity {terms['sending_capacity']}, "
             f"ready accounts {terms['ready_accounts']}).")
+    not_sending = list(dict.fromkeys(c.not_sending for c in senders.values() if c.not_sending))
+    if not_sending:  # the campaigns Instantly is not sending (capacity.campaigns_not_sending)
+        why = " ".join(f"{w[:1].upper()}{w[1:]}." for w in not_sending)
+        head += f" {why}" if ctx.live else f" Counted anyway in this dry run, but a live run would not: {why}"
     detail = [
         f"Weekly target: {terms['enrolled_this_week']} of {terms['weekly_enrol_cap']} enrolled this week "
         f"(Monday to Sunday, UK time), {terms['send_days_left_in_week']} send days left.",
@@ -134,11 +150,13 @@ def add_a_mailbox(senders: dict[str, capacity.SenderCapacity], waiting: int) -> 
     A full sender whose mailboxes are on the sending ramp is held by the ramp, not by a lack of
     mailboxes, so the line says when the ramp lifts it instead (Harry, 1 Oct 2026).
     """
-    full = [c for c in senders.values() if c.full]
+    full = [c for c in senders.values() if c.full and not c.stopped]  # a stopped campaign is not a lack of mailboxes
     if not full:
-        ramping = [c for c in senders.values() if c.ramping]
+        ramping = [c for c in senders.values() if c.ramping and not c.stopped]
         if ramping:
             return [_ramp_line(c) for c in ramping]
+        if any(c.stopped for c in senders.values()):
+            return []  # the head line already says which campaigns to start
         return ["More sends need another Active mailbox (`us-outbound mailbox add`), or higher daily caps once the inboxes are warm."]
     lines = []
     for c in full:
