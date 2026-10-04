@@ -73,7 +73,8 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     # The limiter and each sender (limits.py), with the ramp: Hannah first sent on Monday.
     assert any(line.startswith("Today: 0, limited by ready accounts") for line in lines)
     assert any(line.startswith("  Sending capacity, Hannah Spalding: 3 new leads today, 10 sends a day") for line in lines)
-    assert "  Enrollment waits: live_sending is no." in lines  # enrol's own gate (this test context is live)
+    # enrol's own gate (this test context is live): the opt-out test is not done, so nothing is sent
+    assert any(line.startswith("  Enrollment waits: optout_tested is no") for line in lines)
     assert any(line.startswith("  Apollo: 0 of 2,000 credits used this month") for line in lines)
     assert ("  • hannah@meetspill.org (Active): 5 sent; bounces 1 of its last 6 sends (16.7%); ramp week 1 "
             "(first send Sun 25 Oct): 10 a day of its 30; 20 from Sun 01 Nov") in lines
@@ -135,7 +136,7 @@ def waits(lines):
 
 def test_enrollment_waits_on_enrol_s_own_gates_and_the_hand_check_only_with_auto_send_on():
     ctx, _ = world()
-    with_general(ctx, live_sending=True, approver_slack_ids=("U_HARRY",))
+    with_general(ctx, live_sending=True, approver_slack_ids=("U_HARRY",), optout_tested=True)
     lines, _ = daily_post.build(ctx)
     # auto_send = no: the open hand-check does not hold anything back; the positive reply waiting 30 hours does.
     assert waits(lines) == ["  Enrollment waits: 1 positive reply has waited over 24 hours for approval."]
