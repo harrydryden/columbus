@@ -66,12 +66,12 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     assert got["Settings"].startswith("PASS")
     assert got["Copy"].startswith("FAIL  Copy: 28 of 28 active industries have no approved copy")  # Legal on
     assert got["Copy"].endswith("approve rows on the Copy tab (status approved, approved_by), then `us-outbound sync`")
-    [fintech] = [line for line in out.splitlines() if line.strip().startswith("Fintech: nothing sendable for")]
+    assert "… and 22 more industries like these" in out  # the detail stops at six industries
+    [tech] = [line for line in out.splitlines() if line.strip().startswith("Technology & Startups: nothing sendable")]
     # One line per copy role: "HR manager" contacts get the People leader copy (the Roles tab's copy_role).
-    assert all(r in fintech for r in ("People leader", "Founder or executive", "Operations"))
-    assert "HR manager" not in fintech
-    assert all(f"(fintech-{v}-v1 is a draft" in fintech or f"; fintech-{v}-v1 is a draft" in fintech
-               for v in ("people", "founder", "ops"))
+    assert all(r in tech for r in ("People leader", "Founder or executive", "Operations"))
+    assert "HR manager" not in tech
+    assert all(f"technology-startups-{v}-v1 is a draft" in tech for v in ("people", "founder", "ops"))
     assert got["Mailboxes"] == "FAIL  Mailboxes: no Active mailbox: nothing can send"
     assert "hannah@meetspill.org: Warming, not on a sending list" in out
     # Every FAIL that asks for a sheet edit says to sync it in (jobs read the synced copy of the sheet).

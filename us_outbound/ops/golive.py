@@ -108,6 +108,9 @@ def contacted_roles(ctx: Context) -> list[str]:
     return list(dict.fromkeys(roles)) or list(ROLE_LINE_COLUMNS)
 
 
+COPY_DETAIL_LINES = 6
+
+
 def check_copy(ctx: Context) -> Check:
     s = ctx.settings
     active = [i for i in s.industries if i.active]
@@ -144,6 +147,8 @@ def check_copy(ctx: Context) -> Check:
             own += 1
     status = _worst(statuses)
     fails, warns = statuses.count(FAIL), statuses.count(WARN)
+    if len(detail) > COPY_DETAIL_LINES:  # the rest are alike, and would bury the checks below
+        detail = [*detail[:COPY_DETAIL_LINES], f"… and {len(detail) - COPY_DETAIL_LINES} more industries like these"]
     if status == FAIL:
         reason = (f"{fails} of {len(active)} active industries have no approved copy with a current QA pass for "
                   f"every contacted role; approve rows on the Copy tab (status approved, approved_by){SYNC}")
@@ -324,9 +329,9 @@ def check_queue(ctx: Context) -> Check:
         return Check(WARN, "Queue", f"{len(ready)} ready (verified with a sendable contact), fewer than today's "
                                     f"{want} (weekly target {t['weekly_target']}, sending capacity "
                                     f"{t['sending_capacity']}){cards}", detail)
-    days = len(ready) / want if want else 0
-    return Check(PASS, "Queue", f"{len(ready)} ready (verified with a sendable contact): about {days:.0f} send days "
-                                f"at today's number, {lim.number}{cards}", detail)
+    pace = want or t["sending_capacity"]  # at the weekend, or once the week's target is met, today's number is 0
+    supply = f"about {len(ready) / pace:.0f} send days at {pace} a day" if pace else "none go today"
+    return Check(PASS, "Queue", f"{len(ready)} ready (verified with a sendable contact): {supply}{cards}", detail)
 
 
 def check_hand_check(ctx: Context) -> Check | None:
