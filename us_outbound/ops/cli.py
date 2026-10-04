@@ -1083,7 +1083,8 @@ def cmd_golive(args: argparse.Namespace, factory: Factory) -> int:
         print(golive.render(checks, datetime.now(UTC)))
         return golive.exit_code(checks)
     checks = golive.run_checks(ctx)
-    print(golive.render(checks, ctx.now))
+    g = ctx.settings.general
+    print(golive.render(checks, ctx.now, channel=g.alert_channel, auto_send=g.auto_send))
     return golive.exit_code(checks)
 
 
