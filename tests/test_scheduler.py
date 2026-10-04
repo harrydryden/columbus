@@ -17,6 +17,7 @@ import pytest
 from us_outbound.context import UK, ConfigError
 from us_outbound.ops import cli
 from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import schedule
 from us_outbound.ops import scheduler as sch
 from us_outbound.ops.schedule import SCHEDULE, ScheduledJob, by_name, enabled_names
 
@@ -491,7 +492,11 @@ LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hu
 
 def test_the_table_matches_the_job_registry_and_spec9():
     table = by_name()
-    assert list(table) == list(cli.JOBS) and len(table) == len(SCHEDULE)
+    assert list(table) == list(cli.JOBS) and len(table) == len(SCHEDULE) - 1  # settings_sync has two rows
+    # The second sync (4 Oct 2026): weekdays 11:30, so the morning's sheet edits are in force for enrol at 12:00.
+    assert [j.cron for j in SCHEDULE if j.name == "settings_sync"] == ["0 2 * * *", "30 11 * * 1-5"]
+    assert schedule.crons("settings_sync") == ["0 2 * * *", "30 11 * * 1-5"]
+    assert schedule.crons("enrol") == ["0 12 * * 1-5"] and schedule.crons("score") == []
     assert {n: j.cron for n, j in table.items()} == SPEC9_CRONS
     assert {j.name for j in SCHEDULE if j.live} == LIVE
     for j in SCHEDULE:
@@ -511,7 +516,8 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]
-    assert [j.name for j, _ in sch.Scheduler().jobs] == enabled
+    assert list(dict.fromkeys(j.name for j, _ in sch.Scheduler().jobs)) == enabled
+    assert [j.name for j, _ in sch.Scheduler().jobs].count("settings_sync") == 2
 
 
 def test_next_run_and_the_listing():
@@ -520,7 +526,9 @@ def test_next_run_and_the_listing():
     assert sch.next_run(daily, utc(2026, 10, 25, 0, 30)) == utc(2026, 10, 25, 2, 0)  # 02:00 GMT
     assert sch.next_run(sch.Cron.parse("0 9 * * 1"), utc(2026, 9, 30, 12, 0)) == utc(2026, 10, 5, 8, 0)
     assert sch.next_run(sch.Cron.parse("0 0 31 2 *"), utc(2026, 1, 1, 0, 0), horizon=timedelta(days=40)) is None
-    lines = {line.split()[0]: line for line in sch.describe(now=utc(2026, 9, 30, 12, 0))}
-    assert lines["settings_sync"].endswith("Thu 01 Oct 02:00 BST")
+    listing = sch.describe(now=utc(2026, 9, 30, 12, 0))
+    lines = {line.split()[0]: line for line in listing}
+    syncs = [line for line in listing if line.startswith("settings_sync ")]
+    assert syncs[0].endswith("Thu 01 Oct 02:00 BST") and syncs[1].endswith("Thu 01 Oct 11:30 BST")
     assert lines["heartbeat_check"].endswith("Wed 30 Sep 13:05 BST")
     assert lines["monday_readout"].endswith("disabled until phase 3") and lines["score"].endswith("on demand only")

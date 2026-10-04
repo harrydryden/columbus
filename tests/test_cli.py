@@ -144,7 +144,9 @@ def test_schedule_lists_every_job_with_its_next_run(capsys):
     out = capsys.readouterr().out
     lines = {line.split()[0]: line for line in out.splitlines() if line.split() and line.split()[0] in cli.JOBS}
     assert set(lines) == set(cli.JOBS)
-    assert "0 2 * * *" in lines["settings_sync"] and "--live" in lines["settings_sync"]
+    syncs = [line for line in out.splitlines() if line.startswith("settings_sync ")]
+    assert len(syncs) == 2 and all("--live" in line for line in syncs)  # 02:00 daily, and 11:30 on weekdays
+    assert "0 2 * * *" in syncs[0] and "30 11 * * 1-5" in syncs[1]
     assert "disabled until phase 3" in lines["monday_readout"] and "on demand only" in lines["score"]
     assert re.search(r"(BST|GMT)$", lines["heartbeat_check"])
     assert "live_sending = yes" in out
@@ -208,7 +210,9 @@ def test_live_flag_without_live_sending_stays_dry(capsys):
     h = Harness(SETTINGS)
     assert h.run("run", "suppression_load", "--live") == 0
     assert h.last.dry_run
-    assert "live_sending is not yes" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert out.startswith("Running dry: live_sending is no in the settings in force (synced never). If you have "
+                          "just set it to yes on the sheet, run `us-outbound sync` and try again.")
 
 
 def test_live_needs_both_the_flag_and_the_setting():

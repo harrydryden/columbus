@@ -167,10 +167,25 @@ def _operator() -> str:
     return os.environ.get("USER") or os.environ.get("RAILWAY_SERVICE_NAME") or "unknown"
 
 
+def _synced(ctx: Context) -> str:
+    """When the settings in force were synced from the sheet, in UK time."""
+    return _fmt_time(ctx.settings.synced_at) if ctx.settings.synced_at else "never"
+
+
+def _live_sending_note(ctx: Context) -> str:
+    """Why a --live run stayed dry. Jobs read the synced copy of the sheet, so an edit counts only once synced."""
+    return (f"Running dry: live_sending is no in the settings in force (synced {_synced(ctx)}). "
+            "If you have just set it to yes on the sheet, run `us-outbound sync` and try again.")
+
+
 def _dry_note(ctx: Context, what: str) -> None:
-    if ctx.dry_run:
-        need = "--live" if ctx.live_flag is False else "live_sending = yes in the settings sheet"
-        print(f"Dry-run: {what} Nothing was sent. Needs {need}.")
+    if not ctx.dry_run:
+        return
+    if ctx.live_flag is False:
+        print(f"Dry-run: {what} Nothing was sent. Needs --live.")
+        return
+    print(f"Dry-run: {what} Nothing was sent.")
+    print(_live_sending_note(ctx))
 
 
 def _record_unusable(exc: bootstrap.SettingsUnusable, job: str) -> None:
@@ -195,10 +210,65 @@ def _job(name: str, live_flag: bool, factory: Factory) -> int:
         _record_unusable(exc, name)
         raise
     if live_flag and ctx.dry_run:
-        print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
+        print(_live_sending_note(ctx))
     with _sigterm_ends_the_run():
         summary = run_job(ctx, fn)
     _print(summary)
+    return 0
+
+
+def _sync(live_flag: bool, factory: Factory) -> tuple[Context, dict]:
+    """settings_sync, as `us-outbound sync` and `settings sync` run it: the sheet's edits into force now.
+
+    A dry-run sync still brings the sheet in (the settings live in the database); only its Slack
+    message about sheet errors goes to the dev channel instead.
+    """
+    fn = resolve_job("settings_sync")
+    try:
+        ctx = factory("settings_sync", live_flag)
+    except bootstrap.SettingsUnusable as exc:
+        _record_unusable(exc, "settings_sync")
+        raise
+    with _sigterm_ends_the_run():
+        summary = run_job(ctx, fn)
+    return ctx, summary
+
+
+def _sync_line(summary: dict) -> str:
+    """One plain line on what a sync did."""
+    if summary.get("skipped"):
+        return f"Settings not synced: {summary.get('reason') or 'skipped'}."
+    changed = int(summary.get("rows_opened") or 0) + int(summary.get("rows_closed") or 0)
+    line = "Settings synced from the sheet just now: " + (
+        f"{changed} row{'s' if changed != 1 else ''} changed." if changed else "nothing had changed.")
+    if summary.get("unusable"):
+        line += (f" Unusable: {', '.join(summary['unusable'])}; fix the sheet (the errors are in Slack), "
+                 "then run `us-outbound sync` again.")
+    elif summary.get("rejected"):
+        line += (f" Kept the previous version of {', '.join(summary['rejected'])} (the errors are in Slack); "
+                 "fix the sheet, then run `us-outbound sync` again.")
+    return line
+
+
+def _in_force_line(ctx: Context) -> str:
+    """The two switches as the settings now in force have them (the store, after a sync)."""
+    from us_outbound.settings.sync import load_current
+
+    settings, errors = load_current(ctx.store)
+    if settings is None:
+        tabs = ", ".join(t for t, errs in errors.items() if errs) or "unknown"
+        return f"The settings are not usable ({tabs}): nothing runs until the sheet is fixed and synced."
+    g = settings.general
+    return (f"In force now: live_sending {'yes' if g.live_sending else 'no'}, "
+            f"auto_send {'yes' if g.auto_send else 'no'}.")
+
+
+def cmd_sync(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound sync` (and `settings sync`): bring the sheet's edits into force now, not at the next sync."""
+    ctx, summary = _sync(args.live, factory)
+    _print(summary)
+    print(_sync_line(summary))
+    print(_in_force_line(ctx))
     return 0
 
 
@@ -390,9 +460,27 @@ def _start(ctx: Context) -> dict:
 
 
 def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
-    ctx = factory(OPERATOR_START, args.live)
+    """Resume. With --live it syncs the settings first, so live_sending just set on the sheet counts."""
+    synced = False
+    if args.live:
+        try:
+            _, summary = _sync(True, factory)
+        except (GuardViolation, Terminated):
+            raise
+        except Exception as exc:  # start still goes ahead, on the settings already in force
+            print(f"Could not sync the settings first ({type(exc).__name__}: {redact(str(exc))[:200]}); "
+                  "going on with the settings in force.")
+        else:
+            synced = not summary.get("skipped")
+            print(_sync_line(summary))
+    ctx = factory(OPERATOR_START, args.live)  # reads the settings in force again, after the sync
     _print(run_job(ctx, _start))
-    _dry_note(ctx, "campaigns were not activated and enrollment stays stopped.")
+    if ctx.dry_run and args.live and synced:
+        print("Dry-run: campaigns were not activated and enrollment stays stopped. Nothing was sent.")
+        print(f"Running dry: live_sending is no in the settings in force (synced {_synced(ctx)}, just now). "
+              "Set it to yes on the General tab, then run `us-outbound start --live` again.")
+    else:
+        _dry_note(ctx, "campaigns were not activated and enrollment stays stopped.")
     return 0
 
 
@@ -420,7 +508,7 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
     _print(run_job(ctx, fn))
     _dry_note(ctx, "the sheet and Instantly were not changed.")
     if ctx.live:
-        print("The sheet is changed; the next settings_sync brings it into the database (or run `us-outbound settings sync`).")
+        print("The sheet is changed; the next settings sync brings it into force (or run `us-outbound sync` now).")
     return 0
 
 
@@ -586,7 +674,7 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
 
 def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     if args.action == "sync":
-        return _job("settings_sync", args.live, factory)
+        return cmd_sync(args, factory)
     if args.action == "load":
         from us_outbound.settings.load import DEFAULT_TABS, load
 
@@ -607,7 +695,8 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
             _print(t)
         _dry_note(ctx, "the sheet is unchanged.")
         if ctx.live:
-            print("Now run `us-outbound settings sync` (or wait for 02:00 UK) to bring the tabs in.")
+            print("Now run `us-outbound sync` to bring the tabs into force (or wait for the next sync: 02:00, and "
+                  "11:30 UK on weekdays).")
         return 0
     from us_outbound.settings.sync import bootstrap as create_sheet
 
@@ -616,7 +705,7 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     _print(summary)
     if summary.get("sheet_id"):
         print("Set US_OUTBOUND_SETTINGS_SHEET_ID to this id in the Railway service's variables, share the sheet "
-              "with the Sheets service account as Editor, then run `us-outbound settings sync`.")
+              "with the Sheets service account as Editor, then run `us-outbound sync`.")
     else:
         _dry_note(ctx, "no sheet was created.")
     return 0
@@ -836,8 +925,6 @@ def cmd_replies(args: argparse.Namespace, factory: Factory) -> int:
         return 0 if summary.get("skipped") or ctx.dry_run else 2
     # approve sends to a prospect: --live and live_sending = yes (SPEC 0.3), not --live alone.
     ctx = factory(REPLIES_CLI_JOB, args.live)
-    if args.live and ctx.dry_run:
-        print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
     summary = run_job(ctx, lambda c: desk.approve(c, args.item_id, text=args.edit))
     _print(summary)
     _dry_note(ctx, "the reply was not sent, HubSpot was not written and the item is unchanged.")
@@ -888,8 +975,6 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("--contact and --company go with reject, not approve")
     # approve adds the lead to Instantly, so it is live like a job: --live and live_sending = yes (SPEC 0.3).
     ctx = factory(approvals.APPROVALS_CLI_JOB, args.live)
-    if args.live and ctx.dry_run:
-        print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
     try:
         summary = run_job(ctx, lambda c: approvals.approve(c, args.item_id))
     except (LookupError, ValueError) as exc:
@@ -1082,7 +1167,8 @@ def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
     for line in scheduler.describe():
         print(line)
     print(f"At most {scheduler.max_parallel_from_env()} jobs run at once ({scheduler.MAX_PARALLEL_VAR}). "
-          "A --live job is still dry until live_sending = yes in the settings sheet.")
+          "A --live job is still dry until live_sending = yes in the synced settings (sheet edits apply at the "
+          "next settings_sync, or now with `us-outbound sync`).")
     return 0
 
 
@@ -1107,6 +1193,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="settings, heartbeats, mailboxes and campaigns").set_defaults(fn=cmd_status)
     sub.add_parser("stop", parents=[live], help="pause every US Outbound campaign and enrollment").set_defaults(fn=cmd_stop)
     sub.add_parser("start", parents=[live], help="resume the campaigns and enrollment").set_defaults(fn=cmd_start)
+    sub.add_parser("sync", parents=[live], help="bring the sheet's edits into force now (the same as settings sync)"
+                   ).set_defaults(fn=cmd_sync)
 
     mb = sub.add_parser("mailbox", parents=[live], help="mailbox registry commands (SPEC 9)")
     mb.add_argument("action", choices=["add", "pause", "retire", "check"])
