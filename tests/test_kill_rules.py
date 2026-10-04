@@ -120,6 +120,19 @@ def test_the_rule_does_not_fire_twice_and_old_bounces_never_count_again():
     assert kill_rules.run(later(ctx, t, 1))["fired"] == []
 
 
+def test_replies_sent_from_the_desk_are_not_sends_in_a_bounce_rate():
+    """2 bounces in 50 campaign sends is 4%; counting 30 desk replies as sends would make it 2.5% and hide it."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 50, bounced=2)
+    ctx.store.insert("events", [{"event_id": f"r-{i}", "type": "reply_sent", "mailbox": HANNAH, "contact_id": f"k-{i}",
+                                 "approval": "approved", "occurred_at": RECENT + timedelta(hours=2, minutes=i)}
+                                for i in range(30)])
+    out = kill_rules.run(ctx)
+    [fired] = out["fired"]
+    assert fired["rule"] == "mailbox_bounce_rate" and "2 of its last 50 sends bounced (4.0%" in fired["reason"]
+
+
 def test_one_bounce_never_pauses_a_mailbox():
     ctx, t, inst, sheets = setup()
     campaigns(inst)

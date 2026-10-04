@@ -58,6 +58,29 @@ def test_a_late_listed_send_renumbers_the_steps(world):
     assert world.ctx.store.get("events", event_id="S2")["step"] == 2
 
 
+def test_a_reply_sent_from_the_desk_is_never_a_step(world):
+    """The desk records its replies as reply_sent; even listed among the sent emails, they are no campaign step."""
+    world.ctx.store.insert("events", [
+        {"event_id": "R1", "type": "reply_sent", "contact_id": "k-jane", "account_id": "acc-acme", "mailbox": HANNAH,
+         "step": None, "approval": "approved", "approved_by": "U_HARRY", "occurred_at": NOW - timedelta(days=2)},
+        # One written before desk replies had their own type: a sent row with an approval.
+        {"event_id": "R0", "type": "sent", "contact_id": "k-jane", "account_id": "acc-acme", "mailbox": HANNAH,
+         "step": None, "approval": "edited", "approved_by": "U_HARRY", "occurred_at": NOW - timedelta(days=4)},
+    ])
+    world.sent("S1", at=NOW - timedelta(days=10))
+    world.sent("R1", at=NOW - timedelta(days=2))  # Instantly lists the desk's reply as a sent email
+    world.sent("S2", at=NOW - timedelta(days=1))
+    out = run(world)
+    events = {e["event_id"]: e for e in world.events()}
+    assert (events["S1"]["step"], events["S2"]["step"]) == (1, 2)
+    assert (events["R1"]["type"], events["R1"]["step"]) == ("reply_sent", None)
+    assert (events["R0"]["type"], events["R0"]["step"]) == ("sent", None)  # left as it was, not renumbered
+    assert out["sent"] == 2 and out["dropped"] == {"sent: a reply sent from the reply desk": 1}
+    world.reply("E1", at=NOW - timedelta(hours=1))
+    run(world)
+    assert world.ctx.store.get("events", event_id="E1")["step"] == 2  # the reply answers step 2, not the desk's reply
+
+
 def test_sends_outside_our_campaigns_or_contacts_are_dropped(world):
     world.sent("S1", campaign="cmp-eu")
     world.sent("S2", "someone@else.com")

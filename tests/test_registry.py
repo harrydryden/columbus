@@ -413,6 +413,17 @@ def test_mailbox_health_waits_to_retire_a_recently_used_mailbox():
     assert row(sheets, SAM)["status"] == "Paused"
 
 
+def test_a_reply_sent_from_the_desk_counts_as_using_the_mailbox():
+    settings = dataclasses.replace(SETTINGS, mailboxes=(
+        mailbox(HARRY, "Harry Dryden"), mailbox(SAM, "Sam Jackson", "Paused", retire_after=date(2026, 10, 20))))
+    ctx, t, inst, sheets = setup(settings)
+    ctx.store.insert("events", [{"event_id": "r1", "type": "reply_sent", "mailbox": SAM, "approval": "approved",
+                                 "occurred_at": NOW - timedelta(days=3)}])
+    assert reg.last_use(ctx, SAM) == NOW - timedelta(days=3)
+    out = reg.mailbox_health(ctx)
+    assert out["retired"] == [] and out["waiting_to_retire"] == [SAM]
+
+
 def test_mailbox_health_dry_run_proposes_only():
     settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding", "Warming"),))
     ctx, t, inst, sheets = setup(settings, live=False)

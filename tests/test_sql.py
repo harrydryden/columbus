@@ -98,6 +98,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
+        "reply_sent",  # replies/desk.py: a desk reply is no campaign send
     },
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",

@@ -137,7 +137,9 @@ def test_send_in_the_thread_sends_the_draft_from_the_mailbox_written_to(settings
     assert (row["status"], row["handled_by"], row["handled_at"]) == ("handled", HARRY_ID, NOW)
     assert row["payload"]["desk"]["sent"]["email_id"] == "sent-1" and row["payload"]["sent_text"] == draft
     event = ctx.store.get("events", event_id="sent-1")
-    assert (event["type"], event["approval"], event["approved_by"], event["mailbox"]) == ("sent", "approved", HARRY_ID, HANNAH)
+    assert (event["type"], event["approval"], event["approved_by"], event["mailbox"]) == (
+        "reply_sent", "approved", HARRY_ID, HANNAH)
+    assert event["step"] is None and ctx.store.select("events", {"type": "sent"}) == []  # no campaign send
     assert any(t_.startswith("Sent from hannah@meetspill.org at 16:00 UK") for t_ in sl.texts())  # SPEC 11's words
     assert any(t_.startswith("HubSpot: https://app.hubspot.com/contacts/8481055/record/0-2/") for t_ in sl.texts())
     assert crm.objects["companies"] and out["sent"][0]["approval"] == "approved"
@@ -285,7 +287,7 @@ def test_dry_run_reports_and_changes_nothing(settings):
     assert out["dry_run"] and out["would"] == [{"item": ITEM[:8], "action": "send", "by": HARRY_ID, "via": "✅",
                                                 "edited": False}]
     assert inst.replies == [] and sl.posts == [] and crm.objects["companies"] == {}
-    assert row_of(ctx) == before and ctx.store.select("events", {"type": "sent"}) == []
+    assert row_of(ctx) == before and ctx.store.select("events", {"type": ["sent", "reply_sent"]}) == []
 
 
 # -- re-posting (SPEC 11; D11: until 23:00 UK) ---------------------------------------------------------

@@ -402,9 +402,9 @@ def mailbox_retire(ctx: Context, address: str) -> dict:
 
 
 def last_use(ctx: Context, address: str) -> datetime | None:
-    """When the mailbox last sent: its latest 'sent' event, or its contacts' last step."""
+    """When the mailbox last sent: its latest campaign send or reply sent from the desk, or its contacts' last step."""
     a = address.lower()
-    times = [_ts(e.get("occurred_at")) for e in ctx.store.select("events", {"mailbox": a, "type": "sent"})]
+    times = [_ts(e.get("occurred_at")) for e in ctx.store.select("events", {"mailbox": a, "type": ["sent", "reply_sent"]})]
     times += [_ts(c.get("last_step_at")) for c in ctx.store.select("contacts", {"mailbox": a})]
     times = [t for t in times if t is not None]
     return max(times) if times else None

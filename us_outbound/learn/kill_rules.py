@@ -1,7 +1,8 @@
 """kill_rules, hourly (SPEC 9, 12 "Kill rules"): pause what is hurting deliverability, and say so in Slack.
 
 It reads the events table, which sync_outcomes fills from Instantly: type sent (one row per
-email, with its mailbox, contact and step) and bounced, the names enrol/capacity.py
+campaign email, with its mailbox, contact and step; a reply sent from the reply desk is
+reply_sent, so it is never in a rate's denominator) and bounced, the names enrol/capacity.py
 STOP_EVENTS uses. A send counts as bounced when a bounced event for the same contact, at the
 same step or with no step, came at or after it (as v_mailbox_health counts it). Contract for
 the writers (PHASE0-CONFIRM what Instantly reports):

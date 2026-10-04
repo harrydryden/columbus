@@ -10,6 +10,8 @@ honors opt-outs the same day. Each run:
                   and Instantly's own step numbering is not confirmed. mailbox is the address
                   that sent it. The contact's last_step_at follows its latest send, and its mailbox
                   is set from step 1 when enrol could not know it (Harry has two addresses).
+                  A reply the reply desk sent is its own type, reply_sent (replies/desk.py): never
+                  a step, and dropped here if Instantly lists it among the sent emails.
   * replied:      each email one of our contacts, or anyone at the account's domain, sent to a
                   registry mailbox, unclassified (reply_class NULL) for poll_replies to classify.
                   The account becomes engaged. An email Instantly marks as an auto-reply is left to
@@ -59,6 +61,9 @@ from us_outbound import suppression
 JOB = "sync_outcomes"
 # The event types enrol/capacity.py reads (STOP_EVENTS, and "sent" for the forecast). SPEC 6.
 SENT, BOUNCED, REPLIED, UNSUBSCRIBED = "sent", "bounced", "replied", "unsubscribed"
+# A reply the reply desk sent (replies/desk.py): it uses the mailbox, but it is no campaign step,
+# so it is never a "sent" row, never numbered as a step and never counted as a send.
+REPLY_SENT = "reply_sent"
 ENROLLED, ENGAGED = "enrolled", "engaged"
 BOUNCE_REASON, INSTANTLY_SOURCE = "bounce", "instantly"
 OVERLAP = timedelta(hours=1)  # each run re-reads from an hour before the last good run started
@@ -292,9 +297,15 @@ def mark_engaged(ctx: Context, account_ids: Iterable[str]) -> list[str]:
 
 
 def sent_events(ctx: Context, contact_ids: Iterable[str]) -> dict[str, list[dict]]:
-    """contact id -> its sent events, oldest first."""
+    """contact id -> its campaign sends (sent events), oldest first.
+
+    A sent row with an approval is a desk reply written before desk replies had their own type
+    (reply_sent): it is left out, so it is never numbered as a step.
+    """
     out: dict[str, list[dict]] = defaultdict(list)
     for e in select_in(ctx, "events", "contact_id", contact_ids, {"type": SENT}):
+        if e.get("approval"):
+            continue
         out[str(e["contact_id"])].append(e)
     for evs in out.values():
         evs.sort(key=_send_order)
@@ -340,6 +351,11 @@ def _record_sent(ctx: Context, d: Directory, emails: Iterable[Mapping[str, Any]]
             continue
         new[eid] = {"event_id": eid, "contact_id": contact["contact_id"], "account_id": contact.get("account_id"),
                     "type": SENT, "mailbox": acct, "occurred_at": email_time(e) or ctx.now}
+    # A reply the desk sent may be listed as a sent email too: its own row stays as it is.
+    for r in select_in(ctx, "events", "event_id", new):
+        if r.get("type") == REPLY_SENT or (r.get("type") == SENT and r.get("approval")):
+            new.pop(str(r["event_id"]), None)
+            dropped["sent: a reply sent from the reply desk"] += 1
     if not new:
         return 0, set()
     by_contact = sent_events(ctx, {r["contact_id"] for r in new.values()})

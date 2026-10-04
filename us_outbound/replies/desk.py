@@ -22,7 +22,9 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      guard checks the approver too). The text must pass the copy rules' word and line checks (SPEC
      1.9) or it is not sent, and the thread says why. Then the thread confirms ("Sent from
      hannah@meetspill.org at 14:32 UK"), an events row records the approval (approved, edited or
-     skipped, with approved_by) and the item is handled. While it goes out the item is held at
+     skipped, with approved_by) and the item is handled. A sent reply's row is type reply_sent, not
+     sent: it uses the mailbox (registry/mailboxes.last_use counts it) but is no campaign send, so
+     send counts, steps and the kill rules' bounce rates leave it out. While it goes out the item is held at
      status "sending" by a compare-and-set, so it can never go twice; if a run dies mid-send the
      item is not resent by itself: the thread (and `replies list`) asks a person to check.
   4. Re-post (SPEC 11, D11). An alert unanswered for 2 hours is re-posted in its thread and to the
@@ -84,6 +86,7 @@ from us_outbound.replies.items import (
     save_payload,
     ts,
 )
+from us_outbound.replies.outcomes import REPLY_SENT
 from us_outbound.settings.model import Settings
 
 JOB = "poll_approvals"
@@ -392,8 +395,8 @@ def send_reply(ctx: Context, item: ReplyItem, text: str, *, by: str, edited: boo
     desk.pop("sending", None)
     save_payload(ctx.store, item.id, {"status": HANDLED, "handled_at": ctx.now, "handled_by": by},
                  desk=desk, sent_text=text)
-    ctx.store.upsert("events", [{
-        "event_id": email_id or f"{SENT_EVENT}{item.id}", "type": "sent", "step": None, "mailbox": item.mailbox,
+    ctx.store.upsert("events", [{  # reply_sent, not sent: never counted as a campaign send
+        "event_id": email_id or f"{SENT_EVENT}{item.id}", "type": REPLY_SENT, "step": None, "mailbox": item.mailbox,
         "account_id": item.account_id or None, "contact_id": item.contact_id or None,
         "approval": approval, "approved_by": by, "occurred_at": ctx.now,
     }])
