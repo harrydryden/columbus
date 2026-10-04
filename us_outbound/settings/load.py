@@ -13,6 +13,10 @@ command merges them into the sheet without losing Harry's own edits:
     yet are added with the build's value and note; `--set key=value` sets the values Harry has
     decided. Note-only rows stay where they are. clay_verification (Harry, 1 Oct 2026) arrives
     this way as skip; `--set clay_verification=required` once the Clay functions exist.
+    `--set` refuses the sign-off keys (SIGN_OFF: live_sending, auto_send, optout_tested,
+    approver_slack_ids): this command is live with --live alone, and those are Harry's to set on
+    the sheet. A load never changes the note of a key the tab already has; `--take note` refreshes
+    those notes from the build's, and never touches a value.
   * Copy: a tab still in the one-row-per-step layout is replaced (its rows stay in the
     database's settings history). A tab already in the new layout keeps every row as it
     is on the sheet; only copy versions it does not have are added, at the end. With
@@ -52,6 +56,13 @@ LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus")
 # The columns Harry owns; `--take COLUMN` lets the build's value win for one load (Harry, 1 Oct 2026:
 # "make all the changes" in the design review, so Legal Teams goes on at launch).
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
+# General: a key's note stays as the sheet has it; `--take note` refreshes the notes of the keys the tab
+# already has from the build's (their values are never touched by this).
+GENERAL_TAKE = ("note",)
+# The sign-off keys: Harry sets them on the sheet. `settings load` is an operator command, live with
+# --live alone, so its --set must not be a way round his sign-off (live_sending, auto_send and
+# optout_tested decide what is sent; approver_slack_ids decides who may approve it).
+SIGN_OFF = ("live_sending", "auto_send", "optout_tested", "approver_slack_ids")
 # Tabs where every column the sheet already has keeps its value, blank included (Harry, 2 Oct 2026: the
 # tokenized openers arrive as new Signals columns without undoing his edits). Columns the sheet does not
 # have yet take the build's values; `--take COLUMN` lets the build win for one column, as the design
@@ -102,9 +113,19 @@ def _key(row: Mapping[str, str], tab: str) -> str:
     return str(row.get(KEY[tab]) or "").strip().casefold()
 
 
+def check_sets(sets: Mapping[str, str] | None) -> None:
+    """Refuse a --set of a sign-off key (SIGN_OFF): Harry sets those on the sheet."""
+    refused = [k for k in SIGN_OFF if k in (sets or {})]
+    if refused:
+        raise ValueError(f"--set cannot change {', '.join(refused)}: {'it is' if len(refused) == 1 else 'they are'} "
+                         "Harry's sign-off, set on the General tab of the settings sheet")
+
+
 def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]],
-                 sets: Mapping[str, str] | None = None) -> Plan:
-    """The General tab with renamed keys renamed, missing keys added and Harry's decided values set."""
+                 sets: Mapping[str, str] | None = None, *, take: Sequence[str] = ()) -> Plan:
+    """The General tab with renamed keys renamed, missing keys added and Harry's decided values set;
+    with take ("note"), the notes of the keys it already has refreshed from the build's."""
+    check_sets(sets)
     cols = COLUMNS["General"]
     build = {r["key"]: r for r in build_rows}
     unknown = sorted(set(sets or {}) - set(build))
@@ -126,6 +147,9 @@ def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[M
             row = {c: str(build[new].get(c, "")) for c in cols}
             p.updated.append(f"{key} renamed {new} = {row['value']}")
             present.add(new)
+        elif "note" in take and key in build and row["note"].strip() != str(build[key].get("note", "")).strip():
+            row["note"] = str(build[key].get("note", ""))
+            p.updated.append(f"{key}: note refreshed")
         p.rows.append(row)
     for key, b in build.items():
         if key not in present:
@@ -143,7 +167,7 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
              sets: Mapping[str, str] | None = None, *, replace_drafts: bool = False,
              take: Sequence[str] = ()) -> Plan:
     if tab == "General":
-        return plan_general(sheet_rows, build_rows, sets)
+        return plan_general(sheet_rows, build_rows, sets, take=take)
     cols = COLUMNS[tab]
     present = set().union(*(set(r) for r in sheet_rows)) if sheet_rows else set()
     p = Plan(tab, [], len(sheet_rows), new_columns=[c for c in cols if present and c not in present])
@@ -213,6 +237,7 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
     bad = [t for t in tabs if t not in LOADABLE]
     if bad:
         raise ValueError(f"only {', '.join(LOADABLE)} can be loaded, not {', '.join(bad)}")
+    check_sets(sets)  # before the sheet is read
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise ValueError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
@@ -224,6 +249,7 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
     if sets and "General" not in tabs:
         raise ValueError("--set changes the General tab; load it too (--tab General)")
     kept = {c for t in tabs for c in (COLUMNS[t] if t in SHEET_WINS else KEEP.get(t, ()))}
+    kept |= set(GENERAL_TAKE) if "General" in tabs else set()
     unknown = sorted(set(take) - kept)
     if unknown:
         raise ValueError(f"--take names a column the loaded tabs do not keep: {', '.join(unknown)}")

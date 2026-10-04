@@ -80,7 +80,12 @@ def test_the_job_records_this_week_s_sample_and_posts_it():
     [post] = posts(t)
     assert post.json["channel"] == "C_ALERT"
     text = post.json["text"]
-    assert text.startswith(f"<@U_HARRY> Weekly hand-check {WEEK}") and "`us-outbound handcheck approve --live`" in text
+    assert text.startswith("<@U_HARRY> Week 44 check: 17 accounts drawn at random from the queue. Is each one right: "
+                           "the name, HQ state, size band, the contact's role and title, and what the opener rests on?")
+    assert text.endswith("All fine: `railway ssh -- us-outbound handcheck approve --live`. Any wrong: add "
+                         f"`--pull {p['accounts'][0]['domain']}`, or fix it on the Overrides tab. Until then no new "
+                         "leads go to Instantly this week.")
+    assert "SPEC" not in text and "2026" not in text
     assert item["slack_ts"] == "1.1"
     # Enrollment waits for it.
     assert enrol.hand_check(ctx, ctx.now_et().date()) == (f"this week's hand-check ({WEEK}) is not approved yet", frozenset())
@@ -157,23 +162,25 @@ def harness():
     return h
 
 
-def test_handcheck_show_prints_the_sample_and_records_it_only_when_live(capsys):
+def test_handcheck_show_prints_the_sample_and_never_records_it(capsys):
+    """A9: `handcheck show` only prints; `handcheck approve` records the same draw (seeded with the week)."""
     h = harness()
     assert h.run("handcheck", "show") == 0
     out = capsys.readouterr().out
-    assert f"Weekly hand-check {WEEK}" in out and "Marketing & Creative Agencies (10):" in out
-    assert "Contact: " in out and "Evidence: " in out
-    assert "Not recorded yet" in out and h.store.select("hitl_items", {"kind": "hand_check"}) == []
+    assert "Week 44 check: 17 accounts drawn at random from the queue" in out
+    assert "Marketing & Creative Agencies (10):" in out and "Contact: " in out and "Evidence: " in out
+    assert "All fine: `us-outbound handcheck approve --live`." in out
     assert h.run("handcheck", "show", "--live") == 0
-    assert "Item hand_check-2026-W44: open." in capsys.readouterr().out
-    assert len(h.store.select("hitl_items", {"kind": "hand_check"})) == 1
+    assert h.store.select("hitl_items", {"kind": "hand_check"}) == []
+    shown = hand_check.show(h.last)[1]["groups"]
+    assert h.run("handcheck", "approve", "--live") == 0
+    [item] = h.store.select("hitl_items", {"kind": "hand_check"})
+    assert item["status"] == "handled" and item["payload"]["groups"] == shown  # what show printed
 
 
 def test_handcheck_approve_marks_the_week_handled_with_the_pulled_accounts(capsys):
     h = harness()
-    assert h.run("handcheck", "approve", "--live") == 2  # nothing recorded yet
-    assert "handcheck show --live" in capsys.readouterr().err
-    assert h.run("handcheck", "show", "--live") == 0
+    assert h.run("run", "hand_check_post", "--live") == 0  # recorded and posted
     item = h.store.select("hitl_items", {"kind": "hand_check"})[0]
     sample = item["payload"]["groups"][TECH]
     assert h.run("handcheck", "approve", "--pull", sample[0], "tec1.com") == 0  # dry-run: nothing changes
@@ -224,5 +231,94 @@ def test_with_auto_send_off_the_doubtful_accounts_still_go_to_a_person():
     out = hand_check.post(ctx)
     assert out["status"] == "recorded" and out["accounts"] == 0 and out["doubtful"] == 1 and out["groups"] == {}
     [post] = posts(t)
-    assert "the accounts held back for doubtful Apollo facts" in post.json["text"]
-    assert "mar-70" in post.json["text"] and "The held accounts wait until it is approved." in post.json["text"]
+    text = post.json["text"]
+    assert text.startswith("<@U_HARRY> Week 44 check: 1 account has doubtful Apollo facts, so it won't get a card "
+                           "until you look.\n  1. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70\n")
+    assert text.endswith("All fine: `railway ssh -- us-outbound handcheck approve --live`. Any wrong: add "
+                         "`--pull mar70.com`, or fix it on the Overrides tab. Ignoring this is safe: only these "
+                         "accounts wait.")
+    assert "SPEC" not in text and "Harry, 2 Oct" not in text
+
+
+# -- A9: auto_send switched on after a doubtful-only week, and the confirmation --------------------------------
+
+
+def _doubtful_week(ctx):
+    """auto_send = no: the week's item holds only the account with doubtful facts (no sample)."""
+    from us_outbound import verify
+
+    _approving(ctx)
+    held = acct(70, AGENCIES, "queued", employees=None, size_band="", hq_state="")
+    ctx.store.insert("accounts", [held])
+    ctx.store.insert("signal_events", [verify.doubt_fact(ctx, held, ["no HQ state"])])
+    assert hand_check.post(ctx)["status"] == "recorded"
+    return ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
+
+
+def _auto_send_on(ctx):
+    ctx.settings = dataclasses.replace(SETTINGS, general=dataclasses.replace(SETTINGS.general, auto_send=True))
+
+
+def test_a_doubtful_only_week_does_not_pass_the_gate_once_auto_send_is_yes():
+    ctx, t = world()
+    item = _doubtful_week(ctx)
+    assert item["payload"]["per_group"] == 0 and not enrol.has_sample(item["payload"])
+    hand_check.approve(ctx, ["mar70.com"], "harry")
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset({"mar-70"}))  # auto_send = no: fine
+    _auto_send_on(ctx)
+    why, pulled = enrol.hand_check(ctx, ctx.now_et().date())
+    assert why.startswith(f"this week's hand-check ({WEEK}) has no random sample") and pulled == frozenset()
+    # hand_check_post records it again with the sample, the pull kept, open until it is approved.
+    out = hand_check.post(ctx)
+    assert out["status"] == "recorded again with the sample (auto_send is yes now)" and out["accounts"] == 17
+    item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
+    assert (item["status"], item["handled_by"], item["payload"]["per_group"]) == ("open", None, 10)
+    assert item["payload"]["pulled_account_ids"] == ["mar-70"]
+    assert posts(t)[-1].json["text"].startswith("<@U_HARRY> Week 44 check: 17 accounts drawn at random")
+    assert "not approved yet" in enrol.hand_check(ctx, ctx.now_et().date())[0]
+    hand_check.approve(ctx, [], "harry")
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset({"mar-70"}))
+    assert len(ctx.store.select("hitl_items", {"kind": "hand_check"})) == 1
+
+
+def test_approve_records_the_sample_itself_when_the_week_has_none():
+    ctx, t = world()
+    _doubtful_week(ctx)
+    hand_check.approve(ctx, [], "harry")
+    _auto_send_on(ctx)
+    item, payload = hand_check.show(ctx)  # what approve will record; nothing is written
+    assert item is None and payload["per_group"] == 10 and len(payload["accounts"]) == 17
+    assert ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")["payload"]["per_group"] == 0
+    dry = make_context(ctx.settings, live=False, transport=t, now=ctx.now, store=ctx.store)
+    out = hand_check.approve(dry, [], "harry")
+    assert (out["approved"], out["recorded"], out["was"]) == (False, False, "not recorded")
+    assert ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")["payload"]["per_group"] == 0  # dry: unchanged
+    out = hand_check.approve(ctx, [], "harry")
+    assert (out["approved"], out["recorded"]) == (True, True)
+    item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
+    assert item["status"] == "handled" and item["payload"]["groups"] == payload["groups"]
+    assert enrol.hand_check(ctx, ctx.now_et().date())[0] is None
+
+
+def test_approve_with_nothing_to_check_says_so():
+    ctx = make_context(SETTINGS, live=True, transport=slack_routes(FakeTransport()), now=NOW)
+    import pytest
+
+    with pytest.raises(LookupError, match=f"nothing to check for {WEEK}"):
+        hand_check.approve(ctx, [], "harry")
+
+
+def test_the_confirmation_says_what_happens_next_in_plain_words():
+    ctx, t = world()
+    _doubtful_week(ctx)
+    out = hand_check.approve(ctx, [], "harry")  # Monday: verify_accounts runs again tomorrow at 04:30
+    assert out["message"] == ("Week 44 check approved by harry. The account with doubtful facts is verified again at "
+                              "04:30 tomorrow.")
+    assert posts(t)[-1].json["text"].endswith(out["message"])  # the item was posted, so the channel hears it
+    friday = make_context(ctx.settings, live=True, transport=t, now=NOW + timedelta(days=4), store=ctx.store)
+    assert hand_check.confirmation(friday, WEEK, "harry", [], 2) == (
+        "Week 44 check approved by harry. The 2 accounts with doubtful facts are verified again at 04:30 on Monday.")
+    _auto_send_on(ctx)
+    assert hand_check.confirmation(ctx, WEEK, "harry", ["tec-01"], 0) == (
+        "Week 44 check approved by harry; pulled: tec-01. New leads can go to Instantly this week.")
+    assert "SPEC" not in out["message"]

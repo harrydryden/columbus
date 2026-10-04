@@ -13,7 +13,10 @@ Order: a guard that starts in dry-run, the database store, the settings in force
 mailbox a kill rule holds shown as Paused, learn/holds.py), and
 only then the live decision and the boundaries, so nothing can be sent before the
 settings are known. If the settings are unusable, jobs refuse to run; settings_sync, the
-sheet bootstrap and `settings load` start from the General defaults so they can repair them.
+sheet bootstrap and `settings load` start from the General defaults so they can repair them,
+and so does the kill switch: `stop` (it pauses every US Outbound campaign and stops enrollment)
+and `unenrol` must work however broken the sheet is. Both are operator commands, live with --live
+alone, and neither reaches a prospect.
 
 Live (SPEC 0.3) needs the --live flag and live_sending = yes. Operator commands that
 never reach a prospect (setup, pause, erase; see ops/cli.py) pass operator=True and are
@@ -33,11 +36,14 @@ from us_outbound.clients.http import Transport
 from us_outbound.context import Clients, ConfigError, Context, Secrets, boundaries_for, effective_live
 from us_outbound.learn.holds import with_holds
 from us_outbound.logs import log
+from us_outbound.ops.heartbeat import OPERATOR_STOP
 from us_outbound.settings.model import General, Settings
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
-# Jobs that may start from the General defaults when no valid settings are in force.
-DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap", "settings_load"})
+UNENROL_JOB = "unenrol"  # ops/cli.py cmd_unenrol
+# Jobs that may start from the General defaults when no valid settings are in force: the ones that
+# repair the sheet, and the kill switch (`stop --live` and `unenrol --live` must never wait for a fix).
+DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap", "settings_load", OPERATOR_STOP, UNENROL_JOB})
 DATABASE_VAR = "DATABASE_URL"
 GOOGLE_KEY_VAR = "US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON"
 # ConfigError (the environment is missing something) lives in context.py, beside Secrets;

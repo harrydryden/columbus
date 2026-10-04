@@ -13,13 +13,18 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
      accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
      Send approvals still waiting in Slack count towards the week and hold their sender's slots.
+     Each owner's "US Outbound – {owner}" campaign is read from Instantly: in a live run an owner
+     whose campaign is not active (only `us-outbound start --live` activates one), is missing, or
+     cannot be read has no slots, so no card is proposed and no lead added for them; a dry run counts
+     them and says so (enrol/capacity.campaigns_not_sending; summary campaigns_not_sending).
   3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
      suppressed or a partner, whose industry is on, with no send approval waiting in Slack, and
      with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
      pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
-     hold back an industry group or an email source (learn/holds.py).
+     hold back an industry group or an email source (learn/holds.py). This is one check (eligible),
+     and a send approval's ✅ runs it again for the card's contact (enrol/approvals.recheck).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
@@ -30,7 +35,10 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
-     rendered steps as custom variables.
+     rendered steps as custom variables. A lead the add summary leaves out is looked up in the
+     campaign (campaign_lead_ids): there, it is recorded; not there, Instantly refused it (its
+     blocklist, or a lead in another campaign), so its contact is marked suppressed and
+     pick_contacts finds the next person (mark_not_added) instead of the same one failing daily.
      auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
      comes to this channel first for approval"): each account becomes a send approval instead,
      a hitl_items row and a card in the alert channel showing every email of the sequence, and
@@ -74,7 +82,6 @@ EXCLUDED = "Excluded"
 SENDABLE_EMAIL_STATUSES = frozenset({"verified", "valid", "catch_all_valid"})  # Apollo verified; Clay (SPEC 8)
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.5
 WAITING = ("open", "escalated")  # hitl_items still waiting for Harry
-REPLY_KIND = "reply"  # hitl_items.kind of a reply waiting for a person (replies/poll.py KIND)
 HUBSPOT_SOURCE = "hubspot"
 # signal_events facts that scoring/tiers.py reads as hard exclusions, so a rescore keeps them.
 HS_CUSTOMER = "hubspot_customer"
@@ -83,6 +90,9 @@ HS_OTHER_OWNER = "hubspot_other_owner"
 HS_OPTED_OUT = "hubspot_opted_out_or_bounced"
 LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
+NOT_ADDED = "not added by Instantly (blocklist, or already in another campaign)"  # contacts.suppressed_reason
+OPTOUT_UNTESTED = ("optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so nothing "
+                   "is sent; once it is, set optout_tested = yes on the General tab")
 
 
 # -- small helpers ----------------------------------------------------------------------
@@ -151,16 +161,36 @@ def _item_week(item: Mapping[str, Any]) -> str:
     return iso_week(t.astimezone(UK).date()) if t else ""
 
 
+def has_sample(payload: Any) -> bool:
+    """Whether a hand_check item's payload holds the weekly random sample (per_group > 0). One recorded while
+    auto_send was no holds only the accounts with doubtful facts (per_group 0); an item from before per_group
+    was kept always had the sample."""
+    n = payload.get("per_group") if isinstance(payload, Mapping) else None
+    if n is None:
+        return True
+    try:
+        return int(n) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     """(why enrollment waits, or None; the account ids Harry pulled). SPEC 11 weekly hand-check.
 
     This ISO week's hand_check items (payload.iso_week, else created_at) must all be handled.
-    Accounts listed in a handled item's payload.pulled_account_ids are not enrolled.
+    Accounts listed in a handled item's payload.pulled_account_ids are not enrolled. While auto_send
+    is yes the week's items must hold the random sample too: one recorded while auto_send was no
+    (only the doubtful accounts) does not pass the gate until the sample is added (hand_check.py).
     """
     week = iso_week(today)
     items = [r for r in ctx.store.select("hitl_items", {"kind": "hand_check"}) if _item_week(r) == week]
     if not items:
         return f"this week's hand-check ({week}) has not been posted", frozenset()
+    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
+        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
+                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
+                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
+                "`us-outbound handcheck show`"), frozenset()
     if any(r.get("status") != "handled" for r in items):
         return f"this week's hand-check ({week}) is not approved yet", frozenset()
     pulled = {
@@ -172,16 +202,26 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     return None, frozenset(pulled)
 
 
+def optout_untested(ctx: Context) -> str | None:
+    """Live only: why nothing may be sent while the seed-inbox test of Instantly's {{unsubscribe}} link is not
+    done (optout_tested, golive's "Opt-out tested"). A dry run still previews."""
+    if ctx.live and not ctx.settings.general.optout_tested:
+        return OPTOUT_UNTESTED
+    return None
+
+
 def gate(ctx: Context, today: date) -> str | None:
-    """Why the job does nothing today, or None."""
+    """Why the job does nothing today, or None.
+
+    live_sending is not checked here: a job is live only with --live and live_sending = yes
+    (bootstrap.resolve_live), so a live run always has it.
+    """
     s = ctx.settings
     if budget.is_blackout(today, s):
         return f"{today} is a blackout date"
     if today.weekday() not in s.general.send_window.days:
         return f"{today} is not a send day"
-    if ctx.live and not s.general.live_sending:
-        return "live_sending is no"
-    return operator_pause(ctx) or holds.enrolment_stop(ctx.store) or reply_pause(ctx)
+    return optout_untested(ctx) or operator_pause(ctx) or holds.enrolment_stop(ctx.store) or reply_pause(ctx)
 
 
 # -- candidates --------------------------------------------------------------------------------
@@ -193,15 +233,12 @@ class Candidate:
     contact: dict
 
 
-def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
-    """(suppressed domains, suppressed email hashes) in force now. A suppressed alias suppresses its root.
-
-    A row with an email hash suppresses only that email; its domain is only recorded
-    (suppression.py). A domain row has no email hash.
-    """
+def _in_force(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
+    """(domains, email hashes) of these suppression rows that are in force now. A row with an email hash
+    suppresses only that email; its domain is only recorded (suppression.py). A domain row has no email hash."""
     domains: set[str] = set()
     hashes: set[str] = set()
-    for r in ctx.store.select("suppression"):
+    for r in rows:
         expires = _ts(r.get("expires_at"))
         if expires is not None and expires <= ctx.now:
             continue
@@ -209,13 +246,63 @@ def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
             domains.add(_lower(r["domain"]))
         if r.get("email_sha256"):
             hashes.add(_lower(r["email_sha256"]))
+    return domains, hashes
+
+
+def suppressed(ctx: Context) -> tuple[set[str], set[str]]:
+    """(suppressed domains, suppressed email hashes) in force now. A suppressed alias suppresses its root.
+
+    The whole table, for a run over every account (candidates); suppressed_for looks up a few.
+    """
+    domains, hashes = _in_force(ctx, ctx.store.select("suppression"))
     aliases = {_lower(a.get("alias")): _lower(a.get("root_domain")) for a in ctx.store.select("domain_aliases")}
     domains |= {aliases[d] for d in list(domains) if aliases.get(d)}
     return domains, hashes
 
 
+def suppressed_for(ctx: Context, domains: Iterable[str], hashes: Iterable[str]) -> tuple[set[str], set[str]]:
+    """The part of suppressed() that concerns these domains and email hashes, by indexed lookups: the
+    suppression rows for each domain and for each of its aliases (a suppressed alias suppresses its root),
+    and the rows for each hash. A send approval's re-check reads this, not the whole table."""
+    want = sorted({_lower(d) for d in domains if _lower(d)})
+    want_hashes = sorted({_lower(h) for h in hashes if _lower(h)})
+    root_of = {_lower(a.get("alias")): _lower(a.get("root_domain"))
+               for a in (ctx.store.select("domain_aliases", {"root_domain": want}) if want else ())}
+    keys = sorted(set(want) | set(root_of))
+    rows = ctx.store.select("suppression", {"domain": keys, "email_sha256": None}) if keys else []
+    if want_hashes:
+        rows += ctx.store.select("suppression", {"email_sha256": want_hashes})
+    found, found_hashes = _in_force(ctx, rows)
+    found |= {root_of[d] for d in list(found) if root_of.get(d)}
+    return found & set(want), found_hashes & set(want_hashes)
+
+
+@dataclass(frozen=True)
+class Gates:
+    """What the account and contact checks read, loaded once: the enrol run's candidates and a send approval's
+    re-check (enrol/approvals.recheck) go through the same checks (account_reason, eligible)."""
+
+    settings: Settings
+    domains: Collection[str]  # suppressed domains, aliases' roots included
+    hashes: Collection[str]  # suppressed email hashes
+    partners: Collection[str]
+    pulled: frozenset[str] = frozenset()  # accounts pulled at this week's hand-check
+    stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (learn/holds.py)
+    sources: Collection[str] = frozenset()  # email sources a kill rule paused
+
+
+def gates(ctx: Context, pulled: frozenset[str] = frozenset(),
+          suppressed_now: tuple[set[str], set[str]] | None = None) -> Gates:
+    """The Gates in force now; suppressed_now when the caller looked up only what it needs (suppressed_for)."""
+    domains, hashes = suppressed(ctx) if suppressed_now is None else suppressed_now
+    partners = {_lower(p.get("domain")) for p in ctx.store.select("partners")}
+    return Gates(ctx.settings, domains, hashes, partners, pulled,
+                 frozenset(holds.stopped_groups(ctx.store)), frozenset(holds.paused_sources(ctx.store)))
+
+
 def account_block(
-    account: Mapping[str, Any], settings: Settings, domains: set[str], partners: set[str], pulled: frozenset[str]
+    account: Mapping[str, Any], settings: Settings, domains: Collection[str], partners: Collection[str],
+    pulled: Collection[str],
 ) -> str | None:
     domain = _lower(account.get("domain"))
     if not domain:
@@ -232,7 +319,7 @@ def account_block(
     return None
 
 
-def contact_block(contact: Mapping[str, Any], domains: set[str], hashes: set[str]) -> str | None:
+def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: Collection[str]) -> str | None:
     """Why this contact may not be emailed now (SPEC 1.5, 9 pick_contacts gate), or None."""
     email = _lower(contact.get("email"))
     if contact.get("enrolment_month") or contact.get("instantly_lead_id"):
@@ -274,7 +361,7 @@ def contact_order(
 
 
 def pick_contact(
-    contacts: Iterable[Mapping[str, Any]], domains: set[str], hashes: set[str],
+    contacts: Iterable[Mapping[str, Any]], domains: Collection[str], hashes: Collection[str],
     account: Mapping[str, Any] | None = None, settings: Settings | None = None,
 ) -> tuple[dict | None, str]:
     """The account's one contact in v1: the best-ranked sendable one (contact_order); else why the best is not."""
@@ -288,6 +375,34 @@ def pick_contact(
     return None, first_reason
 
 
+def account_reason(account: Mapping[str, Any], g: Gates, waiting: Collection[str] = frozenset()) -> str | None:
+    """Why the account may not be emailed now, or None: account_block, a send approval still waiting for it
+    (waiting), or a kill rule that stopped its industry group (SPEC 12)."""
+    why = account_block(account, g.settings, g.domains, g.partners, g.pulled)
+    if why is None and str(account.get("account_id")) in waiting:
+        why = "waiting for approval in Slack"
+    if why is None and g.settings.industry_group_of(account).casefold() in g.stopped:
+        why = "industry group stopped by a kill rule"
+    return why
+
+
+def eligible(
+    account: Mapping[str, Any], contacts: Sequence[Mapping[str, Any]], g: Gates, waiting: Collection[str] = frozenset(),
+) -> tuple[dict | None, str]:
+    """(the contact to email at the account, or None; why not): the one eligibility check. The account's checks
+    (account_reason), then its best-ranked sendable contact (pick_contact), leaving out an email source a kill
+    rule paused. The enrol run's candidates call it with every contact on file; a send approval's re-check calls
+    it with the card's contact (enrol/approvals.recheck)."""
+    why = account_reason(account, g, waiting)
+    if why is not None:
+        return None, why
+    usable = [c for c in contacts if _lower(c.get("email_source")) not in g.sources]
+    contact, why = pick_contact(usable, g.domains, g.hashes, account, g.settings)
+    if contact is None and contacts and not usable:
+        why = "email source paused by a kill rule"
+    return contact, why
+
+
 def candidates(
     ctx: Context, pulled: frozenset[str], waiting: Collection[str] = frozenset(),
 ) -> tuple[list[Candidate], Counter[str]]:
@@ -296,30 +411,17 @@ def candidates(
     waiting: accounts with a send approval still waiting in Slack (enrol/approvals.py), which are not
     proposed again until it is approved, declined or expires.
     """
-    s, store = ctx.settings, ctx.store
+    store = ctx.store
     skipped: Counter[str] = Counter()
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
-    domains, hashes = suppressed(ctx)
-    partners = {_lower(p.get("domain")) for p in store.select("partners")}
-    stopped, sources = holds.stopped_groups(store), holds.paused_sources(store)  # kill rules (SPEC 12)
+    g = gates(ctx, pulled)
     contacts: dict[str, list[dict]] = defaultdict(list)
     for chunk in _chunks([a["account_id"] for a in accounts]):
         for c in store.select("contacts", {"account_id": list(chunk)}):
             contacts[c["account_id"]].append(c)
     out: list[Candidate] = []
     for a in accounts:
-        why = account_block(a, s, domains, partners, pulled)
-        if why is None and str(a["account_id"]) in waiting:
-            why = "waiting for approval in Slack"
-        if why is None and s.industry_group_of(a).casefold() in stopped:
-            why = "industry group stopped by a kill rule"
-        contact = None
-        if why is None:
-            mine = contacts.get(a["account_id"], [])
-            usable = [c for c in mine if _lower(c.get("email_source")) not in sources]
-            contact, why = pick_contact(usable, domains, hashes, a, s)
-            if contact is None and mine and not usable:
-                why = "email source paused by a kill rule"
+        contact, why = eligible(a, contacts.get(a["account_id"], []), g, waiting)
         if contact is None:
             skipped[why] += 1
             continue
@@ -514,8 +616,10 @@ class Skip:
 
 def prepare(
     ctx: Context, cand: Candidate, free: Mapping[str, int], counts: Mapping[str, int], rows: Mapping[str, CopyRow],
-    pace: Mapping[str, int] | None = None,
+    pace: Mapping[str, int] | None = None, not_sending: Mapping[str, str] | None = None,
 ) -> Prepared | Skip:
+    """One account made ready to send, or why not. not_sending: owner -> why their campaign takes no new leads
+    (limits.Limits.not_sending); an account whose sender is held by it waits, and says so."""
     s, g = ctx.settings, ctx.settings.general
     a, c = cand.account, cand.contact
     owner = queue.assign_sender(a, s, free, pace)
@@ -523,6 +627,8 @@ def prepare(
         sender = str(a.get("sender") or "")
         if sender and not s.mailboxes_for(sender, "Active"):
             return Skip("sender paused", [f"{sender} has no Active mailbox; the account waits for them"])
+        if sender and (not_sending or {}).get(sender) and free.get(sender, 0) <= 0:
+            return Skip("sender's campaign not sending", [f"{not_sending[sender]}; the account waits for {sender}"])
         if sender:
             return Skip("sender full today", [f"{sender}'s inboxes are full with follow-ups today; the account waits for them"])
         return Skip("no sending capacity")
@@ -598,7 +704,7 @@ class _Run:
 def _walk(
     ctx: Context, lane: Iterator[Candidate], target: int, free: Counter[str], counts: Counter[str],
     rows: Mapping[str, CopyRow], run: _Run, pace: Mapping[str, int] | None = None,
-    quota: focus.Quota | None = None, held: list[Candidate] | None = None,
+    quota: focus.Quota | None = None, held: list[Candidate] | None = None, not_sending: Mapping[str, str] | None = None,
 ) -> list[Prepared]:
     """Prepare accounts in queue order until target are ready; skipped ones make way for the next.
 
@@ -615,7 +721,7 @@ def _walk(
             if held is not None:
                 held.append(cand)
             continue
-        p = prepare(ctx, cand, free, counts, rows, pace)
+        p = prepare(ctx, cand, free, counts, rows, pace, not_sending)
         if isinstance(p, Skip):
             run.skip(cand.account, p.reason, p.detail)
             if p.exclude_fact:
@@ -650,6 +756,32 @@ def _created_ids(result: Mapping[str, Any], leads: Sequence[Mapping[str, Any]]) 
         if lead_id and i is not None:
             out[i] = lead_id
     return out
+
+
+def campaign_lead_ids(ctx: Context, campaign: str, emails: Iterable[str]) -> dict[str, str]:
+    """email (lower case) -> Instantly lead id, for these emails among the campaign's own leads (list_leads).
+
+    The add summary's created_leads leaves out a lead Instantly did not create, and also one that is in the
+    campaign already (an earlier add whose run stopped before recording it), so a lead missing from it is
+    looked up here before anything is concluded. Raises ApiError or LookupError when the campaign cannot be read.
+    """
+    want = {_lower(e) for e in emails if _lower(e)}
+    out: dict[str, str] = {}
+    if not want:
+        return out
+    for lead in ctx.clients.instantly.list_leads(campaign):
+        email = _lower(lead.get("email"))
+        if email in want and lead.get("id") and email not in out:
+            out[email] = str(lead["id"])
+    return out
+
+
+def mark_not_added(ctx: Context, contact_id: Any) -> None:
+    """Instantly would not take this contact (its blocklist, or a lead in another campaign of the workspace):
+    marked suppressed, so pick_contacts finds the next person at the account and the account goes on. Not the
+    suppression table: they did not opt out."""
+    if contact_id:
+        ctx.store.update("contacts", {"contact_id": contact_id}, {"suppressed": True, "suppressed_reason": NOT_ADDED})
 
 
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
@@ -708,7 +840,9 @@ def run(ctx: Context) -> dict:
     # not proposed again, and hold their sender's slots and their place in the week.
     held = approvals.waiting(ctx)
     cands, skipped = candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner)
+    # campaigns=True: an owner whose Instantly campaign is not active gets no capacity in a live run (limits.py).
+    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner, campaigns=True)
+    stopped = lim.not_sending
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
     pace = {owner: c.pace for owner, c in lim.senders.items()}
@@ -726,11 +860,12 @@ def run(ctx: Context) -> dict:
     quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
     held_main: list[Candidate] = []
     held_control: list[Candidate] = []
-    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace, quota, held_control)
-    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace, quota, held_main)
-    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace, quota, held_control)
+    prepared = _walk(ctx, control, queue.control_count(n, s, n_control), free, counts, approved, r, pace, quota,
+                     held_control, stopped)
+    prepared += _walk(ctx, main, n - len(prepared), free, counts, approved, r, pace, quota, held_main, stopped)
+    prepared += _walk(ctx, control, n - len(prepared), free, counts, approved, r, pace, quota, held_control, stopped)
     for held in (held_main, held_control):
-        fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace)
+        fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
         for p in fill:
             quota.take(p.account)
         prepared += fill
@@ -762,9 +897,25 @@ def run(ctx: Context) -> dict:
             would[owner] = len(items)
             continue
         ids = _created_ids(result, leads)
-        for i, p in enumerate(items):
-            if i not in ids:
-                r.skip(p.account, "not added by Instantly", ["no created lead in the add summary (in blocklist, or already in the workspace)"])
+        missing = [i for i in range(len(items)) if i not in ids]
+        found: dict[str, str] | None = {}
+        if missing:  # in the campaign after all (recorded), or refused (the contact suppressed, so the next is found)
+            try:
+                found = campaign_lead_ids(ctx, campaign, [leads[i]["email"] for i in missing])
+            except (ApiError, LookupError) as exc:
+                found = None
+                r.errors.append(f"{campaign}: the leads Instantly left out could not be looked up ({str(exc)[:160]})")
+        for i in missing:
+            email = _lower(leads[i]["email"])
+            if found is None:
+                r.skip(items[i].account, "not added by Instantly",
+                       ["not in the add summary, and the campaign could not be read: the next run tries again"])
+            elif email in found:
+                ids[i] = found[email]
+            else:
+                mark_not_added(ctx, items[i].contact.get("contact_id"))
+                r.skip(items[i].account, "not added by Instantly",
+                       [f"{NOT_ADDED}: the contact is suppressed, so pick_contacts finds the next person"])
         _record_enrolled(ctx, items, ids, campaign, month)
         enrolled[owner] = len(ids)
 
@@ -774,6 +925,7 @@ def run(ctx: Context) -> dict:
         number_terms=terms,
         limited_by=lim.explanation,
         limits=lim.lines,
+        campaigns_not_sending=stopped,
         focus=quota.describe() if quota.active else None,
         candidates=len(cands),
         prepared=len(prepared),

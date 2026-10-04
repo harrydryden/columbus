@@ -8,7 +8,9 @@ Today's number is the smallest of three terms (enrol/queue.py):
 Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026) count as enrolled
 this week for the weekly target, and each takes one of its sender's slots today.
 The budgets sit behind ready_accounts: Clay credits verify accounts and Apollo credits find
-emails, each within its monthly budget and today's share of it (budget.py). When
+emails, each within its monthly budget and today's share of it (budget.py). While the General key
+clay_verification is skip (Harry, 1 Oct 2026), verify_accounts verifies accounts on Apollo data and
+HubSpot (weekdays 04:30 UK) and Clay stands behind nothing, so the line names that job instead. When
 ready_accounts binds, the explanation says which of them, or which earlier stage, is the reason,
 including verified accounts where pick_contacts found no suitable contact (contacts/pick.py).
 
@@ -28,7 +30,9 @@ from typing import Any
 from us_outbound import budget
 from us_outbound.context import Context
 from us_outbound.enrol import capacity, focus, queue
+from us_outbound.settings.model import CLAY_REQUIRED
 
+VERIFY_WAITING = ("new", "queued")  # what verify_accounts verifies while clay_verification = skip (verify.py)
 LABELS = {
     "weekly_target": "the weekly target",
     "sending_capacity": "sending capacity",
@@ -51,16 +55,24 @@ class Limits:
         """Everything, for the enrol summary and the log."""
         return [*self.detail, *self.budget_lines]
 
+    @property
+    def not_sending(self) -> dict[str, str]:
+        """owner -> why their campaign takes no new leads now (read only with campaigns=True)."""
+        return {o: c.not_sending for o, c in self.senders.items() if c.not_sending}
+
 
 def _count(ctx: Context, status: str) -> int:
     return len(ctx.store.select("accounts", {"status": status}))
 
 
-def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str, int] | None = None) -> Limits:
+def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str, int] | None = None,
+          campaigns: bool = False) -> Limits:
     """Today's number, its terms and why, for the send day `day` (a US Eastern date).
 
     pending: owner -> send approvals still waiting in Slack (enrol/approvals.waiting); they count as
     enrolled this week and hold their sender's slots.
+    campaigns: read each owner's campaign status from Instantly (capacity.campaigns_not_sending; the enrol
+    job does). In a live run an owner whose campaign is not active has no capacity today; a dry run says so.
     """
     s = ctx.settings
     pending = {o: n for o, n in (pending or {}).items() if n > 0}
@@ -71,6 +83,9 @@ def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str,
     senders = capacity.sending_capacity(ctx.store, s, day)
     for owner, c in senders.items():
         c.hold(pending.get(owner, 0))
+    if campaigns:
+        for owner, why in capacity.campaigns_not_sending(ctx, senders).items():
+            senders[owner].stop(why, live=ctx.live)
     free = sum(c.free for c in senders.values())
     n, terms = queue.daily_number(weekly_target=target, sending_capacity=free, ready_accounts=ready_accounts)
     budgets = {sys: budget.monthly(ctx.store, s, sys, ctx.now) for sys in ("clay", "apollo")}
@@ -79,7 +94,8 @@ def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str,
         enrolled_this_week=done,
         awaiting_approval=sum(pending.values()),
         send_days_left_in_week=days_left,
-        senders={o: {"cap": c.cap, "free": c.free, **({"pending": c.pending} if c.pending else {})}
+        senders={o: {"cap": c.cap, "free": c.free, **({"pending": c.pending} if c.pending else {}),
+                     **({"not_sending": c.not_sending} if c.not_sending else {})}
                  for o, c in senders.items()},
         budgets={sys: b.as_dict() for sys, b in budgets.items()},
     )
@@ -103,6 +119,10 @@ def explain(
     head = (f"Today: {n}, limited by {LABELS[binding]} "
             f"(weekly target {terms['weekly_target']}, sending capacity {terms['sending_capacity']}, "
             f"ready accounts {terms['ready_accounts']}).")
+    not_sending = list(dict.fromkeys(c.not_sending for c in senders.values() if c.not_sending))
+    if not_sending:  # the campaigns Instantly is not sending (capacity.campaigns_not_sending)
+        why = " ".join(f"{w[:1].upper()}{w[1:]}." for w in not_sending)
+        head += f" {why}" if ctx.live else f" Counted anyway in this dry run, but a live run would not: {why}"
     detail = [
         f"Weekly target: {terms['enrolled_this_week']} of {terms['weekly_enrol_cap']} enrolled this week "
         f"(Monday to Sunday, UK time), {terms['send_days_left_in_week']} send days left.",
@@ -130,11 +150,13 @@ def add_a_mailbox(senders: dict[str, capacity.SenderCapacity], waiting: int) -> 
     A full sender whose mailboxes are on the sending ramp is held by the ramp, not by a lack of
     mailboxes, so the line says when the ramp lifts it instead (Harry, 1 Oct 2026).
     """
-    full = [c for c in senders.values() if c.full]
+    full = [c for c in senders.values() if c.full and not c.stopped]  # a stopped campaign is not a lack of mailboxes
     if not full:
-        ramping = [c for c in senders.values() if c.ramping]
+        ramping = [c for c in senders.values() if c.ramping and not c.stopped]
         if ramping:
             return [_ramp_line(c) for c in ramping]
+        if any(c.stopped for c in senders.values()):
+            return []  # the head line already says which campaigns to start
         return ["More sends need another Active mailbox (`us-outbound mailbox add`), or higher daily caps once the inboxes are warm."]
     lines = []
     for c in full:
@@ -188,6 +210,14 @@ def behind_ready(ctx: Context, ready: int, budgets: dict[str, budget.Budget]) ->
                 f"{_until(apollo)}, so no more emails are looked up.")
     if no_email:
         return f"Behind it: {no_email} verified accounts are waiting for an email (pick_contacts)."
+    if ctx.settings.general.clay_verification != CLAY_REQUIRED:
+        # clay_verification = skip (Harry, 1 Oct 2026): verify_accounts verifies new and queued accounts on
+        # Apollo data and HubSpot, so neither Clay nor its budget stands behind them.
+        waiting = sum(_count(ctx, st) for st in VERIFY_WAITING)
+        if waiting:
+            return f"Behind it: {waiting} accounts are waiting for verify_accounts (weekdays 04:30 UK)."
+        return ("Behind it: no accounts are waiting to be verified, so the universe or the free checks are the limit "
+                "(source_universe, apollo_people).")
     if clay.budget <= 0:
         return "Behind it: Clay has no monthly budget (clay_monthly_credits is 0), so no account can be verified."
     if queued and (clay.spent or clay.left_today <= 0):

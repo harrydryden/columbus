@@ -112,7 +112,8 @@ class FakeSlack:
 
 
 def settings_for(**general):
-    return make_settings(live_sending=general.pop("live_sending", True), approver_slack_ids=(HARRY_ID,), **general)
+    general.setdefault("approver_slack_ids", (HARRY_ID,))
+    return make_settings(live_sending=general.pop("live_sending", True), **general)
 
 
 def world(*, live=True, accounts=None, contacts=None, now=NOW, **general):
@@ -278,9 +279,9 @@ def test_the_card_shows_what_harry_asked_for():
     assert "> Where we got your details" in text  # email 1's data notice: the plain-text version, all of it
     assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
     assert "*Before:* no email to Acme Creative from us before" in text
-    assert "*Today:* Harry: 1 of 15 today" in text
-    assert "✅ send · ❌ don't send" in text
-    assert f"`us-outbound approvals approve {item_for(ctx, 'acc-1')['item_id'][:8]} --live`" in text
+    assert "*Harry today:* card 1 of 15" in text
+    assert "✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread." in text
+    assert "us-outbound" not in text  # no command line hint on a card
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
     assert card["text"].startswith("Send approval: Acme Creative · Jane Doe · from Harry Dryden:")
     # Without an Apollo id, the source's name and no link.
@@ -355,6 +356,19 @@ def test_only_approvers_count_and_the_bots_own_reactions_are_ignored():
     assert poll(ctx)["outcomes"] == {"approved": 1}
 
 
+def test_the_bots_own_reactions_never_approve_even_if_its_id_is_an_approver():
+    """A8: the bot seeds ✅ and ❌ on every card; its id on approver_slack_ids must not make that seed a decision."""
+    ctx, t, sl = world(approver_slack_ids=(HARRY_ID, BOT))
+    enrol.run(ctx)
+    row = item_for(ctx, "acc-1")
+    assert sorted(r["name"] for r in sl.reacted if r["timestamp"] == row["slack_ts"]) == ["white_check_mark", "x"]
+    out = poll(ctx)
+    assert out["outcomes"] == {} and out["rejected"] == [] and instantly_posts(t) == []
+    assert out["ignored_non_approvers"] == 0 and item_for(ctx, "acc-1")["payload"]["state"] == "waiting"
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+
+
 def test_a_recheck_blocks_an_opt_out_after_the_card_was_posted():
     ctx, t, sl, _ = proposed()
     row = item_for(ctx, "acc-1")
@@ -370,13 +384,18 @@ def test_a_recheck_blocks_an_opt_out_after_the_card_was_posted():
     assert any("⛔ Not sent: Jane Doe: contact suppressed" in blocks_text(u) for u in sl.updates)
 
 
-def test_a_recheck_blocks_while_enrolment_is_stopped():
+def test_a_recheck_holds_while_enrolment_is_stopped():
+    """An operator stop is temporary: the card stays open and its ✅ goes through after `start --live` (A2)."""
     ctx, t, sl, _ = proposed()
     hb = {"dry_run": False, "status": "ok", "finished_at": NOW}
     ctx.store.insert("heartbeats", [{**hb, "run_id": "s-1", "job": "operator_stop", "started_at": NOW}])
     sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, "acc-1")["slack_ts"])
-    poll(ctx)
-    assert instantly_posts(t) == [] and "stopped by an operator" in item_for(ctx, "acc-1")["payload"]["reason"]
+    out = poll(ctx)
+    row = item_for(ctx, "acc-1")
+    assert instantly_posts(t) == [] and (row["status"], row["payload"]["outcome"]) == ("open", "")
+    assert "stopped by an operator" in out["held"][0]["why"][0]
+    ctx.store.insert("heartbeats", [{**hb, "run_id": "s-2", "job": "operator_start", "started_at": ctx.now}])
+    assert poll(ctx)["outcomes"] == {"approved": 1} and len(instantly_posts(t)) == 1
 
 
 def test_a_failed_add_waits_for_a_fresh_approval():
@@ -389,7 +408,7 @@ def test_a_failed_add_waits_for_a_fresh_approval():
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["payload"]["state"]) == ("open", "waiting") and "500" in row["payload"]["failed"]["error"]
     note = row["payload"]["approve_ts"]
-    assert note != row["slack_ts"] and any(x.startswith("Not added: Instantly answered ApiError") for x in sl.texts())
+    assert note != row["slack_ts"] and any(x.startswith("Not added: Instantly refused: ") for x in sl.texts())
     from tests.test_enrol import added
 
     t.route("POST", "/leads/add", fn=added)
@@ -399,19 +418,35 @@ def test_a_failed_add_waits_for_a_fresh_approval():
     assert poll(ctx)["outcomes"] == {"approved": 1} and len(instantly_posts(t)) == 2
 
 
-def test_an_add_left_sending_goes_back_to_a_person():
+def test_an_add_left_sending_and_not_in_the_campaign_goes_back_to_a_person():
+    """The campaign is looked up first (A3): the lead is not there, so a person approves it again."""
     ctx, t, sl, _ = proposed()
     row = item_for(ctx, "acc-1")
     payload = {**row["payload"], "state": "sending", "sending": {"at": (NOW - timedelta(minutes=20)).isoformat()}}
     ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"status": "sending", "payload": payload})
     sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    t.route("POST", "/leads/list", {"items": [], "next_starting_after": None})
     out = poll(ctx)
-    assert out["unsure"] == [row["item_id"][:8]] and instantly_posts(t) == []
+    assert out["not_added"][0]["item"] == row["item_id"][:8] and out["unsure"] == []
+    assert [r.url.rsplit("/", 1)[1] for r in instantly_posts(t)] == ["list"]  # looked up, not added
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["payload"]["state"]) == ("open", "waiting")
-    assert any("I can't tell whether jane@acmecreative.com was added" in x for x in sl.texts())
+    assert any(x.startswith("jane@acmecreative.com is not in US Outbound – Harry Dryden: the run adding it stopped")
+               for x in sl.texts())
     poll(ctx)
-    assert instantly_posts(t) == []  # the old ✅ does not add it
+    assert not [r for r in instantly_posts(t) if r.url.endswith("/leads/add")]  # the old ✅ does not add it
+
+
+def test_an_add_left_sending_when_instantly_cannot_be_read_goes_back_to_a_person():
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    payload = {**row["payload"], "state": "sending", "sending": {"at": (NOW - timedelta(minutes=20)).isoformat()}}
+    ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"status": "sending", "payload": payload})
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    out = poll(ctx)
+    assert out["unsure"] == [row["item_id"][:8]]
+    assert (item_for(ctx, "acc-1")["status"], item_for(ctx, "acc-1")["payload"]["state"]) == ("open", "waiting")
+    assert any("I can't tell whether jane@acmecreative.com was added" in x for x in sl.texts())
 
 
 # -- ❌ and the three choices ----------------------------------------------------------------------------------
@@ -434,7 +469,8 @@ def test_a_cross_offers_three_choices_with_their_reactions_seeded():
     choices = row["payload"]["choices_ts"]
     [post] = [p for p in sl.posts if p["ts"] == choices]
     assert post["text"].startswith(f"❌ Not sent (by <@{HARRY_ID}>). What next?")
-    assert "✏️ *edit*" in post["text"] and "👤 *contact*: not Jane Doe" in post["text"] and "🚫 *company*" in post["text"]
+    assert "✏️ *edit*" in post["text"] and "🚫 *company*" in post["text"]
+    assert "👤 *contact*: not Jane Doe; you'll get a card for the next person at Acme Creative" in post["text"]
     assert "expires at the end of Wed 28 Oct (UK)" in post["text"]
     assert sorted(r["name"] for r in sl.reacted if r["timestamp"] == choices) == ["bust_in_silhouette", "no_entry_sign",
                                                                                  "pencil2"]
@@ -808,4 +844,4 @@ def test_dry_run_enrol_through_the_cli_previews_the_card_in_the_dev_channel():
     assert posts and {r.json["channel"] for r in posts} == {"C_DEV"}
     card = next(r for r in posts if r.url.endswith("chat.postMessage") and not r.json.get("thread_ts"))
     assert card.json["text"].startswith("[dry-run → #us-outbound] Send approval: Acme Creative · Jane Doe")
-    assert re.search(r"\*Today:\* \w+: 1 of \d+ today", blocks_text(card.json))
+    assert re.search(r"\*\w+ today:\* card 1 of \d+", blocks_text(card.json))

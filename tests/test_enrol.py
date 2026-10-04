@@ -33,12 +33,12 @@ from us_outbound.logs import hash_email
 
 NOW = datetime(2026, 10, 27, 11, 0, tzinfo=UTC)  # Tuesday 11:00 UK, 07:00 ET (ISO week 2026-W44)
 INSTANTLY = "https://api.instantly.ai/api/v2"
-CAMPAIGNS = {
+CAMPAIGNS = {  # status 1: active (`us-outbound start --live` has run)
     "items": [
-        {"id": "c-hannah", "name": "US Outbound – Hannah Spalding"},
-        {"id": "c-sam", "name": "US Outbound – Sam Jackson"},
-        {"id": "c-harry", "name": "US Outbound – Harry Dryden"},
-        {"id": "c-eu", "name": "EU Outbound – Anna"},
+        {"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1},
+        {"id": "c-sam", "name": "US Outbound – Sam Jackson", "status": 1},
+        {"id": "c-harry", "name": "US Outbound – Harry Dryden", "status": 1},
+        {"id": "c-eu", "name": "EU Outbound – Anna", "status": 1},
     ]
 }
 CAMPAIGN_OWNER = {"c-hannah": "Hannah Spalding", "c-sam": "Sam Jackson", "c-harry": "Harry Dryden"}
@@ -88,11 +88,11 @@ def contacts3() -> list[dict]:
 
 
 def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None,
-         auto_send=True):
+         auto_send=True, optout_tested=True):
     """The enrol world. auto_send = yes by default: leads go straight to Instantly, as before Harry's 2 Oct 2026
-    switch; tests/test_send_approvals.py runs it with auto_send = no."""
+    switch; tests/test_send_approvals.py runs it with auto_send = no. The opt-out test is done (optout_tested)."""
     s = settings or make_settings(live_sending=live)
-    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send))
+    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send, optout_tested=optout_tested))
     t = transport or FakeTransport()
     t.route("GET", "/campaigns", CAMPAIGNS)
     t.route("POST", "/crm/v3/objects/companies/search", {"results": []})
@@ -186,11 +186,27 @@ def test_live_records_enrollment_and_keeps_senders():
     assert omar["copy_version"] == "general-v1"  # Fintech has no row of its own, nor has its group
 
 
-def test_live_flag_without_live_sending_does_nothing():
-    ctx, t = make(live=True, settings=make_settings(live_sending=False))
+def test_live_flag_without_live_sending_runs_dry():
+    """A job is live only with --live and live_sending = yes (bootstrap.resolve_live), so enrol never sees a live
+    context without live_sending, and its gate does not check it again."""
+    from us_outbound.ops import bootstrap
+
+    s = make_settings(live_sending=False)
+    ctx, t = make(live=bootstrap.resolve_live(True, s), settings=s)
     out = enrol.run(ctx)
-    assert out["status"] == "skipped" and out["reason"] == "live_sending is no"
-    assert instantly_posts(t) == []
+    assert out["status"] == "ok" and out["dry_run"] is True and out["enrolled"] == 0
+    assert instantly_posts(t) == [] and ctx.guard.writes("instantly", sent=True) == []
+
+
+def test_a_live_run_waits_for_the_opt_out_test_and_a_dry_run_still_previews():
+    """A6: until optout_tested = yes nothing is enrolled; a dry run (the scheduler's state until then) still runs."""
+    ctx, t = make(live=True, optout_tested=False)
+    out = enrol.run(ctx)
+    assert out["status"] == "skipped" and out["reason"].startswith("optout_tested is no")
+    assert instantly_posts(t) == [] and enrol.gate(ctx, ctx.now_et().date()) == enrol.OPTOUT_UNTESTED
+    ctx, t = make(optout_tested=False)
+    out = enrol.run(ctx)
+    assert out["status"] == "ok" and out["prepared"] == 3 and enrol.gate(ctx, ctx.now_et().date()) is None
 
 
 def test_instantly_skipping_a_lead_leaves_it_unenrolled():
@@ -202,10 +218,49 @@ def test_instantly_skipping_a_lead_leaves_it_unenrolled():
     t = FakeTransport()
     ctx, _ = make(live=True, transport=t)
     t.route("POST", "/leads/add", fn=partial)
+    t.route("POST", "/leads/list", {"items": []})  # not in the campaign either: Instantly refused it
     out = enrol.run(ctx)
     assert out["enrolled"] == 2 and out["skipped"]["not added by Instantly"] == 1
     assert ctx.store.get("accounts", account_id="acc-3")["status"] == "verified"
-    assert not ctx.store.get("contacts", contact_id="con-3").get("instantly_lead_id")
+    lee = ctx.store.get("contacts", contact_id="con-3")
+    assert not lee.get("instantly_lead_id")
+    # A3: suppressed, so pick_contacts finds the next person instead of trying Lee every day.
+    assert (lee["suppressed"], lee["suppressed_reason"]) == (True, enrol.NOT_ADDED)
+    [skip] = [x for x in out["skipped_accounts"] if x["account_id"] == "acc-3"]
+    assert skip["detail"] == [f"{enrol.NOT_ADDED}: the contact is suppressed, so pick_contacts finds the next person"]
+
+
+def test_a_lead_left_out_of_the_summary_but_in_the_campaign_is_recorded():
+    """A3: created_leads leaves out a lead the campaign already has; the lookup finds its id."""
+    def partial(req):
+        body = added(req)
+        body["created_leads"] = [c for c in body["created_leads"] if c["email"] != "lee@loopstudio.com"]
+        return body
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("POST", "/leads/add", fn=partial)
+    t.route("POST", "/leads/list", fn=lambda req: {"items": [
+        {"id": "lead-old", "email": "Lee@LoopStudio.com", "campaign": req.json["campaign"]}]})
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and "not added by Instantly" not in out["skipped"]
+    lee = ctx.store.get("contacts", contact_id="con-3")
+    assert (lee["instantly_lead_id"], lee.get("suppressed")) == ("lead-old", None)
+    assert ctx.store.get("accounts", account_id="acc-3")["status"] == "enrolled"
+
+
+def test_a_left_out_lead_whose_campaign_cannot_be_read_waits_for_the_next_run():
+    def none_created(req):
+        return {**added(req), "created_leads": []}
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("POST", "/leads/add", fn=none_created)
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 0 and out["skipped"]["not added by Instantly"] == 3
+    assert any("could not be looked up" in e for e in out["errors"])
+    assert not any(c.get("suppressed") for c in ctx.store.select("contacts"))  # nothing concluded
 
 
 def test_instantly_api_error_is_recorded_and_marks_nothing():
@@ -217,14 +272,17 @@ def test_instantly_api_error_is_recorded_and_marks_nothing():
     assert {a["status"] for a in ctx.store.select("accounts")} == {"verified"}
 
 
-def test_missing_campaign_is_an_error_not_a_crash():
+def test_a_missing_campaign_gets_no_leads_and_says_how_to_create_it():
+    """A1: an owner with no campaign in Instantly has no capacity in a live run; new accounts go to the others."""
     t = FakeTransport()
     ctx, _ = make(live=True, transport=t)
-    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding"}]})
+    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1}]})
     out = enrol.run(ctx)
-    assert out["enrolled"] == 1 and any("US Outbound – Harry Dryden" in e for e in out["errors"])
-    assert any("US Outbound – Sam Jackson" in e for e in out["errors"])
-    assert ctx.store.get("accounts", account_id="acc-1")["status"] == "verified"
+    assert out["enrolled"] == 3 and out["by_owner"] == {"Hannah Spalding": 3} and out["errors"] == []
+    assert {r.json["campaign_id"] for r in instantly_posts(t)} == {"c-hannah"}
+    assert set(out["campaigns_not_sending"]) == {"Harry Dryden", "Sam Jackson"}
+    assert ("Harry Dryden's campaign (US Outbound – Harry Dryden) is not in Instantly: `us-outbound campaigns ensure "
+            "--live` creates it, then run `us-outbound start --live`.") in out["limited_by"]
 
 
 # -- test versions -------------------------------------------------------------------------------
@@ -327,9 +385,6 @@ def test_positive_reply_waiting_over_24_hours_pauses_enrollment():
 
 def test_only_warm_replies_waiting_pause_enrollment():
     """poll_replies writes a reply item for every class a person answers; only positive and referral pause (SPEC 11)."""
-    from us_outbound.replies.poll import KIND
-
-    assert enrol.REPLY_KIND == KIND
     ctx, _ = make()
     ctx.store.insert("hitl_items", [
         {"item_id": f"r-{c}", "kind": "reply", "status": "open", "payload": {"reply_class": c},

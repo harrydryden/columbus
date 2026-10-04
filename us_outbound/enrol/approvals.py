@@ -28,13 +28,28 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
                                  "✅ Approved by @Harry at 14:02 UK · added to US Outbound – Hannah
                                  Spalding" and the thread confirms. A compare-and-set "sending" status
                                  means it is never added twice; if Instantly fails, the thread says why
-                                 and the item waits for a fresh ✅ on that note (or "send"); if a run
-                                 dies mid-add, the thread asks a person to check the campaign first.
-                                 The re-check: live_sending yes, enrollment not stopped (operator stop,
-                                 the stop rule), the domain and contact not suppressed since (an
-                                 opt-out), the account still verified and in a queue tier, the contact
-                                 not enrolled by another path, the sender still has an Active mailbox.
-                                 If it fails, the item closes as "blocked" with the reason.
+                                 and the item waits for a fresh ✅ on that note (or "send"). A lead
+                                 Instantly leaves out of its add summary is looked up in the campaign
+                                 (enrol.campaign_lead_ids): there, it is recorded and approved; not
+                                 there, Instantly refused it (its blocklist, or a lead in another
+                                 campaign), so the card closes blocked and the contact is marked
+                                 suppressed, and pick_contacts finds the next person. If a run dies
+                                 mid-add (or the lookup fails), a later run looks it up: there, it is
+                                 approved; not there, a person approves it again; Instantly unreadable,
+                                 the thread asks a person to check the campaign first.
+                                 The re-check (recheck) tells holds from blocks. A hold is temporary:
+                                 live_sending or optout_tested no, an operator stop, the stop rule, the
+                                 reply pause, a blackout date on Instantly's next send day, the owner's
+                                 campaign not active in Instantly, Instantly or HubSpot not answering.
+                                 The card stays open, the thread gets one note per hold reason, and the
+                                 ✅ stays valid: each run tries again and the lead is added once the
+                                 holds clear (or the card expires). Approving at the weekend is fine:
+                                 Instantly sends on its next weekday. A block is permanent: the account
+                                 or contact suppressed, excluded or no longer verified, the enrol run's
+                                 own eligibility check (kill rules and hand-check pulls included), the
+                                 email changed, no Active mailbox for the owner, another sender, or
+                                 HubSpot excluding it now (the account is excluded too). The item
+                                 closes as "blocked" with the reason.
   ❌, or "skip" / "no"           state "rejected": the thread offers three choices, their reactions seeded:
     ✏️ (or 📝), or "edit"        how to edit: reply in the thread with the new email 1, an optional first
                                  line "Subject: …" and then the body; "Email 2:" (3, 4) first changes a
@@ -95,7 +110,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from us_outbound import budget
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
@@ -103,7 +120,7 @@ from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import capacity, copy_markup, enrol, openers, queue, render
 from us_outbound.learn import holds
-from us_outbound.logs import log
+from us_outbound.logs import hash_email, log
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
 from us_outbound.replies.items import ts as parse_ts
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
@@ -128,6 +145,10 @@ REJECT_REACTIONS = SKIP_REACTIONS  # ❌
 EDIT_REACTIONS = frozenset({"pencil2", "memo"})  # ✏️ (and 📝)
 CONTACT_REACTIONS = frozenset({"bust_in_silhouette"})  # 👤
 COMPANY_REACTIONS = frozenset({"no_entry_sign"})  # 🚫
+# A ✅'s holds (recheck): temporary, so the card stays open and the approval valid; one thread note per key.
+HOLD_LIVE, HOLD_OPTOUT, HOLD_STOP, HOLD_STOP_RULE = "live_sending", "optout_tested", "operator_stop", "stop_rule"
+HOLD_REPLIES, HOLD_BLACKOUT, HOLD_CAMPAIGN = "reply_pause", "blackout", "campaign"
+HOLD_INSTANTLY, HOLD_HUBSPOT = "instantly", "hubspot"
 SEED_APPROVE = ("white_check_mark", "x")  # what the bot puts on a card or a version, so a click decides
 SEED_CHOICES = ("pencil2", "bust_in_silhouette", "no_entry_sign")
 
@@ -468,7 +489,7 @@ def _before_line(p: Mapping[str, Any]) -> str:
     return line
 
 
-def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, list[dict]]:
+def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     """The card: (plain-text fallback, Block Kit blocks). status, once decided, replaces the footer."""
     c = p.get("contact") or {}
     name = " ".join(x for x in (_text(c.get("first_name")), _text(c.get("last_name"))) if x) or "the contact"
@@ -498,7 +519,7 @@ def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, li
     counts = "\n".join([
         f"*Emails:* Email 1 of {len(render.STEPS)} · follow-ups on days {days} (in the thread)",
         f"*Before:* {_before_line(p)}",
-        f"*Today:* {_esc(_first(owner))}: {p.get('slot', '?')} of {p.get('slots', '?')} today",
+        f"*{_esc(_first(owner)) or 'The sender'} today:* card {p.get('slot', '?')} of {p.get('slots', '?')}",
     ])
     blocks = []
     if status:
@@ -509,8 +530,7 @@ def card(p: Mapping[str, Any], short_id: str, status: str = "") -> tuple[str, li
     if status:
         blocks.append(_context(status))
     else:
-        cli_hint = f"; without Slack, `us-outbound approvals approve {short_id} --live`" if short_id else ""
-        blocks.append(_context(f"✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread{cli_hint}."))
+        blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread."))
     text = _esc(f"Send approval: {company} · {name} · from {owner}: {first.get('subject') or ''}")
     return (f"{status} {text}" if status else text), blocks  # status is mrkdwn already (it may mention)
 
@@ -535,7 +555,7 @@ def choices_text(p: Mapping[str, Any], by: str) -> str:
     name = _esc(" ".join(x for x in (_text(c.get("first_name")), _text(c.get("last_name"))) if x) or "this person")
     return (f"❌ Not sent ({_who(by)}). What next? React to this message, or reply with the word:\n"
             "✏️ *edit*: change the email (or a follow-up), then approve it again\n"
-            f"👤 *contact*: not {name}; pick_contacts finds the next-ranked person at {company}\n"
+            f"👤 *contact*: not {name}; you'll get a card for the next person at {company}\n"
             f"🚫 *company*: drop {company}\n"
             f"If nothing is chosen, it expires at the end of {_day(_date(p.get('expires_on')))} (UK) and "
             f"{company} goes back to the queue.")
@@ -593,7 +613,7 @@ def _seed(slack: Any, channel: str, ts: str, names: Iterable[str]) -> None:
 def _update_card(ctx: Context, slack: Any, item: Item, status: str) -> None:
     if slack is None or not item.channel or not item.ts or ctx.dry_run:
         return
-    text, blocks = card(item.payload, item.short_id, status=status)
+    text, blocks = card(item.payload, status=status)
     try:
         slack.update(item.channel, item.ts, text, blocks)
     except (ApiError, LookupError) as exc:
@@ -603,7 +623,7 @@ def _update_card(ctx: Context, slack: Any, item: Item, status: str) -> None:
 def post_card(ctx: Context, slack: Any, item: Item) -> bool:
     """Post the card to the alert channel (dry-run: the dev channel), seed ✅ and ❌, and post emails 2 to 4
     in its thread. Live, the row records where. True when the card was posted."""
-    text, blocks = card(item.payload, item.short_id)  # a dry-run preview has no id
+    text, blocks = card(item.payload)
     posted = slack.post(ctx.settings.general.alert_channel, text, blocks=blocks)
     if not posted or not posted.get("ts"):
         return False
@@ -801,41 +821,152 @@ def _close(ctx: Context, item: Item, outcome: str, by: str, slack: Any, *, statu
     return True
 
 
-def recheck(ctx: Context, item: Item) -> list[str]:
-    """Why the lead may not be added now, just before adding it; [] when it may."""
+def eligibility(ctx: Context, item: Item, account: Mapping[str, Any], contact: Mapping[str, Any]) -> str:
+    """Why the card's account or contact may no longer be emailed, or "": the enrol run's own check
+    (enrol.eligible: suppression, partners, the hand-check's pulls, industries switched off, kill-rule holds
+    on industry groups and email sources, the recipient rules), with suppression looked up for this domain
+    and email only (enrol.suppressed_for), not the whole table."""
+    email = _text(contact.get("email")).lower()
+    domains = [_text(account.get("domain")), email.rpartition("@")[2]]
+    hashes = [hash_email(email) if "@" in email else "", _text(contact.get("email_sha256"))]
+    _, pulled = enrol.hand_check(ctx, ctx.now_et().date())  # the pulls enrol leaves out, as it reads them
+    g = enrol.gates(ctx, pulled, enrol.suppressed_for(ctx, domains, hashes))
+    why = enrol.account_reason(account, g)
+    if why:
+        return f"{item.company}: {why}"
+    chosen, why = enrol.eligible(account, [contact], g)
+    return f"{item.person}: {why}" if chosen is None else ""
+
+
+@dataclass
+class Recheck:
+    """What a ✅ finds just before the lead is added (recheck).
+
+    holds: key -> why, for what is temporary. The card stays open and its ✅ stays valid: each
+      poll_approvals run tries again, and the lead is added once every hold clears (or the card expires).
+    blocks: what is permanent. The card closes as blocked and the account goes back to the queue.
+    exclude: (fact, reason) when HubSpot now excludes the account, which is excluded as the card closes.
+    """
+
+    holds: dict[str, str] = field(default_factory=dict)
+    blocks: list[str] = field(default_factory=list)
+    exclude: tuple[str, str] | None = None
+
+
+def instantly_send_day(ctx: Context) -> date | None:
+    """The day Instantly would send email 1 if the lead were added now: its schedule's next weekday (the send
+    window's days, in the window's time zone), today if the window has not closed yet. Instantly knows the
+    weekdays, not our blackout dates."""
+    w = ctx.settings.general.send_window
+    now = ctx.now.astimezone(ZoneInfo(w.tz))
+    day = now.date() + timedelta(days=1 if now.time() >= w.end else 0)
+    for i in range(14):
+        if (day + timedelta(days=i)).weekday() in w.days:
+            return day + timedelta(days=i)
+    return None
+
+
+def recheck(ctx: Context, item: Item) -> Recheck:
+    """Why the lead may not be added now, just before adding it: the holds (temporary: the ✅ stays valid) and
+    the blocks (permanent: the card closes). Nothing in either when it may be added.
+
+    Holds: live_sending no, optout_tested no, an operator stop, the stop rule, the reply pause (a positive reply
+    waiting over escalation_hours), Instantly's next send day being a blackout date, the owner's campaign not
+    active in Instantly, and Instantly or HubSpot not answering. Approving at the weekend is fine: Instantly
+    sends on its next weekday. Blocks: the account or contact gone, no longer verified or in a queue tier, the
+    enrol run's own eligibility check (eligibility), the email changed, no Active mailbox for the owner, another
+    sender, and a HubSpot exclusion. Instantly and HubSpot are asked only when nothing else holds or blocks.
+    """
     s = holds.with_holds(ctx.store, ctx.settings)
     p = item.payload
-    out: list[str] = []
+    out = Recheck()
     if not s.general.live_sending:
-        out.append("live_sending is no")
-    out += [w for w in (enrol.operator_pause(ctx), holds.enrolment_stop(ctx.store)) if w]
+        out.holds[HOLD_LIVE] = "live_sending is no"
+    if not s.general.optout_tested:
+        out.holds[HOLD_OPTOUT] = enrol.OPTOUT_UNTESTED
+    for key, why in ((HOLD_STOP, enrol.operator_pause(ctx)), (HOLD_STOP_RULE, holds.enrolment_stop(ctx.store)),
+                     (HOLD_REPLIES, enrol.reply_pause(ctx))):
+        if why:
+            out.holds[key] = why if key != HOLD_REPLIES else f"new emails wait while {why}"
+    day = instantly_send_day(ctx)
+    if day is not None and budget.is_blackout(day, s):
+        out.holds[HOLD_BLACKOUT] = (f"{_day(day)} is a blackout date, and Instantly (which does not know our blackout "
+                                    "dates) would send email 1 then")
     account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
     contact = ctx.store.get("contacts", contact_id=item.contact_id) if item.contact_id else None
     if account is None or contact is None:
-        return out + ["the account or its contact is no longer on file"]
+        out.blocks.append("the account or its contact is no longer on file")
+        return out
     company = item.company
     if account.get("status") != "verified":
-        out.append(f"{company} is {account.get('status') or 'without a status'} now, not verified")
+        out.blocks.append(f"{company} is {account.get('status') or 'without a status'} now, not verified")
     if account.get("tier") not in queue.QUEUE_TIERS:
         reason = _text(account.get("tier_reason"))
-        out.append(f"{company} is {account.get('tier') or 'untiered'} now" + (f" ({reason})" if reason else ""))
-    domains, hashes = enrol.suppressed(ctx)
-    partners = {_text(r.get("domain")).lower() for r in ctx.store.select("partners")}
-    why = enrol.account_block(account, s, domains, partners, frozenset())
+        out.blocks.append(f"{company} is {account.get('tier') or 'untiered'} now" + (f" ({reason})" if reason else ""))
+    why = eligibility(ctx, item, account, contact)
     if why:
-        out.append(f"{company}: {why}")
-    why = enrol.contact_block(contact, domains, hashes)
-    if why:
-        out.append(f"{item.person}: {why}")
+        out.blocks.append(why)
     elif _text(contact.get("email")).lower() != item.email.lower():
-        out.append(f"{item.person}'s email has changed since the card was posted")
+        out.blocks.append(f"{item.person}'s email has changed since the card was posted")
     owner = _text(p.get("owner"))
     if not s.mailboxes_for(owner, "Active"):
-        out.append(f"{owner} has no Active mailbox now")
+        out.blocks.append(f"{owner} has no Active mailbox now")
     sender = _text(account.get("sender"))
     if sender and sender != owner:
-        out.append(f"{company}'s sender is {sender} now, not {owner}")
+        out.blocks.append(f"{company}'s sender is {sender} now, not {owner}")
+    if out.holds or out.blocks:
+        return out
+    try:
+        why = capacity.campaign_problem(owner, ctx.clients.instantly.list_campaigns())
+    except (ApiError, ConfigError, LookupError) as exc:
+        out.holds[HOLD_INSTANTLY] = f"Instantly could not be read ({type(exc).__name__}: {str(exc)[:160]})"
+        return out
+    if why:
+        out.holds[HOLD_CAMPAIGN] = why
+        return out
+    try:
+        excluded = enrol.hubspot_block(ctx, account, contact)
+    except (ApiError, ConfigError) as exc:
+        out.holds[HOLD_HUBSPOT] = f"HubSpot could not be read for the re-check ({str(exc)[:160]})"
+        return out
+    if excluded:
+        out.exclude = excluded
+        out.blocks.append(f"{company}: {excluded[1]}")
     return out
+
+
+def _hold(ctx: Context, item: Item, why: Mapping[str, str], *, by: str, via: str, slack: Any) -> None:
+    """A ✅ that something temporary stops for now: the card stays open and the approval stays valid, so each
+    poll_approvals run tries again and adds the lead once it clears, until the card expires. The thread gets
+    one note per hold reason (payload.held.noted), never the same one again every 5 minutes."""
+    p = item.payload
+    held = dict(p.get("held") or {})
+    noted = [str(k) for k in held.get("noted") or ()]
+    new = [k for k in why if k not in noted]
+    p["held"] = {"by": by, "via": via, "since": held.get("since") or ctx.now.isoformat(), "at": ctx.now.isoformat(),
+                 "reasons": dict(why), "noted": noted + new}
+    _save(ctx, item)
+    if new:
+        _thread(slack, item, f"⏸ Approved {_who(by)}, but not added yet: {_esc('; '.join(why[k] for k in new))}. "
+                             "It goes through by itself once that clears, until the card expires at the end of "
+                             f"{_day(_date(p.get('expires_on')))} (UK). ❌ still stops it.")
+    log("send_approval_held", item_id=item.id, holds=list(why), noted=new)
+
+
+def _held_approval(item: Item) -> tuple[str, str] | None:
+    """(who approved, how) of an approval a hold stopped, while the card still waits; else None."""
+    held = item.payload.get("held") or {}
+    if item.status != OPEN or item.state != WAITING or not held.get("by"):
+        return None
+    return _text(held.get("by")), _text(held.get("via")) or "held"
+
+
+def _retry(item: Item, approvers: frozenset[str]) -> tuple[Command | None, str]:
+    """(send, how it was approved) for an approval a hold stopped, by someone who may still approve; else (None, "")."""
+    held = _held_approval(item)
+    if held is None or (held[0] not in approvers and held[0] != CLI_APPROVER):
+        return None, ""
+    return Command("send", held[0]), held[1]
 
 
 def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
@@ -853,19 +984,27 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
 def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> dict:
     """✅: re-check, then add the one lead to the owner's campaign and record the enrollment; close the item."""
     p = item.payload
-    edited = bool(p.get("edited"))
-    outcome = APPROVED_EDITED if edited else APPROVED
+    outcome = APPROVED_EDITED if p.get("edited") else APPROVED
     result: dict[str, Any] = {"item": item.short_id, "account_id": item.account_id, "by": by, "via": via}
-    problems = recheck(ctx, item)
-    if problems:
-        result.update(added=False, outcome=BLOCKED, why=problems)
+    check = recheck(ctx, item)
+    if check.blocks:
+        result.update(added=False, outcome=BLOCKED, why=check.blocks)
         if ctx.dry_run:
             result["dry_run"] = True
             return result
-        reasons = "; ".join(problems)
-        _close(ctx, item, BLOCKED, by, slack, reason=reasons, via=via, status=f"⛔ Not sent: {_esc(reasons)}",
-               note=f"⛔ Not added ({_who(by)}): {_esc(reasons)}. Closed: nothing was sent, and {_esc(item.company)} "
-                    "goes back to the queue if it can still be emailed.")
+        reasons = "; ".join(check.blocks)
+        closed = _close(ctx, item, BLOCKED, by, slack, reason=reasons, via=via, status=f"⛔ Not sent: {_esc(reasons)}",
+                        note=f"⛔ Not added ({_who(by)}): {_esc(reasons)}. Closed: nothing was sent, and "
+                             f"{_esc(item.company)} goes back to the queue if it can still be emailed.")
+        if closed and check.exclude:  # HubSpot excludes it now: kept out at the next rescore too
+            enrol.mark_excluded(ctx, {"account_id": item.account_id}, *check.exclude)
+        return result
+    if check.holds:
+        result.update(added=False, held=list(check.holds.values()))
+        if ctx.dry_run:
+            result["dry_run"] = True
+            return result
+        _hold(ctx, item, check.holds, by=by, via=via, slack=slack)
         return result
     if ctx.dry_run:
         result.update(added=False, dry_run=True, outcome=outcome)
@@ -885,8 +1024,9 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         raise
     except (ApiError, LookupError, ValueError, ConfigError) as exc:
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
-        note = _thread(slack, item, f"Not added: Instantly answered {_esc(why)}. Check {_esc(campaign)} in Instantly "
-                                    f"for {_esc(item.email)} before you approve it again: ✅ this message, or reply \"send\".")
+        note = _thread(slack, item, f"Not added: Instantly refused: {_esc(str(exc)[:200])}. Check {_esc(campaign)} in "
+                                    f"Instantly for {_esc(item.email)} before you approve it again: ✅ this message, or "
+                                    "reply \"send\".")
         _seed(slack, item.channel, note, SEED_APPROVE[:1])
         p.update(state=WAITING, approve_ts=note, failed={**p.pop("sending", {}), "error": why})
         _cas(ctx, item, OPEN)
@@ -894,29 +1034,60 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         result.update(added=False, why=[why])
         return result
     lead = dict(p.get("lead") or {})
+    email = _text(lead.get("email")).lower()
     ids = enrol._created_ids(added or {}, [lead])
-    if 0 not in ids:
-        why = "Instantly did not add the lead (in its blocklist, or already in the workspace)"
-        _close(ctx, item, BLOCKED, by, slack, reason=why, via=via, status=f"⛔ Not sent: {why}",
-               note=f"⛔ {why}. Closed: nothing was sent.")
-        result.update(added=False, outcome=BLOCKED, why=[why])
-        return result
-    enrol._record_enrolled(ctx, [_prepared(ctx, item)], ids, campaign, ctx.now_et().date().strftime("%Y-%m"))
+    if 0 not in ids:  # not created: in the campaign after all, or refused (enrol.campaign_lead_ids)
+        try:
+            found = enrol.campaign_lead_ids(ctx, campaign, [email])
+        except (ApiError, LookupError, ConfigError) as exc:  # left "sending": _stuck looks again after STUCK_AFTER
+            p["sending"] = {**(p.get("sending") or {}), "answered": True}  # Instantly had the add, and did not create it
+            _save(ctx, item)
+            why = f"Instantly did not confirm the lead and {campaign} could not be read ({str(exc)[:160]}); looked up again"
+            log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
+            result.update(added=False, why=[why])
+            return result
+        if email not in found:
+            return {**result, **_refused(ctx, item, by=by, via=via, slack=slack)}
+        ids = {0: found[email]}
+    return {**result, **_added(ctx, item, ids[0], by=by, via=via, slack=slack)}
+
+
+def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: Any) -> dict:
+    """The lead is in the owner's campaign: record the enrollment as enrol does, and close the item approved."""
+    p = item.payload
+    edited = bool(p.get("edited"))
+    outcome = APPROVED_EDITED if edited else APPROVED
+    campaign = _text(p.get("campaign"))
+    enrol._record_enrolled(ctx, [_prepared(ctx, item)], {0: lead_id}, campaign, ctx.now_et().date().strftime("%Y-%m"))
     at = _uk_time(ctx)
-    p["added"] = {"lead_id": ids[0], "at": ctx.now.isoformat(), "by": by, "campaign": campaign}
+    p["added"] = {"lead_id": lead_id, "at": ctx.now.isoformat(), "by": by, "campaign": campaign}
     first = _esc((p.get("contact") or {}).get("first_name") or "they")
     days = ", ".join(str(d) for d in FOLLOW_UP_DAYS[:-1]) + f" and {FOLLOW_UP_DAYS[-1]}"
     _close(ctx, item, outcome, by, slack, via=via,
            status=f"✅ Approved{' (edited)' if edited else ''} {_who(by)} at {at} UK · added to {_esc(campaign)}",
            note=f"Added to {_esc(campaign)} at {at} UK{' (edited)' if edited else ''}, approved {_who(by)}. Email 1 goes "
                 f"out in the next send window, and the follow-ups on days {days} unless {first} replies.")
-    result.update(added=True, outcome=outcome, campaign=campaign, at=f"{at} UK")
-    return result
+    return {"added": True, "outcome": outcome, "campaign": campaign, "at": f"{at} UK"}
+
+
+def _refused(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> dict:
+    """Instantly did not create the lead and the campaign does not have it: its blocklist, or a lead in another
+    campaign of the workspace. Closed as blocked, and the contact marked suppressed (enrol.mark_not_added) so
+    pick_contacts finds the next person and a later enrol proposes them."""
+    why = enrol.NOT_ADDED
+    company = _esc(item.company)
+    if _close(ctx, item, BLOCKED, by, slack, reason=why, via=via, status=f"⛔ Not sent: {why}",
+              note=f"⛔ Instantly did not add {_esc(item.email)} (in its blocklist, or already in another campaign). "
+                   f"Closed: nothing was sent. {_esc(item.person)} won't be proposed again; you'll get a card for the "
+                   f"next person at {company}."):
+        enrol.mark_not_added(ctx, item.contact_id)
+    return {"added": False, "outcome": BLOCKED, "why": [why]}
 
 
 def reject(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> None:
     """❌: not sent; the thread offers the three choices, their reactions seeded."""
     p = item.payload
+    p.pop("held", None)  # ❌ stops an approval a hold kept
     p.update(state=REJECTED, approve_ts="", rejected={"by": by, "at": ctx.now.isoformat(), "via": via})
     note = _thread(slack, item, choices_text(p, by))
     _seed(slack, item.channel, note, SEED_CHOICES)
@@ -927,6 +1098,7 @@ def reject(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> None:
 
 def start_edit(ctx: Context, item: Item, *, by: str, slack: Any) -> None:
     """✏️: how to edit, with email 1 as it stands, ready to copy."""
+    item.payload.pop("held", None)  # an edited version needs its own ✅
     item.payload["state"] = EDITING
     item.payload["edit_ts"] = _thread(slack, item, edit_help(ctx, item.payload, by))
     _save(ctx, item)
@@ -958,6 +1130,7 @@ def apply_edit(ctx: Context, item: Item, text: str, *, by: str, slack: Any) -> b
     steps = [s for s in steps if s.get("step") != step] + [{"step": step, "subject": r.subject, "text": r.text,
                                                            "source": source}]
     edits.append({"step": step, "by": by, "at": ctx.now.isoformat(), "accepted": True})
+    p.pop("held", None)  # an approval of the earlier version does not carry over
     p.update(lead=lead, steps=sorted(steps, key=lambda s: s.get("step") or 0), edited=True, state=WAITING, edits=edits)
     text_, blocks = version_message(p, step, by)
     note = _thread(slack, item, text_, blocks)
@@ -1009,6 +1182,9 @@ def expire(ctx: Context, item: Item, slack: Any) -> bool:
     """Not approved by the end of its next send day: closed by "system", and the account goes back to the queue."""
     last = _date(item.payload.get("expires_on"))
     reason = f"not approved by the end of {_day(last)} (UK)"
+    held = (item.payload.get("held") or {}).get("reasons") or {}
+    if held:  # approved, but a hold never cleared
+        reason = f"approved, but still held at the end of {_day(last)} (UK): {'; '.join(held.values())}"
     company = _esc(item.company)
     return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=reason, via="expiry",
                   status=f"⌛ Expired: {reason}; nothing was added and {company} goes back to the queue",
@@ -1025,6 +1201,7 @@ class _Run:
     editing: list[str] = field(default_factory=list)
     edits: Counter[str] = field(default_factory=Counter)  # accepted, refused
     not_added: list[dict] = field(default_factory=list)
+    held: list[dict] = field(default_factory=list)  # approvals a hold stopped this run; they stay valid
     cards_posted: int = 0
     unsure: list[str] = field(default_factory=list)
     would: list[dict] = field(default_factory=list)
@@ -1046,6 +1223,8 @@ def _act(ctx: Context, item: Item, cmd: Command, by: str, via: str, slack: Any, 
             run.outcomes[res["outcome"]] += 1
         elif res.get("outcome") == BLOCKED:
             run.outcomes[BLOCKED] += 1
+        elif res.get("held"):
+            run.add("held", {"item": item.short_id, "why": res["held"]})
         else:
             run.add("not_added", res)
         return True
@@ -1076,10 +1255,11 @@ def _first_by(reactions: Sequence[Mapping[str, Any]], names: frozenset[str], app
         if r.get("name") not in names:
             continue
         for u in r.get("users") or ():
+            if bot and u == bot:
+                continue  # its own seeded ✅ and ❌, even if its id were on approver_slack_ids
             if u in approvers:
                 return str(u)
-            if u != bot:
-                run.ignored += 1
+            run.ignored += 1
     return ""
 
 
@@ -1134,9 +1314,12 @@ def _work(ctx: Context, item: Item, slack: Any, bot: str, run: _Run) -> None:
     if item.status != OPEN:
         return
     decision = _reaction_decision(item, slack, approvers, bot, run)
-    if decision is None:
-        return
-    via = {"send": "✅", "reject": "❌", "edit": "✏️", "contact": "👤", "company": "🚫"}[decision.kind]
+    if decision is not None:
+        via = {"send": "✅", "reject": "❌", "edit": "✏️", "contact": "👤", "company": "🚫"}[decision.kind]
+    else:  # an approval a hold stopped (a "send" reply, or the command line) is tried again
+        decision, via = _retry(item, approvers)
+        if decision is None:
+            return
     if ctx.dry_run:
         run.add("would", {"item": item.short_id, "action": decision.kind, "by": decision.text, "via": via})
         return
@@ -1144,21 +1327,48 @@ def _work(ctx: Context, item: Item, slack: Any, bot: str, run: _Run) -> None:
 
 
 def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
-    """An item left "sending" by a run that stopped: back to waiting for a person, never added again alone."""
-    started = parse_ts((item.payload.get("sending") or {}).get("at"))
+    """An item left "sending" by a run that stopped, or whose lead Instantly did not confirm: the campaign is
+    looked up (enrol.campaign_lead_ids). A lead found there is recorded and the item closed approved, by whoever
+    approved it. One not there, after Instantly answered the add (sending.answered), was refused (_refused);
+    otherwise it goes back to waiting for a person's fresh ✅: it is never added again alone, as the add may
+    never have reached Instantly. If the campaign cannot be read, a person is asked to check."""
+    p = item.payload
+    sending = dict(p.get("sending") or {})
+    started = parse_ts(sending.get("at"))
     if started is not None and ctx.now - started < STUCK_AFTER:
         return  # an add may still be going
-    run.add("unsure", item.short_id)
     if ctx.dry_run:
+        run.add("unsure", item.short_id)
         return
-    p = item.payload
-    note = _thread(slack, item, f"I can't tell whether {_esc(item.email)} was added to {_esc(p.get('campaign'))} (the run "
-                                "adding it stopped). Check the campaign in Instantly; if the lead is not there, ✅ this "
-                                "message or reply \"send\" to add it.")
+    campaign, email = _text(p.get("campaign")), item.email.lower()
+    try:
+        found: dict[str, str] | None = enrol.campaign_lead_ids(ctx, campaign, [email]) if campaign and email else {}
+    except (ApiError, LookupError, ConfigError) as exc:
+        found = None
+        log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
+    by, via = _text(sending.get("by")) or SYSTEM, _text(sending.get("via"))
+    if found and found.get(email):
+        res = _added(ctx, item, found[email], by=by, via=via, slack=slack)
+        run.outcomes[res["outcome"]] += 1
+        log("send_approval_found", item_id=item.id)
+        return
+    if found is not None and sending.get("answered"):  # Instantly had the add and did not take it: refused
+        run.outcomes[_refused(ctx, item, by=by, via=via, slack=slack)["outcome"]] += 1
+        return
+    if found is None:
+        run.add("unsure", item.short_id)
+        text = (f"I can't tell whether {_esc(item.email)} was added to {_esc(campaign)} (the run adding it stopped, "
+                "and Instantly could not be read). Check the campaign in Instantly; if the lead is not there, ✅ this "
+                "message or reply \"send\" to add it.")
+    else:
+        run.add("not_added", {"item": item.short_id, "why": ["the run adding it stopped before Instantly had it"]})
+        text = (f"{_esc(item.email)} is not in {_esc(campaign)}: the run adding it stopped before Instantly had it, so "
+                "nothing was sent. ✅ this message or reply \"send\" to add it.")
+    note = _thread(slack, item, text)
     _seed(slack, item.channel, note, SEED_APPROVE[:1])
     p.update(state=WAITING, approve_ts=note, unsure=p.pop("sending", None))
     _cas(ctx, item, OPEN)
-    log("send_approval_unsure", item_id=item.id)
+    log("send_approval_unsure", item_id=item.id, looked_up=found is not None)
 
 
 def _post_missing(ctx: Context, slack: Any, run: _Run) -> None:
@@ -1197,11 +1407,19 @@ def poll(ctx: Context, slack: Any | None) -> dict:
                 if bot is None:
                     bot = slack.bot_user_id()
                 _work(ctx, item, slack, bot, run)
+            else:  # no Slack: an approval a hold stopped still goes through once it clears
+                approvers = frozenset(x.strip() for x in ctx.settings.general.approver_slack_ids if x.strip())
+                cmd, via = _retry(item, approvers)
+                if cmd is not None and ctx.dry_run:
+                    run.add("would", {"item": item.short_id, "action": cmd.kind, "by": cmd.text, "via": via})
+                elif cmd is not None:
+                    _act(ctx, item, Command(cmd.kind), cmd.text, via, slack, run)
         except (ApiError, LookupError) as exc:  # one item's trouble never stops the others
             run.errors.append(f"{item.short_id}: {type(exc).__name__}: {str(exc)[:160]}")
     out: dict[str, Any] = {
         "items": len(todo), "outcomes": dict(run.outcomes), "rejected": run.rejected, "editing": run.editing,
-        "edits": dict(run.edits), "not_added": run.not_added, "cards_posted": run.cards_posted, "unsure": run.unsure,
+        "edits": dict(run.edits), "not_added": run.not_added, "held": run.held, "cards_posted": run.cards_posted,
+        "unsure": run.unsure,
         "ignored_non_approvers": run.ignored, "errors": run.errors,
     }
     if ctx.dry_run:

@@ -38,6 +38,13 @@ What Instantly reports back, from the latest mailbox_health run (registry/mailbo
   * each campaign's sending status: Instantly saying a campaign or all its inboxes hit their
     daily limit marks the sender as full, which limits.py turns into "add a mailbox" when
     ready accounts are waiting.
+
+Each campaign's own status, read from Instantly when enrol runs (campaigns_not_sending; limits.today
+with campaigns=True). Campaigns are created paused (draft) and only `us-outbound start --live`
+activates them, so a lead added to one that is not active (Instantly status 1) would wait there
+unsent. In a live run an owner whose campaign is not active, is missing, or cannot be read (the safe
+direction) has no capacity today, so enrol proposes no card and adds no lead for them, and the limiter
+line says why. A dry run counts them as usual, so previews still work, and only says so.
 """
 
 from __future__ import annotations
@@ -52,8 +59,9 @@ from typing import Any
 from us_outbound.budget import is_send_day
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
-from us_outbound.clients.instantly import STEP_DAYS
-from us_outbound.context import ET
+from us_outbound.clients.http import ApiError
+from us_outbound.clients.instantly import CAMPAIGN_STATUS, STEP_DAYS
+from us_outbound.context import ET, ConfigError, Context
 from us_outbound.learn import holds
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
@@ -65,6 +73,7 @@ STOP_EVENTS = ("replied", "bounced", "unsubscribed")
 OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
 MAX_SCAN_DAYS = 400  # no send day in this long means the settings allow none
+CAMPAIGN_ACTIVE = 1  # Instantly's campaign status for active (clients/instantly.CAMPAIGN_STATUS)
 
 
 def next_send_day(d: date, settings: Settings) -> date | None:
@@ -103,6 +112,49 @@ def _ts(v: Any) -> datetime | None:
             return None
         return t if t.tzinfo else t.replace(tzinfo=UTC)
     return None
+
+
+def _status(campaign: Mapping[str, Any]) -> int | None:
+    try:
+        return int(campaign.get("status"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
+    """Why the owner's "US Outbound – {owner}" campaign, among those Instantly listed, takes no new leads; ""
+    when it is active."""
+    name = US_CAMPAIGN_PREFIX + owner
+    mine = [c for c in found if str(c.get("name") or "") == name]
+    if not mine:
+        return (f"{owner}'s campaign ({name}) is not in Instantly: `us-outbound campaigns ensure --live` creates it, "
+                "then run `us-outbound start --live`")
+    if len(mine) > 1:
+        return f"more than one Instantly campaign is named {name}: fix it by hand in Instantly"
+    status = _status(mine[0])
+    if status != CAMPAIGN_ACTIVE:
+        what = CAMPAIGN_STATUS.get(status, f"status {mine[0].get('status')}") if status is not None else "status unknown"
+        return f"{owner}'s campaign is not active in Instantly ({what}): run `us-outbound start --live`"
+    return ""
+
+
+def unreadable(exc: Exception) -> str:
+    return (f"Instantly could not be read ({type(exc).__name__}: {str(exc)[:120]}), so no campaign is known to be "
+            "active: no new leads until it can be read")
+
+
+def campaigns_not_sending(ctx: Context, owners: Iterable[str]) -> dict[str, str]:
+    """owner -> why their campaign takes no new leads now (campaign_problem), for these owners; {} when every one
+    is active. One read of Instantly's campaign list (list_campaigns, which also caches the ids add_leads uses).
+    When Instantly cannot be read, every owner gets that reason: the safe direction."""
+    owners = sorted(set(owners))
+    if not owners:
+        return {}
+    try:
+        found = ctx.clients.instantly.list_campaigns()
+    except (ApiError, ConfigError, LookupError) as exc:
+        return {o: unreadable(exc) for o in owners}
+    return {o: why for o in owners if (why := campaign_problem(o, found))}
 
 
 def instantly_report(store: Store) -> Mapping[str, Any]:
@@ -201,12 +253,22 @@ class SenderCapacity:
     # today's slots, so free is what is left after them (limits.today takes them off).
     pending: int = 0
     held_from: int | None = None  # free before the waiting send approvals took their slots
+    not_sending: str = ""  # why the owner's campaign takes no new leads now (campaigns_not_sending)
+    stopped: bool = False  # a live run: not_sending took every slot today
 
     def hold(self, n: int) -> None:
         """Take n slots for send approvals still waiting (limits.today)."""
         self.held_from = self.free
         self.pending = max(0, n)
         self.free = max(0, self.free - self.pending)
+
+    def stop(self, why: str, *, live: bool) -> None:
+        """The owner's campaign takes no new leads now: a live run gives the owner none today; a dry run only notes it."""
+        self.not_sending = why
+        if live:
+            self.held_from = self.slots
+            self.free = 0
+            self.stopped = True
 
     @property
     def slots(self) -> int:
@@ -220,6 +282,8 @@ class SenderCapacity:
         return self.cap > 0 and (self.free <= 0 or self.at_limit or near_cap)
 
     def why_full(self) -> str:
+        if self.stopped:
+            return self.not_sending
         if self.at_limit:
             return f"Instantly says {self.instantly_says}"
         if self.sent_last_day is not None and self.last_day and self.sent_last_day >= 0.95 * self.cap:
@@ -241,6 +305,10 @@ class SenderCapacity:
             for m in lowered
         )
         note += "".join(f"; {m.address} is on its {m.ramp.describe()}" for m in self.ramping if m.ramp)
+        if self.stopped:
+            return f"{self.owner}: no new leads today: {self.not_sending}"
+        if self.not_sending:  # a dry run counts them, so previews work
+            note += f"; a live run would give none: {self.not_sending}"
         if self.cap <= 0:
             return f"{self.owner}: no sending capacity{note}"
         if self.room < self.pace and self.tightest_day:

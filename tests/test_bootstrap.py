@@ -211,3 +211,34 @@ def test_with_a_slack_token_the_real_client_is_used():
     from us_outbound.clients.slack import Slack
 
     assert isinstance(_clients(Guard(), {"US_OUTBOUND_SLACK_BOT_TOKEN": "xoxb-test"}).slack, Slack)
+
+
+# -- the kill switch on default settings (A12) ------------------------------------------------------------
+
+
+def test_stop_and_unenrol_run_on_the_general_defaults_when_the_settings_are_unusable(capsys):
+    """`stop --live` must pause the campaigns even when no valid settings are in force."""
+    from us_outbound.ops.heartbeat import OPERATOR_STOP, enrolment_paused
+    from us_outbound.settings.model import General
+
+    assert {OPERATOR_STOP, "unenrol"} <= bootstrap.DEFAULTS_OK and "enrol" not in bootstrap.DEFAULTS_OK
+    t = FakeTransport()
+    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1},
+                                            {"id": "c-sam", "name": "US Outbound – Sam Jackson", "status": 0}]})
+    store = MemoryStore(Guard())
+    env = {"DATABASE_URL": DSN, "US_OUTBOUND_INSTANTLY_API_KEY": "test-instantly"}
+
+    def factory(job, live_flag, operator=False):
+        return bootstrap.build_context(job, live_flag, operator=operator, env=env, store=store, transport=t,
+                                       load_settings=lambda s: (None, {"General": ["row 3: bad"]}),
+                                       google_credentials=object())
+
+    ctx = factory(OPERATOR_STOP, True, operator=True)
+    assert ctx.live and ctx.settings.general == General()
+    assert cli.main(["stop", "--live"], context_factory=factory) == 0
+    assert [r.url.rsplit("/v2", 1)[1] for r in t.requests if r.method == "POST"] == ["/campaigns/c-hannah/pause"]
+    assert enrolment_paused(store) is not None  # enrol's operator_pause sees the stop
+    assert "already_not_sending" in capsys.readouterr().out
+    assert factory("unenrol", True, operator=True).live
+    with pytest.raises(bootstrap.SettingsUnusable):
+        factory("enrol", True)  # a job that sends still refuses
