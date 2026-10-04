@@ -6,7 +6,9 @@ has no schedule of its own; it runs only when started by hand (`us-outbound run 
 
 live:     the scheduler adds --live. Only jobs that write outside the database (Slack
           #us-outbound, the sheet, HubSpot, Instantly) have it, and a job run with --live
-          is still dry until live_sending = yes in the settings sheet (SPEC 0.3).
+          is still dry until live_sending = yes in the synced settings (SPEC 0.3): a sheet
+          edit counts from the next settings_sync (02:00, and 11:30 on weekdays) or
+          `us-outbound sync`.
 enabled:  False for jobs of a later phase (SPEC 14); the scheduler never starts them.
 timeout:  minutes before the scheduler kills a run. Keep it at 60 or less: ops/heartbeat.py
           treats a "running" row older than 60 minutes as dead.
@@ -33,6 +35,10 @@ class ScheduledJob:
 
 SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "0 2 * * *", live=True, enabled=True, timeout_minutes=15, phase=0),
+    # A second weekday sync (4 Oct 2026), so the morning's sheet edits (Copy approvals, live_sending) are in
+    # force for enrol at 12:00. A job may appear twice: the scheduler starts each row on its own cron and never
+    # overlaps two runs of one job; by_name() and enabled_names() give each job once (its first row).
+    ScheduledJob("settings_sync", "30 11 * * 1-5", live=True, enabled=True, timeout_minutes=15, phase=0),
     # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
     # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
     # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich and verify_accounts, all before
@@ -82,9 +88,18 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
 
 
 def by_name() -> dict[str, ScheduledJob]:
-    return {j.name: j for j in SCHEDULE}
+    """Each job once, by its first row (settings_sync's is 02:00)."""
+    out: dict[str, ScheduledJob] = {}
+    for j in SCHEDULE:
+        out.setdefault(j.name, j)
+    return out
+
+
+def crons(name: str) -> list[str]:
+    """Every cron a job runs on, in table order (settings_sync has two)."""
+    return [j.cron for j in SCHEDULE if j.name == name and j.enabled and j.cron]
 
 
 def enabled_names() -> list[str]:
-    """The jobs the scheduler starts: enabled and with a schedule (what heartbeat_check expects)."""
-    return [j.name for j in SCHEDULE if j.enabled and j.cron]
+    """The jobs the scheduler starts: enabled and with a schedule (what heartbeat_check expects), each once."""
+    return list(dict.fromkeys(j.name for j in SCHEDULE if j.enabled and j.cron))

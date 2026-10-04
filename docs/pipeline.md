@@ -161,7 +161,10 @@ An account also needs at least one candidate contact: a person matching the Role
 A sheet made before 1 Oct 2026 has the Roles tab in SPEC 5's layout. It is still read, as the old order, until `us-outbound settings load --tab Roles --live` replaces it; settings_sync says so meanwhile.
 
 **5. Enrol: weekdays at 12:00, `enrol`.**
-- It works out today's number (below), re-checks HubSpot, assigns the test version, renders the copy, and adds the lead to its sender's campaign. **Status: `enrolled`.**
+- It works out today's number (below), re-checks HubSpot, assigns the test version and renders the copy.
+- With `auto_send` = no (the pilot; Harry, 2 Oct 2026), it adds no lead: it posts a send approval, a card with the whole sequence, to #us-outbound. Only an approver's ✅ (or `us-outbound approvals send ID --live`) adds the lead to its sender's campaign, after re-checking HubSpot, opt-outs and the pauses. A card not approved by the end of the next send day lapses, and the account goes back to the queue. Cards still waiting hold their sender's slots and count towards the week.
+- With `auto_send` = yes, it adds the leads straight away, once the weekly hand-check is approved.
+- In a live run, an owner whose campaign is not active in Instantly gets no capacity and no cards: `us-outbound start --live` activates it. **Status: `enrolled`** once the lead is added.
 
 ### Why fit, not signals, finds accounts
 

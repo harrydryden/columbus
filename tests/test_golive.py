@@ -65,6 +65,7 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     got = lines_of(out)
     assert got["Settings"].startswith("PASS")
     assert got["Copy"].startswith("FAIL  Copy: 28 of 28 active industries have no approved copy")  # Legal on
+    assert got["Copy"].endswith("approve rows on the Copy tab (status approved, approved_by), then `us-outbound sync`")
     [fintech] = [line for line in out.splitlines() if line.strip().startswith("Fintech: nothing sendable for")]
     # One line per copy role: "HR manager" contacts get the People leader copy (the Roles tab's copy_role).
     assert all(r in fintech for r in ("People leader", "Founder or executive", "Operations"))
@@ -73,33 +74,45 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
                for v in ("people", "founder", "ops"))
     assert got["Mailboxes"] == "FAIL  Mailboxes: no Active mailbox: nothing can send"
     assert "hannah@meetspill.org: Warming, not on a sending list" in out
-    assert got["live_sending"].startswith("FAIL  live_sending: no")
-    assert got["Approvers"].startswith("FAIL  Approvers: approver_slack_ids is blank")
+    # Every FAIL that asks for a sheet edit says to sync it in (jobs read the synced copy of the sheet).
+    assert got["live_sending"] == ("FAIL  live_sending: no: set live_sending = yes on the General tab once Harry signs "
+                                   "off, then `us-outbound sync`")
+    assert all(line.endswith(", then `us-outbound sync`") for name, line in got.items()
+               if line.startswith("FAIL") and "tab" in line), got
+    assert got["Approvers"] == ("FAIL  Approvers: approver_slack_ids is blank: nobody can approve an email or a reply "
+                                "in Slack; set it on the General tab, then `us-outbound sync`")
     assert got["Slack"] == "PASS  Slack: token set; the bot can see #us-outbound"
     assert got["Campaigns"].startswith("FAIL  Campaigns: no campaign yet: every owner waits for a warm mailbox")
     assert got["Apollo budget"].startswith("PASS  Apollo budget: 2,000 of 2,000 credits left this month")
     assert got["Queue"] == "FAIL  Queue: no verified account has a sendable contact"
-    # auto_send = no by default (Harry, 2 Oct 2026): every email waits for approval, so no hand-check is needed.
+    # auto_send = no by default (Harry, 2 Oct 2026): every email waits for approval, so no hand-check line.
     assert got["auto_send"] == "PASS  auto_send: auto_send = no: every email waits for approval in Slack"
-    assert got["Hand-check"] == "PASS  Hand-check: auto_send = no: every email is approved in Slack"
+    assert "Hand-check" not in got
     assert got["Enrollment"].startswith("PASS")
     assert got["Jobs"].startswith("PASS")  # every job a live send needs is built and scheduled
-    assert got["clay_verification"].startswith("WARN  clay_verification: 'skip'")  # the pilot (Harry, 1 Oct 2026)
+    assert got["clay_verification"] == "PASS  clay_verification: skip: accounts are verified on Apollo data and HubSpot"
+    assert got["HubSpot ids"] == ("WARN  HubSpot ids: hubspot_pipeline_id, hubspot_deal_stage_id, hubspot_owner_id "
+                                  "blank: a positive reply creates no HubSpot deal; run `us-outbound hubspot ids` and "
+                                  "paste them on the General tab, then `us-outbound sync`")
     assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of {{unsubscribe}} not done")
-    assert out.splitlines()[-1].startswith("NO-GO: 7 FAIL, 1 WARN, 7 PASS.")
+    assert got["Opt-out tested"].endswith("set optout_tested = yes on the General tab, then `us-outbound sync`")
+    assert out.splitlines()[-1] == ("NO-GO: 7 FAIL, 1 WARN, 7 PASS. Fix every FAIL, then run `us-outbound golive` "
+                                    "again.")
+    assert not [line for line in report if "SPEC" in line]  # plain words for Harry
     # Read-only: no write was attempted anywhere.
     assert f.ctx.guard.writes() == [] and f.ctx.store.select("heartbeats") == []
 
 
 def ready_world(monkeypatch):
     """Everything in place for the first sends, as Harry should find it on Monday."""
-    g = dict(live_sending=True, approver_slack_ids=("U_HARRY",), optout_tested=True)
+    g = dict(live_sending=True, approver_slack_ids=("U_HARRY",), optout_tested=True,
+             hubspot_pipeline_id="pipe-spill3", hubspot_deal_stage_id="stage-first")
     settings = make_settings(copy=COPY, **g)
     f = Factory(settings, instantly_accounts={m.address: warm_account(m.address) for m in MAILBOXES})
     owners = {"Hannah Spalding": ["hannah@meetspill.org"], "Sam Jackson": ["sam@meetspill.org"],
               "Harry Dryden": ["harry@meetspill.org", "harry@tryspill.org"]}
-    for owner, boxes in owners.items():  # created by `campaigns ensure --live`, at the ramp's limits
-        f.instantly.standard(reg.campaign_name(owner), boxes, 10 * len(boxes))
+    for owner, boxes in owners.items():  # created by `campaigns ensure --live`, at the ramp's limits, and
+        f.instantly.standard(reg.campaign_name(owner), boxes, 10 * len(boxes), status=1)  # activated by start --live
     st = f.ctx.store
     accounts = [account(account_id=f"acc-{i}", domain=f"a{i}.com") for i in range(40)]
     st.insert("accounts", accounts)
@@ -126,15 +139,17 @@ def test_golive_is_a_go_when_every_blocker_is_cleared(monkeypatch, capsys):
     assert got["Mailboxes"] == "PASS  Mailboxes: 4 of 4 Active and warm; 40 sends a day today on the ramp"
     assert ("hannah@meetspill.org: Active and warm (score 98); ramp week 1 (no send yet): 10 a day of its 30; "
             "20 from a week after its first send") in out
-    assert got["Campaigns"].startswith("PASS  Campaigns: all 3 exist and match")
+    assert got["Campaigns"] == "PASS  Campaigns: all 3 exist, match and are active"
     # Agencies have their own row; the other active industries use the General row.
     assert got["Copy"].startswith("WARN  Copy: 2 of 5 active industries have their own approved copy; 3 use the General row")
     assert "Fintech: falls back to General (general-v1) for People leader, Founder or executive, Operations" in out
     assert got["Queue"].startswith("PASS  Queue: 40 ready (verified with a sendable contact)")
     assert got["auto_send"] == "PASS  auto_send: auto_send = no: every email waits for approval in Slack"
-    assert got["Hand-check"] == "PASS  Hand-check: auto_send = no: every email is approved in Slack"
-    assert got["clay_verification"].startswith("WARN  clay_verification: 'skip'")  # the pilot (Harry, 1 Oct 2026)
-    assert out.splitlines()[-1].startswith("GO: 0 FAIL, 2 WARN")
+    assert "Hand-check" not in got  # every email is approved in Slack
+    assert got["clay_verification"] == "PASS  clay_verification: skip: accounts are verified on Apollo data and HubSpot"
+    assert got["HubSpot ids"] == "PASS  HubSpot ids: pipeline, deal stage and owner set: a positive reply creates a deal"
+    assert out.splitlines()[-1] == ("GO: 0 FAIL, 1 WARN, 14 PASS. Next: `us-outbound start --live`; cards arrive in "
+                                    "#us-outbound after enrol at 12:00 UK.")
 
 
 def test_with_auto_send_on_the_hand_check_is_needed_and_the_switch_warns(monkeypatch, capsys):
@@ -198,14 +213,19 @@ def test_unusable_settings_are_a_fail(capsys):
 
     assert cli.main(["golive"], context_factory=factory) == 1
     out = capsys.readouterr().out
-    assert "FAIL  Settings: unusable: fix the sheet, then `us-outbound settings sync`" in out
+    assert "FAIL  Settings: unusable: fix the sheet, then `us-outbound sync`" in out
     assert "General: General row 3, value: must be yes or no" in out and "NO-GO: 1 FAIL" in out
 
 
-@pytest.mark.parametrize("value, status", [(True, "PASS"), ("yes", "PASS"), ("no", "WARN"), (False, "WARN")])
-def test_clay_verification_when_the_build_has_it(value, status):
+@pytest.mark.parametrize("value, line", [
+    ("skip", "PASS  clay_verification: skip: accounts are verified on Apollo data and HubSpot"),
+    ("required", "WARN  clay_verification: required: accounts wait for Clay's verification, which is not built yet, so "
+                 "no new account is verified; set it to skip on the General tab, then `us-outbound sync`"),
+])
+def test_clay_verification(value, line):
     ctx = SimpleNamespace(settings=SimpleNamespace(general=SimpleNamespace(clay_verification=value)))
-    assert golive.check_clay_verification(ctx).status == status
+    c = golive.check_clay_verification(ctx)
+    assert f"{c.status:<5} {c.name}: {c.reason}" == line
 
 
 def test_the_optout_key_is_on_the_general_tab():
@@ -220,3 +240,71 @@ def test_golive_parses():
     assert cli.build_parser().parse_args(["golive"]).command == "golive"
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["golive", "--live"])
+
+
+# -- the lines Harry reads before Monday (4 Oct 2026) -----------------------------------------------------------------
+
+
+def with_general(f, **values):
+    f.ctx.settings = dataclasses.replace(f.ctx.settings, general=dataclasses.replace(f.ctx.settings.general, **values))
+
+
+def test_live_sending_yes_needs_every_sending_owner_s_campaign_active(monkeypatch, capsys):
+    f = ready_world(monkeypatch)
+    f.instantly.by_name("US Outbound – Hannah Spalding")["status"] = 2  # paused, e.g. after `stop --live`
+    assert cli.main(["golive"], context_factory=f) == 1
+    out = capsys.readouterr().out
+    assert lines_of(out)["Campaigns"] == ("FAIL  Campaigns: 1 not active in Instantly while live_sending = yes, so enrol "
+                                          "gives its owner nothing to send: run `us-outbound start --live`")
+    assert "US Outbound – Hannah Spalding: matches (paused); not sending: `us-outbound start --live` activates it" in out
+
+
+def test_with_live_sending_no_a_paused_campaign_is_detail_only(monkeypatch, capsys):
+    f = ready_world(monkeypatch)
+    for c in f.instantly.campaigns.values():
+        c["status"] = 2
+    with_general(f, live_sending=False)
+    cli.main(["golive"], context_factory=f)
+    out = capsys.readouterr().out
+    assert lines_of(out)["Campaigns"] == ("PASS  Campaigns: all 3 exist and match; `us-outbound start --live` "
+                                          "activates them")
+    assert "US Outbound – Sam Jackson: matches (paused); not sending: `us-outbound start --live` activates it" in out
+
+
+def test_live_sending_no_does_not_stop_an_active_campaign(monkeypatch, capsys):
+    f = ready_world(monkeypatch)  # every campaign active
+    with_general(f, live_sending=False)
+    assert cli.main(["golive"], context_factory=f) == 1  # live_sending FAILs
+    got = lines_of(capsys.readouterr().out)
+    assert got["Campaigns"] == ("WARN  Campaigns: 3 exist and match; 3 active in Instantly; live_sending = no does not "
+                                "stop Instantly: to stop sending run `us-outbound stop --live`")
+
+
+def test_the_go_footer_with_auto_send_on_says_leads_go_straight_to_instantly(monkeypatch, capsys):
+    f = ready_world(monkeypatch)
+    with_general(f, auto_send=True)
+    assert cli.main(["golive"], context_factory=f) == 0
+    assert capsys.readouterr().out.splitlines()[-1].endswith(
+        "Next: `us-outbound start --live`; enrol adds the day's leads to Instantly at 12:00 UK.")
+
+
+def test_the_queue_counts_the_cards_waiting_for_a_tick_as_enrol_does(monkeypatch, capsys):
+    f = ready_world(monkeypatch)
+    later = (NOW + timedelta(days=1)).date().isoformat()
+    f.ctx.store.insert("hitl_items", [
+        {"item_id": f"sa-{i}", "kind": "send_approval", "status": "open", "account_id": f"acc-{i}",
+         "contact_id": f"con-{i}", "created_at": NOW - timedelta(hours=20),
+         "payload": {"state": "waiting", "owner": "Hannah Spalding", "send_day": "2026-10-02", "expires_on": later}}
+        for i in range(2)])
+    assert cli.main(["golive"], context_factory=f) == 0
+    queue = lines_of(capsys.readouterr().out)["Queue"]
+    assert queue.startswith("PASS  Queue: 38 ready (verified with a sendable contact)")  # their accounts wait
+    assert queue.endswith("; 2 cards wait for a ✅")
+
+
+def test_hubspot_ids_warn_until_they_are_pasted(monkeypatch, capsys):
+    f = ready_world(monkeypatch)
+    with_general(f, hubspot_deal_stage_id="")
+    cli.main(["golive"], context_factory=f)
+    assert lines_of(capsys.readouterr().out)["HubSpot ids"].startswith(
+        "WARN  HubSpot ids: hubspot_deal_stage_id blank: a positive reply creates no HubSpot deal")

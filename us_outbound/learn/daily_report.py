@@ -7,17 +7,17 @@ unsubscribes were already in the post; this module adds the rest. It only reads 
 only in aggregate: no company or person is named here.
 
 Approvals: the Slack send approvals, where General auto_send = no makes every email wait for an
-approver's ✅. It is read only through the contract the send-approval build writes, so it works
-before that build lands and says nothing until it does:
+approver's ✅. It reads the contract enrol/approvals.py writes:
   * hitl_items, kind send_approval: status open (payload.state waiting, rejected or editing),
     sending or handled; created_at, handled_at; payload outcome, owner, copy_version, industry,
     industry_group, role, tier, opener_source, edited and send_day;
   * events, type send_approval: approval is approved, approved_edited, contact_rejected,
     company_rejected, expired or blocked, with approved_by, account_id, contact_id and occurred_at.
 For the period: approved (and how many after an edit), contact declined, company dropped, expired
-and blocked; how many wait now, by state, and how long the oldest has waited; and auto_send, read
-with getattr from the General tab when the settings carry the key (this module never adds it).
-With no key, no item and no event, the section is left out.
+and blocked; how many wait now, by state, and how long the oldest has waited; and the General
+auto_send. With auto_send = yes and no approval ever made, the section is left out.
+Each send-approval row, with its payload, is read once: the items not yet handled with the other
+open items (Rows.load, filtered by status in the query), and the handled ones only for To improve.
 
 Found, in the period daily_post.period sets:
   * companies: accounts first seen in the period (accounts.first_seen, which the front door sets,
@@ -32,9 +32,9 @@ Found, in the period daily_post.period sets:
     none, with the top reasons.
 
 Pipeline, now:
-  * ready to send: enrol.candidates, the enrol job's own rule (verified, Priority, Standard or
+  * ready to send: enrol.candidates as the enrol job calls it (verified, Priority, Standard or
     Control, domain not suppressed or a partner, industry on, a sendable contact, not enrolled
-    before), less the accounts with a send approval open or sending; by tier, and by the Focus
+    before, and no send approval waiting: enrol/approvals.waiting); by tier, and by the Focus
     tab's groups (enrol/focus.py), or by industry group when the tab is empty;
   * supply: ready accounts ÷ today's number before the ready accounts limit it (the smaller of
     the weekly target's share for today and sending capacity, limits.py); on a day with neither
@@ -95,6 +95,7 @@ from us_outbound.settings.model import CLAY_REQUIRED, TIERS, Settings
 KIND = "send_approval"
 OPEN_STATUSES = ("open", "escalated")  # waiting for an approver; payload.state says how
 SENDING = "sending"  # approved, going out now
+HANDLED = "handled"  # closed: approved, declined, expired or blocked
 APPROVED, EDITED = "approved", "approved_edited"
 CONTACT_REJECTED, COMPANY_REJECTED = "contact_rejected", "company_rejected"
 EXPIRED, BLOCKED = "expired", "blocked"
@@ -184,6 +185,9 @@ class Rows:
     accounts: list[dict]
     contacts: list[dict]
     no_contact: dict[str, str]  # account_id -> why nobody suitable was found (pick.no_contact)
+    open_items: list[dict] = field(default_factory=list)  # hitl_items open or escalated, every kind
+    sending: list[dict] = field(default_factory=list)  # send approvals being added to Instantly now
+    decisions: list[dict] = field(default_factory=list)  # events of type send_approval
     by_account: dict[str, dict] = field(default_factory=dict)
     by_contact: dict[str, dict] = field(default_factory=dict)
 
@@ -191,15 +195,18 @@ class Rows:
         self.by_account = {str(a.get("account_id")): a for a in self.accounts}
         self.by_contact = {str(c.get("contact_id")): c for c in self.contacts}
 
+    @property
+    def pending(self) -> list[dict]:
+        """Send approvals not yet handled: open (waiting for an approver) or sending."""
+        return [i for i in self.open_items if i.get("kind") == KIND] + self.sending
+
     @classmethod
     def load(cls, ctx: Context) -> Rows:
-        return cls(ctx.store.select("accounts"), ctx.store.select("contacts"), pick.no_contact(ctx.store, ctx.now))
-
-
-def awaiting_approval(store: Store) -> set[str]:
-    """Accounts with a send approval open or sending: the enrol job has proposed them already."""
-    return {str(i.get("account_id")) for i in store.select("hitl_items", {"kind": KIND})
-            if i.get("status") in (*OPEN_STATUSES, SENDING) and i.get("account_id")}
+        store = ctx.store
+        return cls(store.select("accounts"), store.select("contacts"), pick.no_contact(store, ctx.now),
+                   open_items=store.select("hitl_items", {"status": list(OPEN_STATUSES)}),
+                   sending=store.select("hitl_items", {"kind": KIND, "status": SENDING}),
+                   decisions=store.select("events", {"type": KIND}))
 
 
 def headline(short: str, nums: Mapping[str, Any]) -> str:
@@ -213,29 +220,13 @@ def headline(short: str, nums: Mapping[str, Any]) -> str:
 # -- Approvals -------------------------------------------------------------------------------------
 
 
-def auto_send(settings: Settings) -> bool | None:
-    """General auto_send, if the settings carry the key; None when they do not, or it reads as neither."""
-    v = getattr(settings.general, "auto_send", None)
-    if v is None or isinstance(v, bool):
-        return v
-    t = _lower(v)
-    if t in ("yes", "true", "1", "on"):
-        return True
-    if t in ("no", "false", "0", "off"):
-        return False
-    return None
-
-
-def approvals(ctx: Context, start: datetime, end: datetime) -> tuple[list[str], dict[str, Any]]:
+def approvals(ctx: Context, rows: Rows, start: datetime, end: datetime) -> tuple[list[str], dict[str, Any]]:
     """The Approvals section and its numbers; ([], {}) with auto_send on and no send approval ever made."""
-    items = ctx.store.select("hitl_items", {"kind": KIND})
-    events = ctx.store.select("events", {"type": KIND})
-    auto = auto_send(ctx.settings)
-    if auto is not False and not items and not events:  # approvals off and none ever made: nothing to say
+    items, events = rows.pending, rows.decisions
+    auto = ctx.settings.general.auto_send
+    if auto and not items and not events:  # approvals off and none ever made (each close is an event)
         return [], {}
-    state = ("auto_send: not set" if auto is None else
-             "auto_send: yes, so emails go without a ✅" if auto else
-             "auto_send: no, so every email waits for a ✅ in Slack")
+    state = "auto_send: yes, so emails go without a ✅" if auto else "auto_send: no, so every email waits for a ✅ in Slack"
     got = Counter(str(e.get("approval") or "") for e in events if _in(e.get("occurred_at"), start, end))
     approved = got[APPROVED] + got[EDITED]
     lines = [f"*Approvals* · {state}",
@@ -466,11 +457,12 @@ def _segment(e: Mapping[str, Any], key: str, index: Mapping[tuple[str, str], Map
 
 def _declines(ctx: Context, rows: Rows, since: datetime, early: list[str]) -> list[str]:
     """Where ❌ concentrates, and the copy rows edited most before approval."""
-    events = [e for e in ctx.store.select("events", {"type": KIND})
+    events = [e for e in rows.decisions
               if (t := _ts(e.get("occurred_at"))) is not None and t >= since and e.get("approval") in DECIDED]
     if not events:
         return []
-    index = _approval_index(ctx.store.select("hitl_items", {"kind": KIND}))
+    # A decision closes its item, so the handled items carry the payloads (read once, only here).
+    index = _approval_index(ctx.store.select("hitl_items", {"kind": KIND, "status": HANDLED}))
     out: list[str] = []
     declined = [e for e in events if e.get("approval") in DECLINED]
     if len(events) < MIN_DECISIONS:

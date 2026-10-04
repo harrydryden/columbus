@@ -46,7 +46,7 @@ _H = 60
 _DAY = 24 * _H
 # Longest gap between healthy runs before a job counts as missed (SPEC 9 schedules plus slack).
 EXPECTED: dict[str, int] = {
-    "settings_sync": 26 * _H,  # 02:00 daily
+    "settings_sync": 26 * _H,  # 02:00 daily (and 11:30 on weekdays; the 02:00 run alone keeps it healthy)
     "source_universe": 26 * _H,  # 03:00 weekdays (weekday time; SPEC 9 had the 1st of the month)
     "apollo_signals": 26 * _H,  # 03:30 weekdays (weekday time; SPEC 9 had Mondays)
     "read_pages": 26 * _H,  # 03:45 weekdays (weekday time; build addition, Harry, 2 Oct 2026)

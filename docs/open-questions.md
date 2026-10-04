@@ -2,6 +2,24 @@
 
 SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than guess." Every item below either blocks progress or has a safe default already in the code, so the build is not stalled on any of them. To change a default, edit the sheet where the item lives there, or say which item and the code changes.
 
+## Open now (4 Oct 2026)
+
+None of these blocks the pilot; each has a safe default. The go-live steps themselves are in
+[roadmap.md](roadmap.md) §3, and the day-to-day in [daily.md](daily.md).
+
+- **4. Instantly plan facts:** the email and uploaded-contact caps and current use, the custom-variable
+  length limit, the forward endpoint (escalation falls back to a HubSpot task), same-address follow-ups.
+- **6a. Postgres backups** and **6f. an alert if the worker itself stops** (a Railway webhook to Slack).
+- **7. Clay's Routines API**, before `clay_email_fallback` = yes.
+- **10. Apollo tracker fixes** ("/us/pricing", "/us/book-demo", data arriving).
+- **72. Page-only claims** to confirm for the US (HIPAA, booking by text, languages, and so on).
+- **74. The first copy test**: what it compares, before phase 3.
+- **77. The duplicate Nonprofits page** to archive on the site.
+
+## Archive
+
+Everything below is the original list, kept for its answers and defaults.
+
 ## A. Needed to finish Phase 0 (blocking)
 
 1. **Privacy and opt-out page.** `/us/legals/privacy-notice` is still a Webflow draft, and there is no US opt-out page. Every email links to it (SPEC 10), and render blocks any send while `privacy_url` is blank. What is the live URL?
@@ -35,6 +53,7 @@ SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than
    - The "US Outbound" folder and its two functions are built in Clay's UI.
 8. **Settings sheet.** A sheet the service account creates is visible only to that account. Shall I create "US Outbound – Settings" in your Drive from the defaults, for you to share with the service account? Or would you rather create it yourself?
 9. **Slack.** Please create the app from `deploy/slack-app-manifest.yaml`, then create #us-outbound and #us-outbound-dev and invite the bot. Neither channel exists yet.
+   *Superseded (2 Oct): the app is Columbus; creating it and the channels is go-live step 1 (roadmap.md §3), and `us-outbound golive` checks the token and the channel.*
 10. **Apollo tracker.** In Apollo:
     - fix "us/pricing" → "/us/pricing"
     - add "/us/book-demo" as high intent
@@ -51,11 +70,13 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 13. First People hire uses `people_leader_count`, which comes from apollo_people. The row lists "apollo_jobs, apollo_people". [both]
 14. Terms match whole words, so "mental health day" does not match "mental health days". Should plurals be added to Progressive benefits? [SPEC terms as written]
+    *Resolved (1 Oct): the Progressive benefits row carries the plurals ("wellness stipends", "mental health days", "sabbaticals", …).*
 15. Should the Nonprofits rows exclude NAICS 813110 (religious organizations), since churches are off? [not excluded]
 16. Each of the 9 "Off" industry groups is one inactive row named after the group, until you add its website labels. [as described]
 17. Please check the Apollo keyword chosen for each Tech label (e.g. software, agtech, video games). [as drafted]
 18. Industries `landing_page_url` and `proof_point` are blank ("Harry to fill"). A blank proof point blocks step 2 for that group. [blank]
 19. No default signal has an opener, so every account gets its angle's default opener. Should "EAP named" ship with "Saw your benefits page mentions {evidence}."? [blank]
+    *Superseded (2 Oct): every signal has opener lines by role on the Signals tab, and signals are context, never the line (roadmap.md §4, week 1 item 2).*
 20. Validation adds checks beyond SPEC. Are they OK? [all on]
     - daily_cap is at most 30
     - claude_monthly_cap_usd is at most 10
@@ -103,6 +124,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 
 46. The running test takes version_a's angle accounts. Control fills any shortfall in Priority and Standard, and the other way round. [yes]
 47. Weekly hand-check: enrollment waits until this week's hand-check item is marked handled, and pulled accounts are skipped. How do you want to approve it: a Slack thread reply, or the sheet? [a handled item in the database; the Slack approval flow comes with phase 2]
+    *Superseded (2 Oct): with `auto_send` = no every email is approved in Slack, so the hand-check holds only accounts with doubtful facts and enrol does not wait for it; it is approved with `us-outbound handcheck approve --live`.*
 48. Your two addresses share one campaign. Leads use your first Active mailbox's signature. [yes]
 49. While `hubspot_owner_id` is blank, the HubSpot re-check excludes any account that has an owner. [fails closed]
 50. `mailbox add` joins the campaign only once the mailbox is Active. SPEC's campaign table sends from Active addresses only. [Active only]

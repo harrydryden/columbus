@@ -13,25 +13,37 @@ missing key, an API error) FAILs with the reason.
                     current QA pass: its own (label or group: PASS), only the General fallback
                     (WARN, naming the row), or none (FAIL, naming the draft that waits)
   Mailboxes         every Active mailbox is warm in Instantly, with its place on the sending ramp
-  live_sending      yes on the General tab (the [ASK HARRY] sign-off, SPEC 14 phase 2)
-  Approvers         approver_slack_ids is set (SPEC 11: only approvers' replies count)
+  live_sending      yes in the synced settings (the [ASK HARRY] sign-off, SPEC 14 phase 2)
+  Approvers         approver_slack_ids is set (SPEC 11: only approvers' ✅ counts, on send cards and replies)
   Slack             the bot token is set and the bot can see the alert channel
   Campaigns         one "US Outbound – {owner}" campaign per owner, matching the settings, the
-                    registry and the ramp (the daily drift check; fix: campaigns ensure --fix --live)
+                    registry and the ramp (the daily drift check; fix: campaigns ensure --fix --live).
+                    With live_sending = yes, every owner with an Active mailbox must have it active
+                    (status 1; enrol gives an owner whose campaign is not active no capacity): FAIL,
+                    "run start --live". With live_sending = no an active campaign WARNs, as
+                    live_sending does not stop Instantly: only `stop --live` pauses the campaigns
   Apollo budget     credits left this month for finding emails
-  Queue             verified accounts with a sendable contact, against today's number
+  Queue             verified accounts with a sendable contact, against today's number, counting the
+                    send approvals still waiting as enrol does (their accounts and their senders' slots)
   auto_send         the General switch (Harry, 2 Oct 2026): no PASSes, as every email then waits for
                     an approver's ✅ in Slack (enrol/approvals.py; the Slack line checks the token);
                     yes WARNs, as emails are then added to Instantly without approval
-  Hand-check        this week's hand-check approved (enrol waits for it while auto_send = yes; with
-                    auto_send = no it PASSes, since every email is approved in Slack)
+  Hand-check        only while auto_send = yes: this week's hand-check approved (enrol waits for it);
+                    with auto_send = no every email is approved in Slack, so the line is left out
   Enrollment        not stopped by an operator, the stop rule, or a positive reply waiting
   Jobs              the jobs a live send needs are built and scheduled: enrol, sync_outcomes (the
                     kill rules' data), poll_replies (replies and opt-outs), poll_approvals,
                     kill_rules, mailbox_health
-  clay_verification the General key, when this build has it (the sourcing build adds it)
+  clay_verification skip PASSes (accounts verified on Apollo data and HubSpot); required WARNs while
+                    verify_in_clay is not built, as no new account is verified then
+  HubSpot ids       hubspot_pipeline_id, hubspot_deal_stage_id and hubspot_owner_id are set; WARN
+                    without them, as a positive reply then creates no HubSpot deal (crm/hubspot_writes.py)
   Opt-out tested    optout_tested = yes: the seed-inbox test of Instantly's {{unsubscribe}} link
                     (blocker B1; PHASE0-CONFIRM in clients/instantly.py)
+
+What Harry reads is plain: no SPEC numbers in a line. Every FAIL that asks him to change the sheet
+ends ", then `us-outbound sync`", since jobs read the synced copy of the sheet. The GO footer says
+what comes next.
 """
 
 from __future__ import annotations
@@ -55,7 +67,8 @@ PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 RANK = {PASS: 0, WARN: 1, FAIL: 2}
 DETAIL_LIMIT = 30
 NEEDED_JOBS = ("enrol", "sync_outcomes", "poll_replies", "poll_approvals", "kill_rules", "mailbox_health")
-_MISSING = object()
+CAMPAIGN_ACTIVE = 1  # Instantly's campaign status for active (clients/instantly.CAMPAIGN_STATUS)
+SYNC = ", then `us-outbound sync`"  # how a sheet edit comes into force
 
 
 @dataclass
@@ -97,7 +110,7 @@ def check_copy(ctx: Context) -> Check:
     s = ctx.settings
     active = [i for i in s.industries if i.active]
     if not active:
-        return Check(FAIL, "Copy", "no industry is active on the Industries tab")
+        return Check(FAIL, "Copy", f"no industry is active: switch one on on the Industries tab{SYNC}")
     rows = enrol.sendable_copy(s)
     roles = contacted_roles(ctx)
     detail, statuses, own = [], [], 0
@@ -131,7 +144,7 @@ def check_copy(ctx: Context) -> Check:
     fails, warns = statuses.count(FAIL), statuses.count(WARN)
     if status == FAIL:
         reason = (f"{fails} of {len(active)} active industries have no approved copy with a current QA pass for "
-                  "every contacted role; approve rows on the Copy tab (status approved, approved_by)")
+                  f"every contacted role; approve rows on the Copy tab (status approved, approved_by){SYNC}")
     elif status == WARN:
         reason = f"{own} of {len(active)} active industries have their own approved copy; {warns} use the General row"
     else:
@@ -189,14 +202,15 @@ def check_mailboxes(ctx: Context) -> Check:
 def check_live_sending(ctx: Context) -> Check:
     if ctx.settings.general.live_sending:
         return Check(PASS, "live_sending", "yes")
-    return Check(FAIL, "live_sending", "no: set live_sending = yes on the General tab once Harry signs off (SPEC 14 phase 2)")
+    return Check(FAIL, "live_sending", f"no: set live_sending = yes on the General tab once Harry signs off{SYNC}")
 
 
 def check_approvers(ctx: Context) -> Check:
     ids = ctx.settings.general.approver_slack_ids
     if ids:
         return Check(PASS, "Approvers", f"approver_slack_ids: {', '.join(ids)}")
-    return Check(FAIL, "Approvers", "approver_slack_ids is blank: no reply can be approved (SPEC 11)")
+    return Check(FAIL, "Approvers", "approver_slack_ids is blank: nobody can approve an email or a reply in Slack; "
+                                    f"set it on the General tab{SYNC}")
 
 
 def check_slack(ctx: Context) -> Check:
@@ -221,10 +235,11 @@ def check_campaigns(ctx: Context) -> Check:
 
     try:
         out = reg.ensure_campaigns(ctx, fix=False, create=False)
-        status_of = {c.get("name"): CAMPAIGN_STATUS.get(c.get("status"), c.get("status"))
-                     for c in ctx.clients.instantly.list_campaigns()}
+        raw = {c.get("name"): c.get("status") for c in ctx.clients.instantly.list_campaigns()}
     except (ConfigError, ApiError, LookupError) as exc:
         return Check(FAIL, "Campaigns", f"cannot read Instantly: {redact(str(exc))[:200]}")
+    status_of = {name: CAMPAIGN_STATUS.get(v, v) for name, v in raw.items()}
+    live = ctx.settings.general.live_sending
     # A campaign can only be created once its owner has an Active (warm) mailbox, and `start` skips an owner
     # without one, so that owner's missing campaign waits rather than blocks: the others can send (2 Oct 2026,
     # Harry's mailboxes still warming while Hannah's and Sam's were ready).
@@ -232,12 +247,19 @@ def check_campaigns(ctx: Context) -> Check:
     no_mailbox = {reg.campaign_name(o) for o in settings.owners() if not reg.sending_list(settings, o)}
     waiting = [n for n in out["pending"] if n in no_mailbox]
     missing = [n for n in out["pending"] if n not in no_mailbox]
+    # An owner with an Active mailbox whose campaign exists but is not active gets no capacity in a live enrol.
+    names = [reg.campaign_name(o) for o in settings.owners()]
+    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] != CAMPAIGN_ACTIVE]
+    active = sorted(n for n, v in raw.items() if v == CAMPAIGN_ACTIVE)
     detail = [f"{name}: {', '.join(f'{k} {v[1]!r}, expected {v[0]!r}' for k, v in sorted(d.items()))}"
               for name, d in out["drift"].items()]
     detail += [f"{name}: missing" for name in missing]
     detail += [f"{name}: waits for a warm mailbox (created by mailbox_health once one is Active)" for name in waiting]
-    detail += [f"{name}: matches ({status_of.get(name, '?')})" for name in out["ok"]]
+    detail += [f"{name}: matches ({status_of.get(name, '?')})"
+               + ("; not sending: `us-outbound start --live` activates it" if name in idle else "")
+               for name in out["ok"]]
     detail += [f"{name}: not an owner in the registry (left alone)" for name in out.get("unknown") or ()]
+    fails, warns = [], []
     if out["drift"] or missing:
         fix = "`us-outbound campaigns ensure --fix --live`" if out["drift"] else "`us-outbound campaigns ensure --live`"
         what = []
@@ -245,14 +267,28 @@ def check_campaigns(ctx: Context) -> Check:
             what.append(f"{len(out['drift'])} drifted")
         if missing:
             what.append(f"{len(missing)} missing")
-        return Check(FAIL, "Campaigns", f"{' and '.join(what)}; run {fix}, then `us-outbound start --live` to send", detail)
-    if not out["ok"]:
-        return Check(FAIL, "Campaigns", "no campaign yet: every owner waits for a warm mailbox", detail)
-    if waiting or out.get("unknown"):
-        why = [f"{len(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a warm mailbox"] if waiting else []
-        why += ["unknown US Outbound campaigns exist"] if out.get("unknown") else []
-        return Check(WARN, "Campaigns", f"{len(out['ok'])} exist and match; {'; '.join(why)}", detail)
-    return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; `us-outbound start --live` activates them", detail)
+        fails.append(f"{' and '.join(what)}; run {fix}, then `us-outbound start --live` to send")
+    elif not out["ok"]:
+        fails.append("no campaign yet: every owner waits for a warm mailbox")
+    if live and idle:
+        whose = "its owner" if len(idle) == 1 else "their owners"
+        fails.append(f"{len(idle)} not active in Instantly while live_sending = yes, so enrol gives {whose} nothing "
+                     "to send: run `us-outbound start --live`")
+    if not live and active:
+        warns.append(f"{len(active)} active in Instantly; live_sending = no does not stop Instantly: to stop sending "
+                     "run `us-outbound stop --live`")
+    if waiting and (out["ok"] or out["drift"] or missing):  # not when every owner waits: the FAIL says so
+        warns.append(f"{len(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a warm mailbox")
+    if out.get("unknown"):
+        warns.append("unknown US Outbound campaigns exist")
+    if fails:
+        return Check(FAIL, "Campaigns", "; ".join(fails + warns), detail)
+    if warns:
+        return Check(WARN, "Campaigns", f"{len(out['ok'])} exist and match; {'; '.join(warns)}", detail)
+    if live:
+        return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist, match and are active", detail)
+    return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; `us-outbound start --live` activates them",
+                 detail)
 
 
 def check_apollo(ctx: Context) -> Check:
@@ -266,28 +302,35 @@ def check_apollo(ctx: Context) -> Check:
 
 
 def check_queue(ctx: Context) -> Check:
+    from us_outbound.enrol import approvals
+
     day = ctx.now_et().date()
     _, pulled = enrol.hand_check(ctx, day)
-    ready, skipped = enrol.candidates(ctx, pulled)
-    lim = limits.today(ctx, day, ready_accounts=len(ready))
+    # As enrol.run: the send approvals still waiting keep their accounts out and hold their senders' slots.
+    held = approvals.waiting(ctx)
+    ready, skipped = enrol.candidates(ctx, pulled, held.accounts)
+    lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner)
     t = lim.terms
     detail = [lim.explanation, *lim.detail]
     if skipped:
         detail.append("Not ready: " + ", ".join(f"{k} {v}" for k, v in skipped.most_common(8)))
+    cards = f"; {held.total} {'card waits' if held.total == 1 else 'cards wait'} for a ✅" if held.total else ""
     want = min(t["weekly_target"], t["sending_capacity"])
     if not ready:
-        return Check(FAIL, "Queue", "no verified account has a sendable contact", detail)
+        return Check(FAIL, "Queue", f"no verified account has a sendable contact{cards}", detail)
     if len(ready) < want:
         return Check(WARN, "Queue", f"{len(ready)} ready (verified with a sendable contact), fewer than today's "
-                                    f"{want} (weekly target {t['weekly_target']}, sending capacity {t['sending_capacity']})", detail)
+                                    f"{want} (weekly target {t['weekly_target']}, sending capacity "
+                                    f"{t['sending_capacity']}){cards}", detail)
     days = len(ready) / want if want else 0
     return Check(PASS, "Queue", f"{len(ready)} ready (verified with a sendable contact): about {days:.0f} send days "
-                                f"at today's number, {lim.number}", detail)
+                                f"at today's number, {lim.number}{cards}", detail)
 
 
-def check_hand_check(ctx: Context) -> Check:
+def check_hand_check(ctx: Context) -> Check | None:
+    """Only while auto_send = yes: with no, every email is approved in Slack and enrol does not wait for it."""
     if not ctx.settings.general.auto_send:
-        return Check(PASS, "Hand-check", "auto_send = no: every email is approved in Slack")
+        return None
     week = enrol.iso_week(ctx.now_et().date())
     why, pulled = enrol.hand_check(ctx, ctx.now_et().date())
     if why is None:
@@ -334,14 +377,23 @@ def check_jobs(ctx: Context) -> Check:
     return Check(PASS, "Jobs", f"{', '.join(NEEDED_JOBS)} are built and scheduled")
 
 
-def check_clay_verification(ctx: Context) -> Check | None:
-    value = getattr(ctx.settings.general, "clay_verification", _MISSING)
-    if value is _MISSING:
-        return None  # not a setting in this build
-    off = value is False or str(value).strip().lower() in ("", "no", "off", "false", "skip", "none")
-    if off:
-        return Check(WARN, "clay_verification", f"{value!r}: accounts are not verified in Clay before they are emailed (SPEC 2)")
-    return Check(PASS, "clay_verification", f"{value!r}")
+def check_clay_verification(ctx: Context) -> Check:
+    from us_outbound.settings.model import CLAY_SKIP
+
+    if ctx.settings.general.clay_verification == CLAY_SKIP:
+        return Check(PASS, "clay_verification", "skip: accounts are verified on Apollo data and HubSpot")
+    return Check(WARN, "clay_verification", "required: accounts wait for Clay's verification, which is not built yet, "
+                                            f"so no new account is verified; set it to skip on the General tab{SYNC}")
+
+
+def check_hubspot_ids(ctx: Context) -> Check:
+    g = ctx.settings.general
+    keys = ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id")
+    blank = [k for k in keys if not str(getattr(g, k)).strip()]
+    if blank:
+        return Check(WARN, "HubSpot ids", f"{', '.join(blank)} blank: a positive reply creates no HubSpot deal; run "
+                                          f"`us-outbound hubspot ids` and paste them on the General tab{SYNC}")
+    return Check(PASS, "HubSpot ids", "pipeline, deal stage and owner set: a positive reply creates a deal")
 
 
 def check_optout(ctx: Context) -> Check:
@@ -349,7 +401,7 @@ def check_optout(ctx: Context) -> Check:
         return Check(PASS, "Opt-out tested", "optout_tested = yes: the seed-inbox test of {{unsubscribe}} is done")
     return Check(FAIL, "Opt-out tested", "seed-inbox test of {{unsubscribe}} not done: send a test from a paused campaign "
                                          "to a seed inbox in html and text, click the link, check the lead shows as "
-                                         "unsubscribed, then set optout_tested = yes on the General tab")
+                                         f"unsubscribed, then set optout_tested = yes on the General tab{SYNC}")
 
 
 CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
@@ -367,6 +419,7 @@ CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
     ("Enrollment", check_enrolment),
     ("Jobs", check_jobs),
     ("clay_verification", check_clay_verification),
+    ("HubSpot ids", check_hubspot_ids),
     ("Opt-out tested", check_optout),
 )
 
@@ -387,10 +440,10 @@ def run_checks(ctx: Context) -> list[Check]:
 
 def unusable(errors: dict[str, list[Any]]) -> list[Check]:
     detail = [f"{tab}: {e}" for tab, errs in errors.items() for e in errs[:5]]
-    return [Check(FAIL, "Settings", "unusable: fix the sheet, then `us-outbound settings sync`", detail)]
+    return [Check(FAIL, "Settings", f"unusable: fix the sheet{SYNC}", detail)]
 
 
-def render(checks: list[Check], now: datetime) -> str:
+def render(checks: list[Check], now: datetime, *, channel: str = "#us-outbound", auto_send: bool = False) -> str:
     lines = [f"Go-live check, {now.astimezone(UK):%a %d %b %Y %H:%M} UK (read-only: nothing was changed)"]
     for c in checks:
         lines.append(f"{c.status:<5} {c.name}: {c.reason}")
@@ -400,8 +453,13 @@ def render(checks: list[Check], now: datetime) -> str:
             lines.append(f"        … and {len(c.detail) - len(shown)} more")
     n = {s: sum(c.status == s for c in checks) for s in (FAIL, WARN, PASS)}
     verdict = "NO-GO" if n[FAIL] else "GO"
-    lines.append(f"{verdict}: {n[FAIL]} FAIL, {n[WARN]} WARN, {n[PASS]} PASS."
-                 + (" Fix every FAIL, then run `us-outbound golive` again." if n[FAIL] else ""))
+    if n[FAIL]:
+        nxt = " Fix every FAIL, then run `us-outbound golive` again."
+    elif auto_send:
+        nxt = " Next: `us-outbound start --live`; enrol adds the day's leads to Instantly at 12:00 UK."
+    else:
+        nxt = f" Next: `us-outbound start --live`; cards arrive in {channel} after enrol at 12:00 UK."
+    lines.append(f"{verdict}: {n[FAIL]} FAIL, {n[WARN]} WARN, {n[PASS]} PASS.{nxt}")
     return "\n".join(lines)
 
 
