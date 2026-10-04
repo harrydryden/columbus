@@ -524,6 +524,28 @@ def test_the_job_runs_from_the_cli_with_a_heartbeat(default_settings):
     assert "Sounds good" not in str(hb["detail"])  # the summary carries counts, never reply text
 
 
+def test_a_backlog_stops_at_the_time_budget_and_the_next_run_takes_the_rest(world, monkeypatch):
+    """Each draft can take a minute: past RUN_SECONDS no new reply is started, and none is lost."""
+    import itertools
+
+    from us_outbound.ops.heartbeat import run_job
+
+    world.reply("E1", at=NOW - timedelta(days=5))
+    world.reply("E2", at=NOW - timedelta(days=4))  # older than the two days every run re-reads
+    world.reply("E3", at=NOW - timedelta(minutes=10))
+    ticks = itertools.chain([0.0, 0.0], itertools.repeat(poll.RUN_SECONDS + 1.0))  # the start, E1, then past it
+    monkeypatch.setattr(poll, "_clock", lambda: next(ticks))
+    first = run_job(world.ctx, poll.run)
+    assert [i["item_id"] for i in world.items()] == ["reply:E1"] and first["alerts_posted"] == 1
+    assert first["left_for_next_run"] == 2 and first["resume_from"] == (NOW - timedelta(days=4)).isoformat()
+    monkeypatch.setattr(poll, "_clock", lambda: 0.0)
+    world.at(NOW + timedelta(minutes=15))
+    second = run_job(world.ctx, poll.run)
+    assert second["since"] == (NOW - timedelta(days=4, hours=1)).isoformat()
+    assert sorted(i["item_id"] for i in world.items()) == ["reply:E1", "reply:E2", "reply:E3"]
+    assert second["left_for_next_run"] == 0 and "resume_from" not in second and second["received"] == 2
+
+
 def test_the_contract_is_written_in_the_module_docstring():
     doc = poll.__doc__
     assert "THE CONTRACT WITH THE REPLY DESK" in doc
