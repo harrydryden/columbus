@@ -53,7 +53,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # After read_pages starts and before verify_accounts, whose rescore scores its facts before pick_contacts;
     # Apollo reads and database writes only, so no --live. At most 500 accounts a run, inside the timeout.
     ScheduledJob("apollo_enrich", "10 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
-    ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
+    # Harry, 5 Oct 2026: the website-visit signals, daily (a visit not read today drops out of Apollo's one-day
+    # list). After pick_contacts and before enrol, whose tiers its rescore sets; Apollo reads and database writes
+    # only, so no --live (sources/site_visits.py).
+    ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=30, phase=1),

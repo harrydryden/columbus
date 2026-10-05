@@ -145,6 +145,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 ### Data and operations
 
 61. `contacts.enrolment_month` is STRING "YYYY-MM". v_signal_value flags a signal after 200 accounts with step 1 delivered. Site-visit events are logged for enrolled accounts only, as SPEC says. [yes]
+    *Changed (5 Oct, the `site_visits` job): a site-visit event is logged for every account Apollo lists as a visitor, so the readout can count visits before the first email; the daily post's warm accounts are still the enrolled ones.*
 62. Raw tables (including raw_clay_contacts, which holds names and emails) have no retention rule, but erase covers them. Should they follow the 12-month contacts rule? [kept]
 63. `erase` GDPR-deletes the HubSpot contact whoever created it, lists a manual Clay step, and deletes database rows even in dry-run. [yes]
 64. heartbeat_check alerts once when a job is newly missed and repeats at 09:00 UK. `test read` before the read date is labelled an early look. [yes]
