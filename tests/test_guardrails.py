@@ -565,6 +565,8 @@ EXERCISES: dict[str, dict[str, Ex]] = {
     "Apollo": {
         "credit_usage": lambda c, w: c.credit_usage(),
         "search_organizations": lambda c, w: c.search_organizations({"organization_locations[]": ["Illinois, US"]}),
+        "search_lookalike_organizations": lambda c, w: c.search_lookalike_organizations(
+            ["org-1", "org-2"], {"organization_locations[]": ["United States"]}),
         "enrich_organization": lambda c, w: c.enrich_organization("acmecreative.com"),
         "bulk_enrich_organizations": lambda c, w: c.bulk_enrich_organizations(["acmecreative.com", "brightfin.com"]),
         "job_postings": lambda c, w: c.job_postings("org-1"),

@@ -114,6 +114,7 @@ DEFAULT_SIGNALS = [
     ("Layoffs", 0, None, "Suppress", "", 90, True),
     ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
     ("Looks like Spill's customers", 4, None, "Score", "", 120, True),  # build addition (Harry, 1 Oct 2026)
+    ("Found as a lookalike of a customer", 10, None, "Score", "", 120, True),  # build addition (Harry, 5 Oct 2026)
 ]
 
 
@@ -145,6 +146,9 @@ def test_signal_sources_and_parsing(settings):
     assert got["Q4 plan-year window"].condition.evaluate({"month": 11})  # kept on the sheet, inactive
     assert got["Culture or values page"].condition.evaluate({"values_page": True})
     assert got["Looks like Spill's customers"].sources == ("lookalike",)
+    assert got["Found as a lookalike of a customer"].sources == ("lookalike_lead",)
+    assert got["Found as a lookalike of a customer"].condition.evaluate({"found_as_lookalike": True})
+    assert not got["Found as a lookalike of a customer"].condition.evaluate({})
     for s in settings.signals:
         assert bool(s.terms) != s.is_condition, s.signal
 

@@ -529,6 +529,17 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "firmographic rows together stay under standard_threshold (20) and an account with no observed "
         "signal stays in Control, the signal-blind holdout. `us-outbound lookalikes show` lists the cells.",
     ),
+    (
+        "Found as a lookalike of a customer", "lookalike_lead", "found_as_lookalike = true",
+        "", "10", "", "Score", "", "", "120", "yes",
+        "Companies the monthly lookalike_leads job found through Apollo's search for US companies like Spill's "
+        "active customers, UK ones included, in an active industry group and size band (Harry, 5 Oct 2026; "
+        "sources/lookalike_leads.py). Only accounts it brought in get it; the fact keeps whether the customer "
+        "was in the US, so US- and UK-seeded leads can be compared. Counts for 120 days, about four monthly runs. "
+        "Unlike Looks like Spill's customers, which scores the account's cell, this was measured on the company "
+        "itself, so it may lift an account out of Control: with the size row (+15 at 10-49) and the cell signal "
+        "(+4) a lookalike lead scores 29, Standard. Added by the build.",
+    ),
 ]
 
 # Tokenized openers (docs/roadmap.md §4 item 2; Harry, 2 Oct 2026): one line per copy role, filled at enrol

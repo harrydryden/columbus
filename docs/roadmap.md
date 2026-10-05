@@ -10,7 +10,7 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 
 | Stage | Built | Not built yet |
 | :- | :- | :- |
-| Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (Spill's HubSpot customers as cells, a signal and an early exclusion of customer domains), `named` accounts, `site_visits` (Apollo's visitors to spill.chat/us, daily 06:00: the two visit signals, and new US visitors of 10–249 people by the front door; 5 Oct) | `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
+| Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (Spill's HubSpot customers as cells, a signal and an early exclusion of customer domains), `lookalike_leads` (5 Oct: monthly, the 1st at 02:50; Apollo's lookalike search seeded by up to 40 active customers, UK ones included, US results only; new accounts by the front door with the "Found as a lookalike of a customer" signal; at most 60 Apollo credits), `named` accounts, `site_visits` (Apollo's visitors to spill.chat/us, daily 06:00: the two visit signals, and new US visitors of 10–249 people by the front door; 5 Oct) | `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
 | Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct). For the groups `apollo_enrich` enriches, Apollo's exact employee count replaces the searched size band before verify runs | `verify_in_clay`; Clay's cross-check of doubtful HQ state and size (the `verify.cross_check` hook) |
 | Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire. The People leaders at every queue account, `apollo_people` (weekdays 04:20, Apollo's free people search; 5 Oct), so "New People leader" scores before the queue is sorted, and "First People hire (likely)" in place of "First People hire", firing only where Apollo holds at least half the headcount | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
 | Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees, unless `apollo_people` searched the account in the last 30 days. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
@@ -187,6 +187,10 @@ verification and contact choice write only the database; enrol, replies and post
 1. **Live checks of the `PHASE0-CONFIRM` items**, starting with the ones that gate sending and opt-outs:
    - Instantly: the `{{unsubscribe}}` tag; lead status codes; the reply and forward endpoints;
      stop-on-reply for replies Instantly classes as automatic.
+   - Apollo's lookalike search (`sources/lookalike_leads.py`, first run 1 Nov): the body key
+     `lookalike_organization_ids` and its limit of 5, `organization_locations` ["United States"] with
+     `organization_not_locations` ["California, US", "Washington, US"], that a page of lookalikes costs
+     1 credit like any search page, and that rows carry `country` and `state`.
    - Apollo: organization and people search filters, job postings, credit charges. Organization enrich
      (`sources/apollo_enrich.py`): the bulk call's body and answer (`organizations`, `unique_enriched_records`), the
      single call's answer for a domain Apollo does not know (404 or an empty `organization`), and the funding fields
@@ -297,6 +301,12 @@ verification and contact choice write only the database; enrol, replies and post
    - UTMs on the industry and demo links, and demo-page bookings read back.
 5. **Retention and compliance:** delete leads 31 days after their last step, act on Apollo
    deletion notices within 30 days, and purge reply text after 90 days.
+6. **Lookalike leads: do UK customers make good US seeds?** Apollo's likeness may favour companies in
+   the seed's own country. Each monthly run counts, for US and for non-US seeds apart, the searches
+   (and the empty ones), the rows returned, and the companies admitted, refused and not US (the daily
+   post on the 1st, and the run's heartbeat). Each lead's `lookalike_lead` fact keeps `seed_country`, so
+   the signal review can compare how UK- and US-seeded leads reply. After two or three runs, keep UK
+   seeds, or seed from US customers only if they find little (a small change in `eligible`).
 
 ### October to December
 1. `public_signals`: IRS BMF for nonprofits, job-post feeds and WARN layoffs. Then Form 5500

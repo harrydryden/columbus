@@ -35,6 +35,7 @@ MAX_PER_PAGE = 100
 MAX_PAGE = 500  # the display limit: 50,000 records = 500 pages of 100
 BULK_MATCH_MAX = 10  # people/bulk_match takes up to 10 details per call
 BULK_ENRICH_MAX = 10  # organizations/bulk_enrich takes up to 10 domains per call
+LOOKALIKE_SEEDS_MAX = 5  # organization search takes up to 5 lookalike_organization_ids (sources/lookalike_leads.py)
 MAX_POSTINGS_PER_PAGE = 10_000  # job postings: a display limit of 10,000 records
 _PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")  # an Apollo id in a URL path
 
@@ -254,6 +255,25 @@ class Apollo(HttpClient):
         body.update(self._page_args(page, per_page))
         return self._read("website_visitors.search", target=tracked[0], json=body,
                           detail={"page": page, "days": days, "pages": paths}) or {}
+
+    def search_lookalike_organizations(self, seed_ids: Iterable[str], filters: Mapping[str, Any], page: int = 1,
+                                       per_page: int = 100) -> dict:
+        """One page of organization search ranked by likeness to up to LOOKALIKE_SEEDS_MAX seed organizations
+        (1 credit per page with results, as any search). See organizations_in().
+
+        Apollo leaves the seeds themselves out, and a seed it has no lookalike data for makes the
+        whole search return nothing rather than fall back to the other filters, so the caller tries
+        a group of seeds that comes back empty one seed at a time (an empty page costs nothing).
+        PHASE0-CONFIRM: the REST body key lookalike_organization_ids (the docs' query form
+        lookalike_organization_ids[], which normalize_filters reads the same way), its limit of 5,
+        and that a page of lookalikes is charged like any search page.
+        """
+        ids = list(dict.fromkeys(_segment(str(i)) for i in seed_ids if i))
+        if not 1 <= len(ids) <= LOOKALIKE_SEEDS_MAX:
+            raise ValueError(f"a lookalike search takes 1 to {LOOKALIKE_SEEDS_MAX} seed organizations, not {len(ids)}")
+        body = {**normalize_filters(filters), "lookalike_organization_ids": ids, **self._page_args(page, per_page)}
+        return self._read("organizations.search", json=body,
+                          detail={"page": page, "filters": sorted(body), "seeds": len(ids)}) or {}
 
     def enrich_organization(self, domain: str) -> dict:
         """Organization enrichment by root domain (1 credit if found). See enriched_in()."""
