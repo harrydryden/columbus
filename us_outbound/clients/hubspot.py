@@ -3,8 +3,9 @@
 Every call is an Op the guard judges. Writes are limited to the six us_outbound_*
 properties, notes, tasks, Spill 3.0 deals and the three empty-only fields; records are
 created only for positive or referral replies. Reads (search, pipelines, owners,
-properties) are free in any mode. In dry-run every write returns its dry_result and
-sends nothing.
+properties, deal-to-company associations) are free in any mode. In dry-run every write
+returns its dry_result and sends nothing. The company and deal searches take the
+properties to read from the caller, so a job reads only the fields it needs.
 
 API: CRM v3 objects and search, v4 default associations, v3 pipelines/owners/properties,
 communication preferences v4 and the v3 GDPR delete.
@@ -17,10 +18,12 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from us_outbound.clients.guard import HUBSPOT_EMPTY_ONLY, HUBSPOT_PROPERTY_GROUP, Op
-from us_outbound.clients.http import HttpClient
+from us_outbound.clients.http import ApiError, HttpClient
 
 SEARCH_PAGE = 100  # HubSpot allows up to 200 per search page
 SEARCH_CAP = 10_000  # search never pages past 10k results; we re-query on hs_object_id instead
+MAX_FILTER_GROUPS = 5  # HubSpot's limit on filterGroups in one search
+ASSOCIATION_PAGE = 500  # v4 associations: up to 500 per page
 
 COMPANY_PROPS = (
     "name",
@@ -47,6 +50,13 @@ CONTACT_PROPS = (
     "us_outbound_reply_class",
 )
 DEAL_PROPS = ("dealname", "pipeline", "dealstage", "hubspot_owner_id", "hs_is_closed", "closedate")
+# Meetings (hubspot_readback, SPEC 9, 11). PHASE0-CONFIRM: a meeting booked through Harry's meetings
+# link (the emails' link, and the website's booking page, which embeds it) has hs_meeting_source
+# MEETINGS_PUBLIC, and hs_meeting_outcome becomes COMPLETED once it is held.
+MEETING_PROPS = (
+    "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_outcome", "hs_meeting_source", "hubspot_owner_id",
+    "hs_createdate", "hs_lastmodifieddate",
+)
 
 # HubSpot-defined association type ids, keyed (from, to).
 # PHASE0-CONFIRM: ids from HubSpot's association type table; deal->company 5 is the
@@ -62,7 +72,8 @@ ASSOCIATION_TYPE_IDS: dict[tuple[str, str], int] = {
     ("contacts", "companies"): 279,
 }
 
-_PLURAL = {"company": "companies", "contact": "contacts", "deal": "deals", "note": "notes", "task": "tasks"}
+_PLURAL = {"company": "companies", "contact": "contacts", "deal": "deals", "note": "notes", "task": "tasks",
+           "meeting": "meetings"}
 _SINGULAR = {v: k for k, v in _PLURAL.items()}
 
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -153,6 +164,25 @@ class HubSpot(HttpClient):
         groups = [{"filters": [{"propertyName": "email", "operator": "EQ", "value": email.strip().lower()}]}]
         return [{"id": r["id"], "properties": r.get("properties", {})} for r in self._search("contacts", groups, CONTACT_PROPS)]
 
+    def opted_out_contacts_at_domain(self, domain: str, limit: int = 1) -> list[dict]:
+        """Up to `limit` contacts on this email domain who opted out of all email or hard-bounced.
+
+        One search page: the caller only needs to know whether there is one (SPEC 9 hard exclusions).
+        PHASE0-CONFIRM: hs_email_domain, HubSpot's "Email domain" contact property, is searchable with EQ.
+        """
+        root = domain.strip().lower().removeprefix("www.")
+        on_domain = {"propertyName": "hs_email_domain", "operator": "EQ", "value": root}
+        groups = [
+            {"filters": [on_domain, {"propertyName": "hs_email_optout", "operator": "EQ", "value": "true"}]},
+            {"filters": [on_domain, {"propertyName": "hs_email_hard_bounce_reason_enum", "operator": "HAS_PROPERTY"}]},
+        ]
+        out: list[dict] = []
+        for r in self._search("contacts", groups, CONTACT_PROPS, limit=limit):
+            out.append({"id": r["id"], "properties": r.get("properties", {})})
+            if len(out) >= limit:
+                break
+        return out
+
     def find_pipeline(self, label: str, object_type: str = "deals") -> tuple[str, str] | None:
         """(pipeline id, id of its first stage by displayOrder) for the pipeline with this label."""
         body = self.request("GET", f"/crm/v3/pipelines/{object_type}", Op("pipeline.list", target=object_type)) or {}
@@ -176,6 +206,55 @@ class HubSpot(HttpClient):
         groups = [{"filters": [{"propertyName": "associations.company", "operator": "EQ", "value": str(company_id)}]}]
         deals = [{"id": r["id"], "properties": r.get("properties", {})} for r in self._search("deals", groups, DEAL_PROPS)]
         return [d for d in deals if str(d["properties"].get("hs_is_closed", "")).lower() != "true"]
+
+    def deals_for_company(self, company_id: str) -> list[dict]:
+        """Every deal associated with the company, open or closed, with its pipeline, stage and create date."""
+        # PHASE0-CONFIRM: search filters on the associations.company pseudo-property (as above).
+        groups = [{"filters": [{"propertyName": "associations.company", "operator": "EQ", "value": str(company_id)}]}]
+        return [{"id": r["id"], "properties": r.get("properties", {})}
+                for r in self._search("deals", groups, (*DEAL_PROPS, "createdate"))]
+
+    def get_record(
+        self, object_type: str, record_id: str, properties: Iterable[str], associations: Iterable[str] = ()
+    ) -> dict | None:
+        """{"id", "properties", "associations": {type: [ids]}} for one record; None when HubSpot has no such record."""
+        obj = plural_type(object_type)
+        params = {"properties": ",".join(properties)}
+        kinds = [plural_type(a) for a in associations]
+        if kinds:
+            params["associations"] = ",".join(kinds)
+        try:
+            body = self.request(
+                "GET", f"/crm/v3/objects/{obj}/{_quote(str(record_id))}", Op(f"{_SINGULAR.get(obj, obj)}.get", target=obj),
+                params=params,
+            ) or {}
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        links: dict[str, list[str]] = {}
+        for kind, block in (body.get("associations") or {}).items():
+            ids = [str(r.get("id")) for r in (block or {}).get("results", []) if r.get("id")]
+            links[str(kind)] = list(dict.fromkeys(ids))  # a labeled and an unlabeled association list one id twice
+        return {"id": str(body.get("id") or record_id), "properties": body.get("properties") or {}, "associations": links}
+
+    def search_meetings(self, owner_id: str, changed_since: datetime) -> list[dict]:
+        """Meetings owned by owner_id created or changed since then (new bookings and new outcomes), oldest first."""
+        since = changed_since if changed_since.tzinfo else changed_since.replace(tzinfo=UTC)
+        groups = [{"filters": [
+            {"propertyName": "hubspot_owner_id", "operator": "EQ", "value": str(owner_id)},
+            {"propertyName": "hs_lastmodifieddate", "operator": "GTE", "value": str(int(since.timestamp() * 1000))},
+        ]}]
+        sorts = [{"propertyName": "hs_lastmodifieddate", "direction": "ASCENDING"}]
+        return [{"id": r["id"], "properties": r.get("properties", {})}
+                for r in self._search("meetings", groups, MEETING_PROPS, sorts)]
+
+    def pipeline_stages(self, pipeline_id: str, object_type: str = "deals") -> list[dict]:
+        """The pipeline's stages ({id, label, displayOrder, metadata}) in board order."""
+        body = self.request(
+            "GET", f"/crm/v3/pipelines/{object_type}/{_quote(str(pipeline_id))}", Op("pipeline.get", target=object_type)
+        ) or {}
+        return sorted(body.get("stages") or [], key=lambda s: s.get("displayOrder", 0))
 
     def properties(self, object_type: str) -> list[dict]:
         body = self.request("GET", f"/crm/v3/properties/{object_type}", Op("property.list", target=object_type)) or {}
@@ -221,6 +300,70 @@ class HubSpot(HttpClient):
                 if len(results) < SEARCH_PAGE:
                     break
                 last = str(results[-1]["id"])
+
+    def _iter_by_object_id(self, obj: str, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
+        """Every record matching any of the filter groups (each a list of filters, all of which must hold), once.
+
+        Pages on hs_object_id > last seen (sorted ascending) rather than the after cursor, so the
+        search API's 10k-result cap never truncates the list. HubSpot allows five filter groups.
+        """
+        if not 1 <= len(filter_groups) <= MAX_FILTER_GROUPS:
+            raise ValueError(f"a HubSpot search takes 1 to {MAX_FILTER_GROUPS} filter groups, not {len(filter_groups)}")
+        props = sorted({*properties, "hs_object_id"})
+        last = "0"
+        while True:
+            groups = [{"filters": [*f, {"propertyName": "hs_object_id", "operator": "GT", "value": last}]}
+                      for f in filter_groups]
+            body = self.request(
+                "POST",
+                f"/crm/v3/objects/{obj}/search",
+                Op(f"{_SINGULAR.get(obj, obj)}.search", target=obj),
+                json={"filterGroups": groups, "properties": props,
+                      "sorts": [{"propertyName": "hs_object_id", "direction": "ASCENDING"}], "limit": SEARCH_PAGE},
+            ) or {}
+            results = body.get("results", [])
+            for r in results:
+                yield {"id": str(r["id"]), "properties": r.get("properties") or {}}
+            if len(results) < SEARCH_PAGE:
+                return
+            last = str(results[-1]["id"])
+
+    def iter_companies(self, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
+        """Companies matching any of the filter groups, each once, with only the properties named (read only)."""
+        return self._iter_by_object_id("companies", filter_groups, properties)
+
+    def iter_deals(self, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
+        """Deals matching any of the filter groups, each once, with only the properties named (read only)."""
+        return self._iter_by_object_id("deals", filter_groups, properties)
+
+    def companies_by_id(self, ids: Iterable[str], properties: Iterable[str]) -> list[dict]:
+        """The companies with these record ids: a search on hs_object_id IN, 100 ids at a time (read only)."""
+        wanted = sorted({str(i) for i in ids if str(i).strip()})
+        out: list[dict] = []
+        for i in range(0, len(wanted), SEARCH_PAGE):
+            chunk = wanted[i : i + SEARCH_PAGE]
+            groups = [[{"propertyName": "hs_object_id", "operator": "IN", "values": chunk}]]
+            out.extend(self._iter_by_object_id("companies", groups, properties))
+        return out
+
+    def deal_company_ids(self, deal_id: str) -> list[str]:
+        """Ids of the companies associated with a deal (v4 associations; a GET, read only)."""
+        ids: list[str] = []
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": ASSOCIATION_PAGE}
+            if after:
+                params["after"] = after
+            body = self.request(
+                "GET",
+                f"/crm/v4/objects/deals/{_quote(str(deal_id))}/associations/companies",
+                Op("association.list", target="deals/companies"),
+                params=params,
+            ) or {}
+            ids.extend(str(r["toObjectId"]) for r in body.get("results", []) if r.get("toObjectId") is not None)
+            after = ((body.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                return ids
 
     # -- writes (guarded; dry-run returns dry_result) ----------------------------
 

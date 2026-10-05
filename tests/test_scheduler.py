@@ -17,6 +17,7 @@ import pytest
 from us_outbound.context import UK, ConfigError
 from us_outbound.ops import cli
 from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import schedule
 from us_outbound.ops import scheduler as sch
 from us_outbound.ops.schedule import SCHEDULE, ScheduledJob, by_name, enabled_names
 
@@ -195,7 +196,7 @@ def test_spring_forward_runs_a_skipped_fixed_time_once_at_0200():
     """29 Mar 2026: 01:00 GMT becomes 02:00 BST, so 01:00-01:59 UK never happens."""
     start, end = utc(2026, 3, 28, 0, 0), utc(2026, 3, 31, 0, 0)
     assert uk_times(runs("30 1 * * *", start, end)) == ["28 01:30 GMT", "29 02:00 BST", "30 01:30 BST"]  # suppression_load
-    assert uk_times(runs("0 1 * * *", start, end)) == ["28 01:00 GMT", "29 02:00 BST", "30 01:00 BST"]  # sync_outcomes
+    assert uk_times(runs("0 1 * * *", start, end)) == ["28 01:00 GMT", "29 02:00 BST", "30 01:00 BST"]  # a 01:00 daily job
     assert uk_times(runs("0 2 * * *", start, end)) == ["28 02:00 GMT", "29 02:00 BST", "30 02:00 BST"]  # settings_sync
     assert runs("0 2 * * *", start, end)[1] == utc(2026, 3, 29, 1, 0)
     assert uk_times(runs("0 7 * * *", start, end)) == ["28 07:00 GMT", "29 07:00 BST", "30 07:00 BST"]
@@ -470,40 +471,53 @@ def test_the_live_gate_is_unchanged(monkeypatch, live_sending):
 
 
 SPEC9_CRONS = {
-    "settings_sync": "0 2 * * *", "source_universe": "0 3 1 * *", "apollo_signals": "30 3 * * 1",
+    # Build, 1 Oct 2026: source_universe and apollo_signals each weekday (SPEC 9: the 1st, and Mondays).
+    "settings_sync": "0 2 * * *", "source_universe": "0 3 * * 1-5", "apollo_signals": "30 3 * * 1-5",
     "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
-    "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "0 1 * * *",
+    "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
     "monday_readout": "0 9 * * 1",
     # Build additions.
-    "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *",
+    "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
+    "lookalikes": "30 2 * * 1",  # Monday, after settings_sync (02:00) and before source_universe (03:00)
+    "hand_check_post": "0 8 * * 1",
+    "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after apollo_signals (03:30), before verify_accounts (04:30)
+    "apollo_enrich": "10 4 * * 1-5",  # Harry, 2 Oct 2026: after read_pages starts (03:45), before verify_accounts
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
-        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check"}
+        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post"}
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
     table = by_name()
-    assert list(table) == list(cli.JOBS) and len(table) == len(SCHEDULE)
+    assert list(table) == list(cli.JOBS) and len(table) == len(SCHEDULE) - 1  # settings_sync has two rows
+    # The second sync (4 Oct 2026): weekdays 11:30, so the morning's sheet edits are in force for enrol at 12:00.
+    assert [j.cron for j in SCHEDULE if j.name == "settings_sync"] == ["0 2 * * *", "30 11 * * 1-5"]
+    assert schedule.crons("settings_sync") == ["0 2 * * *", "30 11 * * 1-5"]
+    assert schedule.crons("enrol") == ["0 12 * * 1-5"] and schedule.crons("score") == []
     assert {n: j.cron for n, j in table.items()} == SPEC9_CRONS
     assert {j.name for j in SCHEDULE if j.live} == LIVE
     for j in SCHEDULE:
         if j.cron:
             sch.Cron.parse(j.cron)
-        assert j.enabled is not (cli.JOBS[j.name].startswith("not built") or j.name == "enrol"), j.name
+        assert j.enabled is not cli.JOBS[j.name].startswith("not built"), j.name
         assert 1 <= j.timeout_minutes <= hb.OVERLAP_MINUTES, j.name
     assert table["poll_approvals"].timeout_minutes < 5  # done before it is due again
 
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
-    assert enabled == ["settings_sync", "mailbox_health", "heartbeat_check", "suppression_load"]
+    assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
+                       "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
+                       "sync_outcomes", "mailbox_health", "kill_rules", "daily_post", "heartbeat_check",
+                       "suppression_load", "lookalikes", "hand_check_post"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]
-    assert [j.name for j, _ in sch.Scheduler().jobs] == enabled
+    assert list(dict.fromkeys(j.name for j, _ in sch.Scheduler().jobs)) == enabled
+    assert [j.name for j, _ in sch.Scheduler().jobs].count("settings_sync") == 2
 
 
 def test_next_run_and_the_listing():
@@ -512,7 +526,9 @@ def test_next_run_and_the_listing():
     assert sch.next_run(daily, utc(2026, 10, 25, 0, 30)) == utc(2026, 10, 25, 2, 0)  # 02:00 GMT
     assert sch.next_run(sch.Cron.parse("0 9 * * 1"), utc(2026, 9, 30, 12, 0)) == utc(2026, 10, 5, 8, 0)
     assert sch.next_run(sch.Cron.parse("0 0 31 2 *"), utc(2026, 1, 1, 0, 0), horizon=timedelta(days=40)) is None
-    lines = {line.split()[0]: line for line in sch.describe(now=utc(2026, 9, 30, 12, 0))}
-    assert lines["settings_sync"].endswith("Thu 01 Oct 02:00 BST")
+    listing = sch.describe(now=utc(2026, 9, 30, 12, 0))
+    lines = {line.split()[0]: line for line in listing}
+    syncs = [line for line in listing if line.startswith("settings_sync ")]
+    assert syncs[0].endswith("Thu 01 Oct 02:00 BST") and syncs[1].endswith("Thu 01 Oct 11:30 BST")
     assert lines["heartbeat_check"].endswith("Wed 30 Sep 13:05 BST")
-    assert lines["enrol"].endswith("disabled until phase 2") and lines["score"].endswith("on demand only")
+    assert lines["monday_readout"].endswith("disabled until phase 3") and lines["score"].endswith("on demand only")

@@ -9,31 +9,36 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.fakes import FakeTransport, make_context
+from tests.test_ramp import past_ramp
 from tests.test_render import (
+    AGENCIES,
+    BODIES,
+    COPY,
+    DEMO,
     EAP_OPENER,
     FIRST_TEST,
-    GENERAL_OPENER,
     HANNAH,
     HARRY_M,
     HARRY_T,
     SAM,
+    SUBJECTS,
     account,
     contact,
-    copy_rows,
+    copy_row,
     make_settings,
 )
 from us_outbound import suppression
-from us_outbound.enrol import enrol, queue
+from us_outbound.enrol import enrol, openers, queue
 from us_outbound.logs import hash_email
 
 NOW = datetime(2026, 10, 27, 11, 0, tzinfo=UTC)  # Tuesday 11:00 UK, 07:00 ET (ISO week 2026-W44)
 INSTANTLY = "https://api.instantly.ai/api/v2"
-CAMPAIGNS = {
+CAMPAIGNS = {  # status 1: active (`us-outbound start --live` has run)
     "items": [
-        {"id": "c-hannah", "name": "US Outbound – Hannah Spalding"},
-        {"id": "c-sam", "name": "US Outbound – Sam Jackson"},
-        {"id": "c-harry", "name": "US Outbound – Harry Dryden"},
-        {"id": "c-eu", "name": "EU Outbound – Anna"},
+        {"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1},
+        {"id": "c-sam", "name": "US Outbound – Sam Jackson", "status": 1},
+        {"id": "c-harry", "name": "US Outbound – Harry Dryden", "status": 1},
+        {"id": "c-eu", "name": "EU Outbound – Anna", "status": 1},
     ]
 }
 CAMPAIGN_OWNER = {"c-hannah": "Hannah Spalding", "c-sam": "Sam Jackson", "c-harry": "Harry Dryden"}
@@ -41,11 +46,12 @@ CAMPAIGN_OWNER = {"c-hannah": "Hannah Spalding", "c-sam": "Sam Jackson", "c-harr
 
 @pytest.fixture(autouse=True)
 def default_openers(monkeypatch):
-    """Openers come from scoring (another module); here each angle's default opener."""
+    """Openers come from enrol/openers.py (tested in test_openers.py); here each angle's default opener."""
 
-    def opener(ctx, a):
+    def opener(ctx, a, c, check=None):
         angle = ctx.settings.angle(str(a.get("angle") or ""))
-        return (angle.default_opener if angle else ""), ""
+        text = angle.default_opener if angle else ""
+        return openers.Opener(text, openers.OPENER if text else openers.NONE, "angle default" if text else ""), ""
 
     monkeypatch.setattr(enrol, "account_opener", opener)
 
@@ -81,8 +87,12 @@ def contacts3() -> list[dict]:
     ]
 
 
-def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None):
+def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None,
+         auto_send=True, optout_tested=True):
+    """The enrol world. auto_send = yes by default: leads go straight to Instantly, as before Harry's 2 Oct 2026
+    switch; tests/test_send_approvals.py runs it with auto_send = no. The opt-out test is done (optout_tested)."""
     s = settings or make_settings(live_sending=live)
+    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send, optout_tested=optout_tested))
     t = transport or FakeTransport()
     t.route("GET", "/campaigns", CAMPAIGNS)
     t.route("POST", "/crm/v3/objects/companies/search", {"results": []})
@@ -93,6 +103,7 @@ def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, ha
     st = ctx.store
     st.insert("accounts", accounts if accounts is not None else accounts3())
     st.insert("contacts", contacts if contacts is not None else contacts3())
+    past_ramp(st, s.mailboxes, now)  # the mailboxes are past the sending ramp (tests/test_ramp.py covers it)
     if hand_check:
         st.insert("hitl_items", [{"item_id": "hc-1", "kind": "hand_check", "status": hand_check,
                                   "created_at": now - timedelta(days=1), "payload": {"iso_week": "2026-W44"}}])
@@ -148,13 +159,13 @@ def test_live_posts_leads_only_to_us_outbound_campaigns_with_custom_variables():
             cv = lead["custom_variables"]
             assert set(cv) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
             assert "{{" not in "".join(cv.values())
-            assert "Reply STOP or use this link to opt out" in cv["s4_body"]
+            assert "on-demand counseling for your team" in cv["s4_body"]  # the signature
     jane = next(lead for lead in by_campaign["c-harry"] if lead["email"] == "jane@acmecreative.com")
     assert jane["first_name"] == "Jane" and jane["company_name"] == "Acme Creative"
     assert EAP_OPENER in jane["custom_variables"]["s1_body"]
-    assert "grab a time with me" in jane["custom_variables"]["s2_body"]
     omar = by_campaign["c-hannah"][0]
-    assert "my colleague Harry Dryden runs our US demos" in omar["custom_variables"]["s2_body"]
+    for lead in (jane, omar):
+        assert f'<a href="{DEMO}">' in lead["custom_variables"]["s2_body"]  # every email's call to action
 
 
 def test_live_records_enrollment_and_keeps_senders():
@@ -167,18 +178,35 @@ def test_live_records_enrollment_and_keeps_senders():
     cons = rows(ctx, "contacts", "contact_id")
     jane, omar = cons["con-1"], cons["con-2"]
     assert jane["enrolment_month"] == "2026-10"
-    assert jane["angle"] == "Upgrade the EAP" and jane["copy_version"] == "eap-v1" and jane["test_id"] is None
+    assert jane["angle"] == "Upgrade the EAP" and jane["copy_version"] == "agencies-v1" and jane["test_id"] is None
     assert jane["instantly_campaign"] == "US Outbound – Harry Dryden"
     assert jane["instantly_lead_id"] == "lead-jane@acmecreative.com"
     assert jane["mailbox"] is None  # Harry has two Active addresses; sync_outcomes records the one that sent
-    assert omar["mailbox"] == "hannah@meetspill.org" and omar["copy_version"] == "general-v1"
+    assert omar["mailbox"] == "hannah@meetspill.org"
+    assert omar["copy_version"] == "general-v1"  # Fintech has no row of its own, nor has its group
 
 
-def test_live_flag_without_live_sending_does_nothing():
-    ctx, t = make(live=True, settings=make_settings(live_sending=False))
+def test_live_flag_without_live_sending_runs_dry():
+    """A job is live only with --live and live_sending = yes (bootstrap.resolve_live), so enrol never sees a live
+    context without live_sending, and its gate does not check it again."""
+    from us_outbound.ops import bootstrap
+
+    s = make_settings(live_sending=False)
+    ctx, t = make(live=bootstrap.resolve_live(True, s), settings=s)
     out = enrol.run(ctx)
-    assert out["status"] == "skipped" and out["reason"] == "live_sending is no"
-    assert instantly_posts(t) == []
+    assert out["status"] == "ok" and out["dry_run"] is True and out["enrolled"] == 0
+    assert instantly_posts(t) == [] and ctx.guard.writes("instantly", sent=True) == []
+
+
+def test_a_live_run_waits_for_the_opt_out_test_and_a_dry_run_still_previews():
+    """A6: until optout_tested = yes nothing is enrolled; a dry run (the scheduler's state until then) still runs."""
+    ctx, t = make(live=True, optout_tested=False)
+    out = enrol.run(ctx)
+    assert out["status"] == "skipped" and out["reason"].startswith("optout_tested is no")
+    assert instantly_posts(t) == [] and enrol.gate(ctx, ctx.now_et().date()) == enrol.OPTOUT_UNTESTED
+    ctx, t = make(optout_tested=False)
+    out = enrol.run(ctx)
+    assert out["status"] == "ok" and out["prepared"] == 3 and enrol.gate(ctx, ctx.now_et().date()) is None
 
 
 def test_instantly_skipping_a_lead_leaves_it_unenrolled():
@@ -190,10 +218,49 @@ def test_instantly_skipping_a_lead_leaves_it_unenrolled():
     t = FakeTransport()
     ctx, _ = make(live=True, transport=t)
     t.route("POST", "/leads/add", fn=partial)
+    t.route("POST", "/leads/list", {"items": []})  # not in the campaign either: Instantly refused it
     out = enrol.run(ctx)
     assert out["enrolled"] == 2 and out["skipped"]["not added by Instantly"] == 1
     assert ctx.store.get("accounts", account_id="acc-3")["status"] == "verified"
-    assert not ctx.store.get("contacts", contact_id="con-3").get("instantly_lead_id")
+    lee = ctx.store.get("contacts", contact_id="con-3")
+    assert not lee.get("instantly_lead_id")
+    # A3: suppressed, so pick_contacts finds the next person instead of trying Lee every day.
+    assert (lee["suppressed"], lee["suppressed_reason"]) == (True, enrol.NOT_ADDED)
+    [skip] = [x for x in out["skipped_accounts"] if x["account_id"] == "acc-3"]
+    assert skip["detail"] == [f"{enrol.NOT_ADDED}: the contact is suppressed, so pick_contacts finds the next person"]
+
+
+def test_a_lead_left_out_of_the_summary_but_in_the_campaign_is_recorded():
+    """A3: created_leads leaves out a lead the campaign already has; the lookup finds its id."""
+    def partial(req):
+        body = added(req)
+        body["created_leads"] = [c for c in body["created_leads"] if c["email"] != "lee@loopstudio.com"]
+        return body
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("POST", "/leads/add", fn=partial)
+    t.route("POST", "/leads/list", fn=lambda req: {"items": [
+        {"id": "lead-old", "email": "Lee@LoopStudio.com", "campaign": req.json["campaign"]}]})
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and "not added by Instantly" not in out["skipped"]
+    lee = ctx.store.get("contacts", contact_id="con-3")
+    assert (lee["instantly_lead_id"], lee.get("suppressed")) == ("lead-old", None)
+    assert ctx.store.get("accounts", account_id="acc-3")["status"] == "enrolled"
+
+
+def test_a_left_out_lead_whose_campaign_cannot_be_read_waits_for_the_next_run():
+    def none_created(req):
+        return {**added(req), "created_leads": []}
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, transport=t)
+    t.route("POST", "/leads/add", fn=none_created)
+    t.route("POST", "/leads/list", {"error": "down"}, status=503)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 0 and out["skipped"]["not added by Instantly"] == 3
+    assert any("could not be looked up" in e for e in out["errors"])
+    assert not any(c.get("suppressed") for c in ctx.store.select("contacts"))  # nothing concluded
 
 
 def test_instantly_api_error_is_recorded_and_marks_nothing():
@@ -205,52 +272,93 @@ def test_instantly_api_error_is_recorded_and_marks_nothing():
     assert {a["status"] for a in ctx.store.select("accounts")} == {"verified"}
 
 
-def test_missing_campaign_is_an_error_not_a_crash():
+def test_a_missing_campaign_gets_no_leads_and_says_how_to_create_it():
+    """A1: an owner with no campaign in Instantly has no capacity in a live run; new accounts go to the others."""
     t = FakeTransport()
     ctx, _ = make(live=True, transport=t)
-    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding"}]})
+    t.route("GET", "/campaigns", {"items": [{"id": "c-hannah", "name": "US Outbound – Hannah Spalding", "status": 1}]})
     out = enrol.run(ctx)
-    assert out["enrolled"] == 1 and any("US Outbound – Harry Dryden" in e for e in out["errors"])
-    assert any("US Outbound – Sam Jackson" in e for e in out["errors"])
-    assert ctx.store.get("accounts", account_id="acc-1")["status"] == "verified"
+    assert out["enrolled"] == 3 and out["by_owner"] == {"Hannah Spalding": 3} and out["errors"] == []
+    assert {r.json["campaign_id"] for r in instantly_posts(t)} == {"c-hannah"}
+    assert set(out["campaigns_not_sending"]) == {"Harry Dryden", "Sam Jackson"}
+    assert ("Harry Dryden's campaign (US Outbound – Harry Dryden) is not in Instantly: `us-outbound campaigns ensure "
+            "--live` creates it, then run `us-outbound start --live`.") in out["limited_by"]
 
 
 # -- test versions -------------------------------------------------------------------------------
 
 
-def test_running_test_splits_eap_accounts_and_records_the_test():
-    eap_accounts = [account(account_id=f"eap-{i}", domain=f"eap{i}.com", clean_name=f"Eap {i}") for i in range(8)]
-    eap_contacts = [contact(contact_id=f"c-{i}", account_id=f"eap-{i}", email=f"p{i}@eap{i}.com") for i in range(8)]
-    s = make_settings(live_sending=True, tests=(FIRST_TEST,))
-    ctx, t = make(live=True, settings=s, accounts=eap_accounts, contacts=eap_contacts)
+V2_SUBJECTS = {**SUBJECTS, 1: "A shorter note for {{company}}"}
+TEST_COPY = COPY + (copy_row("agencies-v2", AGENCIES, subjects=V2_SUBJECTS),)
+
+
+def test_running_test_splits_version_a_accounts_and_records_the_test():
+    accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(8)]
+    cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(8)]
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
+    ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     leads = {lead["email"]: lead for r in instantly_posts(t) for lead in r.json["leads"]}
     versions = set()
     for i in range(8):
         con = ctx.store.get("contacts", contact_id=f"c-{i}")
-        want = "eap-v1" if queue.test_version(f"eap-{i}", FIRST_TEST.test_id) == "a" else "general-v1"
+        want = "agencies-v1" if queue.test_version(f"ag-{i}", FIRST_TEST.test_id) == "a" else "agencies-v2"
         assert con["test_id"] == FIRST_TEST.test_id and con["copy_version"] == want
-        body = leads[f"p{i}@eap{i}.com"]["custom_variables"]["s1_body"]
-        assert (EAP_OPENER if want == "eap-v1" else GENERAL_OPENER) in body
-        assert con["angle"] == ("Upgrade the EAP" if want == "eap-v1" else "General")
+        subject = leads[f"p{i}@ag{i}.com"]["custom_variables"]["s1_subject"]
+        assert subject.startswith("A shorter note" if want == "agencies-v2" else "Support for the")
+        assert con["angle"] == "Upgrade the EAP"  # the account's angle, whichever copy it got
         versions.add(want)
-    assert versions == {"eap-v1", "general-v1"}
+    assert versions == {"agencies-v1", "agencies-v2"}
 
 
-def test_control_and_other_angles_stay_out_of_the_test():
-    s = make_settings(live_sending=True, tests=(FIRST_TEST,))
+def test_control_and_other_copy_stay_out_of_the_test():
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
     ctx, _ = make(live=True, settings=s)
     enrol.run(ctx)
     assert ctx.store.get("contacts", contact_id="con-1")["test_id"] == FIRST_TEST.test_id
-    assert ctx.store.get("contacts", contact_id="con-2")["test_id"] is None
-    assert ctx.store.get("contacts", contact_id="con-3")["test_id"] is None
+    assert ctx.store.get("contacts", contact_id="con-2")["test_id"] is None  # General copy
+    assert ctx.store.get("contacts", contact_id="con-3")["test_id"] is None  # Control
 
 
-def test_no_approved_copy_for_the_angle_skips_the_account():
-    s = make_settings(copy=copy_rows("general-v1", "General") + copy_rows("eap-v1", "Upgrade the EAP", status="draft"))
+def test_no_approved_copy_skips_the_account_and_says_what_waits():
+    s = make_settings(copy=(COPY[0], copy_row("general-v1", "General", status="draft")))
     ctx, _ = make(settings=s)
     out = enrol.run(ctx)
     assert out["skipped"]["no approved copy"] == 1 and out["prepared"] == 2
+    [skip] = [x for x in out["skipped_accounts"] if x["reason"] == "no approved copy"]
+    assert skip["account_id"] == "acc-2" and "general-v1 is a draft" in skip["detail"][1]
+
+
+def test_a_draft_industry_row_falls_back_to_general_and_says_so():
+    s = make_settings(live_sending=True, copy=(copy_row("agencies-v1", AGENCIES, status="draft"), COPY[1]))
+    ctx, _ = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and out["copy_sendable"] == 1
+    assert {c["copy_version"] for c in ctx.store.select("contacts")} == {"general-v1"}
+    assert out["copy_fallbacks"] == {"sent general-v1: agencies-v1 is a draft": 2}
+
+
+def test_unchecked_copy_is_not_sent():
+    s = make_settings(live_sending=True, copy=(copy_row("agencies-v1", AGENCIES, qa=False), COPY[1]))
+    ctx, _ = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    assert {c["copy_version"] for c in ctx.store.select("contacts")} == {"general-v1"}
+    assert "agencies-v1 is approved but has not passed QA" in next(iter(out["copy_fallbacks"]))
+
+
+def test_the_most_specific_row_wins_label_then_role():
+    label = copy_row("advertising-v1", "Advertising agencies")
+    ops = copy_row("agencies-ops-v1", AGENCIES, role="Operations")
+    s = make_settings(live_sending=True, copy=COPY + (ops, label))
+    ctx, _ = make(live=True, settings=s)
+    enrol.run(ctx)
+    cons = rows(ctx, "contacts", "contact_id")
+    assert cons["con-1"]["copy_version"] == "advertising-v1"  # its own label beats its group
+    assert cons["con-3"]["copy_version"] == "advertising-v1"  # the label beats a role row for the group
+    s = make_settings(live_sending=True, copy=COPY + (ops,))
+    ctx, _ = make(live=True, settings=s)
+    enrol.run(ctx)
+    assert rows(ctx, "contacts", "contact_id")["con-3"]["copy_version"] == "agencies-ops-v1"  # Lee is Operations
 
 
 # -- gates ------------------------------------------------------------------------------------
@@ -269,10 +377,23 @@ def test_weekend_skips():
 
 def test_positive_reply_waiting_over_24_hours_pauses_enrollment():
     ctx, _ = make()
-    ctx.store.insert("hitl_items", [{"item_id": "r-1", "kind": "reply_approval", "status": "open",
-                                     "created_at": NOW - timedelta(hours=25)}])
+    ctx.store.insert("hitl_items", [{"item_id": "r-1", "kind": "reply", "status": "open",
+                                     "payload": {"reply_class": "positive"}, "created_at": NOW - timedelta(hours=25)}])
     out = enrol.run(ctx)
     assert out["status"] == "skipped" and "waited over 24 hours" in out["reason"]
+
+
+def test_only_warm_replies_waiting_pause_enrollment():
+    """poll_replies writes a reply item for every class a person answers; only positive and referral pause (SPEC 11)."""
+    ctx, _ = make()
+    ctx.store.insert("hitl_items", [
+        {"item_id": f"r-{c}", "kind": "reply", "status": "open", "payload": {"reply_class": c},
+         "created_at": NOW - timedelta(hours=30)} for c in ("objection", "not_now", "negative", "other", "wrong_person")
+    ])
+    assert enrol.run(ctx)["status"] == "ok"
+    ctx.store.insert("hitl_items", [{"item_id": "r-ref", "kind": "reply", "status": "escalated",
+                                     "payload": {"reply_class": "referral"}, "created_at": NOW - timedelta(hours=30)}])
+    assert "waited over 24 hours" in enrol.run(ctx)["reason"]
 
 
 def test_operator_stop_pauses_enrollment_until_a_live_start():
@@ -292,8 +413,10 @@ def test_operator_stop_pauses_enrollment_until_a_live_start():
 def test_recent_or_handled_replies_do_not_pause():
     ctx, _ = make()
     ctx.store.insert("hitl_items", [
-        {"item_id": "r-1", "kind": "reply_approval", "status": "open", "created_at": NOW - timedelta(hours=23)},
-        {"item_id": "r-2", "kind": "reply_approval", "status": "handled", "created_at": NOW - timedelta(hours=50)},
+        {"item_id": "r-1", "kind": "reply", "status": "open", "payload": {"reply_class": "positive"},
+         "created_at": NOW - timedelta(hours=23)},
+        {"item_id": "r-2", "kind": "reply", "status": "handled", "payload": {"reply_class": "positive"},
+         "created_at": NOW - timedelta(hours=50)},
     ])
     assert enrol.run(ctx)["status"] == "ok"
 
@@ -571,17 +694,19 @@ def test_hubspot_error_skips_the_account_without_excluding():
 
 
 def test_render_violation_skips_the_account_and_says_why():
-    accts = [account(industry="Unlisted label", industry_group="")]  # no proof point for step 2
-    ctx, t = make(live=True, accounts=accts, contacts=[contact()])
+    bodies = {**BODIES, 1: BODIES[1].replace("{{opener}}", "{{opener}} {{nickname}}")}
+    bad = make_settings(live_sending=True, copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies), COPY[1]))
+    ctx, t = make(live=True, settings=bad, accounts=[account()], contacts=[contact()])
     out = enrol.run(ctx)
     assert out["prepared"] == 0 and out["skipped"]["copy blocked"] == 1
     [skip] = [s for s in out["skipped_accounts"] if s["reason"] == "copy blocked"]
-    assert any("{{proof}}" in d for d in skip["detail"])
+    assert any("agencies-v1: email 1:" in d and "{{nickname}}" in d for d in skip["detail"])
     assert instantly_posts(t) == []
 
 
-def test_unlimited_pto_opener_falls_back_to_the_default(monkeypatch):
-    monkeypatch.setattr(enrol, "account_opener", lambda ctx, a: ("Saw your benefits page mentions unlimited PTO", ""))
+def test_an_opener_that_breaks_a_rule_is_dropped(monkeypatch):
+    bad = openers.Opener("Saw your benefits page mentions unlimited PTO", openers.OPENER, "Progressive benefits / opener")
+    monkeypatch.setattr(enrol, "account_opener", lambda ctx, a, c, check=None: (bad, ""))
     ctx, t = make(live=True, accounts=[account()], contacts=[contact()])
     out = enrol.run(ctx)
     assert out["enrolled"] == 1
@@ -589,10 +714,58 @@ def test_unlimited_pto_opener_falls_back_to_the_default(monkeypatch):
     assert fallback["account_id"] == "acc-1" and "unlimited" in fallback["reason"]
     [post] = instantly_posts(t)
     body = post.json["leads"][0]["custom_variables"]["s1_body"]
-    assert EAP_OPENER in body and "unlimited" not in body.lower()
+    assert "unlimited" not in body.lower() and "<p>Hi Jane,</p><p>In most agencies" in body
+    # The contact records that it went out with no opener (the readout's arm), not as an opener.
+    assert ctx.store.get("contacts", contact_id=contact()["contact_id"])["opener_arm"] == openers.NONE
 
 
 def test_created_ids_match_by_index_then_email():
     leads = [{"email": "a@x.com"}, {"email": "b@x.com"}]
     got = enrol._created_ids({"created_leads": [{"index": 5, "id": "L2", "email": "b@x.com"}, {"index": 0, "id": "L1"}]}, leads)
     assert got == {0: "L1", 1: "L2"}
+
+
+# -- which contact (Harry, 1 Oct 2026: the best-ranked sendable one) ----------------------------------------
+
+
+def _with_default_roles(**general):
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    return dataclasses.replace(make_settings(**general), roles=validate_all(default_tabs())[0].roles)
+
+
+RANKED_CONTACTS = [
+    contact(contact_id="k-cfo", email="cfo@acmecreative.com", title="CFO", role="Finance", created_at="2026-09-01"),
+    contact(contact_id="k-hr", email="hr@acmecreative.com", title="HR Manager", created_at="2026-10-01"),
+    contact(contact_id="k-om", email="om@acmecreative.com", title="Office Manager", role="Operations",
+            created_at="2026-10-02"),
+    contact(contact_id="k-hop", email="hop@acmecreative.com", title="Head of People", created_at="2026-10-03"),
+    contact(contact_id="k-ceo", email="ceo@acmecreative.com", title="CEO", role="Founder or executive",
+            created_at="2026-10-04"),
+]
+
+
+@pytest.mark.parametrize("employees, band, chosen", [
+    (30, "20-49", "k-ceo"),  # 10-49: the founder first, though created last
+    (120, "100-249", "k-hop"),  # 50-249: the senior People leader first
+])
+def test_enrol_takes_the_best_ranked_sendable_contact(employees, band, chosen):
+    ctx, _ = make(live=True, settings=_with_default_roles(live_sending=True),
+                  accounts=[account(employees=employees, size_band=band)], contacts=[dict(c) for c in RANKED_CONTACTS])
+    assert enrol.run(ctx)["enrolled"] == 1
+    assert [c["contact_id"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")] == [chosen]
+
+
+def test_enrol_passes_over_an_unsendable_best_contact():
+    s, a = _with_default_roles(), account(employees=30, size_band="20-49")
+    cons = [
+        contact(contact_id="k-om", email="om@acmecreative.com", title="Office Manager", created_at="2026-10-01"),
+        contact(contact_id="k-ceo", email="ceo@acmecreative.com", title="CEO", person_state="CA", created_at="2026-10-02"),
+        contact(contact_id="k-hop", email="hop@acmecreative.com", title="Head of People", created_at="2026-10-03"),
+    ]
+    assert enrol.pick_contact(cons, set(), set(), a, s) == (cons[2], "")
+    assert enrol.pick_contact(cons[1:2], set(), set(), a, s) == (None, "contact in CA or WA")
+    # Without a Roles tab or an account, the first created, as before.
+    assert enrol.pick_contact(cons, set(), set())[0]["contact_id"] == "k-om"
+    assert enrol.pick_contact(cons, set(), set(), a, make_settings())[0]["contact_id"] == "k-om"

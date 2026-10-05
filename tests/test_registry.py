@@ -13,7 +13,14 @@ import pytest
 
 from tests.fakes import TEST_SHEET_ID, FakeTransport, make_context
 from us_outbound.clients.guard import Op
-from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, instantly_schedule
+from us_outbound.clients.instantly import (
+    CAMPAIGN_SETTINGS,
+    UNSUBSCRIBE_HTML,
+    UNSUBSCRIBE_TAG,
+    campaign_settings,
+    instantly_schedule,
+    step_delays,
+)
 from us_outbound.registry import mailboxes as reg
 from us_outbound.settings.defaults import COLUMNS
 from us_outbound.settings.model import General, Mailbox, Settings
@@ -76,8 +83,8 @@ class FakeInstantly:
         """A campaign exactly as ensure_campaigns would create it."""
         from us_outbound.clients.instantly import sequences
 
-        return self.add_campaign(name, **{**CAMPAIGN_SETTINGS, "campaign_schedule": instantly_schedule(),
-                                          "sequences": sequences(reg.CAMPAIGN_STEPS), "email_list": accounts,
+        return self.add_campaign(name, **{**campaign_settings(), "campaign_schedule": instantly_schedule(),
+                                          "sequences": sequences(reg.campaign_steps()), "email_list": accounts,
                                           "daily_limit": limit, **over})
 
     def add_lead(self, campaign_id: str, email: str) -> dict:
@@ -176,10 +183,16 @@ def slack_routes(t: FakeTransport) -> FakeTransport:
     return t
 
 
-def setup(settings: Settings = SETTINGS, *, live: bool = True, accounts: dict | None = None, now: datetime = NOW):
+def setup(settings: Settings = SETTINGS, *, live: bool = True, accounts: dict | None = None, now: datetime = NOW,
+          ramp_done: bool = True):
+    """ramp_done: the mailboxes are past the sending ramp, so caps are the sheet's (tests/test_ramp.py covers the ramp)."""
     t = slack_routes(FakeTransport())
     inst = FakeInstantly(t, accounts)
     ctx = make_context(settings, live=live, transport=t, now=now)
+    if ramp_done:
+        from tests.test_ramp import past_ramp
+
+        past_ramp(ctx.store, settings.mailboxes, now)
     sheets = StubSheets(ctx.guard, {"Mailboxes": sheet_rows(settings)})
     ctx.clients.sheets = sheets
     return ctx, t, inst, sheets
@@ -231,7 +244,7 @@ def test_ensure_campaigns_creates_three_paused_campaigns():
     assert ours[C_HANNAH]["email_list"] == [HANNAH] and ours[C_HANNAH]["daily_limit"] == 30
     for c in ours.values():
         assert {k: c[k] for k in CAMPAIGN_SETTINGS} == CAMPAIGN_SETTINGS
-        assert c["open_tracking"] is False and c["link_tracking"] is False and c["text_only"] is True
+        assert c["open_tracking"] is False and c["link_tracking"] is False and c["text_only"] is False
         steps = c["sequences"][0]["steps"]
         assert [s["variants"][0]["subject"] for s in steps] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
     assert inst.by_name(C_EU)["status"] == 1  # the European campaign is untouched
@@ -279,7 +292,8 @@ def test_mailbox_add_warm_new_owner_gets_a_campaign():
     added = row(sheets, new)
     assert added["status"] == "Active" and added["owner_name"] == "Maria Lopez" and added["added_on"] == "2026-10-27"
     assert added["daily_cap"] == "30" and added["signature"] == "Maria Lopez\nSpill\nspill.chat/us"
-    assert set(added) == set(MAILBOX_HEADERS)
+    # slack_id is optional (D11) and Harry fills it in by hand, so a sheet without the column still takes the row.
+    assert set(added) == set(MAILBOX_HEADERS) - {"slack_id"}
     c = inst.by_name("US Outbound – Maria Lopez")
     assert c["email_list"] == [new] and c["status"] == 0
     assert out["campaign_action"] == "created (paused)" and out["warmup_turned_on"] is False
@@ -399,6 +413,17 @@ def test_mailbox_health_waits_to_retire_a_recently_used_mailbox():
     assert row(sheets, SAM)["status"] == "Paused"
 
 
+def test_a_reply_sent_from_the_desk_counts_as_using_the_mailbox():
+    settings = dataclasses.replace(SETTINGS, mailboxes=(
+        mailbox(HARRY, "Harry Dryden"), mailbox(SAM, "Sam Jackson", "Paused", retire_after=date(2026, 10, 20))))
+    ctx, t, inst, sheets = setup(settings)
+    ctx.store.insert("events", [{"event_id": "r1", "type": "reply_sent", "mailbox": SAM, "approval": "approved",
+                                 "occurred_at": NOW - timedelta(days=3)}])
+    assert reg.last_use(ctx, SAM) == NOW - timedelta(days=3)
+    out = reg.mailbox_health(ctx)
+    assert out["retired"] == [] and out["waiting_to_retire"] == [SAM]
+
+
 def test_mailbox_health_dry_run_proposes_only():
     settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding", "Warming"),))
     ctx, t, inst, sheets = setup(settings, live=False)
@@ -407,6 +432,137 @@ def test_mailbox_health_dry_run_proposes_only():
     assert inst.campaigns == {} and instantly_writes(t) == []
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert post["channel"] == "C_DEV" and "dry-run" in post["text"]
+
+
+# -- campaigns started, drift put right, and a post only when something happened (mailbox_health) ---------
+
+
+def go_live(ctx, at=NOW - timedelta(days=3), *, stop_after: bool = False) -> None:
+    """`us-outbound start --live` ran ok (and, if stop_after, `stop` after it): ops/heartbeat.py's rows."""
+    rows = [{"run_id": "start-1", "job": "operator_start", "status": "ok", "dry_run": False, "started_at": at}]
+    if stop_after:
+        rows.append({"run_id": "stop-1", "job": "operator_stop", "status": "ok", "dry_run": True,
+                     "started_at": at + timedelta(hours=1)})
+    ctx.store.insert("heartbeats", rows)
+
+
+def posts(t) -> list[dict]:
+    return [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
+
+
+HANNAH_WARMING = dataclasses.replace(SETTINGS, mailboxes=(
+    mailbox(HANNAH, "Hannah Spalding", "Warming", added_on=date(2026, 10, 1)), mailbox(HARRY, "Harry Dryden")))
+
+
+def test_after_go_live_a_campaign_created_for_a_promoted_mailbox_is_started():
+    ctx, t, inst, sheets = setup(HANNAH_WARMING)
+    inst.standard(C_HARRY, [HARRY], 30, status=1)
+    go_live(ctx)
+    out = reg.mailbox_health(ctx)
+    assert out["promoted"] == [HANNAH] and out["campaign_actions"] == {C_HANNAH: "created (paused)"}
+    assert inst.by_name(C_HANNAH)["status"] == 1 and out["campaign_start"]["started"] == [C_HANNAH]
+    assert inst.by_name(C_HARRY)["status"] == 1  # already sending: left alone
+    [post] = posts(t)
+    assert "Created (paused until started): US Outbound – Hannah Spalding" in post["text"]
+    assert "Started US Outbound – Hannah Spalding: its owner has an Active mailbox and sending is live." in post["text"]
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_before_go_live_or_after_a_stop_a_new_campaign_is_only_ready(stopped):
+    ctx, t, inst, sheets = setup(HANNAH_WARMING)
+    inst.standard(C_HARRY, [HARRY], 30, status=2 if stopped else 0)
+    if stopped:
+        go_live(ctx, stop_after=True)
+    out = reg.mailbox_health(ctx)
+    assert inst.by_name(C_HANNAH)["status"] == 0 and not [r for r in t.requests if r.url.endswith("/activate")]
+    assert out["campaign_start"]["ready"] == ["Hannah Spalding"] and out["campaign_start"]["went_live"] is None
+    [post] = posts(t)
+    assert "Hannah Spalding's campaign is ready: run `us-outbound start --live` to start it." in post["text"]
+    assert "Harry Dryden's campaign is ready" not in post["text"]  # not new: `start` starts it
+
+
+def test_a_campaign_a_kill_rule_emptied_starts_again_once_its_mailbox_is_active():
+    settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding"), mailbox(SAM, "Sam Jackson")))
+    ctx, t, inst, sheets = setup(settings)
+    go_live(ctx)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=2)  # paused by the kill rule: no Active mailbox was left
+    inst.standard(C_SAM, [SAM], 30, status=2)  # paused for some other reason: reported, not started
+    ctx.store.insert("hitl_items", [{"item_id": "k-1", "kind": "kill_rule", "status": "handled", "created_at": NOW
+                                     - timedelta(days=1), "payload": {"action": "pause_mailbox", "mailboxes": [HANNAH],
+                                                                      "campaigns_paused": [C_HANNAH]}}])
+    out = reg.mailbox_health(ctx)
+    assert out["campaign_start"]["started"] == [C_HANNAH] and inst.by_name(C_HANNAH)["status"] == 1
+    assert out["campaign_start"]["paused"] == ["Sam Jackson"] and inst.by_name(C_SAM)["status"] == 2
+    assert ctx.store.get("hitl_items", item_id="k-1")["payload"]["campaign_restarted"] == NOW.isoformat()
+    [post] = posts(t)
+    assert ("US Outbound – Sam Jackson is paused, though Sam Jackson has an Active mailbox: run "
+            "`us-outbound start --live` to start it.") in post["text"]
+    # Paused again later (by hand, say): that kill rule's pause has been used, so it stays paused.
+    inst.by_name(C_HANNAH)["status"] = 2
+    assert reg.mailbox_health(ctx)["campaign_start"]["paused"] == ["Hannah Spalding", "Sam Jackson"]
+
+
+def test_a_campaign_with_drift_left_is_not_started():
+    """`start` refuses a campaign whose settings drifted; mailbox_health does not start one either."""
+    settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding"),))
+    ctx, t, inst, sheets = setup(settings)
+    go_live(ctx)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=0, link_tracking=True)
+    out = reg.mailbox_health(ctx)
+    assert out["campaign_start"]["started"] == [] and out["campaign_start"]["ready"] == ["Hannah Spalding"]
+    assert inst.by_name(C_HANNAH)["status"] == 0
+    [post] = posts(t)
+    assert "Campaign drift, US Outbound – Hannah Spalding: link_tracking" in post["text"]
+
+
+def test_a_held_mailbox_keeps_its_campaign_paused():
+    settings = dataclasses.replace(SETTINGS, mailboxes=(mailbox(HANNAH, "Hannah Spalding"),))
+    ctx, t, inst, sheets = setup(settings)
+    go_live(ctx)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=2)
+    ctx.store.insert("hitl_items", [{"item_id": "k-1", "kind": "kill_rule", "status": "open", "created_at": NOW,
+                                     "payload": {"action": "pause_mailbox", "mailboxes": [HANNAH],
+                                                 "campaigns_paused": [C_HANNAH]}}])
+    out = reg.mailbox_health(ctx)
+    assert out["campaign_start"]["started"] == [] and inst.by_name(C_HANNAH)["status"] == 2
+
+
+def test_a_dry_run_after_go_live_says_what_it_would_start():
+    ctx, t, inst, sheets = setup(HANNAH_WARMING, live=False)
+    go_live(ctx)
+    inst.standard(C_HARRY, [HARRY], 30, status=0)  # a draft after go-live: nothing else would start it
+    out = reg.mailbox_health(ctx)
+    assert sorted(out["campaign_start"]["would_start"]) == [C_HANNAH, C_HARRY] and instantly_writes(t) == []
+    [post] = posts(t)
+    assert "Would start US Outbound – Harry Dryden" in post["text"] and "Would create" in post["text"]
+
+
+def test_the_daily_limit_and_sending_list_follow_the_sheet_and_other_drift_is_reported():
+    ctx, t, inst, sheets = setup()
+    inst.standard(C_HARRY, [HARRY], 30, status=1)  # the sheet has two Active addresses, 60 a day
+    inst.standard(C_HANNAH, [HANNAH], 30, status=1, open_tracking=True)
+    inst.standard(C_SAM, [SAM], 30, status=1)
+    out = reg.mailbox_health(ctx)
+    assert sorted(inst.by_name(C_HARRY)["email_list"]) == [HARRY, HARRY2] and inst.by_name(C_HARRY)["daily_limit"] == 60
+    assert out["campaigns"]["fixed_fields"] == {C_HARRY: ["daily_limit", "email_list"]}
+    assert inst.by_name(C_HANNAH)["open_tracking"] is True  # reported, not changed
+    [post] = posts(t)
+    assert ("Updated US Outbound – Harry Dryden: daily limit 30 → 60 (the ramp); sending list → harry@meetspill.org, "
+            "harry@tryspill.org (the Active mailboxes)") in post["text"]
+    assert "Campaign drift, US Outbound – Hannah Spalding: open_tracking. Fix with" in post["text"]
+    assert "Campaign drift, US Outbound – Harry Dryden" not in post["text"]
+    assert reg.ensure_campaigns(ctx)["drift"] == {C_HANNAH: {"open_tracking": [False, True]}}
+
+
+def test_a_quiet_day_posts_nothing():
+    ctx, t, inst, sheets = setup()
+    go_live(ctx)
+    inst.standard(C_HARRY, [HARRY, HARRY2], 60, status=1)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=1)
+    inst.standard(C_SAM, [SAM], 30, status=1)
+    out = reg.mailbox_health(ctx)
+    assert out["posted"] is False and out["post_reasons"] == [] and posts(t) == []
+    assert out["campaigns"]["ok"] and out["instantly_daily_limits"]  # still in the summary, so in the heartbeat
 
 
 def test_sheet_id_is_the_test_sheet():
@@ -459,3 +615,37 @@ def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():
                                                       "at_limit": True}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert "Instantly says US Outbound – Harry Dryden is held back: the campaign reached its daily limit" in post["text"]
+
+
+def test_every_step_ends_with_instantly_s_unsubscribe_link():
+    # Harry, 1 Oct 2026: the opt-out is Instantly's own link, in the step template after the lead's
+    # rendered body (Instantly fills merge tags in the template, not inside a custom variable).
+    html, text = reg.campaign_steps(), reg.campaign_steps(text_only=True)
+    assert [s["subject"] for s in html] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
+    for i, (h, t) in enumerate(zip(html, text), start=1):
+        assert h["body"].startswith(f"<div>{{{{s{i}_body}}}}</div><p><a href=\"{UNSUBSCRIBE_TAG}\">")
+        assert t["body"] == f"{{{{s{i}_body}}}}\n\nTo stop hearing from us, unsubscribe here: {UNSUBSCRIBE_TAG}"
+    assert CAMPAIGN_SETTINGS["insert_unsubscribe_header"] is True  # and the mail client's one-click button
+
+
+def test_drift_reads_a_campaign_as_instantly_returns_it():
+    """The first live create (2 Oct 2026): Instantly's GET leaves out settings at their default and never returns
+    is_evergreen, and it had dropped the bare {{sN_body}} from each step. The first is no drift; the second is."""
+    steps = reg.campaign_steps()
+    returned = {
+        "name": C_HANNAH, "status": 0, "daily_limit": 10, "email_list": [HANNAH],
+        "open_tracking": False, "stop_for_company": True, "stop_on_reply": True, "insert_unsubscribe_header": True,
+        "campaign_schedule": instantly_schedule(SETTINGS.general.send_window),
+        "sequences": [{"steps": [{"type": "email", "delay": d, "delay_unit": "days",
+                                  "variants": [{"subject": s["subject"], "body": s["body"]}]}
+                                 for s, d in zip(steps, step_delays())]}],
+    }
+    caps = {HANNAH: 10}
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps) == {}
+    dropped = UNSUBSCRIBE_HTML
+    for st in returned["sequences"][0]["steps"]:
+        st["variants"][0]["body"] = dropped
+    drift = reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)
+    assert set(drift) == {"steps.1", "steps.2", "steps.3", "steps.4"}
+    returned["link_tracking"] = True  # a tracking setting turned on in Instantly is still drift
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["link_tracking"] == [False, True]

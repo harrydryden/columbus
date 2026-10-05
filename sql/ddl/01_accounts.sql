@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.accounts (
   PRIMARY KEY (account_id)
 );
 CREATE INDEX IF NOT EXISTS accounts_domain_idx ON us_outbound.accounts (domain);
+CREATE INDEX IF NOT EXISTS accounts_status_idx ON us_outbound.accounts (status);
 COMMENT ON TABLE us_outbound.accounts IS 'One row per company (root domain) (SPEC 6). The company is the unit: one score, one tier and one contact in v1 (SPEC 2). Universe rows not refreshed in 12 months are deleted by the retention job.';
 COMMENT ON COLUMN us_outbound.accounts.account_id IS 'uuid. Also HubSpot us_outbound_account_id (SPEC 11).';
 COMMENT ON COLUMN us_outbound.accounts.domain IS 'Root domain, lower case, without www (SPEC 13). One account per root domain.';

@@ -27,15 +27,15 @@ C_SAM = "US Outbound – Sam Jackson"
 C_EU = "EU Outbound – Anna"
 
 MAILBOXES = tuple(
-    Mailbox(address, address.split("@")[1], owner, "Active", 30, instantly_account_id=address)
-    for address, owner in (
-        (HANNAH, "Hannah Spalding"),
-        (SAM, "Sam Jackson"),
-        (HARRY, "Harry Dryden"),
-        ("harry@tryspill.org", "Harry Dryden"),
+    Mailbox(address, address.split("@")[1], owner, "Active", 30, instantly_account_id=address, slack_id=slack)
+    for address, owner, slack in (
+        (HANNAH, "Hannah Spalding", "U_HANNAH"),  # D11: Hannah approves replies to her own mailbox
+        (SAM, "Sam Jackson", ""),
+        (HARRY, "Harry Dryden", "U_HARRY"),
+        ("harry@tryspill.org", "Harry Dryden", "U_HARRY"),
     )
 )
-SETTINGS = Settings(general=General(), mailboxes=MAILBOXES)
+SETTINGS = Settings(general=General(approver_slack_ids=("U_HARRY",)), mailboxes=MAILBOXES)
 
 CAMPAIGNS = [
     {"id": "c-hannah", "name": C_HANNAH, "status": 2},
@@ -157,7 +157,8 @@ def test_create_campaign_payload_and_left_paused():
         assert body[key] == value, key
     assert body["open_tracking"] is False and body["link_tracking"] is False
     assert body["stop_on_reply"] and body["stop_for_company"] and not body["stop_on_auto_reply"]
-    assert body["text_only"] and body["insert_unsubscribe_header"] and not body["allow_risky_contacts"]
+    assert body["text_only"] is False  # html by default: the copy's links are embedded (email_format)
+    assert body["insert_unsubscribe_header"] and not body["allow_risky_contacts"]
     assert body["is_evergreen"] is True
     [sched] = body["campaign_schedule"]["schedules"]
     assert sched["timezone"] == "America/Detroit"
@@ -203,7 +204,7 @@ def test_update_campaign():
         inst.update_campaign(C_HANNAH, {"link_tracking": True})
     with pytest.raises(GuardViolation):
         inst.update_campaign(C_HANNAH, {"daily_limit": 60}, accounts=[HANNAH, OUTSIDER])
-    for bad in ({"name": C_HARRY}, {"email_list": [HANNAH]}, {"text_only": False}):
+    for bad in ({"name": C_HARRY}, {"email_list": [HANNAH]}, {"text_only": "no"}, {"stop_on_reply": False}):
         with pytest.raises(ValueError):
             inst.update_campaign(C_HANNAH, bad)
     with pytest.raises(ValueError):
@@ -214,20 +215,21 @@ def test_update_campaign():
 def test_dry_run_makes_no_instantly_writes():
     inst, t, guard = make(live=False)
     t.route("GET", "/leads/l1", body={"id": "l1", "campaign": "c-hannah"})
-    t.route("GET", "/emails/e1", body={"id": "e1", "eaccount": HANNAH, "subject": "Re: hello"})
+    t.route("GET", "/emails/e1", body={"id": "e1", "eaccount": HANNAH, "subject": "Re: hello", "campaign_id": "c-hannah"})
     assert inst.create_campaign(C_SAM, accounts=[SAM], daily_limit=30, steps=STEPS)["dry_run"] is True
     inst.update_campaign(C_HANNAH, {"daily_limit": 60}, accounts=[HANNAH])
     inst.pause_campaign(C_HANNAH)
     inst.activate_campaign(C_HANNAH)
     assert inst.add_leads(C_HANNAH, [{"email": "jane@acme.example"}])["dry_run"] is True
     inst.delete_lead(C_HANNAH, "l1")
-    assert inst.reply(HANNAH, "e1", "Re: hello", "Thanks")["dry_run"] is True
+    assert inst.reply(HANNAH, "e1", "Re: hello", "Thanks", approved_by="U_HARRY")["dry_run"] is True
+    assert inst.stop_lead(C_HANNAH, "jane@acme.example")["dry_run"] is True
     assert inst.forward(HANNAH, "e1", "harry@spill.chat", "Waiting 24h")["dry_run"] is True
     inst.blocklist_add(["jane@acme.example"])
     inst.enable_warmup([HANNAH])
     assert t.writes() == []
     writes = guard.writes("instantly")
-    assert len(writes) == 10 and not any(w.sent for w in writes)
+    assert len(writes) == 11 and not any(w.sent for w in writes)
 
 
 def test_list_emails_outside_registry_refused_before_any_request():
@@ -356,9 +358,9 @@ def test_delete_lead_checks_its_campaign():
 
 def test_reply_from_the_mailbox_that_received_it():
     inst, t, guard = make(live=True)
-    t.route("GET", "/emails/e1", body={"id": "e1", "eaccount": HANNAH})
-    t.route("GET", "/emails/e2", body={"id": "e2", "eaccount": SAM})
-    inst.reply("Hannah@meetspill.org", "e1", "Re: hello", "Hi Jane,\nGreat to hear <3")
+    t.route("GET", "/emails/e1", body={"id": "e1", "eaccount": HANNAH, "campaign_id": "c-hannah"})
+    t.route("GET", "/emails/e2", body={"id": "e2", "eaccount": SAM, "campaign_id": "c-hannah"})
+    inst.reply("Hannah@meetspill.org", "e1", "Re: hello", "Hi Jane,\nGreat to hear <3", approved_by="U_HARRY")
     [post] = t.writes()
     assert post.url == f"{BASE}/emails/reply"
     assert post.json == {
@@ -367,13 +369,72 @@ def test_reply_from_the_mailbox_that_received_it():
         "subject": "Re: hello",
         "body": {"text": "Hi Jane,\nGreat to hear <3", "html": "Hi Jane,<br/>Great to hear &lt;3"},
     }
-    assert guard.writes("instantly")[0].detail["accounts"] == redact([HANNAH])
+    [rec] = guard.writes("instantly")
+    assert rec.detail["accounts"] == redact([HANNAH])
+    assert (rec.detail["campaign"], rec.detail["approved_by"]) == (C_HANNAH, "U_HARRY")
     with pytest.raises(GuardViolation):
-        inst.reply(HANNAH, "e2", "Re: hello", "Hi")  # e2 was received by Sam
+        inst.reply(HANNAH, "e2", "Re: hello", "Hi", approved_by="U_HARRY")  # e2 was received by Sam
     n = len(t.requests)
     with pytest.raises(GuardViolation):
-        inst.reply(OUTSIDER, "e1", "Re: hello", "Hi")
+        inst.reply(OUTSIDER, "e1", "Re: hello", "Hi", approved_by="U_HARRY")
     assert len(t.requests) == n and len(t.writes()) == 1
+
+
+def test_reply_only_in_a_us_outbound_thread():
+    inst, t, guard = make(live=True)
+    t.route("GET", "/emails/e3", body={"id": "e3", "eaccount": HANNAH, "campaign_id": "c-eu"})
+    t.route("GET", "/emails/e4", body={"id": "e4", "eaccount": HANNAH})  # no campaign at all
+    for email_id in ("e3", "e4"):
+        with pytest.raises(GuardViolation, match="US Outbound"):
+            inst.reply(HANNAH, email_id, "Re: hello", "Hi", approved_by="U_HARRY")
+    assert t.writes() == []
+    refused = [c for c in guard.calls if c.action == "email.reply"]
+    assert refused and not any(c.sent for c in refused)
+
+
+def test_reply_needs_an_approver_d11():
+    """SPEC 1.3 as changed by D11: approver_slack_ids, or the owner for their own mailbox, or the CLI command."""
+    inst, t, guard = make(live=True)
+
+    def email(req):
+        email_id = req.url.rsplit("/", 1)[1]
+        return {"id": email_id, "eaccount": email_id.split("-")[0], "subject": "Hello Jane", "campaign_id": "c-hannah"}
+
+    t.route("GET", "/emails/", fn=email)
+    hannah_email, sam_email = f"{HANNAH}-1", f"{SAM}-1"
+    for mailbox, email_id, by in ((HANNAH, hannah_email, ""), (HANNAH, hannah_email, "U_SAM"),
+                                  (SAM, sam_email, "U_HANNAH"), (HANNAH, hannah_email, "cli")):
+        n = len(t.requests)
+        with pytest.raises(GuardViolation, match="approver"):
+            inst.reply(mailbox, email_id, None, "Hi", approved_by=by)
+        assert len(t.requests) == n  # refused before reading the email
+    inst.reply(HANNAH, hannah_email, None, "Hi Jane", approved_by="U_HANNAH")  # her own mailbox
+    inst.reply(SAM, sam_email, None, "Hi Jane", approved_by="U_HARRY")
+    guard.configure(job="replies_approve")
+    inst.reply(SAM, sam_email, None, "Hi Jane", approved_by="cli")
+    posts = [r for r in t.writes() if r.url.endswith("/emails/reply")]
+    assert [p.json["eaccount"] for p in posts] == [HANNAH, SAM, SAM]
+    assert {p.json["subject"] for p in posts} == {"Re: Hello Jane"}  # no subject given: "Re: " the original's
+
+
+def test_reply_subject_keeps_one_re():
+    from us_outbound.clients.instantly import reply_subject
+
+    assert reply_subject("Re: hello") == "Re: hello" and reply_subject("RE hello") == "RE hello"
+    assert reply_subject("hello") == "Re: hello" and reply_subject(None) == "Re:"
+
+
+def test_stop_lead_marks_meeting_booked_in_the_campaign():
+    inst, t, guard = make(live=True)
+    inst.stop_lead(C_HANNAH, "Jane@Acme.example")
+    [post] = t.writes()
+    assert post.url == f"{BASE}/leads/update-interest-status"
+    assert post.json == {"lead_email": "jane@acme.example", "campaign_id": "c-hannah", "interest_value": 2}
+    assert guard.writes("instantly")[0].action == "lead.stop"
+    n = len(t.requests)
+    with pytest.raises(GuardViolation):
+        inst.stop_lead(C_EU, "jane@acme.example")
+    assert len(t.requests) == n
 
 
 def test_forward_with_the_original_thread():

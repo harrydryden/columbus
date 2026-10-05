@@ -1,0 +1,161 @@
+{
+ "collection_id": "6a46988c39e5d3df8dddf039",
+ "site_id": "60b75255186ee4cfc87b1cc0",
+ "locale": "English (United States), cmsLocaleId 6a7b1a45465079bd9e1fe41a",
+ "items": [
+  {
+   "id": "6a54cbb21f8ec52f9387f64b",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-environmental-nonprofits",
+   "before": {
+    "hero-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. Spill is mental health support for environmental nonprofits, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for environmental nonprofits in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. The wider industry numbers tell the same story.",
+    "benefits-intro": "Confidential, external counseling that sits comfortably alongside pastoral care. Here's how Spill helps environmental nonprofits specifically.",
+    "benefit-1-title": "Alongside pastoral care",
+    "benefit-1-body": "Confidential, external counseling that complements rather than competes with spiritual support.",
+    "benefit-2-title": "A place for the people who hold everyone else",
+    "benefit-2-body": "Support for clergy, lay staff and volunteer-thin teams.",
+    "faq-4-a": "Therapy sessions with licensed clinicians, self-guided resources covering burnout, financial stress, and secondary trauma, plus training for managers holding heavy-caseload teams. The organization funds it; each person's use of it stays private.",
+    "faq-7-q": "Does it support faith-based and community organizations?",
+    "faq-7-a": "Yes. Confidential, external counseling sits comfortably alongside pastoral care: a place for the people who hold everyone else, including clergy and lay staff."
+   }
+  },
+  {
+   "id": "6a54cbb464ddb74f3bdd2cdf",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-international-aid-and-relief",
+   "before": {
+    "hero-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. Spill is mental health support for international aid and relief organizations, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for international aid and relief organizations in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. The wider industry numbers tell the same story.",
+    "benefits-intro": "Confidential, external counseling that sits comfortably alongside pastoral care. Here's how Spill helps international aid and relief organizations specifically.",
+    "benefit-1-title": "Alongside pastoral care",
+    "benefit-1-body": "Confidential, external counseling that complements rather than competes with spiritual support.",
+    "benefit-2-title": "A place for the people who hold everyone else",
+    "benefit-2-body": "Support for clergy, lay staff and volunteer-thin teams.",
+    "faq-4-a": "Therapy sessions with licensed clinicians, self-guided resources covering burnout, financial stress, and secondary trauma, plus training for managers holding heavy-caseload teams. The organization funds it; each person's use of it stays private.",
+    "faq-7-q": "Does it support faith-based and community organizations?",
+    "faq-7-a": "Yes. Confidential, external counseling sits comfortably alongside pastoral care: a place for the people who hold everyone else, including clergy and lay staff."
+   }
+  },
+  {
+   "id": "6a54cbd739214575341daefb",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-supported-living",
+   "before": {
+    "hero-intro": "Caregivers work alone in clients' homes with no colleague to decompress with, patchy schedules, and windshield time between visits. Isolation makes burnout invisible until an aide simply stops showing up. Spill is mental health support for supported living providers, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "hero-tick-2": "Grief-specific support, same-day",
+    "geo-answer-block": "Spill is an employee mental health benefit for supported living providers in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-h2": "Grief with no time to grieve",
+    "challenges-intro": "Caregivers work alone in clients' homes with no colleague to decompress with, patchy schedules, and windshield time between visits. Isolation makes burnout invisible until an aide simply stops showing up. The wider industry numbers tell the same story.",
+    "benefit-1-title": "A therapist between visits",
+    "feature-1-body": "Sessions with licensed therapists experienced in grief and loss, bookable by text from any phone with same-day availability that fits around shifts and home visits. Available to the whole team, including part-time and hourly staff.",
+    "faq-5-a": "Caregivers in senior care and hospice lose people they've cared for regularly, and unprocessed grief is a major driver of burnout and exits. Spill offers sessions with therapists experienced in grief and loss, available the same day when a death hits a team hard.",
+    "faq-7-q": "Does it work for home care agencies with distributed staff?",
+    "faq-7-a": "Yes. Phone-first booking reaches caregivers who never come to an office, between visits and around patchy schedules, with no portal logins and no office hours.",
+    "faq-9-q": "Does it fit hospice and palliative teams?",
+    "faq-9-a": "Yes. Sustained proximity to death and family grief is the job description in hospice; Spill provides structured, regular space to process loss, keeping experienced staff in a field that desperately needs them."
+   }
+  },
+  {
+   "id": "6a54cbb94398e2de78f073ac",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-animal-welfare",
+   "before": {
+    "hero-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. Spill is mental health support for animal welfare organizations, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for animal welfare organizations in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. The wider industry numbers tell the same story.",
+    "benefits-intro": "Confidential, external counseling that sits comfortably alongside pastoral care. Here's how Spill helps animal welfare organizations specifically.",
+    "benefit-1-title": "Alongside pastoral care",
+    "benefit-1-body": "Confidential, external counseling that complements rather than competes with spiritual support.",
+    "benefit-2-title": "A place for the people who hold everyone else",
+    "benefit-2-body": "Support for clergy, lay staff and volunteer-thin teams.",
+    "faq-4-a": "Therapy sessions with licensed clinicians, self-guided resources covering burnout, financial stress, and secondary trauma, plus training for managers holding heavy-caseload teams. The organization funds it; each person's use of it stays private.",
+    "faq-7-q": "Does it support faith-based and community organizations?",
+    "faq-7-a": "Yes. Confidential, external counseling sits comfortably alongside pastoral care: a place for the people who hold everyone else, including clergy and lay staff."
+   }
+  },
+  {
+   "id": "6a54cbba40d01b33ec135144",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-human-rights",
+   "before": {
+    "hero-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. Spill is mental health support for human rights organizations, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for human rights organizations in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. The wider industry numbers tell the same story.",
+    "benefits-intro": "Confidential, external counseling that sits comfortably alongside pastoral care. Here's how Spill helps human rights organizations specifically.",
+    "benefit-1-title": "Alongside pastoral care",
+    "benefit-1-body": "Confidential, external counseling that complements rather than competes with spiritual support.",
+    "benefit-2-title": "A place for the people who hold everyone else",
+    "benefit-2-body": "Support for clergy, lay staff and volunteer-thin teams.",
+    "faq-7-q": "Does it support faith-based and community organizations?",
+    "faq-7-a": "Yes. Confidential, external counseling sits comfortably alongside pastoral care: a place for the people who hold everyone else, including clergy and lay staff."
+   }
+  },
+  {
+   "id": "6a54cbb3e80abd0572b8a2b7",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-arts-and-culture",
+   "before": {
+    "hero-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. Spill is mental health support for arts and culture nonprofits, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for arts and culture nonprofits in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Clergy and lay staff are everyone else's crisis support, with congregational expectations, blurred work-life boundaries, and cultural pressure to appear spiritually resilient rather than humanly struggling. The wider industry numbers tell the same story.",
+    "benefits-intro": "Confidential, external counseling that sits comfortably alongside pastoral care. Here's how Spill helps arts and culture nonprofits specifically.",
+    "benefit-1-title": "Alongside pastoral care",
+    "benefit-1-body": "Confidential, external counseling that complements rather than competes with spiritual support.",
+    "benefit-2-title": "A place for the people who hold everyone else",
+    "benefit-2-body": "Support for clergy, lay staff and volunteer-thin teams.",
+    "faq-4-a": "Therapy sessions with licensed clinicians, self-guided resources covering burnout, financial stress, and secondary trauma, plus training for managers holding heavy-caseload teams. The organization funds it; each person's use of it stays private.",
+    "faq-7-q": "Does it support faith-based and community organizations?",
+    "faq-7-a": "Yes. Confidential, external counseling sits comfortably alongside pastoral care: a place for the people who hold everyone else, including clergy and lay staff."
+   }
+  },
+  {
+   "id": "6a54cbbcd7bf40956cf8a082",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-emergency-and-rescue",
+   "before": {
+    "hero-intro": "Frontline staff carry clients' housing, addiction, and family crises home with them: secondary trauma on social-work pay. Caseloads grow while funding cycles shrink. Spill is mental health support for emergency and rescue nonprofits, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for emergency and rescue nonprofits in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Frontline staff carry clients' housing, addiction, and family crises home with them: secondary trauma on social-work pay. Caseloads grow while funding cycles shrink. The wider industry numbers tell the same story.",
+    "benefits-intro": "Counseling that stops compassion fatigue from becoming attrition. Here's how Spill helps emergency and rescue nonprofits specifically.",
+    "benefit-1-title": "Stops compassion fatigue becoming attrition",
+    "benefit-1-body": "Protecting the client relationships that outcomes depend on.",
+    "faq-4-a": "Therapy sessions with licensed clinicians, self-guided resources covering burnout, financial stress, and secondary trauma, plus training for managers holding heavy-caseload teams. The organization funds it; each person's use of it stays private.",
+    "faq-7-q": "Does it support faith-based and community organizations?",
+    "faq-7-a": "Yes. Confidential, external counseling sits comfortably alongside pastoral care: a place for the people who hold everyone else, including clergy and lay staff."
+   }
+  },
+  {
+   "id": "6a54cc084398e2de78f0a74e",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-packaging",
+   "before": {
+    "hero-intro": "Line-rate pressure, EV-transition uncertainty hanging over plants and jobs, and injury-adjacent physical work with an aging workforce. In packaging and other high-speed line work, add tight margins, night shifts, and customer-driven deadline surges. Spill is mental health support for packaging manufacturers, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "geo-answer-block": "Spill is an employee mental health benefit for packaging manufacturers in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot.",
+    "challenges-intro": "Line-rate pressure, EV-transition uncertainty hanging over plants and jobs, and injury-adjacent physical work with an aging workforce. In packaging and other high-speed line work, add tight margins, night shifts, and customer-driven deadline surges. The wider industry numbers tell the same story.",
+    "benefits-intro": "A concrete answer to transition anxiety and burnout. Here's how Spill helps packaging manufacturers specifically.",
+    "benefit-1-title": "Answers transition anxiety",
+    "faq-7-q": "Does it work for field crews in energy and utilities?",
+    "faq-7-a": "Yes. Phone-based counseling reaches field crews wherever they are, plus post-incident sessions after storm response and the hard days. A duty-of-care fit for safety-first cultures.",
+    "faq-9-q": "Does it fit regulated plants like pharma and medical devices?",
+    "faq-9-a": "Yes. Support for sustained precision-under-pressure work, protecting both the people and the error rates that regulators and customers see."
+   }
+  },
+  {
+   "id": "6a54cc04f590e02a7d045178",
+   "cmsLocaleId": "6a7b1a45465079bd9e1fe41a",
+   "slug": "mental-health-support-for-automotive-and-vehicles",
+   "before": {
+    "hero-intro": "Line-rate pressure, EV-transition uncertainty hanging over plants and jobs, and injury-adjacent physical work with an aging workforce. In packaging and other high-speed line work, add tight margins, night shifts, and customer-driven deadline surges. Spill is mental health support for automotive manufacturers, delivered as on-demand counseling with licensed therapists: booked from any phone in one click, often for the same day, with no referral and no paperwork through the employer.",
+    "challenges-intro": "Line-rate pressure, EV-transition uncertainty hanging over plants and jobs, and injury-adjacent physical work with an aging workforce. In packaging and other high-speed line work, add tight margins, night shifts, and customer-driven deadline surges. The wider industry numbers tell the same story.",
+    "faq-7-q": "Does it work for field crews in energy and utilities?",
+    "faq-7-a": "Yes. Phone-based counseling reaches field crews wherever they are, plus post-incident sessions after storm response and the hard days. A duty-of-care fit for safety-first cultures.",
+    "faq-9-q": "Does it fit regulated plants like pharma and medical devices?",
+    "faq-9-a": "Yes. Support for sustained precision-under-pressure work, protecting both the people and the error rates that regulators and customers see.",
+    "geo-answer-block": "Spill is an employee mental health benefit for automotive manufacturers in the US, delivered as on-demand counseling with licensed therapists. Sessions are bookable same-day from 2am to 9:30pm ET, seven days a week, and the whole team is covered by one simple plan, priced per employee per month on a rolling 30-day contract, with packages starting at $195 a month. Companies use Spill instead of, or alongside, a traditional EAP. Companies use it instead of, or alongside, a traditional EAP. Spill is HIPAA compliant and rated 4.9/5 on Trustpilot."
+   }
+  }
+ ]
+}

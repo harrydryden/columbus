@@ -1,31 +1,67 @@
 """The us-outbound command line (SPEC 13 Operations): the same entrypoints as the jobs.
 
-SPEC 13 commands:
-  status                              settings, heartbeats, registry, campaigns
-  stop | start                        pause or resume every US Outbound campaign, and enrollment
-  mailbox add|pause|retire <address>  the registry commands of SPEC 9 (add takes --owner)
-  unenrol --month YYYY-MM             remove that month's leads from their campaigns
-  rescore                             the score job
-  dry-run <job>                       run a job in dry-run whatever the flags
+What Harry uses (`us-outbound --help` lists these, in this order):
+  status                              the two switches and what they mean, when the settings were
+                                      synced, what waits for him (send approvals, replies, kill-rule
+                                      holds), the jobs that failed or missed their heartbeat, mailboxes,
+                                      this week's number and the campaigns
+  golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
+  sync                                settings_sync now: the sheet's edits into force (jobs read the
+                                      synced copy; settings_sync runs at 02:00, and 11:30 on weekdays).
+                                      The same as `settings sync`
+  start | stop                        resume or pause every US Outbound campaign, and enrollment. start
+                                      --live syncs the sheet first, so live_sending just set counts.
+                                      stop --live is the brake: live_sending = no does not stop Instantly
+  approvals list | send | contact |   send approvals without Slack (enrol/approvals.py; Harry, 2 Oct 2026:
+    company [ID]                      while auto_send = no every email waits for approval), in the Slack
+                                      words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
+                                      person, company = 🚫 not this company. approve, reject --contact and
+                                      reject --company are the same; approved_by "cli"
+  replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
+    [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
+                                      send, HubSpot and close path as Slack. approve is the same as send
+  killrules show|clear <item>         the kill-rule holds in force, and lifting one (learn/kill_rules.py)
+  mailbox add|pause|retire <address>  the registry commands of SPEC 9 (add takes --owner); mailbox check
+  mailbox check [--fix]               is mailbox_health by hand, and --fix also runs campaigns ensure --fix
+  campaigns show | ensure [--fix]     each owner's campaign as Instantly holds it (read-only); or create
+                                      the missing ones (paused) and put drift right
+  copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
+                                      preview one, QA it (task model), draft one (writing model)
+  settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
+                                      notes) into the sheet; create the sheet
+  handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
   erase --email <address>             an erasure request (SPEC 6)
-  test start|read <test_id>           start the copy test, or read it (SPEC 12)
-Build support: run <job> [--live] (what the scheduler starts), scheduler (the always-on
-Railway worker, ops/scheduler.py), schedule (the job table and next runs), mailbox check
-(mailbox_health by hand), settings sync|bootstrap, db apply, hubspot setup|ids,
-campaigns ensure [--fix], suppression load. On Railway, run a command inside the worker
-with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
+  schedule                            the job table and next runs (UK time)
+  run <job> [--live]                  one job, what the scheduler starts
+Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
+(remove that month's leads), rescore (the score job), dry-run <job>, test start|read <test_id> (the
+copy test, SPEC 12), db apply, hubspot setup|ids, suppression load, lookalikes show [--top N] [--all]
+(the cells the lookalikes job last stored), pages show (the careers and benefits page reader's
+coverage), data show (what the sources have stored, in aggregate), and scheduler (the always-on
+Railway worker, ops/scheduler.py). On Railway, run a command inside the worker with
+`railway ssh -- us-outbound <command>` (docs/railway-setup.md).
 
 Dry-run is the default everywhere. Two kinds of live:
-  * jobs (run, rescore, settings sync, suppression load) and start: --live AND
-    live_sending = yes, as SPEC 0.3 says;
+  * jobs (run, rescore, sync, settings sync, suppression load) and start: --live AND
+    live_sending = yes in the synced settings, as SPEC 0.3 says (a dry-run sync still brings the
+    sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
-    test start, settings bootstrap, hubspot setup, campaigns ensure): --live alone, so the
-    phase-0 setup and the kill switch work while live_sending is still no.
+    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
+    handcheck show|approve, killrules clear, replies skip, approvals contact|company|reject): --live
+    alone, so the phase-0 setup and the kill switch work while live_sending is still no.
+    `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
+    like a job: --live AND live_sending = yes.
+    copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
+  A read-only action given --live (approvals list, replies list, killrules show, campaigns show,
+  copy check|preview, hubspot ids, test read) says that --live does nothing there.
+  A --live run that stays dry says when the settings in force were synced, and how to bring a
+  sheet edit in (`us-outbound sync`).
 Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
 
 Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError
-or JSON/Unicode decoding error, which are bugs rather than bad input); 2 refused (not built,
+or JSON/Unicode decoding error, which are bugs rather than bad input), or a golive check that
+FAILs; 2 refused (not built,
 bad input, unusable settings); 3 blocked by a guardrail (GuardViolation); 143 stopped by
 SIGTERM while a job ran (the scheduler's timeout, or a redeploy; the heartbeat says error).
 """
@@ -41,9 +77,11 @@ import signal
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
+from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from us_outbound.clients.db import new_id
@@ -65,25 +103,31 @@ from us_outbound.ops.heartbeat import (
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
     "settings_sync": "us_outbound.settings.sync:run",
-    "source_universe": "not built yet (phase 1)",
-    "apollo_signals": "not built yet (phase 1)",
+    "source_universe": "us_outbound.sources.apollo_universe:run",
+    "apollo_signals": "us_outbound.sources.apollo_jobs:run",
+    "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages without Clay
+    "apollo_enrich": "us_outbound.sources.apollo_enrich:run",  # Harry, 2 Oct 2026: funding and headcount from enrich
     "site_visits": "not built yet (phase 1)",
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
+    # Build addition: verified on Apollo data and HubSpot while clay_verification = skip (Harry, 1 Oct 2026).
+    "verify_accounts": "us_outbound.verify:run",
     "score": "us_outbound.scoring.score:rescore",
-    "pick_contacts": "not built yet (phase 2)",
+    "pick_contacts": "us_outbound.contacts.pick:run",
     "enrol": "us_outbound.enrol.enrol:run",
-    "poll_replies": "not built yet (phase 2)",
-    "poll_approvals": "not built yet (phase 2)",
-    "hubspot_readback": "not built yet (phase 2)",
-    "sync_outcomes": "not built yet (phase 2)",
+    "poll_replies": "us_outbound.replies.poll:run",
+    "poll_approvals": "us_outbound.replies.desk:poll_approvals",
+    "hubspot_readback": "us_outbound.crm.readback:hubspot_readback",
+    "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
-    "kill_rules": "not built yet (phase 3)",
-    "daily_post": "not built yet (phase 3)",
+    "kill_rules": "us_outbound.learn.kill_rules:run",
+    "daily_post": "us_outbound.learn.daily_post:run",
     "monday_readout": "not built yet (phase 3)",
     # Build additions (README "Deviations").
     "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
+    "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
+    "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 TEST_WINDOW_DAYS = REPLY_WINDOW_DAYS  # human replies within 28 days of step 1: a week after the last step
@@ -137,10 +181,37 @@ def _operator() -> str:
     return os.environ.get("USER") or os.environ.get("RAILWAY_SERVICE_NAME") or "unknown"
 
 
+def _synced(ctx: Context) -> str:
+    """When the sheet was last read into the settings in force (settings/sync.last_read), in UK time."""
+    from us_outbound.settings import sync
+
+    when = sync.last_read(ctx.store, ctx.settings)
+    return _fmt_time(when) if when else "never"
+
+
+def _live_sending_note(ctx: Context) -> str:
+    """Why a --live run stayed dry. Jobs read the synced copy of the sheet, so an edit counts only once synced."""
+    return (f"Running dry: live_sending is no in the settings in force (synced {_synced(ctx)}). "
+            "If you have just set it to yes on the sheet, run `us-outbound sync` and try again.")
+
+
+READS_ONLY = "(--live does nothing here: this command only reads)"
+
+
+def _only_reads(args: argparse.Namespace) -> None:
+    """A read-only action given --live says so, rather than leave Harry thinking it acted."""
+    if getattr(args, "live", False):
+        print(READS_ONLY)
+
+
 def _dry_note(ctx: Context, what: str) -> None:
-    if ctx.dry_run:
-        need = "--live" if ctx.live_flag is False else "live_sending = yes in the settings sheet"
-        print(f"Dry-run: {what} Nothing was sent. Needs {need}.")
+    if not ctx.dry_run:
+        return
+    if ctx.live_flag is False:
+        print(f"Dry-run: {what} Nothing was sent. Needs --live.")
+        return
+    print(f"Dry-run: {what} Nothing was sent.")
+    print(_live_sending_note(ctx))
 
 
 def _record_unusable(exc: bootstrap.SettingsUnusable, job: str) -> None:
@@ -165,10 +236,65 @@ def _job(name: str, live_flag: bool, factory: Factory) -> int:
         _record_unusable(exc, name)
         raise
     if live_flag and ctx.dry_run:
-        print("Running dry: --live was given but live_sending is not yes in the settings sheet.")
+        print(_live_sending_note(ctx))
     with _sigterm_ends_the_run():
         summary = run_job(ctx, fn)
     _print(summary)
+    return 0
+
+
+def _sync(live_flag: bool, factory: Factory) -> tuple[Context, dict]:
+    """settings_sync, as `us-outbound sync` and `settings sync` run it: the sheet's edits into force now.
+
+    A dry-run sync still brings the sheet in (the settings live in the database); only its Slack
+    message about sheet errors goes to the dev channel instead.
+    """
+    fn = resolve_job("settings_sync")
+    try:
+        ctx = factory("settings_sync", live_flag)
+    except bootstrap.SettingsUnusable as exc:
+        _record_unusable(exc, "settings_sync")
+        raise
+    with _sigterm_ends_the_run():
+        summary = run_job(ctx, fn)
+    return ctx, summary
+
+
+def _sync_line(summary: dict) -> str:
+    """One plain line on what a sync did."""
+    if summary.get("skipped"):
+        return f"Settings not synced: {summary.get('reason') or 'skipped'}."
+    changed = int(summary.get("rows_opened") or 0) + int(summary.get("rows_closed") or 0)
+    line = "Settings synced from the sheet just now: " + (
+        f"{changed} row{'s' if changed != 1 else ''} changed." if changed else "nothing had changed.")
+    if summary.get("unusable"):
+        line += (f" Unusable: {', '.join(summary['unusable'])}; fix the sheet (the errors are in Slack), "
+                 "then run `us-outbound sync` again.")
+    elif summary.get("rejected"):
+        line += (f" Kept the previous version of {', '.join(summary['rejected'])} (the errors are in Slack); "
+                 "fix the sheet, then run `us-outbound sync` again.")
+    return line
+
+
+def _in_force_line(ctx: Context) -> str:
+    """The two switches as the settings now in force have them (the store, after a sync)."""
+    from us_outbound.settings.sync import load_current
+
+    settings, errors = load_current(ctx.store)
+    if settings is None:
+        tabs = ", ".join(t for t, errs in errors.items() if errs) or "unknown"
+        return f"The settings are not usable ({tabs}): nothing runs until the sheet is fixed and synced."
+    g = settings.general
+    return (f"In force now: live_sending {'yes' if g.live_sending else 'no'}, "
+            f"auto_send {'yes' if g.auto_send else 'no'}.")
+
+
+def cmd_sync(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound sync` (and `settings sync`): bring the sheet's edits into force now, not at the next sync."""
+    ctx, summary = _sync(args.live, factory)
+    _print(summary)
+    print(_sync_line(summary))
+    print(_in_force_line(ctx))
     return 0
 
 
@@ -213,36 +339,70 @@ def _fmt_time(v: Any) -> str:
 
 
 def _status_heartbeats(store: Any, now: datetime) -> None:
+    """Only the jobs that need a look (the latest run failed, or the heartbeat is missed), then how many are ok."""
     runs = latest_runs(store)
-    built = set(built_jobs())
     scheduled = set(scheduled_jobs())
+    ok, never = 0, []
     print("Jobs:")
-    for job, target in JOBS.items():
+    for job in built_jobs():
         run = runs.get(job)
-        if job not in built:
-            print(f"  {job:<18} {target if not _is_target(target) else 'not built yet'}")
-            continue
         if not run:
-            print(f"  {job:<18} never run")
+            if job in scheduled:
+                never.append(job)
             continue
-        flag = ""
-        if job in scheduled:
-            over = overdue_minutes(job, run, now)
-            flag = "  MISSED" if over is not None and over > 0 else ""
+        over = overdue_minutes(job, run, now) if job in scheduled else None
+        missed = over is not None and over > 0
+        if run.get("status") != "error" and not missed:
+            ok += 1
+            continue
         mode = "dry-run" if run.get("dry_run") else "live"
-        print(f"  {job:<18} {run.get('status')} {_fmt_time(run.get('started_at'))} ({mode}){flag}")
+        print(f"  {job:<18} {run.get('status')} {_fmt_time(run.get('started_at'))} ({mode})"
+              f"{'  MISSED its heartbeat' if missed else ''}")
         if run.get("status") == "error" and run.get("error"):
             print(f"  {'':<18} error: {str(run['error'])[:160]}")
+    print(f"  {ok} job{'s' if ok != 1 else ''} ok")
+    if never:
+        print(f"  Not run yet: {', '.join(never)}")
+
+
+def _switches(g: Any) -> str:
+    """The two General switches and what they mean together."""
+    if not g.live_sending:
+        meaning = "dry: nothing new reaches Instantly or a prospect; `us-outbound stop --live` pauses what already sends"
+    elif g.auto_send:
+        meaning = "live: emails go straight to Instantly once the weekly hand-check is approved"
+    else:
+        meaning = "live: every email waits for an approver's ✅ in Slack"
+    return (f"Switches: live_sending {'yes' if g.live_sending else 'no'} · auto_send {'yes' if g.auto_send else 'no'} "
+            f"({meaning})")
+
+
+def _waiting_for_you(ctx: Context) -> str:
+    """"Waiting for you: 2 send approvals, 1 reply, 0 kill-rule holds" (learn/daily_post.for_you)."""
+    from us_outbound.learn import daily_post
+
+    w = daily_post.for_you(ctx)
+
+    def n(count: int, one: str, many: str) -> str:
+        return f"{count} {one if count == 1 else many}"
+
+    line = (f"Waiting for you: {n(len(w.send_approvals), 'send approval', 'send approvals')}, "
+            f"{n(len(w.replies), 'reply', 'replies')}, {n(len(w.holds), 'kill-rule hold', 'kill-rule holds')}")
+    return line + (", and this week's hand-check" if w.hand_checks else "")
 
 
 def _status_limits(ctx: Context) -> None:
     """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
     from us_outbound import limits
-    from us_outbound.enrol import enrol
+    from us_outbound.enrol import approvals, enrol
 
     try:
-        ready, _ = enrol.candidates(ctx, frozenset())
-        lim = limits.today(ctx, ctx.now_et().date(), ready_accounts=len(ready))
+        # As enrol.run: pulled accounts and waiting cards stay out, and the cards hold their senders' slots.
+        day = ctx.now_et().date()
+        _, pulled = enrol.hand_check(ctx, day)
+        held = approvals.waiting(ctx)
+        ready, _ = enrol.candidates(ctx, pulled, held.accounts)
+        lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
@@ -267,8 +427,13 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
             _status_heartbeats(exc.store, datetime.now(UTC))
         return 2
     s, g = ctx.settings, ctx.settings.general
-    print(f"live_sending: {'yes' if g.live_sending else 'no'} (jobs are live only with --live and live_sending = yes)")
-    print(f"Settings synced: {_fmt_time(s.synced_at)}")
+    print(_switches(g))
+    print(f"Settings synced: {_synced(ctx)} (sheet edits apply at 02:00 and 11:30 UK on weekdays, or now with "
+          "`us-outbound sync`)")
+    try:
+        print(_waiting_for_you(ctx))
+    except Exception as exc:  # status still prints what it can
+        print(f"Waiting for you: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     paused = enrolment_paused(ctx.store)
     if paused:
         print(f"Enrollment: STOPPED since {_fmt_time(paused.get('started_at'))} (run `us-outbound start --live` to resume)")
@@ -278,8 +443,19 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     print(f"Running test: {running.test_id} (read on {running.read_date})" if running else "Running test: none")
     _status_heartbeats(ctx.store, ctx.now)
     print("Mailboxes:")
+    try:
+        from us_outbound.learn.holds import held_mailboxes
+        from us_outbound.registry.ramp import ramps
+
+        on_ramp, held = ramps(ctx.store, s, ctx.now_et().date()), held_mailboxes(ctx.store)
+    except Exception as exc:  # status still prints what it can
+        print(f"  (ramp unavailable: {type(exc).__name__}: {redact(str(exc))[:120]})")
+        on_ramp, held = {}, {}
     for m in s.mailboxes:
-        print(f"  {m.address:<28} {m.owner_name:<18} {m.status:<8} cap {m.daily_cap}")
+        r = on_ramp.get(m.address.lower())
+        note = f"; today {r.cap}: {r.describe()}" if r is not None and r.ramping else ""
+        note += f"; held by a kill rule: {held[m.address.lower()]}" if m.address.lower() in held else ""
+        print(f"  {m.address:<28} {m.owner_name:<18} {m.status:<8} cap {m.daily_cap}{note}")
     _status_limits(ctx)
     try:
         campaigns = ctx.clients.instantly.list_campaigns()
@@ -292,11 +468,6 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
             print("  none yet")
     except Exception as exc:  # status still prints what it can
         print(f"Campaigns: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
-    try:
-        open_items = ctx.store.select("hitl_items", {"status": "open"})
-        print(f"Open human-in-the-loop items: {len(open_items)}")
-    except Exception as exc:
-        print(f"Open human-in-the-loop items: unavailable ({type(exc).__name__})")
     return 0
 
 
@@ -349,18 +520,41 @@ def _start(ctx: Context) -> dict:
 
 
 def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
-    ctx = factory(OPERATOR_START, args.live)
+    """Resume. With --live it syncs the settings first, so live_sending just set on the sheet counts."""
+    synced = False
+    if args.live:
+        try:
+            _, summary = _sync(True, factory)
+        except (GuardViolation, Terminated):
+            raise
+        except Exception as exc:  # start still goes ahead, on the settings already in force
+            print(f"Could not sync the settings first ({type(exc).__name__}: {redact(str(exc))[:200]}); "
+                  "going on with the settings in force.")
+        else:
+            synced = not summary.get("skipped")
+            print(_sync_line(summary))
+    ctx = factory(OPERATOR_START, args.live)  # reads the settings in force again, after the sync
     _print(run_job(ctx, _start))
-    _dry_note(ctx, "campaigns were not activated and enrollment stays stopped.")
+    if ctx.dry_run and args.live and synced:
+        print("Dry-run: campaigns were not activated and enrollment stays stopped. Nothing was sent.")
+        print(f"Running dry: live_sending is no in the settings in force (synced {_synced(ctx)}, just now). "
+              "Set it to yes on the General tab, then run `us-outbound start --live` again.")
+    else:
+        _dry_note(ctx, "campaigns were not activated and enrollment stays stopped.")
     return 0
 
 
 def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.registry import mailboxes as reg
 
+    if args.fix and args.action != "check":
+        raise Refused("--fix goes with check")
     if args.action == "check":
         ctx = factory("mailbox_health", args.live, operator=True)
         _print(run_job(ctx, reg.mailbox_health))
+        if args.fix:  # and what `campaigns ensure --fix` does, so one command sets the senders up
+            fix_ctx = factory("campaigns_ensure", args.live, operator=True)
+            _print(run_job(fix_ctx, lambda c: reg.ensure_campaigns(c, fix=True)))
         _dry_note(ctx, "the sheet and Instantly were not changed.")
         return 0
     if not args.address:
@@ -379,7 +573,7 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
     _print(run_job(ctx, fn))
     _dry_note(ctx, "the sheet and Instantly were not changed.")
     if ctx.live:
-        print("The sheet is changed; the next settings_sync brings it into the database (or run `us-outbound settings sync`).")
+        print("The sheet is changed; the next settings sync brings it into force (or run `us-outbound sync` now).")
     return 0
 
 
@@ -443,13 +637,11 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     if read_date <= start:
         raise Refused(f"read_date {read_date} must be after the start date {start}")
     missing = [
-        f"{v} step {step}"
-        for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
-        for step in (1, 2, 3, 4)
-        if ctx.settings.approved_copy(v, step) is None
+        v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
+        if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
     ]
     if missing:
-        raise Refused("copy is not approved in the synced settings for: " + ", ".join(missing))
+        raise Refused("copy is not approved, with a current QA pass, in the synced settings for: " + ", ".join(missing))
     sheets = ctx.clients.sheets
     writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
     for column, value in [*writes, ("status", "running")]:
@@ -532,6 +724,7 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
         _print(run_job(ctx, lambda c: _test_start(c, args.test_id)))
         _dry_note(ctx, "the Tests tab was not changed.")
         return 0
+    _only_reads(args)
     ctx = factory("test_read", False)
     result = read_test(ctx, args.test_id)
     _print(result)
@@ -547,7 +740,30 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
 
 def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     if args.action == "sync":
-        return _job("settings_sync", args.live, factory)
+        return cmd_sync(args, factory)
+    if args.action == "load":
+        from us_outbound.settings.load import DEFAULT_TABS, load
+
+        ctx = factory("settings_load", args.live, operator=True)
+        tabs = args.tab or list(DEFAULT_TABS)
+        sets = {}
+        for item in args.set or ():
+            key, sep, value = item.partition("=")
+            if not sep or not key.strip():
+                raise Refused(f"--set takes key=value, not {item!r}")
+            sets[key.strip()] = value.strip()
+        try:
+            summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
+                                                   take=args.take or ()))
+        except ValueError as exc:
+            raise Refused(str(exc)) from exc
+        for t in summary["tabs"]:
+            _print(t)
+        _dry_note(ctx, "the sheet is unchanged.")
+        if ctx.live:
+            print("Now run `us-outbound sync` to bring the tabs into force (or wait for the next sync: 02:00, and "
+                  "11:30 UK on weekdays).")
+        return 0
     from us_outbound.settings.sync import bootstrap as create_sheet
 
     ctx = factory("settings_bootstrap", args.live, operator=True)
@@ -555,10 +771,298 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
     _print(summary)
     if summary.get("sheet_id"):
         print("Set US_OUTBOUND_SETTINGS_SHEET_ID to this id in the Railway service's variables, share the sheet "
-              "with the Sheets service account as Editor, then run `us-outbound settings sync`.")
+              "with the Sheets service account as Editor, then run `us-outbound sync`.")
     else:
         _dry_note(ctx, "no sheet was created.")
     return 0
+
+
+def _sheet_settings(ctx: Context):
+    """The settings as the sheet has them now, validated (not yet synced), so copy can be checked as it is edited."""
+    from us_outbound.settings.sync import read_sheet
+    from us_outbound.settings.validate import validate_all
+
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not sheet_id:
+        return ctx.settings
+    settings, errors = validate_all(read_sheet(ctx, sheet_id))
+    if settings is None:
+        lines = [str(e) for errs in errors.values() for e in errs]
+        raise Refused("the sheet does not validate: " + "; ".join(lines[:10]))
+    return settings
+
+
+def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, role: str | None) -> list:
+    rows = [c for c in settings.copy if c.status != "retired"]
+    if versions:
+        want = {v.casefold() for v in versions}
+        rows = [c for c in rows if c.copy_version.casefold() in want]
+    if industry:
+        rows = [c for c in rows if c.industry.casefold() == industry.casefold()]
+    if role is not None and industry:
+        rows = [c for c in rows if c.role.casefold() == role.casefold()] or rows
+    return rows
+
+
+def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: Any) -> Any:
+    """copy preview: the sample prospect (with --opener, a real Signals-tab line filled with sample facts, or
+    with --generic the General tab's generic line), or with --account a stored account, its contact and the
+    opener enrol would give it (no model call)."""
+    from us_outbound.enrol import enrol, openers
+    from us_outbound.settings.model import ROLE_LINE_COLUMNS
+
+    if not args.account:
+        rows = _pick_rows(settings, args.version, args.industry, args.role or "")
+        if not rows:
+            raise Refused("no Copy row matches; give --version or --industry")
+        role = args.role or rows[0].role or next(iter(ROLE_LINE_COLUMNS))
+        text, note = ("", "")
+        if args.opener:
+            if args.generic and (args.signal or args.leader):
+                raise Refused("--generic shows the line for an account with no signal line; leave out --signal and --leader")
+            try:
+                text, note = copy_desk.sample_opener(settings, role, args.signal or "", leader=args.leader,
+                                                     generic=args.generic)
+            except ValueError as exc:
+                raise Refused(str(exc)) from None
+            note = f"{text or 'none'} ({note})"
+        return copy_desk.preview(rows[0], settings, role=role, sender=args.sender or "", opener=text, opener_note=note)
+    domain = args.account.strip().lower()
+    account = next(iter(ctx.store.select("accounts", {"domain": domain})), None)
+    if account is None:
+        raise Refused(f"no account with the domain {domain!r}")
+    domains, hashes = enrol.suppressed(ctx)
+    contacts = ctx.store.select("contacts", {"account_id": account["account_id"]})
+    contact, why = enrol.pick_contact(contacts, domains, hashes, account, settings)
+    contact = contact or (sorted(contacts, key=lambda c: str(c.get("created_at") or ""))[:1] or [{}])[0]
+    role = args.role or str(contact.get("role") or "") or next(iter(ROLE_LINE_COLUMNS))
+    rows = _pick_rows(settings, args.version, args.industry, role) if args.version or args.industry else []
+    row = rows[0] if rows else enrol.pick_copy(
+        account, role, settings, {c.copy_version: c for c in settings.copy if c.status != "retired"})[0]
+    if row is None:
+        raise Refused("no Copy row for this account; give --version")
+    events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
+    op = openers.for_account(ctx, account, {**contact, "role": role}, events, check=copy_desk._opener_check(settings),
+                             spend=False, settings=settings)
+    arm = op.arm + (f", would be: {op.would_be}" if op.would_be else "")
+    note = f"{op.text or 'none'} ({arm}; {op.source or 'no line'})" + (f"; passed over: {'; '.join(op.notes)}" if op.notes else "")
+    if why:
+        note += f". The contact is not sendable yet: {why}"
+    return copy_desk.preview(row, settings, role=role, sender=args.sender or "", opener=op.text, opener_note=note,
+                             account=account, contact=contact)
+
+
+def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
+    """The copy desk (enrol/copy_desk.py): check, preview, QA and draft the Copy tab."""
+    from us_outbound.enrol import copy_desk
+
+    live = args.live if args.action in ("qa", "draft") else False
+    if not live:
+        _only_reads(args)
+    ctx = factory(f"copy_{args.action}", live, operator=True)
+    settings = _sheet_settings(ctx) if not args.synced else ctx.settings
+    if args.action in ("qa", "draft"):
+        from us_outbound.clients.claude import PRICES
+
+        key = "claude_task_model" if args.action == "qa" else "claude_model"
+        model = getattr(settings.general, key)
+        if model not in PRICES:
+            raise Refused(f"{key} is {model!r}, which the monthly cap cannot price; use one of {', '.join(PRICES)}")
+    if args.action == "check":
+        checks = copy_desk.check_all(settings, args.version)
+        bad = [c for c in checks if not c.ok]
+        for c in bad:
+            print(f"{c.copy_version}:")
+            for p in c.problems:
+                print(f"  - {p}")
+        by_status: Counter[str] = Counter(c.status for c in settings.copy)
+        qa_ok = sum(1 for c in settings.copy if c.qa_current)
+        sendable = sum(1 for c in settings.copy if c.status == "approved" and c.qa_current)
+        print(f"{len(checks)} rows checked, {len(bad)} with problems. By status: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(by_status.items()))
+              + f". QA passed in the current wording: {qa_ok}. Sendable (approved and QA passed): {sendable}.")
+        lines = copy_desk.check_openers(settings)  # the Signals tab's opener lines and General's (enrol/openers.py)
+        for p in lines.problems:
+            print(f"Opener: {p}")
+        print(f"Opener lines (Signals tab, and General's generic and focus lines): {len(lines.problems)} problems.")
+        return 1 if bad or not lines.ok else 0
+    if args.action == "preview":
+        p = _preview(ctx, settings, args, copy_desk)
+        print(p.text())
+        if args.html:
+            Path(args.html).write_text(p.html(), encoding="utf-8")
+            print(f"Wrote {args.html}")
+        return 0
+    if args.action == "qa":
+        rows = _pick_rows(settings, args.version, args.industry, None)
+        if not args.all:
+            rows = [c for c in rows if not c.qa_current]
+        if not ctx.live:
+            est = sum(ctx.clients.claude_task.estimate_usd(copy_desk.QA_SYSTEM, copy_desk.qa_prompt(r, settings),
+                                                           copy_desk.QA_SCHEMA, copy_desk.QA_MAX_TOKENS) for r in rows)
+            for row in rows:
+                c = copy_desk.check_row(row, settings)
+                print(f"{row.copy_version}: " + ("sheet check clean; would go to QA" if c.ok
+                                                 else "sheet check fails, so QA fails it without a model call"))
+            print(f"Dry-run: {len(rows)} rows, no model called. With --live they go to "
+                  f"{settings.general.claude_task_model}, at most ${est:.2f} of the monthly cap.")
+            return 0
+        results = []
+        for row in rows:
+            try:
+                results.append(copy_desk.qa_row(ctx, row, settings))
+            except Exception as exc:  # the cap, or the API: report and stop, keeping what is done
+                print(f"{row.copy_version}: QA stopped: {exc}")
+                break
+        for r in results:
+            print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"))
+        updates = {r.copy_version: {"qa": r.cell, "qa_notes": r.notes} for r in results}
+        sheet_id = ctx.guard.bounds.settings_sheet_id
+        if updates and sheet_id:
+            ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version", updates)
+        print(f"{sum(r.verdict == 'pass' for r in results)} of {len(results)} passed.")
+        _dry_note(ctx, "the verdicts were not written to the sheet.")
+        return 0
+    # draft
+    if not args.industry:
+        raise Refused("give --industry (an Industries label, an industry group, or General)")
+    if not ctx.live:
+        prompt = copy_desk.draft_prompt(args.industry, args.role or "", settings)
+        est = ctx.clients.claude.estimate_usd(copy_desk.DRAFT_SYSTEM, prompt, copy_desk.DRAFT_SCHEMA,
+                                              copy_desk.DRAFT_MAX_TOKENS)
+        print(f"Dry-run: no model called. With --live, {settings.general.claude_model} drafts {args.industry} "
+              f"for at most ${est:.2f} of the monthly cap, and the draft is added to the Copy tab.")
+        return 0
+    row = copy_desk.draft_row(ctx, args.industry, args.role or "", settings=settings)
+    check = copy_desk.check_row(copy_desk.row_from_dict(row), settings)
+    print(copy_desk.preview(copy_desk.row_from_dict(row), settings, role=args.role or "").text())
+    print("Sheet check: " + ("clean" if check.ok else "; ".join(check.problems)))
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if sheet_id:
+        ctx.clients.sheets.append_rows(sheet_id, "Copy", [row])
+    _dry_note(ctx, "the draft was not added to the sheet.")
+    if ctx.live:
+        print(f"Added {row['copy_version']} as a draft. Next: `us-outbound copy qa --version {row['copy_version']} --live`.")
+    return 0
+
+
+def _print_reply_items(items: list[dict]) -> None:
+    if not items:
+        print("No reply items are waiting.")
+        return
+    print(f"{len(items)} reply item{'s' if len(items) != 1 else ''} waiting, oldest first:")
+    for i in items:
+        who = ", ".join(x for x in (i["person"] or "someone", i["title"]) if x)
+        role = f" ({i['role']})" if i["role"] else ""
+        waited = f"waited {i['waited_hours']} h" if i["waited_hours"] is not None else "waiting"
+        print(f"\n{i['id']}  {i['reply_class'] or '?'}  {i['account'] or 'unknown account'} · {who}{role}")
+        print(f"  to {i['mailbox'] or '?'} ({i['owner'] or 'owner unknown'}) · {waited} · {i['status']}"
+              f"{' · escalated' if i['escalated'] else ''} · in Slack: {'yes' if i['in_slack'] else 'no'}")
+        if i["note"]:
+            print(f"  NOTE: {i['note']}")
+        if i["excerpt"]:
+            print(f"  They wrote: \"{i['excerpt']}\"")
+        if i["referral"]:
+            print("  Referred us to: " + ", ".join(v for v in i["referral"].values() if v))
+        print(f"  Draft{' (edited)' if i['draft_edited'] else ''}:" if i["draft"] else "  No draft: approve with --edit \"text\".")
+        for line in (i["draft"] or "").splitlines():
+            print(f"    {line}")
+        if i["hubspot"]:
+            print(f"  HubSpot: {i['hubspot']}")
+        print(f"  Send it: us-outbound replies approve {i['id']} --live   (--edit \"text\" sends that instead)")
+        print(f"  Skip it: us-outbound replies skip {i['id']} --live")
+
+
+def cmd_replies(args: argparse.Namespace, factory: Factory) -> int:
+    """The reply desk at the command line (replies/desk.py): Slack may not be set up for the pilot."""
+    from us_outbound.clients.guard import REPLIES_CLI_JOB
+    from us_outbound.replies import desk
+
+    if args.action == "list":
+        _only_reads(args)
+        _print_reply_items(desk.list_items(factory("replies_list", False, operator=True)))
+        return 0
+    if not args.item_id:
+        raise Refused(f"replies {args.action} needs an item id from `us-outbound replies list`")
+    if args.action == "skip":
+        if args.edit is not None:
+            raise Refused("--text (--edit) goes with send, not skip")
+        ctx = factory("replies_skip", args.live, operator=True)
+        summary = run_job(ctx, lambda c: desk.skip(c, args.item_id))
+        _print(summary)
+        _dry_note(ctx, "the item was not marked handled.")
+        return 0 if summary.get("skipped") or ctx.dry_run else 2
+    # send (approve) sends to a prospect: --live and live_sending = yes (SPEC 0.3), not --live alone.
+    ctx = factory(REPLIES_CLI_JOB, args.live)
+    summary = run_job(ctx, lambda c: desk.approve(c, args.item_id, text=args.edit))
+    _print(summary)
+    _dry_note(ctx, "the reply was not sent, HubSpot was not written and the item is unchanged.")
+    return 0 if summary.get("sent") or ctx.dry_run else 2
+
+
+def _print_send_approvals(items: list[dict]) -> None:
+    if not items:
+        print("No send approvals are waiting.")
+        return
+    print(f"{len(items)} send approval{'s' if len(items) != 1 else ''} waiting, oldest first:")
+    for i in items:
+        who = ", ".join(x for x in (i["person"], i["title"]) if x)
+        expired = " (expired: poll_approvals closes it)" if i["expired"] else ""
+        print(f"\n{i['id']}  {i['company']} ({i['domain']}) · {who}")
+        print(f"  from {i['owner']} ({i['mailbox'] or 'mailbox unknown'}) · {i['state']}{' · edited' if i['edited'] else ''}"
+              f" · posted {i['send_day']}, until the end of {i['expires_on']}{expired} · in Slack: "
+              f"{'yes' if i['in_slack'] else 'no'}")
+        print(f"  Subject: {i['subject']}")
+        print(f"  Send it: us-outbound approvals send {i['id']} --live")
+        print(f"  Not this person: us-outbound approvals contact {i['id']} --live"
+              f"   Not this company: us-outbound approvals company {i['id']} --live")
+
+
+def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
+    """Send approvals at the command line (enrol/approvals.py): the same close path as Slack, approved_by "cli"."""
+    from us_outbound.enrol import approvals
+
+    if args.action == "list":
+        _only_reads(args)
+        _print_send_approvals(approvals.list_items(factory("approvals_list", False, operator=True)))
+        return 0
+    if not args.item_id:
+        raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
+    action = args.action
+    if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
+        if args.contact or args.company:
+            raise Refused(f"`approvals {action}` takes no --contact or --company")
+        args.contact, args.company, action = action == "contact", action == "company", "reject"
+    if action == "reject":
+        if args.contact == args.company:
+            raise Refused("approvals reject needs one of --contact (not this person) or --company (not this company)")
+        # Rejecting reaches no prospect (a contact suppressed, or an account excluded): --live alone.
+        ctx = factory("approvals_reject", args.live, operator=True)
+        try:
+            summary = run_job(ctx, lambda c: approvals.reject_item(c, args.item_id,
+                                                                   "contact" if args.contact else "company"))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "the item, the contact and the account are unchanged.")
+        return 0 if summary.get("done") or ctx.dry_run else 2
+    if args.contact or args.company:
+        raise Refused("--contact and --company go with reject, not send")
+    # send (approve) is ✅.
+    # approve adds the lead to Instantly, so it is live like a job: --live and live_sending = yes (SPEC 0.3).
+    ctx = factory(approvals.APPROVALS_CLI_JOB, args.live)
+    try:
+        summary = run_job(ctx, lambda c: approvals.approve(c, args.item_id))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the lead was not added to Instantly and the item is unchanged.")
+    if summary.get("held"):
+        print("Held, not sent yet: " + "; ".join(summary["held"]) + ". The approval stands: poll_approvals adds the "
+              "lead within 5 minutes of that clearing, unless the card expires first.")
+    elif summary.get("outcome") == approvals.BLOCKED:
+        print("Not sent, and closed: " + "; ".join(summary.get("why") or ()) + ".")
+    return 0 if summary.get("added") or ctx.dry_run else 2
 
 
 def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
@@ -584,6 +1088,7 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
         _print(run_job(ctx, hw.ensure_properties))
         _dry_note(ctx, "no HubSpot property or group was created.")
     else:
+        _only_reads(args)
         ctx = factory("hubspot_ids", False)
     ids = hw.lookup_pipeline(ctx)
     print("Paste these into the General tab (they are never written automatically):")
@@ -593,8 +1098,18 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
-    from us_outbound.registry.mailboxes import ensure_campaigns
+    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns
 
+    if args.action == "show":
+        # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
+        # Instantly kept of the settings and step templates it was given (PHASE0-CONFIRM items).
+        _only_reads(args)
+        ctx = factory("campaigns_show", False)
+        for owner in ctx.settings.owners():
+            name = campaign_name(owner)
+            body = ctx.clients.instantly.get_campaign(name)
+            print(json.dumps({"campaign": name, "instantly": body}, sort_keys=True, default=str))
+        return 0
     ctx = factory("campaigns_ensure", args.live, operator=True)
     _print(run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix)))
     _dry_note(ctx, "no campaign was created or changed.")
@@ -605,6 +1120,130 @@ def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
     return _job("suppression_load", args.live, factory)
 
 
+def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
+    """The lookalike cells from the last lookalikes run (the database only), for the Focus tab and sourcing."""
+    from us_outbound.sources import lookalikes
+
+    if args.top < 1:
+        raise Refused("--top must be 1 or more")
+    ctx = factory("lookalikes_show", False)
+    for line in lookalikes.report(ctx.settings, ctx.store, top=args.top, all_bands=args.all):
+        print(line)
+    return 0
+
+
+def cmd_pages(args: argparse.Namespace, factory: Factory) -> int:
+    """What the careers and benefits page reader has found (the database only): coverage and the decision rule."""
+    from us_outbound.sources import pages
+
+    ctx = factory("pages_show", False)
+    for line in pages.report(ctx):
+        print(line)
+    return 0
+
+
+def cmd_data(args: argparse.Namespace, factory: Factory) -> int:
+    """What the sources have stored, in aggregate (the database only; ops/data_health.py)."""
+    from us_outbound.ops import data_health
+
+    ctx = factory("data_show", False)
+    for line in data_health.report(ctx):
+        print(line)
+    return 0
+
+
+# -- go-live (Harry, 1 Oct 2026) ------------------------------------------------------------------
+
+
+def cmd_golive(args: argparse.Namespace, factory: Factory) -> int:
+    """The read-only go/no-go check (ops/golive.py). Exits 1 if any check FAILs."""
+    from us_outbound.ops import golive
+
+    try:
+        ctx = factory("golive", False)
+    except bootstrap.SettingsUnusable as exc:
+        checks = golive.unusable(exc.errors)
+        print(golive.render(checks, datetime.now(UTC)))
+        return golive.exit_code(checks)
+    checks = golive.run_checks(ctx)
+    g = ctx.settings.general
+    print(golive.render(checks, ctx.now, channel=g.alert_channel, auto_send=g.auto_send))
+    return golive.exit_code(checks)
+
+
+def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
+    """This week's hand-check without Slack (enrol/hand_check.py): show it, or approve it with pulls."""
+    from us_outbound.enrol import hand_check
+
+    if args.action == "show":
+        ctx = factory("handcheck_show", args.live, operator=True)
+        holder: dict[str, Any] = {}
+
+        def show(c: Context) -> dict:
+            item, payload = hand_check.show(c)
+            holder["payload"] = payload
+            return {"dry_run": c.dry_run, "iso_week": payload.get("iso_week"), "item_id": (item or {}).get("item_id"),
+                    "status": (item or {}).get("status") or "not recorded", "accounts": len(payload.get("accounts") or ()),
+                    "doubtful": len(payload.get("doubtful") or ())}
+
+        summary = run_job(ctx, show)
+        payload = holder.get("payload") or {}
+        if not hand_check.has_work(payload):
+            why = (f"{hand_check.AUTO_SEND_OFF}, and no account is held for doubtful facts"
+                   if not ctx.settings.general.auto_send else "no queued or verified account in an active industry group")
+            print(f"Hand-check {summary['iso_week']}: nothing to check ({why}).")
+            return 0
+        print(hand_check.text(payload, detailed=True))
+        if summary["status"] == "not recorded":
+            print("Not recorded yet: `us-outbound handcheck approve --live` records this sample and approves it.")
+        else:
+            print(f"Item {summary['item_id']}: {summary['status']}.")
+        return 0
+    if args.pull and args.action != "approve":
+        raise Refused("--pull goes with approve")
+    ctx = factory("handcheck_approve", args.live, operator=True)
+    try:
+        summary = run_job(ctx, lambda c: hand_check.approve(c, args.pull or [], _operator()))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the hand-check was not marked approved.")
+    if ctx.live:
+        print(f"Approved {summary['iso_week']}; enrollment can go ahead"
+              + (f", leaving out {len(summary['pulled_account_ids'])} pulled accounts." if summary["pulled_account_ids"] else "."))
+    return 0
+
+
+def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
+    """The kill-rule holds in force (learn/kill_rules.py), and lifting one once Harry has checked it."""
+    from us_outbound.learn import kill_rules
+
+    if args.action == "show":
+        _only_reads(args)
+        ctx = factory("killrules_show", False)
+        rows = kill_rules.show(ctx)
+        if not rows:
+            print("No kill-rule hold is in force.")
+        for r in rows:
+            until = f" until {r['until']}" if r.get("until") else ""
+            print(f"{r['item_id']}  {r['rule']}: {r['action']} {r['target']}{until} ({_fmt_time(r.get('created_at'))}"
+                  f"{', dry-run' if r.get('dry_run') else ''})")
+            print(f"    {r['reason']}")
+        return 0
+    if not args.item:
+        raise Refused("killrules clear needs the item id (`us-outbound killrules show` lists them)")
+    ctx = factory("killrules_clear", args.live, operator=True)
+    try:
+        summary = run_job(ctx, lambda c: kill_rules.clear(c, args.item, _operator()))
+    except LookupError as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the hold is still in force.")
+    if summary.get("next"):
+        print(summary["next"])
+    return 0
+
+
 
 def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
     """The job table with each enabled job's next run (UK time)."""
@@ -613,7 +1252,8 @@ def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
     for line in scheduler.describe():
         print(line)
     print(f"At most {scheduler.max_parallel_from_env()} jobs run at once ({scheduler.MAX_PARALLEL_VAR}). "
-          "A --live job is still dry until live_sending = yes in the settings sheet.")
+          "A --live job is still dry until live_sending = yes in the synced settings (sheet edits apply at the "
+          "next settings_sync, or now with `us-outbound sync`).")
     return 0
 
 
@@ -629,73 +1269,143 @@ def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
 # -- parser and entrypoint ----------------------------------------------------------------
 
 
+HELP = ("Spill's US Outbound engine. Dry-run by default. `--live` makes a command act. Anything that reaches a "
+        "prospect (start, approvals send, replies send, every scheduled job) also needs live_sending = yes in the "
+        "synced settings.")
+# Build and duplicate commands (4 Oct 2026): each still works as before, but `--help` lists only what Harry uses.
+HIDDEN = frozenset({"unenrol", "rescore", "dry-run", "test", "db", "hubspot", "suppression", "lookalikes", "pages",
+                    "data", "scheduler"})
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="us-outbound", description="Spill's US Outbound engine (SPEC.md). Dry-run by default.")
+    p = argparse.ArgumentParser(prog="us-outbound", description=HELP)
     sub = p.add_subparsers(dest="command", required=True)
     live = argparse.ArgumentParser(add_help=False)
-    live.add_argument("--live", action="store_true", help="write for real (jobs also need live_sending = yes)")
+    live.add_argument("--live", action="store_true",
+                      help="act for real (anything that reaches a prospect also needs live_sending = yes)")
 
-    sub.add_parser("status", help="settings, heartbeats, mailboxes and campaigns").set_defaults(fn=cmd_status)
-    sub.add_parser("stop", parents=[live], help="pause every US Outbound campaign and enrollment").set_defaults(fn=cmd_stop)
-    sub.add_parser("start", parents=[live], help="resume the campaigns and enrollment").set_defaults(fn=cmd_start)
+    def command(name: str, about: str, fn: Callable[..., int], *, takes_live: bool = False) -> argparse.ArgumentParser:
+        """A subcommand; a hidden one has no help=, so argparse leaves it out of the list (it still parses)."""
+        kw: dict[str, Any] = {"description": about, "parents": [live] if takes_live else []}
+        if name not in HIDDEN:
+            kw["help"] = about
+        parser = sub.add_parser(name, **kw)
+        parser.set_defaults(fn=fn)
+        return parser
 
-    mb = sub.add_parser("mailbox", parents=[live], help="mailbox registry commands (SPEC 9)")
+    # What Harry uses, in the order `--help` lists it.
+    command("status", "the switches, what waits for you, jobs, mailboxes and campaigns", cmd_status)
+    command("golive", "the read-only go/no-go check before the first sends", cmd_golive)
+    command("sync", "bring the sheet's edits into force now (the same as settings sync)", cmd_sync, takes_live=True)
+    command("start", "sync the sheet, then resume the campaigns and enrollment", cmd_start, takes_live=True)
+    command("stop", "pause every US Outbound campaign and enrollment (the brake)", cmd_stop, takes_live=True)
+
+    ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
+                 cmd_approvals, takes_live=True)
+    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject"],
+                    help="send = ✅ (approve); contact = 👤 not this person; company = 🚫 not this company "
+                         "(reject --contact / --company)")
+    ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters)")
+    ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
+    ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")
+
+    rp = command("replies", "the replies waiting, without Slack: list, send the draft (or your text), or skip",
+                 cmd_replies, takes_live=True)
+    rp.add_argument("action", choices=["list", "send", "skip", "approve"], help="send = ✅ (approve)")
+    rp.add_argument("item_id", nargs="?", help="send, skip: the id `replies list` shows (or its first characters)")
+    rp.add_argument("--text", "--edit", dest="edit",
+                    help="send: send this text instead of the draft (recorded as edited)")
+
+    kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
+    kr.add_argument("action", choices=["show", "clear"])
+    kr.add_argument("item", nargs="?", help="clear: the item id")
+
+    mb = command("mailbox", "add, pause, retire or check a mailbox", cmd_mailbox, takes_live=True)
     mb.add_argument("action", choices=["add", "pause", "retire", "check"])
     mb.add_argument("address", nargs="?")
     mb.add_argument("--owner", help="the real person named on the address (add)")
     mb.add_argument("--domain", help="the address's domain (add; defaults to it)")
     mb.add_argument("--daily-cap", type=int, default=30, help="sends per day (add; at most 30)")
-    mb.set_defaults(fn=cmd_mailbox)
+    mb.add_argument("--fix", action="store_true",
+                    help="check: also create missing campaigns and put drifted ones right (campaigns ensure --fix)")
 
-    un = sub.add_parser("unenrol", parents=[live], help="remove a month's leads from their campaigns")
-    un.add_argument("--month", required=True, help="YYYY-MM")
-    un.set_defaults(fn=cmd_unenrol)
+    cp = command("campaigns", "show each sender's campaign, or create them (paused) and put drift right",
+                 cmd_campaigns, takes_live=True)
+    cp.add_argument("action", choices=["ensure", "show"])
+    cp.add_argument("--fix", action="store_true", help="put drifted settings and sending lists right")
 
-    sub.add_parser("rescore", parents=[live], help="run the score job").set_defaults(fn=cmd_rescore)
+    co = command("copy", "check, preview, QA (task model) or draft (writing model) copy", cmd_copy, takes_live=True)
+    co.add_argument("action", choices=["check", "preview", "qa", "draft"])
+    co.add_argument("--version", action="append", help="a copy_version (repeatable)")
+    co.add_argument("--industry", help="an Industries label, an industry group, or General")
+    co.add_argument("--role", help="a Roles-tab role (preview: whose line to show; draft: a role-only row)")
+    co.add_argument("--sender", help="preview: the mailbox owner who sends it")
+    co.add_argument("--opener", action="store_true",
+                    help="preview: with a real Signals-tab opener line, filled with sample facts")
+    co.add_argument("--signal", help="preview --opener: the Signals row whose line to show (default: the first with one)")
+    co.add_argument("--leader", action="store_true",
+                    help="preview --opener: the line for a contact who is the new People leader (opener_self)")
+    co.add_argument("--generic", action="store_true",
+                    help="preview --opener: the generic line, for an account with no signal line (General "
+                         "opener_generic_*; Control accounts too)")
+    co.add_argument("--account", metavar="DOMAIN",
+                    help="preview: a stored account, its contact and the opener enrol would give it")
+    co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
+    co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
+    co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
 
-    dr = sub.add_parser("dry-run", help="run a job in dry-run")
-    dr.add_argument("job")
-    dr.set_defaults(fn=cmd_dry_run)
+    st = command("settings", "sync the sheet, load the build's tabs or notes into it, or create it", cmd_settings,
+                 takes_live=True)
+    st.add_argument("action", choices=["sync", "load", "bootstrap"])
+    st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
+    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy", "Roles", "Signals", "Focus"],
+                    help="load: the tab (default General, Industries, Copy and Roles)")
+    st.add_argument("--take", action="append", metavar="COLUMN",
+                    help="load: let the build's value win for a column Harry owns (Industries active, priority; "
+                         "any Signals column, like weight; General note)")
+    st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
+    st.add_argument("--replace-drafts", action="store_true",
+                    help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
 
-    rn = sub.add_parser("run", parents=[live], help="run a job (what the scheduler starts)")
-    rn.add_argument("job")
-    rn.set_defaults(fn=cmd_run)
+    hc = command("handcheck", "this week's hand-check: show it, or approve it", cmd_handcheck, takes_live=True)
+    hc.add_argument("action", choices=["show", "approve"])
+    hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
+                    help="approve: accounts to leave out (ids or domains)")
 
-    er = sub.add_parser("erase", parents=[live], help="handle an erasure request (SPEC 6)")
+    er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
     er.add_argument("--email", required=True)
-    er.set_defaults(fn=cmd_erase)
 
-    ts = sub.add_parser("test", parents=[live], help="start or read the copy test (SPEC 12)")
+    command("schedule", "the job table and each job's next run (UK time)", cmd_schedule)
+    rn = command("run", "run one job now (what the scheduler starts)", cmd_run, takes_live=True)
+    rn.add_argument("job")
+
+    # Hidden: build and duplicate commands, unchanged.
+    un = command("unenrol", "remove a month's leads from their campaigns", cmd_unenrol, takes_live=True)
+    un.add_argument("--month", required=True, help="YYYY-MM")
+    command("rescore", "run the score job", cmd_rescore, takes_live=True)
+    dr = command("dry-run", "run a job in dry-run", cmd_dry_run)
+    dr.add_argument("job")
+    ts = command("test", "start or read the copy test", cmd_test, takes_live=True)
     ts.add_argument("action", choices=["start", "read"])
     ts.add_argument("test_id")
-    ts.set_defaults(fn=cmd_test)
-
-    st = sub.add_parser("settings", parents=[live], help="sync the sheet, or create it with the defaults")
-    st.add_argument("action", choices=["sync", "bootstrap"])
-    st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
-    st.set_defaults(fn=cmd_settings)
-
-    db = sub.add_parser("db", parents=[live], help="create the tables and views in DATABASE_URL (prints them unless --live)")
+    db = command("db", "create the tables and views in DATABASE_URL (prints them unless --live)", cmd_db, takes_live=True)
     db.add_argument("action", choices=["apply"])
-    db.set_defaults(fn=cmd_db)
-
-    hs = sub.add_parser("hubspot", parents=[live], help="the six properties, and the ids for the General tab")
+    hs = command("hubspot", "the six properties, and the ids for the General tab", cmd_hubspot, takes_live=True)
     hs.add_argument("action", choices=["setup", "ids"])
-    hs.set_defaults(fn=cmd_hubspot)
-
-    cp = sub.add_parser("campaigns", parents=[live], help="create the sender campaigns (paused) and check drift")
-    cp.add_argument("action", choices=["ensure"])
-    cp.add_argument("--fix", action="store_true", help="put drifted settings and sending lists right")
-    cp.set_defaults(fn=cmd_campaigns)
-
-    sp = sub.add_parser("suppression", parents=[live], help="load HubSpot opt-outs and bounces")
+    sp = command("suppression", "load HubSpot opt-outs and bounces", cmd_suppression, takes_live=True)
     sp.add_argument("action", choices=["load"])
-    sp.set_defaults(fn=cmd_suppression)
-
-    sub.add_parser("schedule", help="the job table and each job's next run (UK time)").set_defaults(fn=cmd_schedule)
-    sc = sub.add_parser("scheduler", help="the always-on worker: start every job on its schedule")
+    lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers", cmd_lookalikes)
+    lk.add_argument("action", choices=["show"])
+    lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
+    lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
+    pg = command("pages", "what the careers and benefits page reader has found, and its coverage", cmd_pages)
+    pg.add_argument("action", choices=["show"])
+    dt = command("data", "what the sources have stored, in aggregate (read-only)", cmd_data)
+    dt.add_argument("action", choices=["show"])
+    sc = command("scheduler", "the always-on worker: start every job on its schedule", cmd_scheduler)
     sc.add_argument("--list", action="store_true", help="print the job table instead (same as `schedule`)")
-    sc.set_defaults(fn=cmd_scheduler)
+
+    sub.metavar = "{" + ",".join(name for name in sub.choices if name not in HIDDEN) + "}"
     return p
 
 

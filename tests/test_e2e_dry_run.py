@@ -10,8 +10,8 @@ Only the outside world is faked: the Sheets, Slack, HubSpot and Instantly APIs a
 FakeTransport, and the Postgres database is a MemoryStore. The Sheets API serves default_tabs() with the
 phase-0 fills (ids, postal address, privacy link, approved copy, Active mailboxes).
 
-The flow runs on Tue 29 Sep 2026: outside Q4, so the test account's raw score (100) is not
-cut by score_cap, and a 25-point weight change shows as 25 points.
+The flow runs on Tue 29 Sep 2026. The test account's raw score (80 with the design review's
+Appendix A weights, 1 Oct 2026) is not cut by score_cap, and a 25-point weight change shows as 25 points.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from tests.fakes import FakeTransport
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.context import Secrets
-from us_outbound.enrol import copy_rules
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.logs import hash_email
 from us_outbound.ops import bootstrap, cli
@@ -114,8 +113,9 @@ PHASE0_GENERAL = {
     "clay_monthly_credits": "2000",
     "clay_credits_per_account": "5",
     "approver_slack_ids": "U_HARRY",
-    "postal_address": "Spill Group Ltd, 1 Example Street, London EC1A 1AA, UK",
-    "privacy_url": "https://www.spill.chat/us/privacy",
+    # The flow checks the lead enrol hands Instantly, so it runs with auto_send = yes; the send approvals that
+    # auto_send = no makes instead (Harry, 2 Oct 2026) run through this wiring in tests/test_send_approvals.py.
+    "auto_send": "yes",
 }
 PROOF = "Creative agencies in the UK use Spill so their teams get same-day support (a UK example)."
 
@@ -130,8 +130,11 @@ def phase0_sheet() -> dict[str, list[dict[str, str]]]:
     for row in tabs["Industries"]:
         if row["industry"] == "Advertising agencies":
             row["proof_point"] = PROOF
+    from us_outbound.enrol.copy_desk import row_from_dict
+
     for row in tabs["Copy"]:
         row.update(status="approved", approved_by="Harry Dryden")
+        row["qa"] = f"pass {row_from_dict(row).content_hash()}"  # as `us-outbound copy qa` writes it
     for row in tabs["Mailboxes"]:
         row.update(status="Active", instantly_account_id="acct-" + row["address"].split("@")[0] + "-" + row["domain"],
                    added_on="2026-09-01")
@@ -249,16 +252,18 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     s = flow["sync1"]
     detail = s["heartbeat"]["detail"]
     assert detail["rejected"] == [] and detail["unusable"] == [] and detail["alerted"] is False
-    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides", "Focus", "Named accounts"}  # empty tabs
+    assert {t for t, v in detail["tabs"].items() if v["status"] == "synced"} == set(TABS) - {"Overrides", "Named accounts"}  # empty tabs
     assert [r for r in s["requests"] if r.method != "GET"] == []
     settings, errors = load_current(flow["world"].store)
     assert settings is not None and not any(errors.values())
-    assert settings.general.privacy_url == PHASE0_GENERAL["privacy_url"]
+    assert settings.general.approver_slack_ids == (PHASE0_GENERAL["approver_slack_ids"],)
 
 
 def test_the_account_scores_priority_with_the_eap_angle_and_evidence(flow):
     a = flow["scored"]
-    assert (a["score"], a["tier"], a["angle"]) == (100, "Priority", "Upgrade the EAP")
+    # Mental health support 15, EAP named 5, Progressive benefits 5 (mental health days), People leader
+    # in place 10, New People leader 30, Hiring and growth 15; the values page no longer scores.
+    assert (a["score"], a["tier"], a["angle"]) == (90, "Priority", "Upgrade the EAP")  # + Team of 50–99 (its band)
     assert "capped" not in a["tier_reason"] and "New People leader (+30)" in a["tier_reason"]
     matched = [e["value"]["signal"] for e in flow["world"].store.select("signal_events", {"source": "scoring"})]
     assert "EAP named" in matched and "New People leader" in matched
@@ -284,16 +289,20 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
     assert sorted(cv) == sorted(f"s{i}_{p}" for i in (1, 2, 3, 4) for p in ("subject", "body"))
     for step in (1, 2, 3, 4):
         subject, body = cv[f"s{step}_subject"], cv[f"s{step}_body"]
-        problems = copy_rules.check(
-            subject, body, copy_row=s.approved_copy("eap-v1", step), step=step,
-            sender_is_harry=owner == g.demo_host, privacy_url=g.privacy_url, demo_host=g.demo_host,
-            exempt=("Jane", "Acme Creative", "Chicago, IL", g.postal_address, owner),
-        )
-        assert problems == [], (step, problems)
-        assert g.postal_address in body and "Reply STOP" in body and g.privacy_url in body  # SPEC 10 footer
-    assert "Saw your benefits page mentions EAP." in cv["s1_body"]
-    assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on step 1
-    assert PROOF in cv["s2_body"] and g.booking_link in cv["s2_body"]
+        assert subject and "{{" not in subject + body, step
+        assert body.startswith("<p>Hi Jane,</p>"), step  # html, the default email_format
+        # Email 1 links the industry page; emails 2 to 4 have one call to action, the demo page.
+        assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
+        # The signature; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
+        assert f'Book a call <a href="{g.booking_link}">here</a>' in body and "{{unsubscribe}}" not in body
+    # Openers (Harry, 2 Oct 2026): Jane is a People leader, so EAP named's opener_people line, which names
+    # nothing the benefits page said (signals are context, never the line).
+    assert ("<p>Hi Jane,</p><p>Worries from home often show up at work first, and people open up more when they "
+            "feel listened to.</p>" in cv["s1_body"])
+    assert detail["openers"] == {"arms": {"opener": 1}, "sources": {"EAP named / opener_people": 1}}
+    assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
+    page = s.industry("Advertising agencies").landing_page_url
+    assert f'<a href="{page}">' in cv["s1_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
 
     refused = [c for c in ctx.guard.calls if c.system == "instantly" and c.write]
     assert refused and all(c.action == "lead.add" and c.target == campaign and not c.sent for c in refused)
@@ -330,7 +339,7 @@ def test_every_job_left_a_heartbeat(flow):
 
 def test_changing_a_weight_changes_the_score_after_the_next_sync(flow):
     detail = flow["sync2"]["heartbeat"]["detail"]
-    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": 16}
+    assert detail["tabs"]["Signals"] == {"status": "synced", "added": 0, "changed": 1, "removed": 0, "unchanged": len(default_tabs()["Signals"]) - 1}
     assert detail["rescored"] is True
     before, after = flow["scored"], flow["reweighted"]
     assert before["score"] - after["score"] == 25

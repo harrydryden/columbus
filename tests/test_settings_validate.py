@@ -122,9 +122,17 @@ def test_field_source_needs_a_condition(tabs):
 
 
 def test_text_source_takes_terms(tabs):
-    _row(tabs, "Signals", signal="EAP named")[1]["looks_for"] = "EAP; Lyra Health >= good"
+    _row(tabs, "Signals", signal="Mental health support listed")[1]["looks_for"] = "EAP; Lyra Health >= good"
     settings, _ = validate_all(tabs)
-    assert next(s for s in settings.signals if s.signal == "EAP named").terms == ("EAP", "Lyra Health >= good")
+    assert next(s for s in settings.signals if s.signal == "Mental health support listed").terms == (
+        "EAP", "Lyra Health >= good")
+
+
+def test_a_context_rule_names_only_its_own_terms(tabs):
+    """EAP named's context rule names Optum, Cigna, Carelon and Health Advocate: dropping one from looks_for fails."""
+    _row(tabs, "Signals", signal="EAP named")[1]["looks_for"] = "EAP; employee assistance; ComPsych"
+    e = _one(tabs, "Signals", "context_rule")
+    assert "'Optum', which is not in looks_for" in e.message
 
 
 def test_suggests_angle_not_on_angles(tabs):
@@ -160,9 +168,9 @@ def test_context_rule_on_a_condition(tabs):
 
 
 def test_max_weight_below_weight(tabs):
-    _row(tabs, "Signals", signal="Progressive benefits")[1]["max_weight"] = "5"
+    _row(tabs, "Signals", signal="Progressive benefits")[1]["max_weight"] = "4"
     e = _one(tabs, "Signals", "max_weight")
-    assert "at least the weight (10)" in e.message
+    assert "at least the weight (5)" in e.message
 
 
 def test_counts_for_days_at_least_one(tabs):
@@ -246,6 +254,8 @@ def test_general_types(tabs):
         ("apollo_floor", "-1", "negative"),
         ("escalation_email", "", "required"),
         ("claude_model", "Haiku", "Claude model id"),
+        ("claude_task_model", "Sonnet", "Claude model id"),
+        ("email_format", "rich", "html, text"),
     ]:
         t = copy.deepcopy(BASE)
         n, row = _row(t, "General", key=key)
@@ -281,22 +291,28 @@ def test_a_missing_blackout_dates_row_keeps_the_spec_blackouts(tabs):
     ]
 
 
-def test_live_sending_needs_address_privacy_and_approver(tabs):
+def test_live_sending_needs_an_approver(tabs):
     n, row = _row(tabs, "General", key="live_sending")
     row["value"] = "yes"
     e = _one(tabs, "General", "value")
-    assert e.row == n
-    assert "postal_address" in e.message and "privacy_url" in e.message and "approver_slack_ids" in e.message
-    _row(tabs, "General", key="postal_address")[1]["value"] = "Spill, 1 Example St, London"
-    _row(tabs, "General", key="privacy_url")[1]["value"] = "https://www.spill.chat/us/privacy"
+    assert e.row == n and "approver_slack_ids" in e.message
     _row(tabs, "General", key="approver_slack_ids")[1]["value"] = "U01HARRY"
     settings, _ = validate_all(tabs)
     assert settings.general.live_sending is True
 
 
 def test_blank_sending_values_are_allowed_in_dry_run(tabs):
-    settings, _ = validate_all(tabs)
-    assert settings.general.postal_address == "" and settings.general.privacy_url == ""
+    settings, errors = validate_all(tabs)
+    assert settings.general.approver_slack_ids == () and not errors["General"]
+
+
+def test_retired_general_keys_are_skipped_not_errors(tabs):
+    # Harry, 1 Oct 2026: no postal address and no privacy link. A sheet that still has the rows stays valid.
+    tabs["General"].append({"key": "postal_address", "value": "", "note": ""})
+    tabs["General"].append({"key": "privacy_url", "value": "https://www.spill.chat/us/privacy", "note": ""})
+    settings, errors = validate_all(tabs)
+    assert settings is not None and not errors["General"]
+    assert not hasattr(settings.general, "postal_address")
 
 
 def test_thresholds_in_order(tabs):
@@ -317,9 +333,6 @@ def test_dev_channel_must_differ_from_alert_channel(tabs):
 
 def test_angles_need_general(tabs):
     tabs["Angles"] = [r for r in tabs["Angles"] if r["angle"] != "General"]
-    for c in tabs["Copy"]:
-        if c["angle"] == "General":
-            c["angle"] = "Growing team"
     e = _one(tabs, "Angles", "angle")
     assert e.row == HEADER_ROW
     _row(tabs, "Angles", angle="Growing team")  # still there
@@ -344,45 +357,162 @@ def test_states(tabs):
 
 
 def test_roles(tabs):
-    _row(tabs, "Roles", role="Operations")[1]["fallback_order"] = "10-49"
-    e = _one(tabs, "Roles", "fallback_order")
-    assert "range:rank" in e.message
+    _row(tabs, "Roles", role="Operations")[1]["order_10_49"] = "first"
+    e = _one(tabs, "Roles", "order_10_49")
+    assert "whole number" in e.message
     t = copy.deepcopy(BASE)
-    _row(t, "Roles", role="Founder or executive")[1]["first_choice_for_size"] = "10-99"
-    e = _one(t, "Roles", "first_choice_for_size")
-    assert "overlaps People leader" in e.message
+    _row(t, "Roles", role="Operations")[1]["order_50_249"] = "0"
+    assert "rank from 1" in _one(t, "Roles", "order_50_249").message
     t = copy.deepcopy(BASE)
     _row(t, "Roles", role="Finance")[1]["titles"] = "CFO; COO"
     e = _one(t, "Roles", "titles")
     assert "also a title of Operations" in e.message
+    t = copy.deepcopy(BASE)  # however it is spelled
+    _row(t, "Roles", role="HR manager")[1]["titles"] += "; Head of Human Resources"
+    assert "also a title of People leader" in _one(t, "Roles", "titles").message
+
+
+def test_roles_copy_role_and_who_is_contacted(tabs):
+    _row(tabs, "Roles", role="HR manager")[1]["copy_role"] = "HR"
+    assert "must be one of People leader" in _one(tabs, "Roles", "copy_role").message
+    t = copy.deepcopy(BASE)
+    _row(t, "Roles", role="Finance")[1]["order_50_249"] = "6"  # contacted, but Finance has no copy line
+    assert "set copy_role" in _one(t, "Roles", "copy_role").message
+    t = copy.deepcopy(BASE)
+    for r in t["Roles"]:
+        r["order_10_49"] = ""
+    e = _one(t, "Roles", "order_10_49")
+    assert (e.row, e.message) == (HEADER_ROW, "no row is contacted at 10-49 staff")
+    t = copy.deepcopy(BASE)  # two rows may share a rank, and a copy role may have several rows
+    _row(t, "Roles", role="Operations")[1]["order_10_49"] = "1"
+    settings, errors = validate_all(t)
+    assert settings is not None, errors
+    assert next(r for r in settings.roles if r.role == "HR manager").writes_as == "People leader"
+
+
+def test_roles_industry_groups_are_on_the_industries_tab(tabs):
+    _row(tabs, "Roles", role="Partner at a professional firm")[1]["industry_groups"] = "legal teams; Law firms"
+    e = _one(tabs, "Roles", "industry_groups")
+    assert "'Law firms' is not an industry_group" in e.message
+    t = copy.deepcopy(BASE)
+    _row(t, "Roles", role="Partner at a professional firm")[1]["industry_groups"] = "legal teams"
+    settings, _ = validate_all(t)
+    assert next(r for r in settings.roles if r.role == "Partner at a professional firm").industry_groups == ("Legal Teams",)
+
+
+# The Roles tab as SPEC 5 laid it out, before 1 Oct 2026; a sheet made then still has it.
+LEGACY_ROLES = [
+    {"role": "People leader", "titles": "Head of People; HR Manager", "first_choice_for_size": "50-249",
+     "fallback_order": "", "note": ""},
+    {"role": "Founder or executive", "titles": "CEO; Founder", "first_choice_for_size": "10-49",
+     "fallback_order": "50-249:3", "note": ""},
+    {"role": "Operations", "titles": "COO; Office Manager", "first_choice_for_size": "",
+     "fallback_order": "10-49:2; 50-249:2", "note": ""},
+    {"role": "Finance", "titles": "CFO", "first_choice_for_size": "", "fallback_order": "", "note": "not contacted"},
+]
+
+
+def test_the_spec5_roles_layout_is_still_read(tabs):
+    tabs["Roles"] = copy.deepcopy(LEGACY_ROLES)
+    settings, errors = validate_all(tabs)
+    assert settings is not None, {t: [str(x) for x in e] for t, e in errors.items() if e}
+    order = {r.role: dict(r.order) for r in settings.roles}
+    assert order == {"People leader": {"50-249": 1}, "Founder or executive": {"10-49": 1, "50-249": 3},
+                     "Operations": {"10-49": 2, "50-249": 2}, "Finance": {}}
+    founder = settings.roles[1]
+    assert founder.first_choice_for_size == ("10-49",) and founder.fallback_order == {"50-249": 3}
+    tabs["Roles"][2]["fallback_order"] = "10-49"
+    assert "range:rank" in _one(tabs, "Roles", "fallback_order").message
+
+
+def test_settings_load_replaces_the_spec5_roles_layout_and_keeps_a_new_one():
+    from us_outbound.settings import load as loader
+
+    assert "Roles" in loader.LOADABLE
+    build = BASE["Roles"]
+    plan = loader.plan_tab("Roles", copy.deepcopy(LEGACY_ROLES), build)
+    assert plan.replaced_layout and plan.rows == build
+    edited = copy.deepcopy(build[:-1])  # Harry's edit, and no Finance row
+    edited[0]["titles"] += "; Chief Executive"
+    plan = loader.plan_tab("Roles", edited, build)
+    assert not plan.replaced_layout and plan.added == ["Finance"]
+    assert plan.rows[0]["titles"].endswith("; Chief Executive") and plan.rows[-1] == build[-1]
 
 
 def test_copy(tabs):
-    n, row = _row(tabs, "Copy", copy_version="eap-v1", step="2")
-    row["body"] += " {{frist_name}}"
-    e = _one(tabs, "Copy", "body")
-    assert (e.row, e.label) == (n, "eap-v1 step 2") and "did you mean first_name" in e.message
+    n, row = _row(tabs, "Copy", copy_version="cpa-firms-people-v1")
+    row["s2_body"] += " {{frist_name}}"
+    e = _one(tabs, "Copy", "s2_body")
+    assert (e.row, e.label) == (n, "cpa-firms-people-v1") and "did you mean first_name" in e.message
+    for col, value, fragment in [
+        ("s3_body", "Hi {company}", "double braces"),
+        ("s1_subject", "", "required"),
+        ("status", "live", "draft, approved, retired"),
+        ("qa", "looks good", "written by `us-outbound copy qa`"),
+        ("operations_line", "Hi {{first_name}}", "only {{company}}"),
+        ("industry", "Accountants", "not an industry or industry_group"),
+        ("role", "Intern", "not on the Roles tab"),
+    ]:
+        t = copy.deepcopy(BASE)
+        _row(t, "Copy", copy_version="cpa-firms-people-v1")[1][col] = value
+        e = _one(t, "Copy", col)
+        assert fragment in e.message, (col, e.message)
+    # A row written for no role that uses {{role_line}} needs every role's line.
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="2")[1]["body"] += " {company}"
-    assert "double braces" in _one(t, "Copy", "body").message
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1].update(
+        role="", s1_body="{{role_line}}", people_leader_line="x", founder_line="", operations_line="y")
+    assert "is required: the emails use {{role_line}}" in _one(t, "Copy", "founder_line").message
+    t = copy.deepcopy(BASE)  # one written for a role needs only that role's line
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1].update(
+        s1_body="{{role_line}}", people_leader_line="x", founder_line="")
+    assert not any(validate_all(t)[1].values())
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="2")[1]["step"] = "1"
-    assert "already on row" in _one(t, "Copy", "step").message
-    t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="2")[1]["status"] = "approved"
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1]["status"] = "approved"
     assert _one(t, "Copy", "approved_by").message.startswith("is required")
     t = copy.deepcopy(BASE)
-    for r in t["Copy"]:
-        if r["copy_version"] == "eap-v1":
-            r["angle"] = "Upgrade EAP"
-    errs = _errors(t, "Copy")
-    assert len(errs) == 4 and all(e.column == "angle" and "not on the Angles tab" in e.message for e in errs)
+    _row(t, "Copy", copy_version="legal-teams-people-v1")[1]["copy_version"] = "CPA-firms-people-v1"
+    assert "already on row" in _one(t, "Copy", "copy_version").message
+    t = copy.deepcopy(BASE)  # a group, General and a role-only row are all fine
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1].update(industry="professional services", role="operations")
+    settings, errors = validate_all(t)
+    assert not any(errors.values())
+    row = settings.copy_row("cpa-firms-people-v1")
+    assert (row.industry, row.role) == ("Professional Services", "Operations")  # as the other tabs spell them
+
+
+def test_the_old_copy_layout_reads_as_no_copy():
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="3")[1]["angle"] = "General"
-    assert "already the Upgrade the EAP angle" in _one(t, "Copy", "angle").message
+    t["Copy"] = [{"copy_version": "general-v1", "angle": "General", "step": "1", "subject": "Hi", "body": "Hi",
+                  "status": "approved", "approved_by": "Harry", "sources": ""}]
+    settings, errors = validate_all(t)
+    assert not any(errors.values()) and settings.copy == ()
+
+
+def test_qa_code_follows_the_wording():
     t = copy.deepcopy(BASE)
-    _row(t, "Copy", copy_version="eap-v1", step="4")[1]["step"] = "5"
-    _one(t, "Copy", "step")
+    s, _ = validate_all(t)
+    code = s.copy_row("cpa-firms-people-v1").content_hash()
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1]["qa"] = f"PASS {code.upper()}"
+    s, _ = validate_all(t)
+    assert s.copy_row("cpa-firms-people-v1").qa_current
+    _row(t, "Copy", copy_version="cpa-firms-people-v1")[1]["s4_subject"] = "A different subject"
+    s, _ = validate_all(t)
+    assert not s.copy_row("cpa-firms-people-v1").qa_current
+
+
+def test_new_industries_columns_are_optional():
+    t = copy.deepcopy(BASE)
+    for r in t["Industries"]:
+        for c in [c for c in r if c.startswith("page_")]:
+            del r[c]
+    settings, errors = validate_all(t)
+    assert not any(errors.values()) and settings.industry("CPA firms").page.intro == ""
+
+
+def test_industry_pages_are_on_spill_chat():
+    t = copy.deepcopy(BASE)
+    _row(t, "Industries", industry="CPA firms")[1]["landing_page_url"] = "https://example.com/cpa"
+    assert "must be a page on https://www.spill.chat" in _one(t, "Industries", "landing_page_url").message
 
 
 def test_mailboxes(tabs):
@@ -405,6 +535,30 @@ def test_mailboxes(tabs):
     assert "never sends cold email" in _one(t, "Mailboxes", "address").message
 
 
+def test_mailbox_slack_id_d11(tabs):
+    """Optional (D11, Harry, 1 Oct 2026): the owner's Slack id; one id per person, one person per id."""
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values()) and all(m.slack_id == "" for m in settings.mailboxes)
+    for row in tabs["Mailboxes"]:  # a sheet made before the column existed still validates
+        del row["slack_id"]
+    assert not any(validate_all(tabs)[1].values())
+    t = copy.deepcopy(BASE)
+    _row(t, "Mailboxes", address="harry@meetspill.org")[1]["slack_id"] = "U098X453UAG"
+    _row(t, "Mailboxes", address="harry@tryspill.org")[1]["slack_id"] = "U098X453UAG"  # Harry's two mailboxes
+    _row(t, "Mailboxes", address="hannah@meetspill.org")[1]["slack_id"] = "U0HANNAH1"
+    settings, errors = validate_all(t)
+    assert not any(errors.values())
+    assert {m.address: m.slack_id for m in settings.mailboxes}["harry@tryspill.org"] == "U098X453UAG"
+    for address, value, fragment in [
+        ("sam@meetspill.org", "hannah", "not a Slack user id"),
+        ("sam@meetspill.org", "U0HANNAH1", "already Hannah Spalding's"),
+        ("harry@tryspill.org", "U0OTHER22", "already has Slack id U098X453UAG"),
+    ]:
+        bad = copy.deepcopy(t)
+        _row(bad, "Mailboxes", address=address)[1]["slack_id"] = value
+        assert fragment in _one(bad, "Mailboxes", "slack_id").message, (address, value)
+
+
 def test_mailbox_address_is_lower_cased_and_domain_derived(tabs):
     _row(tabs, "Mailboxes", address="sam@meetspill.org")[1].update(address="Sam@MeetSpill.org", domain="")
     settings, _ = validate_all(tabs)
@@ -424,18 +578,20 @@ def test_overrides(tabs):
 
 
 def test_tests(tabs):
+    # A planned test may name copy not written yet; a running one needs both versions approved.
     n, row = _row(tabs, "Tests", test_id="t1-eap-opener")
-    row["version_b"] = "general-v9"
-    e = _one(tabs, "Tests", "version_b")
-    assert e.row == n and "not a copy_version" in e.message
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values())
     t = copy.deepcopy(BASE)
     _row(t, "Tests", test_id="t1-eap-opener")[1]["status"] = "running"
     errs = _errors(t, "Tests")
     assert {e.column for e in errs} == {"start_date", "read_date"}
-    _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14")
+    _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14",
+                                                         version_a="cpa-firms-people-v1", version_b="cpa-firms-people-v9")
     errs = _errors(t, "Tests")
-    assert {e.column for e in errs} == {"version_a", "version_b"}
-    assert all("approved for steps 1, 2, 3, 4" in e.message for e in errs)
+    assert [(e.column, "not a copy_version" in e.message) for e in errs] == [("version_a", False), ("version_b", True)]
+    assert "needs cpa-firms-people-v1 approved" in errs[0].message
+    _row(t, "Tests", test_id="t1-eap-opener")[1]["version_b"] = "legal-teams-people-v1"
     for c in t["Copy"]:
         c.update(status="approved", approved_by="Harry")
     settings, _ = validate_all(t)
@@ -477,7 +633,7 @@ def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
     assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
-    assert not errors and len(signals) == 17
+    assert not errors and len(signals) == len(BASE["Signals"]) == 23
     bad = [dict(BASE["States"][0], active="sometimes")]
     states, errors = validate_tab("States", bad)
     assert states == () and errors == [RowError("States", 2, "active", "must be yes or no, not 'sometimes'", "AL")]
@@ -487,7 +643,7 @@ def test_validate_tab_alone():
 
 def test_natural_keys():
     assert natural_key("General", {"key": " live_sending ", "value": "no"}) == "live_sending"
-    assert natural_key("Copy", {"copy_version": "eap-v1", "step": "2"}) == "eap-v1|2"
+    assert natural_key("Copy", {"copy_version": "cpa-firms-people-v1", "industry": "CPA firms"}) == "cpa-firms-people-v1"
     assert natural_key("Overrides", {"domain": "acme.com", "field": "hq_state"}) == "acme.com|hq_state"
 
 

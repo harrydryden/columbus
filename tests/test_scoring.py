@@ -571,3 +571,28 @@ def test_rescore_covers_every_open_status(status):
     ctx = make_context(make_settings((Q4,)), now=NOW)
     ctx.store.tables["accounts"] = [account(status=status)]
     assert rescore(ctx)["accounts"] == 1
+
+
+def test_size_signals_read_the_account_s_size_band_when_apollo_sent_no_employee_count():
+    """2 Oct 2026: Apollo's search rows carry no employee count, only the band searched, so the size
+    signals read accounts.size_band when no employees fact exists. A fact still wins."""
+    from datetime import date
+
+    from us_outbound.scoring.score import score_account
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    s, _ = validate_all(default_tabs())
+    base = {"account_id": "a1", "domain": "acme.com", "hq_state": "NY", "industry": "Fintech",
+            "industry_group": "Technology & Startups", "employees": None}
+    today = date(2026, 10, 2)
+
+    def signals(account, events=()):
+        return {m.signal.signal for m in score_account(account, list(events), s, today).matches}
+
+    assert "Team of 10–49" in signals({**base, "size_band": "20-49"})
+    assert "Team of 50–99" in signals({**base, "size_band": "50-99"})
+    assert not {"Team of 10–49", "Team of 50–99"} & signals({**base, "size_band": "100-249"})
+    assert not {"Team of 10–49", "Team of 50–99"} & signals({**base, "size_band": None})
+    fact = {"account_id": "a1", "source": "apollo_org", "fact": "employees", "value": 120, "observed_at": today}
+    assert "Team of 10–49" not in signals({**base, "size_band": "20-49"}, [fact])  # the fact wins

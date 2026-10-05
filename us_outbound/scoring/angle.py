@@ -12,6 +12,11 @@
 
 When several matched signals suggest the chosen angle, the one with the largest
 weight_applied set it (ties: Signals-tab order).
+
+The email's opener is no longer this one (Harry, 2 Oct 2026): enrol/openers.py chooses it at enrol
+time, once the contact and their copy role are known, from the same angle setter's lines by role,
+filled with the account's stored facts, and falls back to the signal's plain opener filled here
+(fill_opener), then to none. This module's opener is the scoring-time view, kept for ScoreResult.
 """
 
 from __future__ import annotations
@@ -31,6 +36,11 @@ LEGAL_OVERLAY = "The bar's Lawyer Assistance Program covers attorneys. Who cover
 
 # Placeholders an opener may use. validate.py allows only {evidence} on the sheet today.
 _PLACEHOLDER = re.compile(r"(?<!\{)\{\s*(evidence|quote|url)\s*\}(?!\})")
+
+
+def has_placeholder(template: str) -> bool:
+    """Whether a plain opener needs evidence to be filled ({evidence}, {quote} or {url})."""
+    return bool(_PLACEHOLDER.search(template))
 
 
 class AngleChoice(NamedTuple):

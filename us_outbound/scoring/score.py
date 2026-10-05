@@ -255,6 +255,7 @@ def _match_condition(
     all_events: Sequence[Mapping[str, Any]],
     today: date,
     overrides: Mapping[str, Any],
+    columns: Mapping[str, Any] | None = None,
 ) -> Match | None:
     cond = signal.condition
     assert cond is not None
@@ -269,6 +270,12 @@ def _match_condition(
         if "calendar" not in signal.sources:
             virtual.pop("month", None)
     values.update(virtual)
+    # Only when no size is known from a fact: a band column never overrules an employee count.
+    sized = any(f in values for f in ACCOUNT_FACTS)
+    from_columns = {} if sized else {f: v for f, v in (columns or {}).items() if f in cond.fields}
+    if "employees" in from_columns:  # an employee count, even from the account row, settles the size
+        from_columns.pop("size_band", None)
+    values.update(from_columns)
     forced = {f: v for f, v in overrides.items() if f in cond.fields}
     values.update(forced)
     if not cond.evaluate(values):
@@ -279,6 +286,8 @@ def _match_condition(
             evidence.append(Evidence(f"{f} = {_fmt(forced[f])}", source="override", observed_at=today))
         elif f in virtual:
             evidence.append(Evidence(f"{f} = {_fmt(virtual[f])}", source="calendar", observed_at=today))
+        elif f in from_columns:
+            evidence.append(Evidence(f"{f} = {_fmt(from_columns[f])}", source=ACCOUNT_FACT_SOURCE, observed_at=today))
         elif f in latest:
             e = latest[f]
             quote = _quote(e.get("quote"))
@@ -319,12 +328,24 @@ def _match_terms(signal: Signal, events: list[Mapping[str, Any]]) -> Match | Non
     return Match(signal, _weight(signal, len(evidence)), evidence)
 
 
+# The account's own columns a condition may read when no fact carries them (2 Oct 2026): Apollo's
+# search rows send no employee count, so size is known only as the band searched (accounts.size_band),
+# and a size signal on facts alone never fired. A fact, when there is one, wins.
+ACCOUNT_FACTS = ("employees", "size_band")
+ACCOUNT_FACT_SOURCE = "apollo_org"
+
+
+def account_facts(account: Mapping[str, Any]) -> dict[str, Any]:
+    return {f: account[f] for f in ACCOUNT_FACTS if account.get(f) not in (None, "")}
+
+
 def match_signal(
     signal: Signal,
     facts: Sequence[Mapping[str, Any]],
     today: date,
     *,
     overrides: Mapping[str, Any] | None = None,
+    account: Mapping[str, Any] | None = None,
 ) -> Match | None:
     """Match one signal against an account's facts (its signal_events rows); None if it does not apply.
 
@@ -339,7 +360,8 @@ def match_signal(
                 return None
             events = [e for e in events if e.get("source") not in unread]
     if signal.is_condition:
-        return _match_condition(signal, events, facts, today, overrides or {})
+        columns = account_facts(account or {}) if ACCOUNT_FACT_SOURCE in signal.sources else {}
+        return _match_condition(signal, events, facts, today, overrides or {}, columns)
     if signal.terms:
         return _match_terms(signal, events)
     return None
@@ -360,7 +382,8 @@ def score_account(
     acct = {**account, **overrides}
     facts = {**latest_facts(events), **overrides}
 
-    matches = [m for s in settings.active_signals() if (m := match_signal(s, events, today, overrides=overrides))]
+    matches = [m for s in settings.active_signals()
+               if (m := match_signal(s, events, today, overrides=overrides, account=acct))]
     score = total_score(matches, settings.general.score_cap)
     exclusion = tiers.hard_exclusion(acct, facts, settings, today)
     partner = tiers.partner_category(acct, facts)

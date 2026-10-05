@@ -1,18 +1,21 @@
-"""Copy rendering: variables, the four steps, the footer and the Article 14 notice.
+"""Copy rendering: variables, the four emails, the signature and the Article 14 notice.
 
 SPEC 10 ("Sequence", "Variables", "Rules"), SPEC 9 ("Instantly campaigns": subjects and
 bodies go to Instantly as custom variables {{s1_subject}}, {{s1_body}} ...; "Sender
-continuity": every demo is with Harry) and SPEC 13 (CAN-SPAM footer).
+continuity": every demo is with Harry), and Harry, 30 Sep and 1 Oct 2026:
+copy by industry and role, links embedded in the copy, the demo page as every email's call
+to action.
 
-  * variables() builds the SPEC 10 variables for one account, contact and sender mailbox.
-  * render_step() fills a Copy-tab row, appends the Article 14 notice on step 1 and the
-    footer on every step (templates/copy/*.txt; "#" lines are comments and are stripped),
-    then runs copy_rules.check(). An unknown or empty variable is a violation and stays
-    visible in the text. Any violation blocks the send.
-  * render_sequence() renders steps 1 to 4 of one copy version; custom_variables() turns
-    them into the lead's Instantly custom variables.
-  * pick_opener() falls back to the angle's default_opener when the evidence opener breaks
-    a copy rule (for example "unlimited PTO" quoted from a benefits page).
+  * variables() builds the variables for one account, contact, sender mailbox and Copy row.
+  * render_step() fills one email of a Copy row (copy_markup: HTML and plain text), appends
+    the signature on every email and the Article 14 notice on email 1 (templates/copy/*.txt;
+    "#" lines are comments and are stripped), then runs the copy rules. An unknown or empty
+    variable is a violation and stays visible in the text. Any violation blocks the send,
+    and so does copy that is not approved or has not passed QA in its current wording.
+  * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
+    custom_variables() turns them into the lead's Instantly custom variables.
+  * pick_opener() falls back to "" when the evidence opener breaks a copy rule (for
+    example "unlimited PTO" quoted from a benefits page): the opener line then disappears.
   * max_rendered_lengths() is the phase-0 probe for Instantly's custom-variable limit.
 """
 
@@ -26,48 +29,29 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from us_outbound.enrol import copy_rules
-from us_outbound.settings.model import CopyRow, Mailbox, Settings
+from us_outbound.enrol import copy_markup, copy_rules
+from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, Mailbox, Settings
 
-STEPS = (1, 2, 3, 4)
+STEPS = COPY_STEPS
 VARIABLES = (
-    "first_name", "company", "opener", "proof", "place", "ask", "price_line", "signature", "demo_line", "legal_overlay",
+    "first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
+    "industry_url", "site_url", "sender_first_name", "proof",
 )
-OPTIONAL_VARIABLES = frozenset({"legal_overlay"})  # empty unless the account is in Legal Teams
+OPTIONAL_VARIABLES = frozenset({"opener", "legal_overlay"})  # alone on their line; the line goes when empty
 LEGAL_GROUP = "Legal Teams"
 
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
-FOOTER_TEMPLATE = "footer.txt"
+SIGNATURE_TEMPLATE = "signature.txt"
 ARTICLE14_TEMPLATE = "article14.txt"
 
-# SPEC 10 "ask", by role (Roles tab names). PHASE0-CONFIRM: the full sentences are ours.
-PEOPLE_LEADER, FOUNDER, OPERATIONS = "People leader", "Founder or executive", "Operations"
-ASKS = {
-    PEOPLE_LEADER: "Would a 20-minute walkthrough be useful?",
-    FOUNDER: "Worth a look for the team?",
-    OPERATIONS: "Happy to send the one-pager if that's useful.",
-}
-# "When the sender is not Harry, the demo ask names Harry as the host" (SPEC 10).
-HOSTED_ASKS = {
-    PEOPLE_LEADER: "Would a 20-minute walkthrough with my colleague {host}, who runs our US demos, be useful?",
-}
+# Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
+# (General price_from). SPEC 4's price-by-size table is not quoted.
+PRICE_LINE = "Plans start from ${dollars} a month for the whole team, on a rolling 30-day contract."
 
-# SPEC 4 US prices, Core plan, flat monthly by team size: (up to this many employees, dollars).
-CORE_PRICES = ((10, 195), (25, 250), (50, 350), (100, 495), (200, 995))
-PER_EMPLOYEE_PRICE = 5  # 201+: $5 per employee
-PRICE_LINE = "For a team your size it's ${dollars} a month, flat."
-PER_EMPLOYEE_LINE = "For a team your size it's ${dollars} per employee a month."
-
-DEFAULT_SIGNATURE = "{owner}\nSpill\nspill.chat/us"  # SPEC 5 Mailboxes; SPEC 15 open item
-DEMO_LINE_HOST = "grab a time with me: {booking_link}"  # SPEC 9, 10
-DEMO_LINE_OTHER = "my colleague {host} runs our US demos; you can grab a time with him here: {booking_link}"
-
-_VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
-_FOOTER_MISSING = {
-    "sender": "the mailbox has no owner_name for the footer",
-    "postal_address": "postal_address is blank on the General tab, so the footer has no postal address",
-    "privacy_url": "privacy_url is blank on the General tab, so the footer has no opt-out link",
+_FIXED_MISSING = {
+    "site_url": "site_url is blank on the General tab, so the signature has no Spill link",
+    "booking_link": "booking_link is blank on the General tab, so the signature has no booking link",
     "company": "the Article 14 notice has no company name",
 }
 
@@ -75,50 +59,30 @@ _FOOTER_MISSING = {
 @dataclass(frozen=True)
 class Rendered:
     subject: str
-    body: str
+    body: str  # as sent, in the General tab's email_format, signature included
     violations: tuple[str, ...] = ()
     step: int = 0
     copy_version: str = ""
+    text: str = ""  # the plain-text version, signature included (previews and QA)
+    html: str = ""
 
     @property
     def ok(self) -> bool:
         return not self.violations
 
 
-# -- variables (SPEC 10) ---------------------------------------------------------------
+# -- variables ---------------------------------------------------------------------------
 
 
 def is_demo_host(mailbox: Mailbox, settings: Settings) -> bool:
-    """True when the sender is the demo host (Harry): "grab a time with me"."""
+    """True when the sender is the demo host (Harry)."""
     host = settings.general.demo_host.strip().casefold()
     return bool(host) and mailbox.owner_name.strip().casefold() == host
 
 
-def _int(value: Any) -> int | None:
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        return int(float(str(value).replace(",", "").strip()))
-    except ValueError:
-        return None
-
-
-def price_line(employees: Any) -> str:
-    """The Core plan price for this team size (SPEC 4), e.g. "For a team your size it's $350 a month, flat."."""
-    n = _int(employees)
-    if n is None or n < 1:
-        return ""
-    for most, dollars in CORE_PRICES:
-        if n <= most:
-            return PRICE_LINE.format(dollars=dollars)
-    return PER_EMPLOYEE_LINE.format(dollars=PER_EMPLOYEE_PRICE)
-
-
-def ask_for(role: str | None, *, sender_is_host: bool, host: str) -> str:
-    role = (role or "").strip()
-    if not sender_is_host and role in HOSTED_ASKS:
-        return HOSTED_ASKS[role].format(host=host)
-    return ASKS.get(role, "")
+def price_line(settings: Settings) -> str:
+    """The starting price every email quotes (General price_from), like "Plans start from $195 a month for the whole team, ..."."""
+    return PRICE_LINE.format(dollars=settings.general.price_from)
 
 
 def proof_for(account: Mapping[str, Any], settings: Settings) -> str:
@@ -141,18 +105,26 @@ def place_for(account: Mapping[str, Any]) -> str:
     return f"{city}, {state}" if city and state else (state or city)
 
 
-def signature_for(mailbox: Mailbox) -> str:
-    return mailbox.signature.strip() or DEFAULT_SIGNATURE.format(owner=mailbox.owner_name.strip())
+def industry_url_for(account: Mapping[str, Any], copy_row: CopyRow, settings: Settings) -> str:
+    """The page {{industry_url}} links: the Copy row's industry's page; for General, the account's own.
+
+    With no page (one still in draft on the website), Spill's US site (General site_url; Harry, 1 Oct 2026).
+    """
+    if copy_row.industry != GENERAL_COPY:
+        page = settings.industry_page_url(copy_row.industry)
+    else:
+        label = str(account.get("industry") or "").strip()
+        page = settings.industry_page_url(label) or settings.industry_page_url(settings.industry_group_of(account))
+    return page or settings.general.site_url.strip()
 
 
-def demo_line_for(mailbox: Mailbox, settings: Settings) -> str:
-    g = settings.general
-    booking = g.booking_link.strip()
-    if not booking:
-        return ""
-    if is_demo_host(mailbox, settings):
-        return DEMO_LINE_HOST.format(booking_link=booking)
-    return DEMO_LINE_OTHER.format(host=g.demo_host.strip(), booking_link=booking)
+def role_line_for(copy_row: CopyRow, role: str | None) -> str:
+    role = (role or "").strip()
+    return next((v.strip() for k, v in copy_row.role_lines.items() if k.casefold() == role.casefold()), "")
+
+
+def sender_first_name(mailbox: Mailbox) -> str:
+    return (mailbox.owner_name.strip().split() or [""])[0]
 
 
 def variables(
@@ -161,52 +133,55 @@ def variables(
     mailbox: Mailbox,
     settings: Settings,
     *,
-    opener: str,
-    legal_overlay: str,
+    copy_row: CopyRow,
+    opener: str = "",
+    legal_overlay: str = "",
 ) -> dict[str, str]:
-    """The SPEC 10 variables for one lead. Overrides for the account's domain win (SPEC 5, 13)."""
+    """The variables for one lead and one Copy row. Overrides for the account's domain win (SPEC 5, 13)."""
     domain = str(account.get("domain") or "").strip().lower()
     acct = {**account, **(settings.overrides_for(domain) if domain else {})}
-    host = is_demo_host(mailbox, settings)
-    legal = str(acct.get("industry_group") or "").strip().casefold() == LEGAL_GROUP.casefold()
-    employees = acct.get("employees")
-    if _int(employees) is None:
-        employees = acct.get("us_employees")
+    legal = settings.industry_group_of(acct).casefold() == LEGAL_GROUP.casefold()
     return {
         "first_name": str(contact.get("first_name") or "").strip(),
         "company": str(acct.get("clean_name") or "").strip(),
-        "opener": (opener or "").strip(),
-        "proof": proof_for(acct, settings),
         "place": place_for(acct),
-        "ask": ask_for(contact.get("role"), sender_is_host=host, host=settings.general.demo_host.strip()),
-        "price_line": price_line(employees),
-        "signature": signature_for(mailbox),
-        "demo_line": demo_line_for(mailbox, settings),
+        "opener": (opener or "").strip(),
         "legal_overlay": (legal_overlay or "").strip() if legal else "",
+        "role_line": role_line_for(copy_row, contact.get("role")),
+        "price_line": price_line(settings),
+        "demo_url": settings.general.booking_page.strip(),
+        "industry_url": industry_url_for(acct, copy_row, settings),
+        "site_url": settings.general.site_url.strip(),
+        "sender_first_name": sender_first_name(mailbox),
+        "proof": proof_for(acct, settings),
     }
 
 
 def pick_opener(
     opener: str,
-    default_opener: str,
     *,
     sender_is_harry: bool = True,
     demo_host: str = "Harry Dryden",
     exempt: Iterable[str] = (),
 ) -> tuple[str, str]:
-    """(opener to use, why the default was used or ""). An opener that breaks a copy rule is replaced.
+    """(opener to use, why it was dropped or ""). An opener that breaks a copy rule is dropped.
 
     SPEC 9 step 5 fills the opener with evidence from the prospect's own pages, which can
-    carry words the copy may not use ("unlimited PTO", "100% employer-paid", "therapy").
+    carry words the copy may not use ("unlimited PTO", "100% employer-paid", "therapy"), and
+    the tokenized openers (enrol/openers.py) with posting titles ("Call Center Agent" would read
+    as an ask for a call). An opener never mentions funding or money either (copy_rules.money_violations;
+    Harry, 2 Oct 2026: funding is a signal, never a line). Email 1 is written to read well without it
+    (style.md), so its line simply goes. enrol/openers.py tries each filled line with this check and
+    takes the first that passes; the enrol job checks the chosen one again as it renders.
     """
-    opener, default_opener = (opener or "").strip(), (default_opener or "").strip()
+    opener = (opener or "").strip()
     if not opener:
-        return default_opener, ""
+        return "", ""
     problems = copy_rules.content_violations(
         opener, sender_is_harry=sender_is_harry, demo_host=demo_host, exempt=exempt
-    ) + copy_rules.structure_violations(opener)
-    if problems and default_opener:
-        return default_opener, "; ".join(problems)
+    ) + copy_rules.structure_violations(opener) + copy_rules.opener_violations(opener, exempt=exempt)
+    if problems:
+        return "", "; ".join(problems)
     return opener, ""
 
 
@@ -235,112 +210,102 @@ def fill(template: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
     return _PLACEHOLDER.sub(one, template), missing
 
 
-def substitute(text: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
-    """Fill {{variables}}. Unknown or empty ones (other than OPTIONAL_VARIABLES) stay visible and are reported."""
-    problems: list[str] = []
+def signature(settings: Settings) -> tuple[copy_markup.Rendered, list[str]]:
+    """The signature every email ends with, after the copy's sign-off (Harry, 1 Oct 2026), and what is missing.
 
-    def one(m: re.Match[str]) -> str:
-        name = m.group(1)
-        if name not in values:
-            problems.append(f"has the unknown variable {{{{{name}}}}}")
-            return m.group(0)
-        value = str(values[name] or "").strip()
-        if not value:
-            if name in OPTIONAL_VARIABLES:
-                return ""
-            problems.append(f"has the empty variable {{{{{name}}}}}")
-            return m.group(0)
-        return value
-
-    return _VARIABLE.sub(one, text), problems
-
-
-def _tidy(body: str) -> str:
-    """Trailing spaces off every line; at most one blank line in a row (an empty overlay leaves a gap)."""
-    lines = [line.rstrip() for line in body.replace("\r\n", "\n").split("\n")]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-
-
-def footer(mailbox: Mailbox, settings: Settings) -> tuple[str, list[str]]:
-    """The footer every step ends with (SPEC 10, 13): sender and role, postal address, ad line, opt-out, privacy link."""
+    Three lines with three links: Spill's US site, Harry's booking link and the Trustpilot reviews.
+    No postal address and no privacy link; the opt-out is Instantly's unsubscribe link, which the
+    campaign's step template adds after everything here (clients/instantly.py).
+    """
     g = settings.general
-    name, role = mailbox.owner_name.strip(), mailbox.owner_role.strip()
-    return fill(
-        load_template(FOOTER_TEMPLATE),
-        {"sender": f"{name}, {role}" if name and role else name, "postal_address": g.postal_address,
-         "privacy_url": g.privacy_url},
-    )
+    source, missing = fill(load_template(SIGNATURE_TEMPLATE), {"site_url": g.site_url, "booking_link": g.booking_link})
+    return copy_markup.render(source, {}), missing
 
 
-def article14(values: Mapping[str, str]) -> tuple[str, list[str]]:
-    """Step 1's UK GDPR Article 14 notice: where the data came from and the lawful basis (SPEC 10)."""
-    return fill(load_template(ARTICLE14_TEMPLATE), {"company": values.get("company", "")})
+def data_sources(settings: Settings) -> str:
+    """The contact-data providers the notice names: Clay only once it runs (clay_verification)."""
+    if settings.general.clay_verification == CLAY_SKIP:
+        return "Apollo, which provides"
+    return "Apollo and Clay, which provide"
+
+
+def article14(values: Mapping[str, str], settings: Settings) -> tuple[str, list[str]]:
+    """Email 1's UK GDPR Article 14 notice: where the data came from and the lawful basis (SPEC 10)."""
+    return fill(load_template(ARTICLE14_TEMPLATE),
+                {"company": values.get("company", ""), "sources": data_sources(settings)})
 
 
 # -- rendering ------------------------------------------------------------------------------
 
 
 def render_step(
-    copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings
+    copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings,
+    for_send: bool = True,
 ) -> Rendered:
-    """One step, footer and (step 1) Article 14 notice included, with every copy-rule violation."""
+    """One email, signature and (email 1) Article 14 notice included, with every copy-rule violation.
+
+    for_send=False leaves out the approval and QA checks, for previews and the sheet check.
+    """
     g = settings.general
+    st = copy_row.step(step)
     problems: list[str] = []
-    if copy_row.step != step:
-        problems.append(f"copy {copy_row.copy_version} row is step {copy_row.step}, rendered as step {step}")
-    subject, p = substitute(copy_row.subject, variables)
+    if for_send and copy_row.status != "approved":
+        problems.append(f"copy {copy_row.copy_version} is {copy_row.status or 'blank'}, not approved")
+    if for_send and not copy_row.qa_current:
+        problems.append(f"copy {copy_row.copy_version} has not passed QA in its current wording "
+                        f"(qa is {copy_row.qa or 'blank'}; run `us-outbound copy qa`)")
+    problems += copy_rules.source_violations(st.subject, st.body, step=step)
+    subject, p = copy_markup.fill_text(st.subject, variables)
     problems += [f"subject {x}" for x in p]
-    body, p = substitute(copy_row.body, variables)
-    problems += [f"body {x}" for x in p]
-    subject = " ".join(subject.split())
+    if copy_markup.links(st.subject) or "**" in st.subject:
+        problems.append("subject has markup; a subject is plain text")
+    body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES)
+    problems += [f"body {x}" for x in body.problems]
 
-    parts = [_tidy(body)]
+    # After the copy's sign-off: the signature, then (email 1) the Article 14 notice in small type.
+    sig, missing = signature(settings)
+    problems += [_FIXED_MISSING.get(m, f"the signature has no {m}") for m in missing]
+    problems += [f"signature {x}" for x in sig.problems]
+    texts, htmls = [body.text, sig.text], [body.html, sig.html]
     if step == 1:
-        notice, missing = article14(variables)
-        problems += [_FOOTER_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
-        parts.append(notice)
-    foot, missing = footer(mailbox, settings)
-    problems += [_FOOTER_MISSING.get(m, f"the footer has no {m}") for m in missing]
-    parts.append(foot)
-    full = "\n\n".join(x for x in parts if x)
+        notice, missing = article14(variables, settings)
+        problems += [_FIXED_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
+        texts.append(notice)
+        htmls.append(copy_markup.plain_to_html(notice))
 
+    text = "\n\n".join(texts)
+    html = "".join(htmls)
     exempt = (variables.get("first_name", ""), variables.get("company", ""), variables.get("place", ""),
-              g.postal_address, mailbox.owner_name)
-    problems += copy_rules.check(
-        subject, full, copy_row=copy_row, step=step, sender_is_harry=is_demo_host(mailbox, settings),
-        privacy_url=g.privacy_url, demo_host=g.demo_host, exempt=exempt,
+              mailbox.owner_name)
+    problems += copy_rules.email_violations(
+        subject, body.words, body.links,
+        step=step, demo_url=variables.get("demo_url", ""), industry_url=variables.get("industry_url", ""),
+        sender_is_harry=is_demo_host(mailbox, settings), demo_host=g.demo_host, exempt=exempt,
+        uncounted=[str(variables.get(v) or "").strip() for v in OPTIONAL_VARIABLES],
+        site_url=variables.get("site_url", ""),
     )
-    return Rendered(subject, full, tuple(dict.fromkeys(problems)), step, copy_row.copy_version)
-
-
-def copy_rows(settings: Settings, copy_version: str) -> dict[int, CopyRow]:
-    """The Copy-tab row for each step of a version; an approved row wins over a draft of the same step."""
-    rows: dict[int, CopyRow] = {}
-    for c in settings.copy:
-        if c.copy_version != copy_version:
-            continue
-        if c.step not in rows or (c.status == "approved" and rows[c.step].status != "approved"):
-            rows[c.step] = c
-    return rows
+    sent = html if g.email_format == "html" else text
+    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html)
 
 
 def render_sequence(
-    copy_version: str, variables: Mapping[str, str], *, mailbox: Mailbox, settings: Settings
+    copy_row: CopyRow, variables: Mapping[str, str], *, mailbox: Mailbox, settings: Settings, for_send: bool = True,
 ) -> list[Rendered]:
-    """Steps 1 to 4 of one copy version; a missing step is a violation."""
-    rows = copy_rows(settings, copy_version)
-    out: list[Rendered] = []
-    for step in STEPS:
-        row = rows.get(step)
-        if row is None:
-            out.append(Rendered("", "", (f"copy {copy_version} has no step {step} row",), step, copy_version))
-        else:
-            out.append(render_step(row, variables, step=step, mailbox=mailbox, settings=settings))
+    """Emails 1 to 4 of one Copy row, and the sequence's own check: it links the industry page."""
+    out = [render_step(copy_row, variables, step=n, mailbox=mailbox, settings=settings, for_send=for_send)
+           for n in STEPS]
+    page = str(variables.get("industry_url") or "").strip()
+    uses = any("industry_url" in copy_markup.VARIABLE.findall(copy_row.step(n).body) for n in STEPS)
+    if page and not uses:
+        long_form = out[1]
+        out[1] = Rendered(long_form.subject, long_form.body,
+                          (*long_form.violations, "the sequence never links the industry page ({{industry_url}})"),
+                          long_form.step, long_form.copy_version, long_form.text, long_form.html)
     return out
 
 
 def violations(rendered: Sequence[Rendered]) -> list[str]:
-    return [f"step {r.step}: {v}" for r in rendered for v in r.violations]
+    return [f"email {r.step}: {v}" for r in rendered for v in r.violations]
 
 
 def custom_variables(rendered: Sequence[Rendered]) -> dict[str, str]:
@@ -355,9 +320,9 @@ def custom_variables(rendered: Sequence[Rendered]) -> dict[str, str]:
 # -- empty and maximum-length values (SPEC 10 tests; SPEC 9 custom-variable limit) ----------
 
 # The longest value each free-text variable can plausibly take. An opener is its template
-# plus a quote of up to 300 characters (SPEC 6), and a proof point is free sheet text, so both
-# can pass the 300-character line limit.
-MAX_LENGTHS = {"first_name": 40, "company": 100, "opener": 340, "proof": 400, "place": 60, "legal_overlay": 120}
+# plus a quote of up to 300 characters (SPEC 6), and a proof point is free sheet text.
+MAX_LENGTHS = {"first_name": 40, "company": 100, "opener": 340, "place": 60, "legal_overlay": 120,
+               "proof": 400, "sender_first_name": 20}
 
 
 def _filler(n: int) -> str:
@@ -370,17 +335,16 @@ def empty_variables() -> dict[str, str]:
     return {v: "" for v in VARIABLES}
 
 
-def max_length_variables(mailbox: Mailbox, settings: Settings) -> dict[str, str]:
+def max_length_variables(copy_row: CopyRow, settings: Settings) -> dict[str, str]:
     """Every variable at its longest: free text at MAX_LENGTHS, fixed choices at their longest option."""
-    host = settings.general.demo_host.strip()
-    asks = list(ASKS.values()) + [a.format(host=host) for a in HOSTED_ASKS.values()]
-    prices = [price_line(most) for most, _ in CORE_PRICES] + [price_line(CORE_PRICES[-1][0] + 1)]
+    pages = [i.landing_page_url for i in settings.industries if i.landing_page_url] or [settings.general.site_url]
     values = {k: _filler(n) for k, n in MAX_LENGTHS.items()}
     values.update(
-        ask=max(asks, key=len),
-        price_line=max(prices, key=len),
-        signature=signature_for(mailbox),
-        demo_line=demo_line_for(mailbox, settings),
+        role_line=max(copy_row.role_lines.values(), key=len, default=""),
+        price_line=price_line(settings),
+        demo_url=settings.general.booking_page.strip(),
+        industry_url=max(pages, key=len),
+        site_url=settings.general.site_url.strip(),
     )
     return values
 
@@ -391,12 +355,14 @@ def max_rendered_lengths(settings: Settings, copy_versions: Iterable[str] | None
     Phase 0 sends a lead with values this long to find Instantly's custom-variable limit
     (SPEC 9: "Test the custom-variable length limit in phase 0").
     """
-    versions = list(dict.fromkeys(copy_versions if copy_versions is not None else (c.copy_version for c in settings.copy)))
+    wanted = set(copy_versions) if copy_versions is not None else None
+    rows = [c for c in settings.copy if wanted is None or c.copy_version in wanted]
     mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
     out = {f"s{step}_{part}": 0 for step in STEPS for part in ("subject", "body")}
-    for version in versions:
+    for row in rows:
+        values = max_length_variables(row, settings)
         for mb in mailboxes:
-            cv = custom_variables(render_sequence(version, max_length_variables(mb, settings), mailbox=mb, settings=settings))
+            cv = custom_variables(render_sequence(row, values, mailbox=mb, settings=settings, for_send=False))
             for k, v in cv.items():
                 out[k] = max(out[k], len(v))
     return out

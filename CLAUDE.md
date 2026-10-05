@@ -1,0 +1,13 @@
+# US Outbound: notes for Claude
+
+## Settled decisions (Harry). Do not raise them again.
+- **No postal address and no privacy link in the emails** (1 Oct 2026, final). The opt-out is
+  Instantly's `{{unsubscribe}}` link and the List-Unsubscribe header.
+- **The signature is outside the copy rules** (1 Oct 2026). Its "Book a call here" link and its
+  Trustpilot link are fixed text, allowed in every email, email 1 included
+  (`templates/copy/signature.txt`; `copy_rules.email_violations` checks the body only).
+
+## Working rules
+- Secrets live only in sealed Railway variables: never in the repo, logs, database or chat.
+- Every job is dry-run by default; `live_sending` = yes on the General tab is Harry's sign-off.
+- Develop on branch `claude/spec-review-build-plan-08kpuz`.

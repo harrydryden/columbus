@@ -1,5 +1,7 @@
 # Phase 0 runbook: Foundations (29 Sep – 9 Oct 2026)
 
+> **Setup history (done); for day-to-day see [docs/daily.md](daily.md).**
+
 The SPEC 14 phase-0 checklist, in the order to do it, with who does each step and the
 command to run. "Harry" means a step in a vendor's UI or a decision. "jobs" means a
 `us-outbound` command, run inside the Railway worker as `railway ssh -- us-outbound …`
@@ -43,7 +45,7 @@ prospect; see README "Dry-run and live".
 | :- | :- | :- | :- |
 | Tables and views (schema `us_outbound`) | jobs | `us-outbound db apply` (prints the DDL), then `us-outbound db apply --live` | `us-outbound status` runs without a database error |
 | Keys | Harry | Each one in its sealed variable on the us-outbound service (railway-setup.md, step c). Never in the repo, a chat, a shell history file or the database. | `us-outbound status` works; a job with a missing key says `set <VARIABLE>` |
-| The scheduler | Railway | The worker starts `us-outbound scheduler` on each deploy (the Dockerfile's default command) | Its log shows `scheduler_start` with the four phase-0 jobs |
+| The scheduler | Railway | The worker starts `us-outbound scheduler` on each deploy (the Dockerfile's default command) | Its log shows `scheduler_start` with every enabled job (`us-outbound schedule` lists them) |
 
 Key variables (SPEC 13): `US_OUTBOUND_APOLLO_API_KEY` (master key), `US_OUTBOUND_CLAY_API_KEY`,
 `US_OUTBOUND_INSTANTLY_API_KEY`, `US_OUTBOUND_HUBSPOT_TOKEN`, `US_OUTBOUND_SLACK_BOT_TOKEN`,
@@ -62,10 +64,11 @@ console), and `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON` (the Sheets service acco
 
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
-| Create "US Outbound – Settings" with the SPEC 5 defaults | jobs | `us-outbound settings bootstrap --live` (prints the new sheet id) | The sheet has ten tabs |
+| Create "US Outbound – Settings" with the SPEC 5 defaults | jobs | `us-outbound settings bootstrap --live` (prints the new sheet id) | The sheet has twelve tabs |
 | Point the jobs at it | Harry | Put the id in the sealed variable `US_OUTBOUND_SETTINGS_SHEET_ID` and deploy; share the sheet with `us-outbound-sheets@columbus-510209.iam.gserviceaccount.com` as Editor (open question 8: who owns the sheet) | |
 | First sync | jobs | `us-outbound settings sync` (dry-run still writes the database; errors go to `#us-outbound-dev`) | `us-outbound status` shows "Settings synced" |
 | HubSpot ids on the General tab | Harry | `us-outbound hubspot ids`, then paste `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id` into the General tab (never written automatically) | Next sync carries them |
+| Load the General keys, the 108 industries and the Copy tab by industry (Harry, 30 Sep and 1 Oct 2026) | jobs | `railway ssh -- us-outbound settings load` to see the changes, then the same with `--live` (add `--set key=value` for General values Harry has decided), then `us-outbound settings sync`. It renames `daily_enrol_cap` to `weekly_enrol_cap` (150) and adds missing General keys with their defaults. Harry's `active`, `priority` and `proof_point` are kept; the old one-row-per-step Copy tab is replaced (docs/pipeline.md, "Where the copy lives") | The Industries tab has 108 rows with page columns; Copy has 318 draft rows |
 
 ## 5. HubSpot
 
@@ -90,7 +93,7 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 
 | Step | Who | How | Done when |
 | :- | :- | :- | :- |
-| The three sender campaigns, paused | jobs | `us-outbound campaigns ensure`, then `--live`. Creates "US Outbound – Hannah Spalding", "US Outbound – Sam Jackson" and "US Outbound – Harry Dryden" (Harry's two addresses) with the SPEC 9 settings, in Draft; nothing activates them but `start`. An owner with no Active mailbox yet waits. | Three campaigns in Draft; `campaigns ensure` reports no drift |
+| The three sender campaigns, paused | jobs | `us-outbound campaigns ensure`, then `--live`. Creates "US Outbound – Hannah Spalding", "US Outbound – Sam Jackson" and "US Outbound – Harry Dryden" (Harry's two addresses) with the SPEC 9 settings, in Draft. `start --live` activates them; after that, the morning mailbox check activates a campaign created later (it holds only approved leads). An owner with no Active mailbox yet waits. | Three campaigns in Draft; `campaigns ensure` reports no drift |
 | Custom-variable length limit | Harry | Add one test lead by hand with a long `s1_body`; record the longest value kept intact | `CUSTOM_VARIABLE_LIMIT` set in `clients/instantly.py` |
 | Follow-ups stay on the step-1 address | Harry | Two seed leads in Harry's campaign; check steps 2 to 4 come from the step-1 address | Noted in phase0-facts.md |
 | Forward endpoint | Harry | Check `POST /emails/forward` works on our plan | Noted in phase0-facts.md |
@@ -119,20 +122,37 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | :- | :- | :- | :- |
 | Review | Harry | Read the diff before merging to `main` (SPEC 13: Harry reviews before each deploy) | |
 | Deploy | Railway | Merging to `main` builds the Dockerfile and redeploys the worker. The old worker gets SIGTERM and 30 s to finish (`RAILWAY_DEPLOYMENT_DRAINING_SECONDS`) | The service's Deployments tab shows the new deploy as active |
-| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, heartbeat_check and suppression_load show a next run; later-phase jobs show "disabled" |
+| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_post show a next run; later-phase jobs show "disabled" |
 | Heartbeats | jobs | After a day: `us-outbound status` | Every phase-0 job shows ok; `heartbeat_check` alerts `#us-outbound-dev` on a missed one |
 
-Scheduled in phase 0 (UK time): settings_sync 02:00, suppression_load 01:30, mailbox_health
-07:00, heartbeat_check hourly at :05. Later-phase jobs have `enabled=False` in
-`us_outbound/ops/schedule.py` until their phase; turning one on is a reviewed code change.
+Scheduled in phase 0 (UK time): settings_sync 02:00 (and 11:30 on weekdays since 4 Oct, so morning
+sheet edits are in force for the 12:00 enrol), suppression_load 01:30, mailbox_health
+07:00, heartbeat_check hourly at :05; and, brought forward for the first sends (Harry, 1 Oct
+2026), kill_rules hourly at :00, daily_post 09:00 and hand_check_post Mondays 08:00. Later-phase
+jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; turning one on is a
+reviewed code change.
+
+Before the first send: `us-outbound golive` prints PASS, WARN or FAIL for each blocker and exits
+1 while any FAILs. While `auto_send = no` (the default; Harry, 2 Oct 2026) every email waits for an
+approver's ✅ on its card in #us-outbound, so the Slack app needs the `reactions:write` scope in
+`deploy/slack-app-manifest.yaml`; without Slack, `us-outbound approvals list`, then `us-outbound
+approvals send ID --live`. With `auto_send = yes`, enrol waits for the weekly hand-check instead:
+without Slack, `us-outbound handcheck show`, then `us-outbound handcheck approve --live` (with
+`--pull ACCOUNT_ID ...` for accounts that are wrong; it records the sample and approves it).
+After the seed-inbox test of the unsubscribe link, set `optout_tested = yes` on the General tab
+yourself, then `us-outbound sync`. (`us-outbound settings load --tab General --live` adds the row,
+as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sending`, `auto_send`,
+`optout_tested` and `approver_slack_ids`: those are set by hand on the sheet.)
 
 ## 11. For Harry to approve (SPEC 14)
 
 | Item | Where |
 | :- | :- |
-| Footer text (sender, postal address, advertisement line, "Reply STOP or use this link to opt out", privacy link) | `templates/copy/footer.txt`; `postal_address` on the General tab |
-| Privacy page link | `privacy_url` on the General tab. The US privacy notice is still a draft and there is no opt-out page (phase0-facts.md): sends stay blocked until it is live |
+| Signature (Spill, "Book a call here", the Trustpilot reviews; Harry 1 Oct) | `templates/copy/signature.txt`; its links follow `site_url` and `booking_link` on the General tab |
+| Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that `{{unsubscribe}}` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
 | Legitimate-interests text (UK GDPR Article 14, step 1) | `templates/copy/article14.txt` |
+| The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |
+| The claims the emails may make, and the voice | `templates/copy/facts.md`, `templates/copy/style.md` (open questions 65 to 72) |
 
 ## Acceptance (SPEC 14)
 

@@ -24,7 +24,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any
 
-from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation, Op
+from us_outbound.clients.guard import CLI_APPROVER, REPLIES_CLI_JOB, US_CAMPAIGN_PREFIX, GuardViolation, Op
 from us_outbound.clients.http import ApiError, HttpClient
 from us_outbound.logs import log
 from us_outbound.settings.model import SendWindow
@@ -42,7 +42,6 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "stop_on_reply": True,
     "stop_for_company": True,  # "stop the campaign for the entire company (domain) when a lead replies"
     "stop_on_auto_reply": False,  # the jobs handle out-of-office replies
-    "text_only": True,
     "open_tracking": False,  # SPEC 1.8: open and link tracking stay off
     "link_tracking": False,
     "insert_unsubscribe_header": True,
@@ -50,6 +49,36 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "is_evergreen": True,  # PHASE0-CONFIRM: that is_evergreen keeps the campaign open to new leads indefinitely
 }
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
+# Instantly's GET /campaigns/{id} (read 2 Oct 2026) leaves out a setting that is at its default, so a
+# setting we want false and that is missing is false. is_evergreen is never returned, so it cannot be
+# checked (PHASE0-CONFIRM above).
+NOT_RETURNED = frozenset({"is_evergreen"})
+# The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
+# of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly
+# fills its merge tags in the template, not inside a custom variable's value. A click stops the
+# lead's sequence and adds the address to the workspace's unsubscribe list, which every campaign
+# honors; insert_unsubscribe_header also gives mail clients their one-click unsubscribe button.
+# PHASE0-CONFIRM: that the tag is {{unsubscribe}} and becomes the link's URL, by a test send to a seed
+# inbox in both formats (Instantly's editor offers it as "Insert unsubscribe link").
+UNSUBSCRIBE_TAG = "{{unsubscribe}}"
+UNSUBSCRIBE_TEXT = "To stop hearing from us, unsubscribe here"
+UNSUBSCRIBE_HTML = f'<p><a href="{UNSUBSCRIBE_TAG}">{UNSUBSCRIBE_TEXT}</a>.</p>'
+UNSUBSCRIBE_PLAIN = f"\n\n{UNSUBSCRIBE_TEXT}: {UNSUBSCRIBE_TAG}"
+
+
+def unsubscribe_line(text_only: bool = False) -> str:
+    """What the step template adds after the rendered body: Instantly's unsubscribe link."""
+    return UNSUBSCRIBE_PLAIN if text_only else UNSUBSCRIBE_HTML
+
+
+# text_only follows the General tab's email_format (Harry, 30 Sep 2026): html by default, so the
+# copy's links are embedded; tracking stays off either way.
+TEXT_ONLY = "text_only"
+
+
+def campaign_settings(text_only: bool = False) -> dict[str, Any]:
+    """The fixed SPEC 9 settings plus text_only for the sheet's email_format."""
+    return {**CAMPAIGN_SETTINGS, TEXT_ONLY: bool(text_only)}
 
 # Four steps, one variant each (SPEC 9/10), a week apart (Harry, 30 Sep 2026; SPEC 10 had days
 # 0, 3, 8 and 15). Instantly counts delays in calendar days and moves a step due at the weekend
@@ -94,8 +123,29 @@ CAMPAIGN_STATUS = {
     0: "draft", 1: "active", 2: "paused", 3: "completed", 4: "running_subsequences",
     -99: "account_suspended", -1: "accounts_unhealthy", -2: "bounce_protect",
 }
+# A lead's `status` (the v2 Lead schema: 1 active, 2 paused, 3 completed, -1 bounced, -2 unsubscribed,
+# -3 skipped). sync_outcomes reads bounced and unsubscribed from it:
+# a click on the {{unsubscribe}} link stops the lead and marks it unsubscribed (Harry, 1 Oct 2026:
+# the opt-out is Instantly's own link). PHASE0-CONFIRM: the codes, read from a lead in a paused
+# campaign, and that an unsubscribe click (and the List-Unsubscribe header) sets -2 on the lead.
+LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
+# PHASE0-CONFIRM: that PATCH /leads/{id} takes status 2 (paused) and 1 (active), and that a lead set
+# back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused:
+# an out-of-office reply only records the return date (replies/poll.py).
+LEAD_PAUSE_CONFIRMED = False
+
+# POST /leads/update-interest-status values. PHASE0-CONFIRM: that 2 is "Meeting booked" and that a
+# lead marked so gets no further steps (stop_lead).
+INTEREST_MEETING_BOOKED = 2
 
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~@")
+_RE_PREFIX = ("re:", "re ")
+
+
+def reply_subject(subject: Any) -> str:
+    """The subject of a reply in the thread: the original's, with "Re: " unless it already has one."""
+    s = str(subject or "").strip()
+    return s if s.lower().startswith(_RE_PREFIX) else f"Re: {s}".strip()
 
 
 def _segment(text: str) -> str:
@@ -189,12 +239,16 @@ def settings_drift(
     daily_limit: int | None = None,
     window: SendWindow | None = None,
     step_days: Sequence[int] = STEP_DAYS,
+    text_only: bool = False,
 ) -> dict[str, tuple[Any, Any]]:
     """{field: (expected, actual)} for every SPEC 9 setting the campaign no longer matches."""
     drift: dict[str, tuple[Any, Any]] = {}
-    for key, want in CAMPAIGN_SETTINGS.items():
-        if campaign.get(key) != want:
-            drift[key] = (want, campaign.get(key))
+    for key, want in campaign_settings(text_only).items():
+        got = campaign.get(key)
+        if got is None and (want is False or key in NOT_RETURNED):
+            continue  # left out at its default (false), or never returned
+        if got != want:
+            drift[key] = (want, got)
     want_sched = instantly_schedule(window)["schedules"][0]
     got_scheds = (campaign.get("campaign_schedule") or {}).get("schedules") or [{}]
     got = got_scheds[0] or {}
@@ -250,6 +304,8 @@ def _check_campaign_fields(fields: Mapping[str, Any]) -> None:
     for key in (set(CAMPAIGN_SETTINGS) - TRACKING_FIELDS) & set(fields):
         if fields[key] != CAMPAIGN_SETTINGS[key]:
             raise ValueError(f"{key} is fixed at {CAMPAIGN_SETTINGS[key]!r} by SPEC 9")
+    if TEXT_ONLY in fields and not isinstance(fields[TEXT_ONLY], bool):
+        raise ValueError("text_only is true or false (the General tab's email_format)")
     if "name" in fields:
         raise ValueError("campaigns are addressed by name; they are never renamed from here")
     if "email_list" in fields:
@@ -466,6 +522,7 @@ class Instantly(HttpClient):
         schedule: SendWindow | Mapping[str, Any] | None = None,
         steps: Sequence[Mapping[str, str]],
         options: Mapping[str, Any] | None = None,
+        text_only: bool = False,
     ) -> dict | None:
         """Create the owner's campaign with the SPEC 9 settings. It stays in Draft: never activated here."""
         self._us_name(name, "campaign.create", True)
@@ -482,7 +539,7 @@ class Instantly(HttpClient):
             campaign_schedule = dict(schedule)
         payload: dict[str, Any] = {
             **options,
-            **CAMPAIGN_SETTINGS,
+            **campaign_settings(text_only),
             "name": name,
             "campaign_schedule": campaign_schedule,
             "sequences": sequences(steps),
@@ -641,6 +698,39 @@ class Instantly(HttpClient):
             "DELETE", f"/leads/{_segment(lead_id)}", Op("lead.delete", target=name, write=True, detail={"lead_id": lead_id})
         )
 
+    def set_lead_paused(self, name: str, lead_id: str, paused: bool) -> dict | None:
+        """Pause one lead of this campaign, or set it going again (re-timing after an out-of-office reply).
+
+        The lead is checked to belong to the campaign first, as delete_lead does. Only the
+        status changes. PHASE0-CONFIRM: see LEAD_PAUSE_CONFIRMED.
+        """
+        cid = self._campaign_id(name, "lead.update", True)
+        lead = self.request("GET", f"/leads/{_segment(lead_id)}", Op("lead.get", target=name, detail={"lead_id": lead_id}))
+        if str((lead or {}).get("campaign") or "") != cid:
+            raise GuardViolation(f"lead {lead_id} is not in campaign {name!r}")
+        status = LEAD_PAUSED if paused else LEAD_ACTIVE
+        return self.request(
+            "PATCH", f"/leads/{_segment(lead_id)}",
+            Op("lead.update", target=name, write=True, detail={"lead_id": lead_id, "status": status}),
+            json={"status": status}, dry_result={"id": lead_id, "status": status, "dry_run": True},
+        )
+
+    def stop_lead(self, name: str, email: str) -> dict | None:
+        """Stop a lead's remaining steps in this campaign once a meeting is booked (SPEC 9 hubspot_readback).
+
+        It marks the lead "Meeting booked" (POST /leads/update-interest-status, scoped to the campaign)
+        rather than deleting it, since SPEC 13 keeps leads 31 days after their last step.
+        PHASE0-CONFIRM: the endpoint and its fields, INTEREST_MEETING_BOOKED, and that Instantly then
+        sends the lead no further step; if it does not, delete_lead is the stop that is certain.
+        """
+        cid = self._campaign_id(name, "lead.stop", True)
+        lead = str(email or "").strip().lower()
+        if "@" not in lead:
+            raise ValueError("stop_lead needs the lead's email address")
+        op = Op("lead.stop", target=name, write=True, detail={"id": cid, "interest_value": INTEREST_MEETING_BOOKED})
+        payload = {"lead_email": lead, "campaign_id": cid, "interest_value": INTEREST_MEETING_BOOKED}
+        return self.request("POST", "/leads/update-interest-status", op, json=payload, dry_result={"dry_run": True})
+
     # -- emails ----------------------------------------------------------------
 
     def list_emails(
@@ -649,10 +739,14 @@ class Instantly(HttpClient):
         since: datetime | str | None = None,
         *,
         email_type: str | None = None,
+        until: datetime | str | None = None,
     ) -> list[dict]:
         """Emails of the registry accounts, one filtered request series per account (eaccount=).
 
         email_type: "received", "sent" or "manual" (Instantly's filter); None for all.
+        until: created at or before this time (max_timestamp_created), for a run that catches up a
+        long gap a week at a time. PHASE0-CONFIRM: that Instantly applies it; if it does not, the
+        run reads up to now, as before, and the events stay idempotent.
         Results whose eaccount is not the account asked for are dropped.
         """
         accs = self._registry("email.list", accounts)
@@ -665,6 +759,8 @@ class Instantly(HttpClient):
                 params: dict[str, Any] = {"eaccount": acct, "limit": PAGE}
                 if since:
                     params["min_timestamp_created"] = _timestamp(since)
+                if until:
+                    params["max_timestamp_created"] = _timestamp(until)
                 if email_type:
                     params["email_type"] = email_type
                 if cursor:
@@ -695,17 +791,66 @@ class Instantly(HttpClient):
             raise GuardViolation(f"email {email_id} does not belong to {eaccount}")
         return body
 
-    def reply(self, eaccount: str, reply_to_uuid: str, subject: str, body: str) -> dict | None:
-        """Reply in the thread from the registry mailbox that received the email."""
+    def get_email(self, eaccount: str, email_id: str) -> dict:
+        """One email of a registry mailbox (GET /emails/{id}), with its body, checked to belong to that mailbox."""
+        [acct] = self._registry("email.get", [eaccount], target=eaccount)
+        return self._owned_email(acct, email_id)
+
+    def _campaign_named_by_id(self, cid: str) -> str | None:
+        """The US Outbound campaign with this id, or None; the name→id cache is refreshed once if needed."""
+        for refresh in (False, True):
+            if refresh:
+                self.list_campaigns()
+            name = next((n for n, known in self._ids.items() if known == cid), None)
+            if name is not None:
+                return name
+        return None
+
+    def _need_approval(self, acct: str, approved_by: str) -> None:
+        """Refuse before any request unless an approver approved this reply (SPEC 1.3, D11; the guard checks too)."""
+        b = self.guard.bounds
+        owners = {sid for address, sid in b.owner_slack_ids if address.lower() == acct}
+        by = str(approved_by or "").strip()
+        if (by == CLI_APPROVER and self.guard.job == REPLIES_CLI_JOB) or (
+            by not in ("", CLI_APPROVER) and by in b.approver_slack_ids | owners
+        ):
+            return
+        detail = {"accounts": [acct], "campaign": US_CAMPAIGN_PREFIX, "approved_by": by}
+        self.guard.authorize(self.system, Op("email.reply", target=acct, write=True, detail=detail))  # refuses
+        raise GuardViolation("nothing goes to a prospect after their reply unless an approver approved it (SPEC 1.3)")
+
+    def reply(
+        self, eaccount: str, reply_to_uuid: str, subject: str | None, body: str, *, approved_by: str
+    ) -> dict | None:
+        """Reply in the thread from the registry mailbox that received the email (SPEC 11 Approval).
+
+        Only in a thread of a US Outbound campaign: the email replied to must carry the id of a
+        "US Outbound – {owner}" campaign. PHASE0-CONFIRM: that Instantly sets campaign_id on a
+        prospect's reply, and that reply_to_uuid is the id of the email being answered.
+        approved_by is the approver's Slack id, or "cli" from `us-outbound replies approve`; the
+        guard refuses anyone else (SPEC 1.3, decision D11). subject None answers "Re: " the original's.
+        """
         [acct] = self._registry("email.reply", [eaccount], write=True, target=eaccount)
-        self._owned_email(acct, reply_to_uuid)
+        self._need_approval(acct, approved_by)
+        original = self._owned_email(acct, reply_to_uuid)
+        cid = str(original.get("campaign_id") or "").strip()
+        campaign = self._campaign_named_by_id(cid) if cid else None
+        op = Op(
+            "email.reply",
+            target=acct,
+            write=True,
+            detail={"accounts": [acct], "reply_to_uuid": reply_to_uuid, "campaign": campaign or "",
+                    "approved_by": str(approved_by).strip()},
+        )
+        if campaign is None:
+            self.guard.authorize(self.system, op)  # refuses: not a thread of a US Outbound campaign
+            raise GuardViolation(f"email {reply_to_uuid} is not in a US Outbound campaign")
         payload = {
             "eaccount": acct,
             "reply_to_uuid": reply_to_uuid,
-            "subject": subject,
+            "subject": reply_subject(original.get("subject")) if subject is None else subject,
             "body": {"text": body, "html": text_to_html(body)},
         }
-        op = Op("email.reply", target=acct, write=True, detail={"accounts": [acct], "reply_to_uuid": reply_to_uuid})
         return self.request("POST", "/emails/reply", op, json=payload, dry_result={"id": None, "dry_run": True})
 
     def forward(

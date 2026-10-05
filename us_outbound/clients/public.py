@@ -3,6 +3,9 @@
 get() reads only the hosts in guard.PUBLIC_HOSTS (the guard refuses any other host).
 resolve_redirect() sends one HEAD to a prospect's own domain and returns where it
 redirects, without following further (SPEC 13 data cleaning: "follow one redirect").
+site_get() reads one page of a prospect's own site, its root domain or a subdomain (the guard
+refuses any other host), for the careers and benefits page reader (sources/pages.py). It
+returns the whole Response, redirects included, so the reader decides what to follow.
 No credentials, no cookies, and nothing is ever sent but a GET or a HEAD.
 """
 
@@ -15,6 +18,8 @@ from us_outbound.clients.http import HttpClient, Response
 from us_outbound.logs import log
 
 USER_AGENT = "spill-us-outbound/1.0 (+https://www.spill.chat/us)"
+ROBOTS_AGENT = "spill-us-outbound"  # the name a robots.txt group addresses us by
+PAGE_ACCEPT = "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.1"
 
 
 def split_url(url: str) -> tuple[str, str, str, str]:
@@ -64,10 +69,18 @@ class Public(HttpClient):
     def headers(self) -> dict[str, str]:
         return {"User-Agent": USER_AGENT, "Accept": "application/json, text/csv, text/plain, */*"}
 
-    def get(self, url: str, params: dict[str, Any] | None = None) -> Any:
+    def get(self, url: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> Any:
         """GET an allowlisted public source. JSON comes back parsed, anything else as text."""
         _, _, host, path = split_url(url)
-        return self.request("GET", url, Op("get", target=host, detail={"path": path.split("?", 1)[0]}), params=params)
+        return self.request("GET", url, Op("get", target=host, detail={"path": path.split("?", 1)[0]}), params=params,
+                            timeout=timeout)
+
+    def site_get(self, url: str, domain: str, timeout: float | None = None) -> Response:
+        """GET a page on the account's own site (domain: its root domain). The raw Response, any status."""
+        _, _, host, path = split_url(url)
+        op = Op("site.get", target=host, detail={"domain": domain, "path": path.split("?", 1)[0]})
+        headers = {"User-Agent": USER_AGENT, "Accept": PAGE_ACCEPT}
+        return self.request("GET", url, op, headers=headers, raw=True, timeout=timeout)
 
     def resolve_redirect(self, url: str) -> str:
         """Where url redirects to (one hop, absolute), or url itself if it does not redirect or fails."""

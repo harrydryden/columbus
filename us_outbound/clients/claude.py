@@ -1,4 +1,4 @@
-"""Claude API client for reply classification, drafts and readout notes (SPEC 1.1, 11, 12).
+"""Claude API client for copy drafts and QA, reply classification, drafts and readout notes (SPEC 1.1, 11, 12).
 
 Uses the official anthropic SDK with structured outputs (output_config.format =
 json_schema), so every answer is one JSON object matching the caller's schema.
@@ -9,6 +9,11 @@ refused if that spend plus a conservative estimate of this call would pass the c
 small reserve. After each call its actual cost, from response.usage, is written to the
 ledger. A model with no price here is refused, so the cap cannot be passed silently.
 Prompt text is never logged.
+
+effort sets output_config.effort. Sonnet 5.5 and Opus 5.5 think before answering, the thinking
+is billed as output and counts against max_tokens, and Sonnet's default effort is high
+(docs/gtm-review/04-tool-capabilities.md §5). A caller that leaves effort out gets the model's
+default, as before.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ PRICES: dict[str, Price] = {
     "claude-haiku-4-5": Price(input=1.0, output=5.0, cache_read=0.10),
     "claude-sonnet-5-5": Price(input=2.0, output=10.0, cache_read=0.20),
     "claude-opus-5-5": Price(input=4.0, output=20.0, cache_read=0.20),
+    "claude-fable-5-1": Price(input=10.0, output=50.0, cache_read=0.25),
 }
 
 CHARS_PER_TOKEN = 3.5  # deliberately low, so the estimate errs high
@@ -51,6 +57,7 @@ OVERHEAD_TOKENS = 300  # the system prompt structured outputs adds, plus message
 # Held back from the cap for estimate error and jobs calling at the same time.
 CAP_RESERVE_SHARE = 0.01
 TIMEOUT_SECONDS = 120.0
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # output_config.effort
 
 
 class ClaudeError(Exception):
@@ -94,6 +101,19 @@ def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def estimate_call_usd(model: str, system: str, prompt: str, schema: dict, max_tokens: int) -> float:
+    """An upper-leaning estimate of one call: input from characters, output at the full max_tokens.
+
+    Needs no key, so a dry run can say what a live one would spend. A model with no price is refused.
+    """
+    price = PRICES.get(model)
+    if price is None:
+        raise ClaudeError(f"no price for Claude model {model!r}; add it to PRICES before using it")
+    chars = len(system) + len(prompt) + len(jsonlib.dumps(schema))
+    input_tokens = chars / CHARS_PER_TOKEN + OVERHEAD_TOKENS
+    return (input_tokens * price.input + max_tokens * price.output) / 1_000_000
 
 
 def usage_cost_usd(price: Price, usage: Any) -> float:
@@ -152,10 +172,7 @@ class Claude:
 
     def estimate_usd(self, system: str, prompt: str, schema: dict, max_tokens: int) -> float:
         """An upper-leaning estimate: input from characters, output at the full max_tokens."""
-        price = self._price()
-        chars = len(system) + len(prompt) + len(jsonlib.dumps(schema))
-        input_tokens = chars / CHARS_PER_TOKEN + OVERHEAD_TOKENS
-        return (input_tokens * price.input + max_tokens * price.output) / 1_000_000
+        return estimate_call_usd(self.model, system, prompt, schema, max_tokens)
 
     # -- the call ----------------------------------------------------------------
 
@@ -168,11 +185,18 @@ class Claude:
         max_tokens: int = 1024,
         purpose: str = "classify",
         now: datetime | None = None,
+        timeout: float | None = None,
+        effort: str | None = None,
     ) -> dict:
         """One structured-output call; returns the parsed JSON object."""
         import anthropic
 
         _check_schema(schema)
+        if effort is not None and effort not in EFFORTS:
+            raise ValueError(f"effort must be one of {', '.join(EFFORTS)}, not {effort!r}")
+        output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": schema}}
+        if effort is not None:
+            output_config["effort"] = effort
         now = _as_utc(now) or datetime.now(UTC)
         price = self._price()
         spent = self.month_spend_usd(now)
@@ -187,13 +211,16 @@ class Claude:
             )
 
         self.guard.authorize("claude", Op("messages.create", target=self.model, detail={"purpose": purpose}))
+        client = self.client
+        if timeout is not None and hasattr(client, "with_options"):
+            client = client.with_options(timeout=timeout)  # a long draft outlasts the default timeout
         try:
-            response = self.client.messages.create(
+            response = client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=system,
                 messages=[{"role": "user", "content": prompt}],
-                output_config={"format": {"type": "json_schema", "schema": schema}},
+                output_config=output_config,
             )
         except anthropic.RateLimitError as exc:
             log("claude_error", model=self.model, purpose=purpose, status=429, kind="rate_limit")
