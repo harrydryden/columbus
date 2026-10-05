@@ -31,6 +31,7 @@ HARRY_CAMPAIGN = "US Outbound – Harry Dryden"
 CONTRACT_KEYS = {
     "state", "outcome", "owner", "mailbox", "campaign", "lead", "copy_version", "angle", "test_id", "opener_arm",
     "opener_source", "industry", "industry_group", "role", "tier", "score", "send_day", "edited", "original", "reason",
+    "subject_arm",  # email 1's subject arm (Harry, 5 Oct 2026)
 }
 
 

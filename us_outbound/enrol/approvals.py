@@ -85,7 +85,8 @@ with handled_at and handled_by (a Slack user id, "cli", or "system" for an expir
 has state (waiting, rejected, editing, sending, done), outcome ("" while open, then approved,
 approved_edited, contact_rejected, company_rejected, expired or blocked), owner, mailbox, campaign,
 lead (the Instantly lead, custom variables included), copy_version, angle, test_id, opener_arm,
-opener_source, industry, industry_group, role, tier, score, send_day (YYYY-MM-DD, UK), edited,
+opener_source, subject_arm (personal or copy: email 1's subject, render.subject_arm; Harry, 5 Oct 2026),
+industry, industry_group, role, tier, score, send_day (YYYY-MM-DD, UK), edited,
 original (the first custom variables once edited, else {}) and reason (why blocked or expired, else
 ""); and the keys this module keeps for itself (expires_on, the card's facts, the steps as text and as
 editable source, the render variables, approve_ts, seen_ts, choices_ts, ...). Each closing decision is
@@ -404,6 +405,7 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
         "state": WAITING, "outcome": "", "owner": p.owner, "mailbox": p.mailbox,
         "campaign": queue.campaign_name(p.owner), "lead": dict(p.lead), "copy_version": p.copy_version,
         "angle": p.angle, "test_id": p.test_id, "opener_arm": p.opener_arm, "opener_source": p.opener_source,
+        "subject_arm": p.subject_arm,
         "industry": _text(a.get("industry")), "industry_group": group, "role": _text(c.get("role")),
         "tier": _text(a.get("tier")), "score": a.get("score"), "send_day": send_day.isoformat(),
         "edited": False, "original": {}, "reason": "",
@@ -978,6 +980,8 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
         copy_version=_text(p.get("copy_version")), angle=_text(p.get("angle")), test_id=_text(p.get("test_id")),
         lead=dict(p.get("lead") or {}), opener_arm=_text(p.get("opener_arm")) or openers.NONE,
         opener_source=_text(p.get("opener_source")),
+        # A card posted before the split (5 Oct 2026) was rendered with the Copy row's subject.
+        subject_arm=_text(p.get("subject_arm")) or render.COPY_SUBJECT,
     )
 
 

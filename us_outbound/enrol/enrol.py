@@ -31,8 +31,9 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      contact's role, else its group's, else General; the running test's hash split takes
      half of version_a's accounts), its opener for that contact (enrol/openers.py: the angle
      setter's line for the contact's copy role, filled with the account's stored facts, or none,
-     and the opener_holdout_share held out with none), its four rendered emails (any copy-rule
-     violation skips it), and a HubSpot
+     and the opener_holdout_share held out with none), its email-1 subject arm (render.subject_arm: the
+     email1_subject_share get General email1_subject, the rest the Copy row's s1_subject; Harry, 5 Oct 2026),
+     its four rendered emails (any copy-rule violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
      rendered steps as custom variables. A lead the add summary leaves out is looked up in the
@@ -50,8 +51,9 @@ enrolled. With auto_send = no no item is written; a few cards are posted to the 
 as a preview. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
 contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
-campaign and lead id, and its opener arm and source (opener, holdout or none; which line), so the
-readout can compare opener against none.
+campaign and lead id, its opener arm and source (opener, holdout or none; which line), so the
+readout can compare opener against none, and its subject arm (personal or copy), so it can compare
+email 1's personal subject against the Copy row's.
 Sent events come later, from sync_outcomes.
 """
 
@@ -601,6 +603,7 @@ class Prepared:
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
     opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
+    subject_arm: str = render.COPY_SUBJECT  # personal or copy: email 1's subject (contacts.subject_arm)
     # What a send approval's card shows and an edit re-renders with (enrol/approvals.py): the four emails
     # as rendered, the variables they were filled with, and the mailbox they were rendered for.
     rendered: list[render.Rendered] = field(default_factory=list)
@@ -651,7 +654,8 @@ def prepare(
     if note:  # every filled opener goes through the copy rules once more, as it will be sent
         op = openers.Opener("", openers.NONE, "", (*op.notes, note))
     values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
-    rendered = render.render_sequence(row, values, mailbox=mb, settings=s)
+    arm = render.subject_arm(a.get("account_id"), s)  # Harry, 5 Oct 2026: email 1's personal subject, as a split
+    rendered = render.render_sequence(row, values, mailbox=mb, settings=s, subject_arm=arm)
     problems = render.violations(rendered)
     if problems:
         return Skip("copy blocked", [f"{row.copy_version}: {p}" for p in problems])
@@ -675,7 +679,7 @@ def prepare(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
-        rendered=rendered, values=values, render_mailbox=mb.address,
+        subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address,
     )
 
 
@@ -690,6 +694,7 @@ class _Run:
     opener_fallbacks: list[dict] = field(default_factory=list)
     opener_arms: Counter[str] = field(default_factory=Counter)  # opener, holdout, none
     opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus", "opener_generic_ops"
+    subject_arms: Counter[str] = field(default_factory=Counter)  # personal, copy
     copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 
@@ -738,6 +743,7 @@ def _walk(
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
         run.opener_arms[p.opener_arm] += 1
+        run.subject_arms[p.subject_arm] += 1
         if p.opener_source:
             run.opener_sources[p.opener_source] += 1
         if p.copy_note:
@@ -808,8 +814,9 @@ def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict
 
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
     """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
-    and what the account looked like then: its signals, score and tier (signals_now); and where the contact's
-    details came from and the lawful basis (render.data_record), kept here since no email carries it."""
+    its opener and subject arms (the readout's two splits), and what the account looked like then: its signals,
+    score and tier (signals_now); and where the contact's details came from and the lawful basis
+    (render.data_record), kept here since no email carries it."""
     accounts, contacts = [], []
     record = render.data_record(ctx.settings)
     signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
@@ -832,6 +839,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "instantly_lead_id": ids[i],
             "opener_arm": p.opener_arm,
             "opener_source": p.opener_source or None,
+            "subject_arm": p.subject_arm,
             "signals_at_enrol": signals.get(str(p.account["account_id"]), []),
             "score_at_enrol": p.account.get("score"),
             "tier_at_enrol": p.account.get("tier") or None,
@@ -966,6 +974,7 @@ def run(ctx: Context) -> dict:
         excluded=r.excluded,
         opener_fallbacks=r.opener_fallbacks,
         openers={"arms": dict(r.opener_arms), "sources": dict(r.opener_sources)},
+        subjects={"arms": dict(r.subject_arms)},
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
         errors=r.errors,

@@ -250,6 +250,21 @@ _GENERAL: list[tuple[str, str, str]] = [
         "I came across {company} and its work on {focus}.",
         "The line opener_focus uses. Tokens: {company}, {focus}, {city}. Added by the build.",
     ),
+    (
+        "email1_subject",
+        General.email1_subject,
+        "Email 1's personal subject, for the email1_subject_share of companies: short, lower case and about the "
+        "reader, so mail filters and people read it as personal mail. Variables: {{company}}, {{first_name}}. "
+        "Emails 2 to 4 keep the Copy row's subjects. Added by the build (Harry, 5 Oct 2026).",
+    ),
+    (
+        "email1_subject_share",
+        "0.5",
+        "Share of companies whose email 1 uses email1_subject instead of the Copy row's s1_subject, chosen by a "
+        "hash of the account id (independent of the opener holdout), so replies can compare the two "
+        "(contacts.subject_arm; `us-outbound signals review`). 0: every email 1 keeps the Copy row's subject. "
+        "Added by the build (Harry, 5 Oct 2026).",
+    ),
 ]
 
 # -- Signals (SPEC 5, every one editable) --------------------------------------

@@ -83,6 +83,40 @@ def test_a_contact_enrolled_before_the_snapshot_uses_the_current_matches():
     assert c.signals == frozenset({"Named by Harry"}) and c.tier == "Control"  # tier from the account row
 
 
+def subject_world(personal, copy_, before=0):
+    """personal and copy_: (emailed, replied) by email 1's subject arm; before: contacts enrolled before the split."""
+    rows, arms = [], {}
+    for arm, (n, k) in (("personal", personal), ("copy", copy_)):
+        for i in range(n):
+            rows.append((f"{arm}{i}", 20, [], "Control", "positive" if i < k else None))
+            arms[f"k-{arm}{i}"] = arm
+    rows += [(f"old{i}", 20, [], "Control", "positive") for i in range(before)]
+    ctx = world(rows)
+    for cid, arm in arms.items():
+        ctx.store.update("contacts", {"contact_id": cid}, {"subject_arm": arm})
+    return ctx
+
+
+def test_the_review_reads_email_1_s_subject_split_with_the_same_test():
+    """Harry, 5 Oct 2026: the personal subject (General email1_subject) against the Copy row's s1_subject, by
+    contacts.subject_arm; a contact enrolled before the split has none and is left out."""
+    r = signal_review.review(subject_world((40, 20), (40, 4), before=5))
+    v = r.subject
+    assert (v.with_n, v.with_replied, v.without_n, v.without_replied, v.verdict) == (40, 20, 40, 4, "raise")
+    assert v.p == signal_review.p_value(40, 20, 40, 4) < signal_review.P_VALUE
+    assert ("Email 1 subject (General email1_subject_share): personal 40 companies, 50.0% replied vs the Copy row's "
+            "40, 10.0% · p = 0.00: the personal subject replies more: keep it, or raise email1_subject_share."
+            ) in signal_review.lines(r)
+    lower = signal_review.review(subject_world((40, 4), (40, 20))).subject
+    assert lower.verdict == "lower" and "the Copy row's subject replies more" in signal_review.subject_line(lower)
+    few = signal_review.review(subject_world((29, 20), (40, 4))).subject  # MIN_COMPANIES in each arm
+    assert few.verdict == "too few"
+    assert signal_review.subject_line(few).endswith(": too few to judge (under 30 emailed companies in an arm).")
+    none = signal_review.review(world([("a", 20, [], "Control", None)]))
+    assert ("Email 1 subject (General email1_subject_share): personal 0 companies, - replied vs the Copy row's 0, -: "
+            "too few to judge (under 30 emailed companies in an arm).") in signal_review.lines(none)
+
+
 def test_the_monday_post_says_when_the_review_is_worth_reading():
     few = world([(f"a{i}", 20, [], "Control", None) for i in range(59)])
     assert signal_review.ready(few) == ""

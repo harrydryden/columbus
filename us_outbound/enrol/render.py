@@ -15,6 +15,13 @@ to action.
     and so does copy that is not approved or has not passed QA in its current wording.
   * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
     custom_variables() turns them into the lead's Instantly custom variables.
+  * subject_arm() is email 1's subject arm (Harry, 5 Oct 2026: a personal subject, as a measured split). The
+    General email1_subject_share of accounts, by sha256 of the salted account id (its own salt, so the split is
+    independent of the opener holdout's), are personal: email 1's subject is General email1_subject ("support
+    for the {{company}} team") instead of the Copy row's s1_subject. The rest are copy. Emails 2 to 4 keep the
+    Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so the send card, the
+    auto_send path, `copy preview` and `seed send` show the subject that is sent; enrol records the arm on the
+    contact (contacts.subject_arm), and `signals review` and the daily post compare the arms' replies.
   * pick_opener() falls back to "" when the evidence opener breaks a copy rule (for
     example "unlimited PTO" quoted from a benefits page): the opener line then disappears.
   * max_rendered_lengths() is the phase-0 probe for Instantly's custom-variable limit.
@@ -22,6 +29,7 @@ to action.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import re
@@ -50,6 +58,12 @@ SIGNATURE_TEMPLATE = "signature.txt"
 SIGNATURE_STYLE = "margin:16px 0 0;font-size:13px;line-height:1.5;color:#555555"
 SIGNATURE_NAME_STYLE = "color:#222222"
 LAWFUL_BASIS = "legitimate interests: telling businesses about Spill"
+
+# Email 1's subject arm (contacts.subject_arm; Harry, 5 Oct 2026): General email1_subject, or the Copy row's s1_subject.
+PERSONAL_SUBJECT, COPY_SUBJECT = "personal", "copy"
+SUBJECT_ARMS = (PERSONAL_SUBJECT, COPY_SUBJECT)
+SUBJECT_SALT = "email1-subject:"  # not openers.HOLDOUT_SALT: the two splits never line up
+SUBJECT_STEP = 1  # only email 1's subject changes
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
 # (General price_from). SPEC 4's price-by-size table is not quoted.
@@ -191,6 +205,24 @@ def pick_opener(
     return opener, ""
 
 
+# -- email 1's subject arm (Harry, 5 Oct 2026) ---------------------------------------------------
+
+
+def subject_arm(account_id: Any, settings: Settings) -> str:
+    """personal or copy, for the account: personal when sha256 of the salted account id falls below General
+    email1_subject_share (openers.in_holdout's rule, with its own salt), and email1_subject is not blank."""
+    g = settings.general
+    if not g.email1_subject.strip():
+        return COPY_SUBJECT
+    h = int(hashlib.sha256((SUBJECT_SALT + str(account_id)).encode()).hexdigest()[:15], 16)
+    return PERSONAL_SUBJECT if h / 16**15 < g.email1_subject_share else COPY_SUBJECT
+
+
+def email1_subject(arm: str, settings: Settings) -> str:
+    """Email 1's subject as written for the arm: General email1_subject when personal, else "" (the Copy row's)."""
+    return settings.general.email1_subject.strip() if arm == PERSONAL_SUBJECT else ""
+
+
 # -- templates ---------------------------------------------------------------------------
 
 
@@ -254,14 +286,18 @@ def data_record(settings: Settings) -> dict[str, Any]:
 
 def render_step(
     copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings,
-    for_send: bool = True,
+    for_send: bool = True, subject: str = "",
 ) -> Rendered:
     """One email, signature included, with every copy-rule violation.
 
-    for_send=False leaves out the approval and QA checks, for previews and the sheet check.
+    for_send=False leaves out the approval and QA checks, for previews and the sheet check. subject, when given,
+    is the subject as written in place of the Copy row's (email 1's personal subject, email1_subject), and goes
+    through the same rules.
     """
     g = settings.general
     st = copy_row.step(step)
+    if subject.strip():
+        st = replace(st, subject=subject)
     problems: list[str] = []
     if for_send and copy_row.status != "approved":
         problems.append(f"copy {copy_row.copy_version} is {copy_row.status or 'blank'}, not approved")
@@ -297,9 +333,15 @@ def render_step(
 
 def render_sequence(
     copy_row: CopyRow, variables: Mapping[str, str], *, mailbox: Mailbox, settings: Settings, for_send: bool = True,
+    subject_arm: str = COPY_SUBJECT,
 ) -> list[Rendered]:
-    """Emails 1 to 4 of one Copy row, and the sequence's own check: it links the industry page."""
-    out = [render_step(copy_row, variables, step=n, mailbox=mailbox, settings=settings, for_send=for_send)
+    """Emails 1 to 4 of one Copy row, and the sequence's own check: it links the industry page.
+
+    subject_arm personal gives email 1 the General email1_subject; emails 2 to 4 keep the Copy row's subjects.
+    """
+    first = email1_subject(subject_arm, settings)
+    out = [render_step(copy_row, variables, step=n, mailbox=mailbox, settings=settings, for_send=for_send,
+                       subject=first if n == SUBJECT_STEP else "")
            for n in STEPS]
     page = str(variables.get("industry_url") or "").strip()
     uses = any("industry_url" in copy_markup.VARIABLE.findall(copy_row.step(n).body) for n in STEPS)
@@ -366,10 +408,13 @@ def max_rendered_lengths(settings: Settings, copy_versions: Iterable[str] | None
     rows = [c for c in settings.copy if wanted is None or c.copy_version in wanted]
     mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
     out = {f"s{step}_{part}": 0 for step in STEPS for part in ("subject", "body")}
+    arms = SUBJECT_ARMS if settings.general.email1_subject.strip() else (COPY_SUBJECT,)
     for row in rows:
         values = max_length_variables(row, settings)
         for mb in mailboxes:
-            cv = custom_variables(render_sequence(row, values, mailbox=mb, settings=settings, for_send=False))
-            for k, v in cv.items():
-                out[k] = max(out[k], len(v))
+            for arm in arms:
+                cv = custom_variables(render_sequence(row, values, mailbox=mb, settings=settings, for_send=False,
+                                                      subject_arm=arm))
+                for k, v in cv.items():
+                    out[k] = max(out[k], len(v))
     return out

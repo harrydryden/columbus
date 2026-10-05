@@ -813,10 +813,13 @@ def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, r
 def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: Any) -> Any:
     """copy preview: the sample prospect (with --opener, a real Signals-tab line filled with sample facts, or
     with --generic the General tab's generic line), or with --account a stored account, its contact and the
-    opener enrol would give it (no model call)."""
+    opener enrol would give it (no model call). Email 1's subject is the account's own arm, or with --subject
+    personal|copy that arm (General email1_subject, or the Copy row's s1_subject; Harry, 5 Oct 2026)."""
     from us_outbound.enrol import enrol, openers
     from us_outbound.settings.model import ROLE_LINE_COLUMNS
 
+    if args.subject == "personal" and not settings.general.email1_subject.strip():
+        raise Refused("email1_subject is blank on the General tab, so there is no personal subject to show")
     if not args.account:
         rows = _pick_rows(settings, args.version, args.industry, args.role or "")
         if not rows:
@@ -832,7 +835,8 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
             except ValueError as exc:
                 raise Refused(str(exc)) from None
             note = f"{text or 'none'} ({note})"
-        return copy_desk.preview(rows[0], settings, role=role, sender=args.sender or "", opener=text, opener_note=note)
+        return copy_desk.preview(rows[0], settings, role=role, sender=args.sender or "", opener=text, opener_note=note,
+                                 subject_arm=args.subject or "")
     domain = args.account.strip().lower()
     account = next(iter(ctx.store.select("accounts", {"domain": domain})), None)
     if account is None:
@@ -855,7 +859,7 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
     if why:
         note += f". The contact is not sendable yet: {why}"
     return copy_desk.preview(row, settings, role=role, sender=args.sender or "", opener=op.text, opener_note=note,
-                             account=account, contact=contact)
+                             account=account, contact=contact, subject_arm=args.subject or "")
 
 
 def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
@@ -1319,12 +1323,12 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     ctx = factory(seed.JOB, args.live, operator=True)
     try:
         summary = run_job(ctx, lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "",
-                                                   role=args.role or ""))
+                                                   role=args.role or "", subject=args.subject))
     except (LookupError, ValueError) as exc:
         raise Refused(str(exc)) from exc
     print(f"Seed email for {summary['address']}, from {summary['sender']} ({summary['campaign']}, "
           f"{summary['campaign_status']}), copy {summary['copy_version']} ({summary['copy_status']}, {summary['role']}):")
-    print(f"  Subject: {summary['subject']}")
+    print(f"  Subject: {summary['subject']} ({seed.SUBJECT_NOTES[summary['subject_arm']]})")
     for line in summary["email_1"].splitlines():
         print(f"  {line}" if line else "")
     if ctx.dry_run:
@@ -1478,6 +1482,9 @@ def build_parser() -> argparse.ArgumentParser:
     sd.add_argument("--owner", help="send: whose campaign sends it, e.g. \"Hannah Spalding\"")
     sd.add_argument("--industry", help="send: whose Copy row to use (default: the first active industry)")
     sd.add_argument("--role", help="send: the copy role (default: People leader)")
+    sd.add_argument("--subject", choices=["personal", "copy"], default="copy",
+                    help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
+                         "s1_subject, the default)")
 
     kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
     kr.add_argument("action", choices=["show", "clear"])
@@ -1513,6 +1520,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "opener_generic_*; Control accounts too)")
     co.add_argument("--account", metavar="DOMAIN",
                     help="preview: a stored account, its contact and the opener enrol would give it")
+    co.add_argument("--subject", choices=["personal", "copy"],
+                    help="preview: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
+                         "s1_subject); default: a stored account's own arm, else copy")
     co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
     co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")

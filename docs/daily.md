@@ -102,6 +102,15 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
   QA pass, so run `us-outbound copy qa --live` after an edit, then `us-outbound sync`.
 - **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
   hold (docs/roadmap.md §3).
+- **Email 1's subject split** (5 Oct 2026): half the companies (General `email1_subject_share`, 0.5)
+  get the personal subject `email1_subject` ("support for the {{company}} team"; `{{company}}` and
+  `{{first_name}}` only) in email 1 instead of the Copy row's. Emails 2 to 4 are unchanged. Each
+  company keeps its arm, and `us-outbound signals review` says which subject gets more replies once
+  each arm has 30 companies emailed. To change the subject or the share, edit them on the General tab,
+  then `us-outbound sync`; 0 sends every email 1 with the Copy row's subject. The first time, run
+  `us-outbound settings load --tab General --live` to add the two keys to the sheet. To see the
+  personal subject: `copy preview --subject personal`, or `seed send ADDRESS --owner NAME --subject
+  personal --live` for a seed inbox.
 
 ## Monthly
 
@@ -153,7 +162,7 @@ commands instead.
 | `sync` | Brings sheet edits into force now |
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
-| `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link |
+| `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
 | `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`) | Send cards without Slack |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |

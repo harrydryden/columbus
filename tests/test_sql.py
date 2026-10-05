@@ -48,7 +48,7 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
-                 "tier_at_enrol", "data_record"},
+                 "tier_at_enrol", "data_record", "subject_arm"},
     "suppression": {"expires_at"},
 }
 # Tables the build adds, with the layouts every agent codes to.
@@ -106,6 +106,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     },
     ("contacts", "email_source"): {"apollo", "clay"},
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
+    ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)

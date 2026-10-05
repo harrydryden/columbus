@@ -117,6 +117,8 @@ GENERIC_OPENER_KEYS = {"People leader": "opener_generic_people", "Founder or exe
                        "Operations": "opener_generic_ops"}
 GENERIC_OPENER_KEY = "opener_generic"
 GENERIC_LINE_TOKENS = ("company", "city")
+# The {{variables}} General email1_subject may use (Harry, 5 Oct 2026: a personal subject for email 1).
+EMAIL1_SUBJECT_VARIABLES = ("company", "first_name")
 # Condition fields that make a signal about one person, so its opener_self line can apply.
 PERSON_FIELDS = frozenset({"people_leader_days_in_title"})
 # The Roles tab's two size columns and the range each covers (SPEC 5 "Who to contact first").
@@ -223,6 +225,13 @@ class General:
         "Pressure in work and life seems to keep rising, and it hardly ever waits for a convenient week.")
     opener_focus: bool = False
     opener_focus_line: str = "I came across {company} and its work on {focus}."
+    # (build) Harry, 5 Oct 2026: a personal subject for email 1, as a measured split. Mail filters (Superhuman,
+    # Gmail) and people read a short, lower-case subject about the recipient as personal mail; the Copy rows'
+    # subjects read like headlines. email1_subject_share of accounts, by a hash of the account id (its own salt,
+    # so it is independent of the opener holdout), get email1_subject instead of the Copy row's s1_subject;
+    # emails 2 to 4 keep the Copy row's subjects (render.subject_arm; contacts.subject_arm).
+    email1_subject: str = "support for the {{company}} team"
+    email1_subject_share: float = 0.5
 
 
 @dataclass(frozen=True)

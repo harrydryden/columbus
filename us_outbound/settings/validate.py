@@ -23,7 +23,8 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from us_outbound.clean.people import title_key
-from us_outbound.enrol.copy_rules import money_violations
+from us_outbound.enrol import copy_markup
+from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
@@ -31,6 +32,7 @@ from us_outbound.settings.model import (
     CLAY_VERIFICATION_MODES,
     COPY_STATUSES,
     COPY_STEPS,
+    EMAIL1_SUBJECT_VARIABLES,
     EMAIL_FORMATS,
     FOCUS_LINE_TOKENS,
     GENERAL_COPY,
@@ -499,6 +501,28 @@ def _line_problems(value: str, tokens: Iterable[str]) -> list[str]:
     return problems + money_violations(value)
 
 
+# copy_desk's sample prospect (Harbor & Finch, Dana): email1_subject is checked as it reads for them.
+_SAMPLE_SUBJECT_VALUES = {"company": "Harbor & Finch", "first_name": "Dana"}
+_HTML_TAG = re.compile(r"</?\s*[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")
+
+
+def email1_subject_problems(value: str) -> list[str]:
+    """General email1_subject (Harry, 5 Oct 2026), checked as a subject: {{company}} and {{first_name}} only, no
+    markup (a subject is plain text, as render_step requires of a Copy row's), and the subject copy rules on it as
+    it reads for the sample prospect (copy_rules.subject_violations), within SUBJECT_MAX characters."""
+    allowed = " and ".join(f"{{{{{v}}}}}" for v in EMAIL1_SUBJECT_VARIABLES)
+    out = [f"may use only {allowed}, not {{{{{name}}}}}"
+           for name in _VARIABLE.findall(value) if name not in EMAIL1_SUBJECT_VARIABLES]
+    out += [f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}"
+            for name in _SINGLE_BRACE.findall(value)]
+    if copy_markup.links(value) or "**" in value or _HTML_TAG.search(value):
+        out.append("has markup; a subject is plain text")
+    if out:
+        return list(dict.fromkeys(out))
+    filled, _ = copy_markup.fill_text(value, _SAMPLE_SUBJECT_VALUES)
+    return subject_violations(filled, exempt=_SAMPLE_SUBJECT_VALUES.values())
+
+
 def _check_general_value(key: str, value: Any) -> None:
     hint = _GENERAL_TYPES[key]
     if hint in (int, float) and value < 0:
@@ -509,6 +533,12 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
     if key == "opener_holdout_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")
+    if key == "email1_subject_share" and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.5 for half of the email 1s with email1_subject")
+    if key == "email1_subject" and value:
+        problems = email1_subject_problems(value)
+        if problems:
+            raise ValueError("; ".join(problems))
     if key == "opener_focus_line" and value:
         problems = _line_problems(value, FOCUS_LINE_TOKENS)
         if not problems and "{focus}" not in value.replace(" ", ""):
@@ -604,6 +634,9 @@ def _general(rows: list[_Row]) -> General:
         err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
     if g.live_sending and not g.approver_slack_ids:
         err("live_sending", "cannot be yes while approver_slack_ids is blank")
+    if g.email1_subject_share > 0 and not g.email1_subject.strip():
+        err("email1_subject", f"cannot be blank while email1_subject_share is above 0 ({g.email1_subject_share:g}); "
+                              "write a subject, or set the share to 0")
     return g
 
 
