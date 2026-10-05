@@ -36,7 +36,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.claude import estimate_call_usd
-from us_outbound.clients.instantly import UNSUBSCRIBE_TEXT
+from us_outbound.clients.instantly import OLD_UNSUBSCRIBE_TEXT, UNSUBSCRIBE_TEXT
 from us_outbound.context import ET, Context
 
 CLASSES = (
@@ -131,7 +131,7 @@ _QUOTE_HEAD = re.compile(
 _HEADER_FIELD = re.compile(r"^(?:Sent|Date|To|Subject|Cc):", re.IGNORECASE)
 # Our own lines, which a mail client can leave unquoted: the unsubscribe line, the notice, the signature.
 OUR_LINES = (
-    UNSUBSCRIBE_TEXT.lower(), "where we got your details", "legitimate interests in telling businesses about spill",
+    UNSUBSCRIBE_TEXT.lower(), OLD_UNSUBSCRIBE_TEXT.lower(), "where we got your details", "legitimate interests in telling businesses about spill",
     "on-demand counseling for your team", "our trustpilot reviews", "book a call here",
 )
 _TAG = re.compile(r"<[^>]+>")

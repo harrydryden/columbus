@@ -66,9 +66,16 @@ NOT_RETURNED = frozenset({"is_evergreen"})
 # PHASE0-CONFIRM: that the tag is {{unsubscribe}} and becomes the link's URL, by a test send to a seed
 # inbox in both formats (Instantly's editor offers it as "Insert unsubscribe link").
 UNSUBSCRIBE_TAG = "{{unsubscribe}}"
-UNSUBSCRIBE_TEXT = "To stop hearing from us, unsubscribe here"
-UNSUBSCRIBE_HTML = f'<p><a href="{UNSUBSCRIBE_TAG}">{UNSUBSCRIBE_TEXT}</a>.</p>'
+# Harry, 5 Oct 2026: plainer words in small grey type, so the line reads as part of a personal email
+# rather than a bulk-mail footer; the link and the List-Unsubscribe header are unchanged.
+UNSUBSCRIBE_ASK = "Not relevant?"
+UNSUBSCRIBE_ANCHOR = "Unsubscribe here"
+UNSUBSCRIBE_TEXT = f"{UNSUBSCRIBE_ASK} {UNSUBSCRIBE_ANCHOR}"
+UNSUBSCRIBE_STYLE = "font-size:12px;color:#888888"
+UNSUBSCRIBE_HTML = (f'<p style="{UNSUBSCRIBE_STYLE}">{UNSUBSCRIBE_ASK} '
+                    f'<a href="{UNSUBSCRIBE_TAG}" style="color:#888888">{UNSUBSCRIBE_ANCHOR}</a>.</p>')
 UNSUBSCRIBE_PLAIN = f"\n\n{UNSUBSCRIBE_TEXT}: {UNSUBSCRIBE_TAG}"
+OLD_UNSUBSCRIBE_TEXT = "To stop hearing from us, unsubscribe here"  # emails sent before 5 Oct 2026
 
 
 def unsubscribe_line(text_only: bool = False) -> str:

@@ -623,8 +623,10 @@ def test_every_step_ends_with_instantly_s_unsubscribe_link():
     html, text = reg.campaign_steps(), reg.campaign_steps(text_only=True)
     assert [s["subject"] for s in html] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
     for i, (h, t) in enumerate(zip(html, text), start=1):
-        assert h["body"].startswith(f"<div>{{{{s{i}_body}}}}</div><p><a href=\"{UNSUBSCRIBE_TAG}\">")
-        assert t["body"] == f"{{{{s{i}_body}}}}\n\nTo stop hearing from us, unsubscribe here: {UNSUBSCRIBE_TAG}"
+        # Harry, 5 Oct 2026: plainer words in small grey type.
+        assert h["body"] == (f"<div>{{{{s{i}_body}}}}</div><p style=\"font-size:12px;color:#888888\">Not relevant? "
+                             f"<a href=\"{UNSUBSCRIBE_TAG}\" style=\"color:#888888\">Unsubscribe here</a>.</p>")
+        assert t["body"] == f"{{{{s{i}_body}}}}\n\nNot relevant? Unsubscribe here: {UNSUBSCRIBE_TAG}"
     assert CAMPAIGN_SETTINGS["insert_unsubscribe_header"] is True  # and the mail client's one-click button
 
 

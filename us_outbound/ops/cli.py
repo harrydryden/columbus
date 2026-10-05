@@ -1311,7 +1311,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
             print("PASS: Instantly shows the seed lead as unsubscribed (status -2), which is what sync_outcomes reads. "
                   "Set optout_tested = yes on the General tab, then run `us-outbound sync`.")
             return 0
-        print("Not yet: open the seed email, click \"unsubscribe here\" at the bottom, then run `us-outbound seed check` "
+        print("Not yet: open the seed email, click \"Unsubscribe here\" at the bottom, then run `us-outbound seed check` "
               "again (Instantly can take a minute or two).")
         return 1
     if not args.address or not args.owner:
@@ -1340,7 +1340,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
         print(f"Added. The campaign is {summary['campaign_status']}, so Instantly sends nothing yet. "
               f"`us-outbound start --live` activates it (it needs live_sending = yes; while optout_tested is no, "
               f"no prospect is added). Then Instantly sends it in the campaign's window: {window}.")
-    print("When it arrives: check it reads as formatted text with working links, click \"unsubscribe here\", then "
+    print("When it arrives: check it reads as formatted text with working links, click \"Unsubscribe here\", then "
           "run `us-outbound seed check`.")
     return 0
 
