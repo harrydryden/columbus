@@ -6,6 +6,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       holds), the jobs that failed or missed their heartbeat, mailboxes,
                                       this week's number and the campaigns
   golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
+  accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py):
+    [--tier T] [--industry TEXT]      a summary and the list in queue order, one company in full (exits 1
+    [--limit N] [--csv]               for a domain we do not hold), or a CSV to stdout (personal data)
   sync                                settings_sync now: the sheet's edits into force (jobs read the
                                       synced copy; settings_sync runs at 02:00, and 11:30 on weekdays).
                                       The same as `settings sync`
@@ -79,7 +82,7 @@ import threading
 import traceback
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1171,6 +1174,44 @@ def cmd_golive(args: argparse.Namespace, factory: Factory) -> int:
     return golive.exit_code(checks)
 
 
+# -- the companies and contacts we hold (Harry, 5 Oct 2026) -----------------------------------------
+
+
+def cmd_accounts(args: argparse.Namespace, factory: Factory) -> int:
+    """The companies and contacts we hold (ops/accounts_view.py): the database only, no heartbeat, no --live.
+    Exits 1 for a domain we hold no company for."""
+    from us_outbound.ops import accounts_view as view
+
+    try:
+        f = view.Filters.parse(args.status, args.tier, args.industry)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
+    if args.limit is not None and args.limit < 0:
+        raise Refused("--limit takes 0 (all) or more")
+    if args.domain and (f or args.limit is not None):
+        raise Refused("a domain shows one company; --status, --tier, --industry and --limit go with the list")
+    if args.csv:
+        # Every database read logs a JSON line to stdout (logs.log reads sys.stdout at each call): here they go to
+        # stderr, so stdout holds the CSV only (`railway ssh -- ... > companies.csv` runs without a terminal).
+        out = sys.stdout
+        with redirect_stdout(sys.stderr):
+            rows = view.csv_rows(factory("accounts", False), f, limit=args.limit, domain=args.domain)
+        if rows is None:
+            print(f"No company with domain {args.domain}.", file=sys.stderr)
+            return 1
+        view.write_csv(out, rows)
+        print(view.csv_note(rows), file=sys.stderr)
+        return 0
+    ctx = factory("accounts", False)
+    if args.domain:
+        found, lines = view.company(ctx, args.domain)
+    else:
+        found, lines = True, view.report(ctx, f, view.LIST_LIMIT if args.limit is None else args.limit)
+    for line in lines:
+        print(line)
+    return 0 if found else 1
+
+
 def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     """This week's hand-check without Slack (enrol/hand_check.py): show it, or approve it with pulls."""
     from us_outbound.enrol import hand_check
@@ -1211,6 +1252,57 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     if ctx.live:
         print(f"Approved {summary['iso_week']}; enrollment can go ahead"
               + (f", leaving out {len(summary['pulled_account_ids'])} pulled accounts." if summary["pulled_account_ids"] else "."))
+    return 0
+
+
+def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
+    """The seed-inbox test of the opt-out (ops/seed.py): add a seed lead to a campaign, or read seed leads back."""
+    from us_outbound.ops import seed
+
+    if args.action == "check":
+        _only_reads(args)
+        rows = seed.check(factory("seed_check", False, operator=True))
+        if not rows:
+            print("No seed lead in any US Outbound campaign yet: `us-outbound seed send ADDRESS --owner NAME --live`.")
+            return 1
+        for r in rows:
+            sent = f", last emailed {_fmt_time(r['last_contact'])}" if r["last_contact"] else ", not emailed yet"
+            print(f"{r['address']} in {r['campaign']} ({r['campaign_status']}): {r['status_text']}{sent}")
+        if any(r["unsubscribed"] for r in rows):
+            print("PASS: Instantly shows the seed lead as unsubscribed (status -2), which is what sync_outcomes reads. "
+                  "Set optout_tested = yes on the General tab, then run `us-outbound sync`.")
+            return 0
+        print("Not yet: open the seed email, click \"unsubscribe here\" at the bottom, then run `us-outbound seed check` "
+              "again (Instantly can take a minute or two).")
+        return 1
+    if not args.address or not args.owner:
+        raise Refused("seed send needs the seed inbox's address and --owner (whose campaign sends it)")
+    ctx = factory(seed.JOB, args.live, operator=True)
+    try:
+        summary = run_job(ctx, lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "",
+                                                   role=args.role or ""))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    print(f"Seed email for {summary['address']}, from {summary['sender']} ({summary['campaign']}, "
+          f"{summary['campaign_status']}), copy {summary['copy_version']} ({summary['copy_status']}, {summary['role']}):")
+    print(f"  Subject: {summary['subject']}")
+    for line in summary["email_1"].splitlines():
+        print(f"  {line}" if line else "")
+    if ctx.dry_run:
+        print("Dry-run: no lead was added. Add --live to add it.")
+        return 0
+    if not summary["added"]:
+        print(f"Not added: {summary.get('why')}.")
+        return 2
+    window = seed.send_window(ctx.settings)
+    if summary["campaign_status"] == "active":
+        print(f"Added. Instantly sends it in the campaign's window: {window}.")
+    else:
+        print(f"Added. The campaign is {summary['campaign_status']}, so Instantly sends nothing yet. "
+              f"`us-outbound start --live` activates it (it needs live_sending = yes; while optout_tested is no, "
+              f"no prospect is added). Then Instantly sends it in the campaign's window: {window}.")
+    print("When it arrives: check it reads as formatted text with working links, click \"unsubscribe here\", then "
+          "run `us-outbound seed check`.")
     return 0
 
 
@@ -1296,6 +1388,27 @@ def build_parser() -> argparse.ArgumentParser:
     # What Harry uses, in the order `--help` lists it.
     command("status", "the switches, what waits for you, jobs, mailboxes and campaigns", cmd_status)
     command("golive", "the read-only go/no-go check before the first sends", cmd_golive)
+    # The choices are written out here, so --help does not import the view (ops/accounts_view.py STATUSES, TIERS).
+    ac = command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV "
+                 "(read-only)", cmd_accounts)
+    ac.add_argument("domain", nargs="?", metavar="DOMAIN",
+                    help="one company in full: its facts, its contacts with their emails, signals, events and Slack "
+                         "cards (a domain or a web address)")
+    ac.add_argument("--status", action="append", metavar="STATUS",
+                    help="only companies with this status (repeat it, or a comma list): new, queued, verified, "
+                         "enrolled, engaged, demo_requested, demo_booked or disqualified")
+    ac.add_argument("--tier", action="append", metavar="TIER",
+                    help="only this tier (repeat it, or a comma list): Priority, Standard, Control, Held or Excluded")
+    ac.add_argument("--industry", metavar="TEXT",
+                    help="only companies whose industry or industry group contains this (any case)")
+    ac.add_argument("--limit", type=int, metavar="N",
+                    help="how many companies the list shows (default 25; 0 lists them all; the CSV holds every "
+                         "match unless --limit is given)")
+    ac.add_argument("--csv", action="store_true",
+                    help="write a CSV to stdout instead: one row per contact with its company's fields (a company "
+                         "with no contact gets one row), the same filters, times in UK time. It holds personal data "
+                         "(names and emails): save it with `railway ssh -- us-outbound accounts --csv > "
+                         "companies.csv`, keep it private and delete it when you are done")
     command("sync", "bring the sheet's edits into force now (the same as settings sync)", cmd_sync, takes_live=True)
     command("start", "sync the sheet, then resume the campaigns and enrollment", cmd_start, takes_live=True)
     command("stop", "pause every US Outbound campaign and enrollment (the brake)", cmd_stop, takes_live=True)
@@ -1315,6 +1428,14 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("item_id", nargs="?", help="send, skip: the id `replies list` shows (or its first characters)")
     rp.add_argument("--text", "--edit", dest="edit",
                     help="send: send this text instead of the draft (recorded as edited)")
+
+    sd = command("seed", "the seed-inbox test of the unsubscribe link: send a seed email, or check it",
+                 cmd_seed, takes_live=True)
+    sd.add_argument("action", choices=["send", "check"])
+    sd.add_argument("address", nargs="?", help="send: the seed inbox (one of ours, never a prospect's)")
+    sd.add_argument("--owner", help="send: whose campaign sends it, e.g. \"Hannah Spalding\"")
+    sd.add_argument("--industry", help="send: whose Copy row to use (default: the first active industry)")
+    sd.add_argument("--role", help="send: the copy role (default: People leader)")
 
     kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
     kr.add_argument("action", choices=["show", "clear"])
