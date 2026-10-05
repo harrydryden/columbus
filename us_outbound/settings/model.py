@@ -52,8 +52,11 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
          "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry",
          "description"}
     ),
+    # people_search_coverage (the people Apollo holds over the employees) and people_found: sources/apollo_people.py
+    # (Harry, 5 Oct 2026), so a People leader count of 0 is read only where Apollo's data is deep enough.
     "apollo_people": frozenset(
-        {"people_leader_count", "people_leader_days_in_title", "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
+        {"people_leader_count", "people_leader_days_in_title", "people_search_coverage", "people_found",
+         "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
     ),
     "apollo_jobs": frozenset({"open_people_roles", "open_roles", "posting_titles"}),  # sources/apollo_jobs.py
     "site_visits": frozenset({"us_visits_30d", "pricing_or_demo_visits_30d", "top_paths", "days_since_first_visit"}),

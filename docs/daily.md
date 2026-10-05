@@ -95,6 +95,13 @@ with `us-outbound accounts`: a summary, then the companies in queue order (`--st
 contacts' emails. For a spreadsheet, run `railway ssh -- us-outbound accounts --csv > companies.csv`
 on your own computer; it holds names and emails, so keep it private and delete it when you are done.
 
+**People leaders** (5 Oct 2026): each weekday at 04:20, before the queue is sorted, `apollo_people`
+looks up who leads People at every company in the queue in Apollo's free people search, so "New
+People leader" and "People leader in place" count for companies nobody has contacted yet. "First
+People hire (likely)" counts only where Apollo knows at least half the company's staff, so that
+finding no People leader there means something. Once, after this reaches the worker:
+`us-outbound settings load --tab Signals --live`, then `us-outbound sync`.
+
 **Don't edit rows by hand in Railway's Data tab.** An edit there bypasses the system's checks
 (suppression, one company per domain, a sender kept for life). Make changes with the sheet and the
 commands instead.

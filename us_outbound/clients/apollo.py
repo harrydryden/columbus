@@ -131,8 +131,15 @@ def postings_in(page: Mapping[str, Any]) -> list[dict]:
 
 
 def total_entries(page: Mapping[str, Any]) -> int | None:
-    """pagination.total_entries of a search or postings page, if Apollo gave it."""
-    value = (page.get("pagination") or {}).get("total_entries")
+    """The total_entries of a search or postings page, if Apollo gave it.
+
+    People API Search gives it at the top level ({"total_entries": 2, "people": [...]}, Apollo's MCP
+    tool on 5 Oct 2026; PHASE0-CONFIRM over REST); the organization search and job postings under
+    pagination.
+    """
+    value = page.get("total_entries")
+    if value is None:
+        value = (page.get("pagination") or {}).get("total_entries")
     try:
         return None if value is None else int(value)
     except (TypeError, ValueError):

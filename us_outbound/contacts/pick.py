@@ -14,7 +14,8 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      The batch stops when either runs out.
   3. Search (0 credits): Apollo People API Search at the organization, for the titles of every
      Roles-tab row contacted at the account's size, for people in the United States with an
-     email Apollo has verified.
+     email Apollo has verified. The People leaders it finds are written as apollo_people facts,
+     unless apollo_people's own fuller search (sources/apollo_people.py) is less than 30 days old.
   4. Rank (clean/people.rank_person): the Roles-tab order for the size, then seniority, then
      how well the title matches, then the newest in role. Left out: titles never contacted at
      this size, junior titles as a People leader, people located in CA, WA or outside the US
@@ -213,24 +214,29 @@ def search_titles(roles: Sequence[Role], employees: int | None, industry_group: 
     return out
 
 
-def search_filters(account: Mapping[str, Any], titles: Sequence[str]) -> dict[str, Any]:
+def organization_filter(account: Mapping[str, Any]) -> dict[str, Any]:
+    """The account's organization for People API Search: its Apollo id when it has one, else its domain."""
+    org = str(account.get("apollo_org_id") or "").strip()
+    if org:
+        return {"organization_ids": [org]}
+    return {"q_organization_domains_list": [_lower(account.get("domain"))]}
+
+
+def search_filters(account: Mapping[str, Any], titles: Sequence[str], *, verified_only: bool = True) -> dict[str, Any]:
     """People API Search at the account's organization, for these titles: people in the US with a verified email.
 
     Similar titles stay in (Apollo's default): the search is free, and every title is checked
-    against the Roles tab here.
+    against the Roles tab here. verified_only=False drops the email filter, for apollo_people's
+    count of everyone in a People role (sources/apollo_people.py), not only those we could email.
     """
     f: dict[str, Any] = {
         "person_titles": list(titles),
         "include_similar_titles": True,
         "person_locations": [US_LOCATION],
-        "contact_email_status": list(SEARCH_EMAIL_STATUSES),
     }
-    org = str(account.get("apollo_org_id") or "").strip()
-    if org:
-        f["organization_ids"] = [org]
-    else:
-        f["q_organization_domains_list"] = [_lower(account.get("domain"))]
-    return f
+    if verified_only:
+        f["contact_email_status"] = list(SEARCH_EMAIL_STATUSES)
+    return {**f, **organization_filter(account)}
 
 
 def search(ctx: Context, account: Mapping[str, Any], titles: Sequence[str]) -> list[dict]:
@@ -295,16 +301,14 @@ PEOPLE_LEADER = "People leader"
 NEWEST_LEADER_FACT = "people_leader_newest"  # who the newest People leader is (enrol/openers.py)
 
 
-def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
-                 today: date, now: datetime) -> list[dict]:
-    """apollo_people facts from the search pick_contacts already makes (no credits; 1 Oct 2026).
+def people_leaders(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
+                   today: date) -> list[tuple[int | None, Mapping[str, Any]]]:
+    """The People leaders among search rows, each with its days in title when Apollo gives them.
 
-    The People-leader signals ("New People leader", "People leader in place") read
-    people_leader_count and people_leader_days_in_title, which no other job writes. Only positive
-    evidence is written: the search returns people with a verified email only, so a count of 0
-    would not mean there is no People leader, and "First People hire" (count = 0) must not fire on it.
-    With the days in title goes people_leader_newest: that leader's Apollo person id and title, so
-    the opener can name the role, and congratulate the leader when they are the contact (Harry, 2 Oct 2026).
+    A People leader is someone this job would contact as one at the account's size (rank_person: a
+    Roles-tab row whose copy role is People leader, never on a junior title), not located outside the
+    US or in CA or WA (location_block). apollo_people counts them the same way, so the People signals
+    mean the same whichever job wrote them.
     """
     size, group = account_size(account), settings.industry_group_of(account)
     leaders: list[tuple[int | None, Mapping[str, Any]]] = []
@@ -314,23 +318,59 @@ def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]]
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is not None and not r.junior and r.role.writes_as == PEOPLE_LEADER:
             leaders.append((r.days_in_role, p))
+    return leaders
+
+
+def newest_known(leaders: Sequence[tuple[int | None, Mapping[str, Any]]]) -> tuple[int, Mapping[str, Any]] | None:
+    """The leader newest in title among those whose days in title are known, or None."""
+    known = [(d, p) for d, p in leaders if d is not None]
+    return min(known, key=lambda x: (x[0], str(x[1].get("id") or ""))) if known else None
+
+
+def leader_facts(account_id: str, count: int | None, newest: tuple[int, Mapping[str, Any] | None] | None,
+                 now: datetime) -> list[dict]:
+    """The People-leader facts (source apollo_people), as both this job and apollo_people write them.
+
+    count None writes no people_leader_count. newest is (days in title, that leader's search row): the
+    days go to people_leader_days_in_title and, when the row is known, people_leader_newest carries the
+    leader's Apollo person id and title, so the opener can name the role, and congratulate the leader
+    when they are the contact (Harry, 2 Oct 2026).
+    """
+    def row(fact: str, value: Any) -> dict:
+        return {"event_id": new_id(), "account_id": account_id, "source": PEOPLE_SOURCE, "fact": fact,
+                "value": value, "quote": "", "source_url": "", "observed_at": now}
+
+    rows = [] if count is None else [row("people_leader_count", count)]
+    if newest is not None:
+        days, person = newest
+        rows.append(row("people_leader_days_in_title", days))
+        if person is not None:
+            rows.append(row(NEWEST_LEADER_FACT, {"apollo_person_id": str(person.get("id") or ""),
+                                                 "title": " ".join(str(person.get("title") or "").split()),
+                                                 "days_in_title": days}))
+    return rows
+
+
+def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
+                 today: date, now: datetime) -> list[dict]:
+    """apollo_people facts from the search pick_contacts already makes (no credits; 1 Oct 2026).
+
+    Only positive evidence is written: this search returns people with a verified email only, so a
+    count of 0 would not mean there is no People leader. apollo_people's full search (weekdays 04:20)
+    is the one that may write 0, and pick_account keeps its result: these facts are written only when
+    that search has not been made within its REFRESH_DAYS.
+    """
+    leaders = people_leaders(account, people, settings, today)
     if not leaders:
         return []
-    aid = account["account_id"]
+    return leader_facts(account["account_id"], len(leaders), newest_known(leaders), now)
 
-    def row(fact: str, value: Any) -> dict:
-        return {"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE, "fact": fact, "value": value,
-                "quote": "", "source_url": "", "observed_at": now}
 
-    rows = [row("people_leader_count", len(leaders))]
-    known = [(d, p) for d, p in leaders if d is not None]
-    if known:
-        days, newest = min(known, key=lambda x: (x[0], str(x[1].get("id") or "")))
-        rows.append(row("people_leader_days_in_title", days))
-        rows.append(row(NEWEST_LEADER_FACT, {"apollo_person_id": str(newest.get("id") or ""),
-                                             "title": " ".join(str(newest.get("title") or "").split()),
-                                             "days_in_title": days}))
-    return rows
+def full_search_is_fresh(ctx: Context, account_id: str) -> bool:
+    """apollo_people searched the account within its REFRESH_DAYS, so its facts stand over this narrower view."""
+    from us_outbound.sources import apollo_people
+
+    return apollo_people.searched_recently(ctx.store, account_id, ctx.now)
 
 
 def rank_candidates(
@@ -577,8 +617,10 @@ def pick_account(
         return Outcome(NO_CONTACT, "no Roles-tab row is contacted at its size")
     people = search(ctx, account, titles)
     facts = people_facts(account, people, s, ctx.today_uk(), ctx.now)
-    if facts:
-        ctx.store.insert("signal_events", facts)  # read by the next rescore (settings_sync, 02:00)
+    # Read by the next rescore (settings_sync, 11:30 on weekdays). Not over apollo_people's fuller search, whose
+    # count of 0 and days in title this verified-email view could otherwise replace.
+    if facts and not full_search_is_fresh(ctx, account["account_id"]):
+        ctx.store.insert("signal_events", facts)
     if not people:
         return Outcome(NO_CONTACT, "nobody at Apollo with a Roles-tab title for its size, in the US, with a verified email",
                        detail={"found": 0})

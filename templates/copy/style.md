@@ -93,7 +93,7 @@ the next line in the cell is tried, then the signal's plain opener, then the gen
 then none. 30% of accounts get no opener at all, so we can measure whether openers help.
 
 **Signals are context, never the line** (Harry, 2 Oct 2026: "these are just signals"). For the hiring,
-People, growth and funding signals (New People leader, First People hire, People role open, Hiring and
+People, growth and funding signals (New People leader, First People hire (likely), People role open, Hiring and
 growth, and both funding rows), the signal tells us what the team is probably going through, and the
 line speaks to the pressure that tends to bring, then to support through it:
 

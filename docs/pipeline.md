@@ -94,7 +94,19 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 - **Status: `new`.**
 
 **2. Free signals: daily and weekly.**
-- **apollo_people** (free): people leaders, US headcount by state, the CA/WA share, and the candidate contacts for the Roles tab.
+- **apollo_people** (free; weekdays 04:20, before verify_accounts' rescore; Harry, 5 Oct 2026): for
+  every queue account with a known size, Apollo's people search (0 credits, no emails) at the
+  company for the Roles-tab People-leader titles at its size, in the US, with no email filter, and
+  once more for how many people Apollo holds there. It writes `people_leader_count`, the newest
+  leader's `people_leader_days_in_title` and `people_leader_newest`, `people_found` and
+  `people_search_coverage` (people found over employees: the employees count, else the top of the
+  size band). A count of 0 is written only at coverage 0.5 or more, so "First People hire (likely)"
+  fires only where finding nobody is meaningful. Search rows carry no start dates, so the days in
+  title come from the search's time-in-title filter, narrowed to within a week (up to 6 more
+  searches, for accounts with a leader in post less than 180 days). Never-searched accounts first,
+  then each again after 30 days; at most 150 accounts, 300 requests and 9 minutes a run, a request
+  every 1.5 seconds. `pick_contacts` still writes the People leaders its own search sees, but not
+  over a full search less than 30 days old. US headcount by state and the CA/WA share are not built.
 - **apollo_jobs**: open roles and open People roles.
 - **read_pages** (free; weekdays 03:45, before verify_accounts' rescore): the company's own careers,
   jobs and benefits pages (up to six pages, robots.txt respected, no JavaScript), then the
@@ -396,6 +408,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
 | — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
+| — | People leaders at every queue account (`apollo_people`, weekdays 04:20, 0 credits); "First People hire" replaced by "First People hire (likely)" (+20, 60 days), which also needs `people_search_coverage >= 0.5` | Harry, 5 Oct 2026: only 12 of 432 companies had People data, "New People leader" had fired on none, and nothing wrote a count of 0 | 5, 7, 9 | Done; `settings load --tab Signals --live` brings the new row and switches the old one off |
 | — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |
 | — | A link in every email: the industry page in email 1, the demo page in emails 2 to 4, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry, 30 Sep and 1 Oct | 10 | Done |
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |

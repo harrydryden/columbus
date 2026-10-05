@@ -382,5 +382,22 @@ def test_the_search_writes_people_leader_facts_for_the_people_signals(ctx, trans
                   # Who the newest leader is, so the opener can congratulate them when they are the contact.
                   "people_leader_newest": {"apollo_person_id": "p1", "title": "Head of People", "days_in_title": 40}}
     # No People leader found: nothing is written (a verified-email search can miss one), so
-    # "First People hire" (count = 0) never fires on a gap in the search.
+    # "First People hire (likely)" (count = 0) never fires on a gap in the search.
     assert pick.people_facts(account(), [people[1]], ctx.settings, date.today(), ctx.now) == []
+
+
+@pytest.mark.parametrize("searched_days_ago, written", [(None, True), (5, False), (31, True)])
+def test_the_pick_leaves_apollo_people_s_fresher_full_search_alone(ctx, transport, searched_days_ago, written):
+    """Harry, 5 Oct 2026: apollo_people searches every account without the email filter, and may write a count of 0
+    and the days in title. pick_contacts' narrower view does not overwrite that within its 30 days."""
+    from us_outbound.sources import apollo_people
+
+    setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
+    if searched_days_ago is not None:
+        ctx.store.insert("signal_events", [{
+            "event_id": "m1", "account_id": "acc-1", "source": "apollo_people", "fact": apollo_people.MARKER,
+            "value": {"run_id": "r"}, "quote": "", "source_url": "", "observed_at": ctx.now - timedelta(days=searched_days_ago)}])
+    out = pick.run(ctx)
+    assert out["picked"] == 1  # the pick itself is unchanged
+    counts = [e for e in ctx.store.select("signal_events", {"source": "apollo_people"}) if e["fact"] == "people_leader_count"]
+    assert bool(counts) is written and all(e["value"] == 1 for e in counts)

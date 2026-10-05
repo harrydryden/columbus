@@ -116,7 +116,7 @@ def test_expected_matches_the_spec9_schedules():
     assert hb.EXPECTED["settings_sync"] == hb.EXPECTED["mailbox_health"] == hb.EXPECTED["daily_post"] == 26 * 60
     assert hb.EXPECTED["monday_readout"] == hb.EXPECTED["public_signals"] == 8 * 24 * 60
     # Build, 1 Oct 2026: the sources and verify_accounts run each weekday (ops/schedule.py), in weekday time.
-    for job in ("source_universe", "apollo_signals", "read_pages", "apollo_enrich", "verify_accounts"):
+    for job in ("source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people", "verify_accounts"):
         assert hb.EXPECTED[job] == 26 * 60 and job in hb.WEEKDAY_JOBS
     assert "score" not in hb.EXPECTED  # no schedule of its own
 
