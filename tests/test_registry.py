@@ -649,3 +649,8 @@ def test_drift_reads_a_campaign_as_instantly_returns_it():
     assert set(drift) == {"steps.1", "steps.2", "steps.3", "steps.4"}
     returned["link_tracking"] = True  # a tracking setting turned on in Instantly is still drift
     assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["link_tracking"] == [False, True]
+    # Harry, 5 Oct 2026: Instantly sent the seed's email 1 as text only, without its unsubscribe link.
+    returned["first_email_text_only"] = True
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["first_email_text_only"] == [False, True]
+    assert reg._fix_fields({"first_email_text_only": [False, True]}, SETTINGS, "Hannah Spalding") == {
+        "first_email_text_only": False}

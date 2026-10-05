@@ -45,6 +45,11 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "open_tracking": False,  # SPEC 1.8: open and link tracking stay off
     "link_tracking": False,
     "insert_unsubscribe_header": True,
+    # Harry, 5 Oct 2026: the seed send showed Instantly sending email 1 as text only (text/plain, no HTML
+    # part) in a campaign with text_only off. The HTML step was flattened: the paragraphs ran together, the
+    # links became written-out addresses and the unsubscribe line lost its link. Email 1 is HTML like the
+    # rest (email_format), so the step-1 text-only option is off, and drift puts it back if it is turned on.
+    "first_email_text_only": False,
     "allow_risky_contacts": False,
     "is_evergreen": True,  # PHASE0-CONFIRM: that is_evergreen keeps the campaign open to new leads indefinitely
 }
