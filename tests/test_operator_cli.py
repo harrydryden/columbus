@@ -176,7 +176,7 @@ def test_the_synced_time_is_the_last_sync_run_even_when_nothing_changed(capsys):
     later = datetime(2026, 10, 6, 1, 0, tzinfo=UTC)  # Tue 02:00 UK: a nightly sync that found nothing new
     w.store.insert("heartbeats", [
         {"run_id": "nightly", "job": "settings_sync", "status": "ok", "dry_run": True,
-         "started_at": later - timedelta(seconds=20), "finished_at": later},
+         "started_at": later, "finished_at": later + timedelta(seconds=20)},
         {"run_id": "broken", "job": "settings_sync", "status": "error", "dry_run": True,
          "started_at": later + timedelta(hours=1), "finished_at": later + timedelta(hours=1)},
     ])
