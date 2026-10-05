@@ -37,6 +37,7 @@ us-outbound golive                                 the read-only go/no-go check 
 us-outbound accounts [DOMAIN] [--csv]              the companies and contacts we hold (read-only): a summary and the list, one company, a CSV
 us-outbound accounts [--status S] [--tier T] [--industry X] [--limit N]   the list, narrowed (default 25; --limit 0 lists all)
 us-outbound sync [--live]                          bring the sheet's edits into force now (= settings sync)
+us-outbound seed send ADDRESS --owner NAME [--live] | seed check   the seed-inbox test of the unsubscribe link
 us-outbound start | stop [--live]                  resume (syncing first) / pause every US Outbound campaign and enrollment
 us-outbound approvals list                         emails waiting for a ✅ (auto_send = no): company, contact, sender, subject
 us-outbound approvals send <id> [--live]           ✅: add its lead to Instantly (= approvals approve)

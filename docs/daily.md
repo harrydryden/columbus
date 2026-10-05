@@ -109,6 +109,7 @@ commands instead.
 | `sync` | Brings sheet edits into force now |
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
+| `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link |
 | `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`) | Send cards without Slack |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
