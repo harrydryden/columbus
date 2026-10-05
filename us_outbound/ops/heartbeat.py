@@ -67,7 +67,7 @@ EXPECTED: dict[str, int] = {
     "daily_post": 26 * _H,  # 09:00 daily
     "monday_readout": 8 * _DAY,  # Mon 09:00
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
-    "lookalikes": 8 * _DAY,  # Mon 02:30 (build addition)
+    "lookalikes": 32 * _DAY,  # the 1st at 02:30 (build addition; monthly from 5 Oct 2026): 31 days at most, plus one
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.

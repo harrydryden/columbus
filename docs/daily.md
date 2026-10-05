@@ -84,6 +84,16 @@ above this.
 - **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
   hold (docs/roadmap.md §3).
 
+## Monthly
+
+- **Lookalikes (the 1st, 02:30 UK):** the `lookalikes` job reads Spill's customers from HubSpot (read
+  only), their 12-month headcount growth from Apollo (counts only, at most 60 credits), and works out
+  each account's lookalike fit (industry, size and growth). Nothing to do. `us-outbound lookalikes show`
+  lists the customers by industry and size; `us-outbound lookalikes fit` shows the fits and the tier
+  mix the lookalike rows give, without changing anything. To put the graded rows on the sheet, run
+  `us-outbound settings load --tab Signals --live`: it adds "Close match" and "Some match to Spill's
+  customers" and switches "Looks like Spill's customers" off.
+
 ## Where the data is
 
 The companies and contacts live in the Postgres database on Railway, schema `us_outbound`: the

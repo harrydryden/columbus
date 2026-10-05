@@ -39,7 +39,8 @@ What Harry uses (`us-outbound --help` lists these, in this order):
 Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
 (remove that month's leads), rescore (the score job), dry-run <job>, test start|read <test_id> (the
 copy test, SPEC 12), db apply, hubspot setup|ids, suppression load, lookalikes show [--top N] [--all]
-(the cells the lookalikes job last stored), pages show (the careers and benefits page reader's
+(the cells the lookalikes job last stored), lookalikes fit (the accounts' lookalike fits and the tier mix the
+build's lookalike rows would give, scored in memory), pages show (the careers and benefits page reader's
 coverage), data show (what the sources have stored, in aggregate), and scheduler (the always-on
 Railway worker, ops/scheduler.py). On Railway, run a command inside the worker with
 `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
@@ -1124,9 +1125,16 @@ def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
-    """The lookalike cells from the last lookalikes run (the database only), for the Focus tab and sourcing."""
+    """show: the lookalike cells from the last lookalikes run, for the Focus tab and sourcing. fit: the accounts'
+    lookalike fits and the tier mix the build's lookalike rows would give, scored in memory (Harry's check before
+    the Signals tab changes). Both read the database only and write nothing."""
     from us_outbound.sources import lookalikes
 
+    if args.action == "fit":
+        ctx = factory("lookalikes_fit", False)
+        for line in lookalikes.fit_report(ctx):
+            print(line)
+        return 0
     if args.top < 1:
         raise Refused("--top must be 1 or more")
     ctx = factory("lookalikes_show", False)
@@ -1515,8 +1523,9 @@ def build_parser() -> argparse.ArgumentParser:
     hs.add_argument("action", choices=["setup", "ids"])
     sp = command("suppression", "load HubSpot opt-outs and bounces", cmd_suppression, takes_live=True)
     sp.add_argument("action", choices=["load"])
-    lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers", cmd_lookalikes)
-    lk.add_argument("action", choices=["show"])
+    lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers, or the accounts' fits",
+                 cmd_lookalikes)
+    lk.add_argument("action", choices=["show", "fit"])
     lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
     lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
     pg = command("pages", "what the careers and benefits page reader has found, and its coverage", cmd_pages)

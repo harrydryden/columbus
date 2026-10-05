@@ -35,7 +35,7 @@ SOURCE_KEYS = (
     "layoffs",
     "calendar",
     "named",
-    "lookalike",  # Spill's HubSpot customers in the account's industry group and size band (sources/lookalikes.py)
+    "lookalike",  # how the account compares with Spill's HubSpot customers: the lookalike fit (sources/lookalikes.py)
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
 TEXT_SOURCES = frozenset({"clay_careers", "careers_pages", "job_posts"})
@@ -50,7 +50,10 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "apollo_org": frozenset(
         {"employees", "size_band", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
          "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry",
-         "description"}
+         "description",
+         # shrinking, flat, growing, fast or unknown: 12-month headcount growth, from headcount_growth_12m or
+         # Apollo's search by growth range (sources/lookalikes.py; Harry, 5 Oct 2026).
+         "headcount_growth_band"}
     ),
     "apollo_people": frozenset(
         {"people_leader_count", "people_leader_days_in_title", "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
@@ -67,7 +70,10 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
     "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
-    "lookalike": frozenset({"lookalike_active", "lookalike_strength"}),  # sources/lookalikes.py (Harry, 1 Oct 2026)
+    # sources/lookalikes.py (Harry, 1 Oct 2026). lookalike_fit (0 to 100) and its three parts (0 to 1; size and
+    # growth null when unknown): Harry, 5 Oct 2026.
+    "lookalike": frozenset({"lookalike_active", "lookalike_strength", "lookalike_fit", "lookalike_industry_fit",
+                            "lookalike_size_fit", "lookalike_growth_fit"}),
 }
 # Fields that count days up to the moment they were read. A source stores each as of its
 # observed_at; scoring adds the days since then, so a fact read months ago still tells the truth.

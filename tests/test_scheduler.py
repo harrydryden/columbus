@@ -480,7 +480,8 @@ SPEC9_CRONS = {
     "monday_readout": "0 9 * * 1",
     # Build additions.
     "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
-    "lookalikes": "30 2 * * 1",  # Monday, after settings_sync (02:00) and before source_universe (03:00)
+    # The 1st of each month (Harry, 5 Oct 2026), after settings_sync (02:00) and before source_universe (03:00).
+    "lookalikes": "30 2 1 * *",
     "hand_check_post": "0 8 * * 1",
     "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after apollo_signals (03:30), before verify_accounts (04:30)
     "apollo_enrich": "10 4 * * 1-5",  # Harry, 2 Oct 2026: after read_pages starts (03:45), before verify_accounts
@@ -532,3 +533,24 @@ def test_next_run_and_the_listing():
     assert syncs[0].endswith("Thu 01 Oct 02:00 BST") and syncs[1].endswith("Thu 01 Oct 11:30 BST")
     assert lines["heartbeat_check"].endswith("Wed 30 Sep 13:05 BST")
     assert lines["monday_readout"].endswith("disabled until phase 3") and lines["score"].endswith("on demand only")
+    assert lines["lookalikes"].endswith("Thu 01 Oct 02:30 BST")
+
+
+def test_lookalikes_runs_on_the_1st_of_each_month_whatever_the_weekday():
+    """Harry, 5 Oct 2026: monthly. Day-of-week is *, so cron's OR of the two day fields does not apply: the
+    1st alone, a Sunday (1 Nov 2026) as much as a Friday (1 Jan 2027), and never on a Monday."""
+    cron = sch.Cron.parse(by_name()["lookalikes"].cron)
+    firsts = [datetime(2026, 11, 1, 2, 30), datetime(2026, 12, 1, 2, 30), datetime(2027, 1, 1, 2, 30)]
+    assert all(cron.matches(d) for d in firsts)  # Sunday, Tuesday, Friday
+    assert not cron.matches(datetime(2026, 10, 5, 2, 30))  # a Monday, the old weekly slot
+    assert not cron.matches(datetime(2026, 11, 2, 2, 30)) and not cron.matches(datetime(2026, 11, 1, 3, 30))
+    # 02:30 UK in BST and in GMT; after the 5 Oct run, the next is 1 Nov (after the clocks go back on 25 Oct).
+    assert sch.next_run(cron, utc(2026, 9, 15, 12, 0)) == utc(2026, 10, 1, 1, 30)
+    assert sch.next_run(cron, utc(2026, 10, 5, 1, 30)) == utc(2026, 11, 1, 2, 30)
+    runs, t = [], utc(2026, 10, 5, 0, 0)
+    for _ in range(4):
+        t = sch.next_run(cron, t)
+        runs.append(t.astimezone(UK).strftime("%d %b %Y %H:%M"))
+    assert runs == ["01 Nov 2026 02:30", "01 Dec 2026 02:30", "01 Jan 2027 02:30", "01 Feb 2027 02:30"]
+    # The longest gap between two runs (31 days) stays inside the heartbeat's expectation.
+    assert 31 * 24 * 60 < hb.EXPECTED["lookalikes"] <= 32 * 24 * 60
