@@ -396,7 +396,7 @@ def test_the_fit_scores_an_account_close_to_spills_customers(world, apollo):
     a = ctx.store.get("accounts", account_id="acc-fintech")
     r = score_account(a, ctx.store.select("signal_events", {"account_id": "acc-fintech"}), ctx.settings, NOW.date())
     matched = {m.signal.signal: m for m in r.matches}
-    assert matched["Close match to Spill's customers"].weight_applied == 15
+    assert matched["Close match to Spill's customers"].weight_applied == 10
     assert matched["Close match to Spill's customers"].evidence[0].text == FINTECH_QUOTE
     assert "Some match to Spill's customers" not in matched and "Looks like Spill's customers" not in matched  # off
     # Agencies at 50-99: a weak industry, no customer of that size and growth unknown, so a low fit.
@@ -423,7 +423,7 @@ def test_a_thin_group_reads_the_size_mix_of_all_customers(world):
     a = ctx.store.get("accounts", account_id="acc-studio")
     r = score_account(a, ctx.store.select("signal_events", {"account_id": "acc-studio"}), ctx.settings, NOW.date())
     assert {m.signal.signal: m.weight_applied for m in r.matches if m.signal.sources == ("lookalike",)} == {
-        "Some match to Spill's customers": 8}
+        "Some match to Spill's customers": 3}
 
 
 def test_apply_writes_only_changes(world, apollo):
@@ -562,8 +562,8 @@ def test_report_lists_the_top_cells(world):
     assert "(no website label)" in "\n".join(lk.report(ctx.settings, ctx.store, top=50, all_bands=True))
     group = next(line for line in lines if line.strip().startswith("Technology & Startups") and "1.00" in line)
     assert group.split()[-4:] == ["11", "4", "20%", "1.00"]  # no per-cell column: the graded rows read the fit
-    assert "Signal \"Close match to Spill's customers\" (+15): lookalike_fit >= 70." in text
-    assert "Signal \"Some match to Spill's customers\" (+8): lookalike_fit >= 45 AND lookalike_fit < 70." in text
+    assert "Signal \"Close match to Spill's customers\" (+10): lookalike_fit >= 70." in text
+    assert "Signal \"Some match to Spill's customers\" (+3): lookalike_fit >= 45 AND lookalike_fit < 70." in text
     assert ("Signal \"Looks like Spill's customers\" (+4, inactive on the Signals tab): lookalike_active >= 5 AND "
             "lookalike_strength >= 10.") in text
     # Nothing from Apollo in these fixtures: every customer's growth is unknown.
@@ -823,8 +823,8 @@ def test_lookalikes_fit_shows_the_fits_and_the_tier_mix_and_writes_nothing(world
     # The fintech prospect, the three new Tech accounts at 10-49 and acme-tech (a customer, Excluded) fit 90 or more.
     assert "  90-100          5" in out and "  10-19           1" in out and "  50-59           1" in out
     assert "Growth known for 1 of 7; the rest are fitted on industry and size alone." in out
-    assert "\"Close match to Spill's customers\" (lookalike_fit >= 70, +15): 5 accounts." in out
-    assert "\"Some match to Spill's customers\" (lookalike_fit >= 45 AND lookalike_fit < 70, +8): 1 account." in out
+    assert "\"Close match to Spill's customers\" (lookalike_fit >= 70, +10): 5 accounts." in out
+    assert "\"Some match to Spill's customers\" (lookalike_fit >= 45 AND lookalike_fit < 70, +3): 1 account." in out
     # Today the 10-49 Tech accounts score 15 + 4 = 19 (Control); with the graded rows 30 (Standard).
     assert "  Standard       0 (0%) !          4 (80%) !" in out
     assert "  Control      5 (100%) !            1 (20%)" in out
@@ -850,7 +850,7 @@ def test_lookalikes_fit_tries_other_cut_offs_and_weights_in_memory(world, apollo
     out = capsys.readouterr().out
     assert "\"Close match to Spill's customers\" (lookalike_fit >= 90, +5): 5 accounts." in out
     assert "Some match" not in out
-    # 15 for 10-49 and 5 for the close match: 20, Standard, as with +15; the sheet is not touched.
+    # 15 for 10-49 and 5 for the close match: 20, Standard, as with +10; the sheet is not touched.
     assert "  Standard       0 (0%) !          4 (80%) !" in out
     assert "tried in memory only" in out
     assert cli.main(["lookalikes", "fit", "--close", "90:10", "--some", "60:4"], context_factory=factory) == 0

@@ -114,8 +114,8 @@ DEFAULT_SIGNALS = [
     ("Layoffs", 0, None, "Suppress", "", 90, True),
     ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
     # Harry, 5 Oct 2026: the lookalike graded by lookalike_fit; the old row stays, off, so a load switches it off.
-    ("Close match to Spill's customers", 15, None, "Score", "", 120, True),
-    ("Some match to Spill's customers", 8, None, "Score", "", 120, True),
+    ("Close match to Spill's customers", 10, None, "Score", "", 120, True),
+    ("Some match to Spill's customers", 3, None, "Score", "", 120, True),
     ("Looks like Spill's customers", 4, None, "Score", "", 120, False),  # build addition (Harry, 1 Oct 2026)
     ("Found as a lookalike of a customer", 10, None, "Score", "", 120, True),  # build addition (Harry, 5 Oct 2026)
 ]

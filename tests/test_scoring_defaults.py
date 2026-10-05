@@ -129,16 +129,17 @@ def test_progressive_benefits_are_worth_less_and_read_plurals(settings):
 
 
 @pytest.mark.parametrize("fit, want, tier", [
-    (100, {"Close match to Spill's customers": 15}, "Standard"),
-    (70, {"Close match to Spill's customers": 15}, "Standard"),  # 70 is a close match
-    (69, {"Some match to Spill's customers": 8}, "Standard"),
-    (45, {"Some match to Spill's customers": 8}, "Standard"),  # 45 is some match
+    (100, {"Close match to Spill's customers": 10}, "Standard"),
+    (70, {"Close match to Spill's customers": 10}, "Standard"),  # 70 is a close match
+    (69, {"Some match to Spill's customers": 3}, "Control"),  # orders within a tier, lifts none on its own
+    (45, {"Some match to Spill's customers": 3}, "Control"),  # 45 is some match
     (44, {}, "Control"),
     (0, {}, "Control"),
 ])
 def test_the_lookalike_fit_is_graded_and_ends_the_cliff_at_10_to_49(settings, fit, want, tier):
     """Harry, 5 Oct 2026: the old +4 left a 10-49 account at 15 + 4 = 19, one under standard_threshold (20), so
-    most of the queue sat in Control. Graded by lookalike_fit, a good fit at 10-49 is Standard (30 or 23)."""
+    most of the queue sat in Control. Graded by lookalike_fit, a close fit at 10-49 is Standard (25); a middling
+    one is 18, Control (at +8 it was 23, and 61% of the queue was Standard on 5 Oct)."""
     events = [fact("apollo_org", "employees", 30), fact("lookalike", "lookalike_fit", fit),
               # the old row's facts are still written, but its row is off, so they add nothing
               fact("lookalike", "lookalike_active", 80), fact("lookalike", "lookalike_strength", 110.0)]
@@ -150,8 +151,8 @@ def test_the_lookalike_fit_is_graded_and_ends_the_cliff_at_10_to_49(settings, fi
 def test_some_match_at_50_to_99_stays_control_and_a_stale_fit_counts_for_nothing(settings):
     r, matched = scored(settings, [fact("apollo_org", "employees", 75), fact("lookalike", "lookalike_fit", 60)],
                         size_band="50-99")
-    assert matched == {"Team of 50–99": 10, "Some match to Spill's customers": 8}
-    assert r.score == 18 < settings.general.standard_threshold and r.tier == "Control"
+    assert matched == {"Team of 50–99": 10, "Some match to Spill's customers": 3}
+    assert r.score == 13 < settings.general.standard_threshold and r.tier == "Control"
     r, matched = scored(settings, [fact("lookalike", "lookalike_fit", 90, days_ago=121)])
     assert matched == {}  # counts for 120 days; apply() rewrites an unchanged fit every 90
 

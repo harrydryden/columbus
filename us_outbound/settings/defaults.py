@@ -517,21 +517,23 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
     ),
     (
         "Close match to Spill's customers", "lookalike", "lookalike_fit >= 70",
-        "", "15", "", "Score", "", "", "120", "yes",
+        "", "10", "", "Score", "", "", "120", "yes",
         "Harry, 5 Oct 2026: the lookalike graded by industry, size and growth rate. lookalike_fit (0 to 100; "
         "sources/lookalikes.py, refreshed nightly from the monthly lookalikes job) weighs how strong Spill's "
         "HubSpot customers are in the account's industry (0.45), how common its size band is among them (0.35) and "
         "how common its 12-month headcount growth is (0.20; left out, never counted against it, when unknown). "
-        "+15 with Team of 10–49 makes 30, Standard: the old +4 left most 10-49 accounts at 19, one point under "
+        "+10 with Team of 10–49 makes 25, Standard: the old +4 left most 10-49 accounts at 19, one point under "
         "standard_threshold, and on 5 Oct Control held 300 of 432 open accounts. So a close lookalike with no "
-        "observed signal is Standard now, and Control holds the accounts that fit less well. `us-outbound "
-        "lookalikes fit` shows the fits and the tier mix these rows give.",
+        "observed signal is Standard now, and Control holds the accounts that fit less well. On 5 Oct any weight "
+        "from +5 to +15 gave the same tiers (Standard 163 of 421, 39%), and +10 leaves room for observed signals "
+        "to order them. `us-outbound lookalikes fit` shows the fits and the tier mix these rows give.",
     ),
     (
         "Some match to Spill's customers", "lookalike", "lookalike_fit >= 45 AND lookalike_fit < 70",
-        "", "8", "", "Score", "", "", "120", "yes",
-        "Harry, 5 Oct 2026: the middle of lookalike_fit (see Close match to Spill's customers). +8 with Team of "
-        "10–49 makes 23, Standard; with Team of 50–99 it makes 18 and stays Control, as does any fit under 45.",
+        "", "3", "", "Score", "", "", "120", "yes",
+        "Harry, 5 Oct 2026: the middle of lookalike_fit (see Close match to Spill's customers). It orders accounts "
+        "within a tier and lifts none on its own: +3 with Team of 10–49 makes 18, Control. At +8 it put 256 of 421 "
+        "open accounts in Standard (61%, 5 Oct), outside the tier-mix check's 5-40%.",
     ),
     (
         "Looks like Spill's customers", "lookalike", "lookalike_active >= 5 AND lookalike_strength >= 10",
