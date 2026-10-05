@@ -368,8 +368,8 @@ accuracy, tone, US grammar and idiom, and whether each role line reads well afte
 Minor problems (severity "minor") are wording you would improve but that could be sent.
 A free trial mentioned in email 4, as facts.md allows, is not a problem.
 The signature (the sender's name and one line the code picks: Spill, "Book a call here" or the
-Trustpilot line) and the data-source notice are fixed text outside these rules (Harry, 1 and 5 Oct
-2026): do not judge them or which line shows, and the signature's booking line is
+Trustpilot line) is fixed text outside these rules (Harry, 1 and 5 Oct
+2026): do not judge it or which line shows, and the signature's booking line is
 not an ask in email 1.
 Report every problem with the email number (0 for the role lines or the whole sequence) and a fix.
 Do not invent problems. verdict is "pass" only when there are no blockers."""
@@ -384,7 +384,7 @@ def qa_prompt(row: CopyRow, settings: Settings) -> str:
         + json.dumps(industry_material(row.industry, settings), indent=1),
         "## The copy as written in the sheet\n" + json.dumps(row_as_json(row), indent=1),
         "## The emails as a prospect would get them (a sample prospect, the first role's line; "
-        "the signature and the data-source notice are fixed text)\n" + sample,
+        "the signature is fixed text)\n" + sample,
     ])
 
 

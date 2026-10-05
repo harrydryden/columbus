@@ -40,7 +40,7 @@ Rows with no role (General, and fallbacks) use the three role lines in email 1 i
 ## The four emails
 
 Every email opens "Hi {{first_name}}," and ends with "Best wishes," and "{{sender_first_name}}" on its own
-line (Harry, 1 Oct 2026). The signature, the data-source notice and the unsubscribe link are added by the
+line (Harry, 1 Oct 2026). The signature and the unsubscribe link are added by the
 system after that; never write them. The signature is the sender's full name and one line with one link,
 which the system picks from the email's own links (Harry, 5 Oct 2026): the booking line when the email
 suggests booking a call, never the website line when the email links a page on the site. So write the

@@ -54,7 +54,7 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
     ✏️ (or 📝), or "edit"        how to edit: reply in the thread with the new email 1, an optional first
                                  line "Subject: …" and then the body; "Email 2:" (3, 4) first changes a
                                  follow-up. Each edit is rendered by the renderer that renders for sending
-                                 (render.render_step: HTML or text, the signature, email 1's data notice,
+                                 (render.render_step: HTML or text, the signature,
                                  every copy rule; the QA hash is left out, since the approver's ✅ is the
                                  review), and one that breaks a rule is refused in the thread with the
                                  rules it breaks. A passing edit is posted as the new version with ✅ and
@@ -569,7 +569,7 @@ def edit_help(ctx: Context, p: Mapping[str, Any], by: str) -> str:
     return (f"✏️ Editing ({_who(by)}). Reply in this thread with the new email 1: an optional first line "
             "`Subject: …`, then the body. To change a follow-up, start with `Email 2:` (or `Email 3:`, `Email 4:`). "
             f"Keep the greeting \"Hi {first},\" and the sign-off \"Best wishes,\" then \"{sender}\"; write links as "
-            "[anchor text](https://…). The signature, and email 1's data notice, are added as before. Each version "
+            "[anchor text](https://…). The signature is added as before. Each version "
             "is checked against the copy rules and posted back here for a fresh ✅. (Slack can't open an editor "
             "here: this app has no interactive endpoint.)\nEmail 1 as it stands, to copy:\n"
             f"```{_esc(copy)}```")
