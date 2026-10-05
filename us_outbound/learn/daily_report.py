@@ -565,6 +565,16 @@ def _gaps(rows: Rows) -> list[str]:
     return ["  Data gaps: " + "; ".join(parts) + ". The page reader's coverage is under Sources."]
 
 
+def _review_ready(ctx: Context) -> list[str]:
+    """On Mondays, once enough companies have been emailed: the signal review is worth reading (learn/signal_review.py)."""
+    from us_outbound.learn import signal_review
+
+    if ctx.today_uk().weekday() != 0:
+        return []
+    line = signal_review.ready(ctx)
+    return [line] if line else []
+
+
 def _tier_mix(ctx: Context, rows: Rows) -> list[str]:
     check = score.tier_share(rows.accounts, ctx.today_uk())
     if not check or not check["off"]:
@@ -587,7 +597,7 @@ def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:
         opener, cuts, bounces = [], [], []
         early.append(f"no email sent in the last {LEARN_DAYS} days")
     # In this order, so that past MAX_IMPROVE the cuts by angle and copy version go first, then "too early".
-    body = [*approval_lines, *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
+    body = [*approval_lines, *_review_ready(ctx), *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
     if early:
         body.append("  Too early to compare: " + "; ".join(early) + ".")
     body = body[:MAX_IMPROVE]

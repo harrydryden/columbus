@@ -1255,6 +1255,15 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_signals(args: argparse.Namespace, factory: Factory) -> int:
+    """Which signals predict replies (learn/signal_review.py): read-only, the evidence for reweighting the Signals tab."""
+    from us_outbound.learn import signal_review
+
+    for line in signal_review.lines(signal_review.review(factory("signals_review", False))):
+        print(line)
+    return 0
+
+
 def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     """The seed-inbox test of the opt-out (ops/seed.py): add a seed lead to a campaign, or read seed leads back."""
     from us_outbound.ops import seed
@@ -1428,6 +1437,9 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("item_id", nargs="?", help="send, skip: the id `replies list` shows (or its first characters)")
     rp.add_argument("--text", "--edit", dest="edit",
                     help="send: send this text instead of the draft (recorded as edited)")
+
+    sg = command("signals", "which signals predict replies, from the companies emailed so far (read-only)", cmd_signals)
+    sg.add_argument("action", choices=["review"])
 
     sd = command("seed", "the seed-inbox test of the unsubscribe link: send a seed email, or check it",
                  cmd_seed, takes_live=True)
