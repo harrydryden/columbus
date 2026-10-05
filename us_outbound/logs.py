@@ -58,5 +58,7 @@ def redact(value: Any, key: str = "") -> Any:
 
 
 def log(event: str, **fields: Any) -> None:
+    # sys.stdout is looked up at each call, so `accounts --csv` can send these lines to stderr
+    # (contextlib.redirect_stdout in ops/cli.cmd_accounts) and keep stdout for the CSV.
     line = {"event": event, **redact(fields)}
     print(json.dumps(line, default=str, ensure_ascii=False), file=sys.stdout, flush=True)

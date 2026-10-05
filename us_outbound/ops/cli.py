@@ -6,6 +6,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       holds), the jobs that failed or missed their heartbeat, mailboxes,
                                       this week's number and the campaigns
   golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
+  accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py):
+    [--tier T] [--industry TEXT]      a summary and the list in queue order, one company in full (exits 1
+    [--limit N] [--csv]               for a domain we do not hold), or a CSV to stdout (personal data)
   sync                                settings_sync now: the sheet's edits into force (jobs read the
                                       synced copy; settings_sync runs at 02:00, and 11:30 on weekdays).
                                       The same as `settings sync`
@@ -79,7 +82,7 @@ import threading
 import traceback
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1171,6 +1174,44 @@ def cmd_golive(args: argparse.Namespace, factory: Factory) -> int:
     return golive.exit_code(checks)
 
 
+# -- the companies and contacts we hold (Harry, 5 Oct 2026) -----------------------------------------
+
+
+def cmd_accounts(args: argparse.Namespace, factory: Factory) -> int:
+    """The companies and contacts we hold (ops/accounts_view.py): the database only, no heartbeat, no --live.
+    Exits 1 for a domain we hold no company for."""
+    from us_outbound.ops import accounts_view as view
+
+    try:
+        f = view.Filters.parse(args.status, args.tier, args.industry)
+    except ValueError as exc:
+        raise Refused(str(exc)) from None
+    if args.limit is not None and args.limit < 0:
+        raise Refused("--limit takes 0 (all) or more")
+    if args.domain and (f or args.limit is not None):
+        raise Refused("a domain shows one company; --status, --tier, --industry and --limit go with the list")
+    if args.csv:
+        # Every database read logs a JSON line to stdout (logs.log reads sys.stdout at each call): here they go to
+        # stderr, so stdout holds the CSV only (`railway ssh -- ... > companies.csv` runs without a terminal).
+        out = sys.stdout
+        with redirect_stdout(sys.stderr):
+            rows = view.csv_rows(factory("accounts", False), f, limit=args.limit, domain=args.domain)
+        if rows is None:
+            print(f"No company with domain {args.domain}.", file=sys.stderr)
+            return 1
+        view.write_csv(out, rows)
+        print(view.csv_note(rows), file=sys.stderr)
+        return 0
+    ctx = factory("accounts", False)
+    if args.domain:
+        found, lines = view.company(ctx, args.domain)
+    else:
+        found, lines = True, view.report(ctx, f, view.LIST_LIMIT if args.limit is None else args.limit)
+    for line in lines:
+        print(line)
+    return 0 if found else 1
+
+
 def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     """This week's hand-check without Slack (enrol/hand_check.py): show it, or approve it with pulls."""
     from us_outbound.enrol import hand_check
@@ -1296,6 +1337,27 @@ def build_parser() -> argparse.ArgumentParser:
     # What Harry uses, in the order `--help` lists it.
     command("status", "the switches, what waits for you, jobs, mailboxes and campaigns", cmd_status)
     command("golive", "the read-only go/no-go check before the first sends", cmd_golive)
+    # The choices are written out here, so --help does not import the view (ops/accounts_view.py STATUSES, TIERS).
+    ac = command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV "
+                 "(read-only)", cmd_accounts)
+    ac.add_argument("domain", nargs="?", metavar="DOMAIN",
+                    help="one company in full: its facts, its contacts with their emails, signals, events and Slack "
+                         "cards (a domain or a web address)")
+    ac.add_argument("--status", action="append", metavar="STATUS",
+                    help="only companies with this status (repeat it, or a comma list): new, queued, verified, "
+                         "enrolled, engaged, demo_requested, demo_booked or disqualified")
+    ac.add_argument("--tier", action="append", metavar="TIER",
+                    help="only this tier (repeat it, or a comma list): Priority, Standard, Control, Held or Excluded")
+    ac.add_argument("--industry", metavar="TEXT",
+                    help="only companies whose industry or industry group contains this (any case)")
+    ac.add_argument("--limit", type=int, metavar="N",
+                    help="how many companies the list shows (default 25; 0 lists them all; the CSV holds every "
+                         "match unless --limit is given)")
+    ac.add_argument("--csv", action="store_true",
+                    help="write a CSV to stdout instead: one row per contact with its company's fields (a company "
+                         "with no contact gets one row), the same filters, times in UK time. It holds personal data "
+                         "(names and emails): save it with `railway ssh -- us-outbound accounts --csv > "
+                         "companies.csv`, keep it private and delete it when you are done")
     command("sync", "bring the sheet's edits into force now (the same as settings sync)", cmd_sync, takes_live=True)
     command("start", "sync the sheet, then resume the campaigns and enrollment", cmd_start, takes_live=True)
     command("stop", "pause every US Outbound campaign and enrollment (the brake)", cmd_stop, takes_live=True)
