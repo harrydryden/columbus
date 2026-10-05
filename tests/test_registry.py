@@ -746,6 +746,13 @@ def test_drift_reads_a_campaign_as_instantly_returns_it():
     assert set(drift) == {"steps.1", "steps.2", "steps.3", "steps.4"}
     returned["link_tracking"] = True  # a tracking setting turned on in Instantly is still drift
     assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["link_tracking"] == [False, True]
+    # Harry, 5 Oct 2026: the unsubscribe link moved from {{unsubscribe}} (sent as href="") to Instantly's
+    # placeholder address. The text is unchanged, so only the link shows the old template.
+    old = returned["sequences"][0]["steps"][0]["variants"][0]
+    fresh = reg.campaign_steps()[0]["body"]
+    old["body"] = fresh.replace(UNSUBSCRIBE_TAG, "{{unsubscribe}}")
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["steps.1"][1]["links"] == ["{{unsubscribe}}"]
+    old["body"] = fresh
     # Harry, 5 Oct 2026: Instantly sent the seed's email 1 as text only, without its unsubscribe link.
     returned["first_email_text_only"] = True
     assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["first_email_text_only"] == [False, True]

@@ -1,7 +1,7 @@
 """The seed-inbox test of the opt-out (golive's "Opt-out tested"; Harry, 5 Oct 2026).
 
 Before any prospect is emailed, one email goes the real way to an inbox of ours: into the owner's own
-campaign, through its step template with Instantly's {{unsubscribe}} link, with a Copy row rendered as
+campaign, through its step template with Instantly's unsubscribe link, with a Copy row rendered as
 enrol renders it. Harry reads it (the body reads as formatted text, the links work, the List-Unsubscribe
 header is there), clicks the unsubscribe link, and `seed check` reads the lead back as sync_outcomes does:
 status -2 (instantly.LEAD_UNSUBSCRIBED) is the pass, and settles the PHASE0-CONFIRM in clients/instantly.py.

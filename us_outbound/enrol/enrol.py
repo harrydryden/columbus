@@ -206,7 +206,7 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
 
 
 def optout_untested(ctx: Context) -> str | None:
-    """Live only: why nothing may be sent while the seed-inbox test of Instantly's {{unsubscribe}} link is not
+    """Live only: why nothing may be sent while the seed-inbox test of Instantly's unsubscribe link is not
     done (optout_tested, golive's "Opt-out tested"). A dry run still previews."""
     if ctx.live and not ctx.settings.general.optout_tested:
         return OPTOUT_UNTESTED

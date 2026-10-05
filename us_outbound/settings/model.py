@@ -186,7 +186,7 @@ class General:
     stop_rule_meetings: int = 5
     stop_rule_bounce_rate: float = 0.03  # (build) the stop rule's account-level bounce share (learn/kill_rules.py)
     stop_rule_complaint_rate: float = 0.003  # (build) and spam-complaint share: Google's 0.3% line
-    optout_tested: bool = False  # (build) Harry: yes once a seed-inbox test shows {{unsubscribe}} works (golive)
+    optout_tested: bool = False  # (build) Harry: yes once a seed-inbox test shows the unsubscribe link works (golive)
     hubspot_pipeline: str = "Spill 3.0"
     hubspot_pipeline_id: str = ""  # (build) looked up through the API in phase 0
     hubspot_deal_stage: str = ""

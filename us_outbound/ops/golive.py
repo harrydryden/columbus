@@ -38,7 +38,7 @@ missing key, an API error) FAILs with the reason.
                     verify_in_clay is not built, as no new account is verified then
   HubSpot ids       hubspot_pipeline_id, hubspot_deal_stage_id and hubspot_owner_id are set; WARN
                     without them, as a positive reply then creates no HubSpot deal (crm/hubspot_writes.py)
-  Opt-out tested    optout_tested = yes: the seed-inbox test of Instantly's {{unsubscribe}} link
+  Opt-out tested    optout_tested = yes: the seed-inbox test of Instantly's unsubscribe link
                     (blocker B1; PHASE0-CONFIRM in clients/instantly.py)
 
 What Harry reads is plain: no SPEC numbers in a line. Every FAIL that asks him to change the sheet
@@ -405,8 +405,8 @@ def check_hubspot_ids(ctx: Context) -> Check:
 
 def check_optout(ctx: Context) -> Check:
     if ctx.settings.general.optout_tested:
-        return Check(PASS, "Opt-out tested", "optout_tested = yes: the seed-inbox test of {{unsubscribe}} is done")
-    return Check(FAIL, "Opt-out tested", "seed-inbox test of {{unsubscribe}} not done: `us-outbound seed send ADDRESS "
+        return Check(PASS, "Opt-out tested", "optout_tested = yes: the seed-inbox test of the unsubscribe link is done")
+    return Check(FAIL, "Opt-out tested", "seed-inbox test of the unsubscribe link not done: `us-outbound seed send ADDRESS "
                                          "--owner NAME --live`; once it arrives, check it and click unsubscribe; "
                                          "`us-outbound seed check` says PASS; then set optout_tested = yes on the "
                                          f"General tab{SYNC}")

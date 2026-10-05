@@ -186,7 +186,7 @@ verification and contact choice write only the database; enrol, replies and post
 
 ### Week 1, during the pilot
 1. **Live checks of the `PHASE0-CONFIRM` items**, starting with the ones that gate sending and opt-outs:
-   - Instantly: the `{{unsubscribe}}` tag; lead status codes; the reply and forward endpoints;
+   - Instantly: the unsubscribe placeholder (`https://UNSUBSCRIBE_INSTANTLY.ai`, not `{{unsubscribe}}`); lead status codes; the reply and forward endpoints;
      stop-on-reply for replies Instantly classes as automatic.
    - Apollo's lookalike search (`sources/lookalike_leads.py`, first run 1 Nov): the body key
      `lookalike_organization_ids` and its limit of 5, `organization_locations` ["United States"] with

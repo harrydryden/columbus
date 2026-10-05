@@ -107,6 +107,7 @@ def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
 
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
 _TAG = re.compile(r"<[^>]+>")
+_HREF = re.compile(r"""href\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 
 
 class MailboxError(Exception):
@@ -190,6 +191,11 @@ def _plain(text: Any) -> str:
     return _TAG.sub("", str(text or "")).strip()
 
 
+def _hrefs(text: Any) -> list[str]:
+    """The link addresses in a step body: the text alone would not show a changed unsubscribe link."""
+    return sorted(_HREF.findall(str(text or "")))
+
+
 def campaign_drift(
     campaign: Mapping[str, Any], settings: Settings, owner: str, caps: Mapping[str, int] | None = None
 ) -> dict[str, list]:
@@ -206,8 +212,9 @@ def campaign_drift(
     for i, step in enumerate(campaign_steps(text_only(settings))):
         variant = ((steps[i].get("variants") or [{}])[0] or {}) if i < len(steps) else {}
         # PHASE0-CONFIRM: Instantly may hand bodies back as HTML; tags are ignored here.
-        want = {k: _plain(v) for k, v in step.items()}
-        got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body"))}
+        want = {**{k: _plain(v) for k, v in step.items()}, "links": _hrefs(step["body"])}
+        got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body")),
+               "links": _hrefs(variant.get("body"))}
         if got != want:
             out[f"steps.{i + 1}"] = [dict(want), got]
     return out

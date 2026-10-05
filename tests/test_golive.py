@@ -94,7 +94,7 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     assert got["HubSpot ids"] == ("WARN  HubSpot ids: hubspot_pipeline_id, hubspot_deal_stage_id, hubspot_owner_id "
                                   "blank: a positive reply creates no HubSpot deal; run `us-outbound hubspot ids` and "
                                   "paste them on the General tab, then `us-outbound sync`")
-    assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of {{unsubscribe}} not done")
+    assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of the unsubscribe link not done")
     assert got["Opt-out tested"].endswith("set optout_tested = yes on the General tab, then `us-outbound sync`")
     assert out.splitlines()[-1] == ("NO-GO: 7 FAIL, 1 WARN, 7 PASS. Fix every FAIL, then run `us-outbound golive` "
                                     "again.")

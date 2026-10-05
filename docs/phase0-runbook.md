@@ -151,7 +151,7 @@ as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sen
 | Item | Where |
 | :- | :- |
 | Signature (the sender's name and one line: Spill, "Book a call here" or the Trustpilot reviews, picked from the email's own links; Harry 1 and 5 Oct) | `templates/copy/signature.txt`, `render.signature`; its links follow `site_url` and `booking_link` on the General tab |
-| Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that `{{unsubscribe}}` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
+| Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that Instantly's placeholder `https://UNSUBSCRIBE_INSTANTLY.ai` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
 | Legitimate-interests text (UK GDPR Article 14, step 1) | `templates/copy/article14.txt` |
 | The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |
 | The claims the emails may make, and the voice | `templates/copy/facts.md`, `templates/copy/style.md` (open questions 65 to 72) |
