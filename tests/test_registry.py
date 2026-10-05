@@ -55,9 +55,15 @@ MAILBOX_HEADERS = list(COLUMNS["Mailboxes"])
 # -- fakes -----------------------------------------------------------------------------------
 
 
+# Each account's sender name in Instantly, already the owner's full name (Harry, 5 Oct 2026).
+SENDER_NAMES = {HANNAH: ("Hannah", "Spalding"), SAM: ("Sam", "Jackson"), HARRY: ("Harry", "Dryden"),
+                HARRY2: ("Harry", "Dryden")}
+
+
 def warm_account(email: str, *, score: int = 98, warmup: int = 1, started: str = "2026-08-01T09:00:00.000Z") -> dict:
+    first, last = SENDER_NAMES.get(email, ("", ""))
     return {"email": email, "status": 1, "warmup_status": warmup, "stat_warmup_score": score,
-            "timestamp_warmup_start": started, "daily_limit": 30}
+            "timestamp_warmup_start": started, "daily_limit": 30, "first_name": first, "last_name": last}
 
 
 class FakeInstantly:
@@ -601,6 +607,95 @@ def test_mailbox_health_in_dry_run_only_reports_a_limit_it_would_set():
     assert out["limit_set"] == {SAM: {"from": 20, "to": 30}} and accounts[SAM]["daily_limit"] == 20
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
     assert "Would set sam@meetspill.org's Instantly daily limit from 20 to 30" in post["text"]
+
+
+# -- the sender name prospects see (Harry, 5 Oct 2026) --------------------------------------------------
+
+
+def account_patches(t: FakeTransport) -> list:
+    return [r for r in t.requests if r.method == "PATCH" and "/accounts/" in r.url]
+
+
+def misnamed() -> dict[str, dict]:
+    """The accounts as the seed emails of 5 Oct showed them: From "Hannah at Spill" and "Sam from Spill"."""
+    accounts = {m.address: warm_account(m.address) for m in MAILBOXES}
+    accounts[HANNAH].update(first_name="Hannah", last_name="at Spill")
+    accounts[SAM].update(first_name="Sam from Spill", last_name="")
+    return accounts
+
+
+def test_sender_name_is_the_owner_s_full_name_split_at_the_first_space():
+    assert reg.sender_name("Hannah Spalding") == ("Hannah", "Spalding")
+    assert reg.sender_name(" Mary  Ann de Vries ") == ("Mary", "Ann de Vries")
+    assert reg.sender_name("Cher") == ("Cher", "")
+
+
+def test_mailbox_health_reports_a_sender_name_that_is_not_the_owner_s_full_name():
+    ctx, t, inst, sheets = setup(accounts=misnamed())
+    out = reg.mailbox_health(ctx)  # live, but without fix_names: reported, not set
+    assert out["name_drift"] == {HANNAH: {"from": ["Hannah", "at Spill"], "to": ["Hannah", "Spalding"]},
+                                 SAM: {"from": ["Sam from Spill", ""], "to": ["Sam", "Jackson"]}}
+    assert out["names_set"] == [] and account_patches(t) == []
+    assert "name_drift" in out["post_reasons"]
+    [post] = posts(t)
+    assert ('Sender name of hannah@meetspill.org (first / last) is "Hannah" / "at Spill", not its owner\'s full name '
+            '"Hannah" / "Spalding". Fix with `us-outbound mailbox check --fix --live`.') in post["text"]
+
+
+def test_fix_names_sets_only_first_and_last_name_and_only_where_they_differ():
+    accounts = misnamed()
+    before = {a: dict(acct) for a, acct in accounts.items()}
+    ctx, t, inst, sheets = setup(accounts=accounts)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert out["names_set"] == [HANNAH, SAM]
+    assert [(r.url.rsplit("/", 1)[1], r.json) for r in account_patches(t)] == [
+        (HANNAH, {"first_name": "Hannah", "last_name": "Spalding"}),
+        (SAM, {"first_name": "Sam", "last_name": "Jackson"}),
+    ]  # Harry's two already carry his full name: no write
+    for address, acct in accounts.items():  # nothing else on any account changed
+        first, last = SENDER_NAMES[address]
+        assert acct == {**before[address], "first_name": first, "last_name": last}
+    assert [c.action for c in ctx.guard.writes("instantly") if c.action.startswith("account.")] == [
+        "account.update_name", "account.update_name"]  # no warmup or daily-limit write
+    [post] = posts(t)
+    assert ('Set hannah@meetspill.org\'s sender name (first / last) from "Hannah" / "at Spill" to "Hannah" / '
+            '"Spalding", its owner\'s full name') in post["text"]
+    again = reg.mailbox_health(ctx, fix_names=True)
+    assert again["name_drift"] == {} and len(account_patches(t)) == 2
+
+
+def test_fix_names_in_dry_run_sends_nothing():
+    accounts = misnamed()
+    ctx, t, inst, sheets = setup(live=False, accounts=accounts)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert out["names_set"] == [HANNAH, SAM] and account_patches(t) == []
+    assert (accounts[HANNAH]["last_name"], accounts[SAM]["first_name"]) == ("at Spill", "Sam from Spill")
+    names = [c for c in ctx.guard.writes("instantly") if c.action == "account.update_name"]
+    assert len(names) == 2 and not any(c.sent for c in names)
+    [post] = posts(t)
+    assert ('Would set sam@meetspill.org\'s sender name (first / last) from "Sam from Spill" / "" to "Sam" / '
+            '"Jackson"') in post["text"]
+
+
+def test_names_already_right_cause_no_write():
+    ctx, t, inst, sheets = setup()
+    go_live(ctx)
+    inst.standard(C_HARRY, [HARRY, HARRY2], 60, status=1)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=1)
+    inst.standard(C_SAM, [SAM], 30, status=1)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert out["name_drift"] == {} and out["names_set"] == []
+    assert instantly_writes(t) == [] and out["posted"] is False
+
+
+def test_a_retired_mailbox_s_name_is_neither_read_nor_set():
+    settings = dataclasses.replace(SETTINGS, mailboxes=(*MAILBOXES[:3], mailbox(HARRY2, "Harry Dryden", "Retired")))
+    accounts = misnamed()
+    accounts[HARRY2].update(first_name="Harry at Spill", last_name="")
+    ctx, t, inst, sheets = setup(settings, accounts=accounts)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert set(out["name_drift"]) == {HANNAH, SAM} and accounts[HARRY2]["first_name"] == "Harry at Spill"
+    assert not [r for r in t.requests if HARRY2 in r.url]
 
 
 def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():

@@ -416,6 +416,9 @@ class Instantly(HttpClient):
                 "health_score_label": agg.get("health_score_label"),
                 "warmup_started_at": acct.get("timestamp_warmup_start"),
                 "daily_limit": acct.get("daily_limit"),
+                # The sender name (set_sender_name). PHASE0-CONFIRM: the account GET returns these two fields.
+                "first_name": acct.get("first_name"),
+                "last_name": acct.get("last_name"),
             }
         return out
 
@@ -471,6 +474,22 @@ class Instantly(HttpClient):
             "PATCH", f"/accounts/{_segment(acc)}",
             Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
             json={"daily_limit": limit},
+        )
+
+    def set_sender_name(self, email: str, first_name: str, last_name: str) -> None:
+        """Set a registry account's sender name: the From name prospects see (Harry, 5 Oct 2026).
+
+        The name is the Mailboxes tab owner's full name, "Hannah Spalding": the seed emails of 5 Oct came
+        from "Hannah at Spill" and "Sam from Spill", which reads as marketing to people and to mail filters.
+        PHASE0-CONFIRM: that Instantly builds the From display name from the account's first_name and
+        last_name (API v2 account object), and that PATCH /accounts/{email} takes exactly those two fields.
+        """
+        [acc] = self._registry("account.update_name", [email], write=True)
+        name = {"first_name": str(first_name).strip(), "last_name": str(last_name).strip()}
+        self.request(
+            "PATCH", f"/accounts/{_segment(acc)}",
+            Op("account.update_name", target=acc, write=True, detail={"accounts": [acc], **name}),
+            json=name,
         )
 
     # -- campaigns -------------------------------------------------------------

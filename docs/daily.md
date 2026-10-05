@@ -25,7 +25,7 @@ campaigns still match the settings, and activates them.
 
 | When | What arrives | What to do |
 | :- | :- | :- |
-| 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated | Usually nothing. If it asks you to run `us-outbound start --live`, run it |
+| 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, a size near a band edge) | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong |
 | 09:00 | The daily post | Read the **Needs you** line under the headline first |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
@@ -63,6 +63,10 @@ above this.
   `us-outbound killrules clear ID --live` lifts the hold.
 - **A mailbox misbehaves:** `us-outbound mailbox pause ADDRESS --live` takes it off its campaign's
   sending list.
+- **The mailbox check says a sender name is wrong:** prospects see each mailbox's From name, and it
+  should be the owner's full name from the Mailboxes tab ("Hannah Spalding"), not "Hannah at Spill".
+  `us-outbound mailbox check` lists what it would change; `us-outbound mailbox check --fix --live`
+  sets it in Instantly (the account's first and last name only).
 - **A card says "Not sent":** the re-check at your ✅ found the person or company can no longer be
   emailed (an unsubscribe, a customer or open deal in HubSpot, a suppressed domain). Nothing was
   sent and the card is closed; there is nothing to do. A card that is only *held* (sending stopped,
@@ -157,7 +161,7 @@ commands instead.
 | `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`) | Send cards without Slack |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
-| `mailbox check --live --fix` | Mailbox health now, and the campaigns put right |
+| `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |
 | `copy preview --industry "Fintech" --html fintech.html`, `copy qa --live` | An email as a prospect will see it; QA for edited rows |
 
 Also `handcheck show|approve`, `erase --email` and `schedule`. `us-outbound --help` lists every command.
