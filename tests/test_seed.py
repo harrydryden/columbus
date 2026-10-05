@@ -60,6 +60,21 @@ def test_live_adds_one_lead_with_the_four_rendered_emails_and_says_what_comes_ne
     assert f"{SEED} in {C_HANNAH} (draft): active" in capsys.readouterr().out
 
 
+def test_subject_personal_shows_the_other_arm_of_the_subject_split(h, capsys):
+    """Harry, 5 Oct 2026: email 1's personal subject (General email1_subject) is a measured split, so a seed can show
+    either arm: --subject personal, or the Copy row's s1_subject (the default). Emails 2 to 4 are the same."""
+    assert h.run("seed", "send", SEED, "--owner", "Hannah Spalding", "--subject", "personal", "--live") == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "  Subject: support for the Harbor & Finch team (the personal subject, General email1_subject)" in out
+    assert h.run("seed", "send", "harry+seed2@spill.chat", "--owner", "Hannah Spalding", "--live") == 0
+    assert any(x.startswith("  Subject: ") and x.endswith(" (the Copy row's s1_subject)")
+               for x in capsys.readouterr().out.splitlines())
+    personal, copy_ = (post.json["leads"][0]["custom_variables"] for post in lead_posts(h))
+    assert personal["s1_subject"] == "support for the Harbor & Finch team" != copy_["s1_subject"]
+    assert [personal[f"s{n}_subject"] for n in (2, 3, 4)] == [copy_[f"s{n}_subject"] for n in (2, 3, 4)]
+    assert [personal[f"s{n}_body"] for n in range(1, 5)] == [copy_[f"s{n}_body"] for n in range(1, 5)]
+
+
 def test_an_address_already_in_the_campaign_is_not_added_twice(h, capsys):
     h.instantly.add_lead(h.instantly.by_name(C_HANNAH)["id"], SEED)
     assert h.run("seed", "send", SEED, "--owner", "Hannah Spalding", "--live") == 2

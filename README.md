@@ -37,7 +37,7 @@ us-outbound golive                                 the read-only go/no-go check 
 us-outbound accounts [DOMAIN] [--csv]              the companies and contacts we hold (read-only): a summary and the list, one company, a CSV
 us-outbound accounts [--status S] [--tier T] [--industry X] [--limit N]   the list, narrowed (default 25; --limit 0 lists all)
 us-outbound sync [--live]                          bring the sheet's edits into force now (= settings sync)
-us-outbound seed send ADDRESS --owner NAME [--live] | seed check   the seed-inbox test of the unsubscribe link
+us-outbound seed send ADDRESS --owner NAME [--subject personal|copy] [--live] | seed check   the seed-inbox test of the unsubscribe link
 us-outbound start | stop [--live]                  resume (syncing first) / pause every US Outbound campaign and enrollment
 us-outbound approvals list                         emails waiting for a ✅ (auto_send = no): company, contact, sender, subject
 us-outbound approvals send <id> [--live]           ✅: add its lead to Instantly (= approvals approve)
@@ -140,7 +140,10 @@ tab, its keys in sheet order, so the jobs keep the sheet's order. General keys a
 Clay function ids, the credits-per-account estimates, `stop_rule_bounce_rate` and
 `stop_rule_complaint_rate` (the stop rule's account-level thresholds) and `optout_tested` (the
 seed-inbox test of the unsubscribe link, which `golive` checks) and `auto_send` (no: every email
-waits for approval in Slack; Harry, 2 Oct 2026).
+waits for approval in Slack; Harry, 2 Oct 2026), and `email1_subject` and `email1_subject_share`
+(Harry, 5 Oct 2026: email 1's personal subject, "support for the {{company}} team", for half the
+companies by a hash of the account id; the rest keep the Copy row's `s1_subject`, and
+`contacts.subject_arm` records which, so `us-outbound signals review` can compare the two).
 
 The reply desk (decision D11, Harry, 1 Oct 2026): approvers are `approver_slack_ids` plus a
 mailbox's owner for replies to that mailbox, from an optional `slack_id` column on the Mailboxes

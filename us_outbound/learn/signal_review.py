@@ -11,7 +11,10 @@ gives each signal a verdict:
   keep      no clear difference yet;
   too few   fewer than MIN_COMPANIES companies on either side.
 It also shows the reply rate by tier at enrolment: the plainest test of whether scoring works at all is
-that Priority replies more than Standard, and Standard more than Control.
+that Priority replies more than Standard, and Standard more than Control. And one line for email 1's subject
+split (Harry, 5 Oct 2026; render.subject_arm): the companies whose email 1 had the personal subject (General
+email1_subject) against those with the Copy row's (contacts.subject_arm, recorded from 5 Oct 2026; a contact
+enrolled before has none and is left out), with the same test and the same MIN_COMPANIES on each side.
 
 Nothing changes by itself: Harry changes weights on the Signals tab (SPEC 12). Replies in windows that have
 not closed yet are counted as they stand, so an early read (two or three weeks in) understates every rate a
@@ -28,6 +31,7 @@ from typing import Any
 
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import Context
+from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.learn import kill_rules
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 
@@ -48,6 +52,7 @@ class Company:
     positive: bool = False
     signals: frozenset[str] = frozenset()
     tier: str = ""
+    subject_arm: str = ""  # personal or copy (contacts.subject_arm); "" before the split
 
 
 @dataclass
@@ -77,6 +82,7 @@ class Review:
     first_send: datetime | None = None
     verdicts: list[Verdict] = field(default_factory=list)
     tiers: dict[str, tuple[int, int]] = field(default_factory=dict)  # tier -> (emailed, replied)
+    subject: Verdict | None = None  # email 1's personal subject (with) against the Copy row's (without)
 
 
 def _ts(v: Any) -> datetime | None:
@@ -113,6 +119,7 @@ def emailed(ctx: Context) -> tuple[list[Company], int]:
         else:
             missing.append(aid)
         c.tier = str(row.get("tier_at_enrol") or "")
+        c.subject_arm = str(row.get("subject_arm") or "").strip().lower()
     if missing:  # enrolled before the snapshot existed: today's matches are the best we have
         now: dict[str, set[str]] = {aid: set() for aid in missing}
         for e in ctx.store.select("signal_events", {"account_id": missing, "source": SCORING_SOURCE, "fact": MATCH_FACT}):
@@ -141,31 +148,54 @@ def p_value(a_n: int, a_k: int, b_n: int, b_k: int) -> float | None:
     return math.erfc(abs(z) / math.sqrt(2))
 
 
+def compare(name: str, weight: int, with_: list[Company], without: list[Company]) -> Verdict:
+    """The two groups' reply rates, the two-proportion test and the verdict (raise, lower, keep or too few)."""
+    wk, ok = sum(c.replied for c in with_), sum(c.replied for c in without)
+    p = p_value(len(with_), wk, len(without), ok)
+    if len(with_) < MIN_COMPANIES or len(without) < MIN_COMPANIES or p is None:
+        verdict = "too few"
+    elif p < P_VALUE:
+        verdict = "raise" if wk / len(with_) > ok / len(without) else "lower"
+    else:
+        verdict = "keep"
+    return Verdict(name, weight, len(with_), wk, len(without), ok, p, verdict)
+
+
 def review(ctx: Context) -> Review:
     companies, closed = emailed(ctx)
     out = Review(companies, closed, companies[0].step1_at if companies else None)
     for sig in ctx.settings.signals:
         if not sig.active or sig.action != "Score":
             continue
-        with_ = [c for c in companies if sig.signal in c.signals]
-        without = [c for c in companies if sig.signal not in c.signals]
-        wk, ok = sum(c.replied for c in with_), sum(c.replied for c in without)
-        p = p_value(len(with_), wk, len(without), ok)
-        if len(with_) < MIN_COMPANIES or len(without) < MIN_COMPANIES or p is None:
-            verdict = "too few"
-        elif p < P_VALUE:
-            verdict = "raise" if wk / len(with_) > ok / len(without) else "lower"
-        else:
-            verdict = "keep"
-        out.verdicts.append(Verdict(sig.signal, sig.weight, len(with_), wk, len(without), ok, p, verdict))
+        out.verdicts.append(compare(sig.signal, sig.weight, [c for c in companies if sig.signal in c.signals],
+                                    [c for c in companies if sig.signal not in c.signals]))
     for tier in TIERS:
         group = [c for c in companies if c.tier == tier]
         out.tiers[tier] = (len(group), sum(c.replied for c in group))
+    out.subject = compare("email 1 subject", 0, [c for c in companies if c.subject_arm == PERSONAL_SUBJECT],
+                          [c for c in companies if c.subject_arm == COPY_SUBJECT])
     return out
 
 
 def _pct(k: int, n: int) -> str:
     return f"{k / n:.1%}" if n else "-"
+
+
+# What a subject verdict means: "raise" is the personal subject replying more.
+SUBJECT_VERDICTS = {
+    "raise": "the personal subject replies more: keep it, or raise email1_subject_share",
+    "lower": "the Copy row's subject replies more: lower email1_subject_share, or rewrite email1_subject",
+    "keep": "no clear difference yet",
+    "too few": f"too few to judge (under {MIN_COMPANIES} emailed companies in an arm)",
+}
+
+
+def subject_line(v: Verdict) -> str:
+    """Email 1's subject split in one line: personal (General email1_subject) against the Copy row's."""
+    p = f" · p = {v.p:.2f}" if v.p is not None else ""
+    return (f"Email 1 subject (General email1_subject_share): personal {v.with_n} companies, "
+            f"{_pct(v.with_replied, v.with_n)} replied vs the Copy row's {v.without_n}, "
+            f"{_pct(v.without_replied, v.without_n)}{p}: {SUBJECT_VERDICTS[v.verdict]}.")
 
 
 def lines(r: Review) -> list[str]:
@@ -180,6 +210,8 @@ def lines(r: Review) -> list[str]:
            f"have closed. Replied: {replied} ({_pct(replied, n)}), positive: {positive} ({_pct(positive, n)}).",
            "By tier at enrolment (scoring works if Priority replies most and Control least):"]
     out += [f"  {t}: {e} emailed, {_pct(k, e)} replied" for t, (e, k) in r.tiers.items()]
+    if r.subject is not None:
+        out.append(subject_line(r.subject))
     order = {"raise": 0, "lower": 1, "keep": 2, "too few": 3}
     judged = [v for v in sorted(r.verdicts, key=lambda v: (order[v.verdict], -v.with_n, v.signal)) if v.verdict != "too few"]
     if judged:

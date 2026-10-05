@@ -130,6 +130,7 @@ def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), foc
     g = General(
         hubspot_owner_id="owner-harry",
         clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
+        email1_subject_share=0.0,  # every email 1 keeps the Copy row's subject; the split's tests opt in
     )
     return Settings(
         general=dataclasses.replace(g, **general), angles=ANGLES, industries=tuple(industries), copy=tuple(copy),

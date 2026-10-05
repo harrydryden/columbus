@@ -20,7 +20,9 @@ Copy reaches a prospect only through every one of these gates, in order:
 
 preview() renders a row as one prospect would see it, for Harry to read before approving: the sample
 prospect with a real opener line from the Signals tab filled with sample facts (sample_opener), or a
-stored account with the opener enrol would give its contact (`copy preview --account DOMAIN`).
+stored account with the opener enrol would give its contact (`copy preview --account DOMAIN`). Its email 1
+subject is the arm's (render.subject_arm; Harry, 5 Oct 2026): the Copy row's for the sample prospect unless
+`--subject personal` asks for General email1_subject, and a stored account's own arm.
 check_openers() is the sheet check of the opener lines (enrol/openers.py): the Signals tab's, and the General
 tab's generic and focus lines, each filled with sample facts and run through the rules an opener must pass,
 no funding or money among them; `copy check` reports it too.
@@ -225,10 +227,18 @@ class Preview:
     sender: str
     emails: list[render.Rendered]
     opener_note: str = ""  # where the preview's opener came from
+    subject_arm: str = render.COPY_SUBJECT  # email 1's subject: personal (General email1_subject) or copy
+
+    def subject_note(self) -> str:
+        """Said only for the personal arm; the copy arm is the Copy row as written."""
+        if self.subject_arm == render.PERSONAL_SUBJECT:
+            return "the personal subject (General email1_subject), not the Copy row's s1_subject"
+        return ""
 
     def text(self) -> str:
         parts = [f"{self.copy_version}, {self.role}, sent by {self.sender}"
-                 + (f"\nOpener: {self.opener_note}" if self.opener_note else "")]
+                 + (f"\nOpener: {self.opener_note}" if self.opener_note else "")
+                 + (f"\nEmail 1 subject: {self.subject_note()}" if self.subject_note() else "")]
         for r in self.emails:
             parts.append(f"--- Email {r.step} (day {render_day(r.step)}) ---\nSubject: {r.subject}\n\n{r.text}")
             if r.violations:
@@ -254,7 +264,8 @@ class Preview:
             ".subject{border-bottom:1px solid #eee;padding-bottom:8px}.problems{color:#b00020}small{color:#888}"
             "</style></head><body>"
             f"<h1>{h.escape(self.copy_version)}</h1><p>{h.escape(self.role)}, sent by {h.escape(self.sender)}. "
-            "Sample prospect: Dana at Harbor &amp; Finch, 40 staff, Boston.</p>"
+            "Sample prospect: Dana at Harbor &amp; Finch, 40 staff, Boston."
+            + (f" Email 1 subject: {h.escape(self.subject_note())}." if self.subject_note() else "") + "</p>"
             + "".join(cards) + "</body></html>"
         )
 
@@ -267,8 +278,12 @@ def render_day(step: int) -> int:
 
 def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "", opener: str = "",
             opener_note: str = "", account: Mapping[str, Any] | None = None,
-            contact: Mapping[str, Any] | None = None) -> Preview:
-    """The row as one prospect reads it: the sample prospect, or a stored account and contact (account, contact)."""
+            contact: Mapping[str, Any] | None = None, subject_arm: str = "") -> Preview:
+    """The row as one prospect reads it: the sample prospect, or a stored account and contact (account, contact).
+
+    subject_arm: email 1's subject arm (render.SUBJECT_ARMS); by default a stored account's own arm, as enrol
+    gives it (render.subject_arm), and the Copy row's subject for the sample prospect.
+    """
     role = role or (row.role or next(iter(ROLE_LINE_COLUMNS)))
     boxes = sample_mailboxes(settings)
     mb = next((m for m in settings.mailboxes if sender and m.owner_name.casefold() == sender.casefold()), boxes[0])
@@ -278,8 +293,12 @@ def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "
                                   legal_overlay=render_overlay(account, settings))
     else:
         values = _values(row, settings, mb, role, opener=opener)
-    emails = render.render_sequence(row, values, mailbox=mb, settings=settings, for_send=False)
-    return Preview(row.copy_version, role, mb.owner_name, emails, opener_note)
+    if not subject_arm:
+        subject_arm = render.subject_arm(account.get("account_id"), settings) if account is not None else render.COPY_SUBJECT
+    if subject_arm == render.PERSONAL_SUBJECT and not settings.general.email1_subject.strip():
+        raise ValueError("email1_subject is blank on the General tab, so there is no personal subject to show")
+    emails = render.render_sequence(row, values, mailbox=mb, settings=settings, for_send=False, subject_arm=subject_arm)
+    return Preview(row.copy_version, role, mb.owner_name, emails, opener_note, subject_arm)
 
 
 def render_overlay(account: Mapping[str, Any], settings: Settings) -> str:

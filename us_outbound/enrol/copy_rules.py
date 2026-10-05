@@ -36,6 +36,8 @@ addresses), so an opener filled with a posting like "Call Center Agent" is dropp
 blocking the email, and the rule that is the opener's alone: it never mentions funding or money
 (money_violations; Harry, 2 Oct 2026: funding is a signal, never a line). Email bodies are not
 held to that one: nonprofit copy says "funding cycles" and fintech copy "a long fundraise".
+subject_violations() is the subject rules on a subject alone, for the General tab's personal subject for email 1
+(email1_subject; Harry, 5 Oct 2026), which no Copy row carries.
 """
 
 from __future__ import annotations
@@ -426,6 +428,37 @@ def email_violations(
         known = {_norm_link(u) for u in (demo_url, industry_url) if u}
         if _norm_link(url) not in known and not url.startswith(SPILL_PAGES):
             out.append(f'links to "{url}"; emails link only to the demo page, the industry page or spill.chat')
+    return list(dict.fromkeys(out))
+
+
+def subject_violations(subject: str, *, exempt: Iterable[str] = ()) -> list[str]:
+    """The rules on email 1's subject alone, as filled: General email1_subject, filled for a sample prospect, is
+    checked with these when the General tab is read (settings/validate.py; Harry, 5 Oct 2026).
+
+    The subject rules render_step applies to a Copy row's subject, as written (no exclamation mark, price, "Re:"
+    or emoji) and as sent (one line, the word rules, no unrendered variable, no spam phrase), and the rule email 1
+    keeps for its words: no demo, call or meeting ask.
+    """
+    masked = _mask(subject, exempt)
+    out: list[str] = []
+    if not subject.strip():
+        out.append("is empty")
+    if "\n" in subject:
+        out.append("has a line break")
+    if len(subject) > SUBJECT_MAX:
+        out.append(f"is {len(subject)} characters with a typical company name (the limit is {SUBJECT_MAX})")
+    if "!" in subject:
+        out.append("has an exclamation mark; the style is calm, not salesy")
+    out += [f'has the price "{_quoted(m)}"; the price comes only from {{{{price_line}}}} (General price_from)'
+            for m in _DOLLARS.finditer(subject)]
+    if _REPLY_PREFIX.match(subject):
+        out.append('starts with "Re:" or "Fwd:" for an email that is neither')
+    if _EMOJI.search(subject):
+        out.append("has an emoji")
+    out += content_violations(subject, exempt=exempt) + structure_violations(subject)
+    out += [f'says "{_quoted(m)}", which reads as spam' for rx in SPAM_PHRASES for m in rx.finditer(masked)]
+    out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
+            for m in _STEP1_ASK.finditer(masked)]
     return list(dict.fromkeys(out))
 
 

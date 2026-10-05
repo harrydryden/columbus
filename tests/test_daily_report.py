@@ -271,10 +271,11 @@ DECISIONS = (
 )
 
 
-def learning(opener=52, holdout=50, clay=10, decisions=DECISIONS):
+def learning(opener=52, holdout=50, clay=10, decisions=DECISIONS, subjects=False):
     """world() plus 90 days of step-1 sends by opener arm and email source, replies, bounces and approval decisions.
 
-    The last two opener contacts bounced, so `opener` - 2 were emailed."""
+    The last two opener contacts bounced, so `opener` - 2 were emailed. subjects: the opener contacts had email 1's
+    personal subject and the holdout the Copy row's (contacts.subject_arm; Harry, 5 Oct 2026); else none recorded."""
     ctx, t = world()
     sent_at = TUE_9 - timedelta(days=20)
     contacts, events = [], []
@@ -282,10 +283,11 @@ def learning(opener=52, holdout=50, clay=10, decisions=DECISIONS):
     groups = [("o", opener, {"opener_arm": "opener", "angle": "Hiring"}),
               ("h", holdout, {"opener_arm": "holdout", "angle": "General"}),
               ("c", clay, {"opener_arm": "none", "email_source": "clay"})]
+    arms = {"o": "personal", "h": "copy"} if subjects else {}
     for prefix, count, fields in groups:
         for i in range(count):
             cid = f"{prefix}{i}"
-            contacts.append(person(cid, f"a{cid}", copy_version="G-1", **fields))
+            contacts.append(person(cid, f"a{cid}", copy_version="G-1", subject_arm=arms.get(prefix), **fields))
             events.append(ev(n, "sent", mailbox=HANNAH, step=1, account_id=f"a{cid}", contact_id=cid, at=sent_at))
             n += 1
     for cid in (f"o{opener - 1}", f"o{opener - 2}", "c0"):
@@ -323,8 +325,21 @@ def test_to_improve_past_its_thresholds():
         "  Bounces by email source: apollo 2 of 102 (2.0%), clay 10 emailed, too few; "
         "the kill rule pauses a source over 3%.",
         "  Replies by angle: General 1 of 50, Hiring 4 of 50.",
+        "  Too early to compare: personal vs Copy-row subject, 0 and 0 of 50 emailed each.",
     ]
-    assert nums["improve_lines"] == 5
+    assert nums["improve_lines"] == 6
+
+
+def test_to_improve_compares_email_1_s_personal_subject_with_the_copy_row_s():
+    """Harry, 5 Oct 2026: the subject split read the way the opener holdout is, next to it."""
+    ctx, _ = learning(subjects=True)
+    lines, _ = daily_post.build(ctx)
+    body = section(lines, "*To improve*")
+    opener = body.index("  Replies, opener vs holdout: 4 of 50 (8.0%) vs 1 of 50 (2.0%); positive 2 vs 0. "
+                        "Counts, not conclusions.")
+    assert body[opener + 1] == ("  Replies, personal vs Copy-row subject: 4 of 50 (8.0%) vs 1 of 50 (2.0%); "
+                                "positive 2 vs 0. Counts, not conclusions.")
+    assert not any("Too early" in line for line in body)
 
 
 def test_to_improve_below_its_thresholds_says_what_it_needs_once():
@@ -333,6 +348,7 @@ def test_to_improve_below_its_thresholds_says_what_it_needs_once():
     assert section(lines, "*To improve*") == [
         "*To improve* · last 90 days",
         "  Too early to compare: ❌ by segment, 5 of 20 decisions; opener vs holdout, 10 and 5 of 50 emailed each; "
+        "personal vs Copy-row subject, 0 and 0 of 50 emailed each; "
         "angles and copy versions, 50 emailed each, two at least; bounces by source, 17 of 50 emailed.",
     ]
 
