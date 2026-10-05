@@ -158,6 +158,11 @@ def spec_violation(rec: CallRecord) -> str | None:
             if not in_registry or set(d) - {"accounts", "daily_limit"}:
                 return f"Instantly {a} beyond a registry account's daily limit"
             return None
+        if a == "account.update_name":  # a registry mailbox's sender name, a mailbox owner's full name, nothing else
+            name = f"{d.get('first_name', '')} {d.get('last_name', '')}"
+            if not in_registry or set(d) - {"accounts", "first_name", "last_name"} or name not in OWNERS:
+                return f"Instantly {a} beyond a registry account's sender name"
+            return None
         if a == "blocklist.add":
             entries = list(d.get("entries") or ())
             return None if entries and all(REDACTED_EMAIL.match(e) for e in entries) else "blocklist entry not an email"
@@ -560,6 +565,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "step_analytics": lambda c, w: c.step_analytics(HANNAH_CAMPAIGN),
         "daily_sends": lambda c, w: c.daily_sends(["hannah@meetspill.org"], start_date="2026-10-20"),
         "set_daily_limit": lambda c, w: c.set_daily_limit("hannah@meetspill.org", 30),
+        "set_sender_name": lambda c, w: c.set_sender_name("hannah@meetspill.org", "Hannah", "Spalding"),
         "sending_status": lambda c, w: c.sending_status(HANNAH_CAMPAIGN),
     },
     "Apollo": {
@@ -805,6 +811,11 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "instantly emails unfiltered": lambda w: w.clients["Instantly"].list_emails([]),
     "instantly accounts outside the registry": lambda w: w.clients["Instantly"].list_accounts(["anna@spill.eu"]),
     "instantly warmup outside the registry": lambda w: w.clients["Instantly"].enable_warmup(["anna@spill.eu"]),
+    # The sender name (Harry, 5 Oct 2026): a registry mailbox only, and only a mailbox owner's full name.
+    "instantly sender name outside the registry": lambda w: w.clients["Instantly"].set_sender_name(
+        "anna@spill.eu", "Anna", "Berg"),
+    "instantly sender name no mailbox owner has": lambda w: w.clients["Instantly"].set_sender_name(
+        "hannah@meetspill.org", "Hannah", "at Spill"),
     "instantly reply from outside the registry": lambda w: w.clients["Instantly"].reply(
         "anna@spill.eu", "E1", "Re", "Hi", approved_by=APPROVER),
     # SPEC 1.3 as changed by D11: an approver, or the owner for their own mailbox, or the CLI command.

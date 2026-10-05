@@ -48,7 +48,7 @@ us-outbound replies skip <id> [--live]             handled, nothing sent
 us-outbound killrules show|clear <item> [--live]   the kill-rule holds in force; lift one once checked
 us-outbound mailbox add <address> --owner "Name" [--domain D] [--daily-cap N] [--live]
 us-outbound mailbox pause|retire <address> [--live]
-us-outbound mailbox check [--fix] [--live]         mailbox_health by hand; --fix also runs campaigns ensure --fix
+us-outbound mailbox check [--fix] [--live]         mailbox_health by hand; --fix also sets each sender name to its owner's full name and runs campaigns ensure --fix
 us-outbound campaigns show                         each owner's campaign as Instantly holds it (read-only)
 us-outbound campaigns ensure [--fix] [--live]      the sender campaigns (created paused) and drift
 us-outbound copy check|preview|qa|draft [...]      the copy desk: check every row, preview one, QA it, draft one
@@ -171,6 +171,12 @@ fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, i
 enrollment until it is cleared (`learn/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
 in a mailbox's first sending week, 20 in its second, then its cap) sets the forecast, each
 campaign's daily limit and each Instantly account's own limit.
+
+The sender name (Harry, 5 Oct 2026): each Instantly account's first and last name, which make the
+From name prospects see, are its owner's full name from the Mailboxes tab ("Hannah Spalding", not
+"Hannah at Spill"). The morning mailbox check reports a name that differs, and
+`us-outbound mailbox check --fix --live` sets it (`Instantly.set_sender_name`, guard action
+`account.update_name`: a registry account, a mailbox owner's name, those two fields only).
 
 For the 5 Oct pilot (1 Oct 2026): `verify_accounts` (weekdays 04:30) verifies accounts on their
 Apollo data and HubSpot while the General key `clay_verification` is `skip` (Harry: go live before

@@ -319,9 +319,11 @@ def test_mailbox_check_fix_also_puts_the_campaigns_right(monkeypatch, capsys):
     monkeypatch.setattr(reg, "ensure_campaigns", recorder(calls, {"ok": [], "drift": {}}))
     h = Harness(SETTINGS)
     assert h.run("mailbox", "check", "--fix", "--live") == 0
-    assert calls == [("mailbox_health", (), {}), ("campaigns_ensure", (), {"fix": True})]
+    # --fix also sets the sender names (Harry, 5 Oct 2026), then puts the campaigns right.
+    assert calls == [("mailbox_health", (), {"fix_names": True}), ("campaigns_ensure", (), {"fix": True})]
     assert h.contexts[-1].live  # an operator command: --live alone
     assert h.run("mailbox", "check") == 0 and len(calls) == 3  # no --fix: mailbox_health only
+    assert calls[-1] == ("mailbox_health", (), {"fix_names": False})  # sender names reported, not set
     assert h.run("mailbox", "pause", "sam@meetspill.org", "--fix") == 2
     assert "--fix goes with check" in capsys.readouterr().err
 

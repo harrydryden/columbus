@@ -376,6 +376,22 @@ def test_mailbox_commands_run_through_the_cli():
     assert h.run("mailbox", "pause") == 2  # needs an address
 
 
+def test_mailbox_check_fix_live_sets_the_sender_names(capsys):
+    """Harry, 5 Oct 2026: the From name is the owner's full name. check reports it; --fix --live sets it."""
+    h = Harness(sheet_tabs={})
+    h.instantly.accounts[HANNAH].update(first_name="Hannah", last_name="at Spill")
+
+    def name_patches():  # the ramp's daily-limit PATCHes are mailbox_health's own (test_registry, test_ramp)
+        return [(r.url.rsplit("/", 1)[1], r.json) for r in h.transport.requests
+                if r.method == "PATCH" and "/accounts/" in r.url and "daily_limit" not in r.json]
+
+    assert h.run("mailbox", "check") == 0 and h.run("mailbox", "check", "--fix") == 0  # dry-run by default
+    assert name_patches() == [] and h.instantly.accounts[HANNAH]["last_name"] == "at Spill"
+    assert h.run("mailbox", "check", "--fix", "--live") == 0  # an operator command: --live alone
+    assert name_patches() == [(HANNAH, {"first_name": "Hannah", "last_name": "Spalding"})]
+    assert h.instantly.accounts[HANNAH]["last_name"] == "Spalding"
+
+
 def test_unenrol_removes_that_months_leads_only(capsys):
     h = Harness()
     c = h.instantly.add_campaign(C_HANNAH)

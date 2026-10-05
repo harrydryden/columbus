@@ -25,7 +25,8 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       send, HubSpot and close path as Slack. approve is the same as send
   killrules show|clear <item>         the kill-rule holds in force, and lifting one (learn/kill_rules.py)
   mailbox add|pause|retire <address>  the registry commands of SPEC 9 (add takes --owner); mailbox check
-  mailbox check [--fix]               is mailbox_health by hand, and --fix also runs campaigns ensure --fix
+  mailbox check [--fix]               is mailbox_health by hand, and --fix also sets each sender name to
+                                      its owner's full name and runs campaigns ensure --fix
   campaigns show | ensure [--fix]     each owner's campaign as Instantly holds it (read-only); or create
                                       the missing ones (paused) and put drift right
   copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
@@ -557,7 +558,8 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("--fix goes with check")
     if args.action == "check":
         ctx = factory("mailbox_health", args.live, operator=True)
-        _print(run_job(ctx, reg.mailbox_health))
+        # --fix also sets each drifted sender name to its owner's full name (Harry, 5 Oct 2026).
+        _print(run_job(ctx, lambda c: reg.mailbox_health(c, fix_names=args.fix)))
         if args.fix:  # and what `campaigns ensure --fix` does, so one command sets the senders up
             fix_ctx = factory("campaigns_ensure", args.live, operator=True)
             _print(run_job(fix_ctx, lambda c: reg.ensure_campaigns(c, fix=True)))
@@ -1490,7 +1492,8 @@ def build_parser() -> argparse.ArgumentParser:
     mb.add_argument("--domain", help="the address's domain (add; defaults to it)")
     mb.add_argument("--daily-cap", type=int, default=30, help="sends per day (add; at most 30)")
     mb.add_argument("--fix", action="store_true",
-                    help="check: also create missing campaigns and put drifted ones right (campaigns ensure --fix)")
+                    help="check: also set each sender name to its owner's full name, create missing campaigns "
+                         "and put drifted ones right (campaigns ensure --fix)")
 
     cp = command("campaigns", "show each sender's campaign, or create them (paused) and put drift right",
                  cmd_campaigns, takes_live=True)
