@@ -90,6 +90,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     assert ("  • hannah@meetspill.org (Active): 5 sent; bounces 1 of its last 6 sends (16.7%); ramp week 1 "
             "(first send Sun 25 Oct): 10 a day of its 30; 20 from Sun 01 Nov") in lines
     assert "Funding (Apollo enrich, Technology & Startups): no account enriched yet (apollo_enrich, weekdays 04:10)." in lines
+    assert "Site visits (spill.chat): not read yet (site_visits, daily 06:00)." in lines  # sources/site_visits.py
     assert "Kill rules fired: emails found by clay: 4 of 100 sends bounced" in lines
     assert "  Holds in force: 1 (`us-outbound killrules show`)" in lines
     # A kill-rule hold is listed as a hold, not as waiting for approval.

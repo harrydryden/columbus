@@ -111,7 +111,7 @@ JOBS: dict[str, str] = {
     "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages without Clay
     "apollo_enrich": "us_outbound.sources.apollo_enrich:run",  # Harry, 2 Oct 2026: funding and headcount from enrich
     "apollo_people": "us_outbound.sources.apollo_people:run",  # Harry, 5 Oct 2026: People leaders at every account
-    "site_visits": "not built yet (phase 1)",
+    "site_visits": "us_outbound.sources.site_visits:run",  # Harry, 5 Oct 2026: Apollo's visitors to the US site
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
     # Build addition: verified on Apollo data and HubSpot while clay_verification = skip (Harry, 1 Oct 2026).

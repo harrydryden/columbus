@@ -76,6 +76,25 @@ above this.
 - **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual
   steps it prints.
 
+## Website visits
+
+`site_visits` runs at 06:00 UK every day. It asks Apollo which companies visited spill.chat's US
+pages (General `site_visit_us_paths`, `/us`) and its pricing and demo pages (`site_visit_intent_paths`)
+in the last 30 days. A visit lifts that company's score before the 12:00 enrol ("Visited the US site"
++35, "Viewed US pricing or demo page" +25, so both make Priority), and a new visitor in the US with
+10 to 249 people joins the queue. It costs about 3 Apollo credits a day. The daily post's Sources
+section has one line on it. The emails never mention a visit.
+
+**If the daily post says "No website-visitor data from Apollo for spill.chat",** check the tracker.
+The jobs only read Apollo's visitor list and never touch the tracker, so this is done by hand:
+- In Apollo, Settings → Website Visitors: spill.chat is listed and shows data received, and the plan
+  includes website visitors.
+- Open spill.chat/us in a browser with the developer tools' Network tab open: a request goes to
+  Apollo when the page loads. If none does, the tracking script is missing from the US pages.
+- While you are there: the intent path should read `/us/pricing` (it was `us/pricing`, without the
+  slash), `/us/book-demo` should be added as high intent, and the script should not be on
+  employee-facing pages.
+
 ## Weekly
 
 - **Focus tab:** the industry mix (Tech 50%, Agencies 30%, Legal 20% to start). Change the shares there.

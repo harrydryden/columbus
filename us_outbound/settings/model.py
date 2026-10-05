@@ -189,6 +189,12 @@ class General:
     # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
     # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.
     apollo_enrich_groups: tuple[str, ...] = ("Technology & Startups",)
+    # (build) Harry, 5 Oct 2026: the website-visit signals (sources/site_visits.py). The site Apollo's visitor tracker
+    # is on (blank: the job reads nothing), and the pages that count as a US-site visit and as a pricing or demo
+    # visit: Apollo matches a page whose path contains any of them.
+    site_visit_domain: str = "spill.chat"
+    site_visit_us_paths: tuple[str, ...] = ("/us",)
+    site_visit_intent_paths: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0

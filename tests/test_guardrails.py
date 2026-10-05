@@ -102,6 +102,7 @@ READS_OVER_POST = {
     "apollo": {
         ("usage.credits", "/usage_stats/credit_usage_stats"),
         ("organizations.search", "/mixed_companies/search"),
+        ("website_visitors.search", "/mixed_companies/search"),  # with the visitor filters (sources/site_visits.py)
         ("people.search", "/mixed_people/api_search"),
         ("people.bulk_match", "/people/bulk_match"),
         ("organizations.bulk_enrich", "/organizations/bulk_enrich"),
@@ -570,6 +571,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "search_people": lambda c, w: c.search_people({"person_titles[]": ["Head of People"]}),
         "bulk_match": lambda c, w: c.bulk_match([{"first_name": "Jane", "last_name": "Doe", "domain": "acmecreative.com"}]),
         "website_visitor_aggregates": lambda c, w: c.website_visitor_aggregates("spill.chat", ["org-1"]),
+        "search_website_visitors": lambda c, w: c.search_website_visitors(["spill.chat"], days=30, pages=["/us"]),
     },
     "Clay": {
         "run_function": lambda c, w: c.run_function(CLAY_FUNCTIONS[0], {"domain": "acmecreative.com"}),

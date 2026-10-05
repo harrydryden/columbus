@@ -511,7 +511,7 @@ def test_the_table_matches_the_job_registry_and_spec9():
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
-                       "apollo_people", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
+                       "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "daily_post", "heartbeat_check",
                        "suppression_load", "lookalikes", "hand_check_post"]
     assert set(enabled) <= set(hb.EXPECTED)

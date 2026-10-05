@@ -26,7 +26,8 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
   * Sources: the careers and benefits page reader's coverage, its last run, every account read so
     far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
     what Apollo's organization enrich found, with funding in the last 180 and 365 days
-    (sources/apollo_enrich.py);
+    (sources/apollo_enrich.py); and one line on website visits: the companies Apollo saw on the US
+    pages, or, when its tracker sends no data, to check it (sources/site_visits.py);
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
@@ -55,7 +56,7 @@ from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
-from us_outbound.sources import apollo_enrich, pages
+from us_outbound.sources import apollo_enrich, pages, site_visits
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -279,6 +280,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     lines += apollo_enrich.post_lines(ctx)
     enriched = apollo_enrich.tally(ctx.store, ctx.today_uk())
     nums.update(enriched=enriched.accounts, enriched_with_funding=enriched.with_funding)
+
+    # Website visits from Apollo, or that its tracker sends no data (Harry, 5 Oct 2026): one line.
+    lines.append(site_visits.post_line(ctx))
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
     lines += ["", "*Mailboxes*"]

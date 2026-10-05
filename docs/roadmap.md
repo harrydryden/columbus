@@ -10,7 +10,7 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 
 | Stage | Built | Not built yet |
 | :- | :- | :- |
-| Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (Spill's HubSpot customers as cells, a signal and an early exclusion of customer domains), `named` accounts | `site_visits`, `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
+| Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (Spill's HubSpot customers as cells, a signal and an early exclusion of customer domains), `named` accounts, `site_visits` (Apollo's visitors to spill.chat/us, daily 06:00: the two visit signals, and new US visitors of 10–249 people by the front door; 5 Oct) | `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
 | Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct). For the groups `apollo_enrich` enriches, Apollo's exact employee count replaces the searched size band before verify runs | `verify_in_clay`; Clay's cross-check of doubtful HQ state and size (the `verify.cross_check` hook) |
 | Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire. The People leaders at every queue account, `apollo_people` (weekdays 04:20, Apollo's free people search; 5 Oct), so "New People leader" scores before the queue is sorted, and "First People hire (likely)" in place of "First People hire", firing only where Apollo holds at least half the headcount | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
 | Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees, unless `apollo_people` searched the account in the last 30 days. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
@@ -282,7 +282,13 @@ verification and contact choice write only the database; enrol, replies and post
    `clay_verification` stays `skip` for the pilot. The Accounts function and `verify_in_clay` are
    needed only if the page reader's coverage falls short (§4 week 1, item 3).
 2. **`site_visits`:** Apollo's company-level visitors on `/us`, with same-day priority for
-   enrolled and queued accounts (D13; copy never mentions a visit).
+   enrolled and queued accounts (D13; copy never mentions a visit). *Built and switched on 5 Oct
+   (Harry: "the strongest intent signal")*: daily at 06:00, three read-only visitor searches (the
+   last day, and 30 days for the US pages and for the pricing and demo pages; General
+   `site_visit_domain`, `site_visit_us_paths`, `site_visit_intent_paths`), about 3 Apollo credits a
+   day, then the rescore before the 12:00 enrol. Still to confirm with the first runs: that Apollo
+   takes the visitor filters through the REST API and data arrives (docs/phase0-facts.md). The daily
+   post says so plainly when it doesn't.
 3. **A second contact at 50–249** (multi-threading), once capacity allows it.
 4. **The learning loop:**
    - `monday_readout`;

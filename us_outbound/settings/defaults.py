@@ -194,6 +194,25 @@ _GENERAL: list[tuple[str, str, str]] = [
         "after 180 days). Blank enriches none. Harry, 2 Oct 2026: funding as a sign of change and growth, where "
         "funding is common. Added by the build.",
     ),
+    (
+        "site_visit_domain",
+        "spill.chat",
+        "The website Apollo's visitor tracker is installed on. Each morning at 06:00 UK, site_visits reads the "
+        "companies that visited it in the last 30 days for the website-visit signals (a few Apollo credits a "
+        "day). Blank: nothing is read. Added by the build.",
+    ),
+    (
+        "site_visit_us_paths",
+        "/us",
+        "Pages that count as a visit to the US site, comma-separated. A page counts when its path contains one "
+        "of these, so /us also counts /us/pricing. Added by the build.",
+    ),
+    (
+        "site_visit_intent_paths",
+        "/us/pricing, /us/demo, /us/book",
+        "Pages that count as a pricing or demo visit, comma-separated, matched the same way, so /us/book counts "
+        "/us/book-demo. Blank: no pricing or demo signal. Added by the build.",
+    ),
     ("claude_model", "claude-opus-5-5",
      "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),
     ("claude_task_model", "claude-sonnet-5-5",

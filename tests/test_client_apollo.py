@@ -26,6 +26,7 @@ READ_METHODS = {
     "search_people",
     "bulk_match",
     "website_visitor_aggregates",
+    "search_website_visitors",
 }
 
 
@@ -44,6 +45,7 @@ def exercise(apollo):
     apollo.search_people({"person_titles": ["Head of People"]})
     apollo.bulk_match([{"id": "p1"}])
     apollo.website_visitor_aggregates("spill.chat", ["org1"])
+    apollo.search_website_visitors(["spill.chat"], days=30, pages=["/us"])
 
 
 def test_there_are_no_write_methods():
@@ -182,6 +184,28 @@ def test_website_visitor_aggregates_per_company():
     apollo, t, _ = make()
     t.route("GET", "/website_visitors/domain_aggregates", status=404, body={"error": "stats not found"})
     assert apollo.website_visitor_aggregates("spill.chat", ["o3"]) == {"o3": {}}
+
+
+def test_website_visitor_search_body_is_read_only_and_never_resent():
+    """Harry, 5 Oct 2026: the companies that visited spill.chat, from organization search's visitor filters."""
+    apollo, t, guard = make()
+    t.route("POST", "/mixed_companies/search", body={"organizations": [{"id": "o1", "primary_domain": "acme.example"}]})
+    page = apollo.search_website_visitors([" Spill.chat "], days=30, pages=["/us/pricing", " ", "/us/demo"], page=2)
+    [req] = t.requests
+    assert (req.method, req.url) == ("POST", f"{BASE}/mixed_companies/search")
+    assert req.json == {"website_visitors_from_domains": ["spill.chat"], "website_visitors_from_past": 30,
+                        "website_visitors_domain_pages": ["/us/pricing", "/us/demo"], "page": 2, "per_page": 100}
+    assert req.idempotent is False  # a paid read: never resent after a timeout
+    assert guard.calls[-1].action == "website_visitors.search" and not guard.calls[-1].write
+    assert [o["organization_id"] for o in organizations_in(page)] == ["o1"]
+    apollo.search_website_visitors(["spill.chat"], days=1)
+    assert "website_visitors_domain_pages" not in t.requests[-1].json  # no page filter: the whole site
+    for bad in ({"days": 2}, {"days": 30, "page": 0}):
+        with pytest.raises(ValueError):
+            apollo.search_website_visitors(["spill.chat"], **bad)
+    with pytest.raises(ValueError):
+        apollo.search_website_visitors([""], days=30)
+    assert len(t.requests) == 2
 
 
 def test_credit_usage():

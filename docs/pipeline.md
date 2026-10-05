@@ -124,7 +124,18 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   count puts outside goes back to `new`, so verify sees it again). A company Apollo has no
   record for is "not found", not "no funding", and is not asked again for 180 days. The daily post
   counts what it found.
-- **Site visits.**
+- **Site visits** (`site_visits`, daily 06:00, about 3 Apollo credits a day; Harry, 5 Oct 2026):
+  Apollo's organisation search with its website-visitor filters, read only, for the General
+  `site_visit_domain` (spill.chat): who visited the `site_visit_us_paths` (`/us`) in the last day
+  and the last 30 days, and the `site_visit_intent_paths` (`/us/pricing`, `/us/demo`, `/us/book`)
+  in the last 30 days. A visitor is matched to its account by root domain (aliases included) or
+  Apollo id, and gets `us_visits_30d` and `pricing_or_demo_visits_30d` (1 while Apollo lists it, 0
+  once it no longer does, written only on a change), and a `site_visit` event for each day it
+  visited (the daily post's warm accounts, the readout's visits before and after the first email).
+  A visitor we don't hold is screened by one search (its Apollo id, the US, 10–249 employees) and,
+  if it passes, comes in by the front door with source `site_visit`, like a universe company. The
+  rescore follows, so a visit counts at the 12:00 enrol. Apollo refusing the filters, or a week
+  with no visitor, puts one line in the daily post: check the tracker.
 - **Layoffs.**
 - **IRS BMF.**
 - **Calendar.**
@@ -188,7 +199,7 @@ Credit budgets are monthly, a calendar month in UK time, because that's how Apol
 
 | Key | Default | Spent or used by | Checked |
 | :- | :- | :- | :- |
-| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages, at most 25%), `apollo_signals` (job postings, at most 25%), `apollo_enrich` (organisation enrich, at most 15%), `pick_contacts` (email reveals: the rest, at least 35%), `verify_in_clay` (enrich, once built) | Before every batch: the month's balance, and today's share of it (each source's share paced the same way) |
+| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages, at most 25%), `apollo_signals` (job postings, at most 25%), `apollo_enrich` (organisation enrich, at most 15%), `pick_contacts` (email reveals: the rest, at least 35%), `verify_in_clay` (enrich, once built), `site_visits` (at most 5 a day, about 90 to 120 a month, outside the daily pacing as it runs after `pick_contacts`) | Before every batch: the month's balance, and today's share of it (each source's share paced the same way) |
 | `clay_monthly_credits` | 2,000 (about 500 a week; 0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts) | The same |
 | `apollo_floor` | 5,000 | All Apollo spend | Stops Apollo spend if the account balance falls below it |
 | `claude_monthly_cap_usd` | $10 | Reply classification and drafts | A UTC month, as the Anthropic Console counts it |
@@ -409,6 +420,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
 | — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
 | — | People leaders at every queue account (`apollo_people`, weekdays 04:20, 0 credits); "First People hire" replaced by "First People hire (likely)" (+20, 60 days), which also needs `people_search_coverage >= 0.5` | Harry, 5 Oct 2026: only 12 of 432 companies had People data, "New People leader" had fired on none, and nothing wrote a count of 0 | 5, 7, 9 | Done; `settings load --tab Signals --live` brings the new row and switches the old one off |
+| — | Website visits from Apollo's visitor filters on organisation search (`site_visits`, daily 06:00; one search per window, not SPEC 7's domain aggregates per account) | Harry, 5 Oct 2026: "the strongest intent signal" | 7, 9 | Done; the REST filters to confirm on the first run |
 | — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |
 | — | A link in every email: the industry page in email 1, the demo page in emails 2 to 4, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry, 30 Sep and 1 Oct | 10 | Done |
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |

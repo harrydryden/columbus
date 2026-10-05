@@ -14,7 +14,8 @@ Shapes come from Apollo's published OpenAPI documents (mirrored Aug 2026) and it
 tool schemas. Auth is the master API key in the X-Api-Key header.
 
 Credits (Apollo's API docs, 1 Oct 2026): an organization search costs 1 credit for a page
-that returns at least one company and 0 for an empty one; job postings cost 1 credit per
+that returns at least one company and 0 for an empty one (the website-visitor search is one, with
+visitor filters); job postings cost 1 credit per
 request; organization enrichment, single or bulk, 1 credit per company found and 0 for one
 not found. The jobs record what they spend in credit_ledger (budget.py); this client only
 says which reads are paid (paid_reads), so none is resent after a timeout.
@@ -53,7 +54,12 @@ READ_ENDPOINTS: dict[str, tuple[str, str]] = {
     # PHASE0-CONFIRM: REST path of Apollo's website-visitor domain aggregates (the MCP tool
     # apollo_website_visitors_domain_aggregates takes organization_id, domain, from, to).
     "website_visitors.domain_aggregates": ("GET", "/website_visitors/domain_aggregates"),
+    # Organization search filtered to the companies that visited our tracked domain (sources/site_visits.py):
+    # the same endpoint and price as organizations.search, its own action so the guard and the logs show it.
+    "website_visitors.search": ("POST", "/mixed_companies/search"),
 }
+# website_visitors_from_past takes only these windows, in days (Apollo's MCP tool docs, 5 Oct 2026).
+VISITOR_WINDOWS = frozenset({1, 7, 15, 30, 60, 90})
 
 # bulk_match query flags: never personal emails (SPEC 1.4), never phones, and no waterfall,
 # whose results only arrive by webhook (there is no public endpoint, SPEC 2).
@@ -179,7 +185,7 @@ class Apollo(HttpClient):
     system = "apollo"
     base_url = "https://api.apollo.io/api/v1"
     paid_reads = frozenset({"organizations.search", "organizations.enrich", "organizations.bulk_enrich",
-                            "organizations.job_postings", "people.bulk_match"})
+                            "organizations.job_postings", "people.bulk_match", "website_visitors.search"})
 
     def headers(self) -> dict[str, str]:
         return {
@@ -221,6 +227,33 @@ class Apollo(HttpClient):
         """One page of organization search (1 credit per page). See organizations_in()."""
         body = {**normalize_filters(filters), **self._page_args(page, per_page)}
         return self._read("organizations.search", json=body, detail={"page": page, "filters": sorted(body)}) or {}
+
+    def search_website_visitors(
+        self, domains: Iterable[str], *, days: int, pages: Iterable[str] = (), page: int = 1, per_page: int = 100,
+    ) -> dict:
+        """One page of the companies that visited our tracked domains (spill.chat) in the last `days` days.
+
+        An organization search (1 credit per page that returns a company, 0 for an empty one) with
+        Apollo's website-visitor filters: website_visitors_from_domains, website_visitors_from_past and,
+        when pages are given, website_visitors_domain_pages (a page whose path CONTAINS any of them).
+        It reads the visitor list only. The tracker's own settings are never read or changed: Apollo's
+        tracker endpoint creates a tracker when there is none, which is a write.
+        PHASE0-CONFIRM: the REST body takes these keys as Apollo's MCP tool does, and the answer comes in
+        the usual two buckets (organizations_in). A filter Apollo ignored would return its whole
+        database, which sources/site_visits.py refuses to use.
+        """
+        if days not in VISITOR_WINDOWS:
+            raise ValueError(f"website_visitors_from_past is one of {sorted(VISITOR_WINDOWS)} days, not {days}")
+        tracked = [d for d in (str(x).strip().lower() for x in domains) if d]
+        if not tracked:
+            raise ValueError("no tracked domain")
+        body: dict[str, Any] = {"website_visitors_from_domains": tracked, "website_visitors_from_past": days}
+        paths = [p for p in (str(x).strip() for x in pages) if p]
+        if paths:
+            body["website_visitors_domain_pages"] = paths
+        body.update(self._page_args(page, per_page))
+        return self._read("website_visitors.search", target=tracked[0], json=body,
+                          detail={"page": page, "days": days, "pages": paths}) or {}
 
     def enrich_organization(self, domain: str) -> dict:
         """Organization enrichment by root domain (1 credit if found). See enriched_in()."""

@@ -546,6 +546,13 @@ def _check_general_value(key: str, value: Any) -> None:
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:
             raise ValueError(f"{', '.join(bad)} is not a Slack user id (they look like U01ABCDEF)")
+    # The website-visit signals (sources/site_visits.py; Harry, 5 Oct 2026).
+    if key == "site_visit_domain" and value and not _DOMAIN.fullmatch(value.strip().lower()):
+        raise ValueError(f"is the bare domain Apollo's tracker is on, like spill.chat (no https:// or path), not {value!r}")
+    if key in ("site_visit_us_paths", "site_visit_intent_paths"):
+        bad = [v for v in value if not v.startswith("/")]
+        if bad:
+            raise ValueError(f"{', '.join(bad)} is not a path on the site: each starts with /, like /us/pricing")
 
 
 def _general(rows: list[_Row]) -> General:

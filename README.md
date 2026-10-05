@@ -107,7 +107,7 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | Phase | State |
 | :- | :- |
 | 0 Foundations | Built and running on Railway: clients, guard, settings sync (02:00, and 11:30 on weekdays), DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the scheduler |
-| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders at every account (`apollo_people`), lookalikes, and `verify_accounts` while Clay verification is not built. Not built: site visits, public signals, `verify_in_clay` |
+| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders at every account (`apollo_people`), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts` while Clay verification is not built. Not built: public signals, `verify_in_clay` |
 | 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment with send approvals in Slack (`auto_send` = no), the sending ramp, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback` |
 | 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); readout not built |
 
