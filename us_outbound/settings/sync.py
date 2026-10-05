@@ -121,20 +121,20 @@ def _stamp(settings: Settings, in_force: InForce) -> Settings:
 
 
 def last_read(store: Store, settings: Settings) -> datetime | None:
-    """When the sheet was last read into the settings in force: the latest settings_sync that finished ok
-    (a dry-run sync writes the settings too), or, with none recorded, the latest row written.
+    """When the sheet was last read into the settings in force: the start of the latest settings_sync that
+    finished ok (a dry-run sync writes the settings too), or, with none recorded, the latest row written.
 
     settings.synced_at alone is when a row last changed: an unchanged sheet writes nothing, so it
     would say "Friday" after a weekend of good syncs.
     """
     times = [settings.synced_at] if settings.synced_at else []
-    try:
-        run = store.latest("heartbeats", "finished_at", {"job": "settings_sync", "status": "ok"})
+    try:  # the run's start: the sheet is read first (heartbeats are indexed by job, started_at)
+        run = store.latest("heartbeats", "started_at", {"job": "settings_sync", "status": "ok"})
     except Exception as exc:  # a status line, never a reason to fail
         log("settings_last_read_unknown", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         run = None
-    if run and run.get("finished_at"):
-        times.append(_ts(run["finished_at"]))
+    if run and run.get("started_at"):
+        times.append(_ts(run["started_at"]))
     return max(times) if times else None
 
 
