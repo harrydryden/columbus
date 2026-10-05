@@ -322,6 +322,11 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 - **"Trusted by over 50,000 employees"** in email 2's "What is Spill?" links the US site (`{{site_url}}`; Harry, 1 Oct 2026).
 - **One price:** `{{price_line}}` reads "Plans start from $195 a month for the whole team, on a rolling 30-day contract." for every team (General `price_from`; Harry, 1 Oct 2026). SPEC 4's price-by-size table is not quoted.
 - **Sign-off:** "Best wishes," and the sender's first name (Harry, 1 Oct 2026).
+- **The signature: the sender's full name and one line with one link** (`templates/copy/signature.txt`, `render.signature`; Harry, 5 Oct 2026: "The signature should only have one line and link"). The line is one of three: Spill's US site (General `site_url`), "Book a call here" (General `booking_link`) or the Trustpilot reviews. The code picks it from the email's own links so it never repeats them:
+  - The email suggests booking a call (it links the demo page or the booking link, or says "book a call", "book a demo", "book a time", "schedule a call", "set up a call" or "grab time"): the booking line, always.
+  - Otherwise, not the website line when the email links a page on the site (the industry page, the US site, any spill.chat address but the demo page), and never a line whose address the email already links.
+  - Among the lines left, a rotation by prospect and email number: different prospects get different lines, a prospect's next email the next line, and a re-render, a Slack edit and a preview the same line.
+  - With today's copy, email 1 (the industry page) shows the booking or the reviews line, and emails 2 to 4 (the demo page) show the booking line.
 - **Emails 2 to 4 each have one call to action, the demo page**, `{{demo_url}}` (General `booking_page`, https://www.spill.chat/us/book-demo), as a link in the text.
 - **The emails are HTML** (General `email_format = html`): embedded links, bullets and the bold headings of the long-form email, with tracking still off. `email_format = text` sends plain text with the links written out, if phase 0 finds Instantly mangles HTML in a custom variable. Instantly's `text_only` follows the setting.
 - **Where the words come from:**
@@ -347,7 +352,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | 2 | Sheet check | Code, free: `us-outbound copy check` renders every row for each role, from the demo host and from another sender, with sample and longest values | Everything the copy rules check (below) |
 | 3 | QA | The task model (`claude_task_model`, Sonnet), `us-outbound copy qa --live`: writes `qa` ("pass 1a2b3c4d") and `qa_notes` to the row | Claims not in facts.md or on the page, wrong data, statistics, tone, US grammar, the structure. A row that fails the sheet check fails QA without a model call |
 | 4 | Approval | Harry: `status = approved` and `approved_by` | Judgment |
-| 5 | Render-time check | Code, on every lead, in the enrol job | Anything the lead's own values break: a missing first name, a blank site or booking link for the signature, an opener with a banned word (the opener is dropped) |
+| 5 | Render-time check | Code, on every lead, in the enrol job | Anything the lead's own values break: a missing first name, a blank site or booking link that leaves the signature no line to show, an opener with a banned word (the opener is dropped) |
 
 **QA stamps the exact wording:** `qa` carries a check code over the row's subjects, bodies and role lines. Edit the copy and the code no longer matches, so the row stops being sent until it passes QA again (`us-outbound copy qa --version <v> --live`, about a cent a row).
 
@@ -380,7 +385,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 - A Copy tab still in the old one-row-per-step layout is replaced. Its rows stay in the database's settings history, and until it is replaced the sync reads it as no copy and says so.
 - A Copy tab already in the new layout keeps every row as it is; only missing versions are added.
 
-**Phase 0 tests Instantly's custom-variable length limit.** The longest email 2 is about 2,350 characters of HTML with the old footer (the 1 Oct signature, with three links, is a little longer), and email 1 about 1,950 with the longest opener. If Instantly's limit is lower, the fallback is to put the signature in the campaign step, beside the unsubscribe link.
+**Phase 0 tests Instantly's custom-variable length limit.** The longest email 2 is about 2,350 characters of HTML with the old footer (the 5 Oct signature, with one line, is shorter than the 1 Oct one with three), and email 1 about 1,950 with the longest opener. If Instantly's limit is lower, the fallback is to put the signature in the campaign step, beside the unsubscribe link; its line differs by email and prospect, so it would go as its own custom variable.
 
 ## How Harry can steer the system
 

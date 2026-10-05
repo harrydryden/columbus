@@ -27,11 +27,18 @@ DEMO = "https://www.spill.chat/us/book-demo"
 PAGE = "https://www.spill.chat/us/industry/"
 BOOKING = "https://meetings.hubspot.com/harry336/us-demo-link"
 TRUSTPILOT = "https://uk.trustpilot.com/review/spill.chat"
-SIGNATURE_LINES = [  # Harry, 1 Oct 2026: the signature, with its three links, after the copy's sign-off
-    "Spill (https://www.spill.chat/us), on-demand counseling for your team",
-    f"Book a call here ({BOOKING})",
-    f"Read our Trustpilot reviews ({TRUSTPILOT}) from employees",
-]
+# Harry, 1 and 5 Oct 2026: the signature's lines by kind, as text and as HTML. After the copy's sign-off,
+# every email shows the sender's full name and one of them.
+SIGNATURE = {
+    "website": "Spill (https://www.spill.chat/us), on-demand counseling for your team",
+    "booking": f"Book a call here ({BOOKING})",
+    "reviews": f"Read our Trustpilot reviews ({TRUSTPILOT}) from employees",
+}
+SIGNATURE_HTML = {
+    "website": '<a href="https://www.spill.chat/us">Spill</a>, on-demand counseling for your team',
+    "booking": f'Book a call <a href="{BOOKING}">here</a>',
+    "reviews": f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees',
+}
 
 
 def mailbox(address: str, owner: str, status: str = "Active", cap: int = 30, **kw) -> Mailbox:
@@ -315,18 +322,17 @@ def test_the_role_line_and_opener_land_in_email_1():
 def test_signature_on_every_email_and_no_data_notice():
     seq = sequence()
     for r in seq:
-        # The sign-off, a space, then the signature: the sender's full name and three lines (Harry, 1 and 5 Oct
-        # 2026). No postal address and no privacy link; the opt-out is Instantly's unsubscribe link, which the
-        # campaign's step template adds after this.
+        # The sign-off, a space, then the signature: the sender's full name and one line with one link (Harry,
+        # 1 and 5 Oct 2026). No postal address and no privacy link; the opt-out is Instantly's unsubscribe link,
+        # which the campaign's step template adds after this.
         lines = r.text.splitlines()
-        sig = lines.index(SIGNATURE_LINES[0])
-        assert lines[sig - 4 : sig + 3] == ["Best wishes,", "Hannah", "", "Hannah Spalding", *SIGNATURE_LINES]
-        assert lines[-3:] == SIGNATURE_LINES  # the signature is the end of every email
+        assert lines[-5:] == ["Best wishes,", "Hannah", "", "Hannah Spalding", SIGNATURE[r.signature]]
+        assert sum(line in SIGNATURE.values() for line in lines) == 1  # the signature is the end of every email
         assert r.html.endswith(
             f'<p style="{render.SIGNATURE_STYLE}"><strong style="{render.SIGNATURE_NAME_STYLE}">Hannah Spalding'
-            '</strong><br><a href="https://www.spill.chat/us">Spill</a>, on-demand counseling for your team<br>'
-            f'Book a call <a href="{BOOKING}">here</a><br>'
-            f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees</p>')
+            f'</strong><br>{SIGNATURE_HTML[r.signature]}</p>')
+        sig_html = r.html[r.html.index(f'<p style="{render.SIGNATURE_STYLE}">'):]
+        assert sig_html.count("<a ") == 1 and sig_html.count("<br>") == 1
         assert "privacy notice" not in r.text.lower() and "{{unsubscribe}}" not in r.html
         # Harry, 5 Oct 2026: where we got the details and the lawful basis are kept, not shown.
         assert "Where we got your details" not in r.text and "legitimate interests" not in r.text
@@ -343,8 +349,128 @@ def test_the_data_record_names_only_the_data_providers_in_use():
 def test_signature_links_follow_the_general_tab_and_blanks_block():
     s = make_settings(booking_link="https://meetings.hubspot.com/someone-else")
     assert '<a href="https://meetings.hubspot.com/someone-else">here</a>' in sequence(settings=s)[1].html
+    # A blank General value drops its line from the choice (Harry, 5 Oct 2026); it blocks only when no line
+    # is left. Email 1 has the reviews line still; emails 2 to 4 suggest booking, so the booking line or none.
     blank = sequence(settings=make_settings(booking_link=""))
-    assert all(any("booking_link is blank" in v for v in r.violations) for r in blank)
+    assert blank[0].ok and blank[0].signature == "reviews"
+    for r in blank[1:]:
+        assert r.signature == "booking" and "Book a call here ({booking_link})" in r.text
+        assert "booking_link is blank on the General tab, so the signature has no booking link" in r.violations
+    assert kinds_for(NO_LINK, settings=make_settings(site_url="")) == {"booking", "reviews"}
+    assert kinds_for(NO_LINK, settings=make_settings(booking_link="")) == {"website", "reviews"}
+    nothing_left = make_settings(booking_link="")
+    assert sig_kind(DEMO_LINK, settings=nothing_left) == ("booking", ["booking_link"])
+
+
+# -- the signature's one line (Harry, 5 Oct 2026) --------------------------------------------------------------
+# "The signature should only have one line and link ... if the [email] refers to a website page, then do not
+# show the line that is to the website ... treat 'book a call' as not a website page ... If the email copy
+# suggests booking a call, then this should be included in the signature as well."
+
+NO_LINK = "Hi Jane,\n\nA short note about support for your team.\n\nBest wishes,\nHannah"
+SITE_LINK = "Hi Jane,\n\nHere's [how Spill works]({{site_url}}).\n\nBest wishes,\nHannah"
+DEMO_LINK = "Hi Jane,\n\nIf it's useful, [book a short demo]({{demo_url}}).\n\nBest wishes,\nHannah"
+CONTACTS = [f"company {i}\njane" for i in range(30)]  # signature keys for 30 different prospects
+
+
+def sig_kind(source: str, *, key: str = CONTACTS[0], step: int = 1, settings=None) -> tuple[str, list[str]]:
+    s = settings or make_settings()
+    body = copy_markup.render(source, values_for(settings=s), optional=render.OPTIONAL_VARIABLES)
+    return render.signature_kind(s, body, source, key=key, step=step)
+
+
+def kinds_for(source: str, *, step: int = 1, settings=None) -> set[str]:
+    """The lines a body's signature shows across the 30 prospects."""
+    return {sig_kind(source, key=key, step=step, settings=settings)[0] for key in CONTACTS}
+
+
+def test_email_1_never_shows_the_website_line_and_emails_2_to_4_show_booking():
+    """Email 1 links the industry page, a page on the site: the booking or the reviews line, rotated by
+    prospect. Emails 2 to 4 link the demo page: the booking line, always."""
+    firsts = set()
+    for name in ("Jane", "Ana", "Bo", "Cy", "Dee", "Eli", "Flo", "Gus"):
+        seq = sequence(con=contact(first_name=name))
+        assert all(r.ok for r in seq), render.violations(seq)
+        firsts.add(seq[0].signature)
+        assert [r.signature for r in seq[1:]] == ["booking"] * 3
+    assert firsts == {"booking", "reviews"}
+
+
+def test_the_shipped_copy_rotates_email_1_and_books_in_emails_2_to_4(default_settings):
+    """data/copy.csv (318 rows; render.py's docstring): every email 1 links only {{industry_url}}, so it shows
+    the booking or the reviews line; every email 2 to 4 links {{demo_url}}, so it shows the booking line."""
+    from us_outbound.enrol import copy_desk
+
+    s = default_settings
+    assert len(s.copy) == 318
+    firsts: set[str] = set()
+    for i, row in enumerate(s.copy):
+        name = ("Dana", "Lee", "Omar", "Priya")[i % 4]
+        p = copy_desk.preview(row, s, account=copy_desk.sample_account(row, s), contact={"first_name": name})
+        first, *rest = p.emails
+        assert first.signature in {"booking", "reviews"}, row.copy_version
+        assert [r.signature for r in rest] == ["booking"] * 3, row.copy_version
+        firsts.add(first.signature)
+    assert firsts == {"booking", "reviews"}
+
+
+@pytest.mark.parametrize("link", ["{{site_url}}", "{{industry_url}}", "https://www.spill.chat/us/pricing",
+                                  "https://spill.chat/us"])
+def test_a_body_that_links_the_site_rotates_booking_and_reviews(link):
+    source = f"Hi Jane,\n\nHere's [how Spill works]({link}).\n\nBest wishes,\nHannah"
+    assert kinds_for(source) == {"booking", "reviews"}
+
+
+def test_a_body_with_no_link_can_show_any_line():
+    assert kinds_for(NO_LINK) == {"website", "booking", "reviews"}
+
+
+@pytest.mark.parametrize("link", ["{{demo_url}}", DEMO, BOOKING])
+def test_a_booking_link_shows_the_booking_line_again(link):
+    """The demo page and the booking link are for booking a call, not website pages; the line shows anyway."""
+    source = f"Hi Jane,\n\nIf it's useful, [book a short demo]({link}).\n\nBest wishes,\nHannah"
+    assert kinds_for(source) == {"booking"}
+    with_site = source.replace("If it's useful", "Spill is [trusted by many]({{site_url}}). If it's useful")
+    assert kinds_for(with_site) == {"booking"}  # email 2's shape: the site and the demo page
+
+
+@pytest.mark.parametrize("words", [
+    "Happy to book a call next week.", "Shall we Book A Demo?", "We could book a\ntime that suits.",
+    "Or schedule a call.", "We can set up a call.", "Grab time with me whenever it suits.",
+])
+def test_a_booking_phrase_shows_the_booking_line(words):
+    assert kinds_for(f"Hi Jane,\n\n{words}\n\nBest wishes,\nHannah") == {"booking"}
+
+
+@pytest.mark.parametrize("words", [
+    "Support for the people calling in all day.", "For a team on a fully booked Saturday.",
+    "Physically and mentally, shifts take a toll.", "Nobody needs a call to start.", "People booked sessions.",
+])
+def test_loose_words_are_not_a_booking_phrase(words):
+    assert kinds_for(f"Hi Jane,\n\n{words}\n\nBest wishes,\nHannah") == {"website", "booking", "reviews"}
+
+
+def test_never_a_line_whose_address_the_body_links():
+    reviews = f"Hi Jane,\n\nSee [what employees say]({TRUSTPILOT}).\n\nBest wishes,\nHannah"
+    assert kinds_for(reviews) == {"website", "booking"}
+    both = f"Hi Jane,\n\nSee [what employees say]({TRUSTPILOT}) and [our site]" + "({{site_url}}).\n\nBest wishes,\nHannah"
+    assert kinds_for(both) == {"booking"}
+
+
+def test_the_same_inputs_give_the_same_line_and_consecutive_emails_differ():
+    """Re-renders, Slack edits and previews agree; a prospect's next email takes the next line when there is
+    a choice, and different prospects start on different lines."""
+    assert [r.signature for r in sequence()] == [r.signature for r in sequence()]
+    assert render.signature_key({"company": " Acme  Creative ", "first_name": "JANE"}) == \
+        render.signature_key({"company": "Acme Creative", "first_name": "Jane"}) == "acme creative\njane"
+    for source in (NO_LINK, SITE_LINK):
+        starts = set()
+        for key in CONTACTS:
+            kinds = [sig_kind(source, key=key, step=n)[0] for n in render.STEPS]
+            assert kinds == [sig_kind(source, key=key, step=n)[0] for n in render.STEPS]
+            assert all(a != b for a, b in zip(kinds, kinds[1:])), (key, kinds)
+            starts.add(kinds[0])
+        assert len(starts) > 1, source
 
 
 def test_unknown_and_empty_variables_stay_visible_and_block():
@@ -391,11 +517,14 @@ def test_email_1_links_the_industry_page_and_asks_for_no_demo():
 
 def test_the_signature_is_outside_the_copy_rules():
     """Harry, 1 Oct 2026: the signature's "Book a call here" and its two outside links are fixed text,
-    so email 1 still sends with them, and the QA model is told not to judge them."""
+    so email 1 still sends with whichever line it shows (Harry, 5 Oct 2026), and the QA model is told not
+    to judge them."""
     from us_outbound.enrol import copy_desk
 
-    first = sequence()[0]
-    assert first.ok and "Book a call here" in first.text and BOOKING in first.html and TRUSTPILOT in first.html
+    firsts = {r.signature: r for r in (sequence(con=contact(first_name=n))[0] for n in ("Jane", "Ana", "Bo"))}
+    booked, reviews = firsts["booking"], firsts["reviews"]
+    assert booked.ok and "Book a call here" in booked.text and BOOKING in booked.html
+    assert reviews.ok and TRUSTPILOT in reviews.html
     assert "signature's booking line is\nnot an ask in email 1" in copy_desk.QA_SYSTEM
 
 
@@ -416,7 +545,7 @@ def test_every_row_against_empty_values():
         for mb in s.mailboxes:
             for r in render.render_sequence(row, render.empty_variables(), mailbox=mb, settings=s):
                 assert any("empty variable" in v for v in r.violations), (row.copy_version, r.step)
-                assert SIGNATURE_LINES[2] in r.text.splitlines()  # the signature is still there
+                assert r.text.splitlines()[-1] == SIGNATURE[r.signature]  # the signature is still there
 
 
 def test_every_row_against_maximum_length_values():
@@ -448,7 +577,15 @@ def test_templates_are_drafts_and_comments_are_stripped():
         text = render.load_template(name)
         assert "#" not in text and "DRAFT" not in text
         assert all(len(line) <= copy_rules.MAX_LINE for line in text.splitlines())
-        assert copy_rules.content_violations(text) == []
+    # The signature: one line of each kind, worded as Harry wrote them (1 Oct 2026); each email shows one.
+    lines = render.signature_lines()
+    assert lines == {
+        "website": "[Spill]({site_url}), on-demand counseling for your team",
+        "booking": "Book a call [here]({booking_link})",
+        "reviews": "Read [our Trustpilot reviews](https://uk.trustpilot.com/review/spill.chat) from employees",
+    }
+    assert list(lines) == list(render.SIGNATURE_KINDS)
+    assert all(copy_rules.content_violations(line) == [] for line in lines.values())
 
 
 def test_a_long_opener_never_pushes_email_1_over_its_word_limit():

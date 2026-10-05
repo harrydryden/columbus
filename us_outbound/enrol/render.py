@@ -13,6 +13,14 @@ to action.
     data_record() is what enrol keeps on each contact instead (contacts.data_record). An unknown or empty
     variable is a violation and stays visible in the text. Any violation blocks the send,
     and so does copy that is not approved or has not passed QA in its current wording.
+  * signature() is the sender's full name and ONE linked line (Harry, 5 Oct 2026: "The signature should
+    only have one line and link"), chosen from the email's own body so it never repeats the body's link:
+    the booking line whenever the body suggests booking a call (it links the demo page or the booking
+    link, or says a phrase in BOOKING_PHRASES); otherwise never the website line when the body links a
+    page on the site, never a line whose address the body already links, and among the lines left, a
+    rotation by the recipient and the email's number. With the current copy (data/copy.csv, 318 rows),
+    email 1 links only {{industry_url}}, a page on the site, so it shows the booking or the reviews line
+    by rotation; emails 2 to 4 all link {{demo_url}}, so they always show the booking line.
   * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
     custom_variables() turns them into the lead's Instantly custom variables.
   * pick_opener() falls back to "" when the evidence opener breaks a copy rule (for
@@ -22,6 +30,7 @@ to action.
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import re
@@ -45,10 +54,24 @@ LEGAL_GROUP = "Legal Teams"
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
 SIGNATURE_TEMPLATE = "signature.txt"
 # Harry, 5 Oct 2026: "Ideally we would add some formatting to signature to make it look more professional."
-# A paragraph of its own (the space after the sign-off), the sender's full name, then the three lines in
+# A paragraph of its own (the space after the sign-off), the sender's full name, then its one line in
 # smaller grey type: the plain look of a personal mail client's signature, no image, no table.
 SIGNATURE_STYLE = "margin:16px 0 0;font-size:13px;line-height:1.5;color:#555555"
 SIGNATURE_NAME_STYLE = "color:#222222"
+# The signature's lines by kind, as signature.txt names them, in the order the rotation takes them
+# (Harry, 5 Oct 2026): Spill's US site, Harry's booking link and the Trustpilot reviews.
+WEBSITE, BOOKING, REVIEWS = SIGNATURE_KINDS = ("website", "booking", "reviews")
+# Harry, 5 Oct 2026: "If the email copy suggests booking a call, then this should be included in the
+# signature as well." Whole phrases in any case: "call" or "booked" on their own are not an ask
+# ("calling", "fully booked Saturday", "physically").
+BOOKING_PHRASES = ("book a call", "book a demo", "book a time", "schedule a call", "set up a call", "grab time")
+_BOOKING_PHRASE = re.compile(
+    r"\b(?:" + "|".join(r"\s+".join(map(re.escape, p.split())) for p in BOOKING_PHRASES) + r")\b", re.IGNORECASE
+)
+# A link as written in the copy names its page by its variable. The demo page is for booking a call, not a
+# website page (Harry, 5 Oct 2026: "treat 'book a call' as not a website page").
+_LINK_VARIABLES = {"demo_url": BOOKING, "industry_url": WEBSITE, "site_url": WEBSITE}
+_SIGNATURE_LINE = re.compile(r"^([a-z]+):\s*(.+)$")
 LAWFUL_BASIS = "legitimate interests: telling businesses about Spill"
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
@@ -71,6 +94,7 @@ class Rendered:
     copy_version: str = ""
     text: str = ""  # the plain-text version, signature included (previews and QA)
     html: str = ""
+    signature: str = ""  # the signature's one line: "website", "booking" or "reviews" (Harry, 5 Oct 2026)
 
     @property
     def ok(self) -> bool:
@@ -216,22 +240,130 @@ def fill(template: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
     return _PLACEHOLDER.sub(one, template), missing
 
 
-def signature(settings: Settings, sender_name: str = "") -> tuple[copy_markup.Rendered, list[str]]:
-    """The signature every email ends with, after the copy's sign-off (Harry, 1 Oct 2026), and what is missing.
+def signature_lines() -> dict[str, str]:
+    """{kind: line} from templates/copy/signature.txt as written: its website, booking and reviews lines."""
+    out: dict[str, str] = {}
+    for line in filter(None, (x.strip() for x in load_template(SIGNATURE_TEMPLATE).splitlines())):
+        m = _SIGNATURE_LINE.match(line)
+        if not m or m.group(1) not in SIGNATURE_KINDS or m.group(1) in out:
+            raise ValueError(f'{SIGNATURE_TEMPLATE}: "{line}" is not "kind: line" with a new kind of '
+                             f'{", ".join(SIGNATURE_KINDS)}')
+        out[m.group(1)] = m.group(2).strip()
+    if set(out) != set(SIGNATURE_KINDS):
+        raise ValueError(f"{SIGNATURE_TEMPLATE} needs one line of each kind: {', '.join(SIGNATURE_KINDS)}")
+    return out
 
-    The sender's full name, then three lines with three links: Spill's US site, Harry's booking link and the
-    Trustpilot reviews. No postal address and no privacy link; the opt-out is Instantly's unsubscribe link,
-    which the campaign's step template adds after everything here (clients/instantly.py).
-    """
+
+def _filled_lines(settings: Settings) -> dict[str, tuple[str, list[str]]]:
+    """{kind: (its line with the General tab's values in, the values that are blank)}."""
     g = settings.general
-    source, missing = fill(load_template(SIGNATURE_TEMPLATE), {"site_url": g.site_url, "booking_link": g.booking_link})
-    sig = copy_markup.render(source, {})
-    inner = sig.html[len("<p>"):-len("</p>")] if sig.html.count("<p>") == 1 else sig.html  # one paragraph of lines
+    values = {"site_url": g.site_url, "booking_link": g.booking_link}
+    return {kind: fill(line, values) for kind, line in signature_lines().items()}
+
+
+def _url_key(url: str) -> str:
+    """An address compared loosely: any case, no scheme, no "www.", no trailing slash."""
+    return re.sub(r"^https?://", "", url.strip().casefold()).removeprefix("www.").rstrip("/")
+
+
+def _host(url: str) -> str:
+    return re.split(r"[/?#]", _url_key(url), maxsplit=1)[0]
+
+
+def link_kind(url: str, settings: Settings) -> str:
+    """What one of the body's links is, for the signature (Harry, 5 Oct 2026), as written or as filled.
+
+    "booking": {{demo_url}} (General booking_page) or Harry's booking_link; booking a call is not a website
+    page. "website": any other page on the site: {{industry_url}}, {{site_url}}, or an address on General
+    site_url's host. "" for anything else.
+    """
+    m = copy_markup.VARIABLE.match(url.strip())
+    if m:
+        return _LINK_VARIABLES.get(m.group(1), "")
+    g = settings.general
+    if _url_key(url) in {_url_key(u) for u in (g.booking_page, g.booking_link) if u.strip()}:
+        return BOOKING
+    site = _host(g.site_url) if g.site_url.strip() else ""
+    return WEBSITE if site and _host(url) == site else ""
+
+
+def suggests_booking(words: str) -> bool:
+    """True when the copy's words ask for a call in so many words (BOOKING_PHRASES)."""
+    return bool(_BOOKING_PHRASE.search(words))
+
+
+def signature_key(values: Mapping[str, str]) -> str:
+    """The recipient, for the signature's rotation: the company and first name (a render has no ids)."""
+    return "\n".join(" ".join(str(values.get(k) or "").split()).casefold() for k in ("company", "first_name"))
+
+
+def rotation(key: str, step: int, n: int) -> int:
+    """Which of n lines: a stable hash of the recipient, moved on one per email.
+
+    The hash spreads prospects over the lines, a prospect's next email takes the next line when the choice
+    is the same, and the same key and email always give the same line, so a re-render, a Slack edit and a
+    preview agree (Python's own hash() changes from run to run; sha256 does not).
+    """
+    start = int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:4], "big")
+    return (start + step) % n
+
+
+def signature_kind(settings: Settings, body: copy_markup.Rendered, source: str = "", *, key: str = "",
+                   step: int = 0) -> tuple[str, list[str]]:
+    """(the signature's line for this email, the General values that leave it with none) (Harry, 5 Oct 2026).
+
+    body is the email's body as rendered (its links filled, its words); source is the copy as written,
+    whose links name their page by variable. The rules, in order:
+      * The body suggests booking a call (a booking link, or a phrase in BOOKING_PHRASES): the booking line,
+        always, even though the body links it too.
+      * Otherwise the website line is left out when the body links a page on the site, and any line is left
+        out when the body already links its address.
+      * A line whose General value is blank (site_url, booking_link) is left out too.
+      * Among the lines left, rotation(key, step). With none left, the line keeps its placeholder in sight
+        and the blank values are returned, which block the send (_FIXED_MISSING).
+    """
+    filled = _filled_lines(settings)
+    urls = [u for _, u in body.links] + [link.url for link in copy_markup.links(source)]
+    kinds = {link_kind(u, settings) for u in urls}
+    if BOOKING in kinds or suggests_booking(body.words):
+        choices = [BOOKING]
+    else:
+        linked = {_url_key(u) for u in urls}
+        choices = [k for k in SIGNATURE_KINDS if not (k == WEBSITE and WEBSITE in kinds)
+                   and not any(_url_key(link.url) in linked for link in copy_markup.links(filled[k][0]))]
+    usable = [k for k in choices if not filled[k][1]]
+    # choices is never empty: the booking line goes only when the body links its address, the first rule.
+    pool = usable or choices or [BOOKING]
+    kind = pool[rotation(key, step, len(pool))]
+    return kind, [] if usable else list(dict.fromkeys(m for k in pool for m in filled[k][1]))
+
+
+def signature(settings: Settings, sender_name: str = "", *, body: copy_markup.Rendered, source: str = "",
+              key: str = "", step: int = 0) -> tuple[copy_markup.Rendered, list[str], str]:
+    """The signature every email ends with, after the copy's sign-off (Harry, 1 and 5 Oct 2026): the
+    rendered signature, the General values it is missing, and the kind of its line.
+
+    The sender's full name, then one line and one link (Harry, 5 Oct 2026), chosen by signature_kind from
+    the email's body and source, the recipient (key, signature_key) and the email's number: Spill's US site,
+    Harry's booking link or the Trustpilot reviews. No postal address and no privacy link; the opt-out is
+    Instantly's unsubscribe link, which the campaign's step template adds after everything here
+    (clients/instantly.py).
+    """
+    kind, missing = signature_kind(settings, body, source, key=key, step=step)
+    sig = copy_markup.render(_filled_lines(settings)[kind][0], {})
+    inner = sig.html[len("<p>"):-len("</p>")] if sig.html.count("<p>") == 1 else sig.html  # the line alone
     name = sender_name.strip()
     if name:
         inner = f'<strong style="{SIGNATURE_NAME_STYLE}">{html.escape(name, quote=False)}</strong><br>{inner}'
     return replace(sig, html=f'<p style="{SIGNATURE_STYLE}">{inner}</p>',
-                   text=f"{name}\n{sig.text}" if name else sig.text), missing
+                   text=f"{name}\n{sig.text}" if name else sig.text), missing, kind
+
+
+def signature_texts(settings: Settings, sender_name: str = "") -> set[str]:
+    """Every line a signature can show, as plain text: the sender's full name and each kind's line.
+    approvals takes a signature pasted into an edit back off with these (render_step adds its own)."""
+    out = {copy_markup.render(line, {}).text.strip() for line, _ in _filled_lines(settings).values()}
+    return out | ({sender_name.strip()} if sender_name.strip() else set())
 
 
 def data_sources(settings: Settings) -> str:
@@ -276,8 +408,9 @@ def render_step(
     body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES)
     problems += [f"body {x}" for x in body.problems]
 
-    # After the copy's sign-off: the signature, as its own paragraph.
-    sig, missing = signature(settings, mailbox.owner_name)
+    # After the copy's sign-off: the signature, as its own paragraph, its one line chosen from the body.
+    sig, missing, kind = signature(settings, mailbox.owner_name, body=body, source=st.body,
+                                   key=signature_key(variables), step=step)
     problems += [_FIXED_MISSING.get(m, f"the signature has no {m}") for m in missing]
     problems += [f"signature {x}" for x in sig.problems]
     text = f"{body.text}\n\n{sig.text}"
@@ -292,7 +425,8 @@ def render_step(
         site_url=variables.get("site_url", ""),
     )
     sent = html_body if g.email_format == "html" else text
-    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html_body)
+    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html_body,
+                    kind)
 
 
 def render_sequence(
@@ -304,10 +438,8 @@ def render_sequence(
     page = str(variables.get("industry_url") or "").strip()
     uses = any("industry_url" in copy_markup.VARIABLE.findall(copy_row.step(n).body) for n in STEPS)
     if page and not uses:
-        long_form = out[1]
-        out[1] = Rendered(long_form.subject, long_form.body,
-                          (*long_form.violations, "the sequence never links the industry page ({{industry_url}})"),
-                          long_form.step, long_form.copy_version, long_form.text, long_form.html)
+        out[1] = replace(out[1], violations=(*out[1].violations,
+                                             "the sequence never links the industry page ({{industry_url}})"))
     return out
 
 

@@ -20,7 +20,7 @@ from tests.test_render import account, contact, make_settings
 from us_outbound import suppression
 from us_outbound.context import Secrets
 from us_outbound.contacts import pick
-from us_outbound.enrol import approvals, enrol, openers
+from us_outbound.enrol import approvals, enrol, openers, render
 from us_outbound.ops import bootstrap, cli
 from us_outbound.replies import desk
 from us_outbound.scoring import score, tiers
@@ -275,7 +275,10 @@ def test_the_card_shows_what_harry_asked_for():
     assert "*From:* Harry Dryden · harry@meetspill.org or harry@tryspill.org (Instantly picks)" in text
     assert "*Subject:* Support for the Acme Creative team" in text
     assert "> Hi Jane," in text and "> I saw your team already has an employee assistance program." in text
-    assert "> Spill (https://www.spill.chat/us), on-demand counseling for your team" in text  # the signature
+    # The signature's one line (Harry, 5 Oct 2026): email 1 links the industry page, so never the website line;
+    # Jane at Acme Creative gets the reviews line by rotation.
+    assert "> Harry Dryden\n> Read our Trustpilot reviews (https://uk.trustpilot.com/review/spill.chat) from employees" \
+        in text and "on-demand counseling for your team" not in text
     assert "Where we got your details" not in text  # no data notice (Harry, 5 Oct 2026)
     assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
     assert "*Before:* no email to Acme Creative from us before" in text
@@ -534,8 +537,11 @@ def test_edit_rerender_reapprove_and_send_the_edited_version():
     cv = p["lead"]["custom_variables"]
     assert cv["s1_subject"] == "Support for the people at Acme Creative"
     assert "the strain often stays hidden" in cv["s1_body"] and cv["s1_body"].startswith("<p>Hi Jane,</p>")
-    assert 'Book a call <a href="https://meetings.hubspot.com/harry336/us-demo-link">here</a>' in cv["s1_body"]
-    assert "Harry Dryden</strong>" in cv["s1_body"]  # the signature, added as before
+    # The signature, added as before: the same one line as the first version, since the links did not change
+    # (Harry, 5 Oct 2026; the rotation is by recipient and email, so an edit and a re-render agree).
+    sig = f'<p style="{render.SIGNATURE_STYLE}">'
+    assert cv["s1_body"].split(sig)[1] == p["original"]["s1_body"].split(sig)[1]
+    assert "Harry Dryden</strong><br>Read <a href=\"https://uk.trustpilot.com/review/spill.chat\">" in cv["s1_body"]
     assert "Where we got your details" not in cv["s1_body"]
     assert cv["s2_body"] == p["original"]["s2_body"]
     version = p["approve_ts"]
@@ -842,6 +848,22 @@ def test_parse_edit():
     assert approvals.parse_edit("Email 3: Subject: Who knows?\nHi Jane,\n\nBody.") == (3, "Who knows?", "Hi Jane,\n\nBody.")
     assert approvals.parse_edit("Subject: Only the subject") == (1, "Only the subject", None)
     assert approvals.parse_edit("\nHi Jane,\nBody") == (1, None, "Hi Jane,\nBody")
+
+
+def test_a_pasted_signature_is_taken_off_whichever_line_it_shows():
+    """The signature shows one of three lines (Harry, 5 Oct 2026); an approver may paste any of them, and
+    render_step adds the right one back."""
+    s = make_settings()
+    values = {"first_name": "Jane", "sender_first_name": "Harry"}
+    body = "Hi Jane,\n\nA short note.\n\nBest wishes,\nHarry"
+    lines = ["Spill (https://www.spill.chat/us), on-demand counseling for your team",
+             "Book a call here (https://meetings.hubspot.com/harry336/us-demo-link)",
+             "Read our Trustpilot reviews (https://uk.trustpilot.com/review/spill.chat) from employees"]
+    want = "Hi {{first_name}},\n\nA short note.\n\nBest wishes,\n{{sender_first_name}}"
+    for line in lines:
+        assert approvals._templated(f"{body}\n\nHarry Dryden\n{line}\n", values, s, "Harry Dryden") == want, line
+    assert approvals._templated(f"{body}\n\n" + "\n".join(lines), values, s, "Harry Dryden") == want
+    assert approvals._templated(body, values, s, "Harry Dryden") == want
 
 
 # -- through the production wiring ----------------------------------------------------------------------------------

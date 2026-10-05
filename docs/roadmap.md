@@ -27,8 +27,9 @@ could not check from the build machine. The pilot's first runs confirm them (§3
 ## 2. Plain text or HTML: the answer for the pilot
 
 Plain text doesn't look spammy to a reader; most one-to-one email is close to plain. What looks
-automated in plain text is raw links. Every email now carries five: the industry page, Spill, the
-booking link, Trustpilot and the unsubscribe link. Shown as full URLs, they read like a mail-merge.
+automated in plain text is raw links. Every email carries its own (the industry page, or the site and
+the demo page), the signature's one link (since 5 Oct: the booking link or Trustpilot, never a repeat of
+the body's) and the unsubscribe link. Shown as full URLs, they read like a mail-merge.
 Mailbox providers don't penalize light HTML. They penalize heavy HTML: images, tracking pixels,
 styled templates and many links to many domains.
 
@@ -39,13 +40,13 @@ So the pilot sends **light HTML**:
 - the data-source notice in small type.
 
 That keeps the credibility of a personal email and most of plain text's deliverability. The
-risk that remains is link count, now five per email with two outside spill.chat (HubSpot and
+risk that remains is link count, now three or four per email with one outside spill.chat (HubSpot or
 Trustpilot). That is the first thing to watch:
 - check where the seed-inbox test lands;
 - split reply rate by mailbox provider in the daily post.
 
 If Gmail or Outlook files the pilot under Promotions or spam, the first change is a plain email 1
-that keeps the signature's words but drops its two outside links (decision D19 in the review), not
+that keeps the signature's words but drops its outside link (decision D19 in the review), not
 a switch of every email to plain text.
 
 ## 3. Go-live: Friday 2 to Monday 5 October

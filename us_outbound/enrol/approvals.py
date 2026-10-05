@@ -755,9 +755,9 @@ def _mailbox(settings: Settings, p: Mapping[str, Any]) -> Mailbox:
 
 def _templated(body: str, values: Mapping[str, str], settings: Settings, sender_name: str = "") -> str:
     """The approver's body as copy: the greeting and sign-off back to their variables, a pasted signature
-    taken off (render_step adds it), so the copy rules read it as they read the sheet."""
-    sig, _ = render.signature(settings, sender_name)
-    fixed = {line.strip() for line in sig.text.split("\n") if line.strip()}
+    taken off (render_step adds it), so the copy rules read it as they read the sheet. The signature shows
+    one of its lines (Harry, 5 Oct 2026), and any of them, or the sender's name, is taken off."""
+    fixed = render.signature_texts(settings, sender_name)
     lines = body.replace("\r\n", "\n").split("\n")
     while lines and (not lines[-1].strip() or lines[-1].strip() in fixed):
         lines.pop()
