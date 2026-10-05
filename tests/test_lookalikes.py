@@ -835,6 +835,34 @@ def test_lookalikes_fit_shows_the_fits_and_the_tier_mix_and_writes_nothing(world
     assert {c.system for c in ctx.guard.calls[calls:]} == {"db"}
 
 
+def test_lookalikes_fit_tries_other_cut_offs_and_weights_in_memory(world, apollo, capsys):
+    ctx, _ = world
+    lk.run(ctx)
+    ctx.store.upsert("accounts", [
+        {"account_id": f"acc-{i}", "domain": f"tech{i}.example", "industry": "Fintech",
+         "industry_group": "Technology & Startups", "size_band": "20-49", "hq_state": "NY", "status": "queued",
+         "first_seen": NOW} for i in range(3)])
+    ctx = dataclasses.replace(ctx, settings=live_sheet(ctx.settings))
+    snapshot = {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()}
+    capsys.readouterr()
+    factory = lambda job, live, **kw: ctx  # noqa: E731
+    assert cli.main(["lookalikes", "fit", "--close", "90:5", "--some", "off"], context_factory=factory) == 0
+    out = capsys.readouterr().out
+    assert "\"Close match to Spill's customers\" (lookalike_fit >= 90, +5): 5 accounts." in out
+    assert "Some match" not in out
+    # 15 for 10-49 and 5 for the close match: 20, Standard, as with +15; the sheet is not touched.
+    assert "  Standard       0 (0%) !          4 (80%) !" in out
+    assert "tried in memory only" in out
+    assert cli.main(["lookalikes", "fit", "--close", "90:10", "--some", "60:4"], context_factory=factory) == 0
+    out = capsys.readouterr().out
+    assert "\"Some match to Spill's customers\" (lookalike_fit >= 60 AND lookalike_fit < 90, +4)" in out
+    assert {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()} == snapshot
+    for bad, why in ((["--close", "ninety"], "LOWEST_FIT:WEIGHT"), (["--close", "60:10", "--some", "70:4"],
+                                                                     "must start below Close match's 60")):
+        assert cli.main(["lookalikes", "fit", *bad], context_factory=factory) == 2
+        assert why in capsys.readouterr().err
+
+
 def test_lookalikes_fit_before_the_first_run(ctx, capsys):
     assert cli.main(["lookalikes", "fit"], context_factory=lambda job, live, **kw: ctx) == 0
     assert "No lookalike cells yet" in capsys.readouterr().out

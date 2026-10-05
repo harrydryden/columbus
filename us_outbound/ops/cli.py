@@ -1126,6 +1126,21 @@ def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
     return _job("suppression_load", args.live, factory)
 
 
+def _fit_row(value: str | None, flag: str) -> tuple[int, int] | bool | None:
+    """--close / --some LOWEST_FIT:WEIGHT as (lowest fit, weight); --some off as False; absent as None."""
+    if not value:
+        return None
+    if flag == "--some" and value.strip().lower() == "off":
+        return False
+    try:
+        low, weight = (int(v) for v in value.split(":"))
+    except ValueError:
+        raise Refused(f"{flag} takes LOWEST_FIT:WEIGHT, like 90:10, not {value!r}") from None
+    if not (0 <= low <= 100 and 0 < weight <= 100):
+        raise Refused(f"{flag}: the lowest fit is 0 to 100 and the weight 1 to 100, not {value!r}")
+    return low, weight
+
+
 def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
     """show: the lookalike cells from the last lookalikes run, for the Focus tab and sourcing. fit: the accounts'
     lookalike fits and the tier mix the build's lookalike rows would give, scored in memory (Harry's check before
@@ -1133,8 +1148,13 @@ def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.sources import lookalikes
 
     if args.action == "fit":
+        close, some = _fit_row(args.close, "--close"), _fit_row(args.some, "--some")
         ctx = factory("lookalikes_fit", False)
-        for line in lookalikes.fit_report(ctx):
+        try:
+            lines = lookalikes.fit_report(ctx, close, some)
+        except ValueError as exc:
+            raise Refused(str(exc)) from exc
+        for line in lines:
             print(line)
         return 0
     if args.top < 1:
@@ -1542,6 +1562,9 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument("action", choices=["show", "fit"])
     lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
     lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
+    lk.add_argument("--close", metavar="FIT:WEIGHT", help="fit: try Close match at this lowest fit and weight, like 90:10")
+    lk.add_argument("--some", metavar="FIT:WEIGHT", help="fit: try Some match from this lowest fit up to Close match's, "
+                    "like 60:4, or off")
     pg = command("pages", "what the careers and benefits page reader has found, and its coverage", cmd_pages)
     pg.add_argument("action", choices=["show"])
     dt = command("data", "what the sources have stored, in aggregate (read-only)", cmd_data)

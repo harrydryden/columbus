@@ -1201,8 +1201,18 @@ TIER_ORDER = ("Priority", "Standard", "Control", "Held", "Excluded")
 QUEUE_TIERS = ("Priority", "Standard", "Control")
 
 
-def with_build_lookalike_rows(settings: Settings) -> Settings:
-    """These settings with the build's lookalike rows (settings/defaults.py) in place of the sheet's."""
+CLOSE_ROW = "Close match to Spill's customers"
+SOME_ROW = "Some match to Spill's customers"
+
+
+def with_build_lookalike_rows(settings: Settings, close: tuple[int, int] | None = None,
+                              some: tuple[int, int] | None | bool = None) -> Settings:
+    """These settings with the build's lookalike rows (settings/defaults.py) in place of the sheet's.
+
+    close and some, (lowest fit, weight), try other cut-offs and weights in memory (`lookalikes fit --close 90:10
+    --some 60:4`): Some match then runs from its own lowest fit up to Close match's. some=False leaves Some match
+    out. Nothing here touches the sheet."""
+    from us_outbound.settings.conditions import parse_condition
     from us_outbound.settings.defaults import default_tabs
     from us_outbound.settings.validate import validate_tab
 
@@ -1210,6 +1220,23 @@ def with_build_lookalike_rows(settings: Settings) -> Settings:
     if errors:  # the build's own rows always validate (tests/test_settings_defaults.py)
         raise ValueError(f"the build's Signals rows do not validate: {errors}")
     rows = [s for s in build if SOURCE in s.sources]
+    if close is not None or some is not None:
+        top = close[0] if close else 70
+        out = []
+        for s in rows:
+            if s.signal == CLOSE_ROW and close:
+                looks = f"{FIT_FACT} >= {close[0]}"
+                s = dataclasses.replace(s, looks_for=looks, condition=parse_condition(looks), weight=close[1])
+            elif s.signal == SOME_ROW:
+                if some is False:
+                    continue
+                low, weight = some if isinstance(some, tuple) else (45, s.weight)
+                if low >= top:
+                    raise ValueError(f"Some match must start below Close match's {top}, not at {low}")
+                looks = f"{FIT_FACT} >= {low} AND {FIT_FACT} < {top}"
+                s = dataclasses.replace(s, looks_for=looks, condition=parse_condition(looks), weight=weight)
+            out.append(s)
+        rows = out
     return dataclasses.replace(settings, signals=(*(s for s in settings.signals if SOURCE not in s.sources), *rows))
 
 
@@ -1222,13 +1249,15 @@ def _mix(counts: Counter[str], tier: str) -> str:
     return f"{counts[tier]} ({share:.0%}){flag}"
 
 
-def fit_report(ctx: Context) -> list[str]:
+def fit_report(ctx: Context, close: tuple[int, int] | None = None,
+               some: tuple[int, int] | None | bool = None) -> list[str]:
     """The lines `us-outbound lookalikes fit` prints. Read-only: the database, no outside call, nothing written.
 
     Each open account's fit is worked out in memory from the stored cells and growth counts (as apply() would
     write it), then scored twice in memory with score_account: with the Signals rows in force, and with the
     build's lookalike rows in place of the sheet's. Harry's check that the size-plus-lookalike cliff is gone
-    before the Signals tab is loaded.
+    before the Signals tab is loaded. close and some try other cut-offs and weights for the two graded rows
+    (with_build_lookalike_rows), still in memory.
     """
     from us_outbound.scoring.score import score_account
 
@@ -1243,7 +1272,7 @@ def fit_report(ctx: Context) -> list[str]:
         for e in store.select("signal_events", {"account_id": chunk}):
             if e.get("source") != SOURCE:
                 events[e["account_id"]].append(e)
-    new = with_build_lookalike_rows(settings)
+    new = with_build_lookalike_rows(settings, close, some)
     rows = [s for s in new.signals if SOURCE in s.sources and s.active]
     names = {s.signal for s in rows}
     fits: Counter[tuple[int, int]] = Counter()
@@ -1282,5 +1311,8 @@ def fit_report(ctx: Context) -> list[str]:
     lines += [f"  {t:<10} {_mix(before, t):>12} {_mix(after, t):>18}" for t in TIER_ORDER]
     lines += ["Shares are of Priority, Standard and Control together; ! marks one outside 5-40%, the tier-mix check's "
               "range (it reads the month's queue).",
-              "Nothing was written. `us-outbound settings load --tab Signals --live` puts the build's rows on the sheet."]
+              "Nothing was written. " + (
+                  "These rows were tried in memory only: to use them, set their looks_for and weight on the Signals "
+                  "tab, then `us-outbound sync`." if close is not None or some is not None else
+                  "`us-outbound settings load --tab Signals --live` puts the build's rows on the sheet.")]
     return lines
