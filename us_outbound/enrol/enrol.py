@@ -808,8 +808,10 @@ def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict
 
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
     """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
-    and what the account looked like then: its signals, score and tier (signals_now)."""
+    and what the account looked like then: its signals, score and tier (signals_now); and where the contact's
+    details came from and the lawful basis (render.data_record), kept here since no email carries it."""
     accounts, contacts = [], []
+    record = render.data_record(ctx.settings)
     signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
     for i, p in enumerate(items):
         if i not in ids:
@@ -833,6 +835,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "signals_at_enrol": signals.get(str(p.account["account_id"]), []),
             "score_at_enrol": p.account.get("score"),
             "tier_at_enrol": p.account.get("tier") or None,
+            "data_record": record,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)

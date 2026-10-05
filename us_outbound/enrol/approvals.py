@@ -753,12 +753,11 @@ def _mailbox(settings: Settings, p: Mapping[str, Any]) -> Mailbox:
     return Mailbox(address=address, domain=address.split("@")[-1], owner_name=owner, status="Active", daily_cap=0)
 
 
-def _templated(body: str, values: Mapping[str, str], settings: Settings) -> str:
+def _templated(body: str, values: Mapping[str, str], settings: Settings, sender_name: str = "") -> str:
     """The approver's body as copy: the greeting and sign-off back to their variables, a pasted signature
-    or data notice taken off (render_step adds them), so the copy rules read it as they read the sheet."""
-    sig, _ = render.signature(settings)
-    notice, _ = render.article14(values, settings)
-    fixed = {line.strip() for line in f"{sig.text}\n{notice}".split("\n") if line.strip()}
+    taken off (render_step adds it), so the copy rules read it as they read the sheet."""
+    sig, _ = render.signature(settings, sender_name)
+    fixed = {line.strip() for line in sig.text.split("\n") if line.strip()}
     lines = body.replace("\r\n", "\n").split("\n")
     while lines and (not lines[-1].strip() or lines[-1].strip() in fixed):
         lines.pop()
@@ -781,10 +780,11 @@ def render_edit(ctx: Context, p: Mapping[str, Any], step: int, subject: str | No
     values = dict(p.get("values") or {})
     cur = _step(p, step)
     subject = (cur.get("subject") or "") if subject is None else subject
-    source = _templated(body if body is not None else str(cur.get("source") or ""), values, s)
+    mailbox = _mailbox(s, p)
+    source = _templated(body if body is not None else str(cur.get("source") or ""), values, s, mailbox.owner_name)
     steps = tuple(CopyStep(subject if n == step else "", source if n == step else "") for n in render.STEPS)
     row = CopyRow(str(p.get("copy_version") or "edited"), _text(p.get("industry")) or GENERAL_COPY, "approved", steps)
-    r = render.render_step(row, values, step=step, mailbox=_mailbox(s, p), settings=s, for_send=False)
+    r = render.render_step(row, values, step=step, mailbox=mailbox, settings=s, for_send=False)
     names = {"{{first_name}}": str(values.get("first_name") or "the first name"),
              "{{sender_first_name}}": str(values.get("sender_first_name") or "the sender's first name")}
     problems = []

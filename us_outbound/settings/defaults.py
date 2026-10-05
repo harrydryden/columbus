@@ -748,8 +748,8 @@ _ROLES: list[tuple[str, str, str, str, str, str, str]] = [
 # data/copy.csv: one four-email sequence per industry and a General one, drafted by Claude from
 # templates/copy/style.md, facts.md and each industry's page, then checked by a second model
 # (docs/pipeline.md, "Copy"). Every row loads as draft: only Harry approves copy (SPEC 5, 10).
-# The signature and (email 1) Article 14 notice are added at render time, and Instantly's unsubscribe
-# line by the campaign's step template; none is stored here.
+# The signature is added at render time, and Instantly's unsubscribe line by the campaign's step
+# template; neither is stored here. No email carries a data notice (Harry, 5 Oct 2026).
 
 
 def _copy() -> list[dict[str, str]]:

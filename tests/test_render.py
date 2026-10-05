@@ -312,30 +312,32 @@ def test_the_role_line_and_opener_land_in_email_1():
     assert "Hi Jane,\n\nIn most agencies" in no_opener.text  # the opener's line went with it
 
 
-def test_signature_on_every_email_and_the_notice_on_email_1():
+def test_signature_on_every_email_and_no_data_notice():
     seq = sequence()
     for r in seq:
-        # The sign-off, then the signature (Harry, 1 Oct 2026). No postal address and no privacy link;
-        # the opt-out is Instantly's unsubscribe link, which the campaign's step template adds after this.
+        # The sign-off, a space, then the signature: the sender's full name and three lines (Harry, 1 and 5 Oct
+        # 2026). No postal address and no privacy link; the opt-out is Instantly's unsubscribe link, which the
+        # campaign's step template adds after this.
         lines = r.text.splitlines()
         sig = lines.index(SIGNATURE_LINES[0])
-        assert lines[sig - 3 : sig + 3] == ["Best wishes,", "Hannah", "", *SIGNATURE_LINES]
-        assert ('<p><a href="https://www.spill.chat/us">Spill</a>, on-demand counseling for your team<br>'
-                f'Book a call <a href="{BOOKING}">here</a><br>'
-                f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees</p>') in r.html
+        assert lines[sig - 4 : sig + 3] == ["Best wishes,", "Hannah", "", "Hannah Spalding", *SIGNATURE_LINES]
+        assert lines[-3:] == SIGNATURE_LINES  # the signature is the end of every email
+        assert r.html.endswith(
+            f'<p style="{render.SIGNATURE_STYLE}"><strong style="{render.SIGNATURE_NAME_STYLE}">Hannah Spalding'
+            '</strong><br><a href="https://www.spill.chat/us">Spill</a>, on-demand counseling for your team<br>'
+            f'Book a call <a href="{BOOKING}">here</a><br>'
+            f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees</p>')
         assert "privacy notice" not in r.text.lower() and "{{unsubscribe}}" not in r.html
-    assert seq[0].text.splitlines()[-2].startswith("Where we got your details")  # small print, after the signature
-    assert "use the unsubscribe link below" in seq[0].text and "link below explains" not in seq[0].text
-    assert all("Where we got your details" not in r.text for r in seq[1:])
-    assert all(r.text.splitlines()[-3:] == SIGNATURE_LINES for r in seq[1:])
+        # Harry, 5 Oct 2026: where we got the details and the lawful basis are kept, not shown.
+        assert "Where we got your details" not in r.text and "legitimate interests" not in r.text
 
 
-def test_the_notice_names_only_the_data_providers_in_use():
-    # Clay is skipped until its functions exist (clay_verification), so the notice names Apollo alone.
-    assert "through Apollo, which provides business contact data" in sequence()[0].text
-    assert "Clay" not in sequence()[0].text
-    s = make_settings(clay_verification="required")
-    assert "through Apollo and Clay, which provide business contact data" in sequence(settings=s)[0].text
+def test_the_data_record_names_only_the_data_providers_in_use():
+    # Clay is skipped until its functions exist (clay_verification), so the record names Apollo alone.
+    assert render.data_record(make_settings()) == {
+        "contact_data": "Apollo", "company_information": "the company's public website",
+        "lawful_basis": "legitimate interests: telling businesses about Spill", "shown_in_email": False}
+    assert render.data_record(make_settings(clay_verification="required"))["contact_data"] == "Apollo and Clay"
 
 
 def test_signature_links_follow_the_general_tab_and_blanks_block():
@@ -440,7 +442,7 @@ def test_max_rendered_lengths_probe():
 
 
 def test_templates_are_drafts_and_comments_are_stripped():
-    for name in (render.SIGNATURE_TEMPLATE, render.ARTICLE14_TEMPLATE):
+    for name in (render.SIGNATURE_TEMPLATE,):
         raw = (render.TEMPLATES_DIR / name).read_text(encoding="utf-8")
         assert raw.splitlines()[0].startswith("# DRAFT — for Harry to approve")
         text = render.load_template(name)

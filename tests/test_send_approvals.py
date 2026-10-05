@@ -276,7 +276,7 @@ def test_the_card_shows_what_harry_asked_for():
     assert "*Subject:* Support for the Acme Creative team" in text
     assert "> Hi Jane," in text and "> I saw your team already has an employee assistance program." in text
     assert "> Spill (https://www.spill.chat/us), on-demand counseling for your team" in text  # the signature
-    assert "> Where we got your details" in text  # email 1's data notice: the plain-text version, all of it
+    assert "Where we got your details" not in text  # no data notice (Harry, 5 Oct 2026)
     assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
     assert "*Before:* no email to Acme Creative from us before" in text
     assert "*Harry today:* card 1 of 15" in text
@@ -322,6 +322,8 @@ def test_the_enrolment_keeps_the_signals_score_and_tier_the_account_had_then():
     assert jane["signals_at_enrol"] == [{"signal": "New People leader", "weight": 30},
                                         {"signal": "Team of 10–49", "weight": 15}]
     assert (jane["score_at_enrol"], jane["tier_at_enrol"]) == (45, "Standard")
+    # Where her details came from and the lawful basis: kept on the contact, never shown (Harry, 5 Oct 2026).
+    assert jane["data_record"]["contact_data"] == "Apollo" and jane["data_record"]["shown_in_email"] is False
 
 
 @pytest.mark.parametrize("how", ["tick", "word"])
@@ -533,7 +535,8 @@ def test_edit_rerender_reapprove_and_send_the_edited_version():
     assert cv["s1_subject"] == "Support for the people at Acme Creative"
     assert "the strain often stays hidden" in cv["s1_body"] and cv["s1_body"].startswith("<p>Hi Jane,</p>")
     assert 'Book a call <a href="https://meetings.hubspot.com/harry336/us-demo-link">here</a>' in cv["s1_body"]
-    assert "Where we got your details" in cv["s1_body"]  # the signature and the data notice, added as before
+    assert "Harry Dryden</strong>" in cv["s1_body"]  # the signature, added as before
+    assert "Where we got your details" not in cv["s1_body"]
     assert cv["s2_body"] == p["original"]["s2_body"]
     version = p["approve_ts"]
     [post] = [x for x in sl.posts if x["ts"] == version]

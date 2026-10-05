@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   signals_at_enrol jsonb,
   score_at_enrol integer,
   tier_at_enrol text,
+  data_record jsonb,
   PRIMARY KEY (contact_id)
 );
 -- For databases created before enrolled_at, opener_arm, opener_source and the enrolment snapshot existed.
@@ -43,6 +44,7 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS opener_source text;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS signals_at_enrol jsonb;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS score_at_enrol integer;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS tier_at_enrol text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS data_record jsonb;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
@@ -59,6 +61,7 @@ COMMENT ON COLUMN us_outbound.contacts.opener_arm IS 'Email 1''s opener arm at e
 COMMENT ON COLUMN us_outbound.contacts.opener_source IS 'The opener line used, or for a holdout the one it would have had: the signal and Signals-tab column (e.g. New People leader / opener_self), focus, or the generic line''s General key (e.g. opener_generic_ops) (build addition).';
 COMMENT ON COLUMN us_outbound.contacts.signals_at_enrol IS 'The Score signals the account showed when this contact was enrolled: a JSON list of {signal, weight}, strongest first (enrol._record_enrolled; build addition, 5 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.score_at_enrol IS 'The account''s score when this contact was enrolled (build addition, 5 Oct 2026).';
+COMMENT ON COLUMN us_outbound.contacts.data_record IS 'Where the contact''s details came from and the lawful basis for emailing them, recorded at enrolment and never shown in an email: {contact_data, company_information, lawful_basis, shown_in_email} (render.data_record; Harry, 5 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.tier_at_enrol IS 'The account''s tier when this contact was enrolled: Priority, Standard or Control (build addition, 5 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.suppressed IS 'Never emailed: an opt-out or a bounce, or a person an approver declined at a send approval (enrol/approvals.py; Harry, 2 Oct 2026). A declined person is not added to the suppression table: they did not opt out.';
 COMMENT ON COLUMN us_outbound.contacts.suppressed_reason IS 'Why it is suppressed, e.g. declined in Slack by U01ABCDEF at a send approval (2 Oct 2026).';

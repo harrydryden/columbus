@@ -48,7 +48,7 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
-                 "tier_at_enrol"},
+                 "tier_at_enrol", "data_record"},
     "suppression": {"expires_at"},
 }
 # Tables the build adds, with the layouts every agent codes to.

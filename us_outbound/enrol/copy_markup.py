@@ -34,7 +34,6 @@ _HTML_TAG = re.compile(r"</?\s*[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")
 _BARE_URL = re.compile(r"(?<![\w/])(?:https?://|www\.)[^\s<>()\[\]]+", re.IGNORECASE)
 _URLISH = re.compile(r"^(?:https?://|www\.)|\.(?:com|org|chat|net|io)(?:/|$)", re.IGNORECASE)
 MIN_BULLETS = 2
-FOOTER_STYLE = "font-size:12px;color:#6b6b6b"
 
 
 @dataclass(frozen=True)
@@ -215,15 +214,6 @@ def render(source: str, values: Mapping[str, str], *, optional: Iterable[str] = 
         versions[fmt] = "".join(parts) if fmt == "html" else "\n\n".join(parts)
     problems += fillers[0].problems
     return Rendered(versions["html"], versions["text"], versions["words"], found, list(dict.fromkeys(problems)))
-
-
-def plain_to_html(text: str, *, link_urls: Iterable[str] = (), style: str = FOOTER_STYLE) -> str:
-    """Fixed plain text (the Article 14 notice) as one small-type HTML paragraph; the given URLs become links."""
-    body = "<br>".join(html.escape(line, quote=False) for line in text.split("\n"))
-    for url in sorted({u for u in link_urls if u}, key=len, reverse=True):
-        esc = html.escape(url, quote=False)
-        body = body.replace(esc, f'<a href="{html.escape(url, quote=True)}">{esc}</a>')
-    return f'<p style="{style}">{body}</p>' if style else f"<p>{body}</p>"
 
 
 def word_count(words: str) -> int:

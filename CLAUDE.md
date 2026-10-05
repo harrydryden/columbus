@@ -6,6 +6,8 @@
 - **The signature is outside the copy rules** (1 Oct 2026). Its "Book a call here" link and its
   Trustpilot link are fixed text, allowed in every email, email 1 included
   (`templates/copy/signature.txt`; `copy_rules.email_violations` checks the body only).
+- **No data notice in any email** (5 Oct 2026). "Where we got your details" and the legitimate-interests
+  text are not shown to prospects; enrol keeps them on each contact (`contacts.data_record`).
 
 ## Working rules
 - Secrets live only in sealed Railway variables: never in the repo, logs, database or chat.

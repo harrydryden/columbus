@@ -300,7 +300,7 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
     assert ("<p>Hi Jane,</p><p>Worries from home often show up at work first, and people open up more when they "
             "feel listened to.</p>" in cv["s1_body"])
     assert detail["openers"] == {"arms": {"opener": 1}, "sources": {"EAP named / opener_people": 1}}
-    assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
+    assert "Where we got your details" not in cv["s1_body"]  # kept in contacts.data_record (Harry, 5 Oct 2026)
     page = s.industry("Advertising agencies").landing_page_url
     assert f'<a href="{page}">' in cv["s1_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
 

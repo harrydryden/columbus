@@ -1,4 +1,4 @@
-"""Copy rendering: variables, the four emails, the signature and the Article 14 notice.
+"""Copy rendering: variables, the four emails and the signature.
 
 SPEC 10 ("Sequence", "Variables", "Rules"), SPEC 9 ("Instantly campaigns": subjects and
 bodies go to Instantly as custom variables {{s1_subject}}, {{s1_body}} ...; "Sender
@@ -8,8 +8,9 @@ to action.
 
   * variables() builds the variables for one account, contact, sender mailbox and Copy row.
   * render_step() fills one email of a Copy row (copy_markup: HTML and plain text), appends
-    the signature on every email and the Article 14 notice on email 1 (templates/copy/*.txt;
-    "#" lines are comments and are stripped), then runs the copy rules. An unknown or empty
+    the signature on every email (templates/copy/signature.txt; "#" lines are comments and are
+    stripped), then runs the copy rules. No email carries the data notice (Harry, 5 Oct 2026):
+    data_record() is what enrol keeps on each contact instead (contacts.data_record). An unknown or empty
     variable is a violation and stays visible in the text. Any violation blocks the send,
     and so does copy that is not approved or has not passed QA in its current wording.
   * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
@@ -21,10 +22,11 @@ to action.
 
 from __future__ import annotations
 
+import html
 import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -42,7 +44,12 @@ LEGAL_GROUP = "Legal Teams"
 
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
 SIGNATURE_TEMPLATE = "signature.txt"
-ARTICLE14_TEMPLATE = "article14.txt"
+# Harry, 5 Oct 2026: "Ideally we would add some formatting to signature to make it look more professional."
+# A paragraph of its own (the space after the sign-off), the sender's full name, then the three lines in
+# smaller grey type: the plain look of a personal mail client's signature, no image, no table.
+SIGNATURE_STYLE = "margin:16px 0 0;font-size:13px;line-height:1.5;color:#555555"
+SIGNATURE_NAME_STYLE = "color:#222222"
+LAWFUL_BASIS = "legitimate interests: telling businesses about Spill"
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
 # (General price_from). SPEC 4's price-by-size table is not quoted.
@@ -52,7 +59,6 @@ _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
 _FIXED_MISSING = {
     "site_url": "site_url is blank on the General tab, so the signature has no Spill link",
     "booking_link": "booking_link is blank on the General tab, so the signature has no booking link",
-    "company": "the Article 14 notice has no company name",
 }
 
 
@@ -210,29 +216,37 @@ def fill(template: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
     return _PLACEHOLDER.sub(one, template), missing
 
 
-def signature(settings: Settings) -> tuple[copy_markup.Rendered, list[str]]:
+def signature(settings: Settings, sender_name: str = "") -> tuple[copy_markup.Rendered, list[str]]:
     """The signature every email ends with, after the copy's sign-off (Harry, 1 Oct 2026), and what is missing.
 
-    Three lines with three links: Spill's US site, Harry's booking link and the Trustpilot reviews.
-    No postal address and no privacy link; the opt-out is Instantly's unsubscribe link, which the
-    campaign's step template adds after everything here (clients/instantly.py).
+    The sender's full name, then three lines with three links: Spill's US site, Harry's booking link and the
+    Trustpilot reviews. No postal address and no privacy link; the opt-out is Instantly's unsubscribe link,
+    which the campaign's step template adds after everything here (clients/instantly.py).
     """
     g = settings.general
     source, missing = fill(load_template(SIGNATURE_TEMPLATE), {"site_url": g.site_url, "booking_link": g.booking_link})
-    return copy_markup.render(source, {}), missing
+    sig = copy_markup.render(source, {})
+    inner = sig.html[len("<p>"):-len("</p>")] if sig.html.count("<p>") == 1 else sig.html  # one paragraph of lines
+    name = sender_name.strip()
+    if name:
+        inner = f'<strong style="{SIGNATURE_NAME_STYLE}">{html.escape(name, quote=False)}</strong><br>{inner}'
+    return replace(sig, html=f'<p style="{SIGNATURE_STYLE}">{inner}</p>',
+                   text=f"{name}\n{sig.text}" if name else sig.text), missing
 
 
 def data_sources(settings: Settings) -> str:
-    """The contact-data providers the notice names: Clay only once it runs (clay_verification)."""
+    """The contact-data providers in use: Clay only once it runs (clay_verification)."""
     if settings.general.clay_verification == CLAY_SKIP:
-        return "Apollo, which provides"
-    return "Apollo and Clay, which provide"
+        return "Apollo"
+    return "Apollo and Clay"
 
 
-def article14(values: Mapping[str, str], settings: Settings) -> tuple[str, list[str]]:
-    """Email 1's UK GDPR Article 14 notice: where the data came from and the lawful basis (SPEC 10)."""
-    return fill(load_template(ARTICLE14_TEMPLATE),
-                {"company": values.get("company", ""), "sources": data_sources(settings)})
+def data_record(settings: Settings) -> dict[str, Any]:
+    """Where a contact's details came from and the lawful basis, kept on the contact at enrolment
+    (contacts.data_record) and never shown in an email (Harry, 5 Oct 2026: "We should keep an internal
+    record but it should not be shown to customers")."""
+    return {"contact_data": data_sources(settings), "company_information": "the company's public website",
+            "lawful_basis": LAWFUL_BASIS, "shown_in_email": False}
 
 
 # -- rendering ------------------------------------------------------------------------------
@@ -242,7 +256,7 @@ def render_step(
     copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings,
     for_send: bool = True,
 ) -> Rendered:
-    """One email, signature and (email 1) Article 14 notice included, with every copy-rule violation.
+    """One email, signature included, with every copy-rule violation.
 
     for_send=False leaves out the approval and QA checks, for previews and the sheet check.
     """
@@ -262,19 +276,12 @@ def render_step(
     body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES)
     problems += [f"body {x}" for x in body.problems]
 
-    # After the copy's sign-off: the signature, then (email 1) the Article 14 notice in small type.
-    sig, missing = signature(settings)
+    # After the copy's sign-off: the signature, as its own paragraph.
+    sig, missing = signature(settings, mailbox.owner_name)
     problems += [_FIXED_MISSING.get(m, f"the signature has no {m}") for m in missing]
     problems += [f"signature {x}" for x in sig.problems]
-    texts, htmls = [body.text, sig.text], [body.html, sig.html]
-    if step == 1:
-        notice, missing = article14(variables, settings)
-        problems += [_FIXED_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
-        texts.append(notice)
-        htmls.append(copy_markup.plain_to_html(notice))
-
-    text = "\n\n".join(texts)
-    html = "".join(htmls)
+    text = f"{body.text}\n\n{sig.text}"
+    html_body = body.html + sig.html
     exempt = (variables.get("first_name", ""), variables.get("company", ""), variables.get("place", ""),
               mailbox.owner_name)
     problems += copy_rules.email_violations(
@@ -284,8 +291,8 @@ def render_step(
         uncounted=[str(variables.get(v) or "").strip() for v in OPTIONAL_VARIABLES],
         site_url=variables.get("site_url", ""),
     )
-    sent = html if g.email_format == "html" else text
-    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html)
+    sent = html_body if g.email_format == "html" else text
+    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html_body)
 
 
 def render_sequence(
