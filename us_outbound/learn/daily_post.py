@@ -26,7 +26,8 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
   * Sources: the careers and benefits page reader's coverage, its last run, every account read so
     far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
     what Apollo's organization enrich found, with funding in the last 180 and 365 days
-    (sources/apollo_enrich.py);
+    (sources/apollo_enrich.py); and, on the morning of the monthly lookalike_leads run (the 1st, 02:50),
+    what it found, with the yield of US and non-US seeds (sources/lookalike_leads.py);
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
@@ -55,7 +56,7 @@ from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
-from us_outbound.sources import apollo_enrich, pages
+from us_outbound.sources import apollo_enrich, lookalike_leads, pages
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -277,6 +278,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
 
     # Funding and headcount from Apollo's organization enrich (Harry, 2 Oct 2026).
     lines += apollo_enrich.post_lines(ctx)
+    lines += lookalike_leads.post_lines(ctx)  # the monthly lookalike leads, the morning they ran (5 Oct 2026)
     enriched = apollo_enrich.tally(ctx.store, ctx.today_uk())
     nums.update(enriched=enriched.accounts, enriched_with_funding=enriched.with_funding)
 

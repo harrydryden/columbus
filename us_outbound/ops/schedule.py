@@ -82,6 +82,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Monday 02:30, after settings_sync and before source_universe and apollo_signals (Harry, 1 Oct 2026).
     # It reads HubSpot and writes only the database, so it needs no --live.
     ScheduledJob("lookalikes", "30 2 * * 1", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # Harry, 5 Oct 2026: new US accounts like Spill's customers, from Apollo's lookalike search, monthly as the
+    # customer base is fairly static. The 1st at 02:50, after lookalikes (02:30), so customer domains are already
+    # suppressed, and before source_universe (03:00 on weekdays). HubSpot and Apollo reads and database writes only.
+    ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
     ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
 )

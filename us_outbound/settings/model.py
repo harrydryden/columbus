@@ -36,6 +36,7 @@ SOURCE_KEYS = (
     "calendar",
     "named",
     "lookalike",  # Spill's HubSpot customers in the account's industry group and size band (sources/lookalikes.py)
+    "lookalike_lead",  # found by Apollo as like a Spill customer, monthly (sources/lookalike_leads.py; Harry, 5 Oct 2026)
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
 TEXT_SOURCES = frozenset({"clay_careers", "careers_pages", "job_posts"})
@@ -68,6 +69,9 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
     "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
     "lookalike": frozenset({"lookalike_active", "lookalike_strength"}),  # sources/lookalikes.py (Harry, 1 Oct 2026)
+    # The company itself was found as like a Spill customer (sources/lookalike_leads.py). Its lookalike_lead fact
+    # (the seed's group, band and country) is a dict, which no condition reads, so the signal reads this flag.
+    "lookalike_lead": frozenset({"found_as_lookalike"}),
 }
 # Fields that count days up to the moment they were read. A source stores each as of its
 # observed_at; scoring adds the days since then, so a fact read months ago still tells the truth.

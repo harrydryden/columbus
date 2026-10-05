@@ -96,7 +96,7 @@ HOT_INDEXES = {
 ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "tier"): set(TIERS),
     ("accounts", "size_band"): set(SIZE_BANDS),
-    ("accounts", "source"): {"apollo", "irs", "site_visit", "named"},
+    ("accounts", "source"): {"apollo", "irs", "site_visit", "named", "lookalike"},  # lookalike: sources/lookalike_leads.py
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },

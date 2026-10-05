@@ -84,6 +84,17 @@ above this.
 - **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
   hold (docs/roadmap.md §3).
 
+## Monthly
+
+- **The 1st, 02:50 UK: lookalike leads** (`lookalike_leads`). Apollo looks for US companies like
+  Spill's active customers, UK customers included, in the Focus tab's industries and the same size
+  band, and the new ones join the queue. They still go through the usual checks (HQ state, size,
+  HubSpot, the hand-check if a fact is doubtful), and they score the "Found as a lookalike of a
+  customer" signal (+10). Nothing arrives in Slack on its own: that morning's daily post says what
+  it found under **Sources**, with how the UK customers' searches did beside the US customers'.
+  It spends at most 60 Apollo credits. `us-outbound run lookalike_leads` runs it by hand; a second
+  run in the same month does nothing, since the customers are much the same.
+
 ## Where the data is
 
 The companies and contacts live in the Postgres database on Railway, schema `us_outbound`: the

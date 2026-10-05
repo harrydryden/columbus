@@ -20,6 +20,7 @@ BASE = "https://api.apollo.io/api/v1"
 READ_METHODS = {
     "credit_usage",
     "search_organizations",
+    "search_lookalike_organizations",  # sources/lookalike_leads.py (Harry, 5 Oct 2026)
     "enrich_organization",
     "bulk_enrich_organizations",
     "job_postings",
@@ -38,6 +39,7 @@ def make(live=True):
 def exercise(apollo):
     apollo.credit_usage()
     apollo.search_organizations({"organization_locations[]": ["new york"]})
+    apollo.search_lookalike_organizations(["org1"], {"organization_locations[]": ["United States"]})
     apollo.enrich_organization("acme.example")
     apollo.bulk_enrich_organizations(["acme.example", "beta.example"])
     apollo.job_postings("org1")
@@ -106,6 +108,24 @@ def test_search_organizations_body_and_paging():
     for bad in ({"page": 501}, {"per_page": 101}, {"page": 0}):
         with pytest.raises(ValueError):
             apollo.search_organizations({}, **bad)
+    assert len(t.requests) == 1
+
+
+def test_lookalike_search_body_seeds_and_limits():
+    """sources/lookalike_leads.py: the seeds as lookalike_organization_ids beside the usual filters, at most 5."""
+    apollo, t, guard = make()
+    apollo.search_lookalike_organizations(["o1", "o2", "o1"], {
+        "organization_locations[]": ["United States"], "organization_not_locations": ["California, US"],
+        "organization_num_employees_ranges": ["10,19"], "page": 7})
+    [req] = t.requests
+    assert (req.method, req.url) == ("POST", f"{BASE}/mixed_companies/search")
+    assert req.json == {"organization_locations": ["United States"], "organization_not_locations": ["California, US"],
+                        "organization_num_employees_ranges": ["10,19"], "lookalike_organization_ids": ["o1", "o2"],
+                        "page": 1, "per_page": 100}
+    assert guard.calls[0].action == "organizations.search" and guard.calls[0].detail["seeds"] == 2
+    for bad in ([], ["a", "b", "c", "d", "e", "f"], ["not/an id"]):
+        with pytest.raises(ValueError):
+            apollo.search_lookalike_organizations(bad, {})
     assert len(t.requests) == 1
 
 

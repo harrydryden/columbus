@@ -42,7 +42,7 @@ COMMENT ON COLUMN us_outbound.accounts.hq_state IS 'USPS code.';
 COMMENT ON COLUMN us_outbound.accounts.industry IS 'Website industry label; the key of the Industries tab.';
 COMMENT ON COLUMN us_outbound.accounts.industry_group IS 'Website industry group (Industries tab).';
 COMMENT ON COLUMN us_outbound.accounts.size_band IS 'One of: 10-19, 20-49, 50-99, 100-249.';
-COMMENT ON COLUMN us_outbound.accounts.source IS 'One of: apollo, irs, site_visit, named. named: from the Named accounts tab (build addition).';
+COMMENT ON COLUMN us_outbound.accounts.source IS 'One of: apollo, irs, site_visit, named, lookalike. named: from the Named accounts tab; lookalike: found by Apollo as like a Spill customer, sources/lookalike_leads.py (build additions).';
 COMMENT ON COLUMN us_outbound.accounts.score IS 'Sum of fresh Score signal weights, each capped at max_weight, total capped at score_cap (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.tier IS 'One of: Priority, Standard, Control, Held, Excluded (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.angle IS 'Angle name from the Angles tab. Control accounts always get General (SPEC 9).';

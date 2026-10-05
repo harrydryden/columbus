@@ -560,8 +560,14 @@ class _Run:
 
 
 def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Counter[str],
-         rows: list[dict], events: list[dict], partners: dict[str, dict]) -> None:
-    """One organization from a search page: into accounts and facts, or skipped with the reason."""
+         rows: list[dict], events: list[dict], partners: dict[str, dict], *,
+         source: str = ACCOUNT_SOURCE) -> accounts.Admitted | None:
+    """One organization from a search page: into accounts and facts, or skipped with the reason.
+
+    Returns the front door's answer, or None for a company skipped before it, so the lookalike leads
+    (sources/lookalike_leads.py), which read Apollo's search under their own account source, can tell
+    the accounts they created from the ones found again.
+    """
     s, store, now = ctx.settings, ctx.store, ctx.now
     domain = org_domain(org)
     if not domain:
@@ -601,10 +607,10 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     site = root_domain(str(org.get("website_url") or "")) if org.get("website_url") else None
     if site and site != domain and not is_personal_domain(site) and not store.get("accounts", domain=site):
         record_alias(store, site, domain, ACCOUNT_SOURCE, now)  # one account per root domain (SPEC 13)
-    got = accounts.admit(store, domain, source=ACCOUNT_SOURCE, now=now, name=str(org.get("name") or ""))
+    got = accounts.admit(store, domain, source=source, now=now, name=str(org.get("name") or ""))
     if not got.ok:
         run.skipped[got.outcome] += 1
-        return
+        return got
     account = store.get("accounts", account_id=got.account_id) or {}
     cols = with_overrides(columns(org, label, state, sl.band), got.domain or domain, s)
     if got.outcome == "created":
@@ -625,9 +631,10 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
         run.updated += 1
     elif account.get("status") == "disqualified":
         run.skipped["disqualified earlier"] += 1
-        return
+        return got
     if not again:
         events.extend(org_facts(got.account_id, org, state, now))  # Apollo's view; Overrides apply at scoring
+    return got
 
 
 def _write(ctx: Context, rows: list[dict], events: list[dict], partners: dict[str, dict], run: _Run) -> None:

@@ -68,6 +68,9 @@ EXPECTED: dict[str, int] = {
     "monday_readout": 8 * _DAY,  # Mon 09:00
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
     "lookalikes": 8 * _DAY,  # Mon 02:30 (build addition)
+    # The 1st of each month, 02:50 (build addition, Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack,
+    # so a monthly job is never "missed" between its runs.
+    "lookalike_leads": 32 * _DAY,
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
