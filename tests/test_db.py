@@ -324,6 +324,24 @@ def test_the_other_views_on_a_fixture(store, fixture_rows):
     assert {r["cut_value"] for r in copy} == {"v1"}
 
 
+def test_v_signal_value_judges_what_an_account_showed_when_it_was_enrolled(store, fixture_rows):
+    """Scoring rewrites the matches every run; the contact's snapshot at enrolment wins (Harry, 5 Oct 2026)."""
+    q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
+    # When it was enrolled, "sent" showed no signal and was in Control: today's eap_named match does not count.
+    store.update("contacts", {"contact_id": "k-sent"}, {"signals_at_enrol": [], "tier_at_enrol": "Control"})
+    [signal] = q("v_signal_value")
+    assert (signal["signal"], signal["accounts"], signal["accounts_delivered"]) == ("eap_named", 0, 0)
+    assert (signal["control_accounts_delivered"], signal["control_reply_rate"]) == (1, 1.0)
+    outcome = {r["account_id"]: r for r in q("v_account_outcomes")}["sent"]
+    assert (outcome["signals_at_enrol"], outcome["tier_at_enrol"]) == ([], "Control")
+
+    store.update("contacts", {"contact_id": "k-sent"},
+                 {"signals_at_enrol": [{"signal": "eap_named", "weight": 25}], "tier_at_enrol": "Priority"})
+    [signal] = q("v_signal_value")
+    assert (signal["accounts"], signal["accounts_delivered"], signal["reply_rate"]) == (1, 1, 1.0)
+    assert signal["control_accounts_delivered"] == 0
+
+
 # -- PostgresStore round trips -------------------------------------------------------------
 
 SAMPLES = {

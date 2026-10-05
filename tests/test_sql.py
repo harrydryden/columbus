@@ -47,7 +47,9 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 }
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
-    "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source"}, "suppression": {"expires_at"},
+    "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
+                 "tier_at_enrol"},
+    "suppression": {"expires_at"},
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
@@ -75,7 +77,7 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned"}
+        "us_active", "us_churned", "score_at_enrol"}
 FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 

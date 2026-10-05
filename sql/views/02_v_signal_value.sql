@@ -4,10 +4,12 @@
 -- its accounts reply below the Control rate after 200 accounts." Nothing re-weights
 -- itself: Harry changes weights in the sheet.
 --   active signal:   Signals tab row in force with active yes.
---   showed it:       scoring wrote a signal_events row (source 'scoring', fact
---                    'signal_matched', value.signal = the signal) for the account.
+--   showed it:       for an account that was emailed, the signal is in its step-1 contact's
+--                    signals_at_enrol (what it showed when enrolled; Harry, 5 Oct 2026); for any
+--                    other account, scoring wrote a signal_events row (source 'scoring', fact
+--                    'signal_matched', value.signal = the signal) for it.
 --   rates:           over accounts with step 1 delivered, from v_account_outcomes.
---   Control:         accounts whose tier is Control now.
+--   Control:         accounts whose tier was Control when enrolled (else, with no snapshot, now).
 --   below_control:   at least 200 accounts with step 1 delivered, and a reply rate
 --                    below the Control rate.
 -- weight and max_weight are sheet text: spaces, commas and + are dropped, then they count
@@ -37,10 +39,20 @@ signals AS (
     suggests_angle
   FROM signals_raw
 ),
+snapshots AS (
+  SELECT account_id, signals_at_enrol
+  FROM us_outbound.v_account_outcomes
+  WHERE jsonb_typeof(signals_at_enrol) = 'array'
+),
 matched AS (
+  SELECT DISTINCT e ->> 'signal' AS signal, s.account_id
+  FROM snapshots AS s
+  CROSS JOIN LATERAL jsonb_array_elements(s.signals_at_enrol) AS e
+  UNION
   SELECT DISTINCT value ->> 'signal' AS signal, account_id
   FROM us_outbound.signal_events
   WHERE source = 'scoring' AND fact = 'signal_matched' AND account_id IS NOT NULL
+    AND account_id NOT IN (SELECT account_id FROM snapshots)
 ),
 per_signal AS (
   SELECT
@@ -64,7 +76,7 @@ control AS (
   FROM us_outbound.v_account_outcomes AS o
   JOIN us_outbound.accounts AS a
     ON a.account_id = o.account_id
-  WHERE a.tier = 'Control'
+  WHERE COALESCE(o.tier_at_enrol, a.tier) = 'Control'
 )
 SELECT
   s.signal,

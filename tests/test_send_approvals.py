@@ -306,6 +306,24 @@ def test_a_card_after_a_contact_swap_says_the_earlier_contact_was_declined():
 # -- ✅ ------------------------------------------------------------------------------------------------------
 
 
+def test_the_enrolment_keeps_the_signals_score_and_tier_the_account_had_then():
+    """Scoring rewrites an account's matches every run; the contact keeps its own copy (Harry, 5 Oct 2026)."""
+    ctx, _, sl, _ = proposed()
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"score": 45, "tier": "Standard"})
+    ctx.store.insert("signal_events", [
+        {"event_id": f"m{i}", "account_id": "acc-1", "source": "scoring", "fact": "signal_matched",
+         "value": {"signal": name, "weight": w}, "observed_at": ctx.now} for i, (name, w) in
+        enumerate([("Team of 10–49", 15), ("New People leader", 30)])
+    ] + [{"event_id": "other", "account_id": "acc-2", "source": "scoring", "fact": "signal_matched",
+          "value": {"signal": "Named by Harry", "weight": 30}, "observed_at": ctx.now}])
+    sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, "acc-1")["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert jane["signals_at_enrol"] == [{"signal": "New People leader", "weight": 30},
+                                        {"signal": "Team of 10–49", "weight": 15}]
+    assert (jane["score_at_enrol"], jane["tier_at_enrol"]) == (45, "Standard")
+
+
 @pytest.mark.parametrize("how", ["tick", "word"])
 def test_a_tick_adds_the_lead_and_records_the_enrolment_once(how):
     ctx, t, sl, _ = proposed()

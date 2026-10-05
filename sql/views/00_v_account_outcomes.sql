@@ -10,6 +10,8 @@
 --   positive:   reply_class positive or referral, in the same 28 days.
 --   opener_arm, opener_source: that contact's email 1 opener at enrollment (contacts; enrol/openers.py),
 --               so a readout can compare opener against the holdout (Harry, 2 Oct 2026).
+--   signals_at_enrol, score_at_enrol, tier_at_enrol: the account's signals, score and tier when that
+--               contact was enrolled (Harry, 5 Oct 2026), so v_signal_value judges what it showed then.
 CREATE OR REPLACE VIEW us_outbound.v_account_outcomes AS
 WITH step1 AS (
   SELECT DISTINCT ON (account_id)
@@ -49,7 +51,10 @@ SELECT
   COALESCE(r.positive, FALSE) AS positive_in_window,
   now() >= s.step1_at + INTERVAL '28 days' AS window_closed,
   c.opener_arm,
-  c.opener_source
+  c.opener_source,
+  c.signals_at_enrol,
+  c.score_at_enrol,
+  c.tier_at_enrol
 FROM step1 AS s
 LEFT JOIN bounced AS b
   ON b.contact_id = s.contact_id
@@ -57,4 +62,4 @@ LEFT JOIN replies AS r
   ON r.account_id = s.account_id
 LEFT JOIN us_outbound.contacts AS c
   ON c.contact_id = s.contact_id;
-COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12); and the opener arm, to compare opener against none.';
+COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12); the opener arm, to compare opener against none; and the account''s signals, score and tier at enrollment.';

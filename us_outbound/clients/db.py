@@ -61,6 +61,7 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "raw_site_visits": frozenset({"payload"}),
     "raw_layoffs": frozenset({"payload"}),
     "events": frozenset({"language_terms"}),
+    "contacts": frozenset({"signals_at_enrol"}),  # enrol._record_enrolled (5 Oct 2026)
 }
 
 Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL

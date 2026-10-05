@@ -73,6 +73,7 @@ from us_outbound.enrol import focus, openers, queue, render
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
+from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
 
 
@@ -784,9 +785,32 @@ def mark_not_added(ctx: Context, contact_id: Any) -> None:
         ctx.store.update("contacts", {"contact_id": contact_id}, {"suppressed": True, "suppressed_reason": NOT_ADDED})
 
 
+def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    """account_id -> the Score signals its latest scoring matched, as [{signal, weight}], strongest first.
+
+    Scoring rewrites these rows every run (scoring/score.py), so a contact keeps its own copy from the
+    moment it is enrolled (contacts.signals_at_enrol): the readout then judges the signals an account had
+    when it was emailed, not the ones it has weeks later (v_signal_value; Harry, 5 Oct 2026).
+    """
+    out: dict[str, list[dict[str, Any]]] = {a: [] for a in account_ids}
+    if not account_ids:
+        return out
+    rows = ctx.store.select("signal_events", {"account_id": list(account_ids), "source": SCORING_SOURCE,
+                                              "fact": MATCH_FACT})
+    for r in rows:
+        v = r.get("value") if isinstance(r.get("value"), Mapping) else {}
+        if v.get("signal"):
+            out.setdefault(str(r["account_id"]), []).append({"signal": str(v["signal"]), "weight": v.get("weight")})
+    for matches in out.values():
+        matches.sort(key=lambda m: (-(m["weight"] if isinstance(m["weight"], (int, float)) else 0), m["signal"]))
+    return out
+
+
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
-    """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast)."""
+    """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
+    and what the account looked like then: its signals, score and tier (signals_now)."""
     accounts, contacts = [], []
+    signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
     for i, p in enumerate(items):
         if i not in ids:
             continue
@@ -806,6 +830,9 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "instantly_lead_id": ids[i],
             "opener_arm": p.opener_arm,
             "opener_source": p.opener_source or None,
+            "signals_at_enrol": signals.get(str(p.account["account_id"]), []),
+            "score_at_enrol": p.account.get("score"),
+            "tier_at_enrol": p.account.get("tier") or None,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
