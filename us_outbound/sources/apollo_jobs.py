@@ -1,7 +1,7 @@
 """Source "apollo_jobs": open roles and open People roles from Apollo (SPEC 7; SPEC 9 apollo_signals).
 
-These are the facts the "Hiring and growth" (open_roles >= 3) and "First People hire"
-(open_people_roles >= 1) signals read. open_roles is owned by this source (docs/pipeline.md, change 4).
+These are the facts the "Hiring and growth" (open_roles >= 3), "People role open" and "First People
+hire (likely)" (open_people_roles >= 1) signals read. open_roles is owned by this source (docs/pipeline.md, change 4).
 
 Each weekday at 03:30 UK, after source_universe and before verify_accounts, for the accounts in the
 queue (new, queued or verified, not Excluded or Held) with an Apollo organization id and no

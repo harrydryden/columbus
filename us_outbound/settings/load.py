@@ -26,8 +26,9 @@ command merges them into the sheet without losing Harry's own edits:
     fallback_order) is replaced by the build's rows, the size-band order led by seniority. A
     tab already in the new layout keeps its rows; only roles it does not have are added.
   * Signals and Focus (Harry, 1 Oct 2026): the build's rows are added and Harry's own rows stay. A
-    row the build replaced under another name (SUPERSEDED: Recent funding, now split by age) stays
-    on the sheet but is switched off, so it does not score alongside its replacements. Focus rows
+    row the build replaced under another name (SUPERSEDED: Recent funding, now split by age; First
+    People hire, now First People hire (likely), 5 Oct 2026) stays on the sheet but is switched off,
+    so it does not score alongside its replacements. Focus rows
     take the build's values. Signals rows (SHEET_WINS; Harry, 2 Oct 2026) keep the sheet's value in
     every column the sheet already has, blank included, so a load never undoes his edits; columns
     the sheet does not have yet, like the tokenized openers' opener_people, opener_founder,
@@ -76,8 +77,13 @@ KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Role
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
 # Rows the build replaced under another name: a load keeps them on the sheet but switches them off,
 # so the old and new rows don't both score (Recent funding was split by age; review Appendix A).
-SUPERSEDED: dict[str, dict[str, str]] = {
-    "Signals": {"recent funding": "Funding in the last 6 months and Funding 6–12 months ago"},
+SUPERSEDED: dict[str, dict[str, tuple[str, str]]] = {  # name -> (what replaced it, when)
+    "Signals": {
+        "recent funding": ("Funding in the last 6 months and Funding 6–12 months ago", "1 Oct 2026"),
+        # Harry, 5 Oct 2026: nothing wrote a count of 0, so it never fired. Its replacement reads apollo_people's
+        # coverage; the new name brings the new condition, weight and window in past SHEET_WINS.
+        "first people hire": ("First People hire (likely)", "5 Oct 2026"),
+    },
 }
 # Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
 LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
@@ -222,9 +228,9 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
     for k, old in sheet.items():
         if k not in build:
             row = {c: str(old.get(c, "")) for c in cols}
-            by = SUPERSEDED.get(tab, {}).get(k)
+            by, when = SUPERSEDED.get(tab, {}).get(k, ("", ""))
             if by and "active" in cols and row["active"].strip().casefold() not in ("no", "false"):
-                row.update(active="no", note=f"Replaced by {by} (1 Oct 2026). {row.get('note', '')}".strip())
+                row.update(active="no", note=f"Replaced by {by} ({when}). {row.get('note', '')}".strip())
                 p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {by})")
             p.rows.append(row)
             p.extra.append(str(old.get(KEY[tab], "")))

@@ -496,9 +496,11 @@ def test_the_first_people_hire_signal_reads_these_facts():
     events = [
         {"event_id": "1", "account_id": "a1", "source": "apollo_jobs", "fact": "open_people_roles", "value": 1, "observed_at": NOW},
         {"event_id": "2", "account_id": "a1", "source": "apollo_people", "fact": "people_leader_count", "value": 0, "observed_at": NOW},
+        {"event_id": "3", "account_id": "a1", "source": "apollo_people", "fact": "people_search_coverage", "value": 0.7,
+         "observed_at": NOW},
     ]
     r = score_account({"account_id": "a1", "domain": "a1.com", "hq_state": "NY"}, events, BASE, NOW.date())
-    assert "First People hire" in [m.signal.signal for m in r.matches]
+    assert "First People hire (likely)" in [m.signal.signal for m in r.matches]
 
 
 # -- the share of the month ----------------------------------------------------------------------------

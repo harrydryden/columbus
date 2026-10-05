@@ -81,7 +81,7 @@ def test_hiring_counts_open_roles_from_apollo_jobs(settings):
     _, matched = scored(settings, [fact("apollo_jobs", "open_roles", 5)])
     assert matched == {"Hiring and growth": 15}  # it read apollo_org only, so this scored 0
     _, matched = scored(settings, [fact("apollo_jobs", "open_people_roles", 1), fact("apollo_jobs", "open_roles", 1)])
-    assert matched == {"People role open": 15}  # no people_leader_count: First People hire waits, this fires
+    assert matched == {"People role open": 15}  # no people_leader_count: First People hire (likely) waits, this fires
 
 
 @pytest.mark.parametrize("days, want", [(30, {"Funding in the last 6 months": 20}), (300, {"Funding 6–12 months ago": 10}),

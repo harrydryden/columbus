@@ -411,10 +411,14 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         f"leader themself. {_CONTEXT_NOTE}",
     ),
     (
-        "First People hire", "apollo_jobs, apollo_people", "open_people_roles >= 1 AND people_leader_count = 0",
-        "", "25", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "90", "yes",
-        "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it. "
-        f"A missing people_leader_count never matches, so People role open below fires anyway. {_CONTEXT_NOTE}",
+        "First People hire (likely)", "apollo_jobs, apollo_people",
+        "open_people_roles >= 1 AND people_leader_count = 0 AND people_search_coverage >= 0.5",
+        "", "20", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "60", "yes",
+        "Harry, 5 Oct 2026: replaces First People hire, which could never fire, as nothing wrote a count of 0. "
+        "apollo_people (weekdays 04:20) writes people_leader_count = 0 only where Apollo holds at least half the "
+        "company's headcount (people_search_coverage), so finding no People leader there likely means there is none; "
+        "the coverage is in the condition too, so a later thin search turns it off. +20, not +25: it is an inference. "
+        f"People role open fires with it. {_CONTEXT_NOTE}",
     ),
     (
         "People role open", "apollo_jobs", "open_people_roles >= 1",
@@ -518,7 +522,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
 _OPENERS: dict[str, tuple[str, str, str, str]] = {
     # The context signals (_CONTEXT_NOTE, above): no tokens, so every line fills for every account.
     "New People leader": _NEW_LEADER_LINES[1:],
-    "First People hire": _PEOPLE_ROLE_LINES[1:],
+    "First People hire (likely)": _PEOPLE_ROLE_LINES[1:],
     "People role open": _PEOPLE_ROLE_LINES[1:],
     "Funding in the last 6 months": _FUNDING_LINES[1:],
     "Funding 6–12 months ago": _FUNDING_LINES[1:],

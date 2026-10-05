@@ -12,8 +12,8 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | :- | :- | :- |
 | Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (Spill's HubSpot customers as cells, a signal and an early exclusion of customer domains), `named` accounts | `site_visits`, `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
 | Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct). For the groups `apollo_enrich` enriches, Apollo's exact employee count replaces the searched size band before verify runs | `verify_in_clay`; Clay's cross-check of doubtful HQ state and size (the `verify.cross_check` hook) |
-| Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
-| Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
+| Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signal, IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire. The People leaders at every queue account, `apollo_people` (weekdays 04:20, Apollo's free people search; 5 Oct), so "New People leader" scores before the queue is sorted, and "First People hire (likely)" in place of "First People hire", firing only where Apollo holds at least half the headcount | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
+| Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees, unless `apollo_people` searched the account in the last 30 days. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
 | Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
 | Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
@@ -113,6 +113,20 @@ verification and contact choice write only the database; enrol, replies and post
   groups; blank enriches none). It enriches up to about 15 accounts a weekday (15% of
   `apollo_monthly_credits`), each again after 180 days, and the daily post counts what it found.
 
+### Done 5 Oct
+- **People data for every company** (Harry: "Get People data for every company, not only those already
+  being contacted"). `apollo_people`, weekdays 04:20, searches Apollo's free people search for each
+  queue account's People leaders (no email filter) and for how many people Apollo holds there: 2
+  requests an account, up to 8 when a leader is new in post, 0 credits. On 5 Oct only 12 of 432
+  companies had People data, from `pick_contacts`. The first runs take about 100 to 150 accounts each
+  (9 minutes, 300 requests at most), so the queue is covered in three or four weekdays.
+- **"First People hire" is now "First People hire (likely)"**: open People roles, no People leader
+  found, and Apollo holding at least half the headcount (`people_search_coverage >= 0.5`); +20, not
+  +25, as it is an inference; 60 days. Run `us-outbound settings load --tab Signals --live`, then
+  `us-outbound sync`: the load adds the new row with its lines and switches the old row off, keeping it
+  on the sheet. Until then the old row stays on and, now that a count of 0 is written, can fire at +25;
+  `apollo_people`'s summary says so (`signals_notice`).
+
 ### Send approvals and the daily report (Harry, 2 Oct)
 - **Every email is approved in Slack** while General `auto_send` = no. The 12:00 enrol run posts a
   card per contact to #us-outbound instead of adding the lead. Each card shows:
@@ -177,6 +191,9 @@ verification and contact choice write only the database; enrol, replies and post
      (`sources/apollo_enrich.py`): the bulk call's body and answer (`organizations`, `unique_enriched_records`), the
      single call's answer for a domain Apollo does not know (404 or an empty `organization`), and the funding fields
      (`latest_funding_round_date`, `latest_funding_stage`, `funding_events[].amount` as text like "8M").
+     People search (`sources/apollo_people.py`): `total_entries` at the top level of the answer and
+     `person_days_in_current_title_range` honoured over REST (both seen through Apollo's MCP tool on 5 Oct),
+     and the plan's rate limits for it.
    - HubSpot: meetings and pipeline stage labels.
    - The job-board feeds (`sources/job_posts.py`): Greenhouse's `company_name` and escaped `content`,
      Lever's `lists`, Ashby's `descriptionHtml`, Workable's `details=true` descriptions.

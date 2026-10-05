@@ -41,8 +41,8 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "30 11 * * 1-5", live=True, enabled=True, timeout_minutes=15, phase=0),
     # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
     # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
-    # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich and verify_accounts, all before
-    # pick_contacts at 05:30.
+    # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich, apollo_people and verify_accounts, all
+    # before pick_contacts at 05:30.
     ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
     ScheduledJob("apollo_signals", "30 3 * * 1-5", live=False, enabled=True, timeout_minutes=45, phase=1),
     # Harry, 2 Oct 2026: our own careers and benefits page reader, in place of Clay's. After apollo_signals and
@@ -53,6 +53,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # After read_pages starts and before verify_accounts, whose rescore scores its facts before pick_contacts;
     # Apollo reads and database writes only, so no --live. At most 500 accounts a run, inside the timeout.
     ScheduledJob("apollo_enrich", "10 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
+    # Harry, 5 Oct 2026: the People leaders at every queue account, from Apollo's free people search, so the People
+    # signals score in verify_accounts' rescore, before pick_contacts. It starts no account after 9 minutes
+    # (sources/apollo_people.py RUN_SECONDS); Apollo reads and database writes only, so no --live.
+    ScheduledJob("apollo_people", "20 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),

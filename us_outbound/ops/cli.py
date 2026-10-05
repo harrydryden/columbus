@@ -110,6 +110,7 @@ JOBS: dict[str, str] = {
     "apollo_signals": "us_outbound.sources.apollo_jobs:run",
     "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages without Clay
     "apollo_enrich": "us_outbound.sources.apollo_enrich:run",  # Harry, 2 Oct 2026: funding and headcount from enrich
+    "apollo_people": "us_outbound.sources.apollo_people:run",  # Harry, 5 Oct 2026: People leaders at every account
     "site_visits": "not built yet (phase 1)",
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
