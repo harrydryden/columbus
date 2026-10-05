@@ -263,7 +263,7 @@ def test_build_commands_are_hidden_from_help_but_still_parse():
     text = cli.build_parser().format_help()
     for name in cli.HIDDEN:
         assert f"\n    {name} " not in text and f",{name}," not in text and f"{{{name}," not in text, name
-    for name in ("status", "golive", "sync", "start", "stop", "approvals", "replies", "killrules", "mailbox",
+    for name in ("status", "golive", "accounts", "sync", "start", "stop", "approvals", "replies", "killrules", "mailbox",
                  "campaigns", "copy", "settings", "handcheck", "erase", "schedule", "run"):
         assert f"\n    {name} " in text, name
     assert ("`--live` makes a command act. Anything that reaches a prospect (start, approvals send, replies send, every "

@@ -84,12 +84,28 @@ above this.
 - **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
   hold (docs/roadmap.md §3).
 
-## The ten commands
+## Where the data is
+
+The companies and contacts live in the Postgres database on Railway, schema `us_outbound`: the
+`accounts` table (one row per company, by its domain) and `contacts` (one row per person). Beside
+them are `signal_events` (what the sources found), `events` (sends, replies, bounces, opt-outs),
+`hitl_items` (the Slack cards) and `suppression`. The database has no public access, so look at it
+with `us-outbound accounts`: a summary, then the companies in queue order (`--status`, `--tier` and
+`--industry` narrow the list). `us-outbound accounts acme.com` shows one company in full, with its
+contacts' emails. For a spreadsheet, run `railway ssh -- us-outbound accounts --csv > companies.csv`
+on your own computer; it holds names and emails, so keep it private and delete it when you are done.
+
+**Don't edit rows by hand in Railway's Data tab.** An edit there bypasses the system's checks
+(suppression, one company per domain, a sender kept for life). Make changes with the sheet and the
+commands instead.
+
+## The commands
 
 | Command | What it does |
 | :- | :- |
 | `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, mailboxes, today's number |
 | `golive` | The read-only go/no-go check |
+| `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
