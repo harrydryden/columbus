@@ -71,9 +71,15 @@ verification and contact choice write only the database; enrol, replies and post
    mailbox; the separate `campaigns ensure` step is not needed. On 2 Oct Instantly showed hannah@ and
    sam@meetspill.org warm, and their campaigns were created; Harry's two (harry@meetspill.org,
    harry@tryspill.org) are promoted, and his campaign created, once Instantly shows them warm.
-4. **Opt-out test.** Send one test email from each campaign to a seed inbox. Confirm the
-   `{{unsubscribe}}` link works in it and that a click shows the lead as unsubscribed in Instantly.
-   Then set `optout_tested` = yes, then `us-outbound sync`. No lead is added until it is yes.
+4. **Opt-out test** (5 Oct: `us-outbound seed send|check`, `us_outbound/ops/seed.py`).
+   `us-outbound seed send ADDRESS --owner "Hannah Spalding" --live` adds one seed inbox of ours as a
+   lead to that owner's campaign, with a real Copy row rendered as enrol renders it. Instantly sends
+   it once `start --live` has activated the campaign, in its window (09:00–16:00 ET). With
+   `optout_tested` = no, start adds no prospect. When the email arrives, check that the body reads as
+   formatted text with working links and that the unsubscribe link is at the bottom, then click it.
+   `us-outbound seed check` reads the lead back as `sync_outcomes` does and says PASS at status -2
+   (unsubscribed). Then set `optout_tested` = yes, then `us-outbound sync`. No lead is added until it
+   is yes.
 5. **Copy approval.** On the Copy tab, set status = approved and approved_by = Harry on the rows to
    send. For the pilot that is the launch focus (Technology & Startups, Marketing & Creative
    Agencies, Legal Teams): about 25 industries × 3 roles. Every row has a QA pass stamped on it.

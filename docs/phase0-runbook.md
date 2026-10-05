@@ -139,8 +139,10 @@ approver's ✅ on its card in #us-outbound, so the Slack app needs the `reaction
 approvals send ID --live`. With `auto_send = yes`, enrol waits for the weekly hand-check instead:
 without Slack, `us-outbound handcheck show`, then `us-outbound handcheck approve --live` (with
 `--pull ACCOUNT_ID ...` for accounts that are wrong; it records the sample and approves it).
-After the seed-inbox test of the unsubscribe link, set `optout_tested = yes` on the General tab
-yourself, then `us-outbound sync`. (`us-outbound settings load --tab General --live` adds the row,
+The seed-inbox test of the unsubscribe link: `us-outbound seed send ADDRESS --owner NAME --live`
+adds an inbox of ours to that owner's campaign; once `start --live` has activated it and the email
+arrives, check it and click the unsubscribe link; `us-outbound seed check` says PASS. Then set
+`optout_tested = yes` on the General tab yourself, then `us-outbound sync`. (`us-outbound settings load --tab General --live` adds the row,
 as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sending`, `auto_send`,
 `optout_tested` and `approver_slack_ids`: those are set by hand on the sheet.)
 

@@ -406,9 +406,10 @@ def check_hubspot_ids(ctx: Context) -> Check:
 def check_optout(ctx: Context) -> Check:
     if ctx.settings.general.optout_tested:
         return Check(PASS, "Opt-out tested", "optout_tested = yes: the seed-inbox test of {{unsubscribe}} is done")
-    return Check(FAIL, "Opt-out tested", "seed-inbox test of {{unsubscribe}} not done: send a test from a paused campaign "
-                                         "to a seed inbox in html and text, click the link, check the lead shows as "
-                                         f"unsubscribed, then set optout_tested = yes on the General tab{SYNC}")
+    return Check(FAIL, "Opt-out tested", "seed-inbox test of {{unsubscribe}} not done: `us-outbound seed send ADDRESS "
+                                         "--owner NAME --live`; once it arrives, check it and click unsubscribe; "
+                                         "`us-outbound seed check` says PASS; then set optout_tested = yes on the "
+                                         f"General tab{SYNC}")
 
 
 CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
