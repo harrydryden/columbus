@@ -28,7 +28,9 @@ command merges them into the sheet without losing Harry's own edits:
   * Signals and Focus (Harry, 1 Oct 2026): the build's rows are added and Harry's own rows stay. A
     row the build replaced under another name (SUPERSEDED: Recent funding, now split by age; First
     People hire, now First People hire (likely), 5 Oct 2026) stays on the sheet but is switched off,
-    so it does not score alongside its replacements. Focus rows
+    so it does not score alongside its replacements; one the build still lists, switched off (Looks
+    like Spill's customers, graded by lookalike_fit from 5 Oct 2026), takes the build's active and
+    note, so the sheet's yes does not keep it scoring. Focus rows
     take the build's values. Signals rows (SHEET_WINS; Harry, 2 Oct 2026) keep the sheet's value in
     every column the sheet already has, blank included, so a load never undoes his edits; columns
     the sheet does not have yet, like the tokenized openers' opener_people, opener_founder,
@@ -76,15 +78,20 @@ KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Role
        "Focus": "industry_group"}
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
 # Rows the build replaced under another name: a load keeps them on the sheet but switches them off,
-# so the old and new rows don't both score (Recent funding was split by age; review Appendix A).
-SUPERSEDED: dict[str, dict[str, tuple[str, str]]] = {  # name -> (what replaced it, when)
+# so the old and new rows don't both score (Recent funding was split by age; review Appendix A). key ->
+# (what replaced it, when). A superseded row the build still has, switched off (Looks like Spill's customers),
+# takes the build's active and note even on a SHEET_WINS tab, so the sheet's yes does not keep it scoring.
+SUPERSEDED: dict[str, dict[str, tuple[str, str]]] = {
     "Signals": {
         "recent funding": ("Funding in the last 6 months and Funding 6–12 months ago", "1 Oct 2026"),
+        "looks like spill's customers": (
+            "Close match to Spill's customers and Some match to Spill's customers", "5 Oct 2026"),
         # Harry, 5 Oct 2026: nothing wrote a count of 0, so it never fired. Its replacement reads apollo_people's
         # coverage; the new name brings the new condition, weight and window in past SHEET_WINS.
         "first people hire": ("First People hire (likely)", "5 Oct 2026"),
     },
 }
+SUPERSEDED_TAKES = ("active", "note")
 # Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
 LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
 SHOW = 12  # names listed per change in the summary
@@ -216,20 +223,26 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
         if old is None:
             p.added.append(row[KEY[tab]])
         else:
+            sup = SUPERSEDED.get(tab, {}).get(k)
             kept = [c for c in keep if str(old.get(c, "")).strip() != row[c].strip()
-                    and (tab in SHEET_WINS or str(old.get(c, "")).strip())]
+                    and (tab in SHEET_WINS or str(old.get(c, "")).strip())
+                    and not (sup and c in SUPERSEDED_TAKES)]
             for c in kept:
                 row[c] = str(old[c])
             if kept:
                 p.kept_from_sheet.append(f"{row[KEY[tab]]} ({', '.join(kept)})")
-            if any(str(old.get(c, "")).strip() != row[c].strip() for c in cols if c not in kept):
+            if sup and "active" in cols and str(old.get("active", "")).strip().casefold() not in ("no", "false") \
+                    and row["active"].strip().casefold() in ("no", "false"):
+                p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {sup[0]})")
+            elif any(str(old.get(c, "")).strip() != row[c].strip() for c in cols if c not in kept):
                 p.updated.append(row[KEY[tab]])
         p.rows.append(row)
     for k, old in sheet.items():
         if k not in build:
             row = {c: str(old.get(c, "")) for c in cols}
-            by, when = SUPERSEDED.get(tab, {}).get(k, ("", ""))
-            if by and "active" in cols and row["active"].strip().casefold() not in ("no", "false"):
+            sup = SUPERSEDED.get(tab, {}).get(k)
+            if sup and "active" in cols and row["active"].strip().casefold() not in ("no", "false"):
+                by, when = sup
                 row.update(active="no", note=f"Replaced by {by} ({when}). {row.get('note', '')}".strip())
                 p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {by})")
             p.rows.append(row)

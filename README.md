@@ -65,6 +65,7 @@ us-outbound db apply [--live]                    * the DDL in sql/ against DATAB
 us-outbound hubspot setup|ids [--live]           * the six properties; ids for the General tab
 us-outbound suppression load [--live]            * HubSpot opt-outs and bounces, hashed
 us-outbound lookalikes show [--top N] [--all]    * the lookalike cells from Spill's HubSpot customers
+us-outbound lookalikes fit                       * the accounts' lookalike fits and the tier mix the new rows give
 us-outbound pages show                           * the careers and benefits page reader's coverage
 us-outbound data show                            * what the sources have stored, in aggregate
 us-outbound scheduler                            * the always-on worker: starts every job on its schedule
@@ -132,7 +133,7 @@ One worker with its own scheduler replaces Cloud Run Jobs and Cloud Scheduler (S
 See [docs/railway-setup.md](docs/railway-setup.md#where-this-differs-from-spec-harry-30-sep-2026).
 
 Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_aliases`,
-`partners`, `lookalike_cells`. `suppression` gains `expires_at` (only Suppress-signal domains expire) and
+`partners`, `lookalike_cells`, `lookalike_growth`. `suppression` gains `expires_at` (only Suppress-signal domains expire) and
 `contacts` gains `last_step_at` (for retention). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
@@ -158,9 +159,10 @@ hand-check, as before. `us_outbound/enrol/approvals.py` has the hitl_items and e
 daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
 
 Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack),
-`suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (Mondays: Spill's
-HubSpot customers as lookalike cells, a signal and an early exclusion; `sources/lookalikes.py`,
-Harry, 1 Oct 2026; `us-outbound lookalikes show` lists the cells) and `hand_check_post` (Mondays
+`suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (the 1st of each month, from
+5 Oct 2026: Spill's HubSpot customers as lookalike cells, their growth from Apollo in aggregate, the
+lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oct 2026;
+`us-outbound lookalikes show` lists the cells, `lookalikes fit` the fits) and `hand_check_post` (Mondays
 08:00: SPEC 11's weekly hand-check. Enrol waits for it only while `auto_send` = yes; with `auto_send`
 = no every email is approved in Slack, and the hand-check holds only accounts with doubtful Apollo
 facts). `stop` and `start` record the

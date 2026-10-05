@@ -65,6 +65,10 @@ BUILD_TABLES: dict[str, set[str]] = {
         "cell_id", "industry_label", "industry_group", "size_band", "active_customers", "churned_customers",
         "us_active", "us_churned", "strength", "computed_at", "run_id",
     },
+    "lookalike_growth": {  # Harry, 5 Oct 2026: customers by 12-month headcount growth band
+        "cell_id", "industry_group", "growth_band", "active_customers", "churned_customers", "strength", "computed_at",
+        "run_id",
+    },
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -120,6 +124,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule", "send_approval"},
     ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
     ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
+    ("lookalike_growth", "growth_band"): {"shrinking", "flat", "growing", "fast", "unknown"},
 }
 
 

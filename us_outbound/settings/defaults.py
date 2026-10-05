@@ -516,18 +516,30 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "Companies on the Named accounts tab (Harry, 30 Sep 2026). They pass every other check as usual.",
     ),
     (
+        "Close match to Spill's customers", "lookalike", "lookalike_fit >= 70",
+        "", "15", "", "Score", "", "", "120", "yes",
+        "Harry, 5 Oct 2026: the lookalike graded by industry, size and growth rate. lookalike_fit (0 to 100; "
+        "sources/lookalikes.py, refreshed nightly from the monthly lookalikes job) weighs how strong Spill's "
+        "HubSpot customers are in the account's industry (0.45), how common its size band is among them (0.35) and "
+        "how common its 12-month headcount growth is (0.20; left out, never counted against it, when unknown). "
+        "+15 with Team of 10–49 makes 30, Standard: the old +4 left most 10-49 accounts at 19, one point under "
+        "standard_threshold, and on 5 Oct Control held 300 of 432 open accounts. So a close lookalike with no "
+        "observed signal is Standard now, and Control holds the accounts that fit less well. `us-outbound "
+        "lookalikes fit` shows the fits and the tier mix these rows give.",
+    ),
+    (
+        "Some match to Spill's customers", "lookalike", "lookalike_fit >= 45 AND lookalike_fit < 70",
+        "", "8", "", "Score", "", "", "120", "yes",
+        "Harry, 5 Oct 2026: the middle of lookalike_fit (see Close match to Spill's customers). +8 with Team of "
+        "10–49 makes 23, Standard; with Team of 50–99 it makes 18 and stays Control, as does any fit under 45.",
+    ),
+    (
         "Looks like Spill's customers", "lookalike", "lookalike_active >= 5 AND lookalike_strength >= 10",
-        "", "4", "", "Score", "", "", "120", "yes",
-        "Spill's HubSpot customers in the account's industry group and size band (Harry, 1 Oct 2026: Spill "
-        "companies from HubSpot may inform lookalike targets; sources/lookalikes.py, weekly). "
-        "lookalike_strength counts an active customer 1 and a churned one 0.25, and a US one double. "
-        "Threshold: at least 5 active and a strength of 10, about ten active customers. From HubSpot's "
-        "aggregates on 1 Oct that is Technology & Startups at 10-49 (about 80 active), 50-99 (about 27) and "
-        "100-249 (about 12), and Marketing & Creative Agencies at 10-49 (about 44); every other cell from 10 "
-        "to 249 staff has fewer than 5 active, Legal Teams included. Weight +4, not more: the size rows "
-        "already give +15 at 10-49, so the two "
-        "firmographic rows together stay under standard_threshold (20) and an account with no observed "
-        "signal stays in Control, the signal-blind holdout. `us-outbound lookalikes show` lists the cells.",
+        "", "4", "", "Score", "", "", "120", "no",
+        "Replaced by Close match and Some match to Spill's customers (Harry, 5 Oct 2026), which grade the fit; "
+        "kept here switched off, so a settings load switches the sheet's row off. It scored +4 when the account's "
+        "industry group and size band held at least 5 active customers and a strength of 10 (Harry, 1 Oct "
+        "2026), which fired on 268 of 432 accounts on 5 Oct and so barely told them apart.",
     ),
     (
         "Found as a lookalike of a customer", "lookalike_lead", "found_as_lookalike = true",

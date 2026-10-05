@@ -269,7 +269,7 @@ def test_build_commands_are_hidden_from_help_but_still_parse():
     assert ("`--live` makes a command act. Anything that reaches a prospect (start, approvals send, replies send, every "
             "scheduled job) also needs live_sending = yes in the synced settings.") in " ".join(text.split())
     for argv in (["dry-run", "enrol"], ["rescore"], ["suppression", "load"], ["scheduler"], ["db", "apply"],
-                 ["hubspot", "ids"], ["lookalikes", "show"], ["pages", "show"], ["data", "show"],
+                 ["hubspot", "ids"], ["lookalikes", "show"], ["lookalikes", "fit"], ["pages", "show"], ["data", "show"],
                  ["test", "read", "t1"], ["unenrol", "--month", "2026-11"]):
         assert cli.build_parser().parse_args(argv).command == argv[0]
 

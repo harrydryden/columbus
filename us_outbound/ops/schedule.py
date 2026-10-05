@@ -86,9 +86,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
-    # Monday 02:30, after settings_sync and before source_universe and apollo_signals (Harry, 1 Oct 2026).
-    # It reads HubSpot and writes only the database, so it needs no --live.
-    ScheduledJob("lookalikes", "30 2 * * 1", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # The 1st of each month at 02:30, after settings_sync and before source_universe and apollo_signals (Harry,
+    # 1 Oct 2026; monthly from 5 Oct 2026: "The customer base for Spill is fairly static"). Day-of-week is *, so
+    # the day of the month alone decides (ops/scheduler.Cron.matches). It reads HubSpot and Apollo and writes
+    # only the database, so it needs no --live.
+    ScheduledJob("lookalikes", "30 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     # Harry, 5 Oct 2026: new US accounts like Spill's customers, from Apollo's lookalike search, monthly as the
     # customer base is fairly static. The 1st at 02:50, after lookalikes (02:30), so customer domains are already
     # suppressed, and before source_universe (03:00 on weekdays). HubSpot and Apollo reads and database writes only.

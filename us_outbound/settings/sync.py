@@ -13,7 +13,7 @@ Nightly at 02:00 UK and on demand:
      tab = ORDER_TAB, so the settings jobs load keep the sheet's order (roles listed first
      win a tie, the first approved copy version, and so on).
   4. Bring the Named accounts tab in through the front door (sources/named.py), and write
-     the lookalike facts from the cells the weekly lookalikes job stored, so an account
+     the lookalike facts from the cells and growth counts the monthly lookalikes job stored, so an account
      sourced since then is scored on them (sources/lookalikes.py; no HubSpot call).
   5. Rescore the queue with the settings now in force, so today's change shapes
      tomorrow's enrollment.

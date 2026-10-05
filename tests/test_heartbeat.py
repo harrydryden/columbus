@@ -121,6 +121,22 @@ def test_expected_matches_the_spec9_schedules():
     assert "score" not in hb.EXPECTED  # no schedule of its own
 
 
+def test_the_monthly_lookalikes_job_is_missed_only_when_a_1st_passes_without_it():
+    """Harry, 5 Oct 2026: lookalikes runs on the 1st at 02:30 UK. A month without it is no alert; a 1st missed is."""
+    t = slack_transport()
+    oct_1 = datetime(2026, 10, 1, 1, 30, tzinfo=UTC)  # 02:30 BST
+    for when in (datetime(2026, 10, 30, 9, 5, tzinfo=UTC), datetime(2026, 11, 1, 12, 5, tzinfo=UTC)):
+        ctx = ctx_at(when, job="heartbeat_check", transport=t)
+        beat(ctx.store, "lookalikes", oct_1)
+        assert hb.check_heartbeats(ctx, jobs=["lookalikes"]) == []  # 29 and 31 days on: still healthy
+    ctx = ctx_at(datetime(2026, 11, 2, 2, 5, tzinfo=UTC), job="heartbeat_check", transport=t)
+    beat(ctx.store, "lookalikes", oct_1)
+    assert hb.check_heartbeats(ctx, jobs=["lookalikes"]) == ["lookalikes"]  # the 1 Nov run never came
+    assert "expected at least every 32 days" in posts(t)[-1]["text"]
+    beat(ctx.store, "lookalikes", datetime(2026, 11, 1, 2, 30, tzinfo=UTC))
+    assert hb.check_heartbeats(ctx, jobs=["lookalikes"]) == []
+
+
 # -- check_heartbeats --------------------------------------------------------------------
 
 

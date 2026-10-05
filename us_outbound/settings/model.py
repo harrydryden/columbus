@@ -35,7 +35,7 @@ SOURCE_KEYS = (
     "layoffs",
     "calendar",
     "named",
-    "lookalike",  # Spill's HubSpot customers in the account's industry group and size band (sources/lookalikes.py)
+    "lookalike",  # how the account compares with Spill's HubSpot customers: the lookalike fit (sources/lookalikes.py)
     "lookalike_lead",  # found by Apollo as like a Spill customer, monthly (sources/lookalike_leads.py; Harry, 5 Oct 2026)
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
@@ -51,7 +51,10 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "apollo_org": frozenset(
         {"employees", "size_band", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
          "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry",
-         "description"}
+         "description",
+         # shrinking, flat, growing, fast or unknown: 12-month headcount growth, from headcount_growth_12m or
+         # Apollo's search by growth range (sources/lookalikes.py; Harry, 5 Oct 2026).
+         "headcount_growth_band"}
     ),
     # people_search_coverage (the people Apollo holds over the employees) and people_found: sources/apollo_people.py
     # (Harry, 5 Oct 2026), so a People leader count of 0 is read only where Apollo's data is deep enough.
@@ -71,7 +74,10 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
     "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
-    "lookalike": frozenset({"lookalike_active", "lookalike_strength"}),  # sources/lookalikes.py (Harry, 1 Oct 2026)
+    # sources/lookalikes.py (Harry, 1 Oct 2026). lookalike_fit (0 to 100) and its three parts (0 to 1; size and
+    # growth null when unknown): Harry, 5 Oct 2026.
+    "lookalike": frozenset({"lookalike_active", "lookalike_strength", "lookalike_fit", "lookalike_industry_fit",
+                            "lookalike_size_fit", "lookalike_growth_fit"}),
     # The company itself was found as like a Spill customer (sources/lookalike_leads.py). Its lookalike_lead fact
     # (the seed's group, band and country) is a dict, which no condition reads, so the signal reads this flag.
     "lookalike_lead": frozenset({"found_as_lookalike"}),

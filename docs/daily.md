@@ -105,6 +105,13 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
 
 ## Monthly
 
+- **Lookalikes (the 1st, 02:30 UK):** the `lookalikes` job reads Spill's customers from HubSpot (read
+  only), their 12-month headcount growth from Apollo (counts only, at most 60 credits), and works out
+  each account's lookalike fit (industry, size and growth). Nothing to do. `us-outbound lookalikes show`
+  lists the customers by industry and size; `us-outbound lookalikes fit` shows the fits and the tier
+  mix the lookalike rows give, without changing anything. To put the graded rows on the sheet, run
+  `us-outbound settings load --tab Signals --live`: it adds "Close match" and "Some match to Spill's
+  customers" and switches "Looks like Spill's customers" off.
 - **The 1st, 02:50 UK: lookalike leads** (`lookalike_leads`). Apollo looks for US companies like
   Spill's active customers, UK customers included, in the Focus tab's industries and the same size
   band, and the new ones join the queue. They still go through the usual checks (HQ state, size,

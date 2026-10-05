@@ -113,7 +113,10 @@ DEFAULT_SIGNALS = [
     ("Team of 50–99", 10, None, "Score", "", 365, True),
     ("Layoffs", 0, None, "Suppress", "", 90, True),
     ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
-    ("Looks like Spill's customers", 4, None, "Score", "", 120, True),  # build addition (Harry, 1 Oct 2026)
+    # Harry, 5 Oct 2026: the lookalike graded by lookalike_fit; the old row stays, off, so a load switches it off.
+    ("Close match to Spill's customers", 15, None, "Score", "", 120, True),
+    ("Some match to Spill's customers", 8, None, "Score", "", 120, True),
+    ("Looks like Spill's customers", 4, None, "Score", "", 120, False),  # build addition (Harry, 1 Oct 2026)
     ("Found as a lookalike of a customer", 10, None, "Score", "", 120, True),  # build addition (Harry, 5 Oct 2026)
 ]
 
@@ -145,7 +148,8 @@ def test_signal_sources_and_parsing(settings):
     assert not first.condition.evaluate({"open_people_roles": 1, "people_leader_count": 0})  # no coverage, no inference
     assert got["Q4 plan-year window"].condition.evaluate({"month": 11})  # kept on the sheet, inactive
     assert got["Culture or values page"].condition.evaluate({"values_page": True})
-    assert got["Looks like Spill's customers"].sources == ("lookalike",)
+    for name in ("Close match to Spill's customers", "Some match to Spill's customers", "Looks like Spill's customers"):
+        assert got[name].sources == ("lookalike",), name
     assert got["Found as a lookalike of a customer"].sources == ("lookalike_lead",)
     assert got["Found as a lookalike of a customer"].condition.evaluate({"found_as_lookalike": True})
     assert not got["Found as a lookalike of a customer"].condition.evaluate({})
