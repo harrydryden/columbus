@@ -22,11 +22,15 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
     enrol counts them (enrol/approvals.waiting: their accounts are not ready again, and they hold
     their senders' slots); and why enrollment waits today, from enrol.gate (a blackout or non-send
     day, an operator stop, the stop rule, a positive reply waiting too long), plus the hand-check
-    only while auto_send = yes, and a note when live_sending is no (enrol then runs dry);
+    only while auto_send = yes, and a note when live_sending is no (enrol then runs dry); and the
+    second-contact switch (enrol/second.py; 6 Oct 2026): "Second contact: off", or how many are ready;
   * Sources: the careers and benefits page reader's coverage, its last run, every account read so
     far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
     what Apollo's organization enrich found, with funding in the last 180 and 365 days
-    (sources/apollo_enrich.py);
+    (sources/apollo_enrich.py); one line on website visits: the companies Apollo saw on the US
+    pages, or, when its tracker sends no data, to check it (sources/site_visits.py); and, on the morning of
+    the monthly lookalike_leads run (the 1st, 02:50), what it found, with the yield of US and non-US seeds
+    (sources/lookalike_leads.py);
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
@@ -49,13 +53,13 @@ from typing import Any
 
 from us_outbound import budget, limits
 from us_outbound.context import UK, Context
-from us_outbound.enrol import approvals, enrol
+from us_outbound.enrol import approvals, enrol, second
 from us_outbound.learn import daily_report, holds, kill_rules
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
-from us_outbound.sources import apollo_enrich, pages
+from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -204,7 +208,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     nums = {
         "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(replies),
         "by_class": dict(classes), "positive": len(warm), "bounced": len(by_type.get("bounced", [])),
-        "unsubscribed": len(by_type.get("unsubscribed", [])), "demos_booked": len(by_type.get("meeting_booked", [])),
+        "unsubscribed": len(by_type.get("unsubscribed", [])),
+        # By company: a meeting and a Spill 3.0 deal for one booking are two events (crm/readback.py, 6 Oct 2026).
+        "demos_booked": len({e.get("account_id") or e["event_id"] for e in by_type.get("meeting_booked", [])}),
         "demos_held": len(by_type.get("demo_held", [])),
     }
     lines = [f"*Daily post, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else "")]
@@ -237,7 +243,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     hand_check_waits, pulled = enrol.hand_check(ctx, today_et)
     held = approvals.waiting(ctx)
     ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, today_et, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
+    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
+    lim = limits.today(ctx, today_et, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
+                       second_ready=len(seconds))
     nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
 
     # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.
@@ -259,6 +267,8 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     # the hand-check only while auto_send = yes (with no, every email is approved in Slack instead).
     lines += ["", "*Today's number*", lim.explanation]
     lines += [f"  {line}" for line in lim.detail]
+    if not second.on(ctx.settings):  # when on, limits.py's own line says how many are ready
+        lines.append(f"  {second.describe(ctx.settings)}")
     why = enrol.gate(ctx, today_et)
     if why is None and ctx.settings.general.auto_send:
         why = hand_check_waits
@@ -277,8 +287,12 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
 
     # Funding and headcount from Apollo's organization enrich (Harry, 2 Oct 2026).
     lines += apollo_enrich.post_lines(ctx)
+    lines += lookalike_leads.post_lines(ctx)  # the monthly lookalike leads, the morning they ran (5 Oct 2026)
     enriched = apollo_enrich.tally(ctx.store, ctx.today_uk())
     nums.update(enriched=enriched.accounts, enriched_with_funding=enriched.with_funding)
+
+    # Website visits from Apollo, or that its tracker sends no data (Harry, 5 Oct 2026): one line.
+    lines.append(site_visits.post_line(ctx))
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
     lines += ["", "*Mailboxes*"]

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, time
 import pytest
 
 from tests.fakes import FakeTransport
-from us_outbound.clients.guard import Guard, GuardViolation
+from us_outbound.clients.guard import Guard, GuardViolation, Op
 from us_outbound.clients.instantly import (
     CAMPAIGN_SETTINGS,
     LEAD_IMPORT_OPTIONS,
@@ -297,6 +297,34 @@ def test_enable_warmup():
     with pytest.raises(GuardViolation):
         inst.enable_warmup([OUTSIDER])
     assert len(t.writes()) == 1
+
+
+def test_set_sender_name_sets_only_the_name_of_a_registry_account():
+    """The From name prospects see is the owner's full name (Harry, 5 Oct 2026); nothing else on the account."""
+    inst, t, guard = make(live=True)
+    t.route("GET", f"/accounts/{HANNAH}", body={"email": HANNAH, "status": 1, "warmup_status": 1,
+                                                "first_name": "Hannah", "last_name": "at Spill"})
+    status = inst.warmup_status([HANNAH])[HANNAH]
+    assert (status["first_name"], status["last_name"]) == ("Hannah", "at Spill")  # read from the account GET
+    sent = len(t.requests)
+    inst.set_sender_name("Hannah@MeetSpill.org", " Hannah ", "Spalding")
+    [patch] = t.requests[sent:]
+    assert (patch.method, patch.url, patch.json) == (
+        "PATCH", f"{BASE}/accounts/{HANNAH}", {"first_name": "Hannah", "last_name": "Spalding"})
+    # Refused before any request: an account outside the registry, or a name no mailbox owner has.
+    for refused in (lambda: inst.set_sender_name(OUTSIDER, "Anna", "Berg"),
+                    lambda: inst.set_sender_name(HANNAH, "Hannah", "at Spill"),
+                    lambda: inst.set_sender_name(SAM, "Sam from Spill", "")):
+        with pytest.raises(GuardViolation):
+            refused()
+    assert len(t.requests) == sent + 1
+    with pytest.raises(GuardViolation):  # the name only: never the daily limit or anything else with it
+        guard.authorize("instantly", Op("account.update_name", target=HANNAH, write=True, detail={
+            "accounts": [HANNAH], "first_name": "Hannah", "last_name": "Spalding", "daily_limit": 50}))
+
+    inst, t, guard = make(live=False)
+    inst.set_sender_name(SAM, "Sam", "Jackson")
+    assert t.requests == [] and [w.sent for w in guard.writes("instantly")] == [False]  # dry-run sends nothing
 
 
 def test_add_leads_chunks_and_merges():

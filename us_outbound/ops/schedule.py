@@ -41,8 +41,8 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "30 11 * * 1-5", live=True, enabled=True, timeout_minutes=15, phase=0),
     # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
     # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
-    # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich and verify_accounts, all before
-    # pick_contacts at 05:30.
+    # weekday (sources/apollo_universe.py); then read_pages, apollo_enrich, apollo_people and verify_accounts, all
+    # before pick_contacts at 05:30.
     ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
     ScheduledJob("apollo_signals", "30 3 * * 1-5", live=False, enabled=True, timeout_minutes=45, phase=1),
     # Harry, 2 Oct 2026: our own careers and benefits page reader, in place of Clay's. After apollo_signals and
@@ -53,7 +53,14 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # After read_pages starts and before verify_accounts, whose rescore scores its facts before pick_contacts;
     # Apollo reads and database writes only, so no --live. At most 500 accounts a run, inside the timeout.
     ScheduledJob("apollo_enrich", "10 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
-    ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=False, timeout_minutes=30, phase=1),
+    # Harry, 5 Oct 2026: the People leaders at every queue account, from Apollo's free people search, so the People
+    # signals score in verify_accounts' rescore, before pick_contacts. It starts no account after 9 minutes
+    # (sources/apollo_people.py RUN_SECONDS); Apollo reads and database writes only, so no --live.
+    ScheduledJob("apollo_people", "20 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
+    # Harry, 5 Oct 2026: the website-visit signals, daily (a visit not read today drops out of Apollo's one-day
+    # list). After pick_contacts and before enrol, whose tiers its rescore sets; Apollo reads and database writes
+    # only, so no --live (sources/site_visits.py).
+    ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=30, phase=1),
@@ -75,13 +82,22 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
     ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
-    ScheduledJob("monday_readout", "0 9 * * 1", live=True, enabled=False, timeout_minutes=20, phase=3),
+    # Harry, 6 Oct 2026 ("push ahead with building"): Mondays at 08:30, after the hand-check (08:00) and before the
+    # daily post (09:00; SPEC 9 had both at 09:00). It only reads and posts: the alert channel needs --live, and in
+    # dry-run the post goes to the dev channel (learn/readout.py).
+    ScheduledJob("monday_readout", "30 8 * * 1", live=True, enabled=True, timeout_minutes=20, phase=3),
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
-    # Monday 02:30, after settings_sync and before source_universe and apollo_signals (Harry, 1 Oct 2026).
-    # It reads HubSpot and writes only the database, so it needs no --live.
-    ScheduledJob("lookalikes", "30 2 * * 1", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # The 1st of each month at 02:30, after settings_sync and before source_universe and apollo_signals (Harry,
+    # 1 Oct 2026; monthly from 5 Oct 2026: "The customer base for Spill is fairly static"). Day-of-week is *, so
+    # the day of the month alone decides (ops/scheduler.Cron.matches). It reads HubSpot and Apollo and writes
+    # only the database, so it needs no --live.
+    ScheduledJob("lookalikes", "30 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # Harry, 5 Oct 2026: new US accounts like Spill's customers, from Apollo's lookalike search, monthly as the
+    # customer base is fairly static. The 1st at 02:50, after lookalikes (02:30), so customer domains are already
+    # suppressed, and before source_universe (03:00 on weekdays). HubSpot and Apollo reads and database writes only.
+    ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
     ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
 )

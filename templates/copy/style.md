@@ -40,8 +40,11 @@ Rows with no role (General, and fallbacks) use the three role lines in email 1 i
 ## The four emails
 
 Every email opens "Hi {{first_name}}," and ends with "Best wishes," and "{{sender_first_name}}" on its own
-line (Harry, 1 Oct 2026). The signature, the data-source notice and the unsubscribe link are added by the
-system after that; never write them.
+line (Harry, 1 Oct 2026). The signature and the unsubscribe link are added by the
+system after that; never write them. The signature is the sender's full name and one line with one link,
+which the system picks from the email's own links (Harry, 5 Oct 2026): the booking line when the email
+suggests booking a call, never the website line when the email links a page on the site. So write the
+links the email needs and let the signature follow.
 
 1. **Day 0: inform and plant a seed (60 to 110 words; Harry, 1 Oct 2026).** Personal, relevant data and
    a hook, not a sales pitch. "{{opener}}" alone on the line after the greeting: it is filled at enrol
@@ -93,7 +96,7 @@ the next line in the cell is tried, then the signal's plain opener, then the gen
 then none. 30% of accounts get no opener at all, so we can measure whether openers help.
 
 **Signals are context, never the line** (Harry, 2 Oct 2026: "these are just signals"). For the hiring,
-People, growth and funding signals (New People leader, First People hire, People role open, Hiring and
+People, growth and funding signals (New People leader, First People hire (likely), People role open, Hiring and
 growth, and both funding rows), the signal tells us what the team is probably going through, and the
 line speaks to the pressure that tends to bring, then to support through it:
 

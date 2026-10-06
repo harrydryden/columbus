@@ -27,6 +27,7 @@ Status key:
 | Existing functions | Confirmed | Work Email `t_0tk0v4lhJ895hhhhTHJ`, Company Latest Funding `t_0tk0v4ehpQ6WaeuCoQf`, Website Technology Stack `t_0tk0v4lEmZDggj3wRwB`, Website Traffic `t_0tk0v4lJQkpANSDTxf9` |
 | "US Outbound" folder and functions | Open | Not created yet |
 | Functions callable programmatically | Partly | Yes through Clay's MCP (a run needs a subroutine id, task id and field mapping). A REST endpoint the Python jobs can call with an API key is not yet confirmed, so `clients/clay.py` marks it PHASE0-CONFIRM and keeps the CSV fallback |
+| Work Email's inputs | Listed 6 Oct | Clay's MCP function list (no credits): Full Name, Company Domain, Company Social Profile URL, Social Profile URL, Company Name, Personal Email. `pick_contacts` sends the first two, and the person's LinkedIn URL and the company name when it has them. Whether the Routines API takes inputs by these names, Work Email's output fields and a lookup's cost: `us-outbound clay check-email --live` |
 | Plan tier, monthly credits and actions, spend limits | Open | Not exposed. Harry set `clay_monthly_credits` to 2,000 a month (30 Sep) |
 
 ## Apollo (team 6a85cc72550d280018aa9e9f)
@@ -39,6 +40,7 @@ Status key:
 | Waterfall email | Confirmed | Enabled |
 | Tracker 6a85cc77f43ea3001cfcd35b on spill.chat | Confirmed | Intent paths are "/us" (high) and "us/pricing" (high, **still missing the leading slash**). **"/us/book-demo" is absent.** Contact-level tracking is off. `data_received: false` |
 | Visitor discovery through the API | Likely yes | Apollo's organisation lookup is described as free and takes `website_visitors_from_domains`, `website_visitors_from_past`, `website_visitors_intent` and page filters. Company search takes the same filters at 1 credit per request. To confirm with one call once Harry approves |
+| The `site_visits` job (5 Oct) | Built; to confirm on its first runs | Harry switched it on (5 Oct). Three company searches a day with the visitor filters (1 credit each when a company comes back). To confirm (PHASE0-CONFIRM in `clients/apollo.py` and `sources/site_visits.py`): the REST body takes `website_visitors_from_domains`, `website_visitors_from_past` and `website_visitors_domain_pages` as the MCP tool does (the job refuses a total over 5,000 companies, the sign Apollo ignored them); the answer's two buckets; what "the last 1 day" covers (24 hours, or yesterday and today); the HTTP status of a plan without website visitors (400, 402, 403, 404 or 422 read as "refused"); `organization_locations` = "United States" with `organization_ids` and the size ranges for the new-visitor screen; whether `/us` (a path that *contains* it) also catches non-US pages such as `/users` or `/use-cases`; and what `website_visitors/domain_aggregates` costs, before using it for real visit counts (the facts are 1 or 0 until then) |
 
 ## Slack
 
@@ -92,6 +94,7 @@ Jackson campaigns, paused, with no leads.
 | Step bodies | Confirmed, fixed 3 Oct | Instantly drops text outside any tag when it saves a step: a bare `{{s1_body}}` before the unsubscribe `<p>` was lost, leaving the unsubscribe line alone. The template is now `<div>{{sN_body}}</div><p>…unsubscribe…</p>`, and Instantly keeps it (read back 3 Oct). Subjects (`{{sN_subject}}`) were kept from the start |
 | Settings in GET | Confirmed | Settings at their default are left out (link_tracking, stop_on_auto_reply, text_only, allow_risky_contacts). open_tracking false, stop_on_reply, stop_for_company and insert_unsubscribe_header true are returned. is_evergreen is never returned |
 | Schedule and delays | Confirmed | Mon–Fri 09:00–16:00 America/Detroit kept as sent; step delays read 7, 7, 7, 0 (the delay before the next email) |
+| Sender (From) name | Open, to confirm (5 Oct) | The seed emails of 5 Oct came from "Hannah at Spill" and "Sam from Spill". Harry wants the owner's full name ("Hannah Spalding"), as `mailbox check --fix --live` now sets it. PHASE0-CONFIRM (`clients/instantly.py`, `set_sender_name`): that Instantly builds the From name from the account's `first_name` and `last_name` (API v2 account object), that the account GET returns both, and that `PATCH /accounts/{email}` with only those two sets them. Check with `mailbox check` afterwards (no name drift) and a seed send |
 | HTML in a custom variable | Open | Whether Instantly puts the rendered HTML of `{{s1_body}}` into the email as HTML (not escaped). The seed-inbox test of the unsubscribe link shows this too: the body should read as formatted text with working links |
 
 ## Not reachable from here

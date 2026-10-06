@@ -14,7 +14,8 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      The batch stops when either runs out.
   3. Search (0 credits): Apollo People API Search at the organization, for the titles of every
      Roles-tab row contacted at the account's size, for people in the United States with an
-     email Apollo has verified.
+     email Apollo has verified. The People leaders it finds are written as apollo_people facts,
+     unless apollo_people's own fuller search (sources/apollo_people.py) is less than 30 days old.
   4. Rank (clean/people.rank_person): the Roles-tab order for the size, then seniority, then
      how well the title matches, then the newest in role. Left out: titles never contacted at
      this size, junior titles as a People leader, people located in CA, WA or outside the US
@@ -26,6 +27,12 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      contact yet. Otherwise the next candidate, at most MAX_REVEALS per account.
   6. Write: one contact per account (v1); or, when nobody suitable exists, a contact_pick fact
      saying why, which limits.py reports as "no suitable contact".
+  7. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026):
+     after the first contacts, and only with what they leave of the lookahead, enrolled accounts of
+     second_contact_min_employees or more staff whose second contact is due within the next two send
+     days get the same search, ranking, checks and reveals, leaving out people of the first contact's
+     copy role. Their reveals count against the Apollo budget like any; their contact_pick fact has
+     slot 2.
 
 Every reveal and every outcome is a signal_events fact with source pick_contacts (no names or
 emails), so nobody is paid for twice. SOURCE is not a SPEC 7 source key, so no Signals row can
@@ -40,14 +47,19 @@ Harry, 2 Oct 2026: Clay narrowed to this), behind General clay_email_fallback (d
 Clay's server-callable path is unconfirmed: clients/clay.py, docs/phase0-facts.md). When it is
 yes and Apollo's reveal of a candidate gave no email or one Apollo doesn't call verified (a miss,
 or a catch-all), that person is looked up in Clay once: the "US Outbound – Contacts" function
-when clay_contacts_function_id is set, otherwise the workspace's Work Email function as it is
-(it charges only when it finds an email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN
-a run, each within today's share of clay_monthly_credits (budget.py; credit_ledger, reserved
-before the call and settled after it), and none while a kill rule pauses the clay source
-(learn/holds.paused_sources). Only a "valid" result is used: catch_all_valid waits for pipeline
-change 8 (whether a catch-all is sendable with Instantly's risky contacts off), and the bounce
-kill rule pauses the clay source on its own if its addresses bounce. The contact is kept by the
-same checks as Apollo's, with email_source = clay; the lookup is a contact_clay fact.
+when clay_contacts_function_id is set (SPEC 8's inputs: full_name, domain, linkedin_url, title),
+otherwise the workspace's Work Email function as it is (its own inputs: Full Name, Company Domain,
+Social Profile URL, Company Name; clients/clay.WORK_EMAIL_INPUTS; it charges only when it finds an
+email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN a run, each within today's share
+of clay_monthly_credits (budget.py; credit_ledger, reserved before the call and settled after it),
+none while a kill rule pauses the clay source (learn/holds.paused_sources) or the Clay API key is
+not set, and none for the rest of the run once CLAY_MAX_ERRORS lookups have failed (a wrong key or
+a function without "API & CLI" would otherwise spend every lookup's reserve). Only a "valid"
+result is used: catch_all_valid waits for pipeline change 8 (whether a catch-all is sendable with
+Instantly's risky contacts off), and the bounce kill rule pauses the clay source on its own if its
+addresses bounce. The contact is kept by the same checks as Apollo's, with email_source = clay;
+the lookup is a contact_clay fact. `us-outbound clay check-email` makes one Work Email lookup by
+hand, to confirm all this before clay_email_fallback goes on (ops/clay_check.py).
 """
 
 from __future__ import annotations
@@ -63,11 +75,17 @@ from us_outbound import budget
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
 from us_outbound.clients.apollo import credits_left
-from us_outbound.clients.clay import WORK_EMAIL_FUNCTION_ID, ClayError, parse_contacts_output, parse_work_email_output
+from us_outbound.clients.clay import (
+    WORK_EMAIL_FUNCTION_ID,
+    ClayError,
+    parse_contacts_output,
+    parse_work_email_output,
+    work_email_inputs,
+)
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
-from us_outbound.context import Context
-from us_outbound.enrol import enrol, queue
+from us_outbound.context import ConfigError, Context
+from us_outbound.enrol import enrol, queue, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
@@ -102,6 +120,7 @@ CLAY_FACT = "contact_clay"  # one per Clay lookup: who, the status, kept or why 
 CLAY_RESERVE = 2.0
 CLAY_ACCEPTED = frozenset({"valid"})  # catch_all_valid waits for pipeline change 8
 CLAY_LOOKUPS_PER_RUN = 25  # each lookup polls Clay until it finishes, inside the job's 60 minutes
+CLAY_MAX_ERRORS = 3  # failed lookups before the run stops asking Clay
 CLAY_LEDGER_NOTE = "email waterfall (Clay)"
 
 # PHASE0-CONFIRM: api_search reads "United States" in person_locations as the whole country, and
@@ -213,24 +232,29 @@ def search_titles(roles: Sequence[Role], employees: int | None, industry_group: 
     return out
 
 
-def search_filters(account: Mapping[str, Any], titles: Sequence[str]) -> dict[str, Any]:
+def organization_filter(account: Mapping[str, Any]) -> dict[str, Any]:
+    """The account's organization for People API Search: its Apollo id when it has one, else its domain."""
+    org = str(account.get("apollo_org_id") or "").strip()
+    if org:
+        return {"organization_ids": [org]}
+    return {"q_organization_domains_list": [_lower(account.get("domain"))]}
+
+
+def search_filters(account: Mapping[str, Any], titles: Sequence[str], *, verified_only: bool = True) -> dict[str, Any]:
     """People API Search at the account's organization, for these titles: people in the US with a verified email.
 
     Similar titles stay in (Apollo's default): the search is free, and every title is checked
-    against the Roles tab here.
+    against the Roles tab here. verified_only=False drops the email filter, for apollo_people's
+    count of everyone in a People role (sources/apollo_people.py), not only those we could email.
     """
     f: dict[str, Any] = {
         "person_titles": list(titles),
         "include_similar_titles": True,
         "person_locations": [US_LOCATION],
-        "contact_email_status": list(SEARCH_EMAIL_STATUSES),
     }
-    org = str(account.get("apollo_org_id") or "").strip()
-    if org:
-        f["organization_ids"] = [org]
-    else:
-        f["q_organization_domains_list"] = [_lower(account.get("domain"))]
-    return f
+    if verified_only:
+        f["contact_email_status"] = list(SEARCH_EMAIL_STATUSES)
+    return {**f, **organization_filter(account)}
 
 
 def search(ctx: Context, account: Mapping[str, Any], titles: Sequence[str]) -> list[dict]:
@@ -295,16 +319,14 @@ PEOPLE_LEADER = "People leader"
 NEWEST_LEADER_FACT = "people_leader_newest"  # who the newest People leader is (enrol/openers.py)
 
 
-def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
-                 today: date, now: datetime) -> list[dict]:
-    """apollo_people facts from the search pick_contacts already makes (no credits; 1 Oct 2026).
+def people_leaders(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
+                   today: date) -> list[tuple[int | None, Mapping[str, Any]]]:
+    """The People leaders among search rows, each with its days in title when Apollo gives them.
 
-    The People-leader signals ("New People leader", "People leader in place") read
-    people_leader_count and people_leader_days_in_title, which no other job writes. Only positive
-    evidence is written: the search returns people with a verified email only, so a count of 0
-    would not mean there is no People leader, and "First People hire" (count = 0) must not fire on it.
-    With the days in title goes people_leader_newest: that leader's Apollo person id and title, so
-    the opener can name the role, and congratulate the leader when they are the contact (Harry, 2 Oct 2026).
+    A People leader is someone this job would contact as one at the account's size (rank_person: a
+    Roles-tab row whose copy role is People leader, never on a junior title), not located outside the
+    US or in CA or WA (location_block). apollo_people counts them the same way, so the People signals
+    mean the same whichever job wrote them.
     """
     size, group = account_size(account), settings.industry_group_of(account)
     leaders: list[tuple[int | None, Mapping[str, Any]]] = []
@@ -314,30 +336,69 @@ def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]]
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is not None and not r.junior and r.role.writes_as == PEOPLE_LEADER:
             leaders.append((r.days_in_role, p))
+    return leaders
+
+
+def newest_known(leaders: Sequence[tuple[int | None, Mapping[str, Any]]]) -> tuple[int, Mapping[str, Any]] | None:
+    """The leader newest in title among those whose days in title are known, or None."""
+    known = [(d, p) for d, p in leaders if d is not None]
+    return min(known, key=lambda x: (x[0], str(x[1].get("id") or ""))) if known else None
+
+
+def leader_facts(account_id: str, count: int | None, newest: tuple[int, Mapping[str, Any] | None] | None,
+                 now: datetime) -> list[dict]:
+    """The People-leader facts (source apollo_people), as both this job and apollo_people write them.
+
+    count None writes no people_leader_count. newest is (days in title, that leader's search row): the
+    days go to people_leader_days_in_title and, when the row is known, people_leader_newest carries the
+    leader's Apollo person id and title, so the opener can name the role, and congratulate the leader
+    when they are the contact (Harry, 2 Oct 2026).
+    """
+    def row(fact: str, value: Any) -> dict:
+        return {"event_id": new_id(), "account_id": account_id, "source": PEOPLE_SOURCE, "fact": fact,
+                "value": value, "quote": "", "source_url": "", "observed_at": now}
+
+    rows = [] if count is None else [row("people_leader_count", count)]
+    if newest is not None:
+        days, person = newest
+        rows.append(row("people_leader_days_in_title", days))
+        if person is not None:
+            rows.append(row(NEWEST_LEADER_FACT, {"apollo_person_id": str(person.get("id") or ""),
+                                                 "title": " ".join(str(person.get("title") or "").split()),
+                                                 "days_in_title": days}))
+    return rows
+
+
+def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]], settings: Settings,
+                 today: date, now: datetime) -> list[dict]:
+    """apollo_people facts from the search pick_contacts already makes (no credits; 1 Oct 2026).
+
+    Only positive evidence is written: this search returns people with a verified email only, so a
+    count of 0 would not mean there is no People leader. apollo_people's full search (weekdays 04:20)
+    is the one that may write 0, and pick_account keeps its result: these facts are written only when
+    that search has not been made within its REFRESH_DAYS.
+    """
+    leaders = people_leaders(account, people, settings, today)
     if not leaders:
         return []
-    aid = account["account_id"]
+    return leader_facts(account["account_id"], len(leaders), newest_known(leaders), now)
 
-    def row(fact: str, value: Any) -> dict:
-        return {"event_id": new_id(), "account_id": aid, "source": PEOPLE_SOURCE, "fact": fact, "value": value,
-                "quote": "", "source_url": "", "observed_at": now}
 
-    rows = [row("people_leader_count", len(leaders))]
-    known = [(d, p) for d, p in leaders if d is not None]
-    if known:
-        days, newest = min(known, key=lambda x: (x[0], str(x[1].get("id") or "")))
-        rows.append(row("people_leader_days_in_title", days))
-        rows.append(row(NEWEST_LEADER_FACT, {"apollo_person_id": str(newest.get("id") or ""),
-                                             "title": " ".join(str(newest.get("title") or "").split()),
-                                             "days_in_title": days}))
-    return rows
+def full_search_is_fresh(ctx: Context, account_id: str) -> bool:
+    """apollo_people searched the account within its REFRESH_DAYS, so its facts stand over this narrower view."""
+    from us_outbound.sources import apollo_people
+
+    return apollo_people.searched_recently(ctx.store, account_id, ctx.now)
 
 
 def rank_candidates(
     people: Sequence[Mapping[str, Any]], account: Mapping[str, Any], settings: Settings, today: date,
-    revealed: Container[str] = frozenset(),
+    revealed: Container[str] = frozenset(), exclude_roles: Container[str] = frozenset(),
 ) -> tuple[list[Candidate], Counter[str]]:
-    """(the people who may be contacted, best first; how many were left out and why)."""
+    """(the people who may be contacted, best first; how many were left out and why).
+
+    exclude_roles: copy roles (lower case) left out, for a second contact: the first contact's (enrol/second.py).
+    """
     size, group = account_size(account), settings.industry_group_of(account)
     out: list[Candidate] = []
     left_out: Counter[str] = Counter()
@@ -352,6 +413,9 @@ def rank_candidates(
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is None:
             left_out["title not contacted at this size"] += 1
+            continue
+        if r.role.writes_as.strip().lower() in exclude_roles:
+            left_out["the first contact's role"] += 1
             continue
         out.append(Candidate(dict(p), r))
     out.sort(key=lambda c: (c.ranked.key, c.id))
@@ -382,6 +446,7 @@ class _Run:
     clay_lookups: int = 0
     clay_found: int = 0
     clay_credits: float = 0.0
+    clay_errors: int = 0
 
     def why_not_clay(self) -> str | None:
         if self.clay_off:
@@ -488,7 +553,9 @@ def wants_clay(row: Mapping[str, Any] | None, why: str | None) -> bool:
 
 
 def clay_inputs(account: Mapping[str, Any], cand: Candidate, match: Mapping[str, Any] | None) -> dict | None:
-    """SPEC 8's Contacts inputs (full_name, domain, linkedin_url, title); None without a full name or a LinkedIn URL."""
+    """SPEC 8's Contacts inputs (full_name, domain, linkedin_url, title); None without a full name or a LinkedIn URL.
+
+    Work Email takes its own names for them (as_work_email)."""
     m = match or {}
     first = str(m.get("first_name") or cand.person.get("first_name") or "").strip()
     last = str(m.get("last_name") or cand.person.get("last_name") or "").strip()
@@ -499,12 +566,18 @@ def clay_inputs(account: Mapping[str, Any], cand: Candidate, match: Mapping[str,
             "linkedin_url": linkedin or None, "title": str(m.get("title") or cand.person.get("title") or "") or None}
 
 
+def as_work_email(inputs: Mapping[str, Any], account: Mapping[str, Any]) -> dict[str, str]:
+    """SPEC 8's Contacts inputs under Work Email's own names, with the company's name; Work Email takes no title."""
+    return work_email_inputs(inputs.get("full_name"), inputs.get("domain"), inputs.get("linkedin_url"),
+                             company_name=str(account.get("clean_name") or "") or None)
+
+
 def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match: Mapping[str, Any] | None,
                 batch: _Run) -> tuple[dict | None, str | None, dict]:
     """(the contacts row from Clay's waterfall, or None; why not; the lookup's fact value). Recorded in credit_ledger first.
 
-    PHASE0-CONFIRM: Work Email's inputs. They are sent under SPEC 8's Contacts names; the
-    "US Outbound – Contacts" function, once built, takes them as they are.
+    The "US Outbound – Contacts" function, once built, takes SPEC 8's inputs as they are; Work Email takes its
+    own names for them (as_work_email). PHASE0-CONFIRM: those names, through the Routines API.
     """
     g = ctx.settings.general
     inputs = clay_inputs(account, cand, match)
@@ -513,6 +586,8 @@ def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match
     if inputs is None:
         return None, "no full name or LinkedIn URL to look up in Clay", {**value, "reason": "nothing to look up"}
     function = g.clay_contacts_function_id or WORK_EMAIL_FUNCTION_ID
+    if not g.clay_contacts_function_id:
+        inputs = as_work_email(inputs, account)
     entry = {"entry_id": new_id(), "system": "clay", "job": JOB, "run_id": ctx.run_id,
              "account_id": account["account_id"], "credits": CLAY_RESERVE, "usd": None, "occurred_at": ctx.now,
              "note": f"{CLAY_LEDGER_NOTE}, reserved"}
@@ -524,6 +599,10 @@ def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match
         ctx.store.upsert("credit_ledger", [{**entry, "note": f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"}])
         batch.clay_spend(CLAY_RESERVE)
         why = f"Clay lookup failed ({type(exc).__name__})"
+        batch.clay_errors += 1
+        log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
+        if batch.clay_errors >= CLAY_MAX_ERRORS:
+            batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
         return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
     credits = got["credits_used"]
     if credits is None:
@@ -565,9 +644,10 @@ def _most(c: Counter[str]) -> str:
 
 def pick_account(
     ctx: Context, account: Mapping[str, Any], batch: _Run, revealed: Container[str],
-    domains: set[str], hashes: set[str], known: set[str],
+    domains: set[str], hashes: set[str], known: set[str], exclude_roles: Container[str] = frozenset(),
 ) -> Outcome:
-    """Search, rank and reveal for one account; writes the contact and the reveal facts."""
+    """Search, rank and reveal for one account; writes the contact and the reveal facts. exclude_roles: for a
+    second contact, the first contact's copy role (rank_candidates)."""
     s = ctx.settings
     size = account_size(account)
     if size is None:
@@ -577,12 +657,14 @@ def pick_account(
         return Outcome(NO_CONTACT, "no Roles-tab row is contacted at its size")
     people = search(ctx, account, titles)
     facts = people_facts(account, people, s, ctx.today_uk(), ctx.now)
-    if facts:
-        ctx.store.insert("signal_events", facts)  # read by the next rescore (settings_sync, 02:00)
+    # Read by the next rescore (settings_sync, 11:30 on weekdays). Not over apollo_people's fuller search, whose
+    # count of 0 and days in title this verified-email view could otherwise replace.
+    if facts and not full_search_is_fresh(ctx, account["account_id"]):
+        ctx.store.insert("signal_events", facts)
     if not people:
         return Outcome(NO_CONTACT, "nobody at Apollo with a Roles-tab title for its size, in the US, with a verified email",
                        detail={"found": 0})
-    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed)
+    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed, exclude_roles)
     detail: dict[str, Any] = {"found": len(people), "candidates": len(cands), "left_out": dict(left_out)}
     if not cands:
         return Outcome(NO_CONTACT, f"nobody suitable ({_most(left_out)})", detail=detail)
@@ -626,20 +708,24 @@ def pick_account(
 # -- the job --------------------------------------------------------------------------------------
 
 
-def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run) -> None:
+def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run, slot: int = 1) -> None:
     aid = account["account_id"]
     value = {"outcome": out.outcome, "reason": out.reason, **out.detail}
+    if slot != 1:
+        value["slot"] = slot  # a second contact (enrol/second.py)
     if out.outcome == PICKED and out.contact and out.candidate:
         value.update(contact_id=out.contact["contact_id"], row=out.candidate.ranked.role.role,
                      role=out.contact["role"], seniority=SENIORITY[out.candidate.ranked.seniority],
                      apollo_person_id=out.candidate.id,  # the opener knows when the contact is the new leader
                      email_source=out.contact["email_source"])
         batch.picked.append({"account_id": aid, "domain": account.get("domain"), "row": value["row"],
-                             "role": value["role"], "seniority": value["seniority"]})
+                             "role": value["role"], "seniority": value["seniority"],
+                             **({"slot": slot} if slot != 1 else {})})
     else:
-        batch.no_contact[out.reason] += 1
+        reason = out.reason if slot == 1 else f"second contact: {out.reason}"
+        batch.no_contact[reason] += 1
         if len(batch.no_contact_accounts) < LIST_LIMIT:
-            batch.no_contact_accounts.append({"account_id": aid, "domain": account.get("domain"), "reason": out.reason})
+            batch.no_contact_accounts.append({"account_id": aid, "domain": account.get("domain"), "reason": reason})
     ctx.store.insert("signal_events", [_fact(aid, OUTCOME_FACT, value, ctx.now)])
     log("pick_contacts_account", account_id=aid, outcome=out.outcome, reason=out.reason, row=value.get("row"))
 
@@ -655,6 +741,10 @@ def clay_room(ctx: Context) -> tuple[str | None, float]:
     month = budget.monthly(ctx.store, s, "clay", ctx.now)
     if month.budget <= 0:
         return "no monthly Clay budget (clay_monthly_credits is 0)", 0.0
+    try:
+        ctx.clients.clay  # the key, read once here rather than failing the job at the first lookup
+    except ConfigError as exc:
+        return f"no Clay API key: {exc}", 0.0
     return None, month.left_today
 
 
@@ -675,12 +765,20 @@ def run(ctx: Context) -> dict:
     due = [a for a in need if not past.cooling(a["account_id"], ctx.now)]
     want = max(0, lookahead(s) - ready)
     summary.update(ready_before=ready, wanted=want, waiting=len(need), tried_recently=len(need) - len(due))
+    # Second contacts (enrol/second.py; Harry, 6 Oct 2026), due within the same lookahead: ([], 0), without a
+    # read, while second_contact is no. They are revealed only with what the first contacts leave of `want`.
+    need2, ready2 = second.to_pick(ctx, second.due_by(ctx, LOOKAHEAD_SEND_DAYS))
+    due2 = [(a, role) for a, role in need2 if not past.cooling(a["account_id"], ctx.now)]
+    if second.on(s):
+        summary["second_contacts"] = {"ready_before": ready2, "waiting": len(need2),
+                                      "tried_recently": len(need2) - len(due2), "picked": 0}
 
     month = budget.monthly(store, s, "apollo", ctx.now)
     batch = _Run(left=month.left_today, balance=None, floor=s.general.apollo_floor)
     why = None
-    if not want or not due:
-        why = "enough accounts are ready for the next two send days" if not want else "no account is waiting for a contact"
+    if not want or not (due or (due2 and want > ready2)):
+        enough = not want or (not due and due2)
+        why = "enough accounts are ready for the next two send days" if enough else "no account is waiting for a contact"
     elif month.budget <= 0:
         why = "no monthly Apollo budget (apollo_monthly_credits is 0)"
     why = why or batch.why_not_reveal()
@@ -711,6 +809,28 @@ def run(ctx: Context) -> dict:
             break
         batch.tried += 1
         _record(ctx, account, out, batch)
+    # Then second contacts, with what is left of the lookahead once the first contacts are counted: the first
+    # contacts of new accounts come first when capacity is short (Harry, 6 Oct 2026).
+    room2 = max(0, lookahead(s) - ready - len(batch.picked) - ready2)
+    picked2 = 0
+    for account, role in due2:
+        if picked2 >= room2 or batch.stopped:
+            break
+        try:
+            out = pick_account(ctx, account, batch, past.revealed[account["account_id"]], domains, hashes, known,
+                               exclude_roles=frozenset({role}))
+        except ApiError as exc:
+            batch.errors.append(f"{account.get('domain')}: {str(exc)[:200]}")
+            if len(batch.errors) >= MAX_ERRORS:
+                batch.stopped = f"{MAX_ERRORS} Apollo errors"
+            continue
+        if out.outcome == STOPPED:
+            break
+        batch.tried += 1
+        picked2 += out.outcome == PICKED
+        _record(ctx, account, out, batch, slot=second.SECOND)
+    if "second_contacts" in summary:
+        summary["second_contacts"]["picked"] = picked2
 
     summary.update(
         status="ok",
@@ -725,7 +845,8 @@ def run(ctx: Context) -> dict:
         errors=batch.errors,
         budget=budget.monthly(store, s, "apollo", ctx.now).describe(),
         clay={"off": batch.clay_off, "lookups": batch.clay_lookups, "found": batch.clay_found,
-              "credits": batch.clay_credits, "budget": budget.monthly(store, s, "clay", ctx.now).describe()},
+              "credits": batch.clay_credits, "errors": batch.clay_errors,
+              "budget": budget.monthly(store, s, "clay", ctx.now).describe()},
         picked_accounts=batch.picked[:LIST_LIMIT],
         no_contact_accounts=batch.no_contact_accounts,
     )

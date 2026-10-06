@@ -8,8 +8,17 @@
 --   delivered:  that contact has no 'bounced' event for step 1 (or with no step).
 --   human:      any reply class except out_of_office; not yet classified (NULL) counts.
 --   positive:   reply_class positive or referral, in the same 28 days.
+--   meeting_booked, first_meeting_at: a meeting_booked event at the account at or after step 1
+--               (crm/readback.py: a meeting on Harry's calendar, or a Spill 3.0 deal at Demo requested or
+--               later; events.source says which). No 28-day limit: a demo booked in week six still counts
+--               (Harry, 6 Oct 2026: the readout and the signal table count bookings).
 --   opener_arm, opener_source: that contact's email 1 opener at enrollment (contacts; enrol/openers.py),
 --               so a readout can compare opener against the holdout (Harry, 2 Oct 2026).
+--   signals_at_enrol, score_at_enrol, tier_at_enrol: the account's signals, score and tier when that
+--               contact was enrolled (Harry, 5 Oct 2026), so v_signal_value judges what it showed then.
+--   subject_arm: that contact's email 1 subject arm at enrollment, personal (General email1_subject) or copy
+--               (the Copy row's s1_subject), so a readout can compare the two (Harry, 5 Oct 2026).
+--   angle, copy_version, test_id: that contact's at enrollment, for the readout's cuts (6 Oct 2026).
 CREATE OR REPLACE VIEW us_outbound.v_account_outcomes AS
 WITH step1 AS (
   SELECT DISTINCT ON (account_id)
@@ -36,6 +45,15 @@ replies AS (
     AND r.occurred_at >= s.step1_at
     AND r.occurred_at < s.step1_at + INTERVAL '28 days'
   GROUP BY s.account_id
+),
+meetings AS (
+  SELECT s.account_id, min(m.occurred_at) AS first_meeting_at
+  FROM step1 AS s
+  JOIN us_outbound.events AS m
+    ON m.account_id = s.account_id
+  WHERE m.type = 'meeting_booked'
+    AND m.occurred_at >= s.step1_at
+  GROUP BY s.account_id
 )
 SELECT
   s.account_id,
@@ -49,12 +67,23 @@ SELECT
   COALESCE(r.positive, FALSE) AS positive_in_window,
   now() >= s.step1_at + INTERVAL '28 days' AS window_closed,
   c.opener_arm,
-  c.opener_source
+  c.opener_source,
+  c.signals_at_enrol,
+  c.score_at_enrol,
+  c.tier_at_enrol,
+  c.subject_arm,
+  mt.first_meeting_at,
+  mt.account_id IS NOT NULL AS meeting_booked,
+  c.angle,
+  c.copy_version,
+  c.test_id
 FROM step1 AS s
 LEFT JOIN bounced AS b
   ON b.contact_id = s.contact_id
 LEFT JOIN replies AS r
   ON r.account_id = s.account_id
+LEFT JOIN meetings AS mt
+  ON mt.account_id = s.account_id
 LEFT JOIN us_outbound.contacts AS c
   ON c.contact_id = s.contact_id;
-COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12); and the opener arm, to compare opener against none.';
+COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12), and whether a meeting was booked after it; the opener arm, to compare opener against none; the subject arm, to compare email 1''s personal subject against the Copy row''s; and the account''s signals, score, tier, angle, copy version and test at enrollment.';

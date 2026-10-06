@@ -2,11 +2,16 @@
 # "Best wishes," and the sender's first name (Harry, 1 Oct 2026: "footer = signature").
 # No postal address and no privacy link (Harry, 1 Oct 2026). The opt-out is Instantly's own unsubscribe
 # link, which the campaign's step template adds at the very end (clients/instantly.py UNSUBSCRIBE_HTML).
-# Written in the copy markup: [anchor](link) is a link, each line is a line break.
+# The sender's full name, then ONE of the lines below (Harry, 5 Oct 2026: "The signature should only have
+# one line and link"). render.py picks the line from the email's own links, so it never repeats them:
+# the booking line when the email suggests booking a call, never the website line when the email already
+# links a page on the site, and otherwise a rotation over the lines per prospect and email.
+# Each line is "kind: line". The kinds are website, booking and reviews; render.py reads them by name.
+# Written in the copy markup: [anchor](link) is a link.
 # Lines starting with "#" are comments: render.py strips them. Placeholders in single braces are
 # filled from the General tab at render time:
 #   {site_url}      site_url, Spill's US site
 #   {booking_link}  booking_link, Harry's meeting link
-[Spill]({site_url}), on-demand counseling for your team
-Book a call [here]({booking_link})
-Read [our Trustpilot reviews](https://uk.trustpilot.com/review/spill.chat) from employees
+website: [Spill]({site_url}), on-demand counseling for your team
+booking: Book a call [here]({booking_link})
+reviews: Read [our Trustpilot reviews](https://uk.trustpilot.com/review/spill.chat) from employees

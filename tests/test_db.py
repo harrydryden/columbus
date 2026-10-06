@@ -324,6 +324,109 @@ def test_the_other_views_on_a_fixture(store, fixture_rows):
     assert {r["cut_value"] for r in copy} == {"v1"}
 
 
+def test_v_signal_value_judges_what_an_account_showed_when_it_was_enrolled(store, fixture_rows):
+    """Scoring rewrites the matches every run; the contact's snapshot at enrolment wins (Harry, 5 Oct 2026)."""
+    q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
+    # When it was enrolled, "sent" showed no signal and was in Control: today's eap_named match does not count.
+    store.update("contacts", {"contact_id": "k-sent"}, {"signals_at_enrol": [], "tier_at_enrol": "Control"})
+    [signal] = q("v_signal_value")
+    assert (signal["signal"], signal["accounts"], signal["accounts_delivered"]) == ("eap_named", 0, 0)
+    assert (signal["control_accounts_delivered"], signal["control_reply_rate"]) == (1, 1.0)
+    outcome = {r["account_id"]: r for r in q("v_account_outcomes")}["sent"]
+    assert (outcome["signals_at_enrol"], outcome["tier_at_enrol"]) == ([], "Control")
+
+    store.update("contacts", {"contact_id": "k-sent"},
+                 {"signals_at_enrol": [{"signal": "eap_named", "weight": 25}], "tier_at_enrol": "Priority"})
+    [signal] = q("v_signal_value")
+    assert (signal["accounts"], signal["accounts_delivered"], signal["reply_rate"]) == (1, 1, 1.0)
+    assert signal["control_accounts_delivered"] == 0
+
+
+def learning_world(store) -> datetime:
+    """The learning loop's views (Harry, 6 Oct 2026): 70 companies emailed six weeks ago, half enrolled with
+    eap_named; one more enrolled with it but not yet sent. Returns now (UTC)."""
+    now = datetime.now(UTC)
+    monday = (now - timedelta(days=49)).date()
+    monday -= timedelta(days=monday.weekday())
+    sent_at = datetime(monday.year, monday.month, monday.day, 12, tzinfo=UTC) + timedelta(days=1)  # a Tuesday noon
+    store.upsert("settings", [
+        settings_row("Signals", "eap_named", {"source": "careers_pages", "action": "Score", "weight": "10",
+                                              "active": "yes"}),
+        settings_row("Signals", "hiring", {"source": "apollo_org", "action": "Score", "weight": "15", "active": "yes"}),
+    ])
+    accounts, contacts, events = [], [], []
+    for i in range(71):
+        aid, with_it = f"a{i:02d}", i < 35 or i == 70
+        accounts.append(account(aid, status="enrolled", tier="Priority" if with_it else "Control",
+                                angle="Upgrade the EAP" if with_it else "General", sender="Hannah Spalding",
+                                industry_group="Marketing & Creative Agencies"))
+        contacts.append({"contact_id": f"k{i:02d}", "account_id": aid, "email_sha256": f"h{i}", "copy_version": "v1",
+                         "enrolled_at": sent_at - timedelta(hours=1), "angle": accounts[-1]["angle"],
+                         "tier_at_enrol": accounts[-1]["tier"],
+                         "signals_at_enrol": [{"signal": "eap_named", "weight": 10}] if with_it else []})
+        if i == 70:
+            continue  # enrolled, step 1 not sent yet
+        events.append({"event_id": f"s{i}", "contact_id": f"k{i:02d}", "account_id": aid, "type": "sent", "step": 1,
+                       "mailbox": "hannah@meetspill.org", "occurred_at": sent_at})
+        replied = i < 10 or 35 <= i < 37
+        if replied:
+            events.append({"event_id": f"r{i}", "contact_id": f"k{i:02d}", "account_id": aid, "type": "replied",
+                           "step": 1, "reply_class": "positive" if i < 3 else "objection",
+                           "occurred_at": sent_at + timedelta(days=2)})
+    events += [
+        {"event_id": "b69", "contact_id": "k69", "account_id": "a69", "type": "bounced", "step": 1, "occurred_at": sent_at},
+        # Two bookings at a00 in one week (a meeting and a deal) are one company; a01's meeting came before step 1.
+        {"event_id": "hs-meeting:1", "account_id": "a00", "type": "meeting_booked", "source": "hubspot_meeting",
+         "occurred_at": sent_at + timedelta(days=1)},
+        {"event_id": "hs-deal:2:booked", "account_id": "a00", "type": "meeting_booked", "source": "hubspot_deal",
+         "occurred_at": sent_at + timedelta(days=1, hours=1)},
+        {"event_id": "hs-meeting:3", "account_id": "a01", "type": "meeting_booked", "occurred_at": sent_at - timedelta(days=7)},
+        {"event_id": "hs-meeting:4", "account_id": "a02", "type": "meeting_booked", "occurred_at": sent_at + timedelta(days=35)},
+    ]
+    store.insert("accounts", accounts)
+    store.insert("contacts", contacts)
+    store.insert("events", events)
+    return now
+
+
+def test_the_learning_loop_views(store):
+    """v_account_outcomes counts a meeting after step 1; v_signal_value compares with and without each signal, with
+    meetings and too_few; v_readout_weekly cuts by tier, angle, sender and step, and counts a booking once."""
+    learning_world(store)
+    q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
+    outcomes = {r["account_id"]: r for r in q("v_account_outcomes")}
+    assert len(outcomes) == 70 and outcomes["a00"]["meeting_booked"] and outcomes["a02"]["meeting_booked"]
+    assert not outcomes["a01"]["meeting_booked"]  # booked before we wrote to them
+    assert (outcomes["a00"]["angle"], outcomes["a00"]["copy_version"]) == ("Upgrade the EAP", "v1")
+
+    signals = {r["signal"]: r for r in q("v_signal_value")}
+    eap = signals["eap_named"]
+    assert (eap["accounts_enrolled"], eap["accounts_sent"], eap["accounts_delivered"]) == (36, 35, 35)
+    assert (eap["accounts_replied"], eap["accounts_positive"], eap["accounts_meeting"]) == (10, 3, 2)
+    assert (eap["without_delivered"], eap["without_replied"], eap["without_meeting"]) == (34, 2, 0)
+    assert eap["reply_rate"] == 10 / 35 and eap["without_reply_rate"] == 2 / 34 and eap["meeting_rate"] == 2 / 35
+    assert eap["too_few"] is False
+    hiring = signals["hiring"]
+    assert (hiring["accounts_enrolled"], hiring["accounts_sent"], hiring["without_delivered"]) == (0, 0, 69)
+    assert hiring["too_few"] is True and hiring["reply_rate"] is None
+
+    readout = q("v_readout_weekly")
+    cuts = {(r["cut"], r["cut_value"]) for r in readout}
+    assert {("tier", "Priority"), ("tier", "Control"), ("angle", "General"), ("sender", "Hannah Spalding"),
+            ("industry_group", "Marketing & Creative Agencies"), ("step", "step 1"), ("all", "all")} <= cuts
+    alls = [r for r in readout if r["cut"] == "all"]
+    assert sum(r["sends"] for r in alls) == 70 and sum(r["bounces"] for r in alls) == 1
+    assert sum(r["replies"] for r in alls) == 12 and sum(r["positive_replies"] for r in alls) == 3
+    assert sum(r["accounts_meeting"] for r in alls) == 2 and sum(r["accounts_window_closed"] for r in alls) == 69
+    booked = {r["week_start"]: r["meetings_booked"] for r in alls if r["meetings_booked"]}
+    assert sorted(booked.values()) == [1, 1, 1]  # a00 once (meeting and deal), a01 and a02
+    step = [r for r in readout if r["cut"] == "step"]
+    assert sum(r["sends"] for r in step) == 70 and sum(r["replies"] for r in step) == 12
+    assert all(r["accounts_enrolled"] == 0 for r in step)  # the step cut has activity only
+    priority = [r for r in readout if (r["cut"], r["cut_value"]) == ("tier", "Priority")]
+    assert sum(r["accounts_enrolled"] for r in priority) == 35 and sum(r["accounts_replied"] for r in priority) == 10
+
+
 # -- PostgresStore round trips -------------------------------------------------------------
 
 SAMPLES = {

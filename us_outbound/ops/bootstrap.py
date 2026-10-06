@@ -147,7 +147,7 @@ def build_context(
         settings = Settings(general=General())
 
     live = resolve_live(live_flag, settings, operator=operator)
-    guard.configure(live=live, bounds=boundaries_for(settings, sheet_id))
+    guard.configure(live=live, bounds=boundaries_for(settings, sheet_id, job=job))
     if live_flag and not live:
         log("live_refused", job=job, reason="live_sending is not yes in the settings sheet; running dry")
     secrets = secrets or Secrets(guard, env)

@@ -15,10 +15,14 @@ hand_check_post, Mondays 08:00 UK and on demand (`us-outbound run hand_check_pos
      opener is the one enrol would give that contact (enrol/openers.py), worked out with no
      model call; a held-out account shows none, with the line it would have had;
   3. adds the accounts verify_accounts held back for doubtful Apollo facts (verify.open_doubts:
-     no HQ state, a size near a band edge, and so on; Harry, 2 Oct 2026), each with its reasons,
-     in payload.doubtful. They are not verified until this hand-check is approved: approving
-     clears the doubts of each one not pulled, and the next verify_accounts run decides on its
-     facts as usual (an Overrides row corrects one that is wrong). A pulled one stays held;
+     no HQ state, a size near a band edge, and so on; Harry, 2 Oct 2026; with clay_cross_check = yes,
+     only what Clay could not settle, as "Clay says 62 staff, Apollo says 49"), each with its reasons,
+     in payload.doubtful, and the site visitors held there (sources/site_visits.py; Harry, 6 Oct 2026).
+     They are not verified until this hand-check is approved: approving clears the doubts of each
+     one not pulled, and the next verify_accounts run decides on its facts as usual (an Overrides
+     row corrects one that is wrong). A missing fact (no HQ state, size or industry) is not cleared
+     by approving: the account stays on the check until an Overrides row fills it in. A pulled one
+     stays held;
   4. posts it to the alert channel (in dry-run, the dev channel), or logs it with no Slack
      token, in plain words: what to look at, the command that approves it, and what waits
      meanwhile. A live run posts an item a dry run recorded unposted.
@@ -55,7 +59,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
-from us_outbound import verify
+from us_outbound import accounts, verify
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
@@ -288,8 +292,13 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
             lines.append(f"Doubtful Apollo facts ({len(doubtful)}): not verified until you look.")
         for d in doubtful:
             n += 1
-            lines.append(f"  {n}. {d.get('clean_name') or '?'} ({d.get('domain')}) · HQ {d.get('hq_state') or '?'} · "
-                         f"{_size(d)} · {'; '.join(d.get('reasons') or ())} · id {d.get('account_id')}")
+            visited = " · visited the US site" if d.get("source") == accounts.SITE_VISIT else ""
+            lines.append(f"  {n}. {d.get('clean_name') or '?'} ({d.get('domain')}){visited} · "
+                         f"HQ {d.get('hq_state') or '?'} · {_size(d)} · {'; '.join(d.get('reasons') or ())} · "
+                         f"id {d.get('account_id')}")
+        if any(verify.MISSING & set(d.get("reasons") or ()) for d in doubtful):
+            lines.append("A missing fact needs an Overrides row (hq_state, employees or industry): approving alone "
+                         "keeps the account on this check.")
     pulled = payload.get("pulled_account_ids") or []
     if pulled:
         lines.append(f"Pulled: {', '.join(pulled)}")
@@ -451,7 +460,8 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
     all_pulled = list(dict.fromkeys([*before, *ids]))
     cleared = [d for r in rows for d in ((r.get("payload") or {}).get("doubtful") or ())
                if d.get("account_id") not in all_pulled]
-    message = confirmation(ctx, week, by, all_pulled, len(cleared))
+    missing = verify.missing_facts(ctx, [d["account_id"] for d in cleared])  # these stay on the check
+    message = confirmation(ctx, week, by, all_pulled, len(cleared) - len(missing), len(missing))
     if ctx.live:
         ctx.store.upsert("hitl_items", [
             {"item_id": r["item_id"], "status": "handled", "handled_at": ctx.now, "handled_by": by,
@@ -464,17 +474,24 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
     return {"dry_run": ctx.dry_run, "iso_week": week, "item_id": item["item_id"], "approved": ctx.live,
             "was": "not recorded" if recorded else item.get("status"), "recorded": recorded and ctx.live,
             "pulled_account_ids": all_pulled,
-            "doubts_cleared": [d["account_id"] for d in cleared] if ctx.live else [],
+            "doubts_cleared": [d["account_id"] for d in cleared if d["account_id"] not in missing] if ctx.live else [],
+            "still_missing_a_fact": sorted(missing),
             "outside_sample": [i for i in ids if i not in sample], "checked": len(sample), "message": message}
 
 
-def confirmation(ctx: Context, week: str, by: str, pulled: Sequence[str], cleared: int) -> str:
-    """What approving says in the channel, in plain words: what happens next, in the mode auto_send is in."""
+def confirmation(ctx: Context, week: str, by: str, pulled: Sequence[str], cleared: int, missing: int = 0) -> str:
+    """What approving says in the channel, in plain words: what happens next, in the mode auto_send is in.
+    cleared: the accounts verify_accounts checks again; missing: those still missing a fact, which stay."""
     head = f"{week_label(week)} check approved by {by}" + (f"; pulled: {', '.join(pulled)}" if pulled else "")
     tomorrow = ctx.today_uk() + timedelta(days=1)
     when = "tomorrow" if tomorrow.weekday() < 5 else "on Monday"  # verify_accounts runs weekdays at 04:30 UK
     doubts = ("the account with doubtful facts is" if cleared == 1 else f"the {cleared} accounts with doubtful facts are")
     doubts = f"{doubts} verified again at 04:30 {when}" if cleared else ""
+    stays = ("" if not missing else
+             ("The account" if missing == 1 else f"The {missing} accounts") + " missing a fact (HQ state, size or "
+             f"industry) {'stays' if missing == 1 else 'stay'} on the check until an Overrides row fills it in.")
     if not ctx.settings.general.auto_send:
-        return f"{head}. " + (f"{doubts[:1].upper()}{doubts[1:]}." if doubts else "Nothing else waits on it.")
-    return f"{head}. New leads can go to Instantly this week" + (f"; {doubts}." if doubts else ".")
+        said = " ".join(x for x in ((f"{doubts[:1].upper()}{doubts[1:]}." if doubts else ""), stays) if x)
+        return f"{head}. " + (said or "Nothing else waits on it.")
+    return (f"{head}. New leads can go to Instantly this week" + (f"; {doubts}." if doubts else ".")
+            + (f" {stays}" if stays else ""))

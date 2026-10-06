@@ -20,7 +20,9 @@ Copy reaches a prospect only through every one of these gates, in order:
 
 preview() renders a row as one prospect would see it, for Harry to read before approving: the sample
 prospect with a real opener line from the Signals tab filled with sample facts (sample_opener), or a
-stored account with the opener enrol would give its contact (`copy preview --account DOMAIN`).
+stored account with the opener enrol would give its contact (`copy preview --account DOMAIN`). Its email 1
+subject is the arm's (render.subject_arm; Harry, 5 Oct 2026): the Copy row's for the sample prospect unless
+`--subject personal` asks for General email1_subject, and a stored account's own arm.
 check_openers() is the sheet check of the opener lines (enrol/openers.py): the Signals tab's, and the General
 tab's generic and focus lines, each filled with sample facts and run through the rules an opener must pass,
 no funding or money among them; `copy check` reports it too.
@@ -225,10 +227,18 @@ class Preview:
     sender: str
     emails: list[render.Rendered]
     opener_note: str = ""  # where the preview's opener came from
+    subject_arm: str = render.COPY_SUBJECT  # email 1's subject: personal (General email1_subject) or copy
+
+    def subject_note(self) -> str:
+        """Said only for the personal arm; the copy arm is the Copy row as written."""
+        if self.subject_arm == render.PERSONAL_SUBJECT:
+            return "the personal subject (General email1_subject), not the Copy row's s1_subject"
+        return ""
 
     def text(self) -> str:
         parts = [f"{self.copy_version}, {self.role}, sent by {self.sender}"
-                 + (f"\nOpener: {self.opener_note}" if self.opener_note else "")]
+                 + (f"\nOpener: {self.opener_note}" if self.opener_note else "")
+                 + (f"\nEmail 1 subject: {self.subject_note()}" if self.subject_note() else "")]
         for r in self.emails:
             parts.append(f"--- Email {r.step} (day {render_day(r.step)}) ---\nSubject: {r.subject}\n\n{r.text}")
             if r.violations:
@@ -254,7 +264,8 @@ class Preview:
             ".subject{border-bottom:1px solid #eee;padding-bottom:8px}.problems{color:#b00020}small{color:#888}"
             "</style></head><body>"
             f"<h1>{h.escape(self.copy_version)}</h1><p>{h.escape(self.role)}, sent by {h.escape(self.sender)}. "
-            "Sample prospect: Dana at Harbor &amp; Finch, 40 staff, Boston.</p>"
+            "Sample prospect: Dana at Harbor &amp; Finch, 40 staff, Boston."
+            + (f" Email 1 subject: {h.escape(self.subject_note())}." if self.subject_note() else "") + "</p>"
             + "".join(cards) + "</body></html>"
         )
 
@@ -267,8 +278,12 @@ def render_day(step: int) -> int:
 
 def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "", opener: str = "",
             opener_note: str = "", account: Mapping[str, Any] | None = None,
-            contact: Mapping[str, Any] | None = None) -> Preview:
-    """The row as one prospect reads it: the sample prospect, or a stored account and contact (account, contact)."""
+            contact: Mapping[str, Any] | None = None, subject_arm: str = "") -> Preview:
+    """The row as one prospect reads it: the sample prospect, or a stored account and contact (account, contact).
+
+    subject_arm: email 1's subject arm (render.SUBJECT_ARMS); by default a stored account's own arm, as enrol
+    gives it (render.subject_arm), and the Copy row's subject for the sample prospect.
+    """
     role = role or (row.role or next(iter(ROLE_LINE_COLUMNS)))
     boxes = sample_mailboxes(settings)
     mb = next((m for m in settings.mailboxes if sender and m.owner_name.casefold() == sender.casefold()), boxes[0])
@@ -278,8 +293,12 @@ def preview(row: CopyRow, settings: Settings, *, role: str = "", sender: str = "
                                   legal_overlay=render_overlay(account, settings))
     else:
         values = _values(row, settings, mb, role, opener=opener)
-    emails = render.render_sequence(row, values, mailbox=mb, settings=settings, for_send=False)
-    return Preview(row.copy_version, role, mb.owner_name, emails, opener_note)
+    if not subject_arm:
+        subject_arm = render.subject_arm(account.get("account_id"), settings) if account is not None else render.COPY_SUBJECT
+    if subject_arm == render.PERSONAL_SUBJECT and not settings.general.email1_subject.strip():
+        raise ValueError("email1_subject is blank on the General tab, so there is no personal subject to show")
+    emails = render.render_sequence(row, values, mailbox=mb, settings=settings, for_send=False, subject_arm=subject_arm)
+    return Preview(row.copy_version, role, mb.owner_name, emails, opener_note, subject_arm)
 
 
 def render_overlay(account: Mapping[str, Any], settings: Settings) -> str:
@@ -367,8 +386,9 @@ already checked banned words, spelling lists, links, word counts and markup, so 
 accuracy, tone, US grammar and idiom, and whether each role line reads well after email 1's hook.
 Minor problems (severity "minor") are wording you would improve but that could be sent.
 A free trial mentioned in email 4, as facts.md allows, is not a problem.
-The signature (Spill, "Book a call here", the Trustpilot line) and the data-source notice are fixed
-text outside these rules (Harry, 1 Oct 2026): do not judge them, and the signature's booking line is
+The signature (the sender's name and one line the code picks: Spill, "Book a call here" or the
+Trustpilot line) is fixed text outside these rules (Harry, 1 and 5 Oct
+2026): do not judge it or which line shows, and the signature's booking line is
 not an ask in email 1.
 Report every problem with the email number (0 for the role lines or the whole sequence) and a fix.
 Do not invent problems. verdict is "pass" only when there are no blockers."""
@@ -383,7 +403,7 @@ def qa_prompt(row: CopyRow, settings: Settings) -> str:
         + json.dumps(industry_material(row.industry, settings), indent=1),
         "## The copy as written in the sheet\n" + json.dumps(row_as_json(row), indent=1),
         "## The emails as a prospect would get them (a sample prospect, the first role's line; "
-        "the signature and the data-source notice are fixed text)\n" + sample,
+        "the signature is fixed text)\n" + sample,
     ])
 
 
@@ -433,7 +453,7 @@ DRAFT_SCHEMA = {
     "additionalProperties": False,
 }
 DRAFT_SYSTEM = """You write cold outbound email sequences for Spill, employee mental health support, to US
-companies with 10 to 249 staff. Follow the style guide and the facts list exactly: they are the rules
+companies with {size_range} staff. Follow the style guide and the facts list exactly: they are the rules
 the system checks every email against, and copy that breaks one is never sent. Write in US English."""
 
 
@@ -469,7 +489,8 @@ def draft_row(ctx, industry: str, role: str = "", *, settings: Settings | None =
     """A new Copy-tab row (status draft) written by the writing model."""
     settings = settings or ctx.settings
     answer = ctx.clients.claude.json(
-        DRAFT_SYSTEM, draft_prompt(industry, role, settings, feedback=feedback), DRAFT_SCHEMA,
+        DRAFT_SYSTEM.replace("{size_range}", settings.size_range_text()),  # the General size range
+        draft_prompt(industry, role, settings, feedback=feedback), DRAFT_SCHEMA,
         max_tokens=DRAFT_MAX_TOKENS, purpose="copy_draft", now=ctx.now, timeout=DRAFT_TIMEOUT_SECONDS,
     )
     row = {"copy_version": next_version(settings, industry, role), "industry": industry, "role": role,

@@ -51,6 +51,7 @@ EXPECTED: dict[str, int] = {
     "apollo_signals": 26 * _H,  # 03:30 weekdays (weekday time; SPEC 9 had Mondays)
     "read_pages": 26 * _H,  # 03:45 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
     "apollo_enrich": 26 * _H,  # 04:10 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
+    "apollo_people": 26 * _H,  # 04:20 weekdays (weekday time; build addition, Harry, 5 Oct 2026)
     "site_visits": 26 * _H,  # 06:00 daily
     "public_signals": 8 * _DAY,  # Mon 04:00
     "verify_in_clay": 26 * _H,  # 04:30 weekdays (weekday time)
@@ -65,14 +66,17 @@ EXPECTED: dict[str, int] = {
     "kill_rules": 150,  # hourly
     "heartbeat_check": 150,  # hourly (nothing watches this one; the daily post reports it)
     "daily_post": 26 * _H,  # 09:00 daily
-    "monday_readout": 8 * _DAY,  # Mon 09:00
+    "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
-    "lookalikes": 8 * _DAY,  # Mon 02:30 (build addition)
+    # Monthly jobs (build additions, Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack, so a monthly
+    # job is never "missed" between its runs.
+    "lookalikes": 32 * _DAY,  # the 1st at 02:30 (weekly until 5 Oct 2026)
+    "lookalike_leads": 32 * _DAY,  # the 1st at 02:50
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
-WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "verify_in_clay",
-                          "verify_accounts", "pick_contacts", "enrol"})
+WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people",
+                          "verify_in_clay", "verify_accounts", "pick_contacts", "enrol"})
 OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 
 LATEST_SQL = (

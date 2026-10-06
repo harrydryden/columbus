@@ -109,9 +109,11 @@ def test_condition_with_unknown_field(tabs):
 
 
 def test_condition_field_from_a_source_the_row_does_not_name(tabs):
-    _row(tabs, "Signals", signal="First People hire")[1]["source"] = "apollo_jobs"
-    e = _one(tabs, "Signals", "looks_for")
-    assert "people_leader_count is not a field of apollo_jobs" in e.message
+    _row(tabs, "Signals", signal="First People hire (likely)")[1]["source"] = "apollo_jobs"
+    errs = _errors(tabs, "Signals")
+    assert {e.column for e in errs} == {"looks_for"}
+    assert sorted(e.message.split(" is not")[0] for e in errs) == ["people_leader_count", "people_search_coverage"]
+    assert all("is not a field of apollo_jobs" in e.message for e in errs)
 
 
 def test_field_source_needs_a_condition(tabs):
@@ -633,7 +635,7 @@ def test_validate_tab_alone():
     general, errors = validate_tab("General", BASE["General"])
     assert not errors and general.weekly_enrol_cap == 150
     signals, errors = validate_tab("Signals", BASE["Signals"])
-    assert not errors and len(signals) == len(BASE["Signals"]) == 23
+    assert not errors and len(signals) == len(BASE["Signals"]) == 26
     bad = [dict(BASE["States"][0], active="sometimes")]
     states, errors = validate_tab("States", bad)
     assert states == () and errors == [RowError("States", 2, "active", "must be yes or no, not 'sometimes'", "AL")]

@@ -99,7 +99,7 @@ DEFAULT_SIGNALS = [
     ("Culture or values page", 0, None, "Score", "Progressive employer", 540, False),  # was +10
     ("People leader in place", 10, None, "Score", "", 365, True),
     ("New People leader", 30, None, "Score", "Progressive employer", 90, True),
-    ("First People hire", 25, None, "Score", "Growing team", 90, True),
+    ("First People hire (likely)", 20, None, "Score", "Growing team", 60, True),  # 5 Oct 2026: reads coverage
     ("People role open", 15, None, "Score", "Growing team", 60, True),  # new
     ("Funding in the last 6 months", 20, None, "Score", "Growing team", 180, True),  # Recent funding, split
     ("Funding 6–12 months ago", 10, None, "Score", "Growing team", 365, True),
@@ -113,7 +113,11 @@ DEFAULT_SIGNALS = [
     ("Team of 50–99", 10, None, "Score", "", 365, True),
     ("Layoffs", 0, None, "Suppress", "", 90, True),
     ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
-    ("Looks like Spill's customers", 4, None, "Score", "", 120, True),  # build addition (Harry, 1 Oct 2026)
+    # Harry, 5 Oct 2026: the lookalike graded by lookalike_fit; the old row stays, off, so a load switches it off.
+    ("Close match to Spill's customers", 10, None, "Score", "", 120, True),
+    ("Some match to Spill's customers", 3, None, "Score", "", 120, True),
+    ("Looks like Spill's customers", 4, None, "Score", "", 120, False),  # build addition (Harry, 1 Oct 2026)
+    ("Found as a lookalike of a customer", 10, None, "Score", "", 120, True),  # build addition (Harry, 5 Oct 2026)
 ]
 
 
@@ -136,12 +140,19 @@ def test_signal_sources_and_parsing(settings):
         assert got[name].sources == ("clay_careers", "careers_pages", "job_posts"), name
     assert got["Culture or values page"].sources == ("clay_careers", "careers_pages")
     assert got["Funding in the last 6 months"].sources == ("apollo_org", "clay_funding")
-    # people_leader_count comes from apollo_people, so that source is listed too.
-    assert got["First People hire"].sources == ("apollo_jobs", "apollo_people")
-    assert got["First People hire"].condition.evaluate({"open_people_roles": 1, "people_leader_count": 0})
+    # people_leader_count and its coverage come from apollo_people, so that source is listed too (Harry, 5 Oct 2026).
+    first = got["First People hire (likely)"]
+    assert first.sources == ("apollo_jobs", "apollo_people") and "First People hire" not in got
+    assert first.condition.evaluate({"open_people_roles": 1, "people_leader_count": 0, "people_search_coverage": 0.5})
+    assert not first.condition.evaluate({"open_people_roles": 1, "people_leader_count": 0, "people_search_coverage": 0.49})
+    assert not first.condition.evaluate({"open_people_roles": 1, "people_leader_count": 0})  # no coverage, no inference
     assert got["Q4 plan-year window"].condition.evaluate({"month": 11})  # kept on the sheet, inactive
     assert got["Culture or values page"].condition.evaluate({"values_page": True})
-    assert got["Looks like Spill's customers"].sources == ("lookalike",)
+    for name in ("Close match to Spill's customers", "Some match to Spill's customers", "Looks like Spill's customers"):
+        assert got[name].sources == ("lookalike",), name
+    assert got["Found as a lookalike of a customer"].sources == ("lookalike_lead",)
+    assert got["Found as a lookalike of a customer"].condition.evaluate({"found_as_lookalike": True})
+    assert not got["Found as a lookalike of a customer"].condition.evaluate({})
     for s in settings.signals:
         assert bool(s.terms) != s.is_condition, s.signal
 
@@ -213,7 +224,7 @@ def test_plain_openers_pass_the_copy_rules_and_signals_are_context_never_the_lin
                                 "it started.",
         "New People leader": "When priorities shift at work, people often feel it at home too, and someone to talk "
                              "to helps.",
-        "First People hire": people_role,
+        "First People hire (likely)": people_role,
         "People role open": people_role,
         "Funding in the last 6 months": funding,
         "Funding 6–12 months ago": funding,  # names no round and no time, so it fits any age of round

@@ -14,7 +14,8 @@ Shapes come from Apollo's published OpenAPI documents (mirrored Aug 2026) and it
 tool schemas. Auth is the master API key in the X-Api-Key header.
 
 Credits (Apollo's API docs, 1 Oct 2026): an organization search costs 1 credit for a page
-that returns at least one company and 0 for an empty one; job postings cost 1 credit per
+that returns at least one company and 0 for an empty one (the website-visitor search is one, with
+visitor filters); job postings cost 1 credit per
 request; organization enrichment, single or bulk, 1 credit per company found and 0 for one
 not found. The jobs record what they spend in credit_ledger (budget.py); this client only
 says which reads are paid (paid_reads), so none is resent after a timeout.
@@ -34,6 +35,7 @@ MAX_PER_PAGE = 100
 MAX_PAGE = 500  # the display limit: 50,000 records = 500 pages of 100
 BULK_MATCH_MAX = 10  # people/bulk_match takes up to 10 details per call
 BULK_ENRICH_MAX = 10  # organizations/bulk_enrich takes up to 10 domains per call
+LOOKALIKE_SEEDS_MAX = 5  # organization search takes up to 5 lookalike_organization_ids (sources/lookalike_leads.py)
 MAX_POSTINGS_PER_PAGE = 10_000  # job postings: a display limit of 10,000 records
 _PATH_SEGMENT = re.compile(r"[A-Za-z0-9_-]+")  # an Apollo id in a URL path
 
@@ -53,7 +55,12 @@ READ_ENDPOINTS: dict[str, tuple[str, str]] = {
     # PHASE0-CONFIRM: REST path of Apollo's website-visitor domain aggregates (the MCP tool
     # apollo_website_visitors_domain_aggregates takes organization_id, domain, from, to).
     "website_visitors.domain_aggregates": ("GET", "/website_visitors/domain_aggregates"),
+    # Organization search filtered to the companies that visited our tracked domain (sources/site_visits.py):
+    # the same endpoint and price as organizations.search, its own action so the guard and the logs show it.
+    "website_visitors.search": ("POST", "/mixed_companies/search"),
 }
+# website_visitors_from_past takes only these windows, in days (Apollo's MCP tool docs, 5 Oct 2026).
+VISITOR_WINDOWS = frozenset({1, 7, 15, 30, 60, 90})
 
 # bulk_match query flags: never personal emails (SPEC 1.4), never phones, and no waterfall,
 # whose results only arrive by webhook (there is no public endpoint, SPEC 2).
@@ -131,8 +138,15 @@ def postings_in(page: Mapping[str, Any]) -> list[dict]:
 
 
 def total_entries(page: Mapping[str, Any]) -> int | None:
-    """pagination.total_entries of a search or postings page, if Apollo gave it."""
-    value = (page.get("pagination") or {}).get("total_entries")
+    """The total_entries of a search or postings page, if Apollo gave it.
+
+    People API Search gives it at the top level ({"total_entries": 2, "people": [...]}, Apollo's MCP
+    tool on 5 Oct 2026; PHASE0-CONFIRM over REST); the organization search and job postings under
+    pagination.
+    """
+    value = page.get("total_entries")
+    if value is None:
+        value = (page.get("pagination") or {}).get("total_entries")
     try:
         return None if value is None else int(value)
     except (TypeError, ValueError):
@@ -172,7 +186,7 @@ class Apollo(HttpClient):
     system = "apollo"
     base_url = "https://api.apollo.io/api/v1"
     paid_reads = frozenset({"organizations.search", "organizations.enrich", "organizations.bulk_enrich",
-                            "organizations.job_postings", "people.bulk_match"})
+                            "organizations.job_postings", "people.bulk_match", "website_visitors.search"})
 
     def headers(self) -> dict[str, str]:
         return {
@@ -214,6 +228,52 @@ class Apollo(HttpClient):
         """One page of organization search (1 credit per page). See organizations_in()."""
         body = {**normalize_filters(filters), **self._page_args(page, per_page)}
         return self._read("organizations.search", json=body, detail={"page": page, "filters": sorted(body)}) or {}
+
+    def search_website_visitors(
+        self, domains: Iterable[str], *, days: int, pages: Iterable[str] = (), page: int = 1, per_page: int = 100,
+    ) -> dict:
+        """One page of the companies that visited our tracked domains (spill.chat) in the last `days` days.
+
+        An organization search (1 credit per page that returns a company, 0 for an empty one) with
+        Apollo's website-visitor filters: website_visitors_from_domains, website_visitors_from_past and,
+        when pages are given, website_visitors_domain_pages (a page whose path CONTAINS any of them).
+        It reads the visitor list only. The tracker's own settings are never read or changed: Apollo's
+        tracker endpoint creates a tracker when there is none, which is a write.
+        PHASE0-CONFIRM: the REST body takes these keys as Apollo's MCP tool does, and the answer comes in
+        the usual two buckets (organizations_in). A filter Apollo ignored would return its whole
+        database, which sources/site_visits.py refuses to use.
+        """
+        if days not in VISITOR_WINDOWS:
+            raise ValueError(f"website_visitors_from_past is one of {sorted(VISITOR_WINDOWS)} days, not {days}")
+        tracked = [d for d in (str(x).strip().lower() for x in domains) if d]
+        if not tracked:
+            raise ValueError("no tracked domain")
+        body: dict[str, Any] = {"website_visitors_from_domains": tracked, "website_visitors_from_past": days}
+        paths = [p for p in (str(x).strip() for x in pages) if p]
+        if paths:
+            body["website_visitors_domain_pages"] = paths
+        body.update(self._page_args(page, per_page))
+        return self._read("website_visitors.search", target=tracked[0], json=body,
+                          detail={"page": page, "days": days, "pages": paths}) or {}
+
+    def search_lookalike_organizations(self, seed_ids: Iterable[str], filters: Mapping[str, Any], page: int = 1,
+                                       per_page: int = 100) -> dict:
+        """One page of organization search ranked by likeness to up to LOOKALIKE_SEEDS_MAX seed organizations
+        (1 credit per page with results, as any search). See organizations_in().
+
+        Apollo leaves the seeds themselves out, and a seed it has no lookalike data for makes the
+        whole search return nothing rather than fall back to the other filters, so the caller tries
+        a group of seeds that comes back empty one seed at a time (an empty page costs nothing).
+        PHASE0-CONFIRM: the REST body key lookalike_organization_ids (the docs' query form
+        lookalike_organization_ids[], which normalize_filters reads the same way), its limit of 5,
+        and that a page of lookalikes is charged like any search page.
+        """
+        ids = list(dict.fromkeys(_segment(str(i)) for i in seed_ids if i))
+        if not 1 <= len(ids) <= LOOKALIKE_SEEDS_MAX:
+            raise ValueError(f"a lookalike search takes 1 to {LOOKALIKE_SEEDS_MAX} seed organizations, not {len(ids)}")
+        body = {**normalize_filters(filters), "lookalike_organization_ids": ids, **self._page_args(page, per_page)}
+        return self._read("organizations.search", json=body,
+                          detail={"page": page, "filters": sorted(body), "seeds": len(ids)}) or {}
 
     def enrich_organization(self, domain: str) -> dict:
         """Organization enrichment by root domain (1 credit if found). See enriched_in()."""

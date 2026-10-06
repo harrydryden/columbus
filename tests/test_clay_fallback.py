@@ -66,8 +66,10 @@ def test_on_apollo_s_catch_all_goes_to_clay_s_work_email_and_a_valid_result_is_k
     assert apollo.revealed == ["p-ceo"]  # Clay found the founder: no second reveal
     [run] = clay_runs(t)
     assert run.url == f"{CLAY}/routines/function:{WORK_EMAIL_FUNCTION_ID}/run"
-    assert run.json["items"][0]["inputs"] == {"full_name": "Pat Lee", "domain": "brightfin.com",
-                                              "linkedin_url": "https://linkedin.com/in/pl", "title": "Co-Founder & CEO"}
+    # Work Email's own input names, as Clay lists them (6 Oct 2026); it takes no title.
+    assert run.json["items"][0]["inputs"] == {"Full Name": "Pat Lee", "Company Domain": "brightfin.com",
+                                              "Social Profile URL": "https://linkedin.com/in/pl",
+                                              "Company Name": "Brightfin"}
     [c] = ctx.store.select("contacts")
     assert (c["email"], c["email_status"], c["email_source"], c["role"], c["person_state"]) == (
         "pat.lee@brightfin.com", "valid", "clay", "Founder or executive", "NY")
@@ -150,6 +152,8 @@ def test_the_us_outbound_contacts_function_is_used_once_its_id_is_set(default_se
     pick.run(ctx)
     [run] = clay_runs(t)
     assert run.url.endswith("/routines/function:fn-us-contacts/run")
+    assert run.json["items"][0]["inputs"] == {"full_name": "Pat Lee", "domain": "brightfin.com",  # SPEC 8's names
+                                              "linkedin_url": "https://linkedin.com/in/pl", "title": "Co-Founder & CEO"}
     assert ctx.store.select("contacts")[0]["email_source"] == "clay"
 
 
@@ -182,3 +186,59 @@ def test_parse_work_email_output(raw, want):
 def test_parse_work_email_output_rejects_a_malformed_address():
     with pytest.raises(ClayError):
         parse_work_email_output({"email": "not-an-email", "status": "valid"})
+
+
+def test_without_a_clay_key_the_run_goes_on_without_clay_and_says_why(default_settings):
+    ctx, t, apollo = world(default_settings, clay_email_fallback=True)
+
+    def no_clay_key(name):
+        if name == "US_OUTBOUND_CLAY_API_KEY":
+            return ""
+        return f"test-{name}"
+
+    ctx.clients.secrets._fetch = no_clay_key
+    out = pick.run(ctx)  # it used to fail the whole job at the first lookup, after reserving its credits
+    assert out["status"] == "ok" and clay_runs(t) == []
+    assert out["clay"]["off"].startswith("no Clay API key: set US_OUTBOUND_CLAY_API_KEY")
+    assert ctx.store.select("credit_ledger", {"system": "clay"}) == []
+    assert apollo.revealed == ["p-ceo", "p-hop"] and ctx.store.select("contacts")[0]["email_source"] == "apollo"
+
+
+def test_the_run_stops_asking_clay_after_its_errors(default_settings, monkeypatch):
+    monkeypatch.setattr(pick, "CLAY_MAX_ERRORS", 1)
+    ctx, t, _ = world(default_settings, clay_email_fallback=True, clay_status=403)
+    out = pick.run(ctx)
+    assert len(clay_runs(t)) == 1 and out["clay"]["errors"] == 1
+    assert out["clay"]["off"].startswith("1 Clay lookups failed this run (the last: clay HTTP 403")
+
+
+def test_a_finished_lookup_with_no_output_is_not_found_and_costs_nothing(default_settings):
+    ctx, t, _ = world(default_settings, clay_email_fallback=True)
+    t.route("GET", "/routines/run/run-1/results", {"status": "complete", "results": [{"id": "1", "status": "complete"}]})
+    pick.run(ctx)
+    [lookup] = facts(ctx, pick.CLAY_FACT)
+    assert (lookup["value"]["status"], lookup["value"]["reason"]) == ("not_found", "Clay email status not_found")
+    assert [r["credits"] for r in ctx.store.select("credit_ledger", {"system": "clay"})] == [0.0]
+
+
+def test_the_guard_allows_work_email_for_the_check_command_alone(default_settings):
+    from us_outbound.clients.clay import CHECK_EMAIL_JOB
+
+    assert WORK_EMAIL_FUNCTION_ID in boundaries_for(default_settings, job=CHECK_EMAIL_JOB).clay_function_ids
+    assert WORK_EMAIL_FUNCTION_ID not in boundaries_for(default_settings, job="pick_contacts").clay_function_ids
+    t = FakeTransport()
+    t.route("POST", "/routines/", {"routine_run_id": "run-1"})
+    t.route("GET", "/routines/run/run-1/results", {"status": "complete", "results": [{"id": "1", "output": {}}]})
+    check = make_context(default_settings, job=CHECK_EMAIL_JOB, transport=t)
+    assert check.clients.clay.run_function(WORK_EMAIL_FUNCTION_ID, {"Full Name": "Harry Dryden"}) == {}
+    assert check.clients.clay.last_run["run_id"] == "run-1"
+    with pytest.raises(GuardViolation):
+        make_context(default_settings, job="pick_contacts", transport=t).clients.clay.run_function(
+            WORK_EMAIL_FUNCTION_ID, {"Full Name": "Harry Dryden"})
+
+
+def test_work_email_inputs_take_its_own_names_and_leave_out_blanks():
+    from us_outbound.clients.clay import work_email_inputs
+
+    assert work_email_inputs(" Pat Lee ", "acme.com", None, company_name="") == {
+        "Full Name": "Pat Lee", "Company Domain": "acme.com"}

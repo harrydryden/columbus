@@ -55,7 +55,8 @@ data to say something, and as counts, not conclusions:
     targeting or scoring is off there;
   * copy rows edited before approval, each named once edited MIN_EDITS times: fix them on the Copy tab;
   * replies, opener against holdout (contacts.opener_arm), once each arm has MIN_PER_ARM contacts
-    emailed (step 1 sent and not bounced); by angle and by copy version, for those that have
+    emailed (step 1 sent and not bounced); email 1's personal subject against the Copy row's
+    (contacts.subject_arm; Harry, 5 Oct 2026) the same way; by angle and by copy version, for those that have
     MIN_PER_ARM each, once two can be compared. A human reply is any but out-of-office, as the
     kill rules count it, at any time after step 1, so recent sends have had less time to reply;
   * bounces by email source (apollo, clay): of the contacts sent step 1, how many bounced, for a
@@ -86,6 +87,7 @@ from us_outbound.context import ET, Context
 from us_outbound.enrol import capacity, focus, queue
 from us_outbound.enrol.enrol import Candidate
 from us_outbound.enrol.openers import HOLDOUT, OPENER
+from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.learn import kill_rules
 from us_outbound.limits import Limits
 from us_outbound.scoring import score, tiers
@@ -109,7 +111,7 @@ MAX_IMPROVE = 6  # lines at most, the "too early" line last
 MIN_DECISIONS = 20  # send-approval decisions before naming where declines concentrate
 MIN_DECLINES = 3  # ... and declines among them
 MIN_EDITS = 3  # edits before approval before a copy row is named
-MIN_PER_ARM = 50  # contacts emailed per arm (opener, holdout; an angle, a copy version, an email source)
+MIN_PER_ARM = 50  # contacts emailed per arm (opener, holdout; personal, copy; an angle, a copy version, an email source)
 TOP = 3  # values named per list
 
 QUEUE_OUT_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})  # not in the queue (sources/apollo_universe.py)
@@ -501,23 +503,29 @@ def _cut(m: _Emailed, rows: Rows, key: str) -> list[tuple[str, int, int]]:
     return [(v, n, back[v]) for v, n in sorted(sent.items(), key=lambda kv: (-kv[1], kv[0])) if n >= MIN_PER_ARM]
 
 
-def _replies(m: _Emailed, rows: Rows, early: list[str]) -> tuple[list[str], list[str]]:
-    """(opener against holdout, by angle and copy version)."""
+def _arms(m: _Emailed, rows: Rows, key: str, a: str, b: str, label: str, early: list[str]) -> list[str]:
+    """Replies in arm a against arm b of the contacts column key, once each has MIN_PER_ARM emailed."""
     arm: Counter[str] = Counter()
     back: Counter[str] = Counter()
     warm: Counter[str] = Counter()
     for cid in m.emailed:
-        a = _lower(rows.by_contact.get(cid, {}).get("opener_arm"))
-        arm[a] += 1
-        back[a] += cid in m.replied
-        warm[a] += cid in m.warm
-    first: list[str] = []
-    if arm[OPENER] >= MIN_PER_ARM and arm[HOLDOUT] >= MIN_PER_ARM:
-        first.append(f"  Replies, opener vs holdout: {back[OPENER]} of {arm[OPENER]} ({_pct(back[OPENER], arm[OPENER])}) "
-                     f"vs {back[HOLDOUT]} of {arm[HOLDOUT]} ({_pct(back[HOLDOUT], arm[HOLDOUT])}); "
-                     f"positive {warm[OPENER]} vs {warm[HOLDOUT]}. Counts, not conclusions.")
-    else:
-        early.append(f"opener vs holdout, {arm[OPENER]} and {arm[HOLDOUT]} of {MIN_PER_ARM} emailed each")
+        v = _lower(rows.by_contact.get(cid, {}).get(key))
+        arm[v] += 1
+        back[v] += cid in m.replied
+        warm[v] += cid in m.warm
+    if arm[a] >= MIN_PER_ARM and arm[b] >= MIN_PER_ARM:
+        return [f"  Replies, {label}: {back[a]} of {arm[a]} ({_pct(back[a], arm[a])}) "
+                f"vs {back[b]} of {arm[b]} ({_pct(back[b], arm[b])}); "
+                f"positive {warm[a]} vs {warm[b]}. Counts, not conclusions."]
+    early.append(f"{label}, {arm[a]} and {arm[b]} of {MIN_PER_ARM} emailed each")
+    return []
+
+
+def _replies(m: _Emailed, rows: Rows, early: list[str]) -> tuple[list[str], list[str]]:
+    """(opener against holdout and the personal subject against the Copy row's, by angle and copy version)."""
+    first = _arms(m, rows, "opener_arm", OPENER, HOLDOUT, "opener vs holdout", early)
+    # Harry, 5 Oct 2026: email 1's personal subject (General email1_subject) against the Copy row's s1_subject.
+    first += _arms(m, rows, "subject_arm", PERSONAL_SUBJECT, COPY_SUBJECT, "personal vs Copy-row subject", early)
     parts = []
     for key, label in (("angle", "angle"), ("copy_version", "copy version")):
         cut = _cut(m, rows, key)
@@ -565,6 +573,16 @@ def _gaps(rows: Rows) -> list[str]:
     return ["  Data gaps: " + "; ".join(parts) + ". The page reader's coverage is under Sources."]
 
 
+def _review_ready(ctx: Context) -> list[str]:
+    """On Mondays, once enough companies have been emailed: the signal review is worth reading (learn/signal_review.py)."""
+    from us_outbound.learn import signal_review
+
+    if ctx.today_uk().weekday() != 0:
+        return []
+    line = signal_review.ready(ctx)
+    return [line] if line else []
+
+
 def _tier_mix(ctx: Context, rows: Rows) -> list[str]:
     check = score.tier_share(rows.accounts, ctx.today_uk())
     if not check or not check["off"]:
@@ -587,7 +605,7 @@ def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:
         opener, cuts, bounces = [], [], []
         early.append(f"no email sent in the last {LEARN_DAYS} days")
     # In this order, so that past MAX_IMPROVE the cuts by angle and copy version go first, then "too early".
-    body = [*approval_lines, *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
+    body = [*approval_lines, *_review_ready(ctx), *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
     if early:
         body.append("  Too early to compare: " + "; ".join(early) + ".")
     body = body[:MAX_IMPROVE]

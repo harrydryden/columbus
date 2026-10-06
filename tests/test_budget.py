@@ -98,12 +98,14 @@ def test_rounding_up_never_takes_a_week_past_its_target():
     assert done == 17
 
 
-def test_enrolled_this_week_counts_accounts():
+def test_enrolled_this_week_counts_contacts():
+    """One contact a company; a second contact at the same company counts as one more (Harry, 6 Oct 2026)."""
     now = datetime(2026, 10, 28, 10, tzinfo=UTC)
     rows = [
         {"contact_id": "1", "account_id": "a", "enrolled_at": now - timedelta(days=1)},
-        {"contact_id": "2", "account_id": "a", "enrolled_at": now - timedelta(hours=1)},  # the same account
+        {"contact_id": "2", "account_id": "a", "enrolled_at": now - timedelta(hours=1)},  # the account's second
         {"contact_id": "3", "account_id": "b", "enrolled_at": now - timedelta(days=5)},  # last week
         {"contact_id": "4", "account_id": "c", "enrolled_at": None},
+        {"contact_id": "1", "account_id": "a", "enrolled_at": now - timedelta(days=1)},  # the same row twice
     ]
-    assert budget.enrolled_this_week(rows, now) == 1
+    assert budget.enrolled_this_week(rows, now) == 2

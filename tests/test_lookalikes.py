@@ -1,25 +1,31 @@
 """The lookalikes job (sources/lookalikes.py; Harry, 1 Oct 2026): Spill's HubSpot customers into lookalike
-cells, kept out of the queue, scored as a signal, reported, and offered to sourcing as priorities.
+cells, kept out of the queue, graded into a lookalike fit by industry, size and growth (Harry, 5 Oct 2026),
+scored, reported, and offered to sourcing as priorities.
 
 HubSpot is a FakeTransport that answers the company and deal searches by their filters and pages on
-hs_object_id like the real search API; the database is a MemoryStore. Nothing here calls a real service.
+hs_object_id like the real search API; Apollo's organization search answers by domain list and growth range
+(FakeApollo); the database is a MemoryStore. Nothing here calls a real service.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound import accounts
+from us_outbound.clients.http import ApiError
 from us_outbound.ops import cli
 from us_outbound.scoring import score
 from us_outbound.scoring.score import score_account
+from us_outbound.settings.defaults import default_tabs
+from us_outbound.settings.validate import validate_all
 from us_outbound.sources import lookalikes as lk
 
-NOW = datetime(2026, 10, 5, 1, 30, tzinfo=UTC)  # Monday 02:30 UK, the job's slot
+NOW = datetime(2026, 10, 5, 1, 30, tzinfo=UTC)  # Monday 5 Oct 2026, 02:30 UK (the pilot's first day)
 SEARCH = "/search"
 ASSOC = "/associations/companies"
 
@@ -142,6 +148,60 @@ def world(default_settings, hub):
          "size_band": "10-19", "hq_state": "NY", "status": "verified", "first_seen": seen},
     ])
     return ctx, t
+
+
+# -- a fake Apollo: organization search by domains and headcount growth range ---------------------------
+
+
+# 12-month headcount growth in percent, as Apollo would filter on it. Customers in no band are unknown.
+GROWTH = {
+    "tech0.co.uk": 12, "tech1.co.uk": 15, "tech2.co.uk": 5, "tech3.co.uk": 0, "tech4.co.uk": 10, "tech5.co.uk": -4,
+    "acme-tech.com": 45, "beta-tech.com": 30, "oldtech0.co.uk": 2, "oldtech1.co.uk": 3, "oldtech2.co.uk": 20,
+    "studio0.co.uk": 8, "studio1.co.uk": 8, "smithlaw.com": 25, "msp-one.com": 1, "bigco.com": 60, "dupe.io": 18,
+    "gonelaw.com": -10, "newwin.com": 35,
+    "fintechprospect.com": 22,  # a prospect; adprospect.com has none
+}
+
+
+class FakeApollo:
+    """Apollo's organization search, answering by q_organization_domains_list and the headcount growth range
+    (inclusive bounds), and its credit balance. ignore_filter: every known domain comes back, whatever the range."""
+
+    def __init__(self, growth=None, *, balance=30_000, ignore_filter=False, saved=()):
+        self.growth = dict(GROWTH if growth is None else growth)
+        self.balance, self.ignore_filter, self.saved = balance, ignore_filter, set(saved)
+        self.asked: list[tuple[dict, list[str]]] = []
+
+    def install(self, t: FakeTransport) -> FakeTransport:
+        t.route("POST", "/usage_stats/credit_usage_stats",
+                body={"credit_usage_stats": {"lead_credit": {"left_over": self.balance}}})
+        t.route("POST", "/mixed_companies/search", fn=self.search)
+        return t
+
+    def search(self, req) -> dict:
+        body = req.json
+        rng, domains = body["organization_headcount_growth_range"], body["q_organization_domains_list"]
+        assert body["organization_headcount_growth_past_n_months"] == 12 and body["per_page"] == 100
+        self.asked.append((dict(rng), list(domains)))
+        lo, hi = rng.get("min", -1e9), rng.get("max", 1e9)
+        hits = [d for d in domains if d in self.growth and (self.ignore_filter or lo <= self.growth[d] <= hi)]
+        # Companies someone saved in Apollo come back in `accounts`, with `domain` (clients/apollo.organizations_in).
+        return {"organizations": [{"id": f"org-{d.split('.')[0]}", "primary_domain": d, "name": "Never stored"}
+                                  for d in hits if d not in self.saved],
+                "accounts": [{"id": "acct-1", "organization_id": f"org-{d.split('.')[0]}", "domain": d}
+                             for d in hits if d in self.saved],
+                "pagination": {"page": body["page"], "per_page": 100, "total_entries": len(hits)}}
+
+
+def install_apollo(t, **kw) -> FakeApollo:
+    fake = FakeApollo(**kw)
+    fake.install(t)
+    return fake
+
+
+@pytest.fixture
+def apollo(world):
+    return install_apollo(world[1], saved={"fintechprospect.com"})
 
 
 def cells(ctx) -> dict[str, dict]:
@@ -312,50 +372,97 @@ def test_an_alias_domain_reaches_its_account(world, hub):
 # -- the signal ---------------------------------------------------------------------------------------------
 
 
-def test_the_signal_scores_an_account_in_a_strong_cell(world):
+FINTECH_QUOTE = ("Spill's customers: Technology & Startups is the strongest industry (1.00); 10–49 staff is its most "
+                 "common size (1.00); growing 10–30% a year like 32% of them (0.89). Fit 98.")
+
+
+def latest_facts(ctx, account_id, source="lookalike") -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for e in sorted(facts(ctx, account_id, source), key=lambda e: e["observed_at"]):
+        out[e["fact"]] = e
+    return out
+
+
+def test_the_fit_scores_an_account_close_to_spills_customers(world, apollo):
     ctx, _ = world
     lk.run(ctx)
-    [active, strength] = sorted(facts(ctx, "acc-fintech", "lookalike"), key=lambda e: e["fact"])
-    assert (active["fact"], active["value"], strength["fact"], strength["value"]) == (
-        "lookalike_active", 11, "lookalike_strength", 15.0)
-    assert active["quote"] == ("Spill's HubSpot customers in Technology & Startups at 10-49 staff: 11 active and "
-                               "4 churned; 3 of the active ones are in the US.")
+    got = latest_facts(ctx, "acc-fintech")
+    assert {f: e["value"] for f, e in got.items()} == {
+        "lookalike_fit": 98, "lookalike_industry_fit": 1.0, "lookalike_size_fit": 1.0, "lookalike_growth_fit": 0.89,
+        "lookalike_active": 11, "lookalike_strength": 15.0}
+    assert got["lookalike_fit"]["quote"] == FINTECH_QUOTE  # aggregate numbers only: no customer's name or domain
+    assert got["lookalike_active"]["quote"] == ("Spill's HubSpot customers in Technology & Startups at 10-49 staff: "
+                                                "11 active and 4 churned; 3 of the active ones are in the US.")
     a = ctx.store.get("accounts", account_id="acc-fintech")
-    events = ctx.store.select("signal_events", {"account_id": "acc-fintech"})
-    r = score_account(a, events, ctx.settings, NOW.date())
-    [m] = [m for m in r.matches if m.signal.signal == "Looks like Spill's customers"]
-    assert m.weight_applied == 4 and m.evidence[0].text == active["quote"]
-    # Agencies at 50-99 have no customers in these fixtures: no fact, no points.
-    assert facts(ctx, "acc-agency", "lookalike") == []
+    r = score_account(a, ctx.store.select("signal_events", {"account_id": "acc-fintech"}), ctx.settings, NOW.date())
+    matched = {m.signal.signal: m for m in r.matches}
+    assert matched["Close match to Spill's customers"].weight_applied == 10
+    assert matched["Close match to Spill's customers"].evidence[0].text == FINTECH_QUOTE
+    assert "Some match to Spill's customers" not in matched and "Looks like Spill's customers" not in matched  # off
+    # Agencies at 50-99: a weak industry, no customer of that size and growth unknown, so a low fit.
+    agency = latest_facts(ctx, "acc-agency")
+    assert agency["lookalike_fit"]["value"] == 13 and agency["lookalike_growth_fit"]["value"] is None
+    assert agency["lookalike_fit"]["quote"] == (
+        "Spill's customers: Marketing & Creative Agencies is the 2nd strongest industry (0.23); none at 50–99 staff "
+        "overall, as Marketing & Creative Agencies has under 5 active (0.00); its growth unknown, so left out. Fit 13.")
 
 
-def test_a_thin_cell_does_not_score(world):
+def test_a_thin_group_reads_the_size_mix_of_all_customers(world):
     ctx, _ = world
     lk.run(ctx)
     ctx.store.upsert("accounts", [{"account_id": "acc-studio", "domain": "newstudio.com",
                                    "industry": "Advertising agencies", "industry_group": "Marketing & Creative Agencies",
                                    "size_band": "10-19", "hq_state": "NY", "status": "queued", "first_seen": NOW}])
     lk.apply(ctx)
-    got = {e["fact"]: e["value"] for e in facts(ctx, "acc-studio", "lookalike")}
-    assert got == {"lookalike_active": 3, "lookalike_strength": 3.5}  # under 5 active and strength 10
+    got = {f: e["value"] for f, e in latest_facts(ctx, "acc-studio").items()}
+    # 3 active agencies at 10 to 249 staff: under SMALL_GROUP, so 10-49 is read against every customer's sizes.
+    assert got == {"lookalike_active": 3, "lookalike_strength": 3.5, "lookalike_industry_fit": 0.23,
+                   "lookalike_size_fit": 1.0, "lookalike_growth_fit": None, "lookalike_fit": 57}
+    assert "10–49 staff is their most common size overall, as Marketing & Creative Agencies has under 5 active" in (
+        latest_facts(ctx, "acc-studio")["lookalike_fit"]["quote"])
     a = ctx.store.get("accounts", account_id="acc-studio")
     r = score_account(a, ctx.store.select("signal_events", {"account_id": "acc-studio"}), ctx.settings, NOW.date())
-    assert "Looks like Spill's customers" not in {m.signal.signal for m in r.matches}
+    assert {m.signal.signal: m.weight_applied for m in r.matches if m.signal.sources == ("lookalike",)} == {
+        "Some match to Spill's customers": 3}
 
 
-def test_apply_writes_only_changes_and_zeroes_a_cell_that_went(world):
+def test_apply_writes_only_changes(world, apollo):
     ctx, _ = world
     lk.run(ctx)
     assert lk.apply(ctx)["written"] == 0
-    assert lk.apply(dataclasses.replace(ctx, now=NOW + timedelta(days=lk.REFRESH_DAYS)))["written"] == 3  # refreshed
-    ctx.store.delete("lookalike_cells", {"cell_id": "Technology & Startups|10-49"})
+    assert lk.apply(dataclasses.replace(ctx, now=NOW + timedelta(days=lk.REFRESH_DAYS)))["written"] == 4  # refreshed
     later = dataclasses.replace(ctx, now=NOW + timedelta(days=lk.REFRESH_DAYS + 1))
+    assert lk.apply(later)["written"] == 0
+    # A new growth figure for the agency changes its fit, and only its facts are written.
+    ctx.store.insert("signal_events", [{"event_id": "g1", "account_id": "acc-agency", "source": "apollo_org",
+                                        "fact": "headcount_growth_12m", "value": 0.05, "quote": "",
+                                        "source_url": "", "observed_at": later.now}])
+    assert lk.apply(later)["written"] == 1
+    assert latest_facts(later, "acc-agency")["lookalike_growth_fit"]["value"] == 0.79  # flat: 5.5 of fast's 7
+    # Tech's cell goes: the fintech's industry and size parts fall, and its cell facts are 0.
+    ctx.store.delete("lookalike_cells", {"cell_id": "Technology & Startups|10-49"})
     assert lk.apply(later)["written"] >= 1
-    latest = max(facts(ctx, "acc-fintech", "lookalike"), key=lambda e: e["observed_at"])
-    assert latest["value"] == 0 and latest["quote"].startswith("No Spill customers counted in Technology & Startups")
-    n = len(facts(ctx, "acc-fintech", "lookalike"))
+    got = latest_facts(later, "acc-fintech")
+    assert got["lookalike_industry_fit"]["value"] == 0.0 and got["lookalike_active"]["value"] == 0
+    assert got["lookalike_active"]["quote"].startswith("No Spill customers counted in Technology & Startups")
+
+
+def test_a_fit_that_falls_to_nothing_is_written_once(world):
+    ctx, _ = world
+    lk.run(ctx)
+    hotel = {"account_id": "acc-hotel", "domain": "hotel.com", "industry": "Hotels", "industry_group": "Hospitality",
+             "size_band": None, "hq_state": "NY", "status": "queued", "first_seen": NOW}
+    ctx.store.upsert("accounts", [hotel])
+    lk.apply(ctx)
+    assert facts(ctx, "acc-hotel", "lookalike") == []  # no customers in Hospitality, size unknown: nothing scores
+    ctx.store.insert("signal_events", [{"event_id": "old-fit", "account_id": "acc-hotel", "source": "lookalike",
+                                        "fact": "lookalike_fit", "value": 60, "quote": "", "source_url": "",
+                                        "observed_at": NOW - timedelta(days=1)}])
+    assert lk.apply(ctx)["written"] == 1
+    assert latest_facts(ctx, "acc-hotel")["lookalike_fit"]["value"] == 0
+    n = len(facts(ctx, "acc-hotel", "lookalike"))
     lk.apply(dataclasses.replace(ctx, now=NOW + timedelta(days=400)))
-    assert len(facts(ctx, "acc-fintech", "lookalike")) == n  # zeros are not written again
+    assert len(facts(ctx, "acc-hotel", "lookalike")) == n  # zeros are not written again
 
 
 def test_apply_before_the_first_run_does_nothing(ctx):
@@ -371,7 +478,10 @@ def test_settings_sync_writes_the_facts_before_its_rescore(world, monkeypatch):
                                    "industry_group": "Technology & Startups", "employees": 30, "hq_state": "NY",
                                    "status": "new", "first_seen": NOW}])
     assert sync._lookalikes(ctx)["written"] == 1  # employees 30 reads as 10-49 when size_band is not set yet
-    assert {e["fact"] for e in facts(ctx, "acc-new", "lookalike")} == {"lookalike_active", "lookalike_strength"}
+    assert {e["fact"] for e in facts(ctx, "acc-new", "lookalike")} == {
+        "lookalike_active", "lookalike_strength", "lookalike_fit", "lookalike_industry_fit", "lookalike_size_fit",
+        "lookalike_growth_fit"}
+    assert ctx.guard.writes("hubspot") == [] and ctx.guard.writes("apollo") == []
 
 
 def test_open_statuses_are_the_scored_ones():
@@ -451,9 +561,21 @@ def test_report_lists_the_top_cells(world):
     assert "(no website label)" not in text  # only 10 to 249 staff by default, top 3
     assert "(no website label)" in "\n".join(lk.report(ctx.settings, ctx.store, top=50, all_bands=True))
     group = next(line for line in lines if line.strip().startswith("Technology & Startups") and "1.00" in line)
-    assert group.rstrip().endswith("10-49")  # the cells where the signal scores
-    assert 'Signal "Looks like Spill\'s customers" (+4)' in text
-    assert "lookalike_active >= 5 AND lookalike_strength >= 10" in text
+    assert group.split()[-4:] == ["11", "4", "20%", "1.00"]  # no per-cell column: the graded rows read the fit
+    assert "Signal \"Close match to Spill's customers\" (+10): lookalike_fit >= 70." in text
+    assert "Signal \"Some match to Spill's customers\" (+3): lookalike_fit >= 45 AND lookalike_fit < 70." in text
+    assert ("Signal \"Looks like Spill's customers\" (+4, inactive on the Signals tab): lookalike_active >= 5 AND "
+            "lookalike_strength >= 10.") in text
+    # Nothing from Apollo in these fixtures: every customer's growth is unknown.
+    assert "Customers' 12-month headcount growth (Apollo, Mon 05 Oct 2026 02:30 UK): shrinking 0, flat 0, " \
+           "growing 0, fast 0; unknown 23 (0 of 23 known)." in text
+    # A sheet still on the old row: the per-cell column says where it fires.
+    old = dataclasses.replace(ctx.settings, signals=tuple(
+        dataclasses.replace(s, active=True) if s.signal == "Looks like Spill's customers" else s
+        for s in ctx.settings.signals if not s.signal.endswith("match to Spill's customers")))
+    old_lines = lk.report(old, ctx.store, top=3)
+    tech = next(line for line in old_lines if line.strip().startswith("Technology & Startups") and "1.00" in line)
+    assert tech.rstrip().endswith("10-49")
 
 
 def test_lookalikes_show_from_the_command_line(world, capsys):
@@ -465,11 +587,309 @@ def test_lookalikes_show_from_the_command_line(world, capsys):
     assert cli.main(["lookalikes", "show", "--top", "0"], context_factory=lambda job, live, **kw: ctx) == 2
 
 
-def test_the_job_is_registered_weekly_before_source_universe():
+def test_the_job_is_registered_monthly_before_source_universe():
     from us_outbound.ops import heartbeat, schedule
 
     assert cli.JOBS["lookalikes"] == "us_outbound.sources.lookalikes:run"
     job = schedule.by_name()["lookalikes"]
-    assert (job.cron, job.enabled, job.live) == ("30 2 * * 1", True, False)  # Monday 02:30 UK; database writes only
+    # Harry, 5 Oct 2026: the 1st of each month at 02:30 UK; HubSpot and Apollo reads and database writes only.
+    assert (job.cron, job.enabled, job.live) == ("30 2 1 * *", True, False)
     assert schedule.by_name()["source_universe"].cron.split()[1] == "3"  # 03:00, after it
-    assert heartbeat.EXPECTED["lookalikes"] == 8 * 24 * 60
+    assert heartbeat.EXPECTED["lookalikes"] == 32 * 24 * 60  # the longest month, and a day's grace
+    # A customer's suppression outlives one missed monthly run; an unchanged fit is rewritten inside its signals' days.
+    assert lk.SUPPRESS_DAYS > 2 * 31
+    settings, _ = validate_all(default_tabs())
+    rows = [s for s in settings.signals if s.sources == ("lookalike",)]
+    assert rows and all(lk.REFRESH_DAYS < s.counts_for_days for s in rows)
+
+
+# -- the lookalike fit -------------------------------------------------------------------------------------
+
+
+def cell(label, group, band, active, strength) -> dict:
+    return {"cell_id": f"{label}|{band}", "industry_label": label, "industry_group": group, "size_band": band,
+            "active_customers": active, "churned_customers": 0, "us_active": 0, "us_churned": 0, "strength": strength}
+
+
+def grown(group, band, n, strength) -> dict:
+    return {"cell_id": f"{group or '-'}|{band}", "industry_group": group, "growth_band": band,
+            "active_customers": n, "churned_customers": 0, "strength": strength}
+
+
+TECH, AGENCIES, LEGAL = "Technology & Startups", "Marketing & Creative Agencies", "Legal Teams"
+MODEL = lk.FitModel(
+    [cell(TECH, TECH, "10-49", 20, 30.0), cell(TECH, TECH, "50-99", 8, 15.0), cell("Games studios", TECH, "10-49", 2, 3.0),
+     cell(AGENCIES, AGENCIES, "10-49", 10, 12.0), cell(LEGAL, LEGAL, "10-49", 3, 6.0), cell(LEGAL, LEGAL, "100-249", 1, 2.0),
+     cell(TECH, TECH, "unknown", 9, 10.0), cell(TECH, TECH, "250+", 4, 40.0)],  # outside 10 to 249: not read
+    [grown(TECH, "flat", 10, 12.0), grown(TECH, "growing", 8, 10.0), grown(TECH, "fast", 2, 3.0),
+     grown(TECH, "unknown", 5, 6.0), grown(AGENCIES, "flat", 4, 4.0), grown(None, "shrinking", 1, 1.0)],
+)
+
+
+def test_the_fit_weighs_industry_size_and_growth():
+    f = MODEL.fit("Fintech", TECH, "10-49", "growing")
+    # Tech is 20 customers with a known band, so its own growth mix: growing 10 of flat's 12.
+    assert (f.industry, f.size, f.growth) == (1.0, 1.0, 0.83)
+    assert f.fit == round(100 * (0.45 * 1.0 + 0.35 * 1.0 + 0.20 * 0.83)) == 97
+    assert f.quote == ("Spill's customers: Technology & Startups is the strongest industry (1.00); 10–49 staff is its "
+                       "most common size (1.00); growing 10–30% a year like 40% of its customers (0.83). Fit 97.")
+    assert (lk.INDUSTRY_WEIGHT, lk.SIZE_WEIGHT, lk.GROWTH_WEIGHT) == (0.45, 0.35, 0.20)
+
+
+def test_unknown_growth_is_left_out_and_the_weights_renormalised():
+    f = MODEL.fit("Fintech", TECH, "50-99", None)
+    assert (f.industry, f.size, f.growth) == (1.0, 0.45, None)  # 50-99 is 15 of 10-49's 33 in Tech
+    assert f.fit == round(100 * (0.45 * 1.0 + 0.35 * 0.45) / 0.80) == 76
+    assert f.quote.endswith("50–99 staff is its 2nd most common size (0.45); its growth unknown, so left out. Fit 76.")
+    # Unknown never costs points: the same account with a growth band no customer has scores lower than unknown.
+    assert MODEL.fit("Fintech", TECH, "50-99", "shrinking").fit < f.fit
+    # Size unknown too: industry alone.
+    assert MODEL.fit("Fintech", TECH, None, None).fit == 100
+
+
+def test_a_small_group_reads_every_customers_size_mix_and_growth():
+    f = MODEL.fit(LEGAL, LEGAL, "10-49", "flat")
+    # Legal: 8 of Tech's 48 at 10 to 249 staff; 4 active there, under SMALL_GROUP, so every customer's sizes:
+    # 10-49 is 51 (30 + 3 + 12 + 6). Legal has no growth counts, so every customer's: flat is 14 of the 25 with a
+    # known band, and the strongest band (16).
+    assert (f.industry, f.size, f.growth) == (0.17, 1.0, 1.0)
+    assert f.fit == round(100 * (0.45 * 0.17 + 0.35 + 0.20)) == 63
+    assert f.quote == ("Spill's customers: Legal Teams is the 3rd strongest industry (0.17); 10–49 staff is their most "
+                       "common size overall, as Legal Teams has under 5 active (1.00); flat (0–10% a year) like 56% "
+                       "of them (1.00). Fit 63.")
+
+
+def test_a_label_spills_hubspot_field_names_apart_is_read_by_its_own_customers():
+    games = MODEL.fit("Games studios", TECH, "50-99", None)
+    assert games.industry == round(3.0 / 48.0, 2) == 0.06  # Games studios' own 3, not Tech's 48
+    assert games.quote.startswith("Spill's customers: Games studios is the 4th strongest industry (0.06); 50–99 staff "
+                                  "is the 2nd most common size in Technology & Startups (0.45)")
+    assert lk.fit_industry("Games studios", TECH) == "Games studios"
+    assert lk.fit_industry("Fintech", TECH) == TECH  # HubSpot cannot tell fintech from other tech
+    assert lk.fit_industry(TECH, TECH) == TECH  # the group's umbrella label reads as the group
+    assert lk.fit_industry("Creative & design agencies", AGENCIES) == AGENCIES  # HubSpot's standard field only
+    none = MODEL.fit("Restaurants", "Hospitality", "10-49", None)
+    assert none.industry == 0.0 and none.quote.startswith("Spill's customers: none in Hospitality (0.00)")
+
+
+def test_growth_band_of_a_12_month_figure():
+    assert [lk.growth_band_of(v) for v in (-0.2, 0, 0.099, 0.1, 0.29, 0.3, 1.5, None, "x")] == [
+        "shrinking", "flat", "flat", "growing", "growing", "fast", "fast", None, None]
+
+
+# -- the growth search ---------------------------------------------------------------------------------------
+
+
+def ledger(ctx) -> list[dict]:
+    return ctx.store.select("credit_ledger", {"job": "lookalikes"})
+
+
+def test_growth_bands_from_apollo_search_by_domains_and_growth_range(world, apollo):
+    ctx, t = world
+    summary = lk.run(ctx)
+    # One search per band for the 22 customer domains (one chunk), fastest band first, each over the domains no
+    # earlier band placed; then the two queue accounts not on a customer's domain.
+    ranges = [rng for rng, _ in apollo.asked]
+    assert ranges == [{"min": 30}, {"min": 10, "max": 30}, {"min": 0, "max": 10}, {"min": -100, "max": 0}] * 2
+    customers = [d for _, d in apollo.asked[:4]]
+    assert len(customers[0]) == 22 and len(customers[1]) == 22 - 4 and "acme-tech.com" not in customers[1]
+    assert sorted(apollo.asked[4][1]) == ["adprospect.com", "fintechprospect.com"]
+    body = next(r.json for r in t.requests if r.url.endswith("/mixed_companies/search"))
+    assert body["organization_headcount_growth_past_n_months"] == 12 and body["page"] == 1
+    # Boundaries go to the higher band: 30% is fast, 10% growing, 0% flat.
+    rows = {r["cell_id"]: r for r in ctx.store.select("lookalike_growth")}
+    assert rows["Technology & Startups|fast"]["active_customers"] == 4  # acme, beta (30%), bigco, newwin
+    assert rows["Technology & Startups|growing"]["active_customers"] == 4  # tech0, tech1, tech4 (10%), dupe.io
+    assert rows["Technology & Startups|growing"]["churned_customers"] == 1
+    assert rows["Technology & Startups|flat"]["active_customers"] == 2  # tech2, tech3 (0%)
+    assert rows["Technology & Startups|unknown"]["strength"] == 1.25  # gmail.com (no domain), oldtech3
+    assert rows["Legal Teams|shrinking"]["churned_customers"] == 1 and rows["-|flat"]["active_customers"] == 1
+    # Counts only: no customer domain or name anywhere in the table, the ledger or the facts' quotes.
+    stored = repr(ctx.store.select("lookalike_growth")) + repr(ledger(ctx))
+    assert not any(d in stored for d in GROWTH) and "Never stored" not in stored
+    # Accounts: a band fact each (source apollo_org), found in the `accounts` bucket by its domain, or unknown.
+    fin = latest_facts(ctx, "acc-fintech", "apollo_org")["headcount_growth_band"]
+    assert (fin["value"], fin["source_url"]) == ("growing", "https://app.apollo.io/#/organizations/org-fintechprospect")
+    assert fin["quote"] == "Apollo search by 12-month headcount growth: growing 10–30% a year"
+    agency = latest_facts(ctx, "acc-agency", "apollo_org")["headcount_growth_band"]
+    assert (agency["value"], agency["source_url"]) == ("unknown", "")  # not searched again for GROWTH_REFRESH_DAYS
+    assert facts(ctx, "acc-customer", "apollo_org") == []  # a customer's domain: searched as a customer only
+    g = summary["growth"]
+    assert g["customers"] == {"domains": 22, "stored": True, "placed": 19, "unknown": 3, "cells": 10, "removed": 0,
+                              "bands": {"fast": 4, "growing": 6, "flat": 7, "shrinking": 2}}
+    assert (g["accounts"]["searched"], g["accounts"]["placed"], g["accounts"]["left_for_next_run"]) == (2, 1, 0)
+    # 1 credit per page with results, 0 for an empty one, each page in credit_ledger as it is read.
+    assert g["credits"] == 5.0 and g["pages"] == 8
+    assert [e["credits"] for e in ledger(ctx)] == [1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0]
+    assert all(json.loads(e["note"])["for"] in ("customers", "accounts") for e in ledger(ctx))
+    # Dry-run, as the other Apollo sources: the searches are reads, so they happen and their credits count.
+    assert ctx.dry_run and ctx.guard.writes("apollo") == []
+
+
+def test_a_fresh_growth_figure_wins_and_the_search_fills_gaps(world, apollo):
+    ctx, _ = world
+    ctx.store.insert("signal_events", [
+        {"event_id": "g-agency", "account_id": "acc-agency", "source": "apollo_org", "fact": "headcount_growth_12m",
+         "value": 0.31, "quote": "", "source_url": "", "observed_at": NOW - timedelta(days=10)},
+        {"event_id": "b-fin", "account_id": "acc-fintech", "source": "apollo_org", "fact": "headcount_growth_band",
+         "value": "flat", "quote": "", "source_url": "", "observed_at": NOW - timedelta(days=30)},
+    ])
+    summary = lk.run(ctx)
+    assert len(apollo.asked) == 4  # the customers only: neither account is due a search
+    band = latest_facts(ctx, "acc-agency", "apollo_org")["headcount_growth_band"]
+    assert (band["value"], band["quote"]) == ("fast", "Apollo: headcount +31% over 12 months, so growing 30% or more a year")
+    assert summary["growth"]["accounts"] == {"from_growth_figures": 1, "due_a_search": 0, "band_facts": 1,
+                                             "left_for_next_run": 0}
+    assert latest_facts(ctx, "acc-fintech", "lookalike")["lookalike_growth_fit"]["value"] == round(5.5 / 7, 2)
+    # After GROWTH_REFRESH_DAYS the band is searched again; the figure, now old, no longer stands in.
+    later = dataclasses.replace(ctx, now=NOW + timedelta(days=lk.GROWTH_REFRESH_DAYS))
+    figures, todo = lk.growth_todo(later, [])
+    assert figures == [] and [a["account_id"] for a in todo] == ["acc-fintech", "acc-agency"]  # Tech first (Focus)
+
+
+def test_the_growth_searches_are_capped_and_customers_are_all_or_nothing(world, monkeypatch):
+    ctx, t = world
+    fake = install_apollo(t)
+    monkeypatch.setattr(lk, "LOOKALIKE_GROWTH_CREDITS", 4)  # the customers' worst case exactly
+    g = lk.run(ctx)["growth"]
+    assert g["customers"]["stored"] is True and g["credits"] == 4.0
+    assert g["accounts"] == {"from_growth_figures": 0, "due_a_search": 2, "band_facts": 0, "left_for_next_run": 2}
+    assert len(fake.asked) == 4 and sum(e["credits"] for e in ledger(ctx)) == 4.0
+    # Under the customers' worst case: their stored counts are kept, and the accounts wait too.
+    before = ctx.store.select("lookalike_growth")
+    monkeypatch.setattr(lk, "LOOKALIKE_GROWTH_CREDITS", 3)
+    g = lk.run(dataclasses.replace(ctx, now=NOW + timedelta(days=31)))["growth"]
+    assert g["customers"]["stored"] is False and "stored growth counts are kept" in g["customers"]["kept"]
+    assert len(fake.asked) == 4 and ctx.store.select("lookalike_growth") == before
+
+
+def test_no_growth_search_below_apollo_floor_but_figures_still_count(world):
+    ctx, t = world
+    fake = install_apollo(t, balance=100)  # apollo_floor is 5,000
+    ctx.store.insert("signal_events", [{"event_id": "g-agency", "account_id": "acc-agency", "source": "apollo_org",
+                                        "fact": "headcount_growth_12m", "value": -0.05, "quote": "", "source_url": "",
+                                        "observed_at": NOW - timedelta(days=3)}])
+    g = lk.run(ctx)["growth"]
+    assert fake.asked == [] and ledger(ctx) == [] and "below apollo_floor" in g["skipped"]
+    assert latest_facts(ctx, "acc-agency", "apollo_org")["headcount_growth_band"]["value"] == "shrinking"
+
+
+def test_a_growth_filter_apollo_ignores_is_caught_and_nothing_is_used(world):
+    ctx, t = world
+    fake = install_apollo(t, ignore_filter=True)
+    g = lk.run(ctx)["growth"]
+    assert "ignore the growth filter" in g["stopped_by"] and g["customers"]["stored"] is False
+    assert len(fake.asked) == 1 and ctx.store.select("lookalike_growth") == []
+    assert facts(ctx, "acc-fintech", "apollo_org") == []  # no account is searched, no band written
+
+
+def test_a_failed_search_keeps_the_stored_counts(world):
+    ctx, t = world
+    install_apollo(t)
+    lk.run(ctx)
+    before = ctx.store.select("lookalike_growth")
+    t.route("POST", "/mixed_companies/search", status=500, body={"error": "busy"})
+    g = lk.run(dataclasses.replace(ctx, now=NOW + timedelta(days=31)))["growth"]
+    assert g["customers"]["stored"] is False and g["errors"] and ctx.store.select("lookalike_growth") == before
+    t.route("POST", "/mixed_companies/search", status=401, body={"error": "bad key"})
+    with pytest.raises(ApiError):
+        lk.run(dataclasses.replace(ctx, now=NOW + timedelta(days=62)))
+
+
+# -- `us-outbound lookalikes fit` ----------------------------------------------------------------------------
+
+
+def live_sheet(settings):
+    """The sheet as it is on 5 Oct 2026: the old row on, the graded rows not there yet."""
+    return dataclasses.replace(settings, signals=tuple(
+        dataclasses.replace(s, active=True) if s.signal == "Looks like Spill's customers" else s
+        for s in settings.signals if not s.signal.endswith("match to Spill's customers")))
+
+
+def test_lookalikes_fit_shows_the_fits_and_the_tier_mix_and_writes_nothing(world, apollo, capsys):
+    ctx, _ = world
+    lk.run(ctx)
+    ctx.store.upsert("accounts", [
+        {"account_id": f"acc-{i}", "domain": f"tech{i}.example", "industry": "Fintech",
+         "industry_group": "Technology & Startups", "size_band": "20-49", "hq_state": "NY", "status": "queued",
+         "first_seen": NOW} for i in range(3)])
+    ctx = dataclasses.replace(ctx, settings=live_sheet(ctx.settings))
+    snapshot = {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()}
+    calls = len(ctx.guard.calls)
+    capsys.readouterr()
+    assert cli.main(["lookalikes", "fit"], context_factory=lambda job, live, **kw: ctx) == 0
+    out = "\n".join(line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event"'))
+    assert out.splitlines()[0] == "Lookalike fit of 7 open accounts, worked out now from the cells of Mon 05 Oct 2026 02:30 UK."
+    # The fintech prospect, the three new Tech accounts at 10-49 and acme-tech (a customer, Excluded) fit 90 or more.
+    assert "  90-100          5" in out and "  10-19           1" in out and "  50-59           1" in out
+    assert "Growth known for 1 of 7; the rest are fitted on industry and size alone." in out
+    assert "\"Close match to Spill's customers\" (lookalike_fit >= 70, +10): 5 accounts." in out
+    assert "\"Some match to Spill's customers\" (lookalike_fit >= 45 AND lookalike_fit < 70, +3): 1 account." in out
+    # Today the 10-49 Tech accounts score 15 + 4 = 19 (Control); with the graded rows 30 (Standard).
+    assert "  Standard       0 (0%) !          4 (80%) !" in out
+    assert "  Control      5 (100%) !            1 (20%)" in out
+    assert "  Excluded              2                  2" in out
+    assert "Nothing was written." in out
+    assert {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()} == snapshot
+    assert all(not c.write for c in ctx.guard.calls[calls:])  # reads only, and only the database
+    assert {c.system for c in ctx.guard.calls[calls:]} == {"db"}
+
+
+def test_lookalikes_fit_tries_other_cut_offs_and_weights_in_memory(world, apollo, capsys):
+    ctx, _ = world
+    lk.run(ctx)
+    ctx.store.upsert("accounts", [
+        {"account_id": f"acc-{i}", "domain": f"tech{i}.example", "industry": "Fintech",
+         "industry_group": "Technology & Startups", "size_band": "20-49", "hq_state": "NY", "status": "queued",
+         "first_seen": NOW} for i in range(3)])
+    ctx = dataclasses.replace(ctx, settings=live_sheet(ctx.settings))
+    snapshot = {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()}
+    capsys.readouterr()
+    factory = lambda job, live, **kw: ctx  # noqa: E731
+    assert cli.main(["lookalikes", "fit", "--close", "90:5", "--some", "off"], context_factory=factory) == 0
+    out = capsys.readouterr().out
+    assert "\"Close match to Spill's customers\" (lookalike_fit >= 90, +5): 5 accounts." in out
+    assert "Some match" not in out
+    # 15 for 10-49 and 5 for the close match: 20, Standard, as with +10; the sheet is not touched.
+    assert "  Standard       0 (0%) !          4 (80%) !" in out
+    assert "tried in memory only" in out
+    assert cli.main(["lookalikes", "fit", "--close", "90:10", "--some", "60:4"], context_factory=factory) == 0
+    out = capsys.readouterr().out
+    assert "\"Some match to Spill's customers\" (lookalike_fit >= 60 AND lookalike_fit < 90, +4)" in out
+    assert {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()} == snapshot
+    for bad, why in ((["--close", "ninety"], "LOWEST_FIT:WEIGHT"), (["--close", "60:10", "--some", "70:4"],
+                                                                     "must start below Close match's 60")):
+        assert cli.main(["lookalikes", "fit", *bad], context_factory=factory) == 2
+        assert why in capsys.readouterr().err
+
+
+def test_lookalikes_fit_before_the_first_run(ctx, capsys):
+    assert cli.main(["lookalikes", "fit"], context_factory=lambda job, live, **kw: ctx) == 0
+    assert "No lookalike cells yet" in capsys.readouterr().out
+
+
+# -- the settings load switches the old row off ---------------------------------------------------------------
+
+
+def test_a_signals_load_switches_the_old_row_off_and_adds_the_graded_rows():
+    from us_outbound.settings.load import plan_tab
+
+    build = default_tabs()["Signals"]
+    sheet = [dict(r) for r in build if not r["signal"].endswith("match to Spill's customers")]
+    old = next(r for r in sheet if r["signal"] == "Looks like Spill's customers")
+    old.update(active="yes", weight="6", note="Harry's note")  # as on the live sheet, with an edit of his
+    plan = plan_tab("Signals", sheet, build)
+    by = {r["signal"]: r for r in plan.rows}
+    assert by["Looks like Spill's customers"]["active"] == "no" and by["Looks like Spill's customers"]["weight"] == "6"
+    assert by["Looks like Spill's customers"]["note"].startswith("Replaced by Close match and Some match")
+    assert ("Looks like Spill's customers switched off (replaced by Close match to Spill's customers and Some match "
+            "to Spill's customers)") in plan.updated
+    assert plan.added == ["Close match to Spill's customers", "Some match to Spill's customers"]
+    assert by["Close match to Spill's customers"]["active"] == "yes"
+    settings, errors = validate_all({**default_tabs(), "Signals": plan.rows})
+    assert not any(errors.values())
+    assert [s.signal for s in settings.active_signals() if s.sources == ("lookalike",)] == [
+        "Close match to Spill's customers", "Some match to Spill's customers"]
+    # A second load changes nothing more.
+    again = plan_tab("Signals", plan.rows, build)
+    assert again.added == [] and not [u for u in again.updated if "switched off" in u]

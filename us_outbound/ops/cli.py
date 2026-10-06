@@ -23,9 +23,17 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
     [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
                                       send, HubSpot and close path as Slack. approve is the same as send
+  signals review | value              which signals predict replies (learn/signal_review.py), or the
+                                      signal-value table from v_signal_value, with meetings and the rates
+                                      against the companies without each signal (learn/signal_value.py)
+  readout                             the Monday readout for last week (learn/readout.py), printed only
+  test start|read <test_id>           start a test on the Tests tab (SPEC 12), or read it at its latest
+                                      pre-registered look; read refuses before the first look, so nobody
+                                      peeks (learn/looks.py; Harry, 6 Oct 2026)
   killrules show|clear <item>         the kill-rule holds in force, and lifting one (learn/kill_rules.py)
   mailbox add|pause|retire <address>  the registry commands of SPEC 9 (add takes --owner); mailbox check
-  mailbox check [--fix]               is mailbox_health by hand, and --fix also runs campaigns ensure --fix
+  mailbox check [--fix]               is mailbox_health by hand, and --fix also sets each sender name to
+                                      its owner's full name and runs campaigns ensure --fix
   campaigns show | ensure [--fix]     each owner's campaign as Instantly holds it (read-only); or create
                                       the missing ones (paused) and put drift right
   copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
@@ -33,13 +41,19 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
                                       notes) into the sheet; create the sheet
   handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
+  clay check-email --first NAME       one Work Email lookup through Clay's API for a Spill colleague's own
+    --last NAME --domain DOMAIN       name (never a prospect), to confirm the email fallback before
+    [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
+                                      only says what it would send. With --live it exits 1 unless the
+                                      fallback can go on
   erase --email <address>             an erasure request (SPEC 6)
   schedule                            the job table and next runs (UK time)
   run <job> [--live]                  one job, what the scheduler starts
 Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
-(remove that month's leads), rescore (the score job), dry-run <job>, test start|read <test_id> (the
-copy test, SPEC 12), db apply, hubspot setup|ids, suppression load, lookalikes show [--top N] [--all]
-(the cells the lookalikes job last stored), pages show (the careers and benefits page reader's
+(remove that month's leads), rescore (the score job), dry-run <job>, db apply, hubspot setup|ids,
+suppression load, lookalikes show [--top N] [--all]
+(the cells the lookalikes job last stored), lookalikes fit (the accounts' lookalike fits and the tier mix the
+build's lookalike rows would give, scored in memory), pages show (the careers and benefits page reader's
 coverage), data show (what the sources have stored, in aggregate), and scheduler (the always-on
 Railway worker, ops/scheduler.py). On Railway, run a command inside the worker with
 `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
@@ -50,11 +64,13 @@ Dry-run is the default everywhere. Two kinds of live:
     sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
     test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
-    handcheck show|approve, killrules clear, replies skip, approvals contact|company|reject): --live
-    alone, so the phase-0 setup and the kill switch work while live_sending is still no.
+    handcheck show|approve, killrules clear, replies skip, approvals contact|company|reject,
+    clay check-email): --live alone, so the phase-0 setup and the kill switch work while
+    live_sending is still no.
     `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
     like a job: --live AND live_sending = yes.
-    copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
+    copy qa and copy draft call Claude only with --live, so a dry run spends nothing; so does
+    clay check-email with Clay.
   A read-only action given --live (approvals list, replies list, killrules show, campaigns show,
   copy check|preview, hubspot ids, test read) says that --live does nothing there.
   A --live run that stays dry says when the settings in force were synced, and how to bring a
@@ -83,13 +99,12 @@ import traceback
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, redirect_stdout
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.logs import log, redact
 from us_outbound.ops import bootstrap
@@ -110,7 +125,8 @@ JOBS: dict[str, str] = {
     "apollo_signals": "us_outbound.sources.apollo_jobs:run",
     "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages without Clay
     "apollo_enrich": "us_outbound.sources.apollo_enrich:run",  # Harry, 2 Oct 2026: funding and headcount from enrich
-    "site_visits": "not built yet (phase 1)",
+    "apollo_people": "us_outbound.sources.apollo_people:run",  # Harry, 5 Oct 2026: People leaders at every account
+    "site_visits": "us_outbound.sources.site_visits:run",  # Harry, 5 Oct 2026: Apollo's visitors to the US site
     "public_signals": "not built yet (phase 1)",
     "verify_in_clay": "not built yet (phase 1)",
     # Build addition: verified on Apollo data and HubSpot while clay_verification = skip (Harry, 1 Oct 2026).
@@ -125,15 +141,15 @@ JOBS: dict[str, str] = {
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
     "kill_rules": "us_outbound.learn.kill_rules:run",
     "daily_post": "us_outbound.learn.daily_post:run",
-    "monday_readout": "not built yet (phase 3)",
+    "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
     # Build additions (README "Deviations").
     "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
+    "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
-TEST_WINDOW_DAYS = REPLY_WINDOW_DAYS  # human replies within 28 days of step 1: a week after the last step
 
 Factory = Callable[..., Context]
 
@@ -397,7 +413,7 @@ def _waiting_for_you(ctx: Context) -> str:
 def _status_limits(ctx: Context) -> None:
     """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
     from us_outbound import limits
-    from us_outbound.enrol import approvals, enrol
+    from us_outbound.enrol import approvals, enrol, second
 
     try:
         # As enrol.run: pulled accounts and waiting cards stay out, and the cards hold their senders' slots.
@@ -405,7 +421,9 @@ def _status_limits(ctx: Context) -> None:
         _, pulled = enrol.hand_check(ctx, day)
         held = approvals.waiting(ctx)
         ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-        lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
+        seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
+        lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
+                           second_ready=len(seconds))
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
@@ -444,6 +462,9 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
     print(f"Running test: {running.test_id} (read on {running.read_date})" if running else "Running test: none")
+    from us_outbound.enrol import second
+
+    print(second.describe(s))  # the second-contact switch (Harry, 6 Oct 2026)
     _status_heartbeats(ctx.store, ctx.now)
     print("Mailboxes:")
     try:
@@ -554,7 +575,8 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("--fix goes with check")
     if args.action == "check":
         ctx = factory("mailbox_health", args.live, operator=True)
-        _print(run_job(ctx, reg.mailbox_health))
+        # --fix also sets each drifted sender name to its owner's full name (Harry, 5 Oct 2026).
+        _print(run_job(ctx, lambda c: reg.mailbox_health(c, fix_names=args.fix)))
         if args.fix:  # and what `campaigns ensure --fix` does, so one command sets the senders up
             fix_ctx = factory("campaigns_ensure", args.live, operator=True)
             _print(run_job(fix_ctx, lambda c: reg.ensure_campaigns(c, fix=True)))
@@ -621,6 +643,12 @@ def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def _test_start(ctx: Context, test_id: str) -> dict:
+    """Pre-registration first (SPEC 12; Harry, 6 Oct 2026: kind and looks, learn/looks.py). One copy test (kind ab)
+    runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns nothing, so it may run beside
+    it, and its versions are the arms enrol records, not Copy rows."""
+    from us_outbound.settings.model import AB_TEST, HOLDOUT_TEST
+    from us_outbound.settings.validate import parse_looks
+
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise Refused("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
@@ -628,100 +656,59 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     row = next((r for r in rows if r.get("test_id", "").strip() == test_id), None)
     if row is None:
         raise Refused(f"no test {test_id!r} on the Tests tab")
-    others = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running" and r.get("test_id", "").strip() != test_id]
-    if others:
-        raise Refused(f"only one test runs at a time (SPEC 9); {', '.join(others)} is running")
+
+    def kind(r: dict) -> str:
+        return (r.get("kind") or "").strip().lower() or AB_TEST
+
+    if kind(row) not in (AB_TEST, HOLDOUT_TEST):
+        raise Refused(f"kind {row.get('kind')!r} on the Tests tab is neither {AB_TEST} nor {HOLDOUT_TEST}")
+    others = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
+              and r.get("test_id", "").strip() != test_id and kind(r) == AB_TEST]
+    if others and kind(row) == AB_TEST:
+        raise Refused(f"only one copy test runs at a time (SPEC 9); {', '.join(others)} is running")
     if row.get("status", "").strip().lower() == "running":
         return {"test_id": test_id, "status": "running", "changed": False}
     read_date = row.get("read_date", "").strip()
     if not read_date or not row.get("decision_rule", "").strip():
         raise Refused("pre-register the read_date and decision_rule on the Tests tab first (SPEC 12)")
+    try:
+        parse_looks(row.get("looks", "") or "")
+    except ValueError as exc:
+        raise Refused(f"looks on the Tests tab: {exc}") from exc
     start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
     if read_date <= start:
         raise Refused(f"read_date {read_date} must be after the start date {start}")
-    missing = [
-        v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
-        if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
-    ]
-    if missing:
-        raise Refused("copy is not approved, with a current QA pass, in the synced settings for: " + ", ".join(missing))
+    if kind(row) == AB_TEST:
+        missing = [
+            v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
+            if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
+        ]
+        if missing:
+            raise Refused("copy is not approved, with a current QA pass, in the synced settings for: "
+                          + ", ".join(missing))
     sheets = ctx.clients.sheets
     writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
     for column, value in [*writes, ("status", "running")]:
         if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
             raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
-    return {"dry_run": ctx.dry_run, "test_id": test_id, "status": "running", "start_date": start,
-            "read_date": read_date, "changed": ctx.live}
-
-
-def _when(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
+    return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
+            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live}
 
 
 def read_test(ctx: Context, test_id: str) -> dict:
-    """Per version: accounts with step 1 delivered, and their human, positive and meeting rates (SPEC 12).
+    """The test at its latest pre-registered look (learn/looks.read); looks.NotYet before the first one.
 
     Reply rate = accounts with a human reply (any class but out_of_office) within REPLY_WINDOW_DAYS (28) days of
-    step 1 ÷ accounts whose step 1 was delivered, as in v_account_outcomes.
+    step 1 ÷ accounts whose step 1 was delivered, as in v_account_outcomes, over the accounts the look covers.
     """
-    test = next((t for t in ctx.settings.tests if t.test_id == test_id), None)
-    contacts = ctx.store.select("contacts", {"test_id": test_id})
-    version_of: dict[str, str] = {}
-    for c in contacts:
-        if c.get("account_id"):
-            version_of.setdefault(c["account_id"], c.get("copy_version") or "unknown")
-    events = ctx.store.select("events", {"account_id": sorted(version_of)}) if version_of else []
-    by_account: dict[str, list[dict]] = {}
-    for e in events:
-        by_account.setdefault(e["account_id"], []).append(e)
-    stats: dict[str, dict[str, int]] = {}
-    for account_id, version in version_of.items():
-        s = stats.setdefault(version, {"accounts": 0, "delivered": 0, "replied": 0, "positive": 0, "meetings": 0})
-        s["accounts"] += 1
-        evs = sorted(by_account.get(account_id, []), key=lambda e: (_when(e.get("occurred_at")) or datetime.max.replace(tzinfo=UTC)))
-        step1 = next((e for e in evs if e.get("type") == "sent" and e.get("step") == 1), None)
-        if step1 is None:
-            continue
-        bounced = any(
-            e.get("type") == "bounced" and e.get("contact_id") == step1.get("contact_id") and e.get("step") in (1, None)
-            for e in evs
-        )
-        if bounced:
-            continue
-        s["delivered"] += 1
-        at = _when(step1.get("occurred_at"))
-        window = [
-            e for e in evs
-            if e.get("type") == "replied" and (e.get("reply_class") or "") != "out_of_office"
-            and at is not None and at <= (_when(e.get("occurred_at")) or at) < at + timedelta(days=TEST_WINDOW_DAYS)
-        ]
-        s["replied"] += bool(window)
-        s["positive"] += any(e.get("reply_class") in ("positive", "referral") for e in window)
-        s["meetings"] += any(e.get("type") == "meeting_booked" for e in evs)
+    from us_outbound.learn import looks
 
-    def rate(n: int, d: int) -> float | None:
-        return round(n / d, 4) if d else None
-
-    versions = {
-        v: {**s, "reply_rate": rate(s["replied"], s["delivered"]), "positive_rate": rate(s["positive"], s["delivered"]),
-            "meeting_rate": rate(s["meetings"], s["delivered"])}
-        for v, s in sorted(stats.items())
-    }
-    today = ctx.today_uk()
-    return {
-        "test_id": test_id,
-        "version_a": test.version_a if test else None,
-        "version_b": test.version_b if test else None,
-        "read_date": test.read_date.isoformat() if test and test.read_date else None,
-        "early_look": bool(test and test.read_date and today < test.read_date),
-        "versions": versions,
-    }
+    return looks.read(ctx, test_id)
 
 
 def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
+    from us_outbound.learn import looks
+
     if args.action == "start":
         ctx = factory("test_start", args.live, operator=True)
         _print(run_job(ctx, lambda c: _test_start(c, args.test_id)))
@@ -729,10 +716,15 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     _only_reads(args)
     ctx = factory("test_read", False)
-    result = read_test(ctx, args.test_id)
+    try:
+        result = read_test(ctx, args.test_id)
+    except (looks.NotYet, LookupError) as exc:  # the no-peek rule (Harry, 6 Oct 2026)
+        raise Refused(str(exc)) from exc
     _print(result)
-    if result["early_look"]:
-        print(f"This is an early look: SPEC 12 reads the test once, on {result['read_date']}.")
+    look = result["look"]
+    print(f"Read at {look['label']}" + ("." if look["final"] else f"; the next is {result['next_look']}."
+                                         if result["next_look"] else "."))
+    print(looks.summary_line(result))
     print("Reply rate decides (a 2x difference is what the test detects); positive and meeting rates are for information.")
     print("Harry writes the result on the Tests tab.")
     return 0
@@ -810,10 +802,13 @@ def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, r
 def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: Any) -> Any:
     """copy preview: the sample prospect (with --opener, a real Signals-tab line filled with sample facts, or
     with --generic the General tab's generic line), or with --account a stored account, its contact and the
-    opener enrol would give it (no model call)."""
+    opener enrol would give it (no model call). Email 1's subject is the account's own arm, or with --subject
+    personal|copy that arm (General email1_subject, or the Copy row's s1_subject; Harry, 5 Oct 2026)."""
     from us_outbound.enrol import enrol, openers
     from us_outbound.settings.model import ROLE_LINE_COLUMNS
 
+    if args.subject == "personal" and not settings.general.email1_subject.strip():
+        raise Refused("email1_subject is blank on the General tab, so there is no personal subject to show")
     if not args.account:
         rows = _pick_rows(settings, args.version, args.industry, args.role or "")
         if not rows:
@@ -829,7 +824,8 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
             except ValueError as exc:
                 raise Refused(str(exc)) from None
             note = f"{text or 'none'} ({note})"
-        return copy_desk.preview(rows[0], settings, role=role, sender=args.sender or "", opener=text, opener_note=note)
+        return copy_desk.preview(rows[0], settings, role=role, sender=args.sender or "", opener=text, opener_note=note,
+                                 subject_arm=args.subject or "")
     domain = args.account.strip().lower()
     account = next(iter(ctx.store.select("accounts", {"domain": domain})), None)
     if account is None:
@@ -852,7 +848,7 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
     if why:
         note += f". The contact is not sendable yet: {why}"
     return copy_desk.preview(row, settings, role=role, sender=args.sender or "", opener=op.text, opener_note=note,
-                             account=account, contact=contact)
+                             account=account, contact=contact, subject_arm=args.subject or "")
 
 
 def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
@@ -1123,10 +1119,37 @@ def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
     return _job("suppression_load", args.live, factory)
 
 
+def _fit_row(value: str | None, flag: str) -> tuple[int, int] | bool | None:
+    """--close / --some LOWEST_FIT:WEIGHT as (lowest fit, weight); --some off as False; absent as None."""
+    if not value:
+        return None
+    if flag == "--some" and value.strip().lower() == "off":
+        return False
+    try:
+        low, weight = (int(v) for v in value.split(":"))
+    except ValueError:
+        raise Refused(f"{flag} takes LOWEST_FIT:WEIGHT, like 90:10, not {value!r}") from None
+    if not (0 <= low <= 100 and 0 < weight <= 100):
+        raise Refused(f"{flag}: the lowest fit is 0 to 100 and the weight 1 to 100, not {value!r}")
+    return low, weight
+
+
 def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
-    """The lookalike cells from the last lookalikes run (the database only), for the Focus tab and sourcing."""
+    """show: the lookalike cells from the last lookalikes run, for the Focus tab and sourcing. fit: the accounts'
+    lookalike fits and the tier mix the build's lookalike rows would give, scored in memory (Harry's check before
+    the Signals tab changes). Both read the database only and write nothing."""
     from us_outbound.sources import lookalikes
 
+    if args.action == "fit":
+        close, some = _fit_row(args.close, "--close"), _fit_row(args.some, "--some")
+        ctx = factory("lookalikes_fit", False)
+        try:
+            lines = lookalikes.fit_report(ctx, close, some)
+        except ValueError as exc:
+            raise Refused(str(exc)) from exc
+        for line in lines:
+            print(line)
+        return 0
     if args.top < 1:
         raise Refused("--top must be 1 or more")
     ctx = factory("lookalikes_show", False)
@@ -1255,6 +1278,49 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_clay(args: argparse.Namespace, factory: Factory) -> int:
+    """`clay check-email`: one Work Email lookup for a Spill colleague, to confirm the email fallback (ops/clay_check.py).
+    Calls Clay only with --live; exits 1 when the call failed or its output is not what the parser expects."""
+    from us_outbound.clients.clay import CHECK_EMAIL_JOB
+    from us_outbound.ops import clay_check
+
+    ctx = factory(CHECK_EMAIL_JOB, args.live, operator=True)
+    try:
+        report = clay_check.check_email(ctx, args.first, args.last, args.domain)
+    except ValueError as exc:
+        raise Refused(str(exc)) from exc
+    for line in clay_check.lines(report):
+        print(line)
+    return 0 if report["dry_run"] or report["verdict"] == clay_check.READY else 1
+
+
+def cmd_signals(args: argparse.Namespace, factory: Factory) -> int:
+    """Which signals predict replies (learn/signal_review.py), or the signal-value table (learn/signal_value.py,
+    from v_signal_value; Harry, 6 Oct 2026): read-only, the evidence for reweighting the Signals tab."""
+    if args.action == "value":
+        from us_outbound.learn import signal_value
+
+        ctx = factory("signals_value", False)
+        for line in signal_value.table_lines(signal_value.rows(ctx)):
+            print(line)
+        return 0
+    from us_outbound.learn import signal_review
+
+    for line in signal_review.lines(signal_review.review(factory("signals_review", False))):
+        print(line)
+    return 0
+
+
+def cmd_readout(args: argparse.Namespace, factory: Factory) -> int:
+    """The Monday readout (learn/readout.py), printed here and posted nowhere: read-only."""
+    from us_outbound.learn import readout
+
+    lines, _ = readout.build(factory("readout_show", False))
+    for line in lines:
+        print(line)
+    return 0
+
+
 def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     """The seed-inbox test of the opt-out (ops/seed.py): add a seed lead to a campaign, or read seed leads back."""
     from us_outbound.ops import seed
@@ -1272,7 +1338,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
             print("PASS: Instantly shows the seed lead as unsubscribed (status -2), which is what sync_outcomes reads. "
                   "Set optout_tested = yes on the General tab, then run `us-outbound sync`.")
             return 0
-        print("Not yet: open the seed email, click \"unsubscribe here\" at the bottom, then run `us-outbound seed check` "
+        print("Not yet: open the seed email, click \"Unsubscribe here\" at the bottom, then run `us-outbound seed check` "
               "again (Instantly can take a minute or two).")
         return 1
     if not args.address or not args.owner:
@@ -1280,12 +1346,12 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     ctx = factory(seed.JOB, args.live, operator=True)
     try:
         summary = run_job(ctx, lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "",
-                                                   role=args.role or ""))
+                                                   role=args.role or "", subject=args.subject))
     except (LookupError, ValueError) as exc:
         raise Refused(str(exc)) from exc
     print(f"Seed email for {summary['address']}, from {summary['sender']} ({summary['campaign']}, "
           f"{summary['campaign_status']}), copy {summary['copy_version']} ({summary['copy_status']}, {summary['role']}):")
-    print(f"  Subject: {summary['subject']}")
+    print(f"  Subject: {summary['subject']} ({seed.SUBJECT_NOTES[summary['subject_arm']]})")
     for line in summary["email_1"].splitlines():
         print(f"  {line}" if line else "")
     if ctx.dry_run:
@@ -1301,7 +1367,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
         print(f"Added. The campaign is {summary['campaign_status']}, so Instantly sends nothing yet. "
               f"`us-outbound start --live` activates it (it needs live_sending = yes; while optout_tested is no, "
               f"no prospect is added). Then Instantly sends it in the campaign's window: {window}.")
-    print("When it arrives: check it reads as formatted text with working links, click \"unsubscribe here\", then "
+    print("When it arrives: check it reads as formatted text with working links, click \"Unsubscribe here\", then "
           "run `us-outbound seed check`.")
     return 0
 
@@ -1365,7 +1431,7 @@ HELP = ("Spill's US Outbound engine. Dry-run by default. `--live` makes a comman
         "prospect (start, approvals send, replies send, every scheduled job) also needs live_sending = yes in the "
         "synced settings.")
 # Build and duplicate commands (4 Oct 2026): each still works as before, but `--help` lists only what Harry uses.
-HIDDEN = frozenset({"unenrol", "rescore", "dry-run", "test", "db", "hubspot", "suppression", "lookalikes", "pages",
+HIDDEN = frozenset({"unenrol", "rescore", "dry-run", "db", "hubspot", "suppression", "lookalikes", "pages",
                     "data", "scheduler"})
 
 
@@ -1429,6 +1495,18 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--text", "--edit", dest="edit",
                     help="send: send this text instead of the draft (recorded as edited)")
 
+    sg = command("signals", "which signals predict replies (review), or the signal-value table (value); read-only",
+                 cmd_signals)
+    sg.add_argument("action", choices=["review", "value"],
+                    help="review: each signal's verdict from the events; value: the table, with meetings, against "
+                         "the companies without it")
+    command("readout", "the Monday readout for last week, printed here and posted nowhere (read-only)", cmd_readout)
+    ts = command("test", "start a test on the Tests tab, or read it at a pre-registered look", cmd_test,
+                 takes_live=True)
+    ts.add_argument("action", choices=["start", "read"],
+                    help="read refuses before the test's first look (its looks, then read_date), so nobody peeks")
+    ts.add_argument("test_id")
+
     sd = command("seed", "the seed-inbox test of the unsubscribe link: send a seed email, or check it",
                  cmd_seed, takes_live=True)
     sd.add_argument("action", choices=["send", "check"])
@@ -1436,6 +1514,9 @@ def build_parser() -> argparse.ArgumentParser:
     sd.add_argument("--owner", help="send: whose campaign sends it, e.g. \"Hannah Spalding\"")
     sd.add_argument("--industry", help="send: whose Copy row to use (default: the first active industry)")
     sd.add_argument("--role", help="send: the copy role (default: People leader)")
+    sd.add_argument("--subject", choices=["personal", "copy"], default="copy",
+                    help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
+                         "s1_subject, the default)")
 
     kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
     kr.add_argument("action", choices=["show", "clear"])
@@ -1448,7 +1529,8 @@ def build_parser() -> argparse.ArgumentParser:
     mb.add_argument("--domain", help="the address's domain (add; defaults to it)")
     mb.add_argument("--daily-cap", type=int, default=30, help="sends per day (add; at most 30)")
     mb.add_argument("--fix", action="store_true",
-                    help="check: also create missing campaigns and put drifted ones right (campaigns ensure --fix)")
+                    help="check: also set each sender name to its owner's full name, create missing campaigns "
+                         "and put drifted ones right (campaigns ensure --fix)")
 
     cp = command("campaigns", "show each sender's campaign, or create them (paused) and put drift right",
                  cmd_campaigns, takes_live=True)
@@ -1471,6 +1553,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "opener_generic_*; Control accounts too)")
     co.add_argument("--account", metavar="DOMAIN",
                     help="preview: a stored account, its contact and the opener enrol would give it")
+    co.add_argument("--subject", choices=["personal", "copy"],
+                    help="preview: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
+                         "s1_subject); default: a stored account's own arm, else copy")
     co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
     co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
@@ -1479,7 +1564,8 @@ def build_parser() -> argparse.ArgumentParser:
                  takes_live=True)
     st.add_argument("action", choices=["sync", "load", "bootstrap"])
     st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
-    st.add_argument("--tab", action="append", choices=["General", "Industries", "Copy", "Roles", "Signals", "Focus"],
+    st.add_argument("--tab", action="append",
+                    choices=["General", "Industries", "Copy", "Roles", "Signals", "Focus", "Tests"],
                     help="load: the tab (default General, Industries, Copy and Roles)")
     st.add_argument("--take", action="append", metavar="COLUMN",
                     help="load: let the build's value win for a column Harry owns (Industries active, priority; "
@@ -1492,6 +1578,13 @@ def build_parser() -> argparse.ArgumentParser:
     hc.add_argument("action", choices=["show", "approve"])
     hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
                     help="approve: accounts to leave out (ids or domains)")
+
+    cl = command("clay", "one Work Email lookup for your own name, to confirm Clay's email fallback", cmd_clay,
+                 takes_live=True)
+    cl.add_argument("action", choices=["check-email"])
+    cl.add_argument("--first", required=True, help="your first name (a Spill colleague's own, never a prospect's)")
+    cl.add_argument("--last", required=True, help="your last name")
+    cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
     er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
     er.add_argument("--email", required=True)
@@ -1506,19 +1599,20 @@ def build_parser() -> argparse.ArgumentParser:
     command("rescore", "run the score job", cmd_rescore, takes_live=True)
     dr = command("dry-run", "run a job in dry-run", cmd_dry_run)
     dr.add_argument("job")
-    ts = command("test", "start or read the copy test", cmd_test, takes_live=True)
-    ts.add_argument("action", choices=["start", "read"])
-    ts.add_argument("test_id")
     db = command("db", "create the tables and views in DATABASE_URL (prints them unless --live)", cmd_db, takes_live=True)
     db.add_argument("action", choices=["apply"])
     hs = command("hubspot", "the six properties, and the ids for the General tab", cmd_hubspot, takes_live=True)
     hs.add_argument("action", choices=["setup", "ids"])
     sp = command("suppression", "load HubSpot opt-outs and bounces", cmd_suppression, takes_live=True)
     sp.add_argument("action", choices=["load"])
-    lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers", cmd_lookalikes)
-    lk.add_argument("action", choices=["show"])
+    lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers, or the accounts' fits",
+                 cmd_lookalikes)
+    lk.add_argument("action", choices=["show", "fit"])
     lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
     lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
+    lk.add_argument("--close", metavar="FIT:WEIGHT", help="fit: try Close match at this lowest fit and weight, like 90:10")
+    lk.add_argument("--some", metavar="FIT:WEIGHT", help="fit: try Some match from this lowest fit up to Close match's, "
+                    "like 60:4, or off")
     pg = command("pages", "what the careers and benefits page reader has found, and its coverage", cmd_pages)
     pg.add_argument("action", choices=["show"])
     dt = command("data", "what the sources have stored, in aggregate (read-only)", cmd_data)

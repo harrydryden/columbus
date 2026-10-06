@@ -55,9 +55,15 @@ MAILBOX_HEADERS = list(COLUMNS["Mailboxes"])
 # -- fakes -----------------------------------------------------------------------------------
 
 
+# Each account's sender name in Instantly, already the owner's full name (Harry, 5 Oct 2026).
+SENDER_NAMES = {HANNAH: ("Hannah", "Spalding"), SAM: ("Sam", "Jackson"), HARRY: ("Harry", "Dryden"),
+                HARRY2: ("Harry", "Dryden")}
+
+
 def warm_account(email: str, *, score: int = 98, warmup: int = 1, started: str = "2026-08-01T09:00:00.000Z") -> dict:
+    first, last = SENDER_NAMES.get(email, ("", ""))
     return {"email": email, "status": 1, "warmup_status": warmup, "stat_warmup_score": score,
-            "timestamp_warmup_start": started, "daily_limit": 30}
+            "timestamp_warmup_start": started, "daily_limit": 30, "first_name": first, "last_name": last}
 
 
 class FakeInstantly:
@@ -603,6 +609,95 @@ def test_mailbox_health_in_dry_run_only_reports_a_limit_it_would_set():
     assert "Would set sam@meetspill.org's Instantly daily limit from 20 to 30" in post["text"]
 
 
+# -- the sender name prospects see (Harry, 5 Oct 2026) --------------------------------------------------
+
+
+def account_patches(t: FakeTransport) -> list:
+    return [r for r in t.requests if r.method == "PATCH" and "/accounts/" in r.url]
+
+
+def misnamed() -> dict[str, dict]:
+    """The accounts as the seed emails of 5 Oct showed them: From "Hannah at Spill" and "Sam from Spill"."""
+    accounts = {m.address: warm_account(m.address) for m in MAILBOXES}
+    accounts[HANNAH].update(first_name="Hannah", last_name="at Spill")
+    accounts[SAM].update(first_name="Sam from Spill", last_name="")
+    return accounts
+
+
+def test_sender_name_is_the_owner_s_full_name_split_at_the_first_space():
+    assert reg.sender_name("Hannah Spalding") == ("Hannah", "Spalding")
+    assert reg.sender_name(" Mary  Ann de Vries ") == ("Mary", "Ann de Vries")
+    assert reg.sender_name("Cher") == ("Cher", "")
+
+
+def test_mailbox_health_reports_a_sender_name_that_is_not_the_owner_s_full_name():
+    ctx, t, inst, sheets = setup(accounts=misnamed())
+    out = reg.mailbox_health(ctx)  # live, but without fix_names: reported, not set
+    assert out["name_drift"] == {HANNAH: {"from": ["Hannah", "at Spill"], "to": ["Hannah", "Spalding"]},
+                                 SAM: {"from": ["Sam from Spill", ""], "to": ["Sam", "Jackson"]}}
+    assert out["names_set"] == [] and account_patches(t) == []
+    assert "name_drift" in out["post_reasons"]
+    [post] = posts(t)
+    assert ('Sender name of hannah@meetspill.org (first / last) is "Hannah" / "at Spill", not its owner\'s full name '
+            '"Hannah" / "Spalding". Fix with `us-outbound mailbox check --fix --live`.') in post["text"]
+
+
+def test_fix_names_sets_only_first_and_last_name_and_only_where_they_differ():
+    accounts = misnamed()
+    before = {a: dict(acct) for a, acct in accounts.items()}
+    ctx, t, inst, sheets = setup(accounts=accounts)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert out["names_set"] == [HANNAH, SAM]
+    assert [(r.url.rsplit("/", 1)[1], r.json) for r in account_patches(t)] == [
+        (HANNAH, {"first_name": "Hannah", "last_name": "Spalding"}),
+        (SAM, {"first_name": "Sam", "last_name": "Jackson"}),
+    ]  # Harry's two already carry his full name: no write
+    for address, acct in accounts.items():  # nothing else on any account changed
+        first, last = SENDER_NAMES[address]
+        assert acct == {**before[address], "first_name": first, "last_name": last}
+    assert [c.action for c in ctx.guard.writes("instantly") if c.action.startswith("account.")] == [
+        "account.update_name", "account.update_name"]  # no warmup or daily-limit write
+    [post] = posts(t)
+    assert ('Set hannah@meetspill.org\'s sender name (first / last) from "Hannah" / "at Spill" to "Hannah" / '
+            '"Spalding", its owner\'s full name') in post["text"]
+    again = reg.mailbox_health(ctx, fix_names=True)
+    assert again["name_drift"] == {} and len(account_patches(t)) == 2
+
+
+def test_fix_names_in_dry_run_sends_nothing():
+    accounts = misnamed()
+    ctx, t, inst, sheets = setup(live=False, accounts=accounts)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert out["names_set"] == [HANNAH, SAM] and account_patches(t) == []
+    assert (accounts[HANNAH]["last_name"], accounts[SAM]["first_name"]) == ("at Spill", "Sam from Spill")
+    names = [c for c in ctx.guard.writes("instantly") if c.action == "account.update_name"]
+    assert len(names) == 2 and not any(c.sent for c in names)
+    [post] = posts(t)
+    assert ('Would set sam@meetspill.org\'s sender name (first / last) from "Sam from Spill" / "" to "Sam" / '
+            '"Jackson"') in post["text"]
+
+
+def test_names_already_right_cause_no_write():
+    ctx, t, inst, sheets = setup()
+    go_live(ctx)
+    inst.standard(C_HARRY, [HARRY, HARRY2], 60, status=1)
+    inst.standard(C_HANNAH, [HANNAH], 30, status=1)
+    inst.standard(C_SAM, [SAM], 30, status=1)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert out["name_drift"] == {} and out["names_set"] == []
+    assert instantly_writes(t) == [] and out["posted"] is False
+
+
+def test_a_retired_mailbox_s_name_is_neither_read_nor_set():
+    settings = dataclasses.replace(SETTINGS, mailboxes=(*MAILBOXES[:3], mailbox(HARRY2, "Harry Dryden", "Retired")))
+    accounts = misnamed()
+    accounts[HARRY2].update(first_name="Harry at Spill", last_name="")
+    ctx, t, inst, sheets = setup(settings, accounts=accounts)
+    out = reg.mailbox_health(ctx, fix_names=True)
+    assert set(out["name_drift"]) == {HANNAH, SAM} and accounts[HARRY2]["first_name"] == "Harry at Spill"
+    assert not [r for r in t.requests if HARRY2 in r.url]
+
+
 def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():
     ctx, t, inst, sheets = setup()
     c = inst.standard(C_HARRY, [HARRY, HARRY2], 60)
@@ -623,8 +718,10 @@ def test_every_step_ends_with_instantly_s_unsubscribe_link():
     html, text = reg.campaign_steps(), reg.campaign_steps(text_only=True)
     assert [s["subject"] for s in html] == [f"{{{{s{i}_subject}}}}" for i in range(1, 5)]
     for i, (h, t) in enumerate(zip(html, text), start=1):
-        assert h["body"].startswith(f"<div>{{{{s{i}_body}}}}</div><p><a href=\"{UNSUBSCRIBE_TAG}\">")
-        assert t["body"] == f"{{{{s{i}_body}}}}\n\nTo stop hearing from us, unsubscribe here: {UNSUBSCRIBE_TAG}"
+        # Harry, 5 Oct 2026: plainer words in small grey type.
+        assert h["body"] == (f"<div>{{{{s{i}_body}}}}</div><p style=\"font-size:12px;color:#888888\">Not relevant? "
+                             f"<a href=\"{UNSUBSCRIBE_TAG}\" style=\"color:#888888\">Unsubscribe here</a>.</p>")
+        assert t["body"] == f"{{{{s{i}_body}}}}\n\nNot relevant? Unsubscribe here: {UNSUBSCRIBE_TAG}"
     assert CAMPAIGN_SETTINGS["insert_unsubscribe_header"] is True  # and the mail client's one-click button
 
 
@@ -649,3 +746,15 @@ def test_drift_reads_a_campaign_as_instantly_returns_it():
     assert set(drift) == {"steps.1", "steps.2", "steps.3", "steps.4"}
     returned["link_tracking"] = True  # a tracking setting turned on in Instantly is still drift
     assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["link_tracking"] == [False, True]
+    # Harry, 5 Oct 2026: the unsubscribe link moved from {{unsubscribe}} (sent as href="") to Instantly's
+    # placeholder address. The text is unchanged, so only the link shows the old template.
+    old = returned["sequences"][0]["steps"][0]["variants"][0]
+    fresh = reg.campaign_steps()[0]["body"]
+    old["body"] = fresh.replace(UNSUBSCRIBE_TAG, "{{unsubscribe}}")
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["steps.1"][1]["links"] == ["{{unsubscribe}}"]
+    old["body"] = fresh
+    # Harry, 5 Oct 2026: Instantly sent the seed's email 1 as text only, without its unsubscribe link.
+    returned["first_email_text_only"] = True
+    assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["first_email_text_only"] == [False, True]
+    assert reg._fix_fields({"first_email_text_only": [False, True]}, SETTINGS, "Hannah Spalding") == {
+        "first_email_text_only": False}

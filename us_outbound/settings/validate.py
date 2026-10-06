@@ -23,20 +23,25 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from us_outbound.clean.people import title_key
-from us_outbound.enrol.copy_rules import money_violations
+from us_outbound.enrol import copy_markup
+from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
+    AB_TEST,
     ACTIONS,
     CLAY_VERIFICATION_MODES,
     COPY_STATUSES,
     COPY_STEPS,
+    EMAIL1_SUBJECT_VARIABLES,
     EMAIL_FORMATS,
     FOCUS_LINE_TOKENS,
     GENERAL_COPY,
     GENERIC_LINE_TOKENS,
     GENERIC_OPENER_KEY,
     GENERIC_OPENER_KEYS,
+    HOLDOUT_ARMS,
+    HOLDOUT_TEST,
     MAILBOX_STATUSES,
     OPENER_COLUMNS,
     OPENER_SELF_COLUMN,
@@ -48,10 +53,12 @@ from us_outbound.settings.model import (
     RETIRED_OPENER_TOKENS,
     ROLE_LINE_COLUMNS,
     ROLE_ORDER_COLUMNS,
+    SIZE_LADDER,
     OPTIONAL_TABS,
     SOURCE_FIELDS,
     SOURCE_KEYS,
     TABS,
+    TEST_KINDS,
     TEST_STATUSES,
     TEXT_SOURCES,
     Angle,
@@ -83,6 +90,7 @@ TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Roles": frozenset({"copy_role", "industry_groups"}),
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
     "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
+    "Tests": frozenset({"kind", "looks"}),  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -202,6 +210,24 @@ def parse_date(text: str) -> date:
         return date.fromisoformat(t)
     except ValueError:
         raise ValueError(f"must be a date written YYYY-MM-DD, not {text!r}") from None
+
+
+def parse_looks(text: str) -> tuple[int | date, ...]:
+    """"200; 2026-11-16" -> (200, date(2026, 11, 16)): a test's pre-registered looks (Harry, 6 Oct 2026), each a
+    whole number of accounts per arm with closed reply windows, or a date. Separated by semicolons or commas."""
+    out: list[int | date] = []
+    for part in split_list(text, ";,"):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
+            look: int | date = parse_date(part)
+        elif re.fullmatch(r"\d+", part) and int(part) >= 1:
+            look = int(part)
+        else:
+            raise ValueError(f"each look is a number of accounts per version, like 200, or a date written "
+                             f"YYYY-MM-DD, not {part!r}")
+        if look in out:
+            raise ValueError(f"{part} is listed twice")
+        out.append(look)
+    return tuple(out)
 
 
 def split_list(text: str, seps: str = ";") -> tuple[str, ...]:
@@ -499,6 +525,28 @@ def _line_problems(value: str, tokens: Iterable[str]) -> list[str]:
     return problems + money_violations(value)
 
 
+# copy_desk's sample prospect (Harbor & Finch, Dana): email1_subject is checked as it reads for them.
+_SAMPLE_SUBJECT_VALUES = {"company": "Harbor & Finch", "first_name": "Dana"}
+_HTML_TAG = re.compile(r"</?\s*[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")
+
+
+def email1_subject_problems(value: str) -> list[str]:
+    """General email1_subject (Harry, 5 Oct 2026), checked as a subject: {{company}} and {{first_name}} only, no
+    markup (a subject is plain text, as render_step requires of a Copy row's), and the subject copy rules on it as
+    it reads for the sample prospect (copy_rules.subject_violations), within SUBJECT_MAX characters."""
+    allowed = " and ".join(f"{{{{{v}}}}}" for v in EMAIL1_SUBJECT_VARIABLES)
+    out = [f"may use only {allowed}, not {{{{{name}}}}}"
+           for name in _VARIABLE.findall(value) if name not in EMAIL1_SUBJECT_VARIABLES]
+    out += [f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}"
+            for name in _SINGLE_BRACE.findall(value)]
+    if copy_markup.links(value) or "**" in value or _HTML_TAG.search(value):
+        out.append("has markup; a subject is plain text")
+    if out:
+        return list(dict.fromkeys(out))
+    filled, _ = copy_markup.fill_text(value, _SAMPLE_SUBJECT_VALUES)
+    return subject_violations(filled, exempt=_SAMPLE_SUBJECT_VALUES.values())
+
+
 def _check_general_value(key: str, value: Any) -> None:
     hint = _GENERAL_TYPES[key]
     if hint in (int, float) and value < 0:
@@ -509,6 +557,14 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
     if key == "opener_holdout_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")
+    if key in ("min_employees", "max_employees") and not 1 <= value < SIZE_LADDER[-1]:
+        raise ValueError(f"is a headcount from 1 to {SIZE_LADDER[-1] - 1}, like 10 or 249")
+    if key == "email1_subject_share" and not 0 <= value <= 1:
+        raise ValueError("is a share: between 0 and 1, like 0.5 for half of the email 1s with email1_subject")
+    if key == "email1_subject" and value:
+        problems = email1_subject_problems(value)
+        if problems:
+            raise ValueError("; ".join(problems))
     if key == "opener_focus_line" and value:
         problems = _line_problems(value, FOCUS_LINE_TOKENS)
         if not problems and "{focus}" not in value.replace(" ", ""):
@@ -521,6 +577,11 @@ def _check_general_value(key: str, value: Any) -> None:
             raise ValueError("; ".join(problems))
     if key == "escalation_hours" and value < 1:
         raise ValueError("must be at least 1")
+    # A second contact (enrol/second.py; Harry, 6 Oct 2026).
+    if key == "second_contact_min_employees" and value < 1:
+        raise ValueError("is a number of staff, like 50")
+    if key == "second_contact_delay_days" and value < 1:
+        raise ValueError("must be at least 1, so the two people's first emails never arrive the same day")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
     if key == "escalation_email":
@@ -546,6 +607,13 @@ def _check_general_value(key: str, value: Any) -> None:
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:
             raise ValueError(f"{', '.join(bad)} is not a Slack user id (they look like U01ABCDEF)")
+    # The website-visit signals (sources/site_visits.py; Harry, 5 Oct 2026).
+    if key == "site_visit_domain" and value and not _DOMAIN.fullmatch(value.strip().lower()):
+        raise ValueError(f"is the bare domain Apollo's tracker is on, like spill.chat (no https:// or path), not {value!r}")
+    if key in ("site_visit_us_paths", "site_visit_intent_paths"):
+        bad = [v for v in value if not v.startswith("/")]
+        if bad:
+            raise ValueError(f"{', '.join(bad)} is not a path on the site: each starts with /, like /us/pricing")
 
 
 def _general(rows: list[_Row]) -> General:
@@ -597,6 +665,14 @@ def _general(rows: list[_Row]) -> General:
         err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
     if g.live_sending and not g.approver_slack_ids:
         err("live_sending", "cannot be yes while approver_slack_ids is blank")
+    if g.min_employees > g.max_employees:
+        err("min_employees", f"must not be above max_employees ({g.max_employees})")
+    if g.clay_cross_check and not g.clay_accounts_function_id.strip():
+        err("clay_cross_check", "cannot be yes while clay_accounts_function_id is blank: build the \"US Outbound – "
+                                "Accounts\" function in Clay first (docs/pipeline.md), then paste its id")
+    if g.email1_subject_share > 0 and not g.email1_subject.strip():
+        err("email1_subject", f"cannot be blank while email1_subject_share is above 0 ({g.email1_subject_share:g}); "
+                              "write a subject, or set the share to 0")
     return g
 
 
@@ -1035,18 +1111,33 @@ def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
     return out
 
 
+def _holdout_arms(a: str, b: str) -> str:
+    """Why a holdout test's versions are not the two arms of one split, or ""."""
+    col_a, col_b = HOLDOUT_ARMS.get(a.casefold()), HOLDOUT_ARMS.get(b.casefold())
+    if col_a and col_a == col_b and a.casefold() != b.casefold():
+        return ""
+    return ("a holdout test compares the two arms of one split enrol records: opener and holdout (the opener "
+            "holdout), or personal and copy (email 1's subject)")
+
+
 def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
+    """The Tests tab. kind (ab, the default, or holdout) and looks (Harry, 6 Oct 2026) are optional columns."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
     for r in rows:
         test_id = r.parse("test_id", str)
         _unique(r, "test_id", test_id, seen, f"test {test_id!r}")
+        kind = r.parse("kind", one_of(TEST_KINDS), required=False, default=AB_TEST)
         hypothesis = r.parse("hypothesis", str)
         a = r.parse("version_a", str)
         b = r.parse("version_b", str)
         if a and b and a == b:
             r.fail("version_b", "must differ from version_a")
+        elif a and b and kind == HOLDOUT_TEST and (why := _holdout_arms(a, b)):
+            r.fail("version_b", why)
+        elif kind == HOLDOUT_TEST and a and b:
+            a, b = a.casefold(), b.casefold()  # the arms as enrol writes them
         n = r.parse("accounts_per_version", parse_int)
         if n is not None and n < 1:
             r.fail("accounts_per_version", "must be 1 or more")
@@ -1057,13 +1148,24 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
         rule = r.parse("decision_rule", str, required=is_running, default="")
         if start and read and read <= start:
             r.fail("read_date", "must be after start_date")
-        if is_running:
+        looks = r.parse("looks", parse_looks, required=False, default=())
+        for look in looks:
+            if isinstance(look, date):
+                if start and look <= start:
+                    r.fail("looks", f"{look} must be after start_date ({start})")
+                if read and look >= read:
+                    r.fail("looks", f"{look} must be before read_date ({read}), which is always the last look")
+            elif n is not None and look > n:
+                r.fail("looks", f"{look} is more than accounts_per_version ({n})")
+        # SPEC 9: one copy test at a time, since it decides each account's copy. A holdout assigns nothing.
+        if is_running and kind == AB_TEST:
             if running is not None:
                 r.fail("status", f"only one test runs at a time; row {running} is already running")
             else:
                 running = r.number
         if r.ok:
-            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result")), r.number))
+            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks),
+                        r.number))
     return out
 
 
@@ -1174,7 +1276,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
     # A test's versions may be written after it is planned; a running test needs both approved.
     versions = {_cell(r, "copy_version").casefold(): _cell(r, "status").lower() for r in raw["Copy"] or ()}
     for t, row in values["Tests"]:
-        if t.status != "running":
+        if t.status != "running" or t.kind != AB_TEST:  # a holdout's arms are no copy versions
             continue
         for col, version in (("version_a", t.version_a), ("version_b", t.version_b)):
             status = versions.get(version.casefold())

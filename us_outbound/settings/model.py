@@ -35,7 +35,8 @@ SOURCE_KEYS = (
     "layoffs",
     "calendar",
     "named",
-    "lookalike",  # Spill's HubSpot customers in the account's industry group and size band (sources/lookalikes.py)
+    "lookalike",  # how the account compares with Spill's HubSpot customers: the lookalike fit (sources/lookalikes.py)
+    "lookalike_lead",  # found by Apollo as like a Spill customer, monthly (sources/lookalike_leads.py; Harry, 5 Oct 2026)
 )
 # Sources whose facts carry page or posting text that term lists are matched against.
 TEXT_SOURCES = frozenset({"clay_careers", "careers_pages", "job_posts"})
@@ -50,10 +51,16 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "apollo_org": frozenset(
         {"employees", "size_band", "naics", "hq_state", "open_roles", "headcount_growth_12m", "days_since_funding",
          "funding_stage", "funding_amount_usd", "founded_year", "technologies", "keywords", "apollo_industry",
-         "description"}
+         "description",
+         # shrinking, flat, growing, fast or unknown: 12-month headcount growth, from headcount_growth_12m or
+         # Apollo's search by growth range (sources/lookalikes.py; Harry, 5 Oct 2026).
+         "headcount_growth_band"}
     ),
+    # people_search_coverage (the people Apollo holds over the employees) and people_found: sources/apollo_people.py
+    # (Harry, 5 Oct 2026), so a People leader count of 0 is read only where Apollo's data is deep enough.
     "apollo_people": frozenset(
-        {"people_leader_count", "people_leader_days_in_title", "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
+        {"people_leader_count", "people_leader_days_in_title", "people_search_coverage", "people_found",
+         "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
     ),
     "apollo_jobs": frozenset({"open_people_roles", "open_roles", "posting_titles"}),  # sources/apollo_jobs.py
     "site_visits": frozenset({"us_visits_30d", "pricing_or_demo_visits_30d", "top_paths", "days_since_first_visit"}),
@@ -67,7 +74,13 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
     "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
-    "lookalike": frozenset({"lookalike_active", "lookalike_strength"}),  # sources/lookalikes.py (Harry, 1 Oct 2026)
+    # sources/lookalikes.py (Harry, 1 Oct 2026). lookalike_fit (0 to 100) and its three parts (0 to 1; size and
+    # growth null when unknown): Harry, 5 Oct 2026.
+    "lookalike": frozenset({"lookalike_active", "lookalike_strength", "lookalike_fit", "lookalike_industry_fit",
+                            "lookalike_size_fit", "lookalike_growth_fit"}),
+    # The company itself was found as like a Spill customer (sources/lookalike_leads.py). Its lookalike_lead fact
+    # (the seed's group, band and country) is a dict, which no condition reads, so the signal reads this flag.
+    "lookalike_lead": frozenset({"found_as_lookalike"}),
 }
 # Fields that count days up to the moment they were read. A source stores each as of its
 # observed_at; scoring adds the days since then, so a fact read months ago still tells the truth.
@@ -104,13 +117,35 @@ GENERIC_OPENER_KEYS = {"People leader": "opener_generic_people", "Founder or exe
                        "Operations": "opener_generic_ops"}
 GENERIC_OPENER_KEY = "opener_generic"
 GENERIC_LINE_TOKENS = ("company", "city")
+# The {{variables}} General email1_subject may use (Harry, 5 Oct 2026: a personal subject for email 1).
+EMAIL1_SUBJECT_VARIABLES = ("company", "first_name")
 # Condition fields that make a signal about one person, so its opener_self line can apply.
 PERSON_FIELDS = frozenset({"people_leader_days_in_title"})
 # The Roles tab's two size columns and the range each covers (SPEC 5 "Who to contact first").
 ROLE_ORDER_COLUMNS = {"order_10_49": "10-49", "order_50_249": "50-249"}
 QA_VERDICTS = ("pass", "fail")
 TEST_STATUSES = ("planned", "running", "read", "stopped")
-SIZE_BANDS = ("10-19", "20-49", "50-99", "100-249")
+# The Tests tab's kind (Harry, 6 Oct 2026; learn/looks.py). ab: a copy A/B, version_a and version_b are Copy-tab
+# copy_versions, accounts split by hash (SPEC 9), and only one runs at a time. holdout: a split enrol already
+# records on each contact, read by its two arms; it assigns nothing, so it may run beside the copy test.
+AB_TEST, HOLDOUT_TEST = TEST_KINDS = ("ab", "holdout")
+# A holdout test's arms: the value enrol writes, and the contacts column it is in. The opener holdout
+# (enrol/openers.py: opener or holdout) and email 1's subject split (render.subject_arm: personal or copy).
+HOLDOUT_ARMS: dict[str, str] = {"opener": "opener_arm", "holdout": "opener_arm",
+                                "personal": "subject_arm", "copy": "subject_arm"}
+# Company size bands: SPEC 2's four (10-19 to 100-249) inside a ladder that runs further each way, so the
+# General min_employees and max_employees can move (Harry, 6 Oct 2026: "update that to say 5-500 easily").
+# A band's label never changes; Apollo is searched with the band clipped to the General range.
+SIZE_LADDER = (1, 5, 10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+SIZE_BANDS = tuple(f"{lo}-{nxt - 1}" for lo, nxt in zip(SIZE_LADDER, SIZE_LADDER[1:]))
+
+
+def band_bounds(band: str) -> tuple[int, int]:
+    """"50-99" -> (50, 99)."""
+    lo, _, hi = band.partition("-")
+    return int(lo), int(hi)
+
+
 # General clay_verification (Harry, 1 Oct 2026): required is SPEC 2 (every account through Clay before it
 # can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
 CLAY_REQUIRED, CLAY_SKIP = "required", "skip"
@@ -171,7 +206,7 @@ class General:
     stop_rule_meetings: int = 5
     stop_rule_bounce_rate: float = 0.03  # (build) the stop rule's account-level bounce share (learn/kill_rules.py)
     stop_rule_complaint_rate: float = 0.003  # (build) and spam-complaint share: Google's 0.3% line
-    optout_tested: bool = False  # (build) Harry: yes once a seed-inbox test shows {{unsubscribe}} works (golive)
+    optout_tested: bool = False  # (build) Harry: yes once a seed-inbox test shows the unsubscribe link works (golive)
     hubspot_pipeline: str = "Spill 3.0"
     hubspot_pipeline_id: str = ""  # (build) looked up through the API in phase 0
     hubspot_deal_stage: str = ""
@@ -182,14 +217,37 @@ class General:
     clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
     clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
     clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
+    # (build) Harry, 6 Oct 2026: Clay's cross-check of the HQ state and size Apollo leaves in doubt, before the weekly
+    # hand-check (us_outbound/clay_cross_check.py), through clay_accounts_function_id; no until that function is built.
+    clay_cross_check: bool = False
+    # (build) Harry, 6 Oct 2026: a second contact, of another role, at accounts of second_contact_min_employees or
+    # more staff (company_size), second_contact_delay_days after the first contact's email 1, from the same sender
+    # (enrol/second.py). Off by default: sending capacity is the binding limit today.
+    second_contact: bool = False
+    second_contact_min_employees: int = 50
+    second_contact_delay_days: int = 3
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
     # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.
     apollo_enrich_groups: tuple[str, ...] = ("Technology & Startups",)
+    # (build) Harry, 5 Oct 2026: the website-visit signals (sources/site_visits.py). The site Apollo's visitor tracker
+    # is on (blank: the job reads nothing), and the pages that count as a US-site visit and as a pricing or demo
+    # visit: Apollo matches a page whose path contains any of them.
+    site_visit_domain: str = "spill.chat"
+    site_visit_us_paths: tuple[str, ...] = ("/us",)
+    site_visit_intent_paths: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
+    # (build) Harry, 6 Oct 2026: the company size range, in employees, both ends included (SPEC 2: 10 to 249).
+    # Every source searches it, verify_accounts holds accounts to it, and the hand-check's size edges follow it.
+    min_employees: int = 10
+    max_employees: int = 249
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0
     email_format: str = "html"  # (build) html: links and bullets; text: plain text, links written out
+    # (build) The learning loop (Harry, 6 Oct 2026). yes: the links to our site and Harry's booking link carry
+    # UTM parameters, in the HTML only (enrol/utm.py); the words of every link stay as they are. no (the default):
+    # bare links, until the seeds show tagged links don't push the emails into AI "marketing" folders.
+    utm_links: bool = False
     # (build) Tokenized openers (Harry, 2 Oct 2026; enrol/openers.py): the share of accounts held out with no
     # opener, so replies can compare opener against none; and the optional "what they do" line.
     opener_holdout_share: float = 0.3
@@ -204,6 +262,13 @@ class General:
         "Pressure in work and life seems to keep rising, and it hardly ever waits for a convenient week.")
     opener_focus: bool = False
     opener_focus_line: str = "I came across {company} and its work on {focus}."
+    # (build) Harry, 5 Oct 2026: a personal subject for email 1, as a measured split. Mail filters (Superhuman,
+    # Gmail) and people read a short, lower-case subject about the recipient as personal mail; the Copy rows'
+    # subjects read like headlines. email1_subject_share of accounts, by a hash of the account id (its own salt,
+    # so it is independent of the opener holdout), get email1_subject instead of the Copy row's s1_subject;
+    # emails 2 to 4 keep the Copy row's subjects (render.subject_arm; contacts.subject_arm).
+    email1_subject: str = "support for the {{company}} team"
+    email1_subject_share: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -319,9 +384,14 @@ class Role:
         return self.copy_role or self.role
 
     def order_at(self, employees: int | None) -> int | None:
-        """This row's rank at a company of this size, or None when it is not contacted there."""
+        """This row's rank at a company of this size, or None when it is not contacted there. A company outside
+        every range on the tab (General min_employees or max_employees set wider: 5, 500) takes the order of the
+        nearest range, so a 7-person company is read as 10-49 and a 400-person one as 50-249."""
         if employees is None:
             return None
+        if self.order:
+            spans = [band_bounds(rng) for rng in ROLE_ORDER_COLUMNS.values()]
+            employees = min(max(employees, min(lo for lo, _ in spans)), max(hi for _, hi in spans))
         ranks = [rank for rng, rank in self.order.items() if _in_range(employees, rng)]
         return min(ranks) if ranks else None
 
@@ -430,6 +500,10 @@ class Override:
 
 @dataclass(frozen=True)
 class Test:
+    """A Tests-tab row. looks are the pre-registered interim looks (Harry, 6 Oct 2026; learn/looks.py), in order:
+    a whole number N (the smaller arm has N accounts with step 1 delivered and their reply window closed) or a
+    date. read_date is always the last look."""
+
     test_id: str
     hypothesis: str
     version_a: str
@@ -440,6 +514,8 @@ class Test:
     read_date: date | None = None
     decision_rule: str = ""
     result: str = ""
+    kind: str = AB_TEST
+    looks: tuple[int | date, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -491,6 +567,27 @@ class Settings:
     def industry(self, label: str) -> Industry | None:
         return next((i for i in self.industries if i.industry == label), None)
 
+    def size_bands(self) -> tuple[str, ...]:
+        """The SIZE_BANDS the General size range touches, smallest first."""
+        lo, hi = self.general.min_employees, self.general.max_employees
+        return tuple(b for b in SIZE_BANDS if band_bounds(b)[0] <= hi and band_bounds(b)[1] >= lo)
+
+    def employee_range(self, band: str) -> str:
+        """Apollo's employee range for a band, clipped to the General size range: "250,499" -> "250,300"."""
+        lo, hi = band_bounds(band)
+        return f"{max(lo, self.general.min_employees)},{min(hi, self.general.max_employees)}"
+
+    def size_in_range(self, employees: int | float) -> bool:
+        return self.general.min_employees <= employees <= self.general.max_employees
+
+    def band_in_range(self, band: str) -> bool:
+        """Whether a band (from a size-filtered search) lies in the General range, at least in part."""
+        return band in self.size_bands()
+
+    def size_range_text(self) -> str:
+        """"10 to 249", as the reasons and prompts write it."""
+        return f"{self.general.min_employees} to {self.general.max_employees}"
+
     def active_states(self) -> tuple[str, ...]:
         return tuple(s.state for s in self.states if s.active)
 
@@ -513,7 +610,8 @@ class Settings:
         return tuple(seen)
 
     def running_test(self) -> Test | None:
-        return next((t for t in self.tests if t.status == "running"), None)
+        """The copy test enrol assigns versions for: the running test of kind ab (a holdout assigns nothing)."""
+        return next((t for t in self.tests if t.status == "running" and t.kind == AB_TEST), None)
 
     def copy_row(self, copy_version: str) -> CopyRow | None:
         return next((c for c in self.copy if c.copy_version == copy_version), None)

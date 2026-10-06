@@ -294,13 +294,17 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
         # Email 1 links the industry page; emails 2 to 4 have one call to action, the demo page.
         assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
         # The signature; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
-        assert f'Book a call <a href="{g.booking_link}">here</a>' in body and "{{unsubscribe}}" not in body
+        # One line (Harry, 5 Oct 2026): email 1 links a page on the site, so never the website line (Jane's
+        # rotation gives the reviews line); emails 2 to 4 link the demo page, so the booking line.
+        booking = f'Book a call <a href="{g.booking_link}">here</a>'
+        assert "on-demand counseling for your team" not in body and "{{unsubscribe}}" not in body, step
+        assert (booking in body) == (step != 1) and ("Trustpilot" in body) == (step == 1), step
     # Openers (Harry, 2 Oct 2026): Jane is a People leader, so EAP named's opener_people line, which names
     # nothing the benefits page said (signals are context, never the line).
     assert ("<p>Hi Jane,</p><p>Worries from home often show up at work first, and people open up more when they "
             "feel listened to.</p>" in cv["s1_body"])
     assert detail["openers"] == {"arms": {"opener": 1}, "sources": {"EAP named / opener_people": 1}}
-    assert "Where we got your details" in cv["s1_body"]  # SPEC 10: Article 14 on email 1
+    assert "Where we got your details" not in cv["s1_body"]  # kept in contacts.data_record (Harry, 5 Oct 2026)
     page = s.industry("Advertising agencies").landing_page_url
     assert f'<a href="{page}">' in cv["s1_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
 

@@ -110,13 +110,14 @@ def test_dry_run_takes_no_live_flag():
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
-                                               "hand_check_post", "read_pages", "apollo_enrich"}
+                                               "hand_check_post", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
     assert cli.JOBS["apollo_enrich"] == "us_outbound.sources.apollo_enrich:run"
     assert cli.JOBS["verify_accounts"] == "us_outbound.verify:run"
     assert cli.JOBS["lookalikes"] == "us_outbound.sources.lookalikes:run"
+    assert cli.JOBS["lookalike_leads"] == "us_outbound.sources.lookalike_leads:run"  # Harry, 5 Oct 2026: monthly
     assert cli.JOBS["settings_sync"] == "us_outbound.settings.sync:run"
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
@@ -147,7 +148,7 @@ def test_schedule_lists_every_job_with_its_next_run(capsys):
     syncs = [line for line in out.splitlines() if line.startswith("settings_sync ")]
     assert len(syncs) == 2 and all("--live" in line for line in syncs)  # 02:00 daily, and 11:30 on weekdays
     assert "0 2 * * *" in syncs[0] and "30 11 * * 1-5" in syncs[1]
-    assert "disabled until phase 3" in lines["monday_readout"] and "on demand only" in lines["score"]
+    assert "30 8 * * 1" in lines["monday_readout"] and "on demand only" in lines["score"]
     assert re.search(r"(BST|GMT)$", lines["heartbeat_check"])
     assert "live_sending = yes" in out
     assert cli.main(["scheduler", "--list"]) == 0
@@ -224,7 +225,6 @@ def test_live_needs_both_the_flag_and_the_setting():
 
 
 @pytest.mark.parametrize("job, message", [
-    ("monday_readout", "not built yet (phase 3)"),
     ("verify_in_clay", "not built yet (phase 1)"),
     ("no_such_job", "unknown job"),
 ])
@@ -375,6 +375,22 @@ def test_mailbox_commands_run_through_the_cli():
     assert h.run("mailbox", "pause") == 2  # needs an address
 
 
+def test_mailbox_check_fix_live_sets_the_sender_names(capsys):
+    """Harry, 5 Oct 2026: the From name is the owner's full name. check reports it; --fix --live sets it."""
+    h = Harness(sheet_tabs={})
+    h.instantly.accounts[HANNAH].update(first_name="Hannah", last_name="at Spill")
+
+    def name_patches():  # the ramp's daily-limit PATCHes are mailbox_health's own (test_registry, test_ramp)
+        return [(r.url.rsplit("/", 1)[1], r.json) for r in h.transport.requests
+                if r.method == "PATCH" and "/accounts/" in r.url and "daily_limit" not in r.json]
+
+    assert h.run("mailbox", "check") == 0 and h.run("mailbox", "check", "--fix") == 0  # dry-run by default
+    assert name_patches() == [] and h.instantly.accounts[HANNAH]["last_name"] == "at Spill"
+    assert h.run("mailbox", "check", "--fix", "--live") == 0  # an operator command: --live alone
+    assert name_patches() == [(HANNAH, {"first_name": "Hannah", "last_name": "Spalding"})]
+    assert h.instantly.accounts[HANNAH]["last_name"] == "Spalding"
+
+
 def test_unenrol_removes_that_months_leads_only(capsys):
     h = Harness()
     c = h.instantly.add_campaign(C_HANNAH)
@@ -448,10 +464,11 @@ def test_test_start_needs_a_read_date_and_approved_copy(capsys):
     assert "pre-register" in capsys.readouterr().err
 
 
-def test_test_read_reports_reply_rate_per_version(capsys):
-    test = CopyTest("t1", "h", "eap-v1", "general-v1", 400, "running", date(2026, 10, 1), date(2026, 12, 15), "reply rate")
+def _read_world(read_date: date):
+    """Four accounts in t1, step 1 on Mon 21 Sep (their windows closed on 19 Oct); the Harness's now is 27 Oct."""
+    test = CopyTest("t1", "h", "eap-v1", "general-v1", 400, "running", date(2026, 9, 14), read_date, "reply rate")
     h = Harness(dataclasses.replace(SETTINGS, tests=(test,)))
-    t0 = datetime(2026, 10, 5, 14, tzinfo=UTC)
+    t0 = datetime(2026, 9, 21, 14, tzinfo=UTC)
     contacts, events = [], []
     for i in range(4):
         version = "eap-v1" if i < 2 else "general-v1"
@@ -463,19 +480,35 @@ def test_test_read_reports_reply_rate_per_version(capsys):
         {"event_id": "r2", "contact_id": "k2", "account_id": "a2", "type": "replied", "reply_class": "out_of_office",
          "occurred_at": t0 + timedelta(days=1)},
         {"event_id": "r3", "contact_id": "k3", "account_id": "a3", "type": "replied", "reply_class": "objection",
-         "occurred_at": t0 + timedelta(days=30)},  # outside 21 days
+         "occurred_at": t0 + timedelta(days=30)},  # outside the 28-day window
         {"event_id": "b1", "contact_id": "k1", "account_id": "a1", "type": "bounced", "step": 1, "occurred_at": t0},
     ]
     h.store.insert("contacts", contacts)
     h.store.insert("events", events)
+    return h
+
+
+def test_test_read_reports_reply_rate_per_version_at_the_read_date(capsys):
+    h = _read_world(date(2026, 10, 26))
     assert h.run("test", "read", "t1") == 0
     out = capsys.readouterr().out
     result = cli.read_test(h.last, "t1")
     assert result["versions"]["eap-v1"] == {"accounts": 2, "delivered": 1, "replied": 1, "positive": 1, "meetings": 0,
                                             "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
     assert result["versions"]["general-v1"]["delivered"] == 2 and result["versions"]["general-v1"]["reply_rate"] == 0.0
-    assert result["early_look"] is True and "early look" in out and "Harry writes the result" in out
+    assert result["look"]["final"] and "Read at look 1 (the read date)" in out and "Harry writes the result" in out
     assert h.store.tables["heartbeats"] == []  # a read writes nothing
+
+
+def test_test_read_refuses_before_the_first_look(capsys):
+    """Harry, 6 Oct 2026: no peeking. Before a pre-registered look the read says how far the arms have got, and no
+    reply."""
+    h = _read_world(date(2026, 12, 15))
+    assert h.run("test", "read", "t1") == 2
+    err = capsys.readouterr().err
+    assert "reached no pre-registered look" in err and "the first is look 1 (the read date): Tue 15 Dec 2026" in err
+    assert "eap-v1 1 emailed (1 window closed), general-v1 2 emailed (2 windows closed)" in err
+    assert "replied" not in err and "%" not in err
 
 
 # -- bootstrap ---------------------------------------------------------------------------------------------

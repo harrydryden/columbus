@@ -1,4 +1,4 @@
-"""Copy rendering: variables, the four emails, the signature and the Article 14 notice.
+"""Copy rendering: variables, the four emails and the signature.
 
 SPEC 10 ("Sequence", "Variables", "Rules"), SPEC 9 ("Instantly campaigns": subjects and
 bodies go to Instantly as custom variables {{s1_subject}}, {{s1_body}} ...; "Sender
@@ -8,12 +8,33 @@ to action.
 
   * variables() builds the variables for one account, contact, sender mailbox and Copy row.
   * render_step() fills one email of a Copy row (copy_markup: HTML and plain text), appends
-    the signature on every email and the Article 14 notice on email 1 (templates/copy/*.txt;
-    "#" lines are comments and are stripped), then runs the copy rules. An unknown or empty
+    the signature on every email (templates/copy/signature.txt; "#" lines are comments and are
+    stripped), then runs the copy rules. No email carries the data notice (Harry, 5 Oct 2026):
+    data_record() is what enrol keeps on each contact instead (contacts.data_record). An unknown or empty
     variable is a violation and stays visible in the text. Any violation blocks the send,
     and so does copy that is not approved or has not passed QA in its current wording.
+  * signature() is the sender's full name and ONE linked line (Harry, 5 Oct 2026: "The signature should
+    only have one line and link"), chosen from the email's own body so it never repeats the body's link:
+    the booking line whenever the body suggests booking a call (it links the demo page or the booking
+    link, or says a phrase in BOOKING_PHRASES); otherwise never the website line when the body links a
+    page on the site, never a line whose address the body already links, and among the lines left, a
+    rotation by the recipient and the email's number. With the current copy (data/copy.csv, 318 rows),
+    email 1 links only {{industry_url}}, a page on the site, so it shows the booking or the reviews line
+    by rotation; emails 2 to 4 all link {{demo_url}}, so they always show the booking line.
   * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
     custom_variables() turns them into the lead's Instantly custom variables.
+  * subject_arm() is email 1's subject arm (Harry, 5 Oct 2026: a personal subject, as a measured split). The
+    General email1_subject_share of accounts, by sha256 of the salted account id (its own salt, so the split is
+    independent of the opener holdout's), are personal: email 1's subject is General email1_subject ("support
+    for the {{company}} team") instead of the Copy row's s1_subject. The rest are copy. Emails 2 to 4 keep the
+    Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so the send card, the
+    auto_send path, `copy preview` and `seed send` show the subject that is sent; enrol records the arm on the
+    contact (contacts.subject_arm), and `signals review` and the daily post compare the arms' replies.
+  * UTM tags (Harry, 6 Oct 2026; enrol/utm.py): with General utm_links = yes, the HTML's links to Spill's site
+    and the signature's site or booking link carry utm_source, utm_medium, utm_campaign (the Copy row's
+    copy_version) and utm_content (the email's number). The words, the plain text, the copy rules' reading and
+    the signature's choice of line all see the bare addresses; the Trustpilot and unsubscribe links are never
+    tagged.
   * pick_opener() falls back to "" when the evidence opener breaks a copy rule (for
     example "unlimited PTO" quoted from a benefits page): the opener line then disappears.
   * max_rendered_lengths() is the phase-0 probe for Instantly's custom-variable limit.
@@ -21,15 +42,17 @@ to action.
 
 from __future__ import annotations
 
+import hashlib
+import html
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from us_outbound.enrol import copy_markup, copy_rules
+from us_outbound.enrol import copy_markup, copy_rules, utm
 from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, Mailbox, Settings
 
 STEPS = COPY_STEPS
@@ -42,7 +65,32 @@ LEGAL_GROUP = "Legal Teams"
 
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
 SIGNATURE_TEMPLATE = "signature.txt"
-ARTICLE14_TEMPLATE = "article14.txt"
+# Harry, 5 Oct 2026: "Ideally we would add some formatting to signature to make it look more professional."
+# A paragraph of its own (the space after the sign-off), the sender's full name, then its one line in
+# smaller grey type: the plain look of a personal mail client's signature, no image, no table.
+SIGNATURE_STYLE = "margin:16px 0 0;font-size:13px;line-height:1.5;color:#555555"
+SIGNATURE_NAME_STYLE = "color:#222222"
+# The signature's lines by kind, as signature.txt names them, in the order the rotation takes them
+# (Harry, 5 Oct 2026): Spill's US site, Harry's booking link and the Trustpilot reviews.
+WEBSITE, BOOKING, REVIEWS = SIGNATURE_KINDS = ("website", "booking", "reviews")
+# Harry, 5 Oct 2026: "If the email copy suggests booking a call, then this should be included in the
+# signature as well." Whole phrases in any case: "call" or "booked" on their own are not an ask
+# ("calling", "fully booked Saturday", "physically").
+BOOKING_PHRASES = ("book a call", "book a demo", "book a time", "schedule a call", "set up a call", "grab time")
+_BOOKING_PHRASE = re.compile(
+    r"\b(?:" + "|".join(r"\s+".join(map(re.escape, p.split())) for p in BOOKING_PHRASES) + r")\b", re.IGNORECASE
+)
+# A link as written in the copy names its page by its variable. The demo page is for booking a call, not a
+# website page (Harry, 5 Oct 2026: "treat 'book a call' as not a website page").
+_LINK_VARIABLES = {"demo_url": BOOKING, "industry_url": WEBSITE, "site_url": WEBSITE}
+_SIGNATURE_LINE = re.compile(r"^([a-z]+):\s*(.+)$")
+LAWFUL_BASIS = "legitimate interests: telling businesses about Spill"
+
+# Email 1's subject arm (contacts.subject_arm; Harry, 5 Oct 2026): General email1_subject, or the Copy row's s1_subject.
+PERSONAL_SUBJECT, COPY_SUBJECT = "personal", "copy"
+SUBJECT_ARMS = (PERSONAL_SUBJECT, COPY_SUBJECT)
+SUBJECT_SALT = "email1-subject:"  # not openers.HOLDOUT_SALT: the two splits never line up
+SUBJECT_STEP = 1  # only email 1's subject changes
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
 # (General price_from). SPEC 4's price-by-size table is not quoted.
@@ -52,7 +100,6 @@ _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
 _FIXED_MISSING = {
     "site_url": "site_url is blank on the General tab, so the signature has no Spill link",
     "booking_link": "booking_link is blank on the General tab, so the signature has no booking link",
-    "company": "the Article 14 notice has no company name",
 }
 
 
@@ -65,6 +112,7 @@ class Rendered:
     copy_version: str = ""
     text: str = ""  # the plain-text version, signature included (previews and QA)
     html: str = ""
+    signature: str = ""  # the signature's one line: "website", "booking" or "reviews" (Harry, 5 Oct 2026)
 
     @property
     def ok(self) -> bool:
@@ -185,6 +233,24 @@ def pick_opener(
     return opener, ""
 
 
+# -- email 1's subject arm (Harry, 5 Oct 2026) ---------------------------------------------------
+
+
+def subject_arm(account_id: Any, settings: Settings) -> str:
+    """personal or copy, for the account: personal when sha256 of the salted account id falls below General
+    email1_subject_share (openers.in_holdout's rule, with its own salt), and email1_subject is not blank."""
+    g = settings.general
+    if not g.email1_subject.strip():
+        return COPY_SUBJECT
+    h = int(hashlib.sha256((SUBJECT_SALT + str(account_id)).encode()).hexdigest()[:15], 16)
+    return PERSONAL_SUBJECT if h / 16**15 < g.email1_subject_share else COPY_SUBJECT
+
+
+def email1_subject(arm: str, settings: Settings) -> str:
+    """Email 1's subject as written for the arm: General email1_subject when personal, else "" (the Copy row's)."""
+    return settings.general.email1_subject.strip() if arm == PERSONAL_SUBJECT else ""
+
+
 # -- templates ---------------------------------------------------------------------------
 
 
@@ -210,29 +276,147 @@ def fill(template: str, values: Mapping[str, str]) -> tuple[str, list[str]]:
     return _PLACEHOLDER.sub(one, template), missing
 
 
-def signature(settings: Settings) -> tuple[copy_markup.Rendered, list[str]]:
-    """The signature every email ends with, after the copy's sign-off (Harry, 1 Oct 2026), and what is missing.
+def signature_lines() -> dict[str, str]:
+    """{kind: line} from templates/copy/signature.txt as written: its website, booking and reviews lines."""
+    out: dict[str, str] = {}
+    for line in filter(None, (x.strip() for x in load_template(SIGNATURE_TEMPLATE).splitlines())):
+        m = _SIGNATURE_LINE.match(line)
+        if not m or m.group(1) not in SIGNATURE_KINDS or m.group(1) in out:
+            raise ValueError(f'{SIGNATURE_TEMPLATE}: "{line}" is not "kind: line" with a new kind of '
+                             f'{", ".join(SIGNATURE_KINDS)}')
+        out[m.group(1)] = m.group(2).strip()
+    if set(out) != set(SIGNATURE_KINDS):
+        raise ValueError(f"{SIGNATURE_TEMPLATE} needs one line of each kind: {', '.join(SIGNATURE_KINDS)}")
+    return out
 
-    Three lines with three links: Spill's US site, Harry's booking link and the Trustpilot reviews.
-    No postal address and no privacy link; the opt-out is Instantly's unsubscribe link, which the
-    campaign's step template adds after everything here (clients/instantly.py).
-    """
+
+def _filled_lines(settings: Settings) -> dict[str, tuple[str, list[str]]]:
+    """{kind: (its line with the General tab's values in, the values that are blank)}."""
     g = settings.general
-    source, missing = fill(load_template(SIGNATURE_TEMPLATE), {"site_url": g.site_url, "booking_link": g.booking_link})
-    return copy_markup.render(source, {}), missing
+    values = {"site_url": g.site_url, "booking_link": g.booking_link}
+    return {kind: fill(line, values) for kind, line in signature_lines().items()}
+
+
+def _url_key(url: str) -> str:
+    """An address compared loosely: any case, no scheme, no "www.", no trailing slash."""
+    return re.sub(r"^https?://", "", url.strip().casefold()).removeprefix("www.").rstrip("/")
+
+
+def _host(url: str) -> str:
+    return re.split(r"[/?#]", _url_key(url), maxsplit=1)[0]
+
+
+def link_kind(url: str, settings: Settings) -> str:
+    """What one of the body's links is, for the signature (Harry, 5 Oct 2026), as written or as filled.
+
+    "booking": {{demo_url}} (General booking_page) or Harry's booking_link; booking a call is not a website
+    page. "website": any other page on the site: {{industry_url}}, {{site_url}}, or an address on General
+    site_url's host. "" for anything else.
+    """
+    m = copy_markup.VARIABLE.match(url.strip())
+    if m:
+        return _LINK_VARIABLES.get(m.group(1), "")
+    g = settings.general
+    if _url_key(url) in {_url_key(u) for u in (g.booking_page, g.booking_link) if u.strip()}:
+        return BOOKING
+    site = _host(g.site_url) if g.site_url.strip() else ""
+    return WEBSITE if site and _host(url) == site else ""
+
+
+def suggests_booking(words: str) -> bool:
+    """True when the copy's words ask for a call in so many words (BOOKING_PHRASES)."""
+    return bool(_BOOKING_PHRASE.search(words))
+
+
+def signature_key(values: Mapping[str, str]) -> str:
+    """The recipient, for the signature's rotation: the company and first name (a render has no ids)."""
+    return "\n".join(" ".join(str(values.get(k) or "").split()).casefold() for k in ("company", "first_name"))
+
+
+def rotation(key: str, step: int, n: int) -> int:
+    """Which of n lines: a stable hash of the recipient, moved on one per email.
+
+    The hash spreads prospects over the lines, a prospect's next email takes the next line when the choice
+    is the same, and the same key and email always give the same line, so a re-render, a Slack edit and a
+    preview agree (Python's own hash() changes from run to run; sha256 does not).
+    """
+    start = int.from_bytes(hashlib.sha256(key.encode("utf-8")).digest()[:4], "big")
+    return (start + step) % n
+
+
+def signature_kind(settings: Settings, body: copy_markup.Rendered, source: str = "", *, key: str = "",
+                   step: int = 0) -> tuple[str, list[str]]:
+    """(the signature's line for this email, the General values that leave it with none) (Harry, 5 Oct 2026).
+
+    body is the email's body as rendered (its links filled, its words); source is the copy as written,
+    whose links name their page by variable. The rules, in order:
+      * The body suggests booking a call (a booking link, or a phrase in BOOKING_PHRASES): the booking line,
+        always, even though the body links it too.
+      * Otherwise the website line is left out when the body links a page on the site, and any line is left
+        out when the body already links its address.
+      * A line whose General value is blank (site_url, booking_link) is left out too.
+      * Among the lines left, rotation(key, step). With none left, the line keeps its placeholder in sight
+        and the blank values are returned, which block the send (_FIXED_MISSING).
+    """
+    filled = _filled_lines(settings)
+    urls = [u for _, u in body.links] + [link.url for link in copy_markup.links(source)]
+    kinds = {link_kind(u, settings) for u in urls}
+    if BOOKING in kinds or suggests_booking(body.words):
+        choices = [BOOKING]
+    else:
+        linked = {_url_key(u) for u in urls}
+        choices = [k for k in SIGNATURE_KINDS if not (k == WEBSITE and WEBSITE in kinds)
+                   and not any(_url_key(link.url) in linked for link in copy_markup.links(filled[k][0]))]
+    usable = [k for k in choices if not filled[k][1]]
+    # choices is never empty: the booking line goes only when the body links its address, the first rule.
+    pool = usable or choices or [BOOKING]
+    kind = pool[rotation(key, step, len(pool))]
+    return kind, [] if usable else list(dict.fromkeys(m for k in pool for m in filled[k][1]))
+
+
+def signature(settings: Settings, sender_name: str = "", *, body: copy_markup.Rendered, source: str = "",
+              key: str = "", step: int = 0,
+              href: Callable[[str], str] | None = None) -> tuple[copy_markup.Rendered, list[str], str]:
+    """The signature every email ends with, after the copy's sign-off (Harry, 1 and 5 Oct 2026): the
+    rendered signature, the General values it is missing, and the kind of its line.
+
+    The sender's full name, then one line and one link (Harry, 5 Oct 2026), chosen by signature_kind from
+    the email's body and source, the recipient (key, signature_key) and the email's number: Spill's US site,
+    Harry's booking link or the Trustpilot reviews. No postal address and no privacy link; the opt-out is
+    Instantly's unsubscribe link, which the campaign's step template adds after everything here
+    (clients/instantly.py). href: the address its link carries in the HTML (UTM tags, enrol/utm.py; the words
+    and the plain text keep it as written).
+    """
+    kind, missing = signature_kind(settings, body, source, key=key, step=step)
+    sig = copy_markup.render(_filled_lines(settings)[kind][0], {}, href=href)
+    inner = sig.html[len("<p>"):-len("</p>")] if sig.html.count("<p>") == 1 else sig.html  # the line alone
+    name = sender_name.strip()
+    if name:
+        inner = f'<strong style="{SIGNATURE_NAME_STYLE}">{html.escape(name, quote=False)}</strong><br>{inner}'
+    return replace(sig, html=f'<p style="{SIGNATURE_STYLE}">{inner}</p>',
+                   text=f"{name}\n{sig.text}" if name else sig.text), missing, kind
+
+
+def signature_texts(settings: Settings, sender_name: str = "") -> set[str]:
+    """Every line a signature can show, as plain text: the sender's full name and each kind's line.
+    approvals takes a signature pasted into an edit back off with these (render_step adds its own)."""
+    out = {copy_markup.render(line, {}).text.strip() for line, _ in _filled_lines(settings).values()}
+    return out | ({sender_name.strip()} if sender_name.strip() else set())
 
 
 def data_sources(settings: Settings) -> str:
-    """The contact-data providers the notice names: Clay only once it runs (clay_verification)."""
+    """The contact-data providers in use: Clay only once it runs (clay_verification)."""
     if settings.general.clay_verification == CLAY_SKIP:
-        return "Apollo, which provides"
-    return "Apollo and Clay, which provide"
+        return "Apollo"
+    return "Apollo and Clay"
 
 
-def article14(values: Mapping[str, str], settings: Settings) -> tuple[str, list[str]]:
-    """Email 1's UK GDPR Article 14 notice: where the data came from and the lawful basis (SPEC 10)."""
-    return fill(load_template(ARTICLE14_TEMPLATE),
-                {"company": values.get("company", ""), "sources": data_sources(settings)})
+def data_record(settings: Settings) -> dict[str, Any]:
+    """Where a contact's details came from and the lawful basis, kept on the contact at enrolment
+    (contacts.data_record) and never shown in an email (Harry, 5 Oct 2026: "We should keep an internal
+    record but it should not be shown to customers")."""
+    return {"contact_data": data_sources(settings), "company_information": "the company's public website",
+            "lawful_basis": LAWFUL_BASIS, "shown_in_email": False}
 
 
 # -- rendering ------------------------------------------------------------------------------
@@ -240,14 +424,18 @@ def article14(values: Mapping[str, str], settings: Settings) -> tuple[str, list[
 
 def render_step(
     copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings,
-    for_send: bool = True,
+    for_send: bool = True, subject: str = "",
 ) -> Rendered:
-    """One email, signature and (email 1) Article 14 notice included, with every copy-rule violation.
+    """One email, signature included, with every copy-rule violation.
 
-    for_send=False leaves out the approval and QA checks, for previews and the sheet check.
+    for_send=False leaves out the approval and QA checks, for previews and the sheet check. subject, when given,
+    is the subject as written in place of the Copy row's (email 1's personal subject, email1_subject), and goes
+    through the same rules.
     """
     g = settings.general
     st = copy_row.step(step)
+    if subject.strip():
+        st = replace(st, subject=subject)
     problems: list[str] = []
     if for_send and copy_row.status != "approved":
         problems.append(f"copy {copy_row.copy_version} is {copy_row.status or 'blank'}, not approved")
@@ -259,22 +447,21 @@ def render_step(
     problems += [f"subject {x}" for x in p]
     if copy_markup.links(st.subject) or "**" in st.subject:
         problems.append("subject has markup; a subject is plain text")
-    body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES)
+    # UTM tags on our own links, in the HTML only (General utm_links; enrol/utm.py): the copy rules and the
+    # signature's choice of line read the bare addresses in body.links.
+    body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES,
+                              href=utm.tagger(settings, copy_version=copy_row.copy_version, step=step))
     problems += [f"body {x}" for x in body.problems]
 
-    # After the copy's sign-off: the signature, then (email 1) the Article 14 notice in small type.
-    sig, missing = signature(settings)
+    # After the copy's sign-off: the signature, as its own paragraph, its one line chosen from the body.
+    sig, missing, kind = signature(settings, mailbox.owner_name, body=body, source=st.body,
+                                   key=signature_key(variables), step=step,
+                                   href=utm.tagger(settings, copy_version=copy_row.copy_version, step=step,
+                                                   signature=True))
     problems += [_FIXED_MISSING.get(m, f"the signature has no {m}") for m in missing]
     problems += [f"signature {x}" for x in sig.problems]
-    texts, htmls = [body.text, sig.text], [body.html, sig.html]
-    if step == 1:
-        notice, missing = article14(variables, settings)
-        problems += [_FIXED_MISSING.get(m, f"the Article 14 notice has no {m}") for m in missing]
-        texts.append(notice)
-        htmls.append(copy_markup.plain_to_html(notice))
-
-    text = "\n\n".join(texts)
-    html = "".join(htmls)
+    text = f"{body.text}\n\n{sig.text}"
+    html_body = body.html + sig.html
     exempt = (variables.get("first_name", ""), variables.get("company", ""), variables.get("place", ""),
               mailbox.owner_name)
     problems += copy_rules.email_violations(
@@ -284,23 +471,28 @@ def render_step(
         uncounted=[str(variables.get(v) or "").strip() for v in OPTIONAL_VARIABLES],
         site_url=variables.get("site_url", ""),
     )
-    sent = html if g.email_format == "html" else text
-    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html)
+    sent = html_body if g.email_format == "html" else text
+    return Rendered(subject, sent, tuple(dict.fromkeys(problems)), step, copy_row.copy_version, text, html_body,
+                    kind)
 
 
 def render_sequence(
     copy_row: CopyRow, variables: Mapping[str, str], *, mailbox: Mailbox, settings: Settings, for_send: bool = True,
+    subject_arm: str = COPY_SUBJECT,
 ) -> list[Rendered]:
-    """Emails 1 to 4 of one Copy row, and the sequence's own check: it links the industry page."""
-    out = [render_step(copy_row, variables, step=n, mailbox=mailbox, settings=settings, for_send=for_send)
+    """Emails 1 to 4 of one Copy row, and the sequence's own check: it links the industry page.
+
+    subject_arm personal gives email 1 the General email1_subject; emails 2 to 4 keep the Copy row's subjects.
+    """
+    first = email1_subject(subject_arm, settings)
+    out = [render_step(copy_row, variables, step=n, mailbox=mailbox, settings=settings, for_send=for_send,
+                       subject=first if n == SUBJECT_STEP else "")
            for n in STEPS]
     page = str(variables.get("industry_url") or "").strip()
     uses = any("industry_url" in copy_markup.VARIABLE.findall(copy_row.step(n).body) for n in STEPS)
     if page and not uses:
-        long_form = out[1]
-        out[1] = Rendered(long_form.subject, long_form.body,
-                          (*long_form.violations, "the sequence never links the industry page ({{industry_url}})"),
-                          long_form.step, long_form.copy_version, long_form.text, long_form.html)
+        out[1] = replace(out[1], violations=(*out[1].violations,
+                                             "the sequence never links the industry page ({{industry_url}})"))
     return out
 
 
@@ -359,10 +551,13 @@ def max_rendered_lengths(settings: Settings, copy_versions: Iterable[str] | None
     rows = [c for c in settings.copy if wanted is None or c.copy_version in wanted]
     mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
     out = {f"s{step}_{part}": 0 for step in STEPS for part in ("subject", "body")}
+    arms = SUBJECT_ARMS if settings.general.email1_subject.strip() else (COPY_SUBJECT,)
     for row in rows:
         values = max_length_variables(row, settings)
         for mb in mailboxes:
-            cv = custom_variables(render_sequence(row, values, mailbox=mb, settings=settings, for_send=False))
-            for k, v in cv.items():
-                out[k] = max(out[k], len(v))
+            for arm in arms:
+                cv = custom_variables(render_sequence(row, values, mailbox=mb, settings=settings, for_send=False,
+                                                      subject_arm=arm))
+                for k, v in cv.items():
+                    out[k] = max(out[k], len(v))
     return out

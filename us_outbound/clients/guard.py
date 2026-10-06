@@ -291,6 +291,15 @@ class Guard:
             need_registry_accounts()  # only the daily limit, only on a registry account (Instantly.set_daily_limit)
             if set(op.detail) - {"accounts", "daily_limit"}:
                 raise GuardViolation("Instantly account.update_limit may change only the daily limit")
+        elif a == "account.update_name":
+            # Only the sender name, only on a registry account, and only to a registry owner's full name
+            # (Instantly.set_sender_name; Harry, 5 Oct 2026).
+            need_registry_accounts()
+            if set(op.detail) - {"accounts", "first_name", "last_name"}:
+                raise GuardViolation("Instantly account.update_name may change only first_name and last_name")
+            name = " ".join(f"{op.detail.get('first_name') or ''} {op.detail.get('last_name') or ''}".split())
+            if name not in {" ".join(o.split()) for o in b.registry_owners}:
+                raise GuardViolation(f"Instantly sender name {name!r} is not a mailbox owner's name on the Mailboxes tab")
         elif a == "blocklist.add":
             if not op.detail.get("entries"):
                 raise GuardViolation("blocklist.add needs entries")

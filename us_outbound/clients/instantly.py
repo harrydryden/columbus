@@ -45,6 +45,11 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
     "open_tracking": False,  # SPEC 1.8: open and link tracking stay off
     "link_tracking": False,
     "insert_unsubscribe_header": True,
+    # Harry, 5 Oct 2026: the seed send showed Instantly sending email 1 as text only (text/plain, no HTML
+    # part) in a campaign with text_only off. The HTML step was flattened: the paragraphs ran together, the
+    # links became written-out addresses and the unsubscribe line lost its link. Email 1 is HTML like the
+    # rest (email_format), so the step-1 text-only option is off, and drift puts it back if it is turned on.
+    "first_email_text_only": False,
     "allow_risky_contacts": False,
     "is_evergreen": True,  # PHASE0-CONFIRM: that is_evergreen keeps the campaign open to new leads indefinitely
 }
@@ -58,12 +63,21 @@ NOT_RETURNED = frozenset({"is_evergreen"})
 # fills its merge tags in the template, not inside a custom variable's value. A click stops the
 # lead's sequence and adds the address to the workspace's unsubscribe list, which every campaign
 # honors; insert_unsubscribe_header also gives mail clients their one-click unsubscribe button.
-# PHASE0-CONFIRM: that the tag is {{unsubscribe}} and becomes the link's URL, by a test send to a seed
-# inbox in both formats (Instantly's editor offers it as "Insert unsubscribe link").
-UNSUBSCRIBE_TAG = "{{unsubscribe}}"
-UNSUBSCRIBE_TEXT = "To stop hearing from us, unsubscribe here"
-UNSUBSCRIBE_HTML = f'<p><a href="{UNSUBSCRIBE_TAG}">{UNSUBSCRIBE_TEXT}</a>.</p>'
+# Harry, 5 Oct 2026: Instantly's editor ("Insert unsubscribe link") writes the link as this placeholder
+# address, which Instantly swaps for the lead's own unsubscribe URL at send time. A {{unsubscribe}} tag in
+# the href went out as href="" (the seed sends of 5 Oct). PHASE0-CONFIRM: the placeholder is swapped in an
+# anchor with our own text and style, and in a text-only email's written-out link, by a seed send of each.
+UNSUBSCRIBE_TAG = "https://UNSUBSCRIBE_INSTANTLY.ai"
+# Harry, 5 Oct 2026: plainer words in small grey type, so the line reads as part of a personal email
+# rather than a bulk-mail footer; the link and the List-Unsubscribe header are unchanged.
+UNSUBSCRIBE_ASK = "Not relevant?"
+UNSUBSCRIBE_ANCHOR = "Unsubscribe here"
+UNSUBSCRIBE_TEXT = f"{UNSUBSCRIBE_ASK} {UNSUBSCRIBE_ANCHOR}"
+UNSUBSCRIBE_STYLE = "font-size:12px;color:#888888"
+UNSUBSCRIBE_HTML = (f'<p style="{UNSUBSCRIBE_STYLE}">{UNSUBSCRIBE_ASK} '
+                    f'<a href="{UNSUBSCRIBE_TAG}" style="color:#888888">{UNSUBSCRIBE_ANCHOR}</a>.</p>')
 UNSUBSCRIBE_PLAIN = f"\n\n{UNSUBSCRIBE_TEXT}: {UNSUBSCRIBE_TAG}"
+OLD_UNSUBSCRIBE_TEXT = "To stop hearing from us, unsubscribe here"  # emails sent before 5 Oct 2026
 
 
 def unsubscribe_line(text_only: bool = False) -> str:
@@ -125,7 +139,7 @@ CAMPAIGN_STATUS = {
 }
 # A lead's `status` (the v2 Lead schema: 1 active, 2 paused, 3 completed, -1 bounced, -2 unsubscribed,
 # -3 skipped). sync_outcomes reads bounced and unsubscribed from it:
-# a click on the {{unsubscribe}} link stops the lead and marks it unsubscribed (Harry, 1 Oct 2026:
+# a click on the unsubscribe link (UNSUBSCRIBE_TAG) stops the lead and marks it unsubscribed (Harry, 1 Oct 2026:
 # the opt-out is Instantly's own link). PHASE0-CONFIRM: the codes, read from a lead in a paused
 # campaign, and that an unsubscribe click (and the List-Unsubscribe header) sets -2 on the lead.
 LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
@@ -411,6 +425,9 @@ class Instantly(HttpClient):
                 "health_score_label": agg.get("health_score_label"),
                 "warmup_started_at": acct.get("timestamp_warmup_start"),
                 "daily_limit": acct.get("daily_limit"),
+                # The sender name (set_sender_name). PHASE0-CONFIRM: the account GET returns these two fields.
+                "first_name": acct.get("first_name"),
+                "last_name": acct.get("last_name"),
             }
         return out
 
@@ -466,6 +483,22 @@ class Instantly(HttpClient):
             "PATCH", f"/accounts/{_segment(acc)}",
             Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
             json={"daily_limit": limit},
+        )
+
+    def set_sender_name(self, email: str, first_name: str, last_name: str) -> None:
+        """Set a registry account's sender name: the From name prospects see (Harry, 5 Oct 2026).
+
+        The name is the Mailboxes tab owner's full name, "Hannah Spalding": the seed emails of 5 Oct came
+        from "Hannah at Spill" and "Sam from Spill", which reads as marketing to people and to mail filters.
+        PHASE0-CONFIRM: that Instantly builds the From display name from the account's first_name and
+        last_name (API v2 account object), and that PATCH /accounts/{email} takes exactly those two fields.
+        """
+        [acc] = self._registry("account.update_name", [email], write=True)
+        name = {"first_name": str(first_name).strip(), "last_name": str(last_name).strip()}
+        self.request(
+            "PATCH", f"/accounts/{_segment(acc)}",
+            Op("account.update_name", target=acc, write=True, detail={"accounts": [acc], **name}),
+            json=name,
         )
 
     # -- campaigns -------------------------------------------------------------

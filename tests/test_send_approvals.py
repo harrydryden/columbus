@@ -20,7 +20,7 @@ from tests.test_render import account, contact, make_settings
 from us_outbound import suppression
 from us_outbound.context import Secrets
 from us_outbound.contacts import pick
-from us_outbound.enrol import approvals, enrol, openers
+from us_outbound.enrol import approvals, enrol, openers, render
 from us_outbound.ops import bootstrap, cli
 from us_outbound.replies import desk
 from us_outbound.scoring import score, tiers
@@ -31,6 +31,7 @@ HARRY_CAMPAIGN = "US Outbound – Harry Dryden"
 CONTRACT_KEYS = {
     "state", "outcome", "owner", "mailbox", "campaign", "lead", "copy_version", "angle", "test_id", "opener_arm",
     "opener_source", "industry", "industry_group", "role", "tier", "score", "send_day", "edited", "original", "reason",
+    "subject_arm",  # email 1's subject arm (Harry, 5 Oct 2026)
 }
 
 
@@ -275,8 +276,11 @@ def test_the_card_shows_what_harry_asked_for():
     assert "*From:* Harry Dryden · harry@meetspill.org or harry@tryspill.org (Instantly picks)" in text
     assert "*Subject:* Support for the Acme Creative team" in text
     assert "> Hi Jane," in text and "> I saw your team already has an employee assistance program." in text
-    assert "> Spill (https://www.spill.chat/us), on-demand counseling for your team" in text  # the signature
-    assert "> Where we got your details" in text  # email 1's data notice: the plain-text version, all of it
+    # The signature's one line (Harry, 5 Oct 2026): email 1 links the industry page, so never the website line;
+    # Jane at Acme Creative gets the reviews line by rotation.
+    assert "> Harry Dryden\n> Read our Trustpilot reviews (https://uk.trustpilot.com/review/spill.chat) from employees" \
+        in text and "on-demand counseling for your team" not in text
+    assert "Where we got your details" not in text  # no data notice (Harry, 5 Oct 2026)
     assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
     assert "*Before:* no email to Acme Creative from us before" in text
     assert "*Harry today:* card 1 of 15" in text
@@ -304,6 +308,26 @@ def test_a_card_after_a_contact_swap_says_the_earlier_contact_was_declined():
 
 
 # -- ✅ ------------------------------------------------------------------------------------------------------
+
+
+def test_the_enrolment_keeps_the_signals_score_and_tier_the_account_had_then():
+    """Scoring rewrites an account's matches every run; the contact keeps its own copy (Harry, 5 Oct 2026)."""
+    ctx, _, sl, _ = proposed()
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"score": 45, "tier": "Standard"})
+    ctx.store.insert("signal_events", [
+        {"event_id": f"m{i}", "account_id": "acc-1", "source": "scoring", "fact": "signal_matched",
+         "value": {"signal": name, "weight": w}, "observed_at": ctx.now} for i, (name, w) in
+        enumerate([("Team of 10–49", 15), ("New People leader", 30)])
+    ] + [{"event_id": "other", "account_id": "acc-2", "source": "scoring", "fact": "signal_matched",
+          "value": {"signal": "Named by Harry", "weight": 30}, "observed_at": ctx.now}])
+    sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, "acc-1")["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert jane["signals_at_enrol"] == [{"signal": "New People leader", "weight": 30},
+                                        {"signal": "Team of 10–49", "weight": 15}]
+    assert (jane["score_at_enrol"], jane["tier_at_enrol"]) == (45, "Standard")
+    # Where her details came from and the lawful basis: kept on the contact, never shown (Harry, 5 Oct 2026).
+    assert jane["data_record"]["contact_data"] == "Apollo" and jane["data_record"]["shown_in_email"] is False
 
 
 @pytest.mark.parametrize("how", ["tick", "word"])
@@ -514,8 +538,12 @@ def test_edit_rerender_reapprove_and_send_the_edited_version():
     cv = p["lead"]["custom_variables"]
     assert cv["s1_subject"] == "Support for the people at Acme Creative"
     assert "the strain often stays hidden" in cv["s1_body"] and cv["s1_body"].startswith("<p>Hi Jane,</p>")
-    assert 'Book a call <a href="https://meetings.hubspot.com/harry336/us-demo-link">here</a>' in cv["s1_body"]
-    assert "Where we got your details" in cv["s1_body"]  # the signature and the data notice, added as before
+    # The signature, added as before: the same one line as the first version, since the links did not change
+    # (Harry, 5 Oct 2026; the rotation is by recipient and email, so an edit and a re-render agree).
+    sig = f'<p style="{render.SIGNATURE_STYLE}">'
+    assert cv["s1_body"].split(sig)[1] == p["original"]["s1_body"].split(sig)[1]
+    assert "Harry Dryden</strong><br>Read <a href=\"https://uk.trustpilot.com/review/spill.chat\">" in cv["s1_body"]
+    assert "Where we got your details" not in cv["s1_body"]
     assert cv["s2_body"] == p["original"]["s2_body"]
     version = p["approve_ts"]
     [post] = [x for x in sl.posts if x["ts"] == version]
@@ -821,6 +849,22 @@ def test_parse_edit():
     assert approvals.parse_edit("Email 3: Subject: Who knows?\nHi Jane,\n\nBody.") == (3, "Who knows?", "Hi Jane,\n\nBody.")
     assert approvals.parse_edit("Subject: Only the subject") == (1, "Only the subject", None)
     assert approvals.parse_edit("\nHi Jane,\nBody") == (1, None, "Hi Jane,\nBody")
+
+
+def test_a_pasted_signature_is_taken_off_whichever_line_it_shows():
+    """The signature shows one of three lines (Harry, 5 Oct 2026); an approver may paste any of them, and
+    render_step adds the right one back."""
+    s = make_settings()
+    values = {"first_name": "Jane", "sender_first_name": "Harry"}
+    body = "Hi Jane,\n\nA short note.\n\nBest wishes,\nHarry"
+    lines = ["Spill (https://www.spill.chat/us), on-demand counseling for your team",
+             "Book a call here (https://meetings.hubspot.com/harry336/us-demo-link)",
+             "Read our Trustpilot reviews (https://uk.trustpilot.com/review/spill.chat) from employees"]
+    want = "Hi {{first_name}},\n\nA short note.\n\nBest wishes,\n{{sender_first_name}}"
+    for line in lines:
+        assert approvals._templated(f"{body}\n\nHarry Dryden\n{line}\n", values, s, "Harry Dryden") == want, line
+    assert approvals._templated(f"{body}\n\n" + "\n".join(lines), values, s, "Harry Dryden") == want
+    assert approvals._templated(body, values, s, "Harry Dryden") == want
 
 
 # -- through the production wiring ----------------------------------------------------------------------------------

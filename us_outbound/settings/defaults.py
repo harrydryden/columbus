@@ -51,9 +51,10 @@ COLUMNS: dict[str, list[str]] = {
         "slack_id",
     ],
     "Overrides": ["domain", "field", "value", "note"],
+    # kind and looks (Harry, 6 Oct 2026: tests read only at pre-registered looks) are optional columns.
     "Tests": [
-        "test_id", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "read_date",
-        "decision_rule", "status", "result",
+        "test_id", "kind", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "looks",
+        "read_date", "decision_rule", "status", "result",
     ],
     # Added 30 Sep 2026 (Harry); a sheet without them reads as if they were empty.
     "Focus": ["industry_group", "share", "note"],
@@ -89,7 +90,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "no (the pilot): every email waits for an approver's ✅ on its card in #us-outbound. yes: emails go straight "
         "to Instantly once the weekly hand-check is approved. Nothing goes out while live_sending is no.",
     ),
-    ("weekly_enrol_cap", "150", "Most new accounts enrolled in a week (Monday to Sunday, UK time). Each send day takes what is left of it ÷ the send days left in the week."),
+    ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company, and a second contact (second_contact) counts too. Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
     ("priority_threshold", "50", "Score at or above this is Priority."),
     ("standard_threshold", "20", "Score at or above this is Standard; below it is Control."),
@@ -183,7 +184,40 @@ _GENERAL: list[tuple[str, str, str]] = [
         "no",
         "yes: when Apollo has no verified email for the chosen person (a miss or a catch-all), pick_contacts asks "
         "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
-        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed.",
+        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed: run "
+        "`us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` "
+        "first; it says when to set this to yes.",
+    ),
+    (
+        "clay_cross_check",
+        "no",
+        "yes: before an account whose HQ state or size Apollo leaves in doubt goes to the weekly hand-check, "
+        "verify_accounts asks Clay's \"US Outbound – Accounts\" function (clay_accounts_function_id) once, within "
+        "clay_monthly_credits. A doubt Clay settles is dropped; where Clay disagrees, the hand-check shows both counts or "
+        "states. A missing HQ state or size is filled in from Clay. Needs clay_accounts_function_id. Harry, 6 Oct 2026: "
+        "no until the function is built in Clay (docs/pipeline.md has its spec).",
+    ),
+    (
+        "second_contact",
+        "no",
+        "yes: at companies of second_contact_min_employees or more staff, a second person of another role (the "
+        "founder, say, when the first was the People leader) gets their own emails, from the same sender, "
+        "second_contact_delay_days after the first person's email 1. Second contacts take only the room the first "
+        "contacts of new companies leave, and count towards the week and each sender's day like anyone. When anyone "
+        "at the company replies, bounces, unsubscribes or complains, both people's emails stop. no: one person per "
+        "company. Harry, 6 Oct 2026: no while sending capacity is the limit.",
+    ),
+    (
+        "second_contact_min_employees",
+        "50",
+        "The smallest company, by staff, that gets a second contact. Read as the Roles tab reads size, so a company "
+        "in the 50-99 band counts as 50.",
+    ),
+    (
+        "second_contact_delay_days",
+        "3",
+        "Days after the first person's email 1 before the second person's, so the two never arrive the same day "
+        "(at least 1). A multiple of 7 would put the second's emails on the days of the first's follow-ups.",
     ),
     ("apollo_credits_per_account", "1", "Not used yet; leave as it is."),
     (
@@ -194,12 +228,55 @@ _GENERAL: list[tuple[str, str, str]] = [
         "after 180 days). Blank enriches none. Harry, 2 Oct 2026: funding as a sign of change and growth, where "
         "funding is common. Added by the build.",
     ),
+    (
+        "site_visit_domain",
+        "spill.chat",
+        "The website Apollo's visitor tracker is installed on. Each morning at 06:00 UK, site_visits reads the "
+        "companies that visited it in the last 30 days for the website-visit signals (a few Apollo credits a "
+        "day). Blank: nothing is read. Added by the build.",
+    ),
+    (
+        "site_visit_us_paths",
+        "/us",
+        "Pages that count as a visit to the US site, comma-separated. A page counts when its path contains one "
+        "of these, so /us also counts /us/pricing. Added by the build.",
+    ),
+    (
+        "site_visit_intent_paths",
+        "/us/pricing, /us/demo, /us/book",
+        "Pages that count as a pricing or demo visit, comma-separated, matched the same way, so /us/book counts "
+        "/us/book-demo. Blank: no pricing or demo signal. Added by the build.",
+    ),
+    (
+        "min_employees",
+        "10",
+        "The smallest company we contact, in employees (SPEC 2: 10). Every source searches from here, "
+        "verify_accounts holds accounts to it and the hand-check's size edges follow it. Harry, 6 Oct 2026. "
+        "Added by the build.",
+    ),
+    (
+        "max_employees",
+        "249",
+        "The largest company we contact, in employees, this number included (SPEC 2: 249). Set 500 to search "
+        "and contact companies up to 500. The Roles tab's 50-249 order covers everyone from 50 up. "
+        "Added by the build.",
+    ),
     ("claude_model", "claude-opus-5-5",
      "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),
     ("claude_task_model", "claude-sonnet-5-5",
      "Well-defined tasks: checks drafted copy (copy qa) and classifies replies. Both models share the cap below."),
     ("email_format", "html",
      "html: emails with embedded links and bullets; text: plain text with links written out. Tracking stays off."),
+    # -- The learning loop (Harry, 6 Oct 2026: "push ahead with building") --
+    (
+        "utm_links",
+        "no",
+        "yes: the links to spill.chat and your booking link carry UTM tags (utm_source us_outbound, utm_medium "
+        "email, utm_campaign the Copy row's copy_version, utm_content the email's number), so website visits and "
+        "bookings can be traced to the emails. The words of each link don't change, and the Trustpilot and "
+        "unsubscribe links are never tagged. no (the default): plain links. Tagged links can read as marketing to "
+        "inbox filters, so try yes on a seed send first. Added by the build.",
+    ),
     ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend; SPEC 1.1 allows at most $10 a month."),
     (
         "opener_holdout_share",
@@ -230,6 +307,21 @@ _GENERAL: list[tuple[str, str, str]] = [
         "opener_focus_line",
         "I came across {company} and its work on {focus}.",
         "The line opener_focus uses. Tokens: {company}, {focus}, {city}. Added by the build.",
+    ),
+    (
+        "email1_subject",
+        General.email1_subject,
+        "Email 1's personal subject, for the email1_subject_share of companies: short, lower case and about the "
+        "reader, so mail filters and people read it as personal mail. Variables: {{company}}, {{first_name}}. "
+        "Emails 2 to 4 keep the Copy row's subjects. Added by the build (Harry, 5 Oct 2026).",
+    ),
+    (
+        "email1_subject_share",
+        "0.5",
+        "Share of companies whose email 1 uses email1_subject instead of the Copy row's s1_subject, chosen by a "
+        "hash of the account id (independent of the opener holdout), so replies can compare the two "
+        "(contacts.subject_arm; `us-outbound signals review`). 0: every email 1 keeps the Copy row's subject. "
+        "Added by the build (Harry, 5 Oct 2026).",
     ),
 ]
 
@@ -411,10 +503,14 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         f"leader themself. {_CONTEXT_NOTE}",
     ),
     (
-        "First People hire", "apollo_jobs, apollo_people", "open_people_roles >= 1 AND people_leader_count = 0",
-        "", "25", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "90", "yes",
-        "SPEC 5 default. SPEC lists apollo_jobs; apollo_people is added because people_leader_count comes from it. "
-        f"A missing people_leader_count never matches, so People role open below fires anyway. {_CONTEXT_NOTE}",
+        "First People hire (likely)", "apollo_jobs, apollo_people",
+        "open_people_roles >= 1 AND people_leader_count = 0 AND people_search_coverage >= 0.5",
+        "", "20", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "60", "yes",
+        "Harry, 5 Oct 2026: replaces First People hire, which could never fire, as nothing wrote a count of 0. "
+        "apollo_people (weekdays 04:20) writes people_leader_count = 0 only where Apollo holds at least half the "
+        "company's headcount (people_search_coverage), so finding no People leader there likely means there is none; "
+        "the coverage is in the condition too, so a later thin search turns it off. +20, not +25: it is an inference. "
+        f"People role open fires with it. {_CONTEXT_NOTE}",
     ),
     (
         "People role open", "apollo_jobs", "open_people_roles >= 1",
@@ -493,18 +589,43 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "Companies on the Named accounts tab (Harry, 30 Sep 2026). They pass every other check as usual.",
     ),
     (
+        "Close match to Spill's customers", "lookalike", "lookalike_fit >= 70",
+        "", "10", "", "Score", "", "", "120", "yes",
+        "Harry, 5 Oct 2026: the lookalike graded by industry, size and growth rate. lookalike_fit (0 to 100; "
+        "sources/lookalikes.py, refreshed nightly from the monthly lookalikes job) weighs how strong Spill's "
+        "HubSpot customers are in the account's industry (0.45), how common its size band is among them (0.35) and "
+        "how common its 12-month headcount growth is (0.20; left out, never counted against it, when unknown). "
+        "+10 with Team of 10–49 makes 25, Standard: the old +4 left most 10-49 accounts at 19, one point under "
+        "standard_threshold, and on 5 Oct Control held 300 of 432 open accounts. So a close lookalike with no "
+        "observed signal is Standard now, and Control holds the accounts that fit less well. On 5 Oct any weight "
+        "from +5 to +15 gave the same tiers (Standard 163 of 421, 39%), and +10 leaves room for observed signals "
+        "to order them. `us-outbound lookalikes fit` shows the fits and the tier mix these rows give.",
+    ),
+    (
+        "Some match to Spill's customers", "lookalike", "lookalike_fit >= 45 AND lookalike_fit < 70",
+        "", "3", "", "Score", "", "", "120", "yes",
+        "Harry, 5 Oct 2026: the middle of lookalike_fit (see Close match to Spill's customers). It orders accounts "
+        "within a tier and lifts none on its own: +3 with Team of 10–49 makes 18, Control. At +8 it put 256 of 421 "
+        "open accounts in Standard (61%, 5 Oct), outside the tier-mix check's 5-40%.",
+    ),
+    (
         "Looks like Spill's customers", "lookalike", "lookalike_active >= 5 AND lookalike_strength >= 10",
-        "", "4", "", "Score", "", "", "120", "yes",
-        "Spill's HubSpot customers in the account's industry group and size band (Harry, 1 Oct 2026: Spill "
-        "companies from HubSpot may inform lookalike targets; sources/lookalikes.py, weekly). "
-        "lookalike_strength counts an active customer 1 and a churned one 0.25, and a US one double. "
-        "Threshold: at least 5 active and a strength of 10, about ten active customers. From HubSpot's "
-        "aggregates on 1 Oct that is Technology & Startups at 10-49 (about 80 active), 50-99 (about 27) and "
-        "100-249 (about 12), and Marketing & Creative Agencies at 10-49 (about 44); every other cell from 10 "
-        "to 249 staff has fewer than 5 active, Legal Teams included. Weight +4, not more: the size rows "
-        "already give +15 at 10-49, so the two "
-        "firmographic rows together stay under standard_threshold (20) and an account with no observed "
-        "signal stays in Control, the signal-blind holdout. `us-outbound lookalikes show` lists the cells.",
+        "", "4", "", "Score", "", "", "120", "no",
+        "Replaced by Close match and Some match to Spill's customers (Harry, 5 Oct 2026), which grade the fit; "
+        "kept here switched off, so a settings load switches the sheet's row off. It scored +4 when the account's "
+        "industry group and size band held at least 5 active customers and a strength of 10 (Harry, 1 Oct "
+        "2026), which fired on 268 of 432 accounts on 5 Oct and so barely told them apart.",
+    ),
+    (
+        "Found as a lookalike of a customer", "lookalike_lead", "found_as_lookalike = true",
+        "", "10", "", "Score", "", "", "120", "yes",
+        "Companies the monthly lookalike_leads job found through Apollo's search for US companies like Spill's "
+        "active customers, UK ones included, in an active industry group and size band (Harry, 5 Oct 2026; "
+        "sources/lookalike_leads.py). Only accounts it brought in get it; the fact keeps whether the customer "
+        "was in the US, so US- and UK-seeded leads can be compared. Counts for 120 days, about four monthly runs. "
+        "Unlike Looks like Spill's customers, which scores the account's cell, this was measured on the company "
+        "itself, so it may lift an account out of Control: with the size row (+15 at 10-49) and the cell signal "
+        "(+4) a lookalike lead scores 29, Standard. Added by the build.",
     ),
 ]
 
@@ -518,7 +639,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
 _OPENERS: dict[str, tuple[str, str, str, str]] = {
     # The context signals (_CONTEXT_NOTE, above): no tokens, so every line fills for every account.
     "New People leader": _NEW_LEADER_LINES[1:],
-    "First People hire": _PEOPLE_ROLE_LINES[1:],
+    "First People hire (likely)": _PEOPLE_ROLE_LINES[1:],
     "People role open": _PEOPLE_ROLE_LINES[1:],
     "Funding in the last 6 months": _FUNDING_LINES[1:],
     "Funding 6–12 months ago": _FUNDING_LINES[1:],
@@ -700,8 +821,8 @@ _ROLES: list[tuple[str, str, str, str, str, str, str]] = [
 # data/copy.csv: one four-email sequence per industry and a General one, drafted by Claude from
 # templates/copy/style.md, facts.md and each industry's page, then checked by a second model
 # (docs/pipeline.md, "Copy"). Every row loads as draft: only Harry approves copy (SPEC 5, 10).
-# The signature and (email 1) Article 14 notice are added at render time, and Instantly's unsubscribe
-# line by the campaign's step template; none is stored here.
+# The signature is added at render time, and Instantly's unsubscribe line by the campaign's step
+# template; neither is stored here. No email carries a data notice (Harry, 5 Oct 2026).
 
 
 def _copy() -> list[dict[str, str]]:
@@ -724,6 +845,7 @@ _MAILBOXES = [
 
 _FIRST_TEST = {
     "test_id": "t1-eap-opener",
+    "kind": "ab",
     "hypothesis": (
         "On accounts where an EAP is named, an Upgrade the EAP opener gets a higher reply rate than a General "
         "opener."
@@ -732,6 +854,7 @@ _FIRST_TEST = {
     "version_b": "general-v1",
     "accounts_per_version": "400",
     "start_date": "",
+    "looks": "",
     "read_date": "",
     "decision_rule": (
         "reply rate, human replies within 28 days of step 1 ÷ accounts with step 1 delivered; "

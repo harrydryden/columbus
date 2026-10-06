@@ -10,6 +10,20 @@ worker: `railway ssh -- us-outbound <command>`. Nothing changes without `--live`
 | `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry, and enrol posts a few preview cards to #us-outbound-dev | Emails go out. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
 | `auto_send` | The pilot: every email waits for an approver's ✅ on its card in #us-outbound | Emails go straight to Instantly once the weekly hand-check is approved |
 
+**Company size (General `min_employees`, `max_employees`; 10 and 249 by default).** To contact companies of 5
+to 500, set 5 and 500. From the next sync every search covers the new range (new size bands are searched
+from page 1), verify_accounts holds accounts to it, and the hand-check's size edges move with it. The
+Roles tab's 10-49 order applies below 10 and its 50-249 order above 249. The first time, run
+`us-outbound settings load --tab General --live` to add the two keys to the sheet.
+
+**A second contact** (`second_contact`, no; Harry, 6 Oct 2026). With yes, a company of 50 or more staff
+(`second_contact_min_employees`) also gets a second person of another role, from the same sender, 3 days
+(`second_contact_delay_days`) after the first person's email 1, with the room new companies leave. Their
+card is headed "Send approval · second contact" and names the first person; approve it like any other.
+When anyone at the company replies, bounces or unsubscribes, both people's emails stop. To switch it on:
+`us-outbound settings load --tab General --set second_contact=yes --live`, then `us-outbound sync`.
+`us-outbound status` and the daily post say whether it is on.
+
 **Sheet edits apply at the next sync:** 02:00 UK every day, and 11:30 UK on weekdays, so a morning
 edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound sync`.
 `us-outbound start --live` syncs by itself first. `us-outbound status` says when the settings were last synced.
@@ -25,8 +39,9 @@ campaigns still match the settings, and activates them.
 
 | When | What arrives | What to do |
 | :- | :- | :- |
-| 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated | Usually nothing. If it asks you to run `us-outbound start --live`, run it |
-| Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, a size near a band edge) | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong |
+| 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
+| Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included. With `clay_cross_check` = yes, only the doubts Clay couldn't settle, with both values ("Clay says 62 staff, Apollo says 49") | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
+| Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
 | 09:00 | The daily post | Read the **Needs you** line under the headline first |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
@@ -47,6 +62,56 @@ one click decides.
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
 | 🚫 | — | Drop the company for good |
 
+## Mondays: the readout
+
+At 08:30 UK, after the hand-check and before the daily post, `monday_readout` posts last week (Monday to
+Sunday, UK time) to #us-outbound. `us-outbound readout` prints the same text without posting. Read it top
+to bottom:
+
+1. **Last week:** emails sent, replies (people, not out-of-office) and how many were positive, meetings
+   booked, bounces and unsubscribes. Then the companies emailed so far and how many of their 28-day reply
+   windows have closed: until they have, every rate still rises.
+2. **Against the targets:** companies enrolled against `weekly_enrol_cap`; the reply, positive and meeting
+   rates so far against the working assumption (3 to 5%, about 1%, 0.5 to 1%); the stop rule's progress.
+3. **Exit criteria to scale**, each "Met" or "Not met" with its numbers: bounces under 2%, no complaints,
+   unsubscribes confirmed end to end, every reply classified and routed, no unexplained refusal. When all
+   five are met, raise `weekly_enrol_cap` with the ramp (docs/roadmap.md §3).
+4. **By tier, angle, industry group, sender and step:** last week's sends, replies and meetings, and for
+   each the companies emailed so far and how many replied.
+5. **Signal value:** the signals whose companies replied more or less than the companies without them. For
+   the whole table, `us-outbound signals value`. To act on it, change a weight on the Signals tab, then
+   `us-outbound sync`. Nothing re-weights itself.
+6. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
+   far each running test has got.
+
+**Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
+counts only. A bounce rate on fewer than 100 sends says that one bounce moves it a lot.
+
+**Meetings** count bookings on your HubSpot calendar (the signature's "Book a call here", and the website's
+demo page, which books into the same calendar) and Spill 3.0 deals at "Demo requested" or later at a company
+we emailed. `hubspot_readback` reads them every 15 minutes and stops that company's emails; it only reads
+HubSpot. A meeting and a deal for one booking count once.
+
+**Tests are read only at a look you set in advance.** On the Tests tab, before `us-outbound test start ID
+--live`:
+- `kind`: `ab` (the default) for a copy test between two Copy rows, or `holdout` to read a split the
+  system already makes: `opener` against `holdout` (the opener holdout), or `personal` against `copy`
+  (email 1's subject). A holdout test can run beside the copy test.
+- `looks`: the interim looks, separated by semicolons. A number, like `200`, is "both versions have 200
+  companies whose 28-day reply window has closed"; a date is that day. `read_date` is always the last look.
+
+`us-outbound test read ID` reads the test at its latest look, over the companies that look covers. Before
+the first look it refuses and shows only how far each version has got, never a reply. Write the result on
+the Tests tab. The first time, `us-outbound settings load --tab Tests --live`, then `us-outbound sync`, adds
+the `kind` and `looks` columns; your values stay.
+
+**UTM tags (off).** With `utm_links` = yes, the links to spill.chat and your booking link carry UTM tags
+(`utm_source=us_outbound`, `utm_medium=email`, `utm_campaign` the Copy row, `utm_content` the email's
+number), so website visits and bookings can be traced to the emails. The words of each link are unchanged,
+and the Trustpilot and unsubscribe links never get tags. It is off by default: tagged links can read as
+marketing to inbox filters, so send a seed with it on and check where it lands before leaving it on. The
+first time, `us-outbound settings load --tab General --live` adds the key to the sheet.
+
 ## Expected volume in the pilot
 
 Each sender takes new contacts at a quarter of its daily cap, so the follow-ups on days 7, 14 and
@@ -63,6 +128,10 @@ above this.
   `us-outbound killrules clear ID --live` lifts the hold.
 - **A mailbox misbehaves:** `us-outbound mailbox pause ADDRESS --live` takes it off its campaign's
   sending list.
+- **The mailbox check says a sender name is wrong:** prospects see each mailbox's From name, and it
+  should be the owner's full name from the Mailboxes tab ("Hannah Spalding"), not "Hannah at Spill".
+  `us-outbound mailbox check` lists what it would change; `us-outbound mailbox check --fix --live`
+  sets it in Instantly (the account's first and last name only).
 - **A card says "Not sent":** the re-check at your ✅ found the person or company can no longer be
   emailed (an unsubscribe, a customer or open deal in HubSpot, a suppressed domain). Nothing was
   sent and the card is closed; there is nothing to do. A card that is only *held* (sending stopped,
@@ -76,6 +145,28 @@ above this.
 - **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual
   steps it prints.
 
+## Website visits
+
+`site_visits` runs at 06:00 UK every day. It asks Apollo which companies visited spill.chat's US
+pages (General `site_visit_us_paths`, `/us`) and its pricing and demo pages (`site_visit_intent_paths`)
+in the last 30 days. A visit lifts that company's score before the 12:00 enrol ("Visited the US site"
++35, "Viewed US pricing or demo page" +25, so both make Priority). A new visitor is looked up in
+Apollo: one in the US (in any state: a visitor is never excluded on its state) within the General size
+range joins the queue, and one Apollo can't place (no HQ state or country,
+no size, no industry, a size near an edge) comes in held for Monday's hand-check rather than being
+left out. It costs about 3 Apollo credits a day, plus 1 for each new visitor looked up. The daily
+post's Sources section has one line on it. The emails never mention a visit.
+
+**If the daily post says "No website-visitor data from Apollo for spill.chat",** check the tracker.
+The jobs only read Apollo's visitor list and never touch the tracker, so this is done by hand:
+- In Apollo, Settings → Website Visitors: spill.chat is listed and shows data received, and the plan
+  includes website visitors.
+- Open spill.chat/us in a browser with the developer tools' Network tab open: a request goes to
+  Apollo when the page loads. If none does, the tracking script is missing from the US pages.
+- While you are there: the intent path should read `/us/pricing` (it was `us/pricing`, without the
+  slash), `/us/book-demo` should be added as high intent, and the script should not be on
+  employee-facing pages.
+
 ## Weekly
 
 - **Focus tab:** the industry mix (Tech 50%, Agencies 30%, Legal 20% to start). Change the shares there.
@@ -83,6 +174,33 @@ above this.
   QA pass, so run `us-outbound copy qa --live` after an edit, then `us-outbound sync`.
 - **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
   hold (docs/roadmap.md §3).
+- **Email 1's subject split** (5 Oct 2026): half the companies (General `email1_subject_share`, 0.5)
+  get the personal subject `email1_subject` ("support for the {{company}} team"; `{{company}}` and
+  `{{first_name}}` only) in email 1 instead of the Copy row's. Emails 2 to 4 are unchanged. Each
+  company keeps its arm, and `us-outbound signals review` says which subject gets more replies once
+  each arm has 30 companies emailed. To change the subject or the share, edit them on the General tab,
+  then `us-outbound sync`; 0 sends every email 1 with the Copy row's subject. The first time, run
+  `us-outbound settings load --tab General --live` to add the two keys to the sheet. To see the
+  personal subject: `copy preview --subject personal`, or `seed send ADDRESS --owner NAME --subject
+  personal --live` for a seed inbox.
+
+## Monthly
+
+- **Lookalikes (the 1st, 02:30 UK):** the `lookalikes` job reads Spill's customers from HubSpot (read
+  only), their 12-month headcount growth from Apollo (counts only, at most 60 credits), and works out
+  each account's lookalike fit (industry, size and growth). Nothing to do. `us-outbound lookalikes show`
+  lists the customers by industry and size; `us-outbound lookalikes fit` shows the fits and the tier
+  mix the lookalike rows give, without changing anything. To put the graded rows on the sheet, run
+  `us-outbound settings load --tab Signals --live`: it adds "Close match" and "Some match to Spill's
+  customers" and switches "Looks like Spill's customers" off.
+- **The 1st, 02:50 UK: lookalike leads** (`lookalike_leads`). Apollo looks for US companies like
+  Spill's active customers, UK customers included, in the Focus tab's industries and the same size
+  band, and the new ones join the queue. They still go through the usual checks (HQ state, size,
+  HubSpot, the hand-check if a fact is doubtful), and they score the "Found as a lookalike of a
+  customer" signal (+10). Nothing arrives in Slack on its own: that morning's daily post says what
+  it found under **Sources**, with how the UK customers' searches did beside the US customers'.
+  It spends at most 60 Apollo credits. `us-outbound run lookalike_leads` runs it by hand; a second
+  run in the same month does nothing, since the customers are much the same.
 
 ## Where the data is
 
@@ -94,6 +212,13 @@ with `us-outbound accounts`: a summary, then the companies in queue order (`--st
 `--industry` narrow the list). `us-outbound accounts acme.com` shows one company in full, with its
 contacts' emails. For a spreadsheet, run `railway ssh -- us-outbound accounts --csv > companies.csv`
 on your own computer; it holds names and emails, so keep it private and delete it when you are done.
+
+**People leaders** (5 Oct 2026): each weekday at 04:20, before the queue is sorted, `apollo_people`
+looks up who leads People at every company in the queue in Apollo's free people search, so "New
+People leader" and "People leader in place" count for companies nobody has contacted yet. "First
+People hire (likely)" counts only where Apollo knows at least half the company's staff, so that
+finding no People leader there means something. Once, after this reaches the worker:
+`us-outbound settings load --tab Signals --live`, then `us-outbound sync`.
 
 **Don't edit rows by hand in Railway's Data tab.** An edit there bypasses the system's checks
 (suppression, one company per domain, a sender kept for life). Make changes with the sheet and the
@@ -109,11 +234,14 @@ commands instead.
 | `sync` | Brings sheet edits into force now |
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
-| `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link |
+| `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
 | `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`) | Send cards without Slack |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
-| `mailbox check --live --fix` | Mailbox health now, and the campaigns put right |
+| `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |
 | `copy preview --industry "Fintech" --html fintech.html`, `copy qa --live` | An email as a prospect will see it; QA for edited rows |
+| `readout` | The Monday readout for last week, printed and not posted |
+| `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
+| `test start ID --live`, `test read ID` | Start a test on the Tests tab; read it at its latest pre-registered look |
 
 Also `handcheck show|approve`, `erase --email` and `schedule`. `us-outbound --help` lists every command.

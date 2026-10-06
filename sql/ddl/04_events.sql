@@ -16,18 +16,22 @@ CREATE TABLE IF NOT EXISTS us_outbound.events (
   approval text,
   approved_by text,
   occurred_at timestamptz,
+  source text,
   PRIMARY KEY (event_id)
 );
+-- For databases created before a booking said where it was read from (6 Oct 2026).
+ALTER TABLE us_outbound.events ADD COLUMN IF NOT EXISTS source text;
 CREATE INDEX IF NOT EXISTS events_account_id_idx ON us_outbound.events (account_id);
 CREATE INDEX IF NOT EXISTS events_contact_id_idx ON us_outbound.events (contact_id);
 CREATE INDEX IF NOT EXISTS events_occurred_at_idx ON us_outbound.events (occurred_at);
 CREATE INDEX IF NOT EXISTS events_type_occurred_at_idx ON us_outbound.events (type, occurred_at);
 COMMENT ON TABLE us_outbound.events IS 'One row per send, reply, visit, meeting, deal or escalation (SPEC 6). event_id is the idempotency key. Reply text is purged after 90 days by the retention job.';
 COMMENT ON COLUMN us_outbound.events.event_id IS 'Idempotency key: the Instantly email id or the HubSpot object id (SPEC 6).';
-COMMENT ON COLUMN us_outbound.events.type IS 'One of: sent, bounced, replied, unsubscribed, site_visit, meeting_booked, demo_held, deal_created, escalated, send_approval, reply_sent. sent: a campaign step Instantly sent. send_approval: the closing decision on a send approval, event_id send-approval:{item_id}, step 1 (enrol/approvals.py; Harry, 2 Oct 2026). reply_sent: a reply the reply desk sent from the mailbox the prospect wrote to, with approval and approved_by, step NULL (replies/desk.py); it is no campaign send, so nothing that counts sends reads it.';
+COMMENT ON COLUMN us_outbound.events.type IS 'One of: sent, bounced, replied, unsubscribed, site_visit, meeting_booked, demo_held, deal_created, escalated, send_approval, reply_sent, lead_stopped. sent: a campaign step Instantly sent. send_approval: the closing decision on a send approval, event_id send-approval:{item_id}, step 1 (enrol/approvals.py; Harry, 2 Oct 2026). reply_sent: a reply the reply desk sent from the mailbox the prospect wrote to, with approval and approved_by, step NULL (replies/desk.py); it is no campaign send, so nothing that counts sends reads it. lead_stopped: the account-level stop ended this contact''s lead because someone else at the account replied, bounced, unsubscribed or complained, event_id lead_stopped:{contact_id} (replies/account_stop.py; Harry, 6 Oct 2026).';
 COMMENT ON COLUMN us_outbound.events.step IS 'Sequence step, 1 to 4 (SPEC 10).';
 COMMENT ON COLUMN us_outbound.events.mailbox IS 'The registry mailbox that sent or received it.';
 COMMENT ON COLUMN us_outbound.events.reply_class IS 'One of: positive, referral, objection, not_now, negative, out_of_office, wrong_person, unsubscribe, other (SPEC 11).';
 COMMENT ON COLUMN us_outbound.events.reply_text IS 'Purged after 90 days (SPEC 6) by the retention job.';
 COMMENT ON COLUMN us_outbound.events.language_terms IS 'JSON: the list of language terms from classification (SPEC 11).';
+COMMENT ON COLUMN us_outbound.events.source IS 'Where a booking was read from (crm/readback.py; build addition, Harry, 6 Oct 2026). One of: hubspot_meeting, hubspot_deal. hubspot_meeting: a meeting on Harry''s calendar booked through his HubSpot meetings link (the signature''s booking line, and the website''s demo page, which books into the same calendar). hubspot_deal: a Spill 3.0 deal at Demo requested or later at an enrolled company (one of ours only once it is past Demo requested). Blank on every other event.';
 COMMENT ON COLUMN us_outbound.events.approval IS 'One of: approved, edited, skipped, approved_edited, contact_rejected, company_rejected, expired, blocked. A reply is approved, edited or skipped; a send approval has its outcome: approved, approved_edited, contact_rejected, company_rejected, expired or blocked, with approved_by a Slack user id, cli or system.';

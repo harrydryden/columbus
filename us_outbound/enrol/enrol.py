@@ -31,8 +31,9 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      contact's role, else its group's, else General; the running test's hash split takes
      half of version_a's accounts), its opener for that contact (enrol/openers.py: the angle
      setter's line for the contact's copy role, filled with the account's stored facts, or none,
-     and the opener_holdout_share held out with none), its four rendered emails (any copy-rule
-     violation skips it), and a HubSpot
+     and the opener_holdout_share held out with none), its email-1 subject arm (render.subject_arm: the
+     email1_subject_share get General email1_subject, the rest the Copy row's s1_subject; Harry, 5 Oct 2026),
+     its four rendered emails (any copy-rule violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
      rendered steps as custom variables. A lead the add summary leaves out is looked up in the
@@ -45,13 +46,21 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      its lead is added only when an approver's ✅ is read (enrol/approvals.py, poll_approvals).
      A live run without US_OUTBOUND_SLACK_BOT_TOKEN refuses, as there is nowhere to approve.
 
+  6. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026): at
+     enrolled accounts of second_contact_min_employees or more staff, a person of another role,
+     second_contact_delay_days after the first contact's email 1. They count in ready accounts and so in
+     today's number, are walked after every first contact (so they take only what new accounts leave
+     of the number and of their sender's slots), keep the account's sender, and are prepared and
+     approved as above. Their contact_slot is 2; their account row is left as it is.
+
 Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is marked
 enrolled. With auto_send = no no item is written; a few cards are posted to the dev channel
 as a preview. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
 contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
-campaign and lead id, and its opener arm and source (opener, holdout or none; which line), so the
-readout can compare opener against none.
+campaign and lead id, its opener arm and source (opener, holdout or none; which line), so the
+readout can compare opener against none, and its subject arm (personal or copy), so it can compare
+email 1's personal subject against the Copy row's.
 Sent events come later, from sync_outcomes.
 """
 
@@ -73,6 +82,7 @@ from us_outbound.enrol import focus, openers, queue, render
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
+from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
 
 
@@ -203,7 +213,7 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
 
 
 def optout_untested(ctx: Context) -> str | None:
-    """Live only: why nothing may be sent while the seed-inbox test of Instantly's {{unsubscribe}} link is not
+    """Live only: why nothing may be sent while the seed-inbox test of Instantly's unsubscribe link is not
     done (optout_tested, golive's "Opt-out tested"). A dry run still previews."""
     if ctx.live and not ctx.settings.general.optout_tested:
         return OPTOUT_UNTESTED
@@ -231,6 +241,8 @@ def gate(ctx: Context, today: date) -> str | None:
 class Candidate:
     account: dict
     contact: dict
+    slot: int = 1  # contacts.contact_slot: 2 for a second contact at the account (enrol/second.py)
+    first: dict | None = None  # a second contact's first contact, as second.first_summary gives it
 
 
 def _in_force(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
@@ -600,11 +612,14 @@ class Prepared:
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
     opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
+    subject_arm: str = render.COPY_SUBJECT  # personal or copy: email 1's subject (contacts.subject_arm)
     # What a send approval's card shows and an edit re-renders with (enrol/approvals.py): the four emails
     # as rendered, the variables they were filled with, and the mailbox they were rendered for.
     rendered: list[render.Rendered] = field(default_factory=list)
     values: dict[str, str] = field(default_factory=dict)
     render_mailbox: str = ""
+    slot: int = 1  # contacts.contact_slot (enrol/second.py)
+    first: dict | None = None  # a second contact's first contact (second.first_summary), for the card
 
 
 @dataclass
@@ -638,6 +653,9 @@ def prepare(
     row, test_id, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
     if row is None:
         return Skip("no approved copy", [why, copy_note] if copy_note else [why])
+    if cand.first and row.copy_version == cand.first.get("copy_version"):
+        # Two colleagues with the same email reads as a mail merge (enrol/second.py).
+        return Skip("same copy as the first contact", [f"{row.copy_version} is the row the first contact got"])
 
     host = render.is_demo_host(mb, s)
     exempt = (str(a.get("clean_name") or ""), str(c.get("first_name") or ""))
@@ -650,7 +668,8 @@ def prepare(
     if note:  # every filled opener goes through the copy rules once more, as it will be sent
         op = openers.Opener("", openers.NONE, "", (*op.notes, note))
     values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
-    rendered = render.render_sequence(row, values, mailbox=mb, settings=s)
+    arm = render.subject_arm(a.get("account_id"), s)  # Harry, 5 Oct 2026: email 1's personal subject, as a split
+    rendered = render.render_sequence(row, values, mailbox=mb, settings=s, subject_arm=arm)
     problems = render.violations(rendered)
     if problems:
         return Skip("copy blocked", [f"{row.copy_version}: {p}" for p in problems])
@@ -674,7 +693,8 @@ def prepare(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
-        rendered=rendered, values=values, render_mailbox=mb.address,
+        subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, slot=cand.slot,
+        first=cand.first,
     )
 
 
@@ -689,6 +709,7 @@ class _Run:
     opener_fallbacks: list[dict] = field(default_factory=list)
     opener_arms: Counter[str] = field(default_factory=Counter)  # opener, holdout, none
     opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus", "opener_generic_ops"
+    subject_arms: Counter[str] = field(default_factory=Counter)  # personal, copy
     copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 
@@ -723,7 +744,7 @@ def _walk(
             continue
         p = prepare(ctx, cand, free, counts, rows, pace, not_sending)
         if isinstance(p, Skip):
-            run.skip(cand.account, p.reason, p.detail)
+            run.skip(cand.account, p.reason if cand.slot == 1 else f"second contact: {p.reason}", p.detail)
             if p.exclude_fact:
                 mark_excluded(ctx, cand.account, p.exclude_fact, p.detail[0])
                 run.excluded.append({"account_id": cand.account["account_id"], "reason": p.detail[0]})
@@ -732,11 +753,12 @@ def _walk(
         free[p.owner] -= 1
         if quota is not None:
             quota.take(cand.account)
-        if p.test_id:
+        if p.test_id and not (p.first and p.first.get("test_id") == p.test_id):  # the test counts accounts
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
         run.opener_arms[p.opener_arm] += 1
+        run.subject_arms[p.subject_arm] += 1
         if p.opener_source:
             run.opener_sources[p.opener_source] += 1
         if p.copy_note:
@@ -784,16 +806,44 @@ def mark_not_added(ctx: Context, contact_id: Any) -> None:
         ctx.store.update("contacts", {"contact_id": contact_id}, {"suppressed": True, "suppressed_reason": NOT_ADDED})
 
 
+def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    """account_id -> the Score signals its latest scoring matched, as [{signal, weight}], strongest first.
+
+    Scoring rewrites these rows every run (scoring/score.py), so a contact keeps its own copy from the
+    moment it is enrolled (contacts.signals_at_enrol): the readout then judges the signals an account had
+    when it was emailed, not the ones it has weeks later (v_signal_value; Harry, 5 Oct 2026).
+    """
+    out: dict[str, list[dict[str, Any]]] = {a: [] for a in account_ids}
+    if not account_ids:
+        return out
+    rows = ctx.store.select("signal_events", {"account_id": list(account_ids), "source": SCORING_SOURCE,
+                                              "fact": MATCH_FACT})
+    for r in rows:
+        v = r.get("value") if isinstance(r.get("value"), Mapping) else {}
+        if v.get("signal"):
+            out.setdefault(str(r["account_id"]), []).append({"signal": str(v["signal"]), "weight": v.get("weight")})
+    for matches in out.values():
+        matches.sort(key=lambda m: (-(m["weight"] if isinstance(m["weight"], (int, float)) else 0), m["signal"]))
+    return out
+
+
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
-    """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast)."""
+    """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
+    its opener and subject arms (the readout's two splits), and what the account looked like then: its signals,
+    score and tier (signals_now); and where the contact's details came from and the lawful basis
+    (render.data_record), kept here since no email carries it. A second contact (enrol/second.py) leaves its
+    account as it is: enrolled already, with its sender, and never moved back from engaged by a late approval."""
     accounts, contacts = [], []
+    record = render.data_record(ctx.settings)
+    signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
     for i, p in enumerate(items):
         if i not in ids:
             continue
-        row = {"account_id": p.account["account_id"], "status": ENROLLED}
-        if not p.account.get("sender"):
-            row["sender"] = p.owner  # set at first enrollment, never changed (SPEC 9)
-        accounts.append(row)
+        if p.slot == 1:
+            row = {"account_id": p.account["account_id"], "status": ENROLLED}
+            if not p.account.get("sender"):
+                row["sender"] = p.owner  # set at first enrollment, never changed (SPEC 9)
+            accounts.append(row)
         contacts.append({
             "contact_id": p.contact["contact_id"],
             "enrolment_month": month,
@@ -806,15 +856,22 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "instantly_lead_id": ids[i],
             "opener_arm": p.opener_arm,
             "opener_source": p.opener_source or None,
+            "subject_arm": p.subject_arm,
+            "signals_at_enrol": signals.get(str(p.account["account_id"]), []),
+            "score_at_enrol": p.account.get("score"),
+            "tier_at_enrol": p.account.get("tier") or None,
+            "data_record": record,
+            "contact_slot": p.slot,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
+    if contacts:
         ctx.store.upsert("contacts", contacts)
 
 
 def run(ctx: Context) -> dict:
     """The enrol job (JOB CONTRACT: run(ctx) -> summary)."""
-    from us_outbound.enrol import approvals  # it builds on this module
+    from us_outbound.enrol import approvals, second  # they build on this module
 
     s = ctx.settings
     today = ctx.now_et().date()
@@ -840,8 +897,11 @@ def run(ctx: Context) -> dict:
     # not proposed again, and hold their sender's slots and their place in the week.
     held = approvals.waiting(ctx)
     cands, skipped = candidates(ctx, pulled, held.accounts)
+    # Second contacts (enrol/second.py; Harry, 6 Oct 2026): none, without a read, while second_contact is no.
+    seconds, not_second = second.candidates(ctx, pulled, held.accounts)
     # campaigns=True: an owner whose Instantly campaign is not active gets no capacity in a live run (limits.py).
-    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner, campaigns=True)
+    lim = limits.today(ctx, today, ready_accounts=len(cands) + len(seconds), pending=held.by_owner, campaigns=True,
+                       second_ready=len(seconds))
     stopped = lim.not_sending
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
@@ -869,6 +929,10 @@ def run(ctx: Context) -> dict:
         for p in fill:
             quota.take(p.account)
         prepared += fill
+    # Second contacts last, from what the first contacts of new accounts left of today's number and of their
+    # senders' slots; outside the industry focus, which shares out new accounts.
+    n_first = len(prepared)
+    prepared += _walk(ctx, iter(seconds), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:
@@ -936,8 +1000,10 @@ def run(ctx: Context) -> dict:
         excluded=r.excluded,
         opener_fallbacks=r.opener_fallbacks,
         openers={"arms": dict(r.opener_arms), "sources": dict(r.opener_sources)},
+        subjects={"arms": dict(r.subject_arms)},
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
+        second_contacts=second.tally(seconds, not_second, len(prepared) - n_first, s),
         errors=r.errors,
     )
     if proposed is not None:  # by_owner: the cards posted (live) or that would be (dry-run)

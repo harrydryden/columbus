@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
 VARIABLE = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
@@ -34,7 +34,6 @@ _HTML_TAG = re.compile(r"</?\s*[A-Za-z][A-Za-z0-9]*(?:\s[^<>]*)?/?>")
 _BARE_URL = re.compile(r"(?<![\w/])(?:https?://|www\.)[^\s<>()\[\]]+", re.IGNORECASE)
 _URLISH = re.compile(r"^(?:https?://|www\.)|\.(?:com|org|chat|net|io)(?:/|$)", re.IGNORECASE)
 MIN_BULLETS = 2
-FOOTER_STYLE = "font-size:12px;color:#6b6b6b"
 
 
 @dataclass(frozen=True)
@@ -163,8 +162,13 @@ class _Filler:
         return "".join(out)
 
 
-def _inline(line: str, f: _Filler, fmt: str, found: list[tuple[str, str]]) -> str:
-    """One line of copy in fmt: "html", "text" (links as "anchor (url)") or "words" (anchor only)."""
+def _inline(line: str, f: _Filler, fmt: str, found: list[tuple[str, str]],
+            href: Callable[[str], str] | None = None) -> str:
+    """One line of copy in fmt: "html", "text" (links as "anchor (url)") or "words" (anchor only).
+
+    href, when given, maps a filled address to the one the HTML link carries (enrol/utm.py adds UTM tags);
+    found, the text and the words keep the address as written, so the copy rules read it bare.
+    """
     out, last = [], 0
     for m in _LINK.finditer(line):
         out.append(_bold(line[last : m.start()], f, fmt))
@@ -172,7 +176,8 @@ def _inline(line: str, f: _Filler, fmt: str, found: list[tuple[str, str]]) -> st
         url = f.fill(m.group(2).strip(), escape=False)
         if fmt == "html":
             found.append((f.fill(m.group(1).strip(), escape=False), url))
-            out.append(f'<a href="{html.escape(url, quote=True)}">{anchor}</a>')
+            shown = href(url) if href is not None else url
+            out.append(f'<a href="{html.escape(shown, quote=True)}">{anchor}</a>')
         elif fmt == "text":
             out.append(f"{anchor} ({url})")
         else:
@@ -193,8 +198,12 @@ def _bold(text: str, f: _Filler, fmt: str) -> str:
     return "".join(out)
 
 
-def render(source: str, values: Mapping[str, str], *, optional: Iterable[str] = ()) -> Rendered:
-    """The copy with its variables filled, as HTML, plain text and words, with every problem."""
+def render(source: str, values: Mapping[str, str], *, optional: Iterable[str] = (),
+           href: Callable[[str], str] | None = None) -> Rendered:
+    """The copy with its variables filled, as HTML, plain text and words, with every problem.
+
+    href: what each link's address becomes in the HTML (UTM tags, enrol/utm.py); links keeps them bare.
+    """
     opt = frozenset(optional)
     source = drop_empty_optional(source, values, opt)
     blocks, problems = parse(source)
@@ -206,7 +215,8 @@ def render(source: str, values: Mapping[str, str], *, optional: Iterable[str] = 
         fillers.append(f)
         parts = []
         for b in blocks:
-            lines = [_inline(line, f, fmt, found if fmt == "html" else []) for line in b.lines]
+            lines = [_inline(line, f, fmt, found if fmt == "html" else [], href if fmt == "html" else None)
+                     for line in b.lines]
             if fmt == "html":
                 parts.append("<ul>" + "".join(f"<li>{x}</li>" for x in lines) + "</ul>" if b.kind == "ul"
                              else "<p>" + "<br>".join(lines) + "</p>")
@@ -215,15 +225,6 @@ def render(source: str, values: Mapping[str, str], *, optional: Iterable[str] = 
         versions[fmt] = "".join(parts) if fmt == "html" else "\n\n".join(parts)
     problems += fillers[0].problems
     return Rendered(versions["html"], versions["text"], versions["words"], found, list(dict.fromkeys(problems)))
-
-
-def plain_to_html(text: str, *, link_urls: Iterable[str] = (), style: str = FOOTER_STYLE) -> str:
-    """Fixed plain text (the Article 14 notice) as one small-type HTML paragraph; the given URLs become links."""
-    body = "<br>".join(html.escape(line, quote=False) for line in text.split("\n"))
-    for url in sorted({u for u in link_urls if u}, key=len, reverse=True):
-        esc = html.escape(url, quote=False)
-        body = body.replace(esc, f'<a href="{html.escape(url, quote=True)}">{esc}</a>')
-    return f'<p style="{style}">{body}</p>' if style else f"<p>{body}</p>"
 
 
 def word_count(words: str) -> int:

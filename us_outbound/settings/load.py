@@ -26,8 +26,11 @@ command merges them into the sheet without losing Harry's own edits:
     fallback_order) is replaced by the build's rows, the size-band order led by seniority. A
     tab already in the new layout keeps its rows; only roles it does not have are added.
   * Signals and Focus (Harry, 1 Oct 2026): the build's rows are added and Harry's own rows stay. A
-    row the build replaced under another name (SUPERSEDED: Recent funding, now split by age) stays
-    on the sheet but is switched off, so it does not score alongside its replacements. Focus rows
+    row the build replaced under another name (SUPERSEDED: Recent funding, now split by age; First
+    People hire, now First People hire (likely), 5 Oct 2026) stays on the sheet but is switched off,
+    so it does not score alongside its replacements; one the build still lists, switched off (Looks
+    like Spill's customers, graded by lookalike_fit from 5 Oct 2026), takes the build's active and
+    note, so the sheet's yes does not keep it scoring. Focus rows
     take the build's values. Signals rows (SHEET_WINS; Harry, 2 Oct 2026) keep the sheet's value in
     every column the sheet already has, blank included, so a load never undoes his edits; columns
     the sheet does not have yet, like the tokenized openers' opener_people, opener_founder,
@@ -37,6 +40,10 @@ command merges them into the sheet without losing Harry's own edits:
     facts, so the page signals' careers_pages source (Harry, 2 Oct 2026: our own page reader,
     sources/pages.py) arrives with a plain `--tab Signals` load; until it does, settings_sync's
     summary says so.
+  * Tests (Harry, 6 Oct 2026): like Signals, every column the sheet already has keeps its value (a test's
+    dates, status and result are Harry's), and rows Harry added stay; the load brings the new kind and looks
+    columns (learn/looks.py), with the build's values for the build's own rows (t1-eap-opener: ab, no
+    interim look).
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -52,7 +59,7 @@ from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, is_legacy_roles, validate_all
 
-LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus")
+LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus", "Tests")
 # The columns Harry owns; `--take COLUMN` lets the build's value win for one load (Harry, 1 Oct 2026:
 # "make all the changes" in the design review, so Legal Teams goes on at launch).
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
@@ -67,18 +74,28 @@ SIGN_OFF = ("live_sending", "auto_send", "optout_tested", "approver_slack_ids")
 # tokenized openers arrive as new Signals columns without undoing his edits). Columns the sheet does not
 # have yet take the build's values; `--take COLUMN` lets the build win for one column, as the design
 # review's load did for the weights on 1 Oct.
-SHEET_WINS = frozenset({"Signals"})
+SHEET_WINS = frozenset({"Signals", "Tests"})
 # Columns that name code, not a judgment, so the build always wins there even on a SHEET_WINS tab: a
 # Signals row's source keys are the source modules that produce its facts (careers_pages, 2 Oct 2026).
 BUILD_OWNS: dict[str, tuple[str, ...]] = {"Signals": ("source",)}
 KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
-       "Focus": "industry_group"}
+       "Focus": "industry_group", "Tests": "test_id"}
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
 # Rows the build replaced under another name: a load keeps them on the sheet but switches them off,
-# so the old and new rows don't both score (Recent funding was split by age; review Appendix A).
-SUPERSEDED: dict[str, dict[str, str]] = {
-    "Signals": {"recent funding": "Funding in the last 6 months and Funding 6–12 months ago"},
+# so the old and new rows don't both score (Recent funding was split by age; review Appendix A). key ->
+# (what replaced it, when). A superseded row the build still has, switched off (Looks like Spill's customers),
+# takes the build's active and note even on a SHEET_WINS tab, so the sheet's yes does not keep it scoring.
+SUPERSEDED: dict[str, dict[str, tuple[str, str]]] = {
+    "Signals": {
+        "recent funding": ("Funding in the last 6 months and Funding 6–12 months ago", "1 Oct 2026"),
+        "looks like spill's customers": (
+            "Close match to Spill's customers and Some match to Spill's customers", "5 Oct 2026"),
+        # Harry, 5 Oct 2026: nothing wrote a count of 0, so it never fired. Its replacement reads apollo_people's
+        # coverage; the new name brings the new condition, weight and window in past SHEET_WINS.
+        "first people hire": ("First People hire (likely)", "5 Oct 2026"),
+    },
 }
+SUPERSEDED_TAKES = ("active", "note")
 # Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
 LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
 SHOW = 12  # names listed per change in the summary
@@ -210,21 +227,27 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
         if old is None:
             p.added.append(row[KEY[tab]])
         else:
+            sup = SUPERSEDED.get(tab, {}).get(k)
             kept = [c for c in keep if str(old.get(c, "")).strip() != row[c].strip()
-                    and (tab in SHEET_WINS or str(old.get(c, "")).strip())]
+                    and (tab in SHEET_WINS or str(old.get(c, "")).strip())
+                    and not (sup and c in SUPERSEDED_TAKES)]
             for c in kept:
                 row[c] = str(old[c])
             if kept:
                 p.kept_from_sheet.append(f"{row[KEY[tab]]} ({', '.join(kept)})")
-            if any(str(old.get(c, "")).strip() != row[c].strip() for c in cols if c not in kept):
+            if sup and "active" in cols and str(old.get("active", "")).strip().casefold() not in ("no", "false") \
+                    and row["active"].strip().casefold() in ("no", "false"):
+                p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {sup[0]})")
+            elif any(str(old.get(c, "")).strip() != row[c].strip() for c in cols if c not in kept):
                 p.updated.append(row[KEY[tab]])
         p.rows.append(row)
     for k, old in sheet.items():
         if k not in build:
             row = {c: str(old.get(c, "")) for c in cols}
-            by = SUPERSEDED.get(tab, {}).get(k)
-            if by and "active" in cols and row["active"].strip().casefold() not in ("no", "false"):
-                row.update(active="no", note=f"Replaced by {by} (1 Oct 2026). {row.get('note', '')}".strip())
+            sup = SUPERSEDED.get(tab, {}).get(k)
+            if sup and "active" in cols and row["active"].strip().casefold() not in ("no", "false"):
+                by, when = sup
+                row.update(active="no", note=f"Replaced by {by} ({when}). {row.get('note', '')}".strip())
                 p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {by})")
             p.rows.append(row)
             p.extra.append(str(old.get(KEY[tab], "")))

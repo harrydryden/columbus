@@ -71,8 +71,8 @@ _GREETING = re.compile(r"^Hi\b[^\n]{0,60},$")
 REPLY_SPAM = tuple(rx for rx in copy_rules.SPAM_PHRASES if "free trial" not in rx.pattern)
 
 SYSTEM = """You draft the reply a Spill salesperson sends to a prospect who answered one of their cold
-emails. Spill is employee mental health support: on-demand counseling for staff, sold to US companies of
-10 to 249 people. A person reads your draft and approves it before anything is sent.
+emails. Spill is employee mental health support: on-demand counseling for staff, sold to small and
+mid-sized US companies. A person reads your draft and approves it before anything is sent.
 
 Write as the sender, in the first person, in their voice. Return only the body of the reply (no subject)
 as plain text, with \\n between lines and \\n\\n between paragraphs. Write a link out in full; never use

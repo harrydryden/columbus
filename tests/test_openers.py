@@ -76,7 +76,7 @@ LEADER = [fact("apollo_people", "people_leader_count", 1), fact("apollo_people",
                {"apollo_person_id": "p-dana", "title": "HEAD OF PEOPLE", "days_in_title": 40})]
 FIRST_HIRE = [fact("apollo_jobs", "open_people_roles", 1), fact("apollo_jobs", "open_roles", 1),
               fact("apollo_jobs", "posting_titles", ["People Operations Manager (Remote)"]),
-              fact("apollo_people", "people_leader_count", 0)]
+              fact("apollo_people", "people_leader_count", 0), fact("apollo_people", "people_search_coverage", 0.8)]
 PEOPLE_ROLE = [fact("apollo_jobs", "open_people_roles", 1), fact("apollo_jobs", "open_roles", 2),
                fact("apollo_jobs", "posting_titles", ["Account Executive", "HR Generalist - Austin, TX"])]
 FUNDING = [fact("apollo_org", "days_since_funding", 60), fact("apollo_org", "funding_stage", "Series A")]
@@ -103,7 +103,7 @@ NEW_LEADER_LINES = {
     OPS: "New routines can follow people home, and the help that sticks is the kind that adds no admin.",
     "self": "It's easy to put your own well-being last when you spend the day looking after everyone else's.",
 }
-PEOPLE_ROLE_LINES = {  # First People hire and People role open
+PEOPLE_ROLE_LINES = {  # First People hire (likely) and People role open
     "": "Work and home both ask a lot of people, and the best help is the kind nobody has to chase.",
     PEOPLE: "Plenty of people carry worries from home into work, and they tend to use help that feels private and "
             "easy.",
@@ -158,7 +158,7 @@ GENERIC = {
 }
 GENERIC_KEY = {PEOPLE: "opener_generic_people", FOUNDER: "opener_generic_founder", OPS: "opener_generic_ops",
                "": "opener_generic"}
-CONTEXT_SIGNALS = ("New People leader", "First People hire", "People role open", "Funding in the last 6 months",
+CONTEXT_SIGNALS = ("New People leader", "First People hire (likely)", "People role open", "Funding in the last 6 months",
                    "Funding 6–12 months ago", "Hiring and growth")
 PAGE_SIGNALS = ("Mental health support listed", "EAP named", "Wellbeing app or perk named", "Progressive benefits")
 COLUMN = {PEOPLE: "opener_people", FOUNDER: "opener_founder", OPS: "opener_ops"}
@@ -172,7 +172,7 @@ TOKEN_LINES = {
         FOUNDER: "I saw {company} has a new {people_title} in place.",
         OPS: "I saw there's a new {people_title} at {company}.",
     },
-    "First People hire": {
+    "First People hire (likely)": {
         PEOPLE: "I saw {company} is hiring a {people_title}.",
         FOUNDER: "I saw {company} is recruiting a {people_title}.",
         OPS: "I saw {company} is looking to hire a {people_title}.",
@@ -242,7 +242,7 @@ T = dataclasses.replace(S, signals=tuple(_with_token_lines(x) if x.signal in TOK
 CONTEXT_CASES = [
     (facts, signal, role, lines[role])
     for facts, signal, lines in (
-        (LEADER, "New People leader", NEW_LEADER_LINES), (FIRST_HIRE, "First People hire", PEOPLE_ROLE_LINES),
+        (LEADER, "New People leader", NEW_LEADER_LINES), (FIRST_HIRE, "First People hire (likely)", PEOPLE_ROLE_LINES),
         (PEOPLE_ROLE, "People role open", PEOPLE_ROLE_LINES), (FUNDING, "Funding in the last 6 months", FUNDING_LINES),
         (FUNDING_OLDER, "Funding 6–12 months ago", FUNDING_LINES), (HIRING, "Hiring and growth", HIRING_LINES),
         (GROWTH, "Hiring and growth", HIRING_LINES),
@@ -289,7 +289,7 @@ def test_a_sheet_line_with_evidence_tokens_fills_from_the_page_facts(facts, sign
 
 def test_the_default_lines_cover_every_signal_that_can_fire_and_pass_the_rules():
     with_lines = {s.signal for s in DEFAULT.signals if s.role_openers}
-    assert with_lines == {"New People leader", "First People hire", "People role open", "Funding in the last 6 months",
+    assert with_lines == {"New People leader", "First People hire (likely)", "People role open", "Funding in the last 6 months",
                           "Funding 6–12 months ago", "Hiring and growth", "Mental health support listed", "EAP named",
                           "Wellbeing app or perk named", "Progressive benefits"}
     assert all(set(s.role_openers) == {PEOPLE, FOUNDER, OPS} for s in DEFAULT.signals if s.role_openers)
@@ -326,7 +326,7 @@ def test_signals_are_context_never_the_line():
             assert not any(w in line.lower() for w in observed) and not page_words.search(line.lower()), (name, line)
             assert line.count(".") == 1 and line.endswith(".") and len(line.split()) <= 20, (name, line)
     assert by["Funding 6–12 months ago"].role_openers == by["Funding in the last 6 months"].role_openers
-    assert by["First People hire"].role_openers == by["People role open"].role_openers
+    assert by["First People hire (likely)"].role_openers == by["People role open"].role_openers
     for role, key in GENERIC_KEY.items():
         line = getattr(DEFAULT.general, key)
         assert line == GENERIC[role] and not any(w in line.lower() for w in observed), line
@@ -604,7 +604,7 @@ def test_bug1_the_rendered_lines_name_the_function():
     leader = [*LEADER[:2], fact("apollo_people", "people_leader_newest",
                                 {"apollo_person_id": "p-dana", "title": "Director, Human Resources", "days_in_title": 40})]
     assert opener(leader, OPS, settings=T).text == "I saw there's a new Director of Human Resources at Brightline."
-    hiring = [*FIRST_HIRE[:2], fact("apollo_jobs", "posting_titles", ["VP, People Operations"]), FIRST_HIRE[3]]
+    hiring = [*FIRST_HIRE[:2], fact("apollo_jobs", "posting_titles", ["VP, People Operations"]), *FIRST_HIRE[3:]]
     assert opener(hiring, PEOPLE, settings=T).text == "I saw Brightline is hiring a VP of People Operations."
 
 

@@ -105,9 +105,11 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 
 | Step | Who | How |
 | :- | :- | :- |
-| The folder "US Outbound" and the two functions | Harry | "US Outbound – Accounts" and "US Outbound – Contacts" (SPEC 8), with "API & CLI" ticked; the existing functions called as they are, never modified |
+| The folder "US Outbound" and the two functions | Harry | "US Outbound – Accounts" and "US Outbound – Contacts" (SPEC 8), with "API & CLI" ticked; the existing functions called as they are, never modified. For now Accounts is narrowed to HQ state and headcount, for the cross-check: its spec is in docs/pipeline.md, "Clay's two jobs" (6 Oct) |
 | Function ids on the General tab | Harry | `clay_accounts_function_id`, `clay_contacts_function_id` |
 | Tried on 20 hand-picked accounts | Harry and jobs | Check the strict JSON; record credits per account |
+| One Work Email call through the API (6 Oct) | Harry | Tick "API & CLI" on Work Email, then `us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` (your own name, never a prospect's). When it says the output matches, set `clay_email_fallback` = yes and `us-outbound sync` |
+| The cross-check (6 Oct) | Harry | Once "US Outbound – Accounts" is built and its id is on the General tab: `clay_cross_check` = yes, then `us-outbound sync`. The next `verify_accounts` summary (`clay_cross_check`) shows what was asked, answered and filled |
 | Workbook spend limit | Harry | If the plan offers one |
 
 ## 9. Suppression
@@ -150,8 +152,8 @@ as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sen
 
 | Item | Where |
 | :- | :- |
-| Signature (Spill, "Book a call here", the Trustpilot reviews; Harry 1 Oct) | `templates/copy/signature.txt`; its links follow `site_url` and `booking_link` on the General tab |
-| Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that `{{unsubscribe}}` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
+| Signature (the sender's name and one line: Spill, "Book a call here" or the Trustpilot reviews, picked from the email's own links; Harry 1 and 5 Oct) | `templates/copy/signature.txt`, `render.signature`; its links follow `site_url` and `booking_link` on the General tab |
+| Unsubscribe link | Instantly's own, added by each campaign step after the email (`clients/instantly.py` UNSUBSCRIBE_HTML). Check on a test send to a seed inbox that Instantly's placeholder `https://UNSUBSCRIBE_INSTANTLY.ai` becomes a working link in html and text, and that a click shows the lead as unsubscribed |
 | Legitimate-interests text (UK GDPR Article 14, step 1) | `templates/copy/article14.txt` |
 | The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |
 | The claims the emails may make, and the voice | `templates/copy/facts.md`, `templates/copy/style.md` (open questions 65 to 72) |

@@ -47,7 +47,12 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 }
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
-    "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source"}, "suppression": {"expires_at"},
+    "accounts": {"hq_country"},  # accounts.any_us_state (Harry, 6 Oct 2026)
+    "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
+                 "tier_at_enrol", "data_record", "subject_arm",
+                 "contact_slot"},  # enrol/second.py (Harry, 6 Oct 2026)
+    "suppression": {"expires_at"},
+    "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
@@ -63,6 +68,10 @@ BUILD_TABLES: dict[str, set[str]] = {
         "cell_id", "industry_label", "industry_group", "size_band", "active_customers", "churned_customers",
         "us_active", "us_churned", "strength", "computed_at", "run_id",
     },
+    "lookalike_growth": {  # Harry, 5 Oct 2026: customers by 12-month headcount growth band
+        "cell_id", "industry_group", "growth_band", "active_customers", "churned_customers", "strength", "computed_at",
+        "run_id",
+    },
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -75,7 +84,7 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned"}
+        "us_active", "us_churned", "score_at_enrol", "contact_slot"}
 FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 
@@ -94,17 +103,20 @@ HOT_INDEXES = {
 ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "tier"): set(TIERS),
     ("accounts", "size_band"): set(SIZE_BANDS),
-    ("accounts", "source"): {"apollo", "irs", "site_visit", "named"},
+    ("accounts", "source"): {"apollo", "irs", "site_visit", "named", "lookalike"},  # lookalike: sources/lookalike_leads.py
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
     ("contacts", "email_source"): {"apollo", "clay"},
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
+    ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
+        "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
     },
+    ("events", "source"): {"hubspot_meeting", "hubspot_deal"},  # crm/readback.py (Harry, 6 Oct 2026)
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
@@ -118,6 +130,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule", "send_approval"},
     ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
     ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
+    ("lookalike_growth", "growth_band"): {"shrinking", "flat", "growing", "fast", "unknown"},
 }
 
 

@@ -1,17 +1,20 @@
 """The seed-inbox test of the opt-out (golive's "Opt-out tested"; Harry, 5 Oct 2026).
 
 Before any prospect is emailed, one email goes the real way to an inbox of ours: into the owner's own
-campaign, through its step template with Instantly's {{unsubscribe}} link, with a Copy row rendered as
+campaign, through its step template with Instantly's unsubscribe link, with a Copy row rendered as
 enrol renders it. Harry reads it (the body reads as formatted text, the links work, the List-Unsubscribe
 header is there), clicks the unsubscribe link, and `seed check` reads the lead back as sync_outcomes does:
 status -2 (instantly.LEAD_UNSUBSCRIBED) is the pass, and settles the PHASE0-CONFIRM in clients/instantly.py.
 
-  us-outbound seed send ADDRESS --owner NAME [--industry I] [--role R] [--live]
+  us-outbound seed send ADDRESS --owner NAME [--industry I] [--role R] [--subject personal|copy] [--live]
       adds ADDRESS as one lead to the owner's campaign, with the four emails of the Copy row for that
       industry and role, filled for copy preview's sample prospect (Harbor & Finch, Dana) and the
       generic opener line. A draft row is fine: the email goes only to us. Live with --live alone, as an
       operator command: it reaches no prospect. ADDRESS must be ours (SEED_DOMAINS, a registry mailbox's
       domain, or a free-mail inbox) and must not be a contact, or on an account's domain, that we hold.
+      Email 1's subject is the Copy row's s1_subject, or with --subject personal the General email1_subject
+      ("support for the Harbor & Finch team"), so Harry can see either arm of the subject split
+      (render.subject_arm; Harry, 5 Oct 2026). Emails 2 to 4 are the same either way.
   us-outbound seed check
       every seed lead in the US Outbound campaigns, with its status. Read-only.
 
@@ -42,6 +45,8 @@ SEED_COMPANY = "Seed test (Spill)"  # the lead's company_name: how `seed check` 
 SEED_DOMAINS = frozenset({"spill.chat"})
 FREE_MAIL = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "icloud.com",
                        "me.com", "yahoo.com", "proton.me", "protonmail.com"})
+SUBJECT_NOTES = {render.PERSONAL_SUBJECT: "the personal subject, General email1_subject",
+                 render.COPY_SUBJECT: "the Copy row's s1_subject"}
 LEAD_STATUS = {1: "active: waiting for the campaign's window, or sending", 2: "paused",
                3: "completed: all four emails sent", LEAD_BOUNCED: "bounced", LEAD_UNSUBSCRIBED: "unsubscribed",
                -3: "skipped"}
@@ -94,9 +99,15 @@ def send_window(settings: Settings) -> str:
     return f"{w.start:%H:%M}–{w.end:%H:%M} US Eastern, Monday to Friday ({start:%H:%M}–{end:%H:%M} UK today)"
 
 
-def send(ctx: Context, address: str, owner: str, *, industry: str = "", role: str = "") -> dict[str, Any]:
-    """Add one seed lead to the owner's campaign (dry-run: say what would be added)."""
+def send(ctx: Context, address: str, owner: str, *, industry: str = "", role: str = "",
+         subject: str = render.COPY_SUBJECT) -> dict[str, Any]:
+    """Add one seed lead to the owner's campaign (dry-run: say what would be added). subject is email 1's subject
+    arm: personal (General email1_subject) or copy (the Copy row's s1_subject)."""
     s = ctx.settings
+    if subject not in render.SUBJECT_ARMS:
+        raise ValueError(f"--subject is {' or '.join(render.SUBJECT_ARMS)}, not {subject!r}")
+    if subject == render.PERSONAL_SUBJECT and not s.general.email1_subject.strip():
+        raise ValueError("email1_subject is blank on the General tab, so there is no personal subject to send")
     address = check_address(ctx, address)
     owners = {o.casefold(): o for o in s.owners()}
     owner = owners.get(owner.strip().casefold(), "")
@@ -112,7 +123,7 @@ def send(ctx: Context, address: str, owner: str, *, industry: str = "", role: st
         raise LookupError(f"{name} is not in Instantly yet: `us-outbound campaigns ensure --live` creates it")
     role = role or next(iter(ROLE_LINE_COLUMNS))
     row = pick_row(s, industry, role)
-    preview = copy_desk.preview(row, s, role=role, sender=owner, opener=copy_desk.SAMPLE_OPENER)
+    preview = copy_desk.preview(row, s, role=role, sender=owner, opener=copy_desk.SAMPLE_OPENER, subject_arm=subject)
     problems = render.violations(preview.emails)
     if problems:
         raise ValueError(f"{row.copy_version} breaks the copy rules, so it would not be sent: " + "; ".join(problems))
@@ -121,7 +132,7 @@ def send(ctx: Context, address: str, owner: str, *, industry: str = "", role: st
     out: dict[str, Any] = {"dry_run": ctx.dry_run, "address": address, "campaign": name,
                            "campaign_status": _campaign_status(campaign), "copy_version": row.copy_version,
                            "copy_status": row.status, "role": preview.role, "sender": owner,
-                           "subject": preview.emails[0].subject, "email_1": preview.emails[0].text}
+                           "subject": preview.emails[0].subject, "subject_arm": subject, "email_1": preview.emails[0].text}
     already = [x for x in inst.list_leads(name) if str(x.get("email") or "").lower() == address]
     if already:
         out.update(added=False, why=f"{address} is already a lead in {name}")

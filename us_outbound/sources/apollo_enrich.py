@@ -27,7 +27,7 @@ those enriched more than REFRESH_DAYS ago; within each, the Focus tab's groups, 
      accounts are tried again next run.
   3. The account row: an exact count supersedes the searched band, so employees and size_band
      (clean.people.size_band) are written, unless an Overrides row sets either or Clay has confirmed
-     them (apollo_universe.CLAY_OWNED). verify_accounts then handles a count outside 10 to 249 as it
+     them (apollo_universe.CLAY_OWNED). verify_accounts then handles a count outside the size range as it
      already does; a verified account the count puts outside goes back to new, so verify sees it again.
 
 Credits. 1 credit per company found and 0 for one not found (Apollo's docs; PHASE0-CONFIRM). Each call
@@ -176,7 +176,7 @@ def size_update(account: Mapping[str, Any], employees: Any, settings: Settings) 
 
     The exact count supersedes the band searched. An Overrides row for either field wins (SPEC 5),
     and so do sizes Clay has confirmed (apollo_universe.CLAY_OWNED). A verified account the count puts
-    outside 10 to 249 goes back to new, so verify_accounts checks it as it checks every new account.
+    outside the General size range goes back to new, so verify_accounts checks it as it checks every new account.
     """
     n = tiers.as_number(employees)
     if n is None:
@@ -189,7 +189,7 @@ def size_update(account: Mapping[str, Any], employees: Any, settings: Settings) 
     if account.get("employees") == n and account.get("size_band") == band:
         return None, ""
     row: dict[str, Any] = {"account_id": account["account_id"], "employees": n, "size_band": band}
-    if band is None and account.get("status") == "verified":
+    if not settings.size_in_range(n) and account.get("status") == "verified":
         row["status"] = "new"
     return row, ""
 

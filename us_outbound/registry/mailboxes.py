@@ -31,6 +31,13 @@ and posts a summary to the alert channel when something changed or is wrong (oth
 the summary is only logged and kept as the heartbeat). Sheet and Instantly writes happen
 only when live; dry-run reports what it would do.
 
+The sender name (Harry, 5 Oct 2026): prospects see each mailbox's From name, which Instantly builds
+from the account's first_name and last_name. It is the owner's full name from the Mailboxes tab
+("Hannah Spalding": first name the first word, last name the rest), never "Hannah at Spill" or
+"Sam from Spill", which reads as marketing to people and to mail filters. mailbox_health reports a
+mailbox whose name differs; `mailbox check --fix --live` sets it (fix_names), and nothing else on
+the account. PHASE0-CONFIRM: see Instantly.set_sender_name.
+
 "Warm" (PHASE0-CONFIRM: what Instantly reports for our four mailboxes): warmup is on,
 the account is active, and either Instantly's warmup score or health score is at least
 WARM_SCORE, or warmup (or the registry row) is at least WARM_DAYS old.
@@ -100,6 +107,7 @@ def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
 
 _EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
 _TAG = re.compile(r"<[^>]+>")
+_HREF = re.compile(r"""href\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 
 
 class MailboxError(Exception):
@@ -108,6 +116,16 @@ class MailboxError(Exception):
 
 def campaign_name(owner: str) -> str:
     return f"{US_CAMPAIGN_PREFIX}{owner}"
+
+
+def sender_name(owner: str) -> tuple[str, str]:
+    """(first_name, last_name) for Instantly: the owner's full name split at the first space (Harry, 5 Oct 2026)."""
+    first, _, last = " ".join(owner.split()).partition(" ")
+    return first, last
+
+
+def _name_text(v: Any) -> str:
+    return " ".join(str(v or "").split())
 
 
 def _date(v: Any) -> date | None:
@@ -173,6 +191,11 @@ def _plain(text: Any) -> str:
     return _TAG.sub("", str(text or "")).strip()
 
 
+def _hrefs(text: Any) -> list[str]:
+    """The link addresses in a step body: the text alone would not show a changed unsubscribe link."""
+    return sorted(_HREF.findall(str(text or "")))
+
+
 def campaign_drift(
     campaign: Mapping[str, Any], settings: Settings, owner: str, caps: Mapping[str, int] | None = None
 ) -> dict[str, list]:
@@ -189,8 +212,9 @@ def campaign_drift(
     for i, step in enumerate(campaign_steps(text_only(settings))):
         variant = ((steps[i].get("variants") or [{}])[0] or {}) if i < len(steps) else {}
         # PHASE0-CONFIRM: Instantly may hand bodies back as HTML; tags are ignored here.
-        want = {k: _plain(v) for k, v in step.items()}
-        got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body"))}
+        want = {**{k: _plain(v) for k, v in step.items()}, "links": _hrefs(step["body"])}
+        got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body")),
+               "links": _hrefs(variant.get("body"))}
         if got != want:
             out[f"steps.{i + 1}"] = [dict(want), got]
     return out
@@ -540,7 +564,8 @@ def _noteworthy(out: Mapping[str, Any]) -> list[str]:
     """Why the summary is worth a Slack post: what changed or is wrong today. Empty: only log it."""
     campaigns = out.get("campaigns") or {}
     starting = out.get("campaign_start") or {}
-    why = [k for k in ("promoted", "retired", "warmup_turned_on", "limit_set", "not_found", "no_sheet_row") if out.get(k)]
+    why = [k for k in ("promoted", "retired", "warmup_turned_on", "limit_set", "name_drift", "not_found", "no_sheet_row")
+           if out.get(k)]
     if any(st.get("code") is not None for st in (out.get("campaign_status") or {}).values()):
         why.append("held_back")
     if campaigns.get("drift"):
@@ -581,6 +606,14 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
         verb = "Would set" if ctx.dry_run else "Set"
         lines.append(f"{verb} {address}'s Instantly daily limit from {change['from']} to {change['to']} "
                      "(the Mailboxes tab's daily_cap, or the ramp's when lower)")
+    for address, change in (out.get("name_drift") or {}).items():
+        have, want = (" / ".join(f'"{x}"' for x in change[k]) for k in ("from", "to"))
+        if address in (out.get("names_set") or ()):
+            lines.append(f"{'Would set' if ctx.dry_run else 'Set'} {address}'s sender name (first / last) from {have} "
+                         f"to {want}, its owner's full name")
+        else:
+            lines.append(f"Sender name of {address} (first / last) is {have}, not its owner's full name {want}. "
+                         "Fix with `us-outbound mailbox check --fix --live`.")
     for owner, st in (out.get("campaign_status") or {}).items():
         if st.get("code") is not None:
             lines.append(f"Instantly says {campaign_name(owner)} is held back: {st['meaning']}"
@@ -627,8 +660,11 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
     return "\n".join(lines)
 
 
-def mailbox_health(ctx: Context) -> dict:
-    """The mailbox_health job: warmup status, promotions, retirements, campaign drift and starts (module docstring)."""
+def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
+    """The mailbox_health job: warmup status, promotions, retirements, campaign drift and starts (module docstring).
+
+    fix_names (`mailbox check --fix`): also set each drifted sender name to its owner's full name.
+    """
     settings = ctx.settings
     registry = [m for m in settings.mailboxes if m.status != RETIRED]
     if not registry:
@@ -661,6 +697,17 @@ def mailbox_health(ctx: Context) -> dict:
         cap = ramp[m.address.lower()].cap if m.address.lower() in ramp else int(m.daily_cap or 0)
         if m.status != RETIRED and _as_int(w["daily_limit"]) != cap:
             out["limit_set"][m.address.lower()] = {"from": w["daily_limit"], "to": cap}
+    # The sender name (Harry, 5 Oct 2026): Instantly's first_name and last_name, which make the From name
+    # prospects see, against the owner's full name. Reported every day; set only with fix_names.
+    out["name_drift"] = {}
+    for m in registry:
+        w = warmups.get(m.address.lower(), {})
+        if not w.get("found"):
+            continue
+        have, want = (_name_text(w.get("first_name")), _name_text(w.get("last_name"))), sender_name(m.owner_name)
+        if have != want:
+            out["name_drift"][m.address.lower()] = {"from": list(have), "to": list(want)}
+    out["names_set"] = sorted(out["name_drift"]) if fix_names else []
     present = [m.address.lower() for m in registry if warmups.get(m.address.lower(), {}).get("found")]
     out["sent_by_day"] = {}
     if present:
@@ -702,6 +749,8 @@ def mailbox_health(ctx: Context) -> dict:
         inst.enable_warmup(out["warmup_turned_on"])  # SPEC 13: warmup always on
     for address, change in out["limit_set"].items():
         inst.set_daily_limit(address, change["to"])  # the sheet's daily_cap (or the ramp's) is the one place caps are set
+    for address in out["names_set"]:
+        inst.set_sender_name(address, *out["name_drift"][address]["to"])  # the account's name only, nothing else
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new_settings = settings
     for m, status in changes:

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.accounts (
   apollo_org_id text,
   hq_city text,
   hq_state text,
+  hq_country text,
   industry text,
   industry_group text,
   naics text,
@@ -41,10 +42,15 @@ COMMENT ON COLUMN us_outbound.accounts.legal_name IS 'Legal name, kept separatel
 COMMENT ON COLUMN us_outbound.accounts.hq_state IS 'USPS code.';
 COMMENT ON COLUMN us_outbound.accounts.industry IS 'Website industry label; the key of the Industries tab.';
 COMMENT ON COLUMN us_outbound.accounts.industry_group IS 'Website industry group (Industries tab).';
-COMMENT ON COLUMN us_outbound.accounts.size_band IS 'One of: 10-19, 20-49, 50-99, 100-249.';
-COMMENT ON COLUMN us_outbound.accounts.source IS 'One of: apollo, irs, site_visit, named. named: from the Named accounts tab (build addition).';
+COMMENT ON COLUMN us_outbound.accounts.size_band IS 'One of: 1-4, 5-9, 10-19, 20-49, 50-99, 100-249, 250-499, 500-999, 1000-2499, 2500-4999, 5000-9999. SPEC 2''s four bands inside a ladder, so General min_employees and max_employees can move (6 Oct 2026).';
+COMMENT ON COLUMN us_outbound.accounts.source IS 'One of: apollo, irs, site_visit, named, lookalike. named: from the Named accounts tab; lookalike: found by Apollo as like a Spill customer, sources/lookalike_leads.py (build additions).';
 COMMENT ON COLUMN us_outbound.accounts.score IS 'Sum of fresh Score signal weights, each capped at max_weight, total capped at score_cap (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.tier IS 'One of: Priority, Standard, Control, Held, Excluded (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.angle IS 'Angle name from the Angles tab. Control accounts always get General (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.sender IS 'Mailbox owner name; set at first enrollment, never changed (SPEC 9, sender continuity).';
 COMMENT ON COLUMN us_outbound.accounts.status IS 'One of: new, queued, verified, enrolled, engaged, demo_requested, demo_booked, disqualified.';
+
+-- Build addition (Harry, 6 Oct 2026): Apollo's HQ country, so a website visitor with no HQ state is known to be in
+-- the US (accounts.any_us_state: a visitor is never excluded on its state).
+ALTER TABLE us_outbound.accounts ADD COLUMN IF NOT EXISTS hq_country text;
+COMMENT ON COLUMN us_outbound.accounts.hq_country IS 'Apollo''s HQ country: United States, or blank when Apollo gives none (build addition, 6 Oct 2026).';

@@ -13,6 +13,9 @@ clay_verification is skip (Harry, 1 Oct 2026), verify_accounts verifies accounts
 HubSpot (weekdays 04:30 UK) and Clay stands behind nothing, so the line names that job instead. When
 ready_accounts binds, the explanation says which of them, or which earlier stage, is the reason,
 including verified accounts where pick_contacts found no suitable contact (contacts/pick.py).
+With General second_contact = yes (enrol/second.py; Harry, 6 Oct 2026), ready_accounts also counts the
+second contacts due today: each counts against the week and its sender's slots like any contact, and a
+line says how many are ready. Enrol takes them only after the first contacts of new accounts.
 
 The enrol job records the result in its summary (number_terms, limited_by), so the
 heartbeat row keeps it; `us-outbound status` prints the same picture for this week; the
@@ -66,13 +69,14 @@ def _count(ctx: Context, status: str) -> int:
 
 
 def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str, int] | None = None,
-          campaigns: bool = False) -> Limits:
+          campaigns: bool = False, second_ready: int = 0) -> Limits:
     """Today's number, its terms and why, for the send day `day` (a US Eastern date).
 
     pending: owner -> send approvals still waiting in Slack (enrol/approvals.waiting); they count as
     enrolled this week and hold their sender's slots.
     campaigns: read each owner's campaign status from Instantly (capacity.campaigns_not_sending; the enrol
     job does). In a live run an owner whose campaign is not active has no capacity today; a dry run says so.
+    second_ready: how many of ready_accounts are second contacts (enrol/second.candidates).
     """
     s = ctx.settings
     pending = {o: n for o, n in (pending or {}).items() if n > 0}
@@ -99,6 +103,8 @@ def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str,
                  for o, c in senders.items()},
         budgets={sys: b.as_dict() for sys, b in budgets.items()},
     )
+    if s.general.second_contact:
+        terms["second_contacts_ready"] = second_ready
     explanation, detail = explain(ctx, n, terms, senders, budgets)
     if pending:
         each = ", ".join(f"{o} {k}" for o, k in sorted(pending.items()))
@@ -107,6 +113,11 @@ def today(ctx: Context, day: date, *, ready_accounts: int, pending: Mapping[str,
     q = focus.today(ctx, days_left)
     if q.active:
         detail.insert(1, q.describe())
+    if s.general.second_contact:
+        g = s.general
+        detail.append(f"Second contacts: {second_ready} ready (companies of {g.second_contact_min_employees} or more "
+                      f"staff, {g.second_contact_delay_days} days after the first person's email 1); they take what "
+                      "the first contacts of new companies leave.")
     return Limits(n, terms, senders, budgets, explanation, detail, [b.describe() + "." for b in budgets.values()])
 
 
@@ -131,7 +142,8 @@ def explain(
         detail.append("Sending capacity: no Active mailbox.")
     detail += [f"Sending capacity, {c.describe()}." for c in senders.values()]
     if binding == "ready_accounts":  # accounts waiting for approval are ready too, just not today's
-        detail.append(behind_ready(ctx, terms["ready_accounts"] + terms.get("awaiting_approval", 0), budgets))
+        first = terms["ready_accounts"] - terms.get("second_contacts_ready", 0)  # behind_ready reads verified accounts
+        detail.append(behind_ready(ctx, first + terms.get("awaiting_approval", 0), budgets))
     elif binding == "sending_capacity" and senders:
         detail += add_a_mailbox(senders, terms["ready_accounts"] - terms["sending_capacity"])
     return head, detail

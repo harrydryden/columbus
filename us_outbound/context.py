@@ -73,14 +73,15 @@ class Secrets:
         return self._cache[name]
 
 
-def boundaries_for(settings: Settings, settings_sheet_id: str = "") -> Boundaries:
-    from us_outbound.clients.clay import WORK_EMAIL_FUNCTION_ID
+def boundaries_for(settings: Settings, settings_sheet_id: str = "", job: str = "") -> Boundaries:
+    from us_outbound.clients.clay import CHECK_EMAIL_JOB, WORK_EMAIL_FUNCTION_ID
 
     g = settings.general
     live_mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
-    # The US Outbound functions, and Clay's own Work Email while clay_email_fallback is yes (Harry, 2 Oct 2026).
+    # The US Outbound functions, and Clay's own Work Email while clay_email_fallback is yes (Harry, 2 Oct 2026),
+    # or for the one lookup `us-outbound clay check-email` makes to confirm it before the switch goes on.
     clay_functions = {x for x in (g.clay_accounts_function_id, g.clay_contacts_function_id) if x}
-    if g.clay_email_fallback:
+    if g.clay_email_fallback or job == CHECK_EMAIL_JOB:
         clay_functions.add(WORK_EMAIL_FUNCTION_ID)
     return Boundaries(
         registry_addresses=frozenset(m.address.lower() for m in live_mailboxes),

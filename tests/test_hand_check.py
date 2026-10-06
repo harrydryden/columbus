@@ -311,13 +311,17 @@ def test_approve_with_nothing_to_check_says_so():
 def test_the_confirmation_says_what_happens_next_in_plain_words():
     ctx, t = world()
     _doubtful_week(ctx)
-    out = hand_check.approve(ctx, [], "harry")  # Monday: verify_accounts runs again tomorrow at 04:30
-    assert out["message"] == ("Week 44 check approved by harry. The account with doubtful facts is verified again at "
-                              "04:30 tomorrow.")
+    out = hand_check.approve(ctx, [], "harry")  # its HQ state and size are missing: approving cannot supply them
+    assert out["message"] == ("Week 44 check approved by harry. The account missing a fact (HQ state, size or "
+                              "industry) stays on the check until an Overrides row fills it in.")
     assert posts(t)[-1].json["text"].endswith(out["message"])  # the item was posted, so the channel hears it
     friday = make_context(ctx.settings, live=True, transport=t, now=NOW + timedelta(days=4), store=ctx.store)
     assert hand_check.confirmation(friday, WEEK, "harry", [], 2) == (
         "Week 44 check approved by harry. The 2 accounts with doubtful facts are verified again at 04:30 on Monday.")
+    monday = make_context(ctx.settings, live=True, transport=t, now=NOW, store=ctx.store)
+    assert hand_check.confirmation(monday, WEEK, "harry", [], 1, 2) == (
+        "Week 44 check approved by harry. The account with doubtful facts is verified again at 04:30 tomorrow. "
+        "The 2 accounts missing a fact (HQ state, size or industry) stay on the check until an Overrides row fills it in.")
     _auto_send_on(ctx)
     assert hand_check.confirmation(ctx, WEEK, "harry", ["tec-01"], 0) == (
         "Week 44 check approved by harry; pulled: tec-01. New leads can go to Instantly this week.")

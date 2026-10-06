@@ -3,9 +3,10 @@
 Only "US Outbound – Accounts" and "US Outbound – Contacts" may be run, and, while General
 clay_email_fallback is yes, the existing workspace function Work Email (WORK_EMAIL_FUNCTION_ID),
 called as it is and never modified (SPEC 1.2; Harry, 2 Oct 2026: Clay narrowed to the email
-waterfall for contacts Apollo can't verify, contacts/pick.py). The guard refuses any other
-function id (context.boundaries_for). Clay runs in dry-run too; budgets are checked by the
-caller before each batch (SPEC 8).
+waterfall for contacts Apollo can't verify, contacts/pick.py). Work Email may also run from
+`us-outbound clay check-email` (CHECK_EMAIL_JOB), the one lookup that confirms it before the switch
+goes on. The guard refuses any other function id (context.boundaries_for). Clay runs in dry-run
+too; budgets are checked by the caller before each batch (SPEC 8).
 
 Routines API (Clay Public HTTP API, beta, per Clay University docs Sep 2026):
   POST {base}/routines/{routine_id}/run   body {"items": [{"id", "inputs"}]}  -> a run id
@@ -17,8 +18,16 @@ ticked in its Integrations settings, or calls return 403.
 If the plan does not allow the API, SPEC 8's CSV fallback applies: write_import_csv()
 for the import, read_export_csv() for Clay's export.
 
+Work Email takes its own input names (WORK_EMAIL_INPUTS: "Full Name", "Company Domain", ...), as
+Clay's function list gives them (Clay's MCP list_subroutines, 6 Oct 2026); work_email_inputs()
+builds them. The "US Outbound – Contacts" function takes SPEC 8's names as they are.
+
 parse_accounts_output() and parse_contacts_output() validate the strict JSON of SPEC 8;
-parse_work_email_output() reads Work Email's own output.
+parse_work_email_output() reads Work Email's own output; parse_cross_check_output() reads the
+narrowed "US Outbound – Accounts" (HQ state and headcount only; docs/pipeline.md, Harry, 6 Oct 2026)
+that verify's cross-check asks (us_outbound/clay_cross_check.py). After each run, Clay.last_run
+holds what the routines endpoint said (run id, statuses, the raw result rows), for the operator
+check to describe; nothing logs it.
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from us_outbound.clean.people import state_code
 from us_outbound.clients.guard import Op
 from us_outbound.clients.http import HttpClient
 
@@ -46,6 +56,13 @@ PROVISION_TYPES = frozenset(
 EMAIL_STATUSES = frozenset({"valid", "catch_all_valid", "invalid", "not_found"})
 # The existing workspace function "Work Email" (docs/phase0-facts.md), which charges only when it finds an email.
 WORK_EMAIL_FUNCTION_ID = "t_0tk0v4lhJ895hhhhTHJ"
+# Work Email's inputs under its own names, as Clay's function list gives them (6 Oct 2026; it also takes
+# "Company Social Profile URL" and "Personal Email", which we never send). PHASE0-CONFIRM: that the Routines
+# API takes inputs by these names (`us-outbound clay check-email --live` shows it: a run that fails
+# validation means it does not).
+WORK_EMAIL_INPUTS = {"full_name": "Full Name", "domain": "Company Domain", "linkedin_url": "Social Profile URL",
+                     "company_name": "Company Name"}
+CHECK_EMAIL_JOB = "clay_check_email"  # `us-outbound clay check-email`: may run Work Email while the fallback is off
 UNVERIFIED = "unverified"  # Work Email found an address but said nothing of its validity: never used
 # PHASE0-CONFIRM: Work Email's output fields. Its waterfall result is read under any of these names, and
 # its validation status mapped onto SPEC 8's statuses; anything else that came with an email is UNVERIFIED.
@@ -73,6 +90,13 @@ class ClayError(Exception):
 
 def routine_id(function_id: str) -> str:
     return function_id if function_id.startswith("function:") else f"function:{function_id}"
+
+
+def work_email_inputs(full_name: str | None, domain: str | None, linkedin_url: str | None = None,
+                      company_name: str | None = None) -> dict[str, str]:
+    """Work Email's inputs under its own names (WORK_EMAIL_INPUTS); blanks left out."""
+    given = {"full_name": full_name, "domain": domain, "linkedin_url": linkedin_url, "company_name": company_name}
+    return {WORK_EMAIL_INPUTS[k]: v.strip() for k, v in given.items() if isinstance(v, str) and v.strip()}
 
 
 def _clean_inputs(inputs: Mapping[str, Any]) -> dict[str, Any]:
@@ -119,6 +143,7 @@ class Clay(HttpClient):
         super().__init__(guard, transport, token)
         self.api_base = base_url.rstrip("/")
         self.poll_interval, self.timeout, self._sleep = poll_interval, timeout, sleep
+        self.last_run: dict[str, Any] = {}  # the latest run as the endpoint gave it (`us-outbound clay check-email`)
 
     def headers(self) -> dict[str, str]:
         return {"clay-api-key": self.token, "Content-Type": "application/json", "Accept": "application/json"}
@@ -142,6 +167,7 @@ class Clay(HttpClient):
         if len(inputs_by_id) > RUN_ITEMS_MAX:
             raise ValueError(f"a Clay run takes at most {RUN_ITEMS_MAX} items")
         items = [{"id": str(i), "inputs": _clean_inputs(v)} for i, v in inputs_by_id.items()]
+        self.last_run = {"function_id": function_id, "items": len(items)}
         body = self.request(
             "POST",
             f"/routines/{routine_id(function_id)}/run",
@@ -149,9 +175,11 @@ class Clay(HttpClient):
             json={"items": items},
             base_url=self.api_base,
         ) or {}
-        run_id = body.get("routine_run_id") or body.get("run_id") or body.get("id")
+        self.last_run["started"] = body if isinstance(body, dict) else {"body": body}
+        run_id = body.get("routine_run_id") or body.get("run_id") or body.get("id") if isinstance(body, dict) else None
         if not run_id:
             raise ClayError(f"Clay run of {function_id} returned no run id")
+        self.last_run["run_id"] = str(run_id)
         rows = self._wait(function_id, str(run_id), len(items))
         out: dict[str, dict | ClayError] = {}
         for item in items:
@@ -163,8 +191,13 @@ class Clay(HttpClient):
             if status in ITEM_FAILED:
                 out[item["id"]] = ClayError(f"Clay item {item['id']} {status}: {str(row.get('error') or '')[:200]}")
                 continue
+            output = _output_of(row)
+            if output is None and status in RUN_DONE:
+                # The item finished and gave nothing back: read as an empty output (Work Email: no email
+                # found, which it does not charge for), not as a failure counted at the reserve.
+                output = {}
             try:
-                out[item["id"]] = _as_obj(_output_of(row), "Clay function")
+                out[item["id"]] = _as_obj(output, "Clay function")
             except ClayError as exc:
                 out[item["id"]] = exc
         return out
@@ -205,9 +238,11 @@ class Clay(HttpClient):
             if not next_cursor or next_cursor == cursor:
                 break
             cursor = str(next_cursor)
+        self.last_run.update(status=status, total=total, finished=finished, rows=rows)
         if status in RUN_FAILED:
             raise ClayError(f"Clay run {run_id} {status}")
-        settled = sum(1 for r in rows.values() if _output_of(r) is not None or str(r.get("status") or "").lower() in ITEM_FAILED)
+        settled = sum(1 for r in rows.values()
+                      if _output_of(r) is not None or str(r.get("status") or "").lower() in ITEM_FAILED | RUN_DONE)
         done = status in RUN_DONE or (finished is not None and finished >= total) or settled >= total
         return rows, done
 
@@ -420,3 +455,30 @@ def parse_work_email_output(obj: Any) -> dict:
     return {"email": email, "status": status, "provider": provider,
             "credits_used": None if credits is None else float(credits)}
 
+
+
+CROSS_CHECK_KEYS = ("hq_state", "employees", "source")  # the narrowed Accounts function's output (docs/pipeline.md)
+
+
+def parse_cross_check_output(obj: Any) -> dict:
+    """The narrowed "US Outbound – Accounts" output that verify's cross-check reads (docs/pipeline.md; Harry, 6 Oct
+    2026): {hq_state, hq_state_given, employees, source, credits_used}. Raises ClayError.
+
+    hq_state, employees and source must be present (each may be null). hq_state is read as a USPS code (a state
+    name is read too); a place that is no US state gives None, with what Clay said in hq_state_given. employees is
+    a whole number of staff; 0 reads as none, as providers use it for unknown. source is Clay's note of where the
+    facts came from ("" when none). credits_used is optional: None when Clay reports none.
+    """
+    o = _as_obj(obj, "US Outbound – Accounts")
+    missing = [k for k in CROSS_CHECK_KEYS if k not in o]
+    if missing:
+        raise ClayError(f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} missing")
+    given = _opt_str(o, "hq_state")
+    credits = _credits(o) if o.get("credits_used") is not None else None
+    return {
+        "hq_state": state_code(given) if given else None,
+        "hq_state_given": given,
+        "employees": _opt_int(o, "employees", 0, 10_000_000) or None,
+        "source": _clip_quote(_opt_str(o, "source")),
+        "credits_used": credits,
+    }
