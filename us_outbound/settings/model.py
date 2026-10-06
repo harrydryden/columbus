@@ -207,6 +207,9 @@ class General:
     clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
     clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
     clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
+    # (build) Harry, 6 Oct 2026: Clay's cross-check of the HQ state and size Apollo leaves in doubt, before the weekly
+    # hand-check (us_outbound/clay_cross_check.py), through clay_accounts_function_id; no until that function is built.
+    clay_cross_check: bool = False
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
     # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.

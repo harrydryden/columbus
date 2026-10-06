@@ -41,14 +41,19 @@ Harry, 2 Oct 2026: Clay narrowed to this), behind General clay_email_fallback (d
 Clay's server-callable path is unconfirmed: clients/clay.py, docs/phase0-facts.md). When it is
 yes and Apollo's reveal of a candidate gave no email or one Apollo doesn't call verified (a miss,
 or a catch-all), that person is looked up in Clay once: the "US Outbound – Contacts" function
-when clay_contacts_function_id is set, otherwise the workspace's Work Email function as it is
-(it charges only when it finds an email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN
-a run, each within today's share of clay_monthly_credits (budget.py; credit_ledger, reserved
-before the call and settled after it), and none while a kill rule pauses the clay source
-(learn/holds.paused_sources). Only a "valid" result is used: catch_all_valid waits for pipeline
-change 8 (whether a catch-all is sendable with Instantly's risky contacts off), and the bounce
-kill rule pauses the clay source on its own if its addresses bounce. The contact is kept by the
-same checks as Apollo's, with email_source = clay; the lookup is a contact_clay fact.
+when clay_contacts_function_id is set (SPEC 8's inputs: full_name, domain, linkedin_url, title),
+otherwise the workspace's Work Email function as it is (its own inputs: Full Name, Company Domain,
+Social Profile URL, Company Name; clients/clay.WORK_EMAIL_INPUTS; it charges only when it finds an
+email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN a run, each within today's share
+of clay_monthly_credits (budget.py; credit_ledger, reserved before the call and settled after it),
+none while a kill rule pauses the clay source (learn/holds.paused_sources) or the Clay API key is
+not set, and none for the rest of the run once CLAY_MAX_ERRORS lookups have failed (a wrong key or
+a function without "API & CLI" would otherwise spend every lookup's reserve). Only a "valid"
+result is used: catch_all_valid waits for pipeline change 8 (whether a catch-all is sendable with
+Instantly's risky contacts off), and the bounce kill rule pauses the clay source on its own if its
+addresses bounce. The contact is kept by the same checks as Apollo's, with email_source = clay;
+the lookup is a contact_clay fact. `us-outbound clay check-email` makes one Work Email lookup by
+hand, to confirm all this before clay_email_fallback goes on (ops/clay_check.py).
 """
 
 from __future__ import annotations
@@ -64,10 +69,16 @@ from us_outbound import budget
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
 from us_outbound.clients.apollo import credits_left
-from us_outbound.clients.clay import WORK_EMAIL_FUNCTION_ID, ClayError, parse_contacts_output, parse_work_email_output
+from us_outbound.clients.clay import (
+    WORK_EMAIL_FUNCTION_ID,
+    ClayError,
+    parse_contacts_output,
+    parse_work_email_output,
+    work_email_inputs,
+)
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
-from us_outbound.context import Context
+from us_outbound.context import ConfigError, Context
 from us_outbound.enrol import enrol, queue
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
@@ -103,6 +114,7 @@ CLAY_FACT = "contact_clay"  # one per Clay lookup: who, the status, kept or why 
 CLAY_RESERVE = 2.0
 CLAY_ACCEPTED = frozenset({"valid"})  # catch_all_valid waits for pipeline change 8
 CLAY_LOOKUPS_PER_RUN = 25  # each lookup polls Clay until it finishes, inside the job's 60 minutes
+CLAY_MAX_ERRORS = 3  # failed lookups before the run stops asking Clay
 CLAY_LEDGER_NOTE = "email waterfall (Clay)"
 
 # PHASE0-CONFIRM: api_search reads "United States" in person_locations as the whole country, and
@@ -422,6 +434,7 @@ class _Run:
     clay_lookups: int = 0
     clay_found: int = 0
     clay_credits: float = 0.0
+    clay_errors: int = 0
 
     def why_not_clay(self) -> str | None:
         if self.clay_off:
@@ -528,7 +541,9 @@ def wants_clay(row: Mapping[str, Any] | None, why: str | None) -> bool:
 
 
 def clay_inputs(account: Mapping[str, Any], cand: Candidate, match: Mapping[str, Any] | None) -> dict | None:
-    """SPEC 8's Contacts inputs (full_name, domain, linkedin_url, title); None without a full name or a LinkedIn URL."""
+    """SPEC 8's Contacts inputs (full_name, domain, linkedin_url, title); None without a full name or a LinkedIn URL.
+
+    Work Email takes its own names for them (as_work_email)."""
     m = match or {}
     first = str(m.get("first_name") or cand.person.get("first_name") or "").strip()
     last = str(m.get("last_name") or cand.person.get("last_name") or "").strip()
@@ -539,12 +554,18 @@ def clay_inputs(account: Mapping[str, Any], cand: Candidate, match: Mapping[str,
             "linkedin_url": linkedin or None, "title": str(m.get("title") or cand.person.get("title") or "") or None}
 
 
+def as_work_email(inputs: Mapping[str, Any], account: Mapping[str, Any]) -> dict[str, str]:
+    """SPEC 8's Contacts inputs under Work Email's own names, with the company's name; Work Email takes no title."""
+    return work_email_inputs(inputs.get("full_name"), inputs.get("domain"), inputs.get("linkedin_url"),
+                             company_name=str(account.get("clean_name") or "") or None)
+
+
 def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match: Mapping[str, Any] | None,
                 batch: _Run) -> tuple[dict | None, str | None, dict]:
     """(the contacts row from Clay's waterfall, or None; why not; the lookup's fact value). Recorded in credit_ledger first.
 
-    PHASE0-CONFIRM: Work Email's inputs. They are sent under SPEC 8's Contacts names; the
-    "US Outbound – Contacts" function, once built, takes them as they are.
+    The "US Outbound – Contacts" function, once built, takes SPEC 8's inputs as they are; Work Email takes its
+    own names for them (as_work_email). PHASE0-CONFIRM: those names, through the Routines API.
     """
     g = ctx.settings.general
     inputs = clay_inputs(account, cand, match)
@@ -553,6 +574,8 @@ def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match
     if inputs is None:
         return None, "no full name or LinkedIn URL to look up in Clay", {**value, "reason": "nothing to look up"}
     function = g.clay_contacts_function_id or WORK_EMAIL_FUNCTION_ID
+    if not g.clay_contacts_function_id:
+        inputs = as_work_email(inputs, account)
     entry = {"entry_id": new_id(), "system": "clay", "job": JOB, "run_id": ctx.run_id,
              "account_id": account["account_id"], "credits": CLAY_RESERVE, "usd": None, "occurred_at": ctx.now,
              "note": f"{CLAY_LEDGER_NOTE}, reserved"}
@@ -564,6 +587,10 @@ def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match
         ctx.store.upsert("credit_ledger", [{**entry, "note": f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"}])
         batch.clay_spend(CLAY_RESERVE)
         why = f"Clay lookup failed ({type(exc).__name__})"
+        batch.clay_errors += 1
+        log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
+        if batch.clay_errors >= CLAY_MAX_ERRORS:
+            batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
         return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
     credits = got["credits_used"]
     if credits is None:
@@ -697,6 +724,10 @@ def clay_room(ctx: Context) -> tuple[str | None, float]:
     month = budget.monthly(ctx.store, s, "clay", ctx.now)
     if month.budget <= 0:
         return "no monthly Clay budget (clay_monthly_credits is 0)", 0.0
+    try:
+        ctx.clients.clay  # the key, read once here rather than failing the job at the first lookup
+    except ConfigError as exc:
+        return f"no Clay API key: {exc}", 0.0
     return None, month.left_today
 
 
@@ -767,7 +798,8 @@ def run(ctx: Context) -> dict:
         errors=batch.errors,
         budget=budget.monthly(store, s, "apollo", ctx.now).describe(),
         clay={"off": batch.clay_off, "lookups": batch.clay_lookups, "found": batch.clay_found,
-              "credits": batch.clay_credits, "budget": budget.monthly(store, s, "clay", ctx.now).describe()},
+              "credits": batch.clay_credits, "errors": batch.clay_errors,
+              "budget": budget.monthly(store, s, "clay", ctx.now).describe()},
         picked_accounts=batch.picked[:LIST_LIMIT],
         no_contact_accounts=batch.no_contact_accounts,
     )

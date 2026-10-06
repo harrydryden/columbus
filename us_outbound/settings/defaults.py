@@ -183,7 +183,18 @@ _GENERAL: list[tuple[str, str, str]] = [
         "no",
         "yes: when Apollo has no verified email for the chosen person (a miss or a catch-all), pick_contacts asks "
         "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
-        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed.",
+        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed: run "
+        "`us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` "
+        "first; it says when to set this to yes.",
+    ),
+    (
+        "clay_cross_check",
+        "no",
+        "yes: before an account whose HQ state or size Apollo leaves in doubt goes to the weekly hand-check, "
+        "verify_accounts asks Clay's \"US Outbound – Accounts\" function (clay_accounts_function_id) once, within "
+        "clay_monthly_credits. A doubt Clay settles is dropped; where Clay disagrees, the hand-check shows both counts or "
+        "states. A missing HQ state or size is filled in from Clay. Needs clay_accounts_function_id. Harry, 6 Oct 2026: "
+        "no until the function is built in Clay (docs/pipeline.md has its spec).",
     ),
     ("apollo_credits_per_account", "1", "Not used yet; leave as it is."),
     (

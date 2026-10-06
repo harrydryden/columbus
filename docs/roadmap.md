@@ -11,9 +11,9 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Stage | Built | Not built yet |
 | :- | :- | :- |
 | Find accounts | `source_universe` (Apollo organization search by industry, state and size; one account per root domain), `apollo_signals` (job postings), `lookalikes` (monthly, the 1st at 02:30: Spill's HubSpot customers as cells, their 12-month headcount growth from Apollo in aggregate, the lookalike fit and an early exclusion of customer domains; 5 Oct), `lookalike_leads` (5 Oct: monthly, the 1st at 02:50; Apollo's lookalike search seeded by up to 40 active customers, UK ones included, US results only; new accounts by the front door with the "Found as a lookalike of a customer" signal; at most 60 Apollo credits), `named` accounts, `site_visits` (Apollo's visitors to spill.chat/us, daily 06:00: the two visit signals, and new US visitors of 10–249 people by the front door; 5 Oct) | `public_signals` (IRS BMF, job feeds, WARN), Form 5500 |
-| Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct). For the groups `apollo_enrich` enriches, Apollo's exact employee count replaces the searched size band before verify runs | `verify_in_clay`; Clay's cross-check of doubtful HQ state and size (the `verify.cross_check` hook) |
+| Verify | `verify_accounts` on Apollo data plus HubSpot (customer, owner, open deal, opted-out), while `clay_verification` = `skip`. Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check with the reason (2 Oct). For the groups `apollo_enrich` enriches, Apollo's exact employee count replaces the searched size band before verify runs. Clay's cross-check of doubtful HQ state and size (`verify.cross_check`, `clay_cross_check.py`; 6 Oct), behind `clay_cross_check` = no until Harry builds the function in Clay | `verify_in_clay` |
 | Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signals graded by `lookalike_fit` (industry, size and growth rate; "Close match" +10 at 70 or more, "Some match" +3 at 45 to 69, so a close lookalike at 10–49 is Standard and a middling one orders accounts within a tier; 5 Oct, on the sheet after `settings load --tab Signals`, judged first with `us-outbound lookalikes fit`), IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire. The People leaders at every queue account, `apollo_people` (weekdays 04:20, Apollo's free people search; 5 Oct), so "New People leader" scores before the queue is sorted, and "First People hire (likely)" in place of "First People hire", firing only where Apollo holds at least half the headcount | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
-| Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees, unless `apollo_people` searched the account in the last 30 days. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until Clay's API is confirmed; 2 Oct) | A second contact at 50–249 |
+| Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees, unless `apollo_people` searched the account in the last 30 days. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until `us-outbound clay check-email --live` confirms Clay's API; 2 and 6 Oct) | A second contact at 50–249 |
 | Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
 | Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
@@ -180,7 +180,9 @@ verification and contact choice write only the database; enrol, replies and post
    third domain ordered on 2 October can send from about 26 October. This is a paid service
    (Harry's decision).
 4. The careers-page signals fire from our own page reader (`read_pages`, §4). Clay is kept for the
-   email waterfall: set `clay_email_fallback` = yes once one Work Email call has been confirmed live.
+   email waterfall: set `clay_email_fallback` = yes once `us-outbound clay check-email --live` has
+   confirmed one Work Email call (it says so). And for the cross-check: build "US Outbound – Accounts"
+   (docs/pipeline.md, "Clay's two jobs"), then set `clay_accounts_function_id` and `clay_cross_check` = yes.
 
 ## 4. What is left to build
 
@@ -278,14 +280,22 @@ verification and contact choice write only the database; enrol, replies and post
    Clay (2 Oct): no Clay lookup while the clay source is paused. Apollo's reveals still go ahead.
 
 ### Weeks 2–4, to scale
-1. **Clay, narrowed to what only it does** (Harry, 2 Oct 2026):
+1. **Clay, narrowed to what only it does** (Harry, 2 Oct 2026; *built 6 Oct*, "push ahead with
+   building these"; both switches stay no until Harry's steps below):
    - the email waterfall for contacts Apollo can't verify: built behind `clay_email_fallback` (no).
-     Confirm one Work Email call through Clay's API (`clients/clay.py` PHASE0-CONFIRM: the routines
-     endpoint, Work Email's inputs, its output fields and what a lookup costs), then set it to yes;
-   - later, a cross-check when Apollo's HQ state or size looks doubtful (the `verify.cross_check`
-     hook; until then those accounts go to the weekly hand-check).
-   `clay_verification` stays `skip` for the pilot. The Accounts function and `verify_in_clay` are
-   needed only if the page reader's coverage falls short (§4 week 1, item 3).
+     `us-outbound clay check-email --first NAME --last NAME --domain spill.chat --live` makes one Work
+     Email call for a Spill colleague's own name and checks the `clients/clay.py` PHASE0-CONFIRM items
+     (the routines endpoint, Work Email's inputs, its output fields, what a lookup costs); it ends with
+     "set clay_email_fallback = yes on the General tab, then sync", or what failed and why. Work Email
+     now gets its own input names (Full Name, Company Domain, ...), as Clay lists them; pick_contacts
+     no longer fails without the Clay key, and stops asking Clay after three failed lookups;
+   - the cross-check when Apollo's HQ state or size looks doubtful: built behind `clay_cross_check`
+     (no), in `us_outbound/clay_cross_check.py` through the `verify.cross_check` hook. It needs the
+     narrowed "US Outbound – Accounts" function (inputs domain and company name; strict JSON out:
+     `hq_state`, `employees`, `source`), specified in docs/pipeline.md, "Clay's two jobs", for Harry
+     to build in Clay; then its id in `clay_accounts_function_id` and `clay_cross_check` = yes.
+   `clay_verification` stays `skip` for the pilot. SPEC 8's fuller Accounts output and `verify_in_clay`
+   are needed only if the page reader's coverage falls short (§4 week 1, item 3).
 2. **`site_visits`:** Apollo's company-level visitors on `/us`, with same-day priority for
    enrolled and queued accounts (D13; copy never mentions a visit). *Built and switched on 5 Oct
    (Harry: "the strongest intent signal")*: daily at 06:00, three read-only visitor searches (the

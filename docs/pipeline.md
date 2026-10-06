@@ -17,7 +17,8 @@ Harry's decisions on 30 Sep 2026:
 
 Harry's decision on 2 Oct 2026: Clay's page reading moves into our own code (`read_pages`, no Clay
 credits), and Clay is narrowed to what only it does: the email waterfall for contacts Apollo can't
-verify, and later a cross-check when Apollo's HQ state or size looks doubtful. `clay_verification`
+verify, and a cross-check when Apollo's HQ state or size looks doubtful (both built on 6 Oct, each
+behind its own General switch, off until Clay is confirmed: "Clay's two jobs" below). `clay_verification`
 stays `skip` for the pilot. The reader measures its own coverage, so whether to enhance it is decided
 on numbers after the first batches (docs/roadmap.md).
 
@@ -43,14 +44,14 @@ The list of changes is at the end.
 | Job | Owner | Fallback | Not used |
 | :- | :- | :- | :- |
 | Find companies (the universe) | Apollo organisation search | IRS BMF for nonprofits (January). New site visitors. The Named accounts tab. Great Place To Work and B Corp lists (phase 3) | Clay Find Companies, Instantly SuperSearch, Apollo lists and saved searches |
-| Company facts (size, HQ, NAICS, founded) | Apollo (an exact employee count from organisation enrich for `apollo_enrich_groups`; the searched size band otherwise) | Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check instead of being verified unseen. Later, Clay cross-checks HQ state and size (`verify.cross_check`) | Clay's other data providers; HubSpot auto-enrichment |
+| Company facts (size, HQ, NAICS, founded) | Apollo (an exact employee count from organisation enrich for `apollo_enrich_groups`; the searched size band otherwise) | Doubtful Apollo facts (no HQ state, no size, a count near the 10, 50 or 250 edge) go to the weekly hand-check instead of being verified unseen. With `clay_cross_check` = yes, Clay is asked first (`verify.cross_check`; "Clay's two jobs" below) | Clay's other data providers; HubSpot auto-enrichment |
 | Clean company name | Clay AI, checked against the `clean/names.py` rules | The `clean/names.py` rules alone | |
 | Read careers, benefits and values pages | Our own reader, `read_pages` (source `careers_pages`; no credits; Harry, 2 Oct 2026) | Clay "US Outbound – Accounts" (`clay_careers`) if the reader's coverage falls short. A failed read is scored as "not read" | |
 | Funding | Apollo organisation enrich (`apollo_enrich`, for `apollo_enrich_groups`; Harry, 2 Oct 2026). Search rows carry none | Clay's Company Latest Funding, run only when Apollo has nothing | |
 | Hiring counts | Apollo organisation search with job filters (`apollo_jobs`) | | |
 | Job-posting text | The public Greenhouse, Lever, Ashby and Workable feeds (free), read by `read_pages` from the board the company's site links to | | |
 | People at the company (titles, locations) | Apollo people search (free) | | Clay Find People, Instantly SuperSearch |
-| Work email | Apollo bulk match, verified emails only | Clay's Work Email waterfall, for misses and catch-alls only, valid results only, behind `clay_email_fallback` (off until Clay's API is confirmed). "US Outbound – Contacts" replaces it once built | Apollo's own waterfall (its results arrive only by webhook, and there is no public endpoint); Instantly's lead finder |
+| Work email | Apollo bulk match, verified emails only | Clay's Work Email waterfall, for misses and catch-alls only, valid results only, behind `clay_email_fallback` (off until `us-outbound clay check-email --live` confirms one lookup). "US Outbound – Contacts" replaces it once built | Apollo's own waterfall (its results arrive only by webhook, and there is no public endpoint); Instantly's lead finder |
 | Email verification | Whoever found the email: Apollo's status, or Clay's check | | Instantly verification, which would spend Instantly credits |
 | Site visits | Apollo website visitors | Harry's weekly CSV export | Instantly's website-visitor feature |
 | Score, tier and angle | Python and the Signals tab | | Apollo scoring, Clay scoring, HubSpot lead scoring and ICP tiers |
@@ -165,6 +166,11 @@ An account also needs at least one candidate contact: a person matching the Role
   hand-check with the reason; Harry's approval clears it, and an Overrides row corrects a wrong
   fact. A missing fact is not cleared by approving: the account stays on the check until an
   Overrides row fills it in (Harry, 6 Oct 2026).
+- With `clay_cross_check` = yes (default no; Harry, 6 Oct 2026), Clay is asked about the HQ state and
+  headcount of those accounts first, once each ("Clay's two jobs" below). A doubt Clay settles is
+  dropped; one it disagrees with reaches the hand-check with both values ("Clay says 62 staff,
+  Apollo says 49"); a missing HQ state or size is filled in from Clay, so the account can verify the
+  same day. Industry stays with the hand-check.
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
@@ -177,7 +183,9 @@ An account also needs at least one candidate contact: a person matching the Role
   doesn't call verified (a catch-all), that person goes once to Clay's Work Email waterfall (or the
   "US Outbound – Contacts" function once its id is set), within today's share of the Clay budget and
   never while a kill rule pauses the clay source. Only a `valid` result is kept, with
-  `email_source` = clay; `catch_all_valid` waits for change 8.
+  `email_source` = clay; `catch_all_valid` waits for change 8. Work Email gets its own input names
+  (Full Name, Company Domain, Social Profile URL, Company Name). After three failed lookups the run
+  stops asking Clay, and without the Clay key it does not start.
 
 | Rank | 10–49 staff | 50–249 staff |
 | :- | :- | :- |
@@ -207,7 +215,7 @@ Credit budgets are monthly, a calendar month in UK time, because that's how Apol
 | Key | Default | Spent or used by | Checked |
 | :- | :- | :- | :- |
 | `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages, at most 25%), `apollo_signals` (job postings, at most 25%), `apollo_enrich` (organisation enrich, at most 15%), `pick_contacts` (email reveals: the rest, at least 35%), `verify_in_clay` (enrich, once built), `site_visits` (3 a day for the searches plus 1 per new visitor looked up, at most 35 a run, about 150 to 200 a month, outside the daily pacing as it runs after `pick_contacts`) | Before every batch: the month's balance, and today's share of it (each source's share paced the same way) |
-| `clay_monthly_credits` | 2,000 (about 500 a week; 0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts) | The same |
+| `clay_monthly_credits` | 2,000 (about 500 a week; 0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts or Work Email, with `clay_email_fallback`), `verify_accounts` (the cross-check, with `clay_cross_check`), `clay check-email` (one lookup) | The same |
 | `apollo_floor` | 5,000 | All Apollo spend | Stops Apollo spend if the account balance falls below it |
 | `claude_monthly_cap_usd` | $10 | Reply classification and drafts | A UTC month, as the Anthropic Console counts it |
 | `weekly_enrol_cap` | 150 | `enrol` | Each send day takes what's left of it ÷ the send days left in the week. A short Monday is made up by Friday |
@@ -444,6 +452,74 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
 | 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Replaced 1 Oct by lookalikes from Spill's HubSpot customers (Harry); built |
 | 14 | The Instantly plan's caps as a fourth term, from its API or `instantly_monthly_emails` | The workspace is shared with the EU campaigns | 1.2, 9 | Proposed; the phase 0 check first |
+
+## Clay's two jobs (Harry, 2 and 6 Oct 2026)
+
+Clay does only what Apollo can't: an email for a person Apollo can't verify, and a second opinion on an
+HQ state or size Apollo leaves in doubt. Each is behind its own General switch, both no, and both spend
+`clay_monthly_credits`, paced by the day, recorded in `credit_ledger` before each call.
+
+**1. The email waterfall (`clay_email_fallback`).** Built. Before switching it on, confirm one Work Email
+call through Clay's Routines API, for your own name:
+
+```
+us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat          (says what it would send)
+us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live   (makes the one call)
+```
+
+It refuses any domain but Spill's own. It prints whether the endpoint answered, the output's keys and
+shapes, the status our parser reads, the credits Clay reports, and then either "set clay_email_fallback =
+yes on the General tab, then run `us-outbound sync`" or what failed and why (a 403 means "API & CLI" is not
+ticked on Work Email; a validation failure means its input names differ). It exits 1 until the fallback
+can go on.
+
+**2. The cross-check (`clay_cross_check`).** Built; it needs the function below, which doesn't exist in
+Clay yet. `verify_accounts` (weekdays 04:30) sends the run's doubtful accounts in one batch of up to 100,
+each once (the answer is kept as a `clay` fact, with Clay's source note as its quote); a Clay error is
+reported in the job's summary, the doubt stands, and the account is asked again the next run. 3 credits
+are reserved per account until Clay reports the real cost.
+
+### What to build in Clay: "US Outbound – Accounts", narrowed
+
+In the folder "US Outbound", a function named **US Outbound – Accounts**. It answers two questions about
+a company and nothing else. It replaces SPEC 8's fuller output for now: pages are read by `read_pages` and
+funding comes from Apollo. If `verify_in_clay` is ever built, SPEC 8's keys can be added beside these; the
+cross-check reads only these.
+
+| | |
+| :- | :- |
+| Input `domain` | Text, always sent: the company's root domain, like `acmecreative.com` |
+| Input `company_name` | Text, sent when we have one: the cleaned name, like `Acme Creative`. Use it to disambiguate, never in place of the domain |
+| Output | Strict JSON: one object with exactly the keys below, each always present (null when unknown). Name the function's outputs exactly so |
+| `hq_state` | The 2-letter USPS code of the company's headquarters state (`IL`; `DC` counts), or null when it is unknown or the headquarters is outside the US. The headquarters, not a branch office or a person's location |
+| `employees` | The number of staff as a whole number (`64`), not a range (`51-200`) or text (`64 employees`); null when unknown |
+| `source` | One short sentence, at most 300 characters, saying where each value came from, like `LinkedIn company page: 64 employees, HQ Chicago, IL`. Harry reads it on the hand-check |
+| `credits_used` | Optional: the credits the row cost, if the function can give it |
+| How to fill them | A data provider (Clay's company enrichment from whichever provider the plan includes) or Claygent reading the company's own site and LinkedIn page, cheapest first. Report what the source says; never judge whether the company fits |
+| Settings | Tick "API & CLI" in the function's Integrations settings, or the API returns 403. Set a workbook spend limit if the plan offers one |
+
+Example output: `{"hq_state": "IL", "employees": 64, "source": "LinkedIn company page: 64 employees, HQ Chicago, IL"}`
+
+Then: paste the function's id (`t_…`) into the General `clay_accounts_function_id`, set `clay_cross_check` =
+yes, and run `us-outbound sync`. The sheet refuses `clay_cross_check` = yes while the id is blank.
+
+What the answer does, per account:
+
+| Apollo | Clay | What Harry sees |
+| :- | :- | :- |
+| No HQ state | `IL` | Nothing: filled in, and the account verifies on its other checks |
+| No HQ state | null, or outside the US | "Apollo gives no HQ state", word for word |
+| No count and no band | `120` | Nothing: filled in (`employees` 120, band 100-249) |
+| No count and no band | `49` (near the 50 edge) | "Clay says 49 staff, Apollo gives none" |
+| 49 (near the 50 edge) | `45` | Nothing: the same side of every size edge (the floor, 50 staff and the ceiling) |
+| 49 | `62` | "Clay says 62 staff, Apollo says 49" |
+| 64, band 20-49 (they disagree) | `62` | Nothing: Clay sides with the count |
+| HQ `NY` | `CA` | "Clay says CA, Apollo says NY" |
+| No industry | anything | "Apollo gives no industry": Clay doesn't settle industry, as a loose label would pick the wrong copy |
+| A field set by an Overrides row | anything | The Overrides row stands: Clay neither fills nor questions it |
+
+Approving the hand-check clears "Clay says …" reasons like any other doubt; a missing fact still needs an
+Overrides row.
 
 ## Which value wins
 

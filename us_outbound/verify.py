@@ -34,8 +34,12 @@ fact) and the checks above decide as usual; an Overrides row corrects a fact tha
 A missing fact is the exception (Harry, 6 Oct 2026): approving cannot supply it, and the checks
 would then fail the account unseen, so it stays on the hand-check, week after week, until an
 Overrides row (hq_state, employees or size_band, industry) fills it in or Harry pulls it.
-cross_check() is the hook for Clay's cross-check of HQ state and size (docs/roadmap.md): today
-nothing confirms a doubt, so every one goes to the hand-check.
+Clay's cross-check (Harry, 6 Oct 2026; us_outbound/clay_cross_check.py), while General clay_cross_check
+is yes: before the checks, the run's accounts with an HQ-state or size doubt go to Clay's "US Outbound –
+Accounts" function once, in one batch, within the Clay budget, and a missing HQ state or size is filled
+in from its answer. cross_check() then drops a doubt Clay settles, and restates one Clay disagrees with
+("Clay says 62 staff, Apollo says 49"), so the hand-check shows both. With the switch off (the default),
+or no answer, every doubt goes to the hand-check as before.
 Overrides win over the account's columns, as in scoring. Then the score job runs (SPEC 9: score
 runs after the sources), so the new accounts and the sources' new facts have a tier and an angle
 before pick_contacts at 05:30.
@@ -204,12 +208,23 @@ def standing(found: Iterable[str], cleared: Collection[str]) -> list[str]:
 
 
 def cross_check(ctx: Context, account: Mapping[str, Any], found: Sequence[str]) -> list[str]:
-    """The doubts a second source leaves standing: the hook for Clay's cross-check (docs/roadmap.md).
+    """The doubts a second source leaves standing: Clay's cross-check of HQ state and size (clay_cross_check.settle).
 
-    Once Clay's Accounts function exists, its HQ state and size confirm or correct Apollo's here,
-    and a doubt they settle is dropped. Today nothing cross-checks, so every doubt stands.
+    With clay_cross_check = yes and Clay's answer stored, a doubt it settles is dropped and one it disagrees with
+    is restated with both values; otherwise every doubt stands.
     """
-    return list(found)
+    from us_outbound import clay_cross_check
+
+    return clay_cross_check.settle(ctx, account, found)
+
+
+def clay_pre_pass(ctx: Context, todo: Sequence[dict], facts: Mapping[str, Mapping[str, Any]],
+                  suppressed: Collection[str], partners: Collection[str], cleared: Mapping[str, set[str]]) -> dict:
+    """Ask Clay about the run's doubtful accounts and fill their missing facts, before the checks
+    (clay_cross_check.ask); the job summary's clay_cross_check entry."""
+    from us_outbound import clay_cross_check
+
+    return clay_cross_check.ask(ctx, todo, facts, suppressed, partners, cleared)
 
 
 def _when(v: Any) -> datetime:
@@ -348,6 +363,7 @@ def run(ctx: Context) -> dict:
             examples.append({"account_id": account["account_id"], "domain": account.get("domain"), "reason": why})
 
     recorded, cleared = doubt_history(ctx, [a["account_id"] for a in todo])
+    summary["clay_cross_check"] = clay_pre_pass(ctx, todo, facts, suppressed, partners, cleared)
     doubt_rows: list[dict] = []
     for a in todo:
         acct = with_overrides(a, s)

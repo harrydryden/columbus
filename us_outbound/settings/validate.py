@@ -639,6 +639,9 @@ def _general(rows: list[_Row]) -> General:
         err("live_sending", "cannot be yes while approver_slack_ids is blank")
     if g.min_employees > g.max_employees:
         err("min_employees", f"must not be above max_employees ({g.max_employees})")
+    if g.clay_cross_check and not g.clay_accounts_function_id.strip():
+        err("clay_cross_check", "cannot be yes while clay_accounts_function_id is blank: build the \"US Outbound – "
+                                "Accounts\" function in Clay first (docs/pipeline.md), then paste its id")
     if g.email1_subject_share > 0 and not g.email1_subject.strip():
         err("email1_subject", f"cannot be blank while email1_subject_share is above 0 ({g.email1_subject_share:g}); "
                               "write a subject, or set the share to 0")
