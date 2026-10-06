@@ -787,6 +787,9 @@ def _sheet_settings(ctx: Context):
     return settings
 
 
+QA_ERRORS_IN_A_ROW = 3  # copy qa: one row's failed answer is skipped; this many in a row stops the run
+
+
 def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, role: str | None) -> list:
     rows = [c for c in settings.copy if c.status != "retired"]
     if versions:
@@ -911,13 +914,22 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
             print(f"Dry-run: {len(rows)} rows, no model called. With --live they go to "
                   f"{settings.general.claude_task_model}, at most ${est:.2f} of the monthly cap.")
             return 0
-        results = []
+        from us_outbound.clients.claude import BudgetExceeded
+
+        results, errors = [], 0
         for row in rows:
             try:
                 results.append(copy_desk.qa_row(ctx, row, settings))
-            except Exception as exc:  # the cap, or the API: report and stop, keeping what is done
+                errors = 0
+            except BudgetExceeded as exc:  # the month's cap: stop, keeping what is done
                 print(f"{row.copy_version}: QA stopped: {exc}")
                 break
+            except Exception as exc:  # one row's answer failed: it stays unchecked, the rest go on
+                errors += 1
+                print(f"{row.copy_version}: not checked ({exc}); run copy qa again to retry it")
+                if errors >= QA_ERRORS_IN_A_ROW:
+                    print(f"QA stopped after {errors} failures in a row: the API may be down")
+                    break
         for r in results:
             print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"))
         updates = {r.copy_version: {"qa": r.cell, "qa_notes": r.notes} for r in results}

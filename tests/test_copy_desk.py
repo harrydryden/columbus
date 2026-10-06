@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -168,6 +169,29 @@ def test_copy_qa_active_checks_only_the_rows_enrol_can_send(capsys):
     assert cli.main(["copy", "qa", "--synced", "--active"], context_factory=lambda *a, **k: ctx) == 0
     out = capsys.readouterr().out
     assert "agencies-v1:" in out and "general-v1:" in out and "staffing-v1" not in out and "2 rows" in out
+
+
+def test_copy_qa_skips_a_row_whose_answer_fails_and_checks_the_rest(capsys):
+    """6 Oct 2026: one verdict ran past max_tokens and the whole run stopped; now that row waits for the next run."""
+    from us_outbound.ops import cli
+
+    rows = (copy_row("agencies-v1", AGENCIES, qa=False), copy_row("advertising-v1", "Advertising agencies", qa=False))
+    s = make_settings(copy=rows)
+    tabs = {"Copy": [{"copy_version": r.copy_version, "qa": "", "qa_notes": ""} for r in rows]}
+    ctx, sdk = ctx_with(s, live=True, tabs=tabs)
+    ctx.guard.configure(live=True)
+    answers = iter([("{", "max_tokens"), (PASS, "end_turn")])
+
+    def create(**kwargs):
+        sdk.calls.append(kwargs)
+        text, stop = next(answers)
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)], stop_reason=stop, usage=sdk.usage)
+
+    sdk.create = create
+    assert cli.main(["copy", "qa", "--synced", "--live"], context_factory=lambda *a, **k: ctx) == 0
+    out = capsys.readouterr().out
+    assert "agencies-v1: not checked" in out and "1 of 1 passed." in out and len(sdk.calls) == 2
+    assert [r["qa"] for r in tabs["Copy"]] == ["", f"pass {s.copy[1].content_hash()}"]
 
 
 def test_copy_qa_live_writes_the_verdicts_to_the_sheet(capsys):
