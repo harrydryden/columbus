@@ -125,7 +125,17 @@ PERSON_FIELDS = frozenset({"people_leader_days_in_title"})
 ROLE_ORDER_COLUMNS = {"order_10_49": "10-49", "order_50_249": "50-249"}
 QA_VERDICTS = ("pass", "fail")
 TEST_STATUSES = ("planned", "running", "read", "stopped")
-SIZE_BANDS = ("10-19", "20-49", "50-99", "100-249")
+# Company size bands: SPEC 2's four (10-19 to 100-249) inside a ladder that runs further each way, so the
+# General min_employees and max_employees can move (Harry, 6 Oct 2026: "update that to say 5-500 easily").
+# A band's label never changes; Apollo is searched with the band clipped to the General range.
+SIZE_LADDER = (1, 5, 10, 20, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
+SIZE_BANDS = tuple(f"{lo}-{nxt - 1}" for lo, nxt in zip(SIZE_LADDER, SIZE_LADDER[1:]))
+
+
+def band_bounds(band: str) -> tuple[int, int]:
+    """"50-99" -> (50, 99)."""
+    lo, _, hi = band.partition("-")
+    return int(lo), int(hi)
 # General clay_verification (Harry, 1 Oct 2026): required is SPEC 2 (every account through Clay before it
 # can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
 CLAY_REQUIRED, CLAY_SKIP = "required", "skip"
@@ -207,6 +217,10 @@ class General:
     site_visit_domain: str = "spill.chat"
     site_visit_us_paths: tuple[str, ...] = ("/us",)
     site_visit_intent_paths: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
+    # (build) Harry, 6 Oct 2026: the company size range, in employees, both ends included (SPEC 2: 10 to 249).
+    # Every source searches it, verify_accounts holds accounts to it, and the hand-check's size edges follow it.
+    min_employees: int = 10
+    max_employees: int = 249
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0
@@ -347,9 +361,14 @@ class Role:
         return self.copy_role or self.role
 
     def order_at(self, employees: int | None) -> int | None:
-        """This row's rank at a company of this size, or None when it is not contacted there."""
+        """This row's rank at a company of this size, or None when it is not contacted there. A company outside
+        every range on the tab (General min_employees or max_employees set wider: 5, 500) takes the order of the
+        nearest range, so a 7-person company is read as 10-49 and a 400-person one as 50-249."""
         if employees is None:
             return None
+        if self.order:
+            spans = [band_bounds(rng) for rng in ROLE_ORDER_COLUMNS.values()]
+            employees = min(max(employees, min(lo for lo, _ in spans)), max(hi for _, hi in spans))
         ranks = [rank for rng, rank in self.order.items() if _in_range(employees, rng)]
         return min(ranks) if ranks else None
 
@@ -518,6 +537,27 @@ class Settings:
 
     def industry(self, label: str) -> Industry | None:
         return next((i for i in self.industries if i.industry == label), None)
+
+    def size_bands(self) -> tuple[str, ...]:
+        """The SIZE_BANDS the General size range touches, smallest first."""
+        lo, hi = self.general.min_employees, self.general.max_employees
+        return tuple(b for b in SIZE_BANDS if band_bounds(b)[0] <= hi and band_bounds(b)[1] >= lo)
+
+    def employee_range(self, band: str) -> str:
+        """Apollo's employee range for a band, clipped to the General size range: "250,499" -> "250,300"."""
+        lo, hi = band_bounds(band)
+        return f"{max(lo, self.general.min_employees)},{min(hi, self.general.max_employees)}"
+
+    def size_in_range(self, employees: int | float) -> bool:
+        return self.general.min_employees <= employees <= self.general.max_employees
+
+    def band_in_range(self, band: str) -> bool:
+        """Whether a band (from a size-filtered search) lies in the General range, at least in part."""
+        return band in self.size_bands()
+
+    def size_range_text(self) -> str:
+        """"10 to 249", as the reasons and prompts write it."""
+        return f"{self.general.min_employees} to {self.general.max_employees}"
 
     def active_states(self) -> tuple[str, ...]:
         return tuple(s.state for s in self.states if s.active)

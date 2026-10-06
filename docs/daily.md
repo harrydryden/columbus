@@ -10,6 +10,12 @@ worker: `railway ssh -- us-outbound <command>`. Nothing changes without `--live`
 | `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry, and enrol posts a few preview cards to #us-outbound-dev | Emails go out. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
 | `auto_send` | The pilot: every email waits for an approver's ✅ on its card in #us-outbound | Emails go straight to Instantly once the weekly hand-check is approved |
 
+**Company size (General `min_employees`, `max_employees`; 10 and 249 by default).** To contact companies of 5
+to 500, set 5 and 500. From the next sync every search covers the new range (new size bands are searched
+from page 1), verify_accounts holds accounts to it, and the hand-check's size edges move with it. The
+Roles tab's 10-49 order applies below 10 and its 50-249 order above 249. The first time, run
+`us-outbound settings load --tab General --live` to add the two keys to the sheet.
+
 **Sheet edits apply at the next sync:** 02:00 UK every day, and 11:30 UK on weekdays, so a morning
 edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound sync`.
 `us-outbound start --live` syncs by itself first. `us-outbound status` says when the settings were last synced.
@@ -86,7 +92,8 @@ above this.
 pages (General `site_visit_us_paths`, `/us`) and its pricing and demo pages (`site_visit_intent_paths`)
 in the last 30 days. A visit lifts that company's score before the 12:00 enrol ("Visited the US site"
 +35, "Viewed US pricing or demo page" +25, so both make Priority). A new visitor is looked up in
-Apollo: one in the US with 10 to 249 people joins the queue, and one Apollo can't place (no HQ state,
+Apollo: one in the US (in any state: a visitor is never excluded on its state) within the General size
+range joins the queue, and one Apollo can't place (no HQ state or country,
 no size, no industry, a size near an edge) comes in held for Monday's hand-check rather than being
 left out. It costs about 3 Apollo credits a day, plus 1 for each new visitor looked up. The daily
 post's Sources section has one line on it. The emails never mention a visit.

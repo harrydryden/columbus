@@ -321,7 +321,7 @@ def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_chec
     from us_outbound.enrol import hand_check
 
     ctx, _, fake = make([
-        visitor(1, domain="nostate.com", state="", enriched={"state": None}),
+        visitor(1, domain="nostate.com", state="", country="", enriched={"state": None, "country": None}),
         visitor(2, domain="nosize.com", employees=None),
         visitor(3, domain="unknown.com", found=False),  # Apollo's enrich does not know it: its row is all there is
         visitor(4, domain="edgeco.com", employees=251),  # near the 250 edge: maybe ours
@@ -346,7 +346,7 @@ def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_chec
 
 def test_an_overrides_row_fills_a_visitor_s_missing_fact_so_it_comes_in_unheld():
     s = dataclasses.replace(BASE, overrides=(Override("nostate.com", "hq_state", "TX"),))
-    ctx, _, _ = make([visitor(1, domain="nostate.com", state="")], settings=s)
+    ctx, _, _ = make([visitor(1, domain="nostate.com", state="", country="")], settings=s)
     out = sv.run(ctx)
     assert out["created"] == ["nostate.com"] and out["held_for_hand_check"] == []
     assert ctx.store.get("accounts", domain="nostate.com")["hq_state"] == "TX"
@@ -363,7 +363,7 @@ def test_lookups_are_capped_and_the_rest_are_looked_up_next_run(monkeypatch):
 
 
 def test_visitors_the_old_screen_turned_away_are_judged_again():
-    ctx, _, fake = make([visitor(1, domain="nostate.com", state="")])
+    ctx, _, fake = make([visitor(1, domain="nostate.com", state="", country="")])
     ctx.store.insert("credit_ledger", [{"entry_id": "e1", "system": "apollo", "job": sv.JOB, "credits": 1.0, "usd": 0.0,
                                         "occurred_at": NOW - timedelta(days=1), "run_id": "old",
                                         "note": '{"screen": 1, "asked": ["org001"], "kept": ["org001"]}'}])
@@ -371,16 +371,20 @@ def test_visitors_the_old_screen_turned_away_are_judged_again():
     assert fake.enriches == [["nostate.com"]] and out["held_for_hand_check"] == ["nostate.com"]
 
 
-def test_the_front_door_refuses_a_never_state_a_suppressed_domain_and_a_partner():
+def test_a_visitor_in_any_us_state_comes_in_and_the_front_door_refuses_suppressed_and_partners():
     ctx, _, fake = make([visitor(1, domain="calco.com", state="California"), visitor(2, domain="hushed.com"),
                       visitor(3, domain="broker.com"), visitor(4, domain="txco.com", state="Texas")])
     suppression.add(ctx.store, domain="hushed.com", reason="test", source="test", now=NOW)
     ctx.store.upsert("partners", [{"domain": "broker.com", "name": "Broker", "reason": "broker", "naics": None,
                                    "added_at": NOW}])
     out = sv.run(ctx)
-    assert out["created"] == ["txco.com"]
-    assert out["not_admitted"] == {"HQ outside the active states": 1, "suppressed": 1, "a partner, never prospected": 1}
-    assert sorted(d for call in fake.enriches for d in call) == ["broker.com", "hushed.com", "txco.com"]
+    assert out["created"] == ["calco.com", "txco.com"]  # never excluded on its state (Harry, 6 Oct 2026)
+    assert out["held_for_hand_check"] == []
+    assert out["not_admitted"] == {"suppressed": 1, "a partner, never prospected": 1}
+    assert sorted(d for call in fake.enriches for d in call) == ["broker.com", "calco.com", "hushed.com", "txco.com"]
+    calco = ctx.store.get("accounts", domain="calco.com")
+    assert (calco["hq_state"], calco["hq_country"], calco["source"]) == ("CA", "United States", "site_visit")
+    assert verify.check(calco, {}, ctx.settings, set(), set()) is None  # verify takes it, CA and all
 
 
 # -- no data ---------------------------------------------------------------------------------------------

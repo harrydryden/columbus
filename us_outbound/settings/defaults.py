@@ -213,6 +213,20 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Pages that count as a pricing or demo visit, comma-separated, matched the same way, so /us/book counts "
         "/us/book-demo. Blank: no pricing or demo signal. Added by the build.",
     ),
+    (
+        "min_employees",
+        "10",
+        "The smallest company we contact, in employees (SPEC 2: 10). Every source searches from here, "
+        "verify_accounts holds accounts to it and the hand-check's size edges follow it. Harry, 6 Oct 2026. "
+        "Added by the build.",
+    ),
+    (
+        "max_employees",
+        "249",
+        "The largest company we contact, in employees, this number included (SPEC 2: 249). Set 500 to search "
+        "and contact companies up to 500. The Roles tab's 50-249 order covers everyone from 50 up. "
+        "Added by the build.",
+    ),
     ("claude_model", "claude-opus-5-5",
      "Writing: drafts copy and reply drafts (Harry, 30 Sep 2026: Opus constructs the emails)."),
     ("claude_task_model", "claude-sonnet-5-5",

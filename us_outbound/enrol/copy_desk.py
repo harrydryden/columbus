@@ -453,7 +453,7 @@ DRAFT_SCHEMA = {
     "additionalProperties": False,
 }
 DRAFT_SYSTEM = """You write cold outbound email sequences for Spill, employee mental health support, to US
-companies with 10 to 249 staff. Follow the style guide and the facts list exactly: they are the rules
+companies with {size_range} staff. Follow the style guide and the facts list exactly: they are the rules
 the system checks every email against, and copy that breaks one is never sent. Write in US English."""
 
 
@@ -489,7 +489,8 @@ def draft_row(ctx, industry: str, role: str = "", *, settings: Settings | None =
     """A new Copy-tab row (status draft) written by the writing model."""
     settings = settings or ctx.settings
     answer = ctx.clients.claude.json(
-        DRAFT_SYSTEM, draft_prompt(industry, role, settings, feedback=feedback), DRAFT_SCHEMA,
+        DRAFT_SYSTEM.replace("{size_range}", settings.size_range_text()),  # the General size range
+        draft_prompt(industry, role, settings, feedback=feedback), DRAFT_SCHEMA,
         max_tokens=DRAFT_MAX_TOKENS, purpose="copy_draft", now=ctx.now, timeout=DRAFT_TIMEOUT_SECONDS,
     )
     row = {"copy_version": next_version(settings, industry, role), "industry": industry, "role": role,

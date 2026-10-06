@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
-from us_outbound.settings.model import SIZE_BANDS, Role
+from us_outbound.settings.model import SIZE_BANDS, Role, band_bounds
 
 # -- names -------------------------------------------------------------------
 
@@ -438,13 +438,9 @@ def rank_person(
 
 # -- size --------------------------------------------------------------------
 
-def _band_bounds(band: str) -> tuple[int, int]:
-    lo, _, hi = band.partition("-")
-    return int(lo), int(hi)
-
-
 def size_band(employees: int | float | str | None) -> str | None:
-    """The SIZE_BANDS band for a headcount ("64" -> "50-99"); None outside 10 to 249 or unknown."""
+    """The SIZE_BANDS band for a headcount ("64" -> "50-99", "7" -> "5-9"); None when unknown or off the ladder.
+    Whether the size is one we contact is the General range's question (Settings.size_in_range), not this one."""
     if employees is None or isinstance(employees, bool):
         return None
     try:
@@ -452,7 +448,7 @@ def size_band(employees: int | float | str | None) -> str | None:
     except (ValueError, OverflowError):
         return None
     for band in SIZE_BANDS:
-        lo, hi = _band_bounds(band)
+        lo, hi = band_bounds(band)
         if lo <= n <= hi:
             return band
     return None
@@ -462,7 +458,7 @@ def company_size(employees: int | float | str | None, band: str | None = None) -
     """The headcount the Roles tab's size ranges are read against: the low end of the account's
     size band (as the resolver set it, so "50-99" is 50), else its employee count; None if unknown."""
     if band in SIZE_BANDS:
-        return _band_bounds(band)[0]
+        return band_bounds(band)[0]
     if employees is None or isinstance(employees, bool):
         return None
     try:

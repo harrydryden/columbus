@@ -23,12 +23,13 @@ The lookalike_leads job (the 1st of each month, 02:50 UK, after lookalikes at 02
      ranks companies by likeness to up to 5 seeds (lookalike_organization_ids), one search per size band
      of the cell: search rows carry no headcount, so the band must come from the filter (as source_universe
      reads it), and companies of the seeds' own size are the lookalikes wanted. Across the cells the
-     searches cover 10 to 249 staff. The results are US only, three times over:
+     searches cover the General size range (10 to 249 by default; cell_bands). The results are US only,
+     three times over:
        a. in the request: HQ in the United States, never California or Washington (the wording
           source_universe's filters use), the size band, and insurers and brokers left out, as there;
        b. on each row before the door: Apollo's HQ country must be the US (a row without one is counted
           "not US"), and source_universe's take() then wants an HQ state active on the States tab (never
-          CA or WA; FL only when switched on), a size inside 10 to 249 when the row gives one, an active
+          CA or WA; FL only when switched on), a size inside the General range when the row gives one, an active
           Industries label, and no partner;
        c. after the door: verify_accounts checks state, size, HubSpot, partners and suppression as for
           any account. There is no shortcut.
@@ -83,7 +84,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
 from us_outbound.logs import log
-from us_outbound.settings.model import SIZE_BANDS, Settings
+from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
 from us_outbound.sources import lookalikes
@@ -107,10 +108,11 @@ POST_HOURS = 36  # the daily post mentions a run this recent (the 1st's post)
 # takes states written as source_universe writes them ("California, US"), on the lookalike search too.
 US_LOCATION = "United States"
 NOT_LOCATIONS = tuple(uni.location(s) for s in sorted(uni.NEVER_STATES))  # never CA or WA (SPEC 1.3)
-# The cells' size bands (lookalikes.TARGET_BANDS) as Apollo's search bands (settings/model.py SIZE_BANDS).
-CELL_BANDS: dict[str, tuple[str, ...]] = {
-    cell: tuple(b for b in SIZE_BANDS if lookalikes.PROSPECT_BANDS.get(b) == cell) for cell in lookalikes.TARGET_BANDS
-}
+def cell_bands(settings: Settings, cell: str) -> tuple[str, ...]:
+    """A cell's size bands (lookalikes.TARGET_BANDS) as Apollo's search bands within the General size range: the
+    bands the range touches that read as this cell (lookalikes.PROSPECT_BANDS), so 5-9 searches with 10-49's seeds
+    and 250-499 with 100-249's when the range is set wider (Harry, 6 Oct 2026)."""
+    return tuple(b for b in settings.size_bands() if lookalikes.PROSPECT_BANDS.get(b) == cell)
 NOT_US = "not US"
 CUSTOMER = "a Spill customer"
 EXISTS = "already an account"
@@ -240,12 +242,13 @@ class _Leads:
         return sum(self.created.values())
 
 
-def us_filters(band: str) -> dict[str, Any]:
-    """source_universe's filters for one size band, over the whole US at once, never CA or WA."""
+def us_filters(band: str, settings: Settings) -> dict[str, Any]:
+    """source_universe's filters for one size band (clipped to the General size range), over the whole US at
+    once, never CA or WA."""
     f: dict[str, Any] = {
         "organization_locations": [US_LOCATION],
         "organization_not_locations": list(NOT_LOCATIONS),
-        "organization_num_employees_ranges": [uni.EMPLOYEE_RANGES[band]],
+        "organization_num_employees_ranges": [settings.employee_range(band)],
     }
     if uni.PARTNER_FILTER:
         f["not_organization_naics_codes"] = list(uni.PARTNER_FILTER)
@@ -400,7 +403,7 @@ def find(ctx: Context, leads: _Leads, seeds: Sequence[Seed]) -> None:
     for group in searches(resolved):
         first = group[0]
         seed_ids = [ids[s.domain] for s in group]
-        for band in CELL_BANDS[first.band]:
+        for band in cell_bands(ctx.settings, first.band):
             if not _may_search(leads):
                 return
             note = {"step": "lookalikes", "cell": first.cell, "band": band, "seed_country": first.country,
@@ -411,7 +414,7 @@ def find(ctx: Context, leads: _Leads, seeds: Sequence[Seed]) -> None:
 def _lookalike(ctx: Context, leads: _Leads, seed_ids: Sequence[str], band: str, seed: Seed,
                note: Mapping[str, Any]) -> None:
     """One lookalike search; when it comes back empty with several seeds, each seed alone, same filters."""
-    filters = us_filters(band)
+    filters = us_filters(band, ctx.settings)
     tally = leads.by_country[seed.country]
     tries: list[tuple[list[str], Mapping[str, Any]]] = [(list(seed_ids), note)]
     while tries:

@@ -8,15 +8,17 @@ universe is every company that fits the sheet's Industries, States and size band
        * the NAICS codes of the group's active Industries labels, as prefixes; a code an earlier
          group already searched is left out, so no company is paid for twice;
        * a label with no NAICS codes is searched by its apollo_keywords instead;
-       * the active States, never CA or WA (SPEC 1.3); 10 to 249 employees in the four SPEC size
-         bands; insurers and brokers (NAICS 524) left out by Apollo, other partners by Python.
+       * the active States, never CA or WA (SPEC 1.3); the General size range, min_employees to
+         max_employees (10 to 249 by default; Harry, 6 Oct 2026), one search per size band it touches
+         (Settings.size_bands), each band clipped to the range; insurers and brokers (NAICS 524) left
+         out by Apollo, other partners by Python.
      A search Apollo says holds over 50,000 companies (its display limit) is split by size band (SPEC 7),
      and so is one whose first page carries no employee counts, so the band comes from the filter.
   2. Each company is mapped to exactly one Industries label (best_label: its NAICS codes, then its
      Apollo keywords) and skipped if none fits or the best fit is switched off. Its root domain and
      name are cleaned (clean/), and it comes in by the front door (accounts.admit: one account per
      root domain, through domain_aliases; suppressed and partner domains refused). Personal domains,
-     companies with no website, HQs outside the active states and sizes outside 10 to 249 are
+     companies with no website, HQs outside the active states and sizes outside the General range are
      skipped. A new account has source apollo and status new; an account still in the queue that is
      found again gets Apollo's latest columns. Overrides win; fields Clay has confirmed are kept
      (docs/pipeline.md, "Which value wins"). A row with no employee count only fills a blank size: the
@@ -77,7 +79,7 @@ from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import parse_override
 from us_outbound.settings.conditions import find_terms
-from us_outbound.settings.model import SIZE_BANDS, Industry, Settings
+from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_credits as credits
 
 JOB = "source_universe"
@@ -88,7 +90,6 @@ QUEUE_WEEKS = 2  # SPEC 2: a two-week queue
 OPEN_STATUSES = ("new", "queued", "verified")  # waiting to be enrolled
 OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
-EMPLOYEE_RANGES = {band: band.replace("-", ",") for band in SIZE_BANDS}  # Apollo writes a range as "10,19"
 MAX_RESULTS = MAX_PAGE * MAX_PER_PAGE  # Apollo shows at most 50,000 companies per search
 # PHASE0-CONFIRM: organization_naics_codes takes 2 to 5 digits (Apollo's docs), so a 6-digit code is
 # sent as its 5-digit prefix and Python checks the full code. Set to 6 if Apollo takes six digits.
@@ -98,7 +99,9 @@ MAX_PAGES_PER_RUN = 200  # well inside the 60-minute timeout
 # Apollo's search rows carry no estimated_num_employees (2 Oct 2026, the first live run: none on 432
 # accounts), so a search without a size filter gives accounts no size band at all. Every search is
 # therefore read by size band from the start, and the band comes from the search's own filter.
-START_BANDS: tuple[str, ...] = SIZE_BANDS
+# None: the bands the General size range touches (Settings.size_bands; Harry, 6 Oct 2026), each searched with
+# its range clipped to min_employees and max_employees.
+START_BANDS: tuple[str, ...] | None = None
 BACKFILL_BATCH = 100  # accounts per size-band backfill search (one page; Apollo's per_page limit)
 QUOTE_LIMIT = 300  # SPEC 6
 DESCRIPTION_LIMIT = 600  # the description fact, for the opener's "what they do" phrase
@@ -162,17 +165,24 @@ class Slice:
     terms: tuple[str, ...]  # NAICS prefixes or keywords
     label: str  # the label for a company that comes back with no NAICS codes or keywords ("" for none)
     band: str = ""
+    employees: str = ""  # Apollo's range for the band, clipped to the General size range ("250,300")
 
     @property
     def key(self) -> str:
         digest = hashlib.sha256("|".join(self.terms).encode()).hexdigest()[:8]  # a changed filter starts afresh
-        return f"{self.group}|{self.what}|{self.state}|{self.band or 'all'}|{digest}"
+        band = self.band or "all"
+        if self.band and self.employees and self.employees != self.band.replace("-", ","):
+            band += f"={self.employees}"  # a band the General range clips: a new clip starts afresh
+        return f"{self.group}|{self.what}|{self.state}|{band}|{digest}"
 
-    def filters(self) -> dict[str, Any]:
-        bands = [self.band] if self.band else list(SIZE_BANDS)
+    def filters(self, settings: Settings) -> dict[str, Any]:
+        if self.band:
+            ranges = [self.employees or settings.employee_range(self.band)]
+        else:
+            ranges = [settings.employee_range(b) for b in settings.size_bands()]
         f: dict[str, Any] = {
             "organization_locations": [location(self.state)],
-            "organization_num_employees_ranges": [EMPLOYEE_RANGES[b] for b in bands],
+            "organization_num_employees_ranges": ranges,
         }
         if self.what == NAICS:
             f["organization_naics_codes"] = list(self.terms)
@@ -182,8 +192,8 @@ class Slice:
             f["not_organization_naics_codes"] = list(PARTNER_FILTER)
         return f
 
-    def by_band(self) -> list[Slice]:
-        return [replace(self, band=b) for b in SIZE_BANDS]
+    def by_band(self, settings: Settings) -> list[Slice]:
+        return [replace(self, band=b, employees=settings.employee_range(b)) for b in settings.size_bands()]
 
 
 def plan(settings: Settings, groups: Sequence[str], states: Sequence[str]) -> dict[str, list[Slice]]:
@@ -198,8 +208,9 @@ def plan(settings: Settings, groups: Sequence[str], states: Sequence[str]) -> di
         umbrella = next((i.industry for i in labels if i.industry == group), "")
         searches = [(NAICS, tuple(codes), umbrella)] if codes else []
         searches += [(i.industry, i.apollo_keywords, i.industry) for i in labels if not i.naics_prefixes]
-        out[group] = [Slice(group, st, what, terms, label, band)
-                      for what, terms, label in searches for st in states for band in START_BANDS]
+        bands = START_BANDS if START_BANDS is not None else settings.size_bands()
+        out[group] = [Slice(group, st, what, terms, label, band, settings.employee_range(band) if band else "")
+                      for what, terms, label in searches for st in states for band in bands]
     return out
 
 
@@ -271,13 +282,13 @@ def cursors(ctx: Context) -> dict[str, Cursor]:
     return out
 
 
-def _lane(slices: Iterable[Slice], progress: Mapping[str, Cursor]) -> deque[Slice]:
+def _lane(slices: Iterable[Slice], progress: Mapping[str, Cursor], settings: Settings) -> deque[Slice]:
     """The searches still to read, in turn; a split search is read as its four size bands."""
     out: deque[Slice] = deque()
     for sl in slices:
         c = progress.get(sl.key)
         if c is not None and c.split:
-            out.extend(b for b in sl.by_band() if not progress.get(b.key, Cursor()).done)
+            out.extend(b for b in sl.by_band(settings) if not progress.get(b.key, Cursor()).done)
         elif c is None or not c.done:
             out.append(sl)
     return out
@@ -535,6 +546,7 @@ def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: st
         "apollo_org_id": str(org.get("organization_id") or org.get("id") or "") or None,
         "hq_city": str(org.get("city") or "").strip() or None,
         "hq_state": state,
+        "hq_country": "United States" if in_us(org) and str(org.get("country") or "").strip() else None,
         "industry": label.industry if label else None,
         "industry_group": label.industry_group if label else None,
         "naics": ", ".join(codes) or None,
@@ -586,8 +598,8 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
         run.skipped["HQ outside the active states"] += 1
         return
     employees = _int(org.get("estimated_num_employees"))
-    if employees is not None and size_band(employees) is None:
-        run.skipped["outside 10 to 249 employees"] += 1
+    if employees is not None and not s.size_in_range(employees):
+        run.skipped[f"outside {s.size_range_text()} employees"] += 1
         return
     codes, text = org_naics(org), _keyword_text(org)
     label = best_label(codes, text, s) if codes or text else s.industry(sl.label) if sl.label else None
@@ -652,7 +664,7 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
     """Read the search's next page into accounts and facts; False if Apollo refused it."""
     page = cur.page + 1
     try:
-        body = ctx.clients.apollo.search_organizations(sl.filters(), page=page, per_page=MAX_PER_PAGE)
+        body = ctx.clients.apollo.search_organizations(sl.filters(ctx.settings), page=page, per_page=MAX_PER_PAGE)
     except ApiError as exc:
         if exc.status in (401, 403):
             raise  # the key is wrong: every search would fail
@@ -696,10 +708,11 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
     banded = 0
     for i in range(0, len(todo), BACKFILL_BATCH):
         batch = {str(a["apollo_org_id"]): a for a in todo[i : i + BACKFILL_BATCH]}
-        for band in SIZE_BANDS:
+        for band in ctx.settings.size_bands():
             if not batch or not room.allows():
                 return banded
-            filters = {"organization_ids": list(batch), "organization_num_employees_ranges": [EMPLOYEE_RANGES[band]]}
+            filters = {"organization_ids": list(batch),
+                       "organization_num_employees_ranges": [ctx.settings.employee_range(band)]}
             try:
                 body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
             except ApiError as exc:
@@ -771,7 +784,7 @@ def run(ctx: Context) -> dict:
     searches = plan(s, groups, states)
     halt, short = "", []
     for pool, pool_target in todo:
-        lane = _lane((sl for g in pool for sl in searches.get(g, ())), progress)
+        lane = _lane((sl for g in pool for sl in searches.get(g, ())), progress, s)
         while not halt and _depth(depth, pool) < pool_target:
             if r.pages >= MAX_PAGES_PER_RUN:
                 halt = f"the limit of {MAX_PAGES_PER_RUN} pages a run"
@@ -786,7 +799,7 @@ def run(ctx: Context) -> dict:
                 if not read_page(ctx, sl, cur, r, room, depth):
                     continue  # refused: that search waits for the next run
                 if cur.split:
-                    lane.extendleft(reversed([b for b in sl.by_band() if not progress.get(b.key, Cursor()).done]))
+                    lane.extendleft(reversed([b for b in sl.by_band(s) if not progress.get(b.key, Cursor()).done]))
                 elif not cur.done:
                     lane.append(sl)
         if halt:

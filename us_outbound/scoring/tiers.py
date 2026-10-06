@@ -18,7 +18,8 @@ Hard exclusions are fixed in code, not in the settings sheet:
   * more than 20% of US-located staff in CA or WA (or in FL, until FL is switched on);
   * fewer than 5 US-located people found;
   * founded less than 2 years ago;
-  * HQ in CA or WA (never, SPEC 1.3), or in a state not active on the States tab.
+  * HQ in CA or WA (never, SPEC 1.3), or in a state not active on the States tab. Not a website
+    visitor (Harry, 6 Oct 2026; accounts.any_us_state): its HQ may be in any US state.
 
 `facts` here is the latest value of each field across all sources, whatever its age
 (score.latest_facts), with the account's Overrides applied.
@@ -31,6 +32,7 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
+from us_outbound.accounts import any_us_state, us_country
 from us_outbound.scoring.angle import evidence_display
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Settings
@@ -208,14 +210,16 @@ def hard_exclusion(
         if _truthy(facts.get(fact)):
             return reason
 
-    active ={s.upper() for s in settings.active_states()}
+    active = {s.upper() for s in settings.active_states()}
     state = str(_first(account, facts, "hq_state") or "").strip().upper()
-    if not state:
+    visitor = any_us_state(account)
+    if not state and not (visitor and us_country(account.get("hq_country"))):
         return "HQ state unknown"
-    if state in NEVER_STATES:
-        return f"HQ in {state}, which is never contacted"
-    if state not in active:
-        return f"HQ state {state} is not active"
+    if state and not visitor:
+        if state in NEVER_STATES:
+            return f"HQ in {state}, which is never contacted"
+        if state not in active:
+            return f"HQ state {state} is not active"
 
     ca_wa = as_number(facts.get("ca_wa_share"))
     if ca_wa is not None and ca_wa > STATE_SHARE_LIMIT:

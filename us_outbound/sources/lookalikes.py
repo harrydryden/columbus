@@ -98,7 +98,7 @@ from us_outbound.context import UK, Context
 from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.defaults import US_STATES
-from us_outbound.settings.model import Settings, Signal
+from us_outbound.settings.model import SIZE_BANDS, Settings, Signal, band_bounds
 from us_outbound.sources import apollo_credits as credits
 
 SOURCE = "lookalike"
@@ -182,7 +182,10 @@ ACTIVE_WEIGHT, CHURNED_WEIGHT, US_WEIGHT = 1.0, 0.25, 2.0
 # headcount cannot tell them apart, and the cells stay big enough to mean something.
 BANDS = ("1-9", "10-49", "50-99", "100-249", "250+")
 UNKNOWN = "unknown"
-PROSPECT_BANDS = {"10-19": "10-49", "20-49": "10-49", "50-99": "50-99", "100-249": "100-249"}
+# A prospect's size band as the cells read it. A band outside 10 to 249 (General min_employees or max_employees
+# set wider; Harry, 6 Oct 2026) reads as the nearest cell: under 10 as 10-49, 250 and over as 100-249.
+PROSPECT_BANDS = {band: "10-49" if band_bounds(band)[1] < 50 else "50-99" if band_bounds(band)[1] < 100 else "100-249"
+                  for band in SIZE_BANDS}
 TARGET_BANDS = ("10-49", "50-99", "100-249")  # the sizes the system contacts (SPEC 2: 10 to 249)
 # HubSpot's enriched numberofemployees is mostly the top of a range: 10 is 1-10, 50 is 11-50, 250 is
 # 51-250, 1000 is 251-1,000 (1 Oct 2026: 413 at 50, 179 at 10, 165 at 250). 250 spans two bands: unknown.

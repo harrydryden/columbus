@@ -65,7 +65,7 @@ Instantly finds, enriches and verifies as well (SuperSearch, a seven-provider wa
 | :- | :- | :- |
 | Which industries? | Industries: labels, NAICS prefixes, excluded NAICS, Apollo keywords | Built into the filters of each Apollo search. Python then re-checks every result against the tab, so a loose Apollo filter can't let a wrong company in |
 | Where? | States (HQ state), and CA and WA never | Apollo `organization_locations`. People are checked against the same list |
-| How big? | 10–249 employees in four bands (General, code) | Apollo `organization_num_employees_ranges` |
+| How big? | General `min_employees` to `max_employees` (10–249 by default; Harry, 6 Oct 2026: "update that to say 5-500 easily"), searched by size band, each band clipped to the range | Apollo `organization_num_employees_ranges` |
 | Who do we email? | Roles: titles, the copy each row gets, and its rank at 10–49 and at 50–249 staff | Apollo people-search title filters; Python ranks the results |
 | What makes an account better or worse? | Signals, Angles | Never sent to a vendor. Clay reports what the pages say and never judges them (SPEC 8) |
 | Who is never contacted? | Hard exclusions (code), Overrides, suppression | Checked in Python before any credit is spent |
@@ -89,7 +89,7 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 - It is deduplicated on root domain against accounts and aliases, against suppression, and against the whole HubSpot portal.
 - It is rejected at once for:
   - no domain
-  - HQ in CA, WA or an inactive state
+  - HQ in CA, WA or an inactive state (not a website visitor: its HQ may be in any US state, Harry, 6 Oct 2026; a contact located in CA or WA is still never emailed)
   - partner NAICS or keywords
   - HubSpot conflicts
 - **Status: `new`.**
@@ -121,7 +121,7 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   signals read (`days_since_funding`, aged to today at scoring, `funding_stage`, `funding_amount_usd`),
   `employees` and `headcount_growth_12m`, and the description, technologies and keywords when none is
   stored. An exact count replaces the searched size band on the account, unless an Overrides row or
-  Clay says otherwise; verify then treats a count outside 10–249 as usual (a verified account that
+  Clay says otherwise; verify then treats a count outside the General size range as usual (a verified account that
   count puts outside goes back to `new`, so verify sees it again). A company Apollo has no
   record for is "not found", not "no funding", and is not asked again for 180 days. The daily post
   counts what it found.
@@ -134,9 +134,9 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   once it no longer does, written only on a change), and a `site_visit` event for each day it
   visited (the daily post's warm accounts, the readout's visits before and after the first email).
   A visitor we don't hold is kept out on its search row only when it is surely not for us (outside
-  the US, an inactive state, no label fits, an insurer or broker). Every other one is looked up in
+  the US, no label fits, an insurer or broker; never its HQ state, Harry, 6 Oct 2026). Every other one is looked up in
   Apollo's organisation enrich (1 credit each found, at most 30 a run) and judged again: out only
-  for a size clearly outside 10–249; otherwise it comes in by the front door with source
+  for a size clearly outside the General size range; otherwise it comes in by the front door with source
   `site_visit`. One Apollo leaves in doubt (no HQ state, no size, no industry, a count near an
   edge) comes in held for the weekly hand-check, not left out (Harry, 6 Oct 2026). The
   rescore follows, so a visit counts at the 12:00 enrol. Apollo refusing the filters, or a week

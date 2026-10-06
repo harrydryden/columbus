@@ -32,15 +32,19 @@ enrol at 12:00, whose tiers the rescore at the end of the run sets.
   4. New high-intent leads (SPEC 7: "An unknown visiting company ... joins the queue if it
      passes"). A visitor with no account is judged on its search row first (judge()), and one that
      is surely not for us stays out at no cost: no website, a personal domain, a country outside
-     the US, an HQ state that is not active (CA and WA never are), an industry no active label fits,
-     an insurer or broker. Every other one is looked up in Apollo's organization enrich
+     the US, an industry no active label fits, an insurer or broker. Never its HQ state (Harry,
+     6 Oct 2026: "I never want to exclude a website visitor on their state, as long as they're in the
+     US"; accounts.any_us_state): any state, CA and WA and the inactive ones included, and an unknown
+     state once Apollo puts the HQ in the US. A contact located in CA or WA is still never emailed
+     (SPEC 1.3). Every other one is looked up in Apollo's organization enrich
      (MAX_ENRICH_PER_RUN a run, BULK_ENRICH_MAX a call), since search rows carry no employee count,
      and judged again on the record, with the domain's Overrides applied: also out when its count
-     is outside 10 to 249 and not near an edge. A visitor that passes comes in by the front door
+     is outside the General size range (min_employees to max_employees) and not near an edge. A
+     visitor that passes comes in by the front door
      (accounts.admit, source site_visit; suppressed and partner domains refused), with the account
      columns and apollo_org facts the universe gives (sources/apollo_universe.py), and goes through
-     verify, scoring and pick_contacts like any other. One that Apollo leaves in doubt (no HQ state,
-     no employee count, no industry, a count near the 10, 50 or 250 edge: verify.doubts) is not
+     verify, scoring and pick_contacts like any other. One that Apollo leaves in doubt (no HQ state and
+     no country, no employee count, no industry, a count near a size edge: verify.doubts) is not
      left out (Harry, 6 Oct 2026: "include the visitors the system isn't confident to disqualify in
      the weekly check"): it comes in held, with a doubtful_facts fact, so the weekly hand-check
      (enrol/hand_check.py) shows it and verify_accounts waits for Harry. Clay's cross-check of HQ
@@ -93,7 +97,7 @@ from us_outbound.sources import apollo_universe as universe
 
 JOB = "site_visits"
 SOURCE = "site_visits"  # signal_events.source (SPEC 7)
-ACCOUNT_SOURCE = "site_visit"  # accounts.source of a company that came in by visiting (SPEC 6)
+ACCOUNT_SOURCE = accounts.SITE_VISIT  # accounts.source of a company that came in by visiting (SPEC 6)
 EVENT_TYPE = "site_visit"
 US_FACT, INTENT_FACT = "us_visits_30d", "pricing_or_demo_visits_30d"
 US, US_TODAY, INTENT = "us", "us_today", "intent"
@@ -321,7 +325,7 @@ def _keyword_text(org: Mapping[str, Any]) -> str:
     return " ; ".join([*universe.org_keywords(org), str(org.get("industry") or "")]).strip(" ;")
 
 
-def judge(ctx: Context, org: Mapping[str, Any], states: frozenset[str]) -> Verdict:
+def judge(ctx: Context, org: Mapping[str, Any]) -> Verdict:
     """Out only for a reason Apollo's record makes sure of; what it leaves unknown is a doubt, never a no.
     The domain's Overrides rows apply to its HQ state, size and industry, as in verify."""
     s = ctx.settings
@@ -342,14 +346,12 @@ def judge(ctx: Context, org: Mapping[str, Any], states: frozenset[str]) -> Verdi
                             "keywords": universe.org_keywords(org), "apollo_industry": org.get("industry")}, {}):
         return Verdict("a partner, never prospected")
     state = state_code(str(org.get("state") or ""))
-    acct = verify.with_overrides({**universe.columns(org, label, state, ""), "domain": domain}, s)
-    known = state_code(str(acct.get("hq_state") or ""))
-    if known and known not in states:
-        return Verdict("HQ outside the active states")
+    acct = verify.with_overrides({**universe.columns(org, label, state, ""), "domain": domain,
+                                  "source": ACCOUNT_SOURCE}, s)
     n = tiers.as_number(acct.get("employees"))
-    if n is not None and not verify.MIN_EMPLOYEES <= n <= verify.MAX_EMPLOYEES and verify.near_edge(int(n)) is None:
-        return Verdict("outside 10 to 249 employees")
-    return Verdict(label=label, state=state, doubts=tuple(verify.doubts(acct)))
+    if n is not None and not s.size_in_range(n) and verify.near_edge(int(n), s) is None:
+        return Verdict(verify.outside(s))
+    return Verdict(label=label, state=state, doubts=tuple(verify.doubts(acct, s)))
 
 
 def enrich(ctx: Context, orgs: Sequence[Mapping[str, Any]], run: _Run) -> dict[str, dict]:
@@ -424,11 +426,10 @@ def admit_new(ctx: Context, reads: Sequence[Read], matched: dict[str, dict], run
                 todo.setdefault(oid, org)
     if not todo:
         return
-    states = frozenset(universe.allowed_states(ctx.settings))
     out: list[str] = []
     look: list[dict] = []
     for oid, org in todo.items():
-        v = judge(ctx, org, states)
+        v = judge(ctx, org)
         if v.out:
             run.refuse(org, v.out)
             out.append(oid)
@@ -439,7 +440,7 @@ def admit_new(ctx: Context, reads: Sequence[Read], matched: dict[str, dict], run
     records = enrich(ctx, look[:MAX_ENRICH_PER_RUN], run)
     run.deferred = len(look) - len(records)
     for oid, org in records.items():
-        v = judge(ctx, org, states)
+        v = judge(ctx, org)
         if v.out:
             run.refuse(org, v.out)
             continue

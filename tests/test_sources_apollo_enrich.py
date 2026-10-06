@@ -255,7 +255,7 @@ def test_the_exact_count_supersedes_the_searched_band():
     a, big = ctx.store.get("accounts", account_id="acme"), ctx.store.get("accounts", account_id="big")
     assert (a["employees"], a["size_band"], a["status"]) == (64, "50-99", "new")
     # Outside 10 to 249: verify_accounts checks it again, and fails it as it fails any such account.
-    assert (big["employees"], big["size_band"], big["status"]) == (400, None, "new")
+    assert (big["employees"], big["size_band"], big["status"]) == (400, "250-499", "new")  # outside 10 to 249
     assert verify.check(big, {}, ctx.settings, set(), set()) == "outside 10 to 249 employees"
     assert (out["size_written"], out["back_to_verify"]) == (2, 1)
 

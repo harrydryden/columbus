@@ -58,7 +58,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
-from us_outbound import verify
+from us_outbound import accounts, verify
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
@@ -70,7 +70,6 @@ JOB = "hand_check_post"
 KIND = "hand_check"
 PER_GROUP = 10  # SPEC 11: ten random queued accounts per active industry group
 STATUSES = ("verified", "queued")  # verified first: they are the next to be emailed
-SITE_VISIT = "site_visit"  # accounts.source of a company that came in by visiting (sources/site_visits.py)
 EVIDENCE_LIMIT = 3
 QUOTE_LIMIT = 160
 
@@ -292,7 +291,7 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
             lines.append(f"Doubtful Apollo facts ({len(doubtful)}): not verified until you look.")
         for d in doubtful:
             n += 1
-            visited = " · visited the US site" if d.get("source") == SITE_VISIT else ""
+            visited = " · visited the US site" if d.get("source") == accounts.SITE_VISIT else ""
             lines.append(f"  {n}. {d.get('clean_name') or '?'} ({d.get('domain')}){visited} · "
                          f"HQ {d.get('hq_state') or '?'} · {_size(d)} · {'; '.join(d.get('reasons') or ())} · "
                          f"id {d.get('account_id')}")

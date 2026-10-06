@@ -10,8 +10,11 @@ docs/phase0-facts.md), so to go live on Monday 5 Oct the General key clay_verifi
 The checks, cheapest first. An account that fails one keeps its status and is checked again next run.
   1. The domain is present, not a personal email domain and not suppressed (aliases included).
   2. Not a partner: on the partners table, or by NAICS or keywords (scoring/tiers.partner_match).
-  3. The HQ state is active on the States tab, and never CA or WA (SPEC 1.3).
-  4. 10 to 249 employees (SPEC 2); when Apollo gave no count, a SPEC size band from its size filter.
+  3. The HQ state is active on the States tab, and never CA or WA (SPEC 1.3). Not for a website
+     visitor (Harry, 6 Oct 2026; accounts.any_us_state): any US state will do, and an unknown one
+     too once Apollo puts the HQ in the US.
+  4. Inside the General size range, min_employees to max_employees (SPEC 2: 10 to 249; Harry,
+     6 Oct 2026); when Apollo gave no count, a size band from its size filter that the range touches.
   5. The industry is an active Industries label.
   6. HubSpot: not a customer, not owned by someone else, no open deal (enrol.hubspot_company_block,
      the check the enrol job makes again before it sends), and no contact on the domain who opted out
@@ -23,8 +26,9 @@ doubt is not verified silently, nor dropped silently. It goes to the weekly hand
 (enrol/hand_check.py) with the reason, as a doubtful_facts fact, and waits:
   * Apollo gives no HQ state, no employee count and no size band, or no industry (MISSING);
   * the employee count and the size band disagree;
-  * Apollo's count (an estimate) is within EDGE_MARGIN of a SIZE_EDGES edge, where what we do
-    changes: 10 staff (the floor), 50 (the Roles order, so whom we write to) and 250 (the ceiling).
+  * Apollo's count (an estimate) is within EDGE_MARGIN of an edge where what we do changes
+    (size_edges): the floor (min_employees, 10 by default), 50 (the Roles order, so whom we write
+    to) and one past the ceiling (max_employees + 1, 250 by default).
 When Harry approves the hand-check without pulling it, its doubts are cleared (a doubt_cleared
 fact) and the checks above decide as usual; an Overrides row corrects a fact that was wrong.
 A missing fact is the exception (Harry, 6 Oct 2026): approving cannot supply it, and the checks
@@ -52,6 +56,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from us_outbound.accounts import any_us_state, us_country
 from us_outbound.clean.domains import is_personal_domain
 from us_outbound.clean.people import size_band, state_code
 from us_outbound.clients.db import new_id
@@ -61,12 +66,11 @@ from us_outbound.enrol import enrol, focus, queue
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import latest_facts, parse_override
-from us_outbound.settings.model import CLAY_REQUIRED, SIZE_BANDS, Settings
+from us_outbound.settings.model import CLAY_REQUIRED, SIZE_BANDS, General, Settings
 
 JOB = "verify_accounts"
 VERIFIED = "verified"
 WAITING_STATUSES = ("new", "queued")
-MIN_EMPLOYEES, MAX_EMPLOYEES = 10, 249  # SPEC 2
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_ACCOUNTS_PER_RUN = 1000  # about three HubSpot searches each, inside the 30-minute timeout
 FLUSH_EVERY = 100  # verified accounts written as the run goes, so a stopped run keeps its work
@@ -78,12 +82,11 @@ CLAY_NOT_BUILT = ("clay_verification is required and verify_in_clay is not built
 # Doubtful Apollo facts (Harry, 2 Oct 2026): to the weekly hand-check instead of verified silently.
 DOUBT_SOURCE = JOB  # signal_events.source of the doubt facts; not a SPEC 7 source key, so no signal scores them
 DOUBT_FACT, CLEARED_FACT = "doubtful_facts", "doubt_cleared"
-SIZE_EDGES = (10, 50, 250)  # the first headcount where what we do changes: the floor, the Roles order, the ceiling
+ROLES_EDGE = 50  # the Roles tab's 10-49 and 50-249 orders: whom we write to changes here
 EDGE_MARGIN = 2  # Apollo's count is an estimate: this close to an edge it could be either side
 DOUBTFUL = "doubtful Apollo facts, waiting for the weekly hand-check"
 # check() reasons a doubt can stand behind: the hand-check sees the account rather than it failing unseen.
-DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "outside 10 to 249 employees",
-                       "no Industries label"})
+DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "no Industries label"})
 NO_STATE = "Apollo gives no HQ state"
 NO_SIZE = "Apollo gives no employee count or size band"
 NO_INDUSTRY = "Apollo gives no industry"
@@ -122,17 +125,20 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
     if domain in partners or tiers.partner_match(account, facts):
         return "a partner, never prospected"
     state = state_code(str(account.get("hq_state") or ""))
-    if not state:
+    visitor = any_us_state(account)
+    if not state and not (visitor and us_country(account.get("hq_country"))):
         return "HQ state unknown"
-    if state in NEVER_STATES:
-        return "HQ in CA or WA"
-    if state not in settings.active_states():
-        return "HQ state not active"
+    if state and not visitor:
+        if state in NEVER_STATES:
+            return "HQ in CA or WA"
+        if state not in settings.active_states():
+            return "HQ state not active"
     employees = tiers.as_number(account.get("employees"))
-    if employees is None and account.get("size_band") not in SIZE_BANDS:
+    band = account.get("size_band")
+    if employees is None and band not in SIZE_BANDS:
         return "employee count unknown"
-    if employees is not None and not MIN_EMPLOYEES <= employees <= MAX_EMPLOYEES:
-        return "outside 10 to 249 employees"
+    if not (settings.size_in_range(employees) if employees is not None else settings.band_in_range(band)):
+        return outside(settings)
     ind = settings.industry(str(account.get("industry") or ""))
     if ind is None:
         return "no Industries label"
@@ -144,15 +150,34 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
     return None
 
 
-def near_edge(n: int) -> int | None:
-    """The SIZE_EDGES edge Apollo's estimate of n staff is within EDGE_MARGIN of, or None."""
-    return next((e for e in SIZE_EDGES if e - EDGE_MARGIN <= n < e + EDGE_MARGIN), None)
+def outside(settings: Settings) -> str:
+    """check()'s reason for a size outside the General range: "outside 10 to 249 employees"."""
+    return f"outside {settings.size_range_text()} employees"
 
 
-def doubts(account: Mapping[str, Any]) -> list[str]:
-    """What in the account's Apollo facts is too doubtful to verify on unseen (Overrides already applied)."""
+def doubtable(why: str | None, settings: Settings) -> bool:
+    """Whether a doubt can stand behind check()'s reason: the hand-check sees the account rather than it failing
+    unseen."""
+    return why is None or why in DOUBTABLE or why == outside(settings)
+
+
+def size_edges(settings: Settings | None) -> tuple[int, ...]:
+    """The first headcounts where what we do changes: the floor, the Roles order, one past the ceiling."""
+    g = settings.general if settings is not None else General()
+    return tuple(sorted({g.min_employees, ROLES_EDGE, g.max_employees + 1}))
+
+
+def near_edge(n: int, settings: Settings | None = None) -> int | None:
+    """The size edge Apollo's estimate of n staff is within EDGE_MARGIN of, or None."""
+    return next((e for e in size_edges(settings) if e - EDGE_MARGIN <= n < e + EDGE_MARGIN), None)
+
+
+def doubts(account: Mapping[str, Any], settings: Settings | None = None) -> list[str]:
+    """What in the account's Apollo facts is too doubtful to verify on unseen (Overrides already applied).
+    settings gives the size edges (the General range); without it, SPEC 2's 10 to 249."""
     out: list[str] = []
-    if not state_code(str(account.get("hq_state") or "")):
+    if not state_code(str(account.get("hq_state") or "")) and not (
+            any_us_state(account) and us_country(account.get("hq_country"))):
         out.append(NO_STATE)
     if not str(account.get("industry") or "").strip():
         out.append(NO_INDUSTRY)
@@ -163,9 +188,10 @@ def doubts(account: Mapping[str, Any]) -> list[str]:
             out.append(NO_SIZE)
         return out
     n = int(employees)
-    if band in SIZE_BANDS and size_band(n) not in (None, band):
+    g = settings.general if settings is not None else General()
+    if band in SIZE_BANDS and g.min_employees <= n <= g.max_employees and size_band(n) != band:  # outside: fails
         out.append(f"the employee count ({n}) and the size band ({band}) disagree")
-    edge = near_edge(n)
+    edge = near_edge(n, settings)
     if edge is not None:
         out.append(f"Apollo's estimate of {n} staff is within {EDGE_MARGIN} of the {edge}-staff edge")
     return out
@@ -229,7 +255,7 @@ def open_doubts(ctx: Context) -> list[dict]:
         return []
     out = []
     for a in ctx.store.select("accounts", {"account_id": sorted(recorded), "status": list(WAITING_STATUSES)}):
-        missing = MISSING & set(doubts(with_overrides(a, ctx.settings)))
+        missing = MISSING & set(doubts(with_overrides(a, ctx.settings), ctx.settings))
         found = recorded[a["account_id"]].get("reasons") or ()
         reasons = [r for r in standing(found, cleared.get(a["account_id"], set())) if r not in MISSING or r in missing]
         if reasons:
@@ -253,7 +279,7 @@ def missing_facts(ctx: Context, account_ids: Iterable[str]) -> set[str]:
     out: set[str] = set()
     for i in range(0, len(ids), ID_CHUNK):
         for a in ctx.store.select("accounts", {"account_id": ids[i : i + ID_CHUNK]}):
-            if MISSING & set(doubts(with_overrides(a, ctx.settings))):
+            if MISSING & set(doubts(with_overrides(a, ctx.settings), ctx.settings)):
                 out.add(str(a["account_id"]))
     return out
 
@@ -326,8 +352,8 @@ def run(ctx: Context) -> dict:
     for a in todo:
         acct = with_overrides(a, s)
         why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
-        if why is None or why in DOUBTABLE:
-            still = standing(cross_check(ctx, acct, doubts(acct)), cleared.get(a["account_id"], set()))
+        if doubtable(why, s):
+            still = standing(cross_check(ctx, acct, doubts(acct, s)), cleared.get(a["account_id"], set()))
             if still:
                 if (recorded.get(a["account_id"]) or {}).get("reasons") != still:
                     doubt_rows.append(doubt_fact(ctx, acct, still))

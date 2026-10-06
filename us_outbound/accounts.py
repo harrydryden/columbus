@@ -12,8 +12,10 @@ came in by a named row still has to pass them all before it can be emailed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from us_outbound import suppression
 from us_outbound.clean.domains import canonical_domain, is_personal_domain
@@ -21,6 +23,20 @@ from us_outbound.clean.names import clean_company_name
 from us_outbound.clients.db import Store, new_id
 
 NEW = "new"
+SITE_VISIT = "site_visit"  # accounts.source of a company that came in by visiting (sources/site_visits.py)
+US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
+
+
+def us_country(country: object) -> bool:
+    return " ".join(str(country or "").split()).casefold() in US_COUNTRIES
+
+
+def any_us_state(account: Mapping[str, Any]) -> bool:
+    """Harry, 6 Oct 2026: a website visitor is never excluded on its HQ state, as long as it is in the US. Its HQ
+    may be in any state, CA, WA and the States tab's inactive ones included; an unknown state is no doubt once
+    Apollo puts the HQ in the US (hq_country). SPEC 1.3's rule on people stands: a contact located in CA or WA is
+    never emailed (contacts/pick.py, enrol.pick_contact), whatever the company's HQ."""
+    return str(account.get("source") or "") == SITE_VISIT
 
 
 @dataclass(frozen=True)
