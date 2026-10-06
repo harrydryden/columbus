@@ -398,7 +398,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | :- | :- | :- | :- |
 | 1 | Draft | The writing model (`claude_model`, Opus), `us-outbound copy draft --industry X --live`, or a person | |
 | 2 | Sheet check | Code, free: `us-outbound copy check` renders every row for each role, from the demo host and from another sender, with sample and longest values | Everything the copy rules check (below) |
-| 3 | QA | The task model (`claude_task_model`, Sonnet), `us-outbound copy qa --live`: writes `qa` ("pass 1a2b3c4d") and `qa_notes` to the row | Claims not in facts.md or on the page, wrong data, statistics, tone, US grammar, the structure. A row that fails the sheet check fails QA without a model call |
+| 3 | QA | The task model (`claude_task_model`, Sonnet), `us-outbound copy qa --live`: writes `qa` ("pass 1a2b3c4d") and `qa_notes` to the row as each verdict comes, so a run cut short keeps what it did and the next run checks only the rows left | Claims not in facts.md or on the page, wrong data, statistics, tone, US grammar, the structure. A row that fails the sheet check fails QA without a model call |
 | 4 | Approval | Harry: `status = approved` and `approved_by` | Judgment |
 | 5 | Render-time check | Code, on every lead, in the enrol job | Anything the lead's own values break: a missing first name, a blank site or booking link that leaves the signature no line to show, an opener with a banned word (the opener is dropped) |
 
