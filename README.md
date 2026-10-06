@@ -19,7 +19,8 @@ Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
   `us-outbound sync` (`start --live` syncs first by itself).
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
   `erase`, `test start`, `settings bootstrap|load`, `hubspot setup`, `campaigns ensure`,
-  `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals contact|company`) are live
+  `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals contact|company`,
+  `clay check-email`) are live
   with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is still
   `no`. `replies send` sends to a prospect and `approvals send` adds one to Instantly, so they need
   both, like a job.
@@ -54,6 +55,7 @@ us-outbound campaigns ensure [--fix] [--live]      the sender campaigns (created
 us-outbound copy check|preview|qa|draft [...]      the copy desk: check every row, preview one, QA it, draft one
 us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (--tab, --set, --take note) into the sheet; create it
 us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
+us-outbound clay check-email --first NAME --last NAME --domain spill.chat [--live]   one Work Email lookup for your own name, to confirm Clay's email fallback (exits 1 until it can go on)
 us-outbound erase --email <address> [--live]       an erasure request
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)
 us-outbound run <job> [--live]                     one job (what the scheduler starts)
@@ -191,10 +193,14 @@ Clay narrowed (Harry, 2 Oct 2026): `read_pages` (weekdays 03:45) is our own care
 page reader, in place of Clay's: each queued account's own careers, jobs and benefits pages and
 its public Greenhouse, Lever, Ashby or Workable board, with no Clay credits (`sources/pages.py`,
 source `careers_pages`, and `sources/job_posts.py`). `us-outbound pages show` and the daily post
-report its coverage for the decision on enhancing it. Clay is kept for the email waterfall: with
-the General key `clay_email_fallback` = yes (default no), `pick_contacts` asks Clay's Work Email
-for a person Apollo has no verified email for. `verify_accounts` sends accounts with doubtful
-Apollo facts (no HQ state or size, a count near a size edge) to the weekly hand-check.
+report its coverage for the decision on enhancing it. Clay is kept for what only it does (6 Oct:
+built, both switches off): the email waterfall, where with the General key `clay_email_fallback` =
+yes `pick_contacts` asks Clay's Work Email for a person Apollo has no verified email for, once
+`us-outbound clay check-email --live` has confirmed one lookup (`ops/clay_check.py`); and a
+cross-check, where with `clay_cross_check` = yes `verify_accounts` asks Clay's "US Outbound –
+Accounts" function for the HQ state and headcount of an account whose Apollo facts are doubtful (no
+HQ state or size, a count and band that disagree, a count near a size edge) before it goes to the
+weekly hand-check (`us_outbound/clay_cross_check.py`; the function's spec is in docs/pipeline.md).
 
 Funding from Apollo's organization enrich (Harry, 2 Oct 2026): Apollo's search rows carry no
 funding and no employee count, so `apollo_enrich` (weekdays 04:10, before `verify_accounts`)

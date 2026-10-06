@@ -105,9 +105,11 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 
 | Step | Who | How |
 | :- | :- | :- |
-| The folder "US Outbound" and the two functions | Harry | "US Outbound – Accounts" and "US Outbound – Contacts" (SPEC 8), with "API & CLI" ticked; the existing functions called as they are, never modified |
+| The folder "US Outbound" and the two functions | Harry | "US Outbound – Accounts" and "US Outbound – Contacts" (SPEC 8), with "API & CLI" ticked; the existing functions called as they are, never modified. For now Accounts is narrowed to HQ state and headcount, for the cross-check: its spec is in docs/pipeline.md, "Clay's two jobs" (6 Oct) |
 | Function ids on the General tab | Harry | `clay_accounts_function_id`, `clay_contacts_function_id` |
 | Tried on 20 hand-picked accounts | Harry and jobs | Check the strict JSON; record credits per account |
+| One Work Email call through the API (6 Oct) | Harry | Tick "API & CLI" on Work Email, then `us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` (your own name, never a prospect's). When it says the output matches, set `clay_email_fallback` = yes and `us-outbound sync` |
+| The cross-check (6 Oct) | Harry | Once "US Outbound – Accounts" is built and its id is on the General tab: `clay_cross_check` = yes, then `us-outbound sync`. The next `verify_accounts` summary (`clay_cross_check`) shows what was asked, answered and filled |
 | Workbook spend limit | Harry | If the plan offers one |
 
 ## 9. Suppression

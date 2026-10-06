@@ -15,7 +15,8 @@ hand_check_post, Mondays 08:00 UK and on demand (`us-outbound run hand_check_pos
      opener is the one enrol would give that contact (enrol/openers.py), worked out with no
      model call; a held-out account shows none, with the line it would have had;
   3. adds the accounts verify_accounts held back for doubtful Apollo facts (verify.open_doubts:
-     no HQ state, a size near a band edge, and so on; Harry, 2 Oct 2026), each with its reasons,
+     no HQ state, a size near a band edge, and so on; Harry, 2 Oct 2026; with clay_cross_check = yes,
+     only what Clay could not settle, as "Clay says 62 staff, Apollo says 49"), each with its reasons,
      in payload.doubtful, and the site visitors held there (sources/site_visits.py; Harry, 6 Oct 2026).
      They are not verified until this hand-check is approved: approving clears the doubts of each
      one not pulled, and the next verify_accounts run decides on its facts as usual (an Overrides

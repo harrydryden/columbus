@@ -78,7 +78,7 @@ def make_context(
     claude_sdk: Any = None,
     google_credentials: Any = None,
 ) -> Context:
-    guard = Guard(live=live, bounds=boundaries_for(settings, TEST_SHEET_ID), job=job)
+    guard = Guard(live=live, bounds=boundaries_for(settings, TEST_SHEET_ID, job=job), job=job)
     transport = transport or FakeTransport()
     store = store or MemoryStore(guard)
     store.guard = guard

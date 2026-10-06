@@ -27,6 +27,7 @@ Status key:
 | Existing functions | Confirmed | Work Email `t_0tk0v4lhJ895hhhhTHJ`, Company Latest Funding `t_0tk0v4ehpQ6WaeuCoQf`, Website Technology Stack `t_0tk0v4lEmZDggj3wRwB`, Website Traffic `t_0tk0v4lJQkpANSDTxf9` |
 | "US Outbound" folder and functions | Open | Not created yet |
 | Functions callable programmatically | Partly | Yes through Clay's MCP (a run needs a subroutine id, task id and field mapping). A REST endpoint the Python jobs can call with an API key is not yet confirmed, so `clients/clay.py` marks it PHASE0-CONFIRM and keeps the CSV fallback |
+| Work Email's inputs | Listed 6 Oct | Clay's MCP function list (no credits): Full Name, Company Domain, Company Social Profile URL, Social Profile URL, Company Name, Personal Email. `pick_contacts` sends the first two, and the person's LinkedIn URL and the company name when it has them. Whether the Routines API takes inputs by these names, Work Email's output fields and a lookup's cost: `us-outbound clay check-email --live` |
 | Plan tier, monthly credits and actions, spend limits | Open | Not exposed. Harry set `clay_monthly_credits` to 2,000 a month (30 Sep) |
 
 ## Apollo (team 6a85cc72550d280018aa9e9f)

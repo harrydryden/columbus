@@ -34,6 +34,11 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
                                       notes) into the sheet; create the sheet
   handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
+  clay check-email --first NAME       one Work Email lookup through Clay's API for a Spill colleague's own
+    --last NAME --domain DOMAIN       name (never a prospect), to confirm the email fallback before
+    [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
+                                      only says what it would send. With --live it exits 1 unless the
+                                      fallback can go on
   erase --email <address>             an erasure request (SPEC 6)
   schedule                            the job table and next runs (UK time)
   run <job> [--live]                  one job, what the scheduler starts
@@ -52,11 +57,13 @@ Dry-run is the default everywhere. Two kinds of live:
     sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
     test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
-    handcheck show|approve, killrules clear, replies skip, approvals contact|company|reject): --live
-    alone, so the phase-0 setup and the kill switch work while live_sending is still no.
+    handcheck show|approve, killrules clear, replies skip, approvals contact|company|reject,
+    clay check-email): --live alone, so the phase-0 setup and the kill switch work while
+    live_sending is still no.
     `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
     like a job: --live AND live_sending = yes.
-    copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
+    copy qa and copy draft call Claude only with --live, so a dry run spends nothing; so does
+    clay check-email with Clay.
   A read-only action given --live (approvals list, replies list, killrules show, campaigns show,
   copy check|preview, hubspot ids, test read) says that --live does nothing there.
   A --live run that stays dry says when the settings in force were synced, and how to bring a
@@ -1291,6 +1298,22 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_clay(args: argparse.Namespace, factory: Factory) -> int:
+    """`clay check-email`: one Work Email lookup for a Spill colleague, to confirm the email fallback (ops/clay_check.py).
+    Calls Clay only with --live; exits 1 when the call failed or its output is not what the parser expects."""
+    from us_outbound.clients.clay import CHECK_EMAIL_JOB
+    from us_outbound.ops import clay_check
+
+    ctx = factory(CHECK_EMAIL_JOB, args.live, operator=True)
+    try:
+        report = clay_check.check_email(ctx, args.first, args.last, args.domain)
+    except ValueError as exc:
+        raise Refused(str(exc)) from exc
+    for line in clay_check.lines(report):
+        print(line)
+    return 0 if report["dry_run"] or report["verdict"] == clay_check.READY else 1
+
+
 def cmd_signals(args: argparse.Namespace, factory: Factory) -> int:
     """Which signals predict replies (learn/signal_review.py): read-only, the evidence for reweighting the Signals tab."""
     from us_outbound.learn import signal_review
@@ -1547,6 +1570,13 @@ def build_parser() -> argparse.ArgumentParser:
     hc.add_argument("action", choices=["show", "approve"])
     hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
                     help="approve: accounts to leave out (ids or domains)")
+
+    cl = command("clay", "one Work Email lookup for your own name, to confirm Clay's email fallback", cmd_clay,
+                 takes_live=True)
+    cl.add_argument("action", choices=["check-email"])
+    cl.add_argument("--first", required=True, help="your first name (a Spill colleague's own, never a prospect's)")
+    cl.add_argument("--last", required=True, help="your last name")
+    cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
     er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
     er.add_argument("--email", required=True)
