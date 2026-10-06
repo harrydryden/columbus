@@ -916,10 +916,11 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
             return 0
         from us_outbound.clients.claude import BudgetExceeded
 
+        sheet_id = ctx.guard.bounds.settings_sheet_id
         results, errors = [], 0
         for row in rows:
             try:
-                results.append(copy_desk.qa_row(ctx, row, settings))
+                r = copy_desk.qa_row(ctx, row, settings)
                 errors = 0
             except BudgetExceeded as exc:  # the month's cap: stop, keeping what is done
                 print(f"{row.copy_version}: QA stopped: {exc}")
@@ -930,12 +931,14 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
                 if errors >= QA_ERRORS_IN_A_ROW:
                     print(f"QA stopped after {errors} failures in a row: the API may be down")
                     break
-        for r in results:
-            print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"))
-        updates = {r.copy_version: {"qa": r.cell, "qa_notes": r.notes} for r in results}
-        sheet_id = ctx.guard.bounds.settings_sheet_id
-        if updates and sheet_id:
-            ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version", updates)
+                continue
+            results.append(r)
+            print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"), flush=True)
+            # Each verdict goes to the sheet as it comes (6 Oct 2026: a dropped SSH session lost 43 held to the end),
+            # so a run cut short keeps what it paid for, and the next run starts from the rows still unchecked.
+            if sheet_id:
+                ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version",
+                                               {r.copy_version: {"qa": r.cell, "qa_notes": r.notes}})
         print(f"{sum(r.verdict == 'pass' for r in results)} of {len(results)} passed.")
         _dry_note(ctx, "the verdicts were not written to the sheet.")
         return 0

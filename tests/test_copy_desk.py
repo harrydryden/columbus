@@ -194,6 +194,32 @@ def test_copy_qa_skips_a_row_whose_answer_fails_and_checks_the_rest(capsys):
     assert [r["qa"] for r in tabs["Copy"]] == ["", f"pass {s.copy[1].content_hash()}"]
 
 
+def test_copy_qa_writes_each_verdict_as_it_comes_so_a_dropped_run_keeps_them(capsys):
+    """6 Oct 2026: the SSH session closed 43 verdicts into a run that wrote only at the end, and all 43 were lost."""
+    from us_outbound.ops import cli
+
+    rows = (copy_row("agencies-v1", AGENCIES, qa=False), copy_row("advertising-v1", "Advertising agencies", qa=False))
+    s = make_settings(copy=rows)
+    tabs = {"Copy": [{"copy_version": r.copy_version, "qa": "", "qa_notes": ""} for r in rows]}
+    ctx, sdk = ctx_with(s, live=True, tabs=tabs)
+    ctx.guard.configure(live=True)
+    calls = iter([PASS, KeyboardInterrupt])  # the second call never answers: the session drops
+
+    def create(**kwargs):
+        sdk.calls.append(kwargs)
+        answer = next(calls)
+        if answer is KeyboardInterrupt:
+            raise KeyboardInterrupt
+        return SimpleNamespace(content=[SimpleNamespace(type="text", text=answer)], stop_reason="end_turn",
+                               usage=sdk.usage)
+
+    sdk.create = create
+    with pytest.raises(KeyboardInterrupt):
+        cli.main(["copy", "qa", "--synced", "--live"], context_factory=lambda *a, **k: ctx)
+    assert [r["qa"] for r in tabs["Copy"]] == [f"pass {s.copy[0].content_hash()}", ""]
+    assert "agencies-v1: pass" in capsys.readouterr().out
+
+
 def test_copy_qa_live_writes_the_verdicts_to_the_sheet(capsys):
     from us_outbound.ops import cli
 
