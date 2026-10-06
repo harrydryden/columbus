@@ -1,7 +1,8 @@
 """The site_visits job (sources/site_visits.py; Harry, 5 Oct 2026), against a fake Apollo: the visitor searches and
 their bodies, credits and caps, matching through aliases and Apollo ids, facts written only when they change and
 cleared when visits stop, one site_visit event a day, new US visitors of 10 to 249 people by the front door, the
-tracker message when Apollo has no data, and the default Signals then scoring the visit."""
+tracker message when Apollo has no data, and the default Signals then scoring the visit. New visitors are looked
+up in Apollo's organization enrich; one Apollo leaves in doubt comes in held for the weekly hand-check (6 Oct 2026)."""
 
 from __future__ import annotations
 
@@ -11,9 +12,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.fakes import FakeTransport, make_context
-from us_outbound import suppression
+from us_outbound import suppression, verify
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
 from us_outbound.ops.heartbeat import run_job
+from us_outbound.settings.model import Override
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.validate import validate_all
 from us_outbound.sources import site_visits as sv
@@ -26,20 +28,23 @@ MESSAGE = ("No website-visitor data from Apollo for spill.chat: check that Apoll
 
 
 def visitor(i: int, *, domain: str | None = None, paths=("/us",), ago: int = 0, us: bool = True,
-            band: str | None = "20-49", state: str = "New York", bucket: str = "organizations", **kw) -> dict:
+            employees: int | None = 35, state: str = "New York", bucket: str = "organizations", found: bool = True,
+            enriched: dict | None = None, **kw) -> dict:
+    """A visiting company: its search row, and what Apollo's enrich adds (_employees, _enriched; none if not _found)."""
     d = domain or f"visitor{i}.com"
     return {"id": f"org{i:03d}", "name": f"Visitor {i}, Inc.", "primary_domain": d, "website_url": f"http://www.{d}",
             "city": "New York", "state": state, "country": "United States" if us else "United Kingdom",
             "naics_codes": ["541511"], "keywords": ["fintech"], "industry": "financial services", "founded_year": 2015,
-            "_paths": list(paths), "_ago": ago, "_us": us, "_band": band, "_bucket": bucket, **kw}
+            "_paths": list(paths), "_ago": ago, "_employees": employees, "_bucket": bucket, "_found": found,
+            "_enriched": enriched or {}, **kw}
 
 
 class FakeApollo:
-    """Organization search with the website-visitor filters, the ids screen, and the credit balance.
+    """Organization search with the website-visitor filters, bulk organization enrich, and the credit balance.
 
     A visitor is listed by a visitor search when it visited, within the window (_ago days ago, under
-    from_past), a page whose path contains one of the searched paths. The screen keeps the asked ids
-    in the US (_us) and in one of the asked size ranges (_band).
+    from_past), a page whose path contains one of the searched paths. Enrich answers the asked domains
+    Apollo knows (_found) with the row, its employee count (_employees) and any _enriched fields.
     """
 
     def __init__(self, visitors=(), *, balance=30_000, total=None):
@@ -50,6 +55,7 @@ class FakeApollo:
         t.route("POST", "/usage_stats/credit_usage_stats",
                 body={"credit_usage_stats": {"lead_credit": {"left_over": self.balance}}})
         t.route("POST", "/mixed_companies/search", fn=self.search)
+        t.route("POST", "/organizations/bulk_enrich", fn=self.enrich)
         return t
 
     @property
@@ -57,8 +63,15 @@ class FakeApollo:
         return [b for b in self.bodies if "website_visitors_from_domains" in b]
 
     @property
-    def screens(self) -> list[dict]:
-        return [b for b in self.bodies if "organization_ids" in b]
+    def enriches(self) -> list[list[str]]:
+        return [b["domains"] for b in self.bodies if "domains" in b]
+
+    def enrich(self, req):
+        body = req.json
+        self.bodies.append(body)
+        found = [{**self._row({**o, "_bucket": "organizations"}), "estimated_num_employees": o["_employees"],
+                  **o["_enriched"]} for o in self.visitors if o["primary_domain"] in body["domains"] and o["_found"]]
+        return {"organizations": found}
 
     @staticmethod
     def _row(o: dict) -> dict:
@@ -76,9 +89,7 @@ class FakeApollo:
             found = [self._row(o) for o in self.visitors
                      if o["_ago"] < days and any(p in path for path in o["_paths"] for p in paths)]
         else:
-            ids, ranges = set(body["organization_ids"]), body["organization_num_employees_ranges"]
-            found = [self._row({**o, "_bucket": "organizations"}) for o in self.visitors
-                     if o["id"] in ids and o["_us"] and (o["_band"] or "").replace("-", ",") in ranges]
+            raise AssertionError(f"an organization search other than the visitor list: {sorted(body)}")
         page, per = body["page"], body["per_page"]
         total = self.total if self.total is not None else len(found)
         return {"organizations": [r for r in found if "organization_id" not in r][(page - 1) * per : page * per],
@@ -125,7 +136,7 @@ def test_three_read_only_visitor_searches_for_the_tracked_domain():
     assert [(b["website_visitors_from_past"], b["website_visitors_domain_pages"]) for b in fake.visitor_searches] == [
         (1, ["/us"]), (30, ["/us"]), (30, ["/us/pricing", "/us/demo", "/us/book"])]
     assert all((b["page"], b["per_page"]) == (1, 100) for b in fake.visitor_searches)
-    assert fake.screens == []  # no visitor without an account: no screen
+    assert fake.enriches == []  # no visitor without an account: nothing looked up
     apollo = [c for c in ctx.guard.calls if c.system == "apollo"]
     assert {c.action for c in apollo} == {"usage.credits", "website_visitors.search"} <= APOLLO_READ_ACTIONS
     assert not any(c.write for c in apollo)
@@ -276,38 +287,92 @@ def test_dry_run_reads_and_writes_only_the_database():
 
 
 def test_a_new_us_visitor_of_10_to_249_comes_in_by_the_front_door():
-    ctx, _, fake = make([visitor(1, domain="newco.com", paths=("/us/book-demo",), band="50-99")])
+    ctx, _, fake = make([visitor(1, domain="newco.com", paths=("/us/book-demo",), employees=60)])
     out = sv.run(ctx)
-    [screen] = fake.screens
-    assert screen == {"organization_ids": ["org001"], "organization_locations": ["United States"],
-                      "organization_num_employees_ranges": ["10,19", "20,49", "50,99", "100,249"],
-                      "not_organization_naics_codes": ["524"], "page": 1, "per_page": 100}
+    assert fake.enriches == [["newco.com"]]  # looked up in Apollo: search rows carry no employee count
     [new] = ctx.store.select("accounts")
     assert (new["domain"], new["source"], new["status"], new["apollo_org_id"]) == ("newco.com", "site_visit", "new", "org001")
     assert (new["hq_state"], new["industry"], new["industry_group"]) == ("NY", "Fintech", "Technology & Startups")
-    assert new["size_band"] is None  # source_universe's size-band backfill gives it one before verify_accounts
-    assert out["created"] == ["newco.com"] and out["credits"] == 4.0  # three searches and the screen
+    assert (new["employees"], new["size_band"]) == (60, "50-99")
+    assert out["created"] == ["newco.com"] and out["held_for_hand_check"] == []
+    assert out["credits"] == 4.0 and out["enriched"] == 1  # three searches and the one company Apollo found
     org_facts = {e["fact"] for e in ctx.store.select("signal_events", {"account_id": new["account_id"], "source": "apollo_org"})}
-    assert {"naics", "hq_state", "keywords"} <= org_facts
+    assert {"naics", "hq_state", "keywords", "employees"} <= org_facts
+    assert ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE}) == []
     assert [(e["fact"], e["value"]) for e in facts(ctx, new["account_id"])] == [("us_visits_30d", 1),
                                                                                ("pricing_or_demo_visits_30d", 1)]
     assert "Visited the US site" in matched_signals(ctx, new["account_id"])
 
 
-def test_visitors_outside_the_us_or_the_size_range_never_come_in_and_are_not_asked_again():
-    ctx, _, fake = make([visitor(1, domain="ukco.co.uk", us=False), visitor(2, domain="bigco.com", band=None)])
+def test_visitors_surely_not_for_us_never_come_in_and_are_not_judged_again():
+    ctx, _, fake = make([visitor(1, domain="ukco.co.uk", us=False), visitor(2, domain="bigco.com", employees=900),
+                         visitor(3, domain="tinyco.com", employees=4)])
     out = sv.run(ctx)
     assert ctx.store.select("accounts") == [] and out["created"] == []
-    assert out["not_admitted"] == {"screened out: not a US company of 10 to 249 employees, or an insurer or broker": 2}
-    assert len(fake.screens) == 1
+    assert out["not_admitted"] == {"outside the US": 1, "outside 10 to 249 employees": 2}
+    assert fake.enriches == [["bigco.com", "tinyco.com"]]  # the UK company is out on its search row, at no cost
     sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=1), run_id="tuesday"))
-    assert len(fake.screens) == 1  # screened in the last 30 days: not asked about again
-    sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=31), run_id="later"))
-    assert len(fake.screens) == 2
+    assert len(fake.enriches) == 1  # decided on in the last 30 days: not judged again
+    later = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=31), run_id="later"))
+    assert len(fake.enriches) == 2 and later["not_admitted"]["outside the US"] == 1
+
+
+def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_check():
+    from us_outbound.enrol import hand_check
+
+    ctx, _, fake = make([
+        visitor(1, domain="nostate.com", state="", enriched={"state": None}),
+        visitor(2, domain="nosize.com", employees=None),
+        visitor(3, domain="unknown.com", found=False),  # Apollo's enrich does not know it: its row is all there is
+        visitor(4, domain="edgeco.com", employees=251),  # near the 250 edge: maybe ours
+        visitor(5, domain="bare.com", naics_codes=[], keywords=[], industry=""),
+    ])
+    out = sv.run(ctx)
+    assert sorted(out["held_for_hand_check"]) == ["bare.com", "edgeco.com", "nosize.com", "nostate.com", "unknown.com"]
+    assert out["credits"] == 6.0  # two searches with visitors (the pricing pages had none) and the four Apollo found
+    reasons = {d["domain"]: d["reasons"] for d in verify.open_doubts(ctx)}
+    assert reasons == {
+        "nostate.com": [verify.NO_STATE], "nosize.com": [verify.NO_SIZE], "unknown.com": [verify.NO_SIZE],
+        "edgeco.com": ["Apollo's estimate of 251 staff is within 2 of the 250-staff edge"],
+        "bare.com": [verify.NO_INDUSTRY]}
+    assert {d["source"] for d in verify.open_doubts(ctx)} == {"site_visit"}
+    bare = ctx.store.get("accounts", domain="bare.com")
+    assert (bare["industry"], bare["industry_group"], bare["status"]) == (None, None, "new")
+    _, payload = hand_check.show(ctx)
+    words = hand_check.text(payload)
+    assert "(nostate.com) · visited the US site · HQ ? · 20-49 (35 staff) · Apollo gives no HQ state" in words
+    assert "A missing fact needs an Overrides row" in words
+
+
+def test_an_overrides_row_fills_a_visitor_s_missing_fact_so_it_comes_in_unheld():
+    s = dataclasses.replace(BASE, overrides=(Override("nostate.com", "hq_state", "TX"),))
+    ctx, _, _ = make([visitor(1, domain="nostate.com", state="")], settings=s)
+    out = sv.run(ctx)
+    assert out["created"] == ["nostate.com"] and out["held_for_hand_check"] == []
+    assert ctx.store.get("accounts", domain="nostate.com")["hq_state"] == "TX"
+
+
+def test_lookups_are_capped_and_the_rest_are_looked_up_next_run(monkeypatch):
+    monkeypatch.setattr(sv, "MAX_ENRICH_PER_RUN", 10)
+    ctx, _, fake = make([visitor(i) for i in range(1, 13)])
+    out = sv.run(ctx)
+    assert (out["enriched"], out["deferred"], len(out["created"])) == (10, 2, 10)
+    assert [len(d) for d in fake.enriches] == [10]
+    nxt = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=1), run_id="tuesday"))
+    assert (nxt["enriched"], nxt["deferred"], len(nxt["created"])) == (2, 0, 2)
+
+
+def test_visitors_the_old_screen_turned_away_are_judged_again():
+    ctx, _, fake = make([visitor(1, domain="nostate.com", state="")])
+    ctx.store.insert("credit_ledger", [{"entry_id": "e1", "system": "apollo", "job": sv.JOB, "credits": 1.0, "usd": 0.0,
+                                        "occurred_at": NOW - timedelta(days=1), "run_id": "old",
+                                        "note": '{"screen": 1, "asked": ["org001"], "kept": ["org001"]}'}])
+    out = sv.run(ctx)
+    assert fake.enriches == [["nostate.com"]] and out["held_for_hand_check"] == ["nostate.com"]
 
 
 def test_the_front_door_refuses_a_never_state_a_suppressed_domain_and_a_partner():
-    ctx, _, _ = make([visitor(1, domain="calco.com", state="California"), visitor(2, domain="hushed.com"),
+    ctx, _, fake = make([visitor(1, domain="calco.com", state="California"), visitor(2, domain="hushed.com"),
                       visitor(3, domain="broker.com"), visitor(4, domain="txco.com", state="Texas")])
     suppression.add(ctx.store, domain="hushed.com", reason="test", source="test", now=NOW)
     ctx.store.upsert("partners", [{"domain": "broker.com", "name": "Broker", "reason": "broker", "naics": None,
@@ -315,6 +380,7 @@ def test_the_front_door_refuses_a_never_state_a_suppressed_domain_and_a_partner(
     out = sv.run(ctx)
     assert out["created"] == ["txco.com"]
     assert out["not_admitted"] == {"HQ outside the active states": 1, "suppressed": 1, "a partner, never prospected": 1}
+    assert sorted(d for call in fake.enriches for d in call) == ["broker.com", "hushed.com", "txco.com"]
 
 
 # -- no data ---------------------------------------------------------------------------------------------
@@ -350,7 +416,7 @@ def test_an_implausible_total_means_the_filters_were_ignored_and_nothing_is_used
     out = sv.run(ctx)
     assert out["searches"]["us_today"]["problem"].startswith("implausible: Apollo says 2,000,000 companies visited")
     assert len(fake.visitor_searches) == 1 and out["credits"] == 1.0  # the others would be ignored the same way
-    assert facts(ctx, aid) == [] and ctx.store.select("events") == [] and fake.screens == []
+    assert facts(ctx, aid) == [] and ctx.store.select("events") == [] and fake.enriches == []
     assert ctx.store.select("raw_site_visits") == [] and out["created"] == []
     assert out["tracker_check"] == MESSAGE and "filters were ignored" in out["refused"]
 

@@ -21,12 +21,15 @@ The checks, cheapest first. An account that fails one keeps its status and is ch
 Doubtful Apollo facts (Harry, 2 Oct 2026): an account whose HQ state or size Apollo leaves in
 doubt is not verified silently, nor dropped silently. It goes to the weekly hand-check
 (enrol/hand_check.py) with the reason, as a doubtful_facts fact, and waits:
-  * Apollo gives no HQ state, or no employee count and no size band;
+  * Apollo gives no HQ state, no employee count and no size band, or no industry (MISSING);
   * the employee count and the size band disagree;
   * Apollo's count (an estimate) is within EDGE_MARGIN of a SIZE_EDGES edge, where what we do
     changes: 10 staff (the floor), 50 (the Roles order, so whom we write to) and 250 (the ceiling).
 When Harry approves the hand-check without pulling it, its doubts are cleared (a doubt_cleared
 fact) and the checks above decide as usual; an Overrides row corrects a fact that was wrong.
+A missing fact is the exception (Harry, 6 Oct 2026): approving cannot supply it, and the checks
+would then fail the account unseen, so it stays on the hand-check, week after week, until an
+Overrides row (hq_state, employees or size_band, industry) fills it in or Harry pulls it.
 cross_check() is the hook for Clay's cross-check of HQ state and size (docs/roadmap.md): today
 nothing confirms a doubt, so every one goes to the hand-check.
 Overrides win over the account's columns, as in scoring. Then the score job runs (SPEC 9: score
@@ -79,7 +82,13 @@ SIZE_EDGES = (10, 50, 250)  # the first headcount where what we do changes: the 
 EDGE_MARGIN = 2  # Apollo's count is an estimate: this close to an edge it could be either side
 DOUBTFUL = "doubtful Apollo facts, waiting for the weekly hand-check"
 # check() reasons a doubt can stand behind: the hand-check sees the account rather than it failing unseen.
-DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "outside 10 to 249 employees"})
+DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "outside 10 to 249 employees",
+                       "no Industries label"})
+NO_STATE = "Apollo gives no HQ state"
+NO_SIZE = "Apollo gives no employee count or size band"
+NO_INDUSTRY = "Apollo gives no industry"
+# Doubts approving cannot settle: only an Overrides row fills the fact in (Harry, 6 Oct 2026).
+MISSING = frozenset({NO_STATE, NO_SIZE, NO_INDUSTRY})
 
 
 def _lower(v: Any) -> str:
@@ -135,24 +144,37 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
     return None
 
 
+def near_edge(n: int) -> int | None:
+    """The SIZE_EDGES edge Apollo's estimate of n staff is within EDGE_MARGIN of, or None."""
+    return next((e for e in SIZE_EDGES if e - EDGE_MARGIN <= n < e + EDGE_MARGIN), None)
+
+
 def doubts(account: Mapping[str, Any]) -> list[str]:
     """What in the account's Apollo facts is too doubtful to verify on unseen (Overrides already applied)."""
     out: list[str] = []
     if not state_code(str(account.get("hq_state") or "")):
-        out.append("Apollo gives no HQ state")
+        out.append(NO_STATE)
+    if not str(account.get("industry") or "").strip():
+        out.append(NO_INDUSTRY)
     employees = tiers.as_number(account.get("employees"))
     band = account.get("size_band")
     if employees is None:
         if band not in SIZE_BANDS:
-            out.append("Apollo gives no employee count or size band")
+            out.append(NO_SIZE)
         return out
     n = int(employees)
     if band in SIZE_BANDS and size_band(n) not in (None, band):
         out.append(f"the employee count ({n}) and the size band ({band}) disagree")
-    edge = next((e for e in SIZE_EDGES if e - EDGE_MARGIN <= n < e + EDGE_MARGIN), None)
+    edge = near_edge(n)
     if edge is not None:
         out.append(f"Apollo's estimate of {n} staff is within {EDGE_MARGIN} of the {edge}-staff edge")
     return out
+
+
+def standing(found: Iterable[str], cleared: Collection[str]) -> list[str]:
+    """The doubts still open: those a hand-check has not cleared, and every missing fact (MISSING), which
+    approving cannot fill in."""
+    return [d for d in found if d in MISSING or d not in cleared]
 
 
 def cross_check(ctx: Context, account: Mapping[str, Any], found: Sequence[str]) -> list[str]:
@@ -200,17 +222,20 @@ def doubt_history(ctx: Context, account_ids: Iterable[str] | None = None) -> tup
 
 
 def open_doubts(ctx: Context) -> list[dict]:
-    """The accounts waiting in new or queued for the hand-check, each with its uncleared doubts."""
+    """The accounts waiting in new or queued for the hand-check, each with its open doubts: those not cleared,
+    and the facts still missing once Overrides are applied (an Overrides row that fills one settles it)."""
     recorded, cleared = doubt_history(ctx)
     if not recorded:
         return []
     out = []
     for a in ctx.store.select("accounts", {"account_id": sorted(recorded), "status": list(WAITING_STATUSES)}):
-        reasons = [r for r in recorded[a["account_id"]].get("reasons") or () if r not in cleared.get(a["account_id"], set())]
+        missing = MISSING & set(doubts(with_overrides(a, ctx.settings)))
+        found = recorded[a["account_id"]].get("reasons") or ()
+        reasons = [r for r in standing(found, cleared.get(a["account_id"], set())) if r not in MISSING or r in missing]
         if reasons:
             out.append({"account_id": a["account_id"], "domain": a.get("domain") or "", "clean_name": a.get("clean_name") or "",
                         "hq_state": a.get("hq_state") or "", "employees": a.get("employees"),
-                        "size_band": a.get("size_band") or "", "reasons": reasons})
+                        "size_band": a.get("size_band") or "", "source": a.get("source") or "", "reasons": reasons})
     return sorted(out, key=lambda d: str(d["domain"]))
 
 
@@ -220,6 +245,17 @@ def doubt_fact(ctx: Context, account: Mapping[str, Any], reasons: Sequence[str])
     return {"event_id": new_id(), "account_id": account["account_id"], "source": DOUBT_SOURCE, "fact": DOUBT_FACT,
             "value": {"reasons": list(reasons), "facts": seen}, "quote": "; ".join(reasons)[:300], "source_url": "",
             "observed_at": ctx.now}
+
+
+def missing_facts(ctx: Context, account_ids: Iterable[str]) -> set[str]:
+    """The accounts among these still missing a fact (MISSING) once Overrides are applied."""
+    ids = sorted({str(i) for i in account_ids})
+    out: set[str] = set()
+    for i in range(0, len(ids), ID_CHUNK):
+        for a in ctx.store.select("accounts", {"account_id": ids[i : i + ID_CHUNK]}):
+            if MISSING & set(doubts(with_overrides(a, ctx.settings))):
+                out.add(str(a["account_id"]))
+    return out
 
 
 def clear_doubts(ctx: Context, items: Iterable[Mapping[str, Any]], by: str, week: str) -> int:
@@ -291,12 +327,12 @@ def run(ctx: Context) -> dict:
         acct = with_overrides(a, s)
         why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
         if why is None or why in DOUBTABLE:
-            standing = [d for d in cross_check(ctx, acct, doubts(acct)) if d not in cleared.get(a["account_id"], set())]
-            if standing:
-                if (recorded.get(a["account_id"]) or {}).get("reasons") != standing:
-                    doubt_rows.append(doubt_fact(ctx, acct, standing))
+            still = standing(cross_check(ctx, acct, doubts(acct)), cleared.get(a["account_id"], set()))
+            if still:
+                if (recorded.get(a["account_id"]) or {}).get("reasons") != still:
+                    doubt_rows.append(doubt_fact(ctx, acct, still))
                 fail(a, DOUBTFUL)
-                doubtful.append({"account_id": a["account_id"], "domain": a.get("domain"), "reasons": standing})
+                doubtful.append({"account_id": a["account_id"], "domain": a.get("domain"), "reasons": still})
                 continue
         if why:
             fail(a, why)

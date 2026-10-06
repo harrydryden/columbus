@@ -526,16 +526,17 @@ def _keep_size(cols: Mapping[str, Any], account: Mapping[str, Any], overrides: M
     return out
 
 
-def columns(org: Mapping[str, Any], label: Industry, state: str, band: str) -> dict:
-    """The accounts columns Apollo gives (SPEC 6)."""
+def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: str) -> dict:
+    """The accounts columns Apollo gives (SPEC 6). No label leaves the industry blank: a site visitor held for
+    the weekly hand-check (sources/site_visits.py) until an Overrides row gives one."""
     employees = _int(org.get("estimated_num_employees"))
     codes = org_naics(org)
     return {
         "apollo_org_id": str(org.get("organization_id") or org.get("id") or "") or None,
         "hq_city": str(org.get("city") or "").strip() or None,
         "hq_state": state,
-        "industry": label.industry,
-        "industry_group": label.industry_group,
+        "industry": label.industry if label else None,
+        "industry_group": label.industry_group if label else None,
         "naics": ", ".join(codes) or None,
         "employees": employees,
         "size_band": size_band(employees) if employees is not None else (band or None),

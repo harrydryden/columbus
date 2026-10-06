@@ -281,6 +281,8 @@ def test_from_apollo_to_a_verified_scored_account():
     ({"employees": 52}, []),
     ({"employees": 11, "size_band": "10-19"}, ["Apollo's estimate of 11 staff is within 2 of the 10-staff edge"]),
     ({"employees": 248, "size_band": "100-249"}, ["Apollo's estimate of 248 staff is within 2 of the 250-staff edge"]),
+    ({"industry": None}, ["Apollo gives no industry"]),
+    ({"hq_state": "", "industry": ""}, ["Apollo gives no HQ state", "Apollo gives no industry"]),
 ])
 def test_what_counts_as_a_doubtful_apollo_fact(change, reasons):
     assert verify.doubts(account(**change)) == reasons
@@ -317,12 +319,27 @@ def test_the_hand_check_lists_doubts_and_approving_it_clears_them_so_the_next_ru
     assert "3 accounts have doubtful Apollo facts, so they won't get a card until you look." in words
     assert "(a1co.com) · HQ NY · 20-49 (49 staff) · Apollo's estimate of 49 staff is within 2 of the 50-staff edge" in words
     out = hand_check.approve(live, ["a3co.com"], "harry")
-    assert out["doubts_cleared"] == ["a1", "a2"] and out["pulled_account_ids"] == ["a3"]
+    assert out["doubts_cleared"] == ["a1"] and out["pulled_account_ids"] == ["a3"]
+    assert out["still_missing_a_fact"] == ["a2"]  # approving cannot supply an HQ state (Harry, 6 Oct 2026)
+    assert "The account missing a fact (HQ state, size or industry) stays on the check" in out["message"]
     live.guard.configure(live=False)
     again = verify.run(ctx)
     assert status(ctx, "a1") == "verified"  # checked by Harry: verified on its facts
-    assert status(ctx, "a2") == "new" and again["not_verified"]["HQ state unknown"] == 1  # needs an Overrides row
-    assert status(ctx, "a3") == "new" and again["to_hand_check"] == 1  # pulled: still held
+    assert status(ctx, "a2") == "new" and "HQ state unknown" not in again["not_verified"]  # never failed unseen
+    assert status(ctx, "a3") == "new" and again["to_hand_check"] == 2  # a2 still missing its state; a3 pulled
+    assert [d["account_id"] for d in verify.open_doubts(ctx)] == ["a2", "a3"]
+    filled = dataclasses.replace(ctx, settings=settings_with(overrides=(Override("a2co.com", "hq_state", "NY"),)))
+    assert [d["account_id"] for d in verify.open_doubts(filled)] == ["a3"]  # the Overrides row settles it
+    verify.run(filled)
+    assert status(ctx, "a2") == "verified"
+
+
+def test_an_account_with_no_industry_goes_to_the_hand_check():
+    ctx, _ = make([account(industry=None, industry_group=None)])
+    out = verify.run(ctx)
+    assert out["to_hand_check_accounts"] == [{"account_id": "a1", "domain": "a1co.com", "reasons": [verify.NO_INDUSTRY]}]
+    ctx, _ = make([account(industry="Not a label")])  # a label the Industries tab lacks is no doubt: it fails as before
+    assert verify.run(ctx)["not_verified"] == {"no Industries label": 1}
 
 
 def test_an_overrides_row_settles_a_doubt():

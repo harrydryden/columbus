@@ -30,16 +30,23 @@ enrol at 12:00, whose tiers the rescore at the end of the run sets.
      PHASE0-CONFIRM: what Apollo's "last 1 day" covers. If it is yesterday and today rather than
      24 hours, one visit can give two events a day apart.
   4. New high-intent leads (SPEC 7: "An unknown visiting company ... joins the queue if it
-     passes"). Visitors with no account are screened by one organization search filtered to their
-     Apollo ids, the United States and 10 to 249 employees (and not insurers or brokers, as the
-     universe search): Apollo's own filters decide country and size, since search rows carry no
-     employee count. A company the screen keeps comes in by the front door (accounts.admit,
-     source site_visit; suppressed, partner and personal domains refused) when its HQ is in an
-     active state (never CA or WA) and an active Industries label fits, with the account columns
-     and apollo_org facts the universe gives (sources/apollo_universe.py). It then goes through
-     verify, scoring and pick_contacts like any other; source_universe's size-band backfill gives
-     it its band before verify_accounts (weekdays). A company the screen leaves out or the checks
-     refuse is not asked about again for SCREEN_AGAIN_DAYS (credit_ledger notes).
+     passes"). A visitor with no account is judged on its search row first (judge()), and one that
+     is surely not for us stays out at no cost: no website, a personal domain, a country outside
+     the US, an HQ state that is not active (CA and WA never are), an industry no active label fits,
+     an insurer or broker. Every other one is looked up in Apollo's organization enrich
+     (MAX_ENRICH_PER_RUN a run, BULK_ENRICH_MAX a call), since search rows carry no employee count,
+     and judged again on the record, with the domain's Overrides applied: also out when its count
+     is outside 10 to 249 and not near an edge. A visitor that passes comes in by the front door
+     (accounts.admit, source site_visit; suppressed and partner domains refused), with the account
+     columns and apollo_org facts the universe gives (sources/apollo_universe.py), and goes through
+     verify, scoring and pick_contacts like any other. One that Apollo leaves in doubt (no HQ state,
+     no employee count, no industry, a count near the 10, 50 or 250 edge: verify.doubts) is not
+     left out (Harry, 6 Oct 2026: "include the visitors the system isn't confident to disqualify in
+     the weekly check"): it comes in held, with a doubtful_facts fact, so the weekly hand-check
+     (enrol/hand_check.py) shows it and verify_accounts waits for Harry. Clay's cross-check of HQ
+     state and size (verify.cross_check) is the other lookup once Clay's Accounts function exists.
+     A visitor decided on is not judged again for LOOK_AGAIN_DAYS (credit_ledger notes "judged");
+     one the run's credits did not reach is looked up next run.
   5. The rescore (SPEC 9: score runs after site_visits), when the run wrote a fact or an account.
 
 No data. When Apollo refuses the visitor filters (a plan or permission error) or ignores them (a
@@ -49,8 +56,9 @@ post's Sources section say plainly to check the tracker (TRACKER_MESSAGE). Nothi
 or ignored search is used, and the run makes no further search.
 
 Credits. Each search page that returns a company costs 1 Apollo credit and an empty one 0, so a
-normal day costs 3, and 4 when there are new visitors to screen: at most MAX_CREDITS_PER_RUN a run,
-about 90 to 120 a month (under 6% of apollo_monthly_credits). This is not paced like the sources'
+normal day costs 3, plus 1 for each new visitor Apollo's enrich finds (a few a day; the first run
+looks up the 30-day backlog, MAX_ENRICH_PER_RUN a run): at most MAX_CREDITS_PER_RUN a run, about
+150 to 200 a month (under 10% of apollo_monthly_credits). This is not paced like the sources'
 shares: it runs after pick_contacts has taken the day's allowance, and a visit not read today is
 lost from the one-day list. Every request goes into credit_ledger (job site_visits), so it counts
 in the month's budget; nothing is spent while Apollo's balance is below apollo_floor or the month's
@@ -70,16 +78,16 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from us_outbound import accounts, budget
+from us_outbound import accounts, budget, verify
 from us_outbound.clean.domains import canonical_domain, is_personal_domain
 from us_outbound.clean.people import state_code
-from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
+from us_outbound.clients.apollo import BULK_ENRICH_MAX, MAX_PER_PAGE, enriched_in, organizations_in, total_entries
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound.logs import log
 from us_outbound.scoring import score, tiers
-from us_outbound.settings.model import SIZE_BANDS, Settings
+from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as universe
 
@@ -91,13 +99,13 @@ US_FACT, INTENT_FACT = "us_visits_30d", "pricing_or_demo_visits_30d"
 US, US_TODAY, INTENT = "us", "us_today", "intent"
 WINDOW_DAYS = 30  # the facts' window: us_visits_30d, pricing_or_demo_visits_30d
 MAX_PAGES_PER_SEARCH = 3  # 300 visiting companies; a longer list is read in part and clears nothing
-MAX_CREDITS_PER_RUN = 5  # three searches and a screen, with a page to spare
+MAX_ENRICH_PER_RUN = 30  # new visitors looked up in Apollo a run (1 credit each found): a backlog clears in days
+MAX_CREDITS_PER_RUN = 5 + MAX_ENRICH_PER_RUN  # three searches with pages to spare, and the lookups
 MAX_PLAUSIBLE = 5_000  # companies in 30 days: beyond any real visitor list, so the filters were ignored
-SCREEN_AGAIN_DAYS = 30  # a visitor screened out is not asked about again for this long
+LOOK_AGAIN_DAYS = 30  # a visitor decided on is not judged again for this long
 REFRESH_DAYS = 7  # a positive fact is written again after this, before it goes stale
 NO_DATA_RUNS = 7  # runs in a row with an empty one-day list before the post says to check the tracker
 REFUSED_STATUSES = frozenset({400, 402, 403, 404, 422})  # Apollo refused the visitor filters (PHASE0-CONFIRM)
-US_LOCATION = "United States"  # PHASE0-CONFIRM: the organization_locations value for the whole country
 EXAMPLES = 20
 QUOTE_LIMIT = 300  # SPEC 6
 TRACKER_MESSAGE = ("No website-visitor data from Apollo for {domain}: check that Apollo's website tracker is "
@@ -189,10 +197,12 @@ class _Run:
     not_admitted: Counter[str] = field(default_factory=Counter)
     examples: list[dict] = field(default_factory=list)
     created: list[str] = field(default_factory=list)
-    screened: int = 0
+    held: list[str] = field(default_factory=list)  # created, held for the weekly hand-check
+    enriched: int = 0
+    deferred: int = 0  # new visitors the run's credits did not reach: looked up next run
 
-    def allows(self) -> bool:
-        return self.credits + 1 <= self.cap
+    def allows(self, n: float = 1) -> bool:
+        return self.credits + n <= self.cap
 
     def refuse(self, org: Mapping[str, Any], why: str) -> None:
         self.not_admitted[why] += 1
@@ -283,126 +293,159 @@ def match(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> dict[str, dict]:
     return out
 
 
-# -- new visitors: the screen and the front door ------------------------------------------------------
+# -- new visitors: looked up in Apollo, then the front door or the hand-check ---------------------------
 
 
-def screened_recently(ctx: Context) -> set[str]:
-    """Apollo ids this job asked the screen about in the last SCREEN_AGAIN_DAYS."""
-    since = ctx.now - timedelta(days=SCREEN_AGAIN_DAYS)
+@dataclass(frozen=True)
+class Verdict:
+    """A visitor's record judged: out (a reason we are sure of), or in, with what Apollo leaves in doubt."""
+    out: str = ""
+    label: Industry | None = None
+    state: str = ""
+    doubts: tuple[str, ...] = ()  # verify.doubts: held for the weekly hand-check
+
+
+def judged_recently(ctx: Context) -> set[str]:
+    """Apollo ids this job decided on in the last LOOK_AGAIN_DAYS (credit_ledger notes "judged")."""
+    since = ctx.now - timedelta(days=LOOK_AGAIN_DAYS)
     out: set[str] = set()
     for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
         t = _ts(r.get("occurred_at"))
         note = _note(r)
-        if t is not None and t >= since and isinstance(note.get("asked"), list):
-            out |= {str(i) for i in note["asked"]}
+        if t is not None and t >= since and isinstance(note.get("judged"), list):
+            out |= {str(i) for i in note["judged"]}
     return out
-
-
-def screen(ctx: Context, ids: Sequence[str], run: _Run) -> list[dict] | None:
-    """The companies among ids that are in the US with 10 to 249 employees (Apollo's filters); None if refused.
-
-    PHASE0-CONFIRM: organization_ids with organization_locations ["United States"] and the size ranges on
-    mixed_companies/search (source_universe's size-band backfill pairs organization_ids with a size filter).
-    """
-    filters: dict[str, Any] = {
-        "organization_ids": list(ids),
-        "organization_locations": [US_LOCATION],
-        "organization_num_employees_ranges": [universe.EMPLOYEE_RANGES[b] for b in SIZE_BANDS],
-    }
-    if universe.PARTNER_FILTER:
-        filters["not_organization_naics_codes"] = list(universe.PARTNER_FILTER)
-    try:
-        body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
-    except ApiError as exc:
-        if exc.status == 401:
-            raise
-        run.errors.append(f"screen: {str(exc)[:200]}")
-        return None
-    asked = set(ids)
-    rows = organizations_in(body)
-    kept = [r for r in rows if str(r.get("organization_id") or "") in asked]  # never a company we did not ask about
-    spent = 1.0 if rows else 0.0
-    credits.record(ctx, JOB, spent, note=json.dumps(
-        {"screen": len(ids), "asked": list(ids), "kept": [str(r["organization_id"]) for r in kept]}))
-    run.credits += spent
-    run.screened += len(ids)
-    return kept
 
 
 def _keyword_text(org: Mapping[str, Any]) -> str:
     return " ; ".join([*universe.org_keywords(org), str(org.get("industry") or "")]).strip(" ;")
 
 
-def admit(ctx: Context, org: Mapping[str, Any], run: _Run, states: frozenset[str]) -> dict | None:
-    """A screened visitor into accounts by the front door, with the universe's columns and facts; None if refused."""
-    s, store, now = ctx.settings, ctx.store, ctx.now
+def judge(ctx: Context, org: Mapping[str, Any], states: frozenset[str]) -> Verdict:
+    """Out only for a reason Apollo's record makes sure of; what it leaves unknown is a doubt, never a no.
+    The domain's Overrides rows apply to its HQ state, size and industry, as in verify."""
+    s = ctx.settings
     domain = universe.org_domain(org)
     if not domain:
-        run.refuse(org, "no website")
-        return None
+        return Verdict("no website")
     if is_personal_domain(domain):
-        run.refuse(org, "a personal email domain")
-        return None
-    state = state_code(str(org.get("state") or ""))
+        return Verdict("a personal email domain")
     if not universe.in_us(org):
-        run.refuse(org, "outside the US")
-        return None
-    if state not in states:
-        run.refuse(org, "HQ outside the active states" if state else "HQ state unknown")
-        return None
+        return Verdict("outside the US")
     codes, text = universe.org_naics(org), _keyword_text(org)
     label = universe.best_label(codes, text, s) if codes or text else None
-    if label is None:
-        run.refuse(org, "no Industries label fits")
-        return None
-    if not label.active:
-        run.refuse(org, "its best Industries label is switched off")
-        return None
-    if tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": universe.org_keywords(org),
-                            "apollo_industry": org.get("industry")}, {}):
-        run.refuse(org, "a partner, never prospected")
-        return None
+    if (codes or text) and label is None:
+        return Verdict("no Industries label fits")
+    if label is not None and not label.active:
+        return Verdict("its best Industries label is switched off")
+    if tiers.partner_match({"naics": codes, "industry": label.industry if label else "",
+                            "keywords": universe.org_keywords(org), "apollo_industry": org.get("industry")}, {}):
+        return Verdict("a partner, never prospected")
+    state = state_code(str(org.get("state") or ""))
+    acct = verify.with_overrides({**universe.columns(org, label, state, ""), "domain": domain}, s)
+    known = state_code(str(acct.get("hq_state") or ""))
+    if known and known not in states:
+        return Verdict("HQ outside the active states")
+    n = tiers.as_number(acct.get("employees"))
+    if n is not None and not verify.MIN_EMPLOYEES <= n <= verify.MAX_EMPLOYEES and verify.near_edge(int(n)) is None:
+        return Verdict("outside 10 to 249 employees")
+    return Verdict(label=label, state=state, doubts=tuple(verify.doubts(acct)))
+
+
+def enrich(ctx: Context, orgs: Sequence[Mapping[str, Any]], run: _Run) -> dict[str, dict]:
+    """Apollo's organization enrich for these visitors, BULK_ENRICH_MAX a call while the run's credits allow:
+    organization id -> the record over the search row (a company Apollo does not find keeps its row)."""
+    out: dict[str, dict] = {}
+    for i in range(0, len(orgs), BULK_ENRICH_MAX):
+        batch = list(orgs[i : i + BULK_ENRICH_MAX])
+        if not run.allows(len(batch)):
+            break
+        by_id = {str(o["organization_id"]): o for o in batch}
+        by_domain = {universe.org_domain(o): o for o in batch}
+        try:
+            body = ctx.clients.apollo.bulk_enrich_organizations(list(by_domain))
+        except ApiError as exc:
+            if exc.status == 401:
+                raise
+            run.errors.append(f"enrich: {str(exc)[:200]}")
+            break
+        found = enriched_in(body)
+        for rec in found:
+            row = by_id.get(str(rec.get("organization_id") or "")) or by_domain.get(universe.org_domain(rec))
+            if row is not None:
+                out[str(row["organization_id"])] = {**row, **{k: v for k, v in rec.items() if v not in (None, "", [])},
+                                                    "organization_id": row["organization_id"]}
+        for oid, row in by_id.items():
+            out.setdefault(oid, dict(row))
+        spent = float(len(found))
+        credits.record(ctx, JOB, spent, note=json.dumps(
+            {"enrich": len(batch), "found": len(found), "judged": list(by_id)}))
+        run.credits += spent
+        run.enriched += len(batch)
+    return out
+
+
+def admit(ctx: Context, org: Mapping[str, Any], v: Verdict, run: _Run) -> dict | None:
+    """A visitor into accounts by the front door, with the universe's columns and facts, and held for the
+    weekly hand-check when Apollo leaves something in doubt; None if the front door refuses it."""
+    s, store, now = ctx.settings, ctx.store, ctx.now
+    domain = universe.org_domain(org) or ""
     got = accounts.admit(store, domain, source=ACCOUNT_SOURCE, now=now, name=str(org.get("name") or ""))
     if not got.ok:
         run.refuse(org, got.outcome)
         return None
     if got.outcome != "created":
         return store.get("accounts", account_id=got.account_id)  # found after all, through an alias
-    cols = universe.with_overrides(universe.columns(org, label, state, ""), got.domain or domain, s)
+    domain = got.domain or domain
+    cols = universe.with_overrides(universe.columns(org, v.label, v.state, ""), domain, s)
     row = {"account_id": got.account_id, **cols}
     store.upsert("accounts", [row])  # partial row: admit wrote the rest
-    store.insert("signal_events", universe.org_facts(got.account_id, org, state, now))
-    run.created.append(got.domain or domain)
-    return {**row, "domain": got.domain or domain}
+    events = universe.org_facts(got.account_id, org, v.state, now)
+    if v.doubts:
+        events.append(verify.doubt_fact(ctx, row, v.doubts))
+        run.held.append(domain)
+    store.insert("signal_events", events)
+    run.created.append(domain)
+    return {**row, "domain": domain}
 
 
 def admit_new(ctx: Context, reads: Sequence[Read], matched: dict[str, dict], run: _Run) -> None:
-    """Screen the visitors with no account (one search, if the run's credits allow) and admit the ones that pass."""
+    """Judge the visitors with no account; look the ones not surely out up in Apollo; admit the ones that pass,
+    held for the hand-check when in doubt."""
     usable = {r.search.key: r for r in reads if r.usable}
     if US not in usable:
         return  # the 30-day list is not usable (refused, or the filters ignored): no company comes in on it
-    asked = screened_recently(ctx)
+    done = judged_recently(ctx)
     todo: dict[str, dict] = {}
     for r in usable.values():
         for org in r.rows:
             oid = str(org.get("organization_id") or "")
-            if row_key(org) not in matched and oid and oid not in asked:
+            if row_key(org) not in matched and oid and oid not in done:
                 todo.setdefault(oid, org)
-    if not todo or not run.allows():
+    if not todo:
         return
-    ids = list(todo)[:MAX_PER_PAGE]
-    kept = screen(ctx, ids, run)
-    if kept is None:
-        return
-    kept_ids = {str(o["organization_id"]) for o in kept}
-    for oid in ids:
-        if oid not in kept_ids:
-            run.refuse(todo[oid], "screened out: not a US company of 10 to 249 employees, or an insurer or broker")
     states = frozenset(universe.allowed_states(ctx.settings))
-    for org in kept:
-        account = admit(ctx, org, run, states)
+    out: list[str] = []
+    look: list[dict] = []
+    for oid, org in todo.items():
+        v = judge(ctx, org, states)
+        if v.out:
+            run.refuse(org, v.out)
+            out.append(oid)
+        else:
+            look.append(org)
+    if out:
+        credits.record(ctx, JOB, 0.0, note=json.dumps({"judged": out}))  # decided on its search row: no credit
+    records = enrich(ctx, look[:MAX_ENRICH_PER_RUN], run)
+    run.deferred = len(look) - len(records)
+    for oid, org in records.items():
+        v = judge(ctx, org, states)
+        if v.out:
+            run.refuse(org, v.out)
+            continue
+        account = admit(ctx, org, v, run)
         if account is not None:
-            for key in {row_key(org), row_key(todo[str(org["organization_id"])])}:
+            for key in {row_key(org), row_key(todo[oid])}:
                 matched[key] = account
 
 
@@ -528,10 +571,11 @@ def post_line(ctx: Context) -> str:
     if last.get("skipped"):
         return f"Site visits ({domain}): the last run read nothing: {last.get('reason')}."
     v, m = last.get("visitors") or {}, last.get("matched") or {}
-    created = len(last.get("created") or ())
+    created, held = len(last.get("created") or ()), len(last.get("held_for_hand_check") or ())
+    held_note = f", {held} of them held for the weekly hand-check" if held else ""
     return (f"Site visits ({domain}, Apollo): {v.get(US, 0)} companies on the US pages in the last 30 days "
             f"({m.get(US, 0)} of them ours, {v.get(INTENT, 0)} on pricing or demo pages); {v.get(US_TODAY, 0)} in "
-            f"the last day; {created} new {'account' if created == 1 else 'accounts'}.")
+            f"the last day; {created} new {'account' if created == 1 else 'accounts'}{held_note}.")
 
 
 # -- the run ------------------------------------------------------------------------------------------
@@ -599,7 +643,8 @@ def run(ctx: Context) -> dict:
         visitors={r.search.key: len({row_key(o) for o in r.rows}) for r in reads if r.usable},
         matched={r.search.key: len({row_key(o) for o in r.rows if row_key(o) in matched}) for r in reads if r.usable},
         facts_written=len(facts) - cleared, facts_cleared=cleared, events=events, raw_rows=raw,
-        screened=run_.screened, created=run_.created, not_admitted=dict(run_.not_admitted),
+        enriched=run_.enriched, deferred=run_.deferred, created=run_.created, held_for_hand_check=run_.held,
+        not_admitted=dict(run_.not_admitted),
         not_admitted_examples=run_.examples, credits=run_.credits, credit_cap=run_.cap, quiet_runs=quiet,
         tracker_check=tracker, refused=run_.refused, errors=run_.errors[:20],
         rescore=score.rescore(ctx) if changed else "nothing changed",

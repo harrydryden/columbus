@@ -125,7 +125,7 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   count puts outside goes back to `new`, so verify sees it again). A company Apollo has no
   record for is "not found", not "no funding", and is not asked again for 180 days. The daily post
   counts what it found.
-- **Site visits** (`site_visits`, daily 06:00, about 3 Apollo credits a day; Harry, 5 Oct 2026):
+- **Site visits** (`site_visits`, daily 06:00, about 3 Apollo credits a day plus 1 per new visitor looked up; Harry, 5 Oct 2026):
   Apollo's organisation search with its website-visitor filters, read only, for the General
   `site_visit_domain` (spill.chat): who visited the `site_visit_us_paths` (`/us`) in the last day
   and the last 30 days, and the `site_visit_intent_paths` (`/us/pricing`, `/us/demo`, `/us/book`)
@@ -133,8 +133,12 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   Apollo id, and gets `us_visits_30d` and `pricing_or_demo_visits_30d` (1 while Apollo lists it, 0
   once it no longer does, written only on a change), and a `site_visit` event for each day it
   visited (the daily post's warm accounts, the readout's visits before and after the first email).
-  A visitor we don't hold is screened by one search (its Apollo id, the US, 10–249 employees) and,
-  if it passes, comes in by the front door with source `site_visit`, like a universe company. The
+  A visitor we don't hold is kept out on its search row only when it is surely not for us (outside
+  the US, an inactive state, no label fits, an insurer or broker). Every other one is looked up in
+  Apollo's organisation enrich (1 credit each found, at most 30 a run) and judged again: out only
+  for a size clearly outside 10–249; otherwise it comes in by the front door with source
+  `site_visit`. One Apollo leaves in doubt (no HQ state, no size, no industry, a count near an
+  edge) comes in held for the weekly hand-check, not left out (Harry, 6 Oct 2026). The
   rescore follows, so a visit counts at the 12:00 enrol. Apollo refusing the filters, or a week
   with no visitor, puts one line in the daily post: check the tracker.
 - **Layoffs.**
@@ -157,8 +161,10 @@ An account also needs at least one candidate contact: a person matching the Role
 - The careers pages and job boards are already read by `read_pages` (free). Clay's own page read
   is for later, and only if the reader's coverage falls short (docs/roadmap.md).
 - Until Clay is built (`clay_verification` = `skip`), `verify_accounts` verifies on Apollo data and
-  HubSpot, and sends an account whose HQ state or size is in doubt to the weekly hand-check with
-  the reason; Harry's approval clears it, and an Overrides row corrects a wrong fact.
+  HubSpot, and sends an account whose HQ state, size or industry is in doubt to the weekly
+  hand-check with the reason; Harry's approval clears it, and an Overrides row corrects a wrong
+  fact. A missing fact is not cleared by approving: the account stays on the check until an
+  Overrides row fills it in (Harry, 6 Oct 2026).
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
@@ -200,7 +206,7 @@ Credit budgets are monthly, a calendar month in UK time, because that's how Apol
 
 | Key | Default | Spent or used by | Checked |
 | :- | :- | :- | :- |
-| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages, at most 25%), `apollo_signals` (job postings, at most 25%), `apollo_enrich` (organisation enrich, at most 15%), `pick_contacts` (email reveals: the rest, at least 35%), `verify_in_clay` (enrich, once built), `site_visits` (at most 5 a day, about 90 to 120 a month, outside the daily pacing as it runs after `pick_contacts`) | Before every batch: the month's balance, and today's share of it (each source's share paced the same way) |
+| `apollo_monthly_credits` | 2,000 (about 500 a week) | `source_universe` (search pages, at most 25%), `apollo_signals` (job postings, at most 25%), `apollo_enrich` (organisation enrich, at most 15%), `pick_contacts` (email reveals: the rest, at least 35%), `verify_in_clay` (enrich, once built), `site_visits` (3 a day for the searches plus 1 per new visitor looked up, at most 35 a run, about 150 to 200 a month, outside the daily pacing as it runs after `pick_contacts`) | Before every batch: the month's balance, and today's share of it (each source's share paced the same way) |
 | `clay_monthly_credits` | 2,000 (about 500 a week; 0 means no Clay calls) | `verify_in_clay`, `pick_contacts` (Clay Contacts) | The same |
 | `apollo_floor` | 5,000 | All Apollo spend | Stops Apollo spend if the account balance falls below it |
 | `claude_monthly_cap_usd` | $10 | Reply classification and drafts | A UTC month, as the Anthropic Console counts it |

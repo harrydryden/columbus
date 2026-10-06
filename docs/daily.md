@@ -26,7 +26,7 @@ campaigns still match the settings, and activates them.
 | When | What arrives | What to do |
 | :- | :- | :- |
 | 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
-| Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, a size near a band edge) | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong |
+| Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
 | 09:00 | The daily post | Read the **Needs you** line under the headline first |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
@@ -85,9 +85,11 @@ above this.
 `site_visits` runs at 06:00 UK every day. It asks Apollo which companies visited spill.chat's US
 pages (General `site_visit_us_paths`, `/us`) and its pricing and demo pages (`site_visit_intent_paths`)
 in the last 30 days. A visit lifts that company's score before the 12:00 enrol ("Visited the US site"
-+35, "Viewed US pricing or demo page" +25, so both make Priority), and a new visitor in the US with
-10 to 249 people joins the queue. It costs about 3 Apollo credits a day. The daily post's Sources
-section has one line on it. The emails never mention a visit.
++35, "Viewed US pricing or demo page" +25, so both make Priority). A new visitor is looked up in
+Apollo: one in the US with 10 to 249 people joins the queue, and one Apollo can't place (no HQ state,
+no size, no industry, a size near an edge) comes in held for Monday's hand-check rather than being
+left out. It costs about 3 Apollo credits a day, plus 1 for each new visitor looked up. The daily
+post's Sources section has one line on it. The emails never mention a visit.
 
 **If the daily post says "No website-visitor data from Apollo for spill.chat",** check the tracker.
 The jobs only read Apollo's visitor list and never touch the tracker, so this is done by hand:
