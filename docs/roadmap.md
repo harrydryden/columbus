@@ -17,9 +17,9 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
 | Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
-| Hand-off | `poll_approvals`: Slack ✅/edit/❌ from Harry or the mailbox owner, or `us-outbound replies list|approve|skip` without Slack. HubSpot company, contact, note, task and deal on positive or referral replies. 24-hour escalation. `hubspot_readback` for booked meetings | — |
+| Hand-off | `poll_approvals`: Slack ✅/edit/❌ from Harry or the mailbox owner, or `us-outbound replies list|approve|skip` without Slack. HubSpot company, contact, note, task and deal on positive or referral replies. 24-hour escalation. `hubspot_readback` for booked meetings, and (6 Oct) demo requests in Spill 3.0 at companies we emailed | — |
 | Safety | Every email approved in Slack before it is sent (while `auto_send` = no), `kill_rules` (bounces, blocks, complaints), `stop --live` as the brake, `daily_post` with its "Needs you" line, `golive`, heartbeats, the guard on every outbound call, dry-run by default. The weekly `hand_check_post` covers only accounts with doubtful Apollo facts while `auto_send` = no; it is enrol's gate only with `auto_send` = yes | Retention jobs (deleting leads 31 days after their last step; Apollo deletion notices) |
-| Learn | The events table and the readout views | `monday_readout`, test reads with pre-registered looks, UTMs on links |
+| Learn | The events table and the readout views. The learning loop (6 Oct): `monday_readout` (Mondays 08:30: last week, the targets, the exit criteria, the cuts, the signal table, the tests at a look), the signal table (`signals value`), tests read only at pre-registered looks (Tests tab `kind` and `looks`), UTM tags on our links (`utm_links`), demo bookings read back from Spill 3.0 (`hubspot_readback`) | The readout's limit and budget lines (pipeline.md Proposed 11); SPEC 12's three observations drawn from the reply text; monthly state and role cuts |
 
 About 70 API details are marked `PHASE0-CONFIRM` in the code: endpoint shapes and status codes we
 could not check from the build machine. The pilot's first runs confirm them (§3).
@@ -165,7 +165,8 @@ verification and contact choice write only the database; enrol, replies and post
 - **Watch daily:** bounces (kill rules pause a mailbox over 3%), complaints, the seed-inbox
   placement, replies reaching Slack within 15 minutes and being classified correctly, and
   positive replies answered the same day.
-- **Exit criteria to scale** (end of week 1):
+- **Exit criteria to scale** (end of week 1; the Monday readout says "Met" or "Not met" for each, with its
+  numbers, from 12 Oct):
   - bounce rate under 2% and no complaints;
   - unsubscribes confirmed end to end;
   - every reply classified and routed;
@@ -199,7 +200,10 @@ verification and contact choice write only the database; enrol, replies and post
      People search (`sources/apollo_people.py`): `total_entries` at the top level of the answer and
      `person_days_in_current_title_range` honoured over REST (both seen through Apollo's MCP tool on 5 Oct),
      and the plan's rate limits for it.
-   - HubSpot: meetings and pipeline stage labels.
+   - HubSpot: meetings and pipeline stage labels. For the bookings read back (6 Oct): that a booking through
+     Harry's meetings link (with UTM tags on it) has `hs_meeting_source` MEETINGS_PUBLIC and keeps the tags on
+     the contact it creates; whether spill.chat/us/book-demo raises a Spill 3.0 deal at "Demo requested"
+     through Spill's own website flow; that the deal search takes `pipeline` and `hs_lastmodifieddate` filters.
    - The job-board feeds (`sources/job_posts.py`): Greenhouse's `company_name` and escaped `content`,
      Lever's `lists`, Ashby's `descriptionHtml`, Workable's `details=true` descriptions.
    Fix whatever the first runs show.
@@ -295,11 +299,27 @@ verification and contact choice write only the database; enrol, replies and post
    takes the visitor filters through the REST API and data arrives (docs/phase0-facts.md). The daily
    post says so plainly when it doesn't.
 3. **A second contact at 50–249** (multi-threading), once capacity allows it.
-4. **The learning loop:**
-   - `monday_readout`;
-   - the signal-value table;
-   - test reads with pre-registered looks (a `kind` column on the Tests tab);
-   - UTMs on the industry and demo links, and demo-page bookings read back.
+4. **The learning loop: built 6 Oct** (Harry: "push ahead with building"; docs/pipeline.md "How the system
+   learns", docs/daily.md "Mondays: the readout"):
+   - `monday_readout` (`learn/readout.py`), Mondays 08:30 UK, after the hand-check and before the daily post:
+     last week's sends, replies, positive replies, meetings, bounces and unsubscribes; the weekly target, SPEC
+     12's funnel assumption and the stop rule; the five exit criteria, each met or not; the cuts by tier,
+     angle, industry group, sender and step (`v_readout_weekly`); the signal table's headline; the tests at a
+     look. A rate on under 30 companies reads "too few to read". `us-outbound readout` prints it.
+   - The signal table (`v_signal_value`, `us-outbound signals value`): per signal, the companies enrolled
+     with it, sent, replied, positive and with a meeting, against those emailed without it, "too few to
+     read" under 30 on either side.
+   - Test reads at pre-registered looks: the Tests tab's `kind` (`ab`, or `holdout` for the opener holdout or
+     email 1's subject) and `looks` (counts of closed reply windows, or dates; `read_date` last).
+     `us-outbound test read ID` refuses before the first look, so nobody peeks.
+   - UTM tags on the links to spill.chat and on the booking link (General `utm_links`, on): the words don't
+     change, Trustpilot and the unsubscribe link are never tagged.
+   - Demo bookings read back: `hubspot_readback` also searches Spill 3.0 for deals at "Demo requested" or
+     later at companies we emailed, matched by company domain or contact email, recorded as `meeting_booked`
+     with `events.source` (it stops that company's emails, and only reads HubSpot).
+   - Harry, once deployed: `us-outbound settings load --tab General --tab Tests --live`, then `us-outbound
+     sync` (adds `utm_links` and the `kind` and `looks` columns, keeping his values); pre-register `looks` on
+     a test before `test start`.
 5. **Retention and compliance:** delete leads 31 days after their last step, act on Apollo
    deletion notices within 30 days, and purge reply text after 90 days.
 6. **Lookalike leads: do UK customers make good US seeds?** Apollo's likeness may favour companies in

@@ -125,6 +125,14 @@ PERSON_FIELDS = frozenset({"people_leader_days_in_title"})
 ROLE_ORDER_COLUMNS = {"order_10_49": "10-49", "order_50_249": "50-249"}
 QA_VERDICTS = ("pass", "fail")
 TEST_STATUSES = ("planned", "running", "read", "stopped")
+# The Tests tab's kind (Harry, 6 Oct 2026; learn/looks.py). ab: a copy A/B, version_a and version_b are Copy-tab
+# copy_versions, accounts split by hash (SPEC 9), and only one runs at a time. holdout: a split enrol already
+# records on each contact, read by its two arms; it assigns nothing, so it may run beside the copy test.
+AB_TEST, HOLDOUT_TEST = TEST_KINDS = ("ab", "holdout")
+# A holdout test's arms: the value enrol writes, and the contacts column it is in. The opener holdout
+# (enrol/openers.py: opener or holdout) and email 1's subject split (render.subject_arm: personal or copy).
+HOLDOUT_ARMS: dict[str, str] = {"opener": "opener_arm", "holdout": "opener_arm",
+                                "personal": "subject_arm", "copy": "subject_arm"}
 SIZE_BANDS = ("10-19", "20-49", "50-99", "100-249")
 # General clay_verification (Harry, 1 Oct 2026): required is SPEC 2 (every account through Clay before it
 # can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
@@ -211,6 +219,10 @@ class General:
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0
     email_format: str = "html"  # (build) html: links and bullets; text: plain text, links written out
+    # (build) The learning loop (Harry, 6 Oct 2026). yes: the links to our site and Harry's booking link carry
+    # UTM parameters, in the HTML only (enrol/utm.py); the words of every link stay as they are. no: bare links,
+    # if the tags seem to hurt deliverability.
+    utm_links: bool = True
     # (build) Tokenized openers (Harry, 2 Oct 2026; enrol/openers.py): the share of accounts held out with no
     # opener, so replies can compare opener against none; and the optional "what they do" line.
     opener_holdout_share: float = 0.3
@@ -458,6 +470,10 @@ class Override:
 
 @dataclass(frozen=True)
 class Test:
+    """A Tests-tab row. looks are the pre-registered interim looks (Harry, 6 Oct 2026; learn/looks.py), in order:
+    a whole number N (the smaller arm has N accounts with step 1 delivered and their reply window closed) or a
+    date. read_date is always the last look."""
+
     test_id: str
     hypothesis: str
     version_a: str
@@ -468,6 +484,8 @@ class Test:
     read_date: date | None = None
     decision_rule: str = ""
     result: str = ""
+    kind: str = AB_TEST
+    looks: tuple[int | date, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -541,7 +559,8 @@ class Settings:
         return tuple(seen)
 
     def running_test(self) -> Test | None:
-        return next((t for t in self.tests if t.status == "running"), None)
+        """The copy test enrol assigns versions for: the running test of kind ab (a holdout assigns nothing)."""
+        return next((t for t in self.tests if t.status == "running" and t.kind == AB_TEST), None)
 
     def copy_row(self, copy_version: str) -> CopyRow | None:
         return next((c for c in self.copy if c.copy_version == copy_version), None)

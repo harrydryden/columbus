@@ -292,11 +292,11 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
         assert subject and "{{" not in subject + body, step
         assert body.startswith("<p>Hi Jane,</p>"), step  # html, the default email_format
         # Email 1 links the industry page; emails 2 to 4 have one call to action, the demo page.
-        assert body.count(f'<a href="{g.booking_page}">') == (0 if step == 1 else 1), step
+        assert body.count(f'<a href="{g.booking_page}?utm_source=us_outbound&amp;') == (0 if step == 1 else 1), step
         # The signature; the opt-out is Instantly's unsubscribe link in the campaign template (Harry, 1 Oct 2026).
         # One line (Harry, 5 Oct 2026): email 1 links a page on the site, so never the website line (Jane's
         # rotation gives the reviews line); emails 2 to 4 link the demo page, so the booking line.
-        booking = f'Book a call <a href="{g.booking_link}">here</a>'
+        booking = f'Book a call <a href="{g.booking_link}?utm_source=us_outbound&amp;'
         assert "on-demand counseling for your team" not in body and "{{unsubscribe}}" not in body, step
         assert (booking in body) == (step != 1) and ("Trustpilot" in body) == (step == 1), step
     # Openers (Harry, 2 Oct 2026): Jane is a People leader, so EAP named's opener_people line, which names
@@ -306,7 +306,7 @@ def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
     assert detail["openers"] == {"arms": {"opener": 1}, "sources": {"EAP named / opener_people": 1}}
     assert "Where we got your details" not in cv["s1_body"]  # kept in contacts.data_record (Harry, 5 Oct 2026)
     page = s.industry("Advertising agencies").landing_page_url
-    assert f'<a href="{page}">' in cv["s1_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
+    assert f'<a href="{page}?utm_source=us_outbound&amp;' in cv["s1_body"] and "<strong>What is Spill?</strong>" in cv["s2_body"]
 
     refused = [c for c in ctx.guard.calls if c.system == "instantly" and c.write]
     assert refused and all(c.action == "lead.add" and c.target == campaign and not c.sent for c in refused)

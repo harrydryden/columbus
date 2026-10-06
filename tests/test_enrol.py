@@ -166,7 +166,7 @@ def test_live_posts_leads_only_to_us_outbound_campaigns_with_custom_variables():
     assert EAP_OPENER in jane["custom_variables"]["s1_body"]
     omar = by_campaign["c-hannah"][0]
     for lead in (jane, omar):
-        assert f'<a href="{DEMO}">' in lead["custom_variables"]["s2_body"]  # every email's call to action
+        assert f'<a href="{DEMO}?utm_source=us_outbound&amp;' in lead["custom_variables"]["s2_body"]  # the call to action
 
 
 def test_live_records_enrollment_and_keeps_senders():

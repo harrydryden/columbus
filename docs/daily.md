@@ -27,6 +27,7 @@ campaigns still match the settings, and activates them.
 | :- | :- | :- |
 | 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
+| Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
 | 09:00 | The daily post | Read the **Needs you** line under the headline first |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
@@ -46,6 +47,56 @@ one click decides.
 | — | `send: …` | Sends that text instead of the draft |
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
 | 🚫 | — | Drop the company for good |
+
+## Mondays: the readout
+
+At 08:30 UK, after the hand-check and before the daily post, `monday_readout` posts last week (Monday to
+Sunday, UK time) to #us-outbound. `us-outbound readout` prints the same text without posting. Read it top
+to bottom:
+
+1. **Last week:** emails sent, replies (people, not out-of-office) and how many were positive, meetings
+   booked, bounces and unsubscribes. Then the companies emailed so far and how many of their 28-day reply
+   windows have closed: until they have, every rate still rises.
+2. **Against the targets:** companies enrolled against `weekly_enrol_cap`; the reply, positive and meeting
+   rates so far against the working assumption (3 to 5%, about 1%, 0.5 to 1%); the stop rule's progress.
+3. **Exit criteria to scale**, each "Met" or "Not met" with its numbers: bounces under 2%, no complaints,
+   unsubscribes confirmed end to end, every reply classified and routed, no unexplained refusal. When all
+   five are met, raise `weekly_enrol_cap` with the ramp (docs/roadmap.md §3).
+4. **By tier, angle, industry group, sender and step:** last week's sends, replies and meetings, and for
+   each the companies emailed so far and how many replied.
+5. **Signal value:** the signals whose companies replied more or less than the companies without them. For
+   the whole table, `us-outbound signals value`. To act on it, change a weight on the Signals tab, then
+   `us-outbound sync`. Nothing re-weights itself.
+6. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
+   far each running test has got.
+
+**Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
+counts only. A bounce rate on fewer than 100 sends says that one bounce moves it a lot.
+
+**Meetings** count bookings on your HubSpot calendar (the signature's "Book a call here", and the website's
+demo page, which books into the same calendar) and Spill 3.0 deals at "Demo requested" or later at a company
+we emailed. `hubspot_readback` reads them every 15 minutes and stops that company's emails; it only reads
+HubSpot. A meeting and a deal for one booking count once.
+
+**Tests are read only at a look you set in advance.** On the Tests tab, before `us-outbound test start ID
+--live`:
+- `kind`: `ab` (the default) for a copy test between two Copy rows, or `holdout` to read a split the
+  system already makes: `opener` against `holdout` (the opener holdout), or `personal` against `copy`
+  (email 1's subject). A holdout test can run beside the copy test.
+- `looks`: the interim looks, separated by semicolons. A number, like `200`, is "both versions have 200
+  companies whose 28-day reply window has closed"; a date is that day. `read_date` is always the last look.
+
+`us-outbound test read ID` reads the test at its latest look, over the companies that look covers. Before
+the first look it refuses and shows only how far each version has got, never a reply. Write the result on
+the Tests tab. The first time, `us-outbound settings load --tab Tests --live`, then `us-outbound sync`, adds
+the `kind` and `looks` columns; your values stay.
+
+**UTM tags.** The links to spill.chat and your booking link carry UTM tags (`utm_source=us_outbound`,
+`utm_medium=email`, `utm_campaign` the Copy row, `utm_content` the email's number), so website visits and
+bookings can be traced to the emails. The words of each link are unchanged, and the Trustpilot and
+unsubscribe links never get tags. If the tags seem to hurt deliverability, set `utm_links` = no on the
+General tab, then `us-outbound sync`. The first time, `us-outbound settings load --tab General --live` adds
+the key to the sheet (until then it is on).
 
 ## Expected volume in the pilot
 
@@ -174,5 +225,8 @@ commands instead.
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |
 | `copy preview --industry "Fintech" --html fintech.html`, `copy qa --live` | An email as a prospect will see it; QA for edited rows |
+| `readout` | The Monday readout for last week, printed and not posted |
+| `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
+| `test start ID --live`, `test read ID` | Start a test on the Tests tab; read it at its latest pre-registered look |
 
 Also `handcheck show|approve`, `erase --email` and `schedule`. `us-outbound --help` lists every command.

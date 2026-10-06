@@ -478,6 +478,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "deals_for_company": lambda c, w: c.deals_for_company("c1"),
         "get_record": lambda c, w: c.get_record("meetings", "m1", ["hs_meeting_outcome"], associations=["contacts"]),
         "search_meetings": lambda c, w: c.search_meetings("owner-harry", NOW),
+        "search_pipeline_deals": lambda c, w: c.search_pipeline_deals(PIPELINE, NOW),
         "pipeline_stages": lambda c, w: c.pipeline_stages(PIPELINE),
         "properties": lambda c, w: c.properties("companies"),
         "property_groups": lambda c, w: c.property_groups("companies"),

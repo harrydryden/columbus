@@ -40,6 +40,10 @@ command merges them into the sheet without losing Harry's own edits:
     facts, so the page signals' careers_pages source (Harry, 2 Oct 2026: our own page reader,
     sources/pages.py) arrives with a plain `--tab Signals` load; until it does, settings_sync's
     summary says so.
+  * Tests (Harry, 6 Oct 2026): like Signals, every column the sheet already has keeps its value (a test's
+    dates, status and result are Harry's), and rows Harry added stay; the load brings the new kind and looks
+    columns (learn/looks.py), with the build's values for the build's own rows (t1-eap-opener: ab, no
+    interim look).
 
 Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
 (values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
@@ -55,7 +59,7 @@ from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, is_legacy_roles, validate_all
 
-LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus")
+LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus", "Tests")
 # The columns Harry owns; `--take COLUMN` lets the build's value win for one load (Harry, 1 Oct 2026:
 # "make all the changes" in the design review, so Legal Teams goes on at launch).
 KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_point")}
@@ -70,12 +74,12 @@ SIGN_OFF = ("live_sending", "auto_send", "optout_tested", "approver_slack_ids")
 # tokenized openers arrive as new Signals columns without undoing his edits). Columns the sheet does not
 # have yet take the build's values; `--take COLUMN` lets the build win for one column, as the design
 # review's load did for the weights on 1 Oct.
-SHEET_WINS = frozenset({"Signals"})
+SHEET_WINS = frozenset({"Signals", "Tests"})
 # Columns that name code, not a judgment, so the build always wins there even on a SHEET_WINS tab: a
 # Signals row's source keys are the source modules that produce its facts (careers_pages, 2 Oct 2026).
 BUILD_OWNS: dict[str, tuple[str, ...]] = {"Signals": ("source",)}
 KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
-       "Focus": "industry_group"}
+       "Focus": "industry_group", "Tests": "test_id"}
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
 # Rows the build replaced under another name: a load keeps them on the sheet but switches them off,
 # so the old and new rows don't both score (Recent funding was split by age; review Appendix A). key ->

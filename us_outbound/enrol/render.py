@@ -30,6 +30,11 @@ to action.
     Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so the send card, the
     auto_send path, `copy preview` and `seed send` show the subject that is sent; enrol records the arm on the
     contact (contacts.subject_arm), and `signals review` and the daily post compare the arms' replies.
+  * UTM tags (Harry, 6 Oct 2026; enrol/utm.py): with General utm_links = yes, the HTML's links to Spill's site
+    and the signature's site or booking link carry utm_source, utm_medium, utm_campaign (the Copy row's
+    copy_version) and utm_content (the email's number). The words, the plain text, the copy rules' reading and
+    the signature's choice of line all see the bare addresses; the Trustpilot and unsubscribe links are never
+    tagged.
   * pick_opener() falls back to "" when the evidence opener breaks a copy rule (for
     example "unlimited PTO" quoted from a benefits page): the opener line then disappears.
   * max_rendered_lengths() is the phase-0 probe for Instantly's custom-variable limit.
@@ -41,13 +46,13 @@ import hashlib
 import html
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from us_outbound.enrol import copy_markup, copy_rules
+from us_outbound.enrol import copy_markup, copy_rules, utm
 from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, Mailbox, Settings
 
 STEPS = COPY_STEPS
@@ -370,7 +375,8 @@ def signature_kind(settings: Settings, body: copy_markup.Rendered, source: str =
 
 
 def signature(settings: Settings, sender_name: str = "", *, body: copy_markup.Rendered, source: str = "",
-              key: str = "", step: int = 0) -> tuple[copy_markup.Rendered, list[str], str]:
+              key: str = "", step: int = 0,
+              href: Callable[[str], str] | None = None) -> tuple[copy_markup.Rendered, list[str], str]:
     """The signature every email ends with, after the copy's sign-off (Harry, 1 and 5 Oct 2026): the
     rendered signature, the General values it is missing, and the kind of its line.
 
@@ -378,10 +384,11 @@ def signature(settings: Settings, sender_name: str = "", *, body: copy_markup.Re
     the email's body and source, the recipient (key, signature_key) and the email's number: Spill's US site,
     Harry's booking link or the Trustpilot reviews. No postal address and no privacy link; the opt-out is
     Instantly's unsubscribe link, which the campaign's step template adds after everything here
-    (clients/instantly.py).
+    (clients/instantly.py). href: the address its link carries in the HTML (UTM tags, enrol/utm.py; the words
+    and the plain text keep it as written).
     """
     kind, missing = signature_kind(settings, body, source, key=key, step=step)
-    sig = copy_markup.render(_filled_lines(settings)[kind][0], {})
+    sig = copy_markup.render(_filled_lines(settings)[kind][0], {}, href=href)
     inner = sig.html[len("<p>"):-len("</p>")] if sig.html.count("<p>") == 1 else sig.html  # the line alone
     name = sender_name.strip()
     if name:
@@ -440,12 +447,17 @@ def render_step(
     problems += [f"subject {x}" for x in p]
     if copy_markup.links(st.subject) or "**" in st.subject:
         problems.append("subject has markup; a subject is plain text")
-    body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES)
+    # UTM tags on our own links, in the HTML only (General utm_links; enrol/utm.py): the copy rules and the
+    # signature's choice of line read the bare addresses in body.links.
+    body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES,
+                              href=utm.tagger(settings, copy_version=copy_row.copy_version, step=step))
     problems += [f"body {x}" for x in body.problems]
 
     # After the copy's sign-off: the signature, as its own paragraph, its one line chosen from the body.
     sig, missing, kind = signature(settings, mailbox.owner_name, body=body, source=st.body,
-                                   key=signature_key(variables), step=step)
+                                   key=signature_key(variables), step=step,
+                                   href=utm.tagger(settings, copy_version=copy_row.copy_version, step=step,
+                                                   signature=True))
     problems += [_FIXED_MISSING.get(m, f"the signature has no {m}") for m in missing]
     problems += [f"signature {x}" for x in sig.problems]
     text = f"{body.text}\n\n{sig.text}"

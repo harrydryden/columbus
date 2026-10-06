@@ -249,6 +249,18 @@ class HubSpot(HttpClient):
         return [{"id": r["id"], "properties": r.get("properties", {})}
                 for r in self._search("meetings", groups, MEETING_PROPS, sorts)]
 
+    def search_pipeline_deals(self, pipeline_id: str, changed_since: datetime) -> list[dict]:
+        """Deals in the pipeline created or changed since then, oldest change first, with their stage, name and
+        create date (crm/readback.bookings: demo requests at companies we emailed). Read only."""
+        since = changed_since if changed_since.tzinfo else changed_since.replace(tzinfo=UTC)
+        groups = [{"filters": [
+            {"propertyName": "pipeline", "operator": "EQ", "value": str(pipeline_id)},
+            {"propertyName": "hs_lastmodifieddate", "operator": "GTE", "value": str(int(since.timestamp() * 1000))},
+        ]}]
+        sorts = [{"propertyName": "hs_lastmodifieddate", "direction": "ASCENDING"}]
+        return [{"id": r["id"], "properties": r.get("properties", {})}
+                for r in self._search("deals", groups, (*DEAL_PROPS, "createdate", "hs_lastmodifieddate"), sorts)]
+
     def pipeline_stages(self, pipeline_id: str, object_type: str = "deals") -> list[dict]:
         """The pipeline's stages ({id, label, displayOrder, metadata}) in board order."""
         body = self.request(

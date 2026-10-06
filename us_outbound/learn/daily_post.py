@@ -207,7 +207,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     nums = {
         "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(replies),
         "by_class": dict(classes), "positive": len(warm), "bounced": len(by_type.get("bounced", [])),
-        "unsubscribed": len(by_type.get("unsubscribed", [])), "demos_booked": len(by_type.get("meeting_booked", [])),
+        "unsubscribed": len(by_type.get("unsubscribed", [])),
+        # By company: a meeting and a Spill 3.0 deal for one booking are two events (crm/readback.py, 6 Oct 2026).
+        "demos_booked": len({e.get("account_id") or e["event_id"] for e in by_type.get("meeting_booked", [])}),
         "demos_held": len(by_type.get("demo_held", [])),
     }
     lines = [f"*Daily post, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else "")]

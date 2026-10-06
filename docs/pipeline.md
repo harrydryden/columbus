@@ -281,7 +281,7 @@ The same picture appears in several places:
 - **The mailbox check's summary** each morning: limits it set, and campaigns Instantly says are held back.
 - **`v_budgets`** in Postgres: each budget this month, with `expected_by_now`, `projected` and `pace`.
 - **The daily post** (phase 3, Slack): the `limited_by` line, every morning. Until Slack is set up, it goes to the log.
-- **The Monday readout** (phase 3): how many days each term was the limit, and each budget's pace (**Proposed 11**, with alerts when a budget runs ahead of pace, or when the same limit binds three send days running).
+- **The Monday readout** (built 6 Oct 2026, below) does not carry these lines yet: how many days each term was the limit, and each budget's pace (**Proposed 11**, with alerts when a budget runs ahead of pace, or when the same limit binds three send days running).
 
 ## How many emails Instantly can send, and what it reports back
 
@@ -335,6 +335,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
   - Among the lines left, a rotation by prospect and email number: different prospects get different lines, a prospect's next email the next line, and a re-render, a Slack edit and a preview the same line.
   - With today's copy, email 1 (the industry page) shows the booking or the reviews line, and emails 2 to 4 (the demo page) show the booking line.
 - **Emails 2 to 4 each have one call to action, the demo page**, `{{demo_url}}` (General `booking_page`, https://www.spill.chat/us/book-demo), as a link in the text.
+- **UTM tags on our links** (Harry, 6 Oct 2026; `enrol/utm.py`, General `utm_links` = yes). In the HTML, every link to spill.chat (the industry page, the demo page, the US site) and the signature's site or booking link carry `utm_source=us_outbound`, `utm_medium=email`, `utm_campaign` (the Copy row's `copy_version`, so a visit names its sequence; a Slack edit keeps its card's) and `utm_content` (`step1` to `step4`, with `-signature` for the signature's link). Only the address behind a link changes: the words, the plain-text version, the copy rules and the signature's choice of line all read the bare addresses, so the sheet check and the render-time check are unchanged. Trustpilot is never tagged, and Instantly's unsubscribe link (`https://UNSUBSCRIBE_INSTANTLY.ai`, which Instantly swaps per lead) is in the campaign template, never in the rendered body, so the campaign drift check is unaffected too. `utm_links` = no sends bare links. With `email_format = text` the addresses are written out, so they stay bare.
 - **The emails are HTML** (General `email_format = html`): embedded links, bullets and the bold headings of the long-form email, with tracking still off. `email_format = text` sends plain text with the links written out, if phase 0 finds Instantly mangles HTML in a custom variable. Instantly's `text_only` follows the setting.
 - **Where the words come from:**
   - `templates/copy/style.md`: the voice, the four emails, the role lines, the markup, and Harry's long-form email as the model for email 2.
@@ -417,6 +418,49 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **Lookalike leads** go one step further (Harry, 5 Oct 2026: "the customer base for Spill is fairly static, so the whole HubSpot pull and lookalike search can happen on a monthly cadence"). On the 1st of each month `lookalike_leads` (`sources/lookalike_leads.py`) takes up to 40 active customers as seeds, at most 5 per industry group and size band, in the groups the Focus tab names (all active groups when its shares leave room), in any country: most of Spill's customers are in the UK, and Harry wants them to inspire US lookalikes. Apollo's lookalike search returns US companies only, and each row is checked for a US HQ in an active state before it reaches the front door. The seeds stay in memory: no customer's domain or name is stored or logged. Each lead's `lookalike_lead` fact keeps the seed's group, band and country (US or non-US), and the run counts US and non-US seeds' yield apart, so Harry can see whether UK seeds work. The signal "Found as a lookalike of a customer" (+10 for 120 days) is on the Signals tab; `us-outbound settings load --tab Signals --live` adds it to the sheet.
 
+## How the system learns
+
+Harry, 6 Oct 2026: "push ahead with building" the learning loop (docs/roadmap.md §4, weeks 2 to 4, item 4).
+Nothing re-weights or decides by itself: the system counts, and Harry changes the sheet.
+
+| Part | Where | What it does |
+| :- | :- | :- |
+| `monday_readout` | `learn/readout.py`, Mondays 08:30 UK | Last week's sends, replies, positive replies, meetings, bounces and unsubscribes; the targets (`weekly_enrol_cap`, SPEC 12's funnel assumption, the stop rule); the exit criteria to scale, each met or not; the same numbers by tier, angle, industry group, sender and step; the signal table's headline; the tests at a look. Posts to #us-outbound (the dev channel in dry-run); `us-outbound readout` prints it |
+| The signal table | `v_signal_value`, `learn/signal_value.py`, `us-outbound signals value` | Per active signal, over the enrolled companies: how many had it at enrolment (`contacts.signals_at_enrol`), were sent, replied, replied positively and booked a meeting, against the companies emailed without it |
+| Test reads | Tests tab `kind` and `looks`, `learn/looks.py`, `us-outbound test read ID` | A test is read only at a pre-registered look, over what that look covers; before the first, the read refuses and shows no reply |
+| Bookings | `crm/readback.py` (`hubspot_readback`, every 15 minutes), `events.source` | A meeting on Harry's calendar booked through his link (`hubspot_meeting`), or a Spill 3.0 deal at Demo requested or later at an enrolled company (`hubspot_deal`), recorded as `meeting_booked` |
+| UTM tags | `enrol/utm.py`, General `utm_links` | Our links say which sequence and email a website visit or booking came from |
+
+**Small numbers read as small.** Under 30 companies on either side, a rate is "too few to read" and only
+the counts are given (`signal_value.MIN_TO_READ`, the view's `too_few`, the readout). From 30, the signal
+table and `signals review` use a two-proportion test on the reply rates, at p < 0.10: with a pilot's samples,
+a lead to follow, not proof. A bounce rate on under 100 sends says that one bounce moves it a lot.
+
+**The views behind it.** `v_account_outcomes` adds the meeting (any `meeting_booked` after step 1, with no
+28-day limit) and the contact's angle, copy version and test. `v_readout_weekly` cuts by tier (at
+enrolment), angle, industry group, sender (the account's) and step (sends, bounces and replies only), with
+last week's activity (sends, bounces, replies, positive replies, meetings by company, unsubscribes,
+complaints) beside the cohort by week of step 1. `v_signal_value` keeps SPEC 12's Control comparison and the
+below-Control flag after 200, and adds the enrolled, sent and meeting counts and the "without" side.
+
+**Pre-registered looks.** A count look `N` is reached when both versions have `N` companies whose 28-day
+reply window has closed, and reads exactly the first `N` of each; a date look reads the companies whose window
+had closed by that date. Replies count within each company's window and meetings until the look, so a late
+read says what it would have said on time. `kind` = `holdout` reads a split enrol records anyway (the opener
+holdout, `contacts.opener_arm`; email 1's subject, `contacts.subject_arm`) for the companies enrolled from
+`start_date`, and may run beside the one copy test SPEC 9 allows.
+
+**How a demo is booked, and read back.** The signature's "Book a call here" opens Harry's HubSpot meetings
+link (General `booking_link`); the emails' call to action opens spill.chat/us/book-demo (`booking_page`),
+which books into the same calendar (SPEC 4). `hubspot_readback` reads both ways: the meetings on Harry's
+calendar booked through a meetings link, and one search of the Spill 3.0 pipeline for deals at "Demo
+requested" or later made in the last three days, matched to enrolled accounts by their companies (our stored
+id, else the company's domain) or contacts (the email's hash, else its domain), and counted only when made
+after that company was first enrolled. Our own deal from a reply asking for a demo counts only once it
+reaches "Demo created" (the per-company deal read, which also follows any deal once we hold the company). The
+company counts once however many records the booking made. It only reads HubSpot (PHASE0-CONFIRM: whether
+the website's page raises a Spill 3.0 deal itself).
+
 ## Changes for Harry
 
 | # | Change | Why | SPEC | Status |
@@ -440,6 +484,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | — | A link in every email: the industry page in email 1, the demo page in emails 2 to 4, where SPEC 10 had step 1 carry one link only (the privacy page) | Harry, 30 Sep and 1 Oct | 10 | Done |
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |
 | — | `claude_model` (Opus) writes; `claude_task_model` (Sonnet) checks and classifies | Harry | 1.1 | Done |
+| — | The learning loop: `monday_readout` (Mondays 08:30), the signal table, tests read only at pre-registered looks (Tests tab `kind`, `looks`), UTM tags (General `utm_links`), demo bookings read back from Spill 3.0 | Harry, 6 Oct 2026: "push ahead with building" | 9, 12 | Done; `settings load --tab General --tab Tests --live` brings the new key and columns |
 | 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |
 | 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
 | 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Replaced 1 Oct by lookalikes from Spill's HubSpot customers (Harry); built |

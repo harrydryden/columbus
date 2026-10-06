@@ -477,7 +477,7 @@ SPEC9_CRONS = {
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
     "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
-    "monday_readout": "0 9 * * 1",
+    "monday_readout": "30 8 * * 1",  # Harry, 6 Oct 2026: after the hand-check, before the daily post
     # Build additions.
     "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
     # The 1st of each month (Harry, 5 Oct 2026), after settings_sync (02:00) and before source_universe (03:00).
@@ -514,7 +514,8 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
-                       "sync_outcomes", "mailbox_health", "kill_rules", "daily_post", "heartbeat_check",
+                       "sync_outcomes", "mailbox_health", "kill_rules", "daily_post", "monday_readout",
+                       "heartbeat_check",
                        "suppression_load", "lookalikes", "lookalike_leads", "hand_check_post"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
@@ -534,7 +535,7 @@ def test_next_run_and_the_listing():
     syncs = [line for line in listing if line.startswith("settings_sync ")]
     assert syncs[0].endswith("Thu 01 Oct 02:00 BST") and syncs[1].endswith("Thu 01 Oct 11:30 BST")
     assert lines["heartbeat_check"].endswith("Wed 30 Sep 13:05 BST")
-    assert lines["monday_readout"].endswith("disabled until phase 3") and lines["score"].endswith("on demand only")
+    assert lines["monday_readout"].endswith("Mon 05 Oct 08:30 BST") and lines["score"].endswith("on demand only")
     assert lines["lookalikes"].endswith("Thu 01 Oct 02:30 BST")
 
 

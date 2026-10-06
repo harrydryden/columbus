@@ -51,9 +51,10 @@ COLUMNS: dict[str, list[str]] = {
         "slack_id",
     ],
     "Overrides": ["domain", "field", "value", "note"],
+    # kind and looks (Harry, 6 Oct 2026: tests read only at pre-registered looks) are optional columns.
     "Tests": [
-        "test_id", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "read_date",
-        "decision_rule", "status", "result",
+        "test_id", "kind", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "looks",
+        "read_date", "decision_rule", "status", "result",
     ],
     # Added 30 Sep 2026 (Harry); a sheet without them reads as if they were empty.
     "Focus": ["industry_group", "share", "note"],
@@ -219,6 +220,15 @@ _GENERAL: list[tuple[str, str, str]] = [
      "Well-defined tasks: checks drafted copy (copy qa) and classifies replies. Both models share the cap below."),
     ("email_format", "html",
      "html: emails with embedded links and bullets; text: plain text with links written out. Tracking stays off."),
+    # -- The learning loop (Harry, 6 Oct 2026: "push ahead with building") --
+    (
+        "utm_links",
+        "yes",
+        "yes: the links to spill.chat and your booking link carry UTM tags (utm_source us_outbound, utm_medium "
+        "email, utm_campaign the industry, utm_content the email's number), so website visits and bookings can be "
+        "traced to the emails. The words of each link don't change, and the Trustpilot and unsubscribe links are "
+        "never tagged. no: plain links, if the tags seem to hurt deliverability. Added by the build.",
+    ),
     ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend; SPEC 1.1 allows at most $10 a month."),
     (
         "opener_holdout_share",
@@ -787,6 +797,7 @@ _MAILBOXES = [
 
 _FIRST_TEST = {
     "test_id": "t1-eap-opener",
+    "kind": "ab",
     "hypothesis": (
         "On accounts where an EAP is named, an Upgrade the EAP opener gets a higher reply rate than a General "
         "opener."
@@ -795,6 +806,7 @@ _FIRST_TEST = {
     "version_b": "general-v1",
     "accounts_per_version": "400",
     "start_date": "",
+    "looks": "",
     "read_date": "",
     "decision_rule": (
         "reply rate, human replies within 28 days of step 1 ÷ accounts with step 1 delivered; "

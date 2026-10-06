@@ -35,10 +35,16 @@ SIGNATURE = {
     "reviews": f"Read our Trustpilot reviews ({TRUSTPILOT}) from employees",
 }
 SIGNATURE_HTML = {
-    "website": '<a href="https://www.spill.chat/us">Spill</a>, on-demand counseling for your team',
-    "booking": f'Book a call <a href="{BOOKING}">here</a>',
-    "reviews": f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees',
+    "website": '<a href="https://www.spill.chat/us{tags}">Spill</a>, on-demand counseling for your team',
+    "booking": f'Book a call <a href="{BOOKING}{{tags}}">here</a>',
+    "reviews": f'Read <a href="{TRUSTPILOT}">our Trustpilot reviews</a> from employees',  # never tagged
 }
+
+
+def tags(version: str, content: str) -> str:
+    """The UTM query an HTML link to our site or Harry's booking link carries (enrol/utm.py; Harry, 6 Oct 2026)."""
+    return (f"?utm_source=us_outbound&amp;utm_medium=email&amp;utm_campaign={version}&amp;"
+            f"utm_content={content}")
 
 
 def mailbox(address: str, owner: str, status: str = "Active", cap: int = 30, **kw) -> Mailbox:
@@ -300,8 +306,9 @@ def test_clean_sequence_renders_without_violations():
     cv = render.custom_variables(sequence())
     assert set(cv) == {f"s{i}_{p}" for i in range(1, 5) for p in ("subject", "body")}
     assert cv["s1_subject"] == "Support for the Acme Creative team"
-    assert f'<a href="{PAGE}agencies">how Spill works for agencies</a>' in cv["s1_body"] and DEMO not in cv["s1_body"]
-    assert f'<a href="{DEMO}">book a short demo</a>' in cv["s2_body"]
+    assert (f'<a href="{PAGE}agencies{tags("agencies-v1", "step1")}">how Spill works for agencies</a>' in cv["s1_body"]
+            and DEMO not in cv["s1_body"])
+    assert f'<a href="{DEMO}{tags("agencies-v1", "step2")}">book a short demo</a>' in cv["s2_body"]
     assert "<ul><li>Employees can get support the same day" in cv["s2_body"]
 
 
@@ -331,7 +338,7 @@ def test_signature_on_every_email_and_no_data_notice():
         assert sum(line in SIGNATURE.values() for line in lines) == 1  # the signature is the end of every email
         assert r.html.endswith(
             f'<p style="{render.SIGNATURE_STYLE}"><strong style="{render.SIGNATURE_NAME_STYLE}">Hannah Spalding'
-            f'</strong><br>{SIGNATURE_HTML[r.signature]}</p>')
+            f'</strong><br>{SIGNATURE_HTML[r.signature].format(tags=tags("agencies-v1", f"step{r.step}-signature"))}</p>')
         sig_html = r.html[r.html.index(f'<p style="{render.SIGNATURE_STYLE}">'):]
         assert sig_html.count("<a ") == 1 and sig_html.count("<br>") == 1
         assert "privacy notice" not in r.text.lower() and "{{unsubscribe}}" not in r.html
@@ -349,7 +356,8 @@ def test_the_data_record_names_only_the_data_providers_in_use():
 
 def test_signature_links_follow_the_general_tab_and_blanks_block():
     s = make_settings(booking_link="https://meetings.hubspot.com/someone-else")
-    assert '<a href="https://meetings.hubspot.com/someone-else">here</a>' in sequence(settings=s)[1].html
+    assert (f'<a href="https://meetings.hubspot.com/someone-else{tags("agencies-v1", "step2-signature")}">here</a>'
+            in sequence(settings=s)[1].html)
     # A blank General value drops its line from the choice (Harry, 5 Oct 2026); it blocks only when no line
     # is left. Email 1 has the reviews line still; emails 2 to 4 suggest booking, so the booking line or none.
     blank = sequence(settings=make_settings(booking_link=""))
@@ -513,7 +521,8 @@ def test_email_1_links_the_industry_page_and_asks_for_no_demo():
     s = make_settings(copy=(fintech_row,))
     fintech = account(industry="Fintech", industry_group=TECH)
     assert all(r.ok for r in sequence(row=fintech_row, settings=s, acct=fintech))
-    assert 'href="https://www.spill.chat/us"' in sequence(row=fintech_row, settings=s, acct=fintech)[0].html
+    assert (f'href="https://www.spill.chat/us{tags("fintech-v1", "step1")}"'
+            in sequence(row=fintech_row, settings=s, acct=fintech)[0].html)
 
 
 def test_the_signature_is_outside_the_copy_rules():

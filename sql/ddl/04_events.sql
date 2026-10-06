@@ -16,8 +16,11 @@ CREATE TABLE IF NOT EXISTS us_outbound.events (
   approval text,
   approved_by text,
   occurred_at timestamptz,
+  source text,
   PRIMARY KEY (event_id)
 );
+-- For databases created before a booking said where it was read from (6 Oct 2026).
+ALTER TABLE us_outbound.events ADD COLUMN IF NOT EXISTS source text;
 CREATE INDEX IF NOT EXISTS events_account_id_idx ON us_outbound.events (account_id);
 CREATE INDEX IF NOT EXISTS events_contact_id_idx ON us_outbound.events (contact_id);
 CREATE INDEX IF NOT EXISTS events_occurred_at_idx ON us_outbound.events (occurred_at);
@@ -30,4 +33,5 @@ COMMENT ON COLUMN us_outbound.events.mailbox IS 'The registry mailbox that sent 
 COMMENT ON COLUMN us_outbound.events.reply_class IS 'One of: positive, referral, objection, not_now, negative, out_of_office, wrong_person, unsubscribe, other (SPEC 11).';
 COMMENT ON COLUMN us_outbound.events.reply_text IS 'Purged after 90 days (SPEC 6) by the retention job.';
 COMMENT ON COLUMN us_outbound.events.language_terms IS 'JSON: the list of language terms from classification (SPEC 11).';
+COMMENT ON COLUMN us_outbound.events.source IS 'Where a booking was read from (crm/readback.py; build addition, Harry, 6 Oct 2026). One of: hubspot_meeting, hubspot_deal. hubspot_meeting: a meeting on Harry''s calendar booked through his HubSpot meetings link (the signature''s booking line, and the website''s demo page, which books into the same calendar). hubspot_deal: a Spill 3.0 deal at Demo requested or later at an enrolled company (one of ours only once it is past Demo requested). Blank on every other event.';
 COMMENT ON COLUMN us_outbound.events.approval IS 'One of: approved, edited, skipped, approved_edited, contact_rejected, company_rejected, expired, blocked. A reply is approved, edited or skipped; a send approval has its outcome: approved, approved_edited, contact_rejected, company_rejected, expired or blocked, with approved_by a Slack user id, cli or system.';
