@@ -347,6 +347,36 @@ def test_the_data_record_names_only_the_data_providers_in_use():
     assert render.data_record(make_settings(clay_verification="required"))["contact_data"] == "Apollo and Clay"
 
 
+# -- two links an email (Harry, 6 Oct 2026) ------------------------------------------------------------
+
+
+def _links(html: str) -> int:
+    return html.count("<a ")
+
+
+def test_every_email_carries_two_links_at_most_body_and_signature_together():
+    for mb in MAILBOXES:
+        for r in sequence(mb=mb):
+            body, sig = r.html.split(f'<p style="{render.SIGNATURE_STYLE}">')
+            assert (_links(body), _links(sig)) == (1, 1), (r.step, mb.address)
+
+
+def test_email_2_keeps_its_call_to_action_and_the_proof_line_loses_its_link():
+    s2 = sequence()[1]
+    assert "trusted by over 50,000 employees" in s2.html and "trusted by over 50,000 employees" in s2.text
+    assert '">trusted by over 50,000 employees</a>' not in s2.html  # the words stay, the link goes
+    assert f'<a href="{DEMO}">book a short demo</a>' in s2.html and s2.ok
+
+
+def test_the_cap_keeps_the_call_to_action_whatever_the_order():
+    source = "[one](https://www.spill.chat/a) and [demo]({{demo_url}}) and [two](https://www.spill.chat/b)"
+    assert copy_markup.cap_links(source, 1, prefer=lambda link: "demo_url" in link) == (
+        "one and [demo]({{demo_url}}) and two")
+    assert copy_markup.cap_links(source, 1) == "[one](https://www.spill.chat/a) and demo and two"
+    assert copy_markup.cap_links(source, 3) == source
+    assert copy_markup.cap_links("no links here", 1) == "no links here"
+
+
 def test_signature_links_follow_the_general_tab_and_blanks_block():
     s = make_settings(booking_link="https://meetings.hubspot.com/someone-else")
     assert '<a href="https://meetings.hubspot.com/someone-else">here</a>' in sequence(settings=s)[1].html

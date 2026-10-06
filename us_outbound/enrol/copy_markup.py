@@ -88,6 +88,20 @@ def links(source: str) -> list[Link]:
     return [Link(m.group(1).strip(), m.group(2).strip()) for m in _LINK.finditer(source)]
 
 
+def cap_links(source: str, limit: int, prefer: Callable[[str], bool] = lambda link: False) -> str:
+    """The copy with at most `limit` of its [text](link)s: the ones prefer() picks stay first, then the earliest;
+    the rest keep their words and lose the link."""
+    found = list(_LINK.finditer(source))
+    if len(found) <= limit:
+        return source
+    kept = set(sorted(range(len(found)), key=lambda i: (not prefer(found[i].group(2).strip()), i))[:max(0, limit)])
+    out, last = [], 0
+    for i, m in enumerate(found):
+        out += [source[last:m.start()], m.group(0) if i in kept else m.group(1)]
+        last = m.end()
+    return "".join(out) + source[last:]
+
+
 def parse(source: str) -> tuple[list[Block], list[str]]:
     """(the blocks, every problem reading the markup)."""
     problems: list[str] = []
