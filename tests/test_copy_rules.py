@@ -221,10 +221,20 @@ def test_every_email_has_exactly_one_demo_link():
 
 def test_links_go_only_to_the_demo_page_the_industry_page_or_spill():
     ok = (("book a demo", DEMO), ("see how Spill works for CPA firms", PAGE), ("our privacy page", PRIVACY))
-    assert emailed(found=ok) == []
+    # Each target alone is allowed; three links in one body break the two-links-an-email rule (below).
+    assert [v for v in emailed(found=ok) if "links in the body" not in v] == []
     bad = emailed(found=(("book a demo", DEMO), ("our story", "https://example.com/x")))
     assert any('links to "https://example.com/x"' in v for v in bad)
     assert any("more than once" in v for v in emailed(found=(("book a demo", DEMO), ("a", PAGE), ("b", PAGE))))
+
+
+def test_the_body_has_one_link_as_the_signature_adds_the_second():
+    """Harry, 6 Oct 2026: two links an email at most, body and signature together."""
+    assert emailed() == []
+    two = (("book a short demo", DEMO), ("trusted by over 50,000 employees", "https://www.spill.chat/us"))
+    assert [v for v in emailed(found=two) if "links in the body" in v] == [
+        "has 2 links in the body; with the signature's link an email has 2 at most, so the body has one, its call "
+        "to action: write any other as plain words"]
 
 
 def test_anchor_text_says_where_the_link_goes():

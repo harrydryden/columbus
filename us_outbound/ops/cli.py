@@ -894,6 +894,11 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if args.action == "qa":
         rows = _pick_rows(settings, args.version, args.industry, None)
+        if args.active:  # the rows enrol can send now: the active industries' and General's (Harry, 6 Oct 2026)
+            from us_outbound.settings.model import GENERAL_COPY
+
+            on = {i.industry.casefold() for i in settings.industries if i.active} | {GENERAL_COPY.casefold()}
+            rows = [c for c in rows if c.industry.casefold() in on]
         if not args.all:
             rows = [c for c in rows if not c.qa_current]
         if not ctx.live:
@@ -1558,6 +1563,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "s1_subject); default: a stored account's own arm, else copy")
     co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
     co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
+    co.add_argument("--active", action="store_true",
+                    help="qa: only the rows of industries active on the Industries tab, and General's")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
 
     st = command("settings", "sync the sheet, load the build's tabs or notes into it, or create it", cmd_settings,

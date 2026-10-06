@@ -157,6 +157,19 @@ def test_copy_qa_dry_run_calls_no_model(capsys):
     assert "sheet check clean; would go to QA" in out and "no model called" in out and sdk.calls == []
 
 
+def test_copy_qa_active_checks_only_the_rows_enrol_can_send(capsys):
+    """--active (Harry, 6 Oct 2026): the active industries' rows and General's, so re-checking edited copy before
+    going live spends only on what can be sent."""
+    from us_outbound.ops import cli
+
+    rows = (copy_row("agencies-v1", AGENCIES, qa=False), copy_row("staffing-v1", "Staffing agencies", qa=False),
+            copy_row("general-v1", "General", qa=False))
+    ctx, sdk = ctx_with(make_settings(copy=rows))
+    assert cli.main(["copy", "qa", "--synced", "--active"], context_factory=lambda *a, **k: ctx) == 0
+    out = capsys.readouterr().out
+    assert "agencies-v1:" in out and "general-v1:" in out and "staffing-v1" not in out and "2 rows" in out
+
+
 def test_copy_qa_live_writes_the_verdicts_to_the_sheet(capsys):
     from us_outbound.ops import cli
 

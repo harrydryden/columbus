@@ -415,8 +415,19 @@ def test_every_contactable_industry_has_a_draft_sequence_for_each_role(settings)
     assert len(settings.copy) == 3 * len(industries)
     assert all(c.copy_version.endswith(f"-{COPY_ROLES[c.role]}-v1") for c in settings.copy)
     assert all(c.status == "draft" and c.approved_by == "" for c in settings.copy)  # only Harry approves copy
-    # Every row passed QA in its current wording: editing data/copy.csv needs `copy qa` again.
-    assert all(c.qa_current for c in settings.copy), [c.copy_version for c in settings.copy if not c.qa_current]
+    # Every row passed QA, and its wording has changed since only by the 6 Oct unlink of email 2's proof line
+    # (two links an email, Harry, 6 Oct 2026), which `copy qa` re-checks on the sheet. Any other edit to
+    # data/copy.csv needs `copy qa` again.
+    linked = "[trusted by over 50,000 employees]({{site_url}})"
+
+    def before_unlink(c):
+        s2 = c.step(2)
+        steps = tuple(dataclasses.replace(st, body=st.body.replace("trusted by over 50,000 employees", linked))
+                      if st is s2 else st for st in c.steps)
+        return dataclasses.replace(c, steps=steps)
+
+    assert all(c.qa_verdict == "pass" and before_unlink(c).content_hash() == c.qa_hash for c in settings.copy), [
+        c.copy_version for c in settings.copy if before_unlink(c).content_hash() != c.qa_hash]
 
 
 def test_every_sequence_passes_the_sheet_check(settings):
@@ -435,7 +446,7 @@ def test_every_sequence_has_harry_s_shape(settings):
             assert heading in s2, (c.copy_version, heading)
         assert "{{price_line}} We don't lock you in." in s2, c.copy_version
         assert "{{industry_url}}" in s1 and "{{demo_url}}" not in s1, c.copy_version  # the page, no demo ask
-        assert "[trusted by over 50,000 employees]({{site_url}})" in s2, c.copy_version
+        assert "trusted by over 50,000 employees" in s2 and "[trusted by" not in s2, c.copy_version  # plain words
         assert all(b.endswith("Best wishes,\n{{sender_first_name}}") for b in (s1, s2, s3, s4)), c.copy_version
         assert all("{{industry_url}}" not in b and "{{demo_url}}" in b for b in (s2, s3, s4)), c.copy_version
         assert len(s2) > max(len(s1), len(s3), len(s4)), c.copy_version  # the long form is email 2

@@ -83,7 +83,7 @@ BODIES = {
        "counseling, often the same day, booked from any phone or from Slack, with evening sessions that fit around "
        "launches. If it's useful, here's [how Spill works for agencies]({{industry_url}}).\n\nBest wishes,\n{{sender_first_name}}",
     2: "Hi {{first_name}},\n\nIn case it's useful, here's a short overview of Spill for agencies.\n\n"
-       "**What is Spill?**\nSpill is an on-demand counseling service, [trusted by over 50,000 employees]({{site_url}}). We help "
+       "**What is Spill?**\nSpill is an on-demand counseling service, trusted by over 50,000 employees. We help "
        "agencies increase productivity, reduce absenteeism and free up HR time by addressing the issues that most often "
        "derail performance at work.\nWith Spill, employees get fast, easy access to professional counseling, and managers "
        "get the tools they need to support anyone on their team who's struggling.\n\n"
@@ -361,20 +361,13 @@ def test_every_email_carries_two_links_at_most_body_and_signature_together():
             assert (_links(body), _links(sig)) == (1, 1), (r.step, mb.address)
 
 
-def test_email_2_keeps_its_call_to_action_and_the_proof_line_loses_its_link():
-    s2 = sequence()[1]
-    assert "trusted by over 50,000 employees" in s2.html and "trusted by over 50,000 employees" in s2.text
-    assert '">trusted by over 50,000 employees</a>' not in s2.html  # the words stay, the link goes
-    assert f'<a href="{DEMO}">book a short demo</a>' in s2.html and s2.ok
-
-
-def test_the_cap_keeps_the_call_to_action_whatever_the_order():
-    source = "[one](https://www.spill.chat/a) and [demo]({{demo_url}}) and [two](https://www.spill.chat/b)"
-    assert copy_markup.cap_links(source, 1, prefer=lambda link: "demo_url" in link) == (
-        "one and [demo]({{demo_url}}) and two")
-    assert copy_markup.cap_links(source, 1) == "[one](https://www.spill.chat/a) and demo and two"
-    assert copy_markup.cap_links(source, 3) == source
-    assert copy_markup.cap_links("no links here", 1) == "no links here"
+def test_a_second_body_link_fails_the_check_and_is_never_rewritten():
+    two = BODIES[2].replace("trusted by over 50,000 employees", "[trusted by over 50,000 employees]({{site_url}})")
+    row = copy_row("agencies-v1", AGENCIES, bodies={**BODIES, 2: two})  # approved, QA passed as written
+    seq = sequence(row=row, settings=make_settings(copy=(row,)))
+    assert "has 2 links in the body" in " ".join(seq[1].violations) and not seq[1].ok  # blocked, never sent
+    assert '">trusted by over 50,000 employees</a>' in seq[1].html  # the email shown is the copy as written
+    assert all(r.ok for r in (seq[0], seq[2], seq[3]))
 
 
 def test_signature_links_follow_the_general_tab_and_blanks_block():

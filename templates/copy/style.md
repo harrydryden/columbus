@@ -45,7 +45,7 @@ system after that; never write them. The signature is the sender's full name and
 which the system picks from the email's own links (Harry, 5 Oct 2026): the booking line when the email
 suggests booking a call, never the website line when the email links a page on the site. Two links an
 email at most, body and signature together (Harry, 6 Oct 2026), so the body has ONE link, its call to
-action; write no other. The system unlinks any other link in the copy, keeping its words.
+action; write no other. A second body link fails the sheet check, and the email is never sent.
 
 1. **Day 0: inform and plant a seed (60 to 110 words; Harry, 1 Oct 2026).** Personal, relevant data and
    a hook, not a sales pitch. "{{opener}}" alone on the line after the greeting: it is filled at enrol

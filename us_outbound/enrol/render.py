@@ -21,11 +21,6 @@ to action.
     rotation by the recipient and the email's number. With the current copy (data/copy.csv, 318 rows),
     email 1 links only {{industry_url}}, a page on the site, so it shows the booking or the reviews line
     by rotation; emails 2 to 4 all link {{demo_url}}, so they always show the booking line.
-  * Two links an email at most, body and signature together (Harry, 6 Oct 2026; the unsubscribe link aside).
-    The signature always carries one, so the body keeps one: its call to action, the industry page in email 1
-    and the demo page in emails 2 to 4 (CALL_TO_ACTION). Any other link in the copy (email 2's "trusted by over
-    50,000 employees", which links the site) keeps its words and loses the link, as the email is sent, previewed
-    and checked.
   * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
     custom_variables() turns them into the lead's Instantly custom variables.
   * subject_arm() is email 1's subject arm (Harry, 5 Oct 2026: a personal subject, as a measured split). The
@@ -96,9 +91,6 @@ PERSONAL_SUBJECT, COPY_SUBJECT = "personal", "copy"
 SUBJECT_ARMS = (PERSONAL_SUBJECT, COPY_SUBJECT)
 SUBJECT_SALT = "email1-subject:"  # not openers.HOLDOUT_SALT: the two splits never line up
 SUBJECT_STEP = 1  # only email 1's subject changes
-MAX_LINKS = 2  # Harry, 6 Oct 2026: links an email carries, body and signature together (the unsubscribe link aside)
-SIGNATURE_LINKS = 1  # the signature's one line, one link (Harry, 5 Oct 2026)
-CALL_TO_ACTION = {1: "industry_url"}  # the body link kept first: email 1's industry page, else the demo page
 
 # Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
 # (General price_from). SPEC 4's price-by-size table is not quoted.
@@ -455,19 +447,14 @@ def render_step(
     problems += [f"subject {x}" for x in p]
     if copy_markup.links(st.subject) or "**" in st.subject:
         problems.append("subject has markup; a subject is plain text")
-    # Two links an email (MAX_LINKS): the signature has one, so the body keeps its call to action.
-    cta = CALL_TO_ACTION.get(step, "demo_url")
-    cta_url = str(variables.get(cta) or "").strip()
-    source = copy_markup.cap_links(st.body, MAX_LINKS - SIGNATURE_LINKS,
-                                   prefer=lambda link: cta in link or bool(cta_url and link == cta_url))
     # UTM tags on our own links, in the HTML only (General utm_links; enrol/utm.py): the copy rules and the
     # signature's choice of line read the bare addresses in body.links.
-    body = copy_markup.render(source, variables, optional=OPTIONAL_VARIABLES,
+    body = copy_markup.render(st.body, variables, optional=OPTIONAL_VARIABLES,
                               href=utm.tagger(settings, copy_version=copy_row.copy_version, step=step))
     problems += [f"body {x}" for x in body.problems]
 
     # After the copy's sign-off: the signature, as its own paragraph, its one line chosen from the body.
-    sig, missing, kind = signature(settings, mailbox.owner_name, body=body, source=source,
+    sig, missing, kind = signature(settings, mailbox.owner_name, body=body, source=st.body,
                                    key=signature_key(variables), step=step,
                                    href=utm.tagger(settings, copy_version=copy_row.copy_version, step=step,
                                                    signature=True))
