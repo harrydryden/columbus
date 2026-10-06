@@ -22,7 +22,10 @@ The rules on each email as sent (email_violations): a subject; no empty or unren
 {{variable}}; no line over 300 characters; the word count for its step; no spam phrases; no
 bare addresses; email 1 links the industry page and not the demo page (Harry, 1 Oct 2026: a demo
 ask first is too presumptive); emails 2 to 4 have exactly one link to the demo page, the call to
-action; links only to the demo page, the industry page or spill.chat. Harry, 1 Oct 2026: email 1
+action; links only to the demo page, the industry page or spill.chat; one link in the body, as the
+signature adds the email's second (Harry, 6 Oct 2026: two links an email at most, body and signature
+together; Instantly's unsubscribe link aside). The rule is checked, never applied: copy with a second body
+link fails the sheet check and is never sent, so what Harry approves is what goes out. Harry, 1 Oct 2026: email 1
 informs and plants a seed, so its copy asks for nothing but a visit to the site (no demo, call or
 meeting words), and email 4 alludes to the free trial before it signs off ("free trial" is allowed
 there and nowhere else).
@@ -321,6 +324,9 @@ _STEP1_ASK = _rx(
     r"|(?:15|20|30)[- ]minutes?)\b"
 )  # "on-call" and "call-outs" are industry words, not an ask
 POOR_ANCHORS = frozenset({"here", "click here", "this link", "link", "this", "click"})
+EMAIL_LINKS = 2  # Harry, 6 Oct 2026: links an email carries at most, body and signature together
+SIGNATURE_LINKS = 1  # the signature's one line, one link (Harry, 5 Oct 2026; render.signature)
+BODY_LINKS = EMAIL_LINKS - SIGNATURE_LINKS
 _DOLLARS = re.compile(r"\$\s?\d|\b\d[\d,]*\s?(?:dollars|USD)\b", _I)
 _EMOJI = re.compile("[\u2600-\u27bf\U0001f000-\U0001faff]")
 _REPLY_PREFIX = _rx(r"^\s*(?:re|fwd?)\s*:")
@@ -408,6 +414,9 @@ def email_violations(
     if not lo <= n <= hi:
         out.append(f"email {step} has {n} words; it should have {lo} to {hi}")
     found = list(links_found)
+    if len(found) > BODY_LINKS:
+        out.append(f"has {len(found)} links in the body; with the signature's link an email has {EMAIL_LINKS} at most, "
+                   "so the body has one, its call to action: write any other as plain words")
     demo = [u for _, u in found if _norm_link(u) == _norm_link(demo_url)] if demo_url else []
     page = [u for _, u in found if industry_url and _norm_link(u) == _norm_link(industry_url)]
     if step == 1:

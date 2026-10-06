@@ -53,7 +53,7 @@ SAMPLE_ACCOUNT = {"account_id": "sample", "domain": "harborfinch.com", "clean_na
 SAMPLE_CONTACT = {"contact_id": "sample", "first_name": "Dana", "last_name": "Reyes"}
 SAMPLE_OPENER = "Pressure at work and at home seems to keep rising, and most teams feel it somewhere."  # the generic line
 ROLE_LINE_MAX = 220  # characters; style.md asks for under 30 words
-QA_MAX_TOKENS = 3000
+QA_MAX_TOKENS = 6000  # 6 Oct 2026: verdicts with several findings ran to 2,700 tokens, and one hit 3,000 unfinished
 DRAFT_MAX_TOKENS = 16000
 DRAFT_TIMEOUT_SECONDS = 600.0
 

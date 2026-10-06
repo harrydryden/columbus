@@ -787,6 +787,9 @@ def _sheet_settings(ctx: Context):
     return settings
 
 
+QA_ERRORS_IN_A_ROW = 3  # copy qa: one row's failed answer is skipped; this many in a row stops the run
+
+
 def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, role: str | None) -> list:
     rows = [c for c in settings.copy if c.status != "retired"]
     if versions:
@@ -894,6 +897,11 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if args.action == "qa":
         rows = _pick_rows(settings, args.version, args.industry, None)
+        if args.active:  # the rows enrol can send now: the active industries' and General's (Harry, 6 Oct 2026)
+            from us_outbound.settings.model import GENERAL_COPY
+
+            on = {i.industry.casefold() for i in settings.industries if i.active} | {GENERAL_COPY.casefold()}
+            rows = [c for c in rows if c.industry.casefold() in on]
         if not args.all:
             rows = [c for c in rows if not c.qa_current]
         if not ctx.live:
@@ -906,13 +914,22 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
             print(f"Dry-run: {len(rows)} rows, no model called. With --live they go to "
                   f"{settings.general.claude_task_model}, at most ${est:.2f} of the monthly cap.")
             return 0
-        results = []
+        from us_outbound.clients.claude import BudgetExceeded
+
+        results, errors = [], 0
         for row in rows:
             try:
                 results.append(copy_desk.qa_row(ctx, row, settings))
-            except Exception as exc:  # the cap, or the API: report and stop, keeping what is done
+                errors = 0
+            except BudgetExceeded as exc:  # the month's cap: stop, keeping what is done
                 print(f"{row.copy_version}: QA stopped: {exc}")
                 break
+            except Exception as exc:  # one row's answer failed: it stays unchecked, the rest go on
+                errors += 1
+                print(f"{row.copy_version}: not checked ({exc}); run copy qa again to retry it")
+                if errors >= QA_ERRORS_IN_A_ROW:
+                    print(f"QA stopped after {errors} failures in a row: the API may be down")
+                    break
         for r in results:
             print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"))
         updates = {r.copy_version: {"qa": r.cell, "qa_notes": r.notes} for r in results}
@@ -1558,6 +1575,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "s1_subject); default: a stored account's own arm, else copy")
     co.add_argument("--html", help="preview: also write the four emails as an HTML page to this path")
     co.add_argument("--all", action="store_true", help="qa: check rows that already passed too")
+    co.add_argument("--active", action="store_true",
+                    help="qa: only the rows of industries active on the Industries tab, and General's")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
 
     st = command("settings", "sync the sheet, load the build's tabs or notes into it, or create it", cmd_settings,

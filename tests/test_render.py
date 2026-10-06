@@ -83,7 +83,7 @@ BODIES = {
        "counseling, often the same day, booked from any phone or from Slack, with evening sessions that fit around "
        "launches. If it's useful, here's [how Spill works for agencies]({{industry_url}}).\n\nBest wishes,\n{{sender_first_name}}",
     2: "Hi {{first_name}},\n\nIn case it's useful, here's a short overview of Spill for agencies.\n\n"
-       "**What is Spill?**\nSpill is an on-demand counseling service, [trusted by over 50,000 employees]({{site_url}}). We help "
+       "**What is Spill?**\nSpill is an on-demand counseling service, trusted by over 50,000 employees. We help "
        "agencies increase productivity, reduce absenteeism and free up HR time by addressing the issues that most often "
        "derail performance at work.\nWith Spill, employees get fast, easy access to professional counseling, and managers "
        "get the tools they need to support anyone on their team who's struggling.\n\n"
@@ -345,6 +345,29 @@ def test_the_data_record_names_only_the_data_providers_in_use():
         "contact_data": "Apollo", "company_information": "the company's public website",
         "lawful_basis": "legitimate interests: telling businesses about Spill", "shown_in_email": False}
     assert render.data_record(make_settings(clay_verification="required"))["contact_data"] == "Apollo and Clay"
+
+
+# -- two links an email (Harry, 6 Oct 2026) ------------------------------------------------------------
+
+
+def _links(html: str) -> int:
+    return html.count("<a ")
+
+
+def test_every_email_carries_two_links_at_most_body_and_signature_together():
+    for mb in MAILBOXES:
+        for r in sequence(mb=mb):
+            body, sig = r.html.split(f'<p style="{render.SIGNATURE_STYLE}">')
+            assert (_links(body), _links(sig)) == (1, 1), (r.step, mb.address)
+
+
+def test_a_second_body_link_fails_the_check_and_is_never_rewritten():
+    two = BODIES[2].replace("trusted by over 50,000 employees", "[trusted by over 50,000 employees]({{site_url}})")
+    row = copy_row("agencies-v1", AGENCIES, bodies={**BODIES, 2: two})  # approved, QA passed as written
+    seq = sequence(row=row, settings=make_settings(copy=(row,)))
+    assert "has 2 links in the body" in " ".join(seq[1].violations) and not seq[1].ok  # blocked, never sent
+    assert '">trusted by over 50,000 employees</a>' in seq[1].html  # the email shown is the copy as written
+    assert all(r.ok for r in (seq[0], seq[2], seq[3]))
 
 
 def test_signature_links_follow_the_general_tab_and_blanks_block():

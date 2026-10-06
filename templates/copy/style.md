@@ -43,8 +43,9 @@ Every email opens "Hi {{first_name}}," and ends with "Best wishes," and "{{sende
 line (Harry, 1 Oct 2026). The signature and the unsubscribe link are added by the
 system after that; never write them. The signature is the sender's full name and one line with one link,
 which the system picks from the email's own links (Harry, 5 Oct 2026): the booking line when the email
-suggests booking a call, never the website line when the email links a page on the site. So write the
-links the email needs and let the signature follow.
+suggests booking a call, never the website line when the email links a page on the site. Two links an
+email at most, body and signature together (Harry, 6 Oct 2026), so the body has ONE link, its call to
+action; write no other. A second body link fails the sheet check, and the email is never sent.
 
 1. **Day 0: inform and plant a seed (60 to 110 words; Harry, 1 Oct 2026).** Personal, relevant data and
    a hook, not a sales pitch. "{{opener}}" alone on the line after the greeting: it is filled at enrol
@@ -64,7 +65,8 @@ links the email needs and let the signature follow.
    - **What makes Spill unique** four bullets: same-day support in a couple of clicks with no waiting
      lists; one or two points that matter to this role in this industry; the tools it works through;
      and "{{price_line}} We don't lock you in."
-   Email 2 also links the site in "What is Spill?" ({{site_url}}). The call to action is a demo link:
+   "What is Spill?" says it is trusted by over 50,000 employees, as plain words: no link (two links an
+   email, Harry, 6 Oct 2026). The call to action, the email's one link, is a demo link:
    [book a short demo]({{demo_url}}) or similar anchor text.
 3. **Day 14: a new angle for the role (50 to 90 words).** One different reason, chosen for the role:
    - People leader: confidentiality and uptake, manager training, working alongside an EAP, easy
@@ -179,7 +181,7 @@ Hi {{first_name}},
 In case it's useful, here's a short overview of Spill.
 
 **What is Spill?**
-Spill is an on-demand counseling service, [trusted by over 50,000 employees]({{site_url}}). We help organizations increase staff productivity, reduce absenteeism and free up HR time by addressing the issues that most often derail performance at work.
+Spill is an on-demand counseling service, trusted by over 50,000 employees. We help organizations increase staff productivity, reduce absenteeism and free up HR time by addressing the issues that most often derail performance at work.
 With Spill, employees get fast, easy access to professional counseling, and managers get the tools they need to support anyone on their team who's struggling.
 
 **Who is Spill for?**

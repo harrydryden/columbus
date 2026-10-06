@@ -171,7 +171,11 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
 
 - **Focus tab:** the industry mix (Tech 50%, Agencies 30%, Legal 20% to start). Change the shares there.
 - **Copy:** approve rows on the Copy tab (`status` approved, `approved_by`). Editing a row clears its
-  QA pass, so run `us-outbound copy qa --live` after an edit, then `us-outbound sync`.
+  QA pass, so run `us-outbound copy qa --live` after an edit, then `us-outbound sync`. Add `--active` to
+  re-check only the rows that can be sent now (the active industries' and General's), which keeps the spend
+  well inside the month's Claude cap; run it without `--live` first to see the rows and the most it can cost.
+  Every email has two links at most, body and signature together (Harry, 6 Oct 2026): the body's one link is
+  its call to action, and a row with a second body link fails the check and is never sent.
 - **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
   hold (docs/roadmap.md §3).
 - **Email 1's subject split** (5 Oct 2026): half the companies (General `email1_subject_share`, 0.5)

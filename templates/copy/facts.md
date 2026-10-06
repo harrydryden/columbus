@@ -7,7 +7,8 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 ## Claims
 
 - Spill is an on-demand counseling service for employees, trusted by over 50,000 employees (Harry, 1 Oct
-  2026), written as [trusted by over 50,000 employees]({{site_url}}).
+  2026), written as plain words with no link: an email has two links at most, the body's call to action and
+  the signature's (Harry, 6 Oct 2026).
 - Spill helps organizations increase staff productivity, reduce absenteeism and free up HR time by
   addressing the issues that most often derail performance at work.
 - Employees get fast, easy access to professional counseling, often the same day, in a couple of clicks.
