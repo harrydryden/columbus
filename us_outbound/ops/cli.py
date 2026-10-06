@@ -408,7 +408,7 @@ def _waiting_for_you(ctx: Context) -> str:
 def _status_limits(ctx: Context) -> None:
     """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
     from us_outbound import limits
-    from us_outbound.enrol import approvals, enrol
+    from us_outbound.enrol import approvals, enrol, second
 
     try:
         # As enrol.run: pulled accounts and waiting cards stay out, and the cards hold their senders' slots.
@@ -416,7 +416,9 @@ def _status_limits(ctx: Context) -> None:
         _, pulled = enrol.hand_check(ctx, day)
         held = approvals.waiting(ctx)
         ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-        lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
+        seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
+        lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
+                           second_ready=len(seconds))
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
@@ -455,6 +457,9 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
     print(f"Running test: {running.test_id} (read on {running.read_date})" if running else "Running test: none")
+    from us_outbound.enrol import second
+
+    print(second.describe(s))  # the second-contact switch (Harry, 6 Oct 2026)
     _status_heartbeats(ctx.store, ctx.now)
     print("Mailboxes:")
     try:

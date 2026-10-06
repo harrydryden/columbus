@@ -48,6 +48,10 @@ Every read is filtered by registry mailbox or by US Outbound campaign (SPEC 1.2)
 or lead that belongs to no contact of ours is counted and dropped. Dry-run reads Instantly and
 writes the database (SPEC 0.3), but nothing to Instantly or HubSpot.
 
+Then the account-level stop (replies/account_stop.py; Harry, 6 Oct 2026): at an account where someone
+replied, bounced, unsubscribed or complained, every other contact's lead is stopped too. It matters only
+for accounts with a second contact (enrol/second.py); with one contact per account it calls nothing.
+
 Directory, since() and mark_engaged() are shared with poll_replies.
 
 Not here yet (SPEC 9's other sync_outcomes duties): deleting leads 31 days after their last step,
@@ -562,6 +566,10 @@ def run(ctx: Context) -> dict:
     replied, auto = _record_replies(ctx, d, received, dropped)
     if w.read_leads:
         _lead_outcomes(ctx, d, campaigns.values(), out, dropped)
+    # Anyone's reply, bounce, unsubscribe or complaint stops every sequence at the account (Harry, 6 Oct 2026).
+    from us_outbound.replies import account_stop
+
+    out["account_stops"] = account_stop.sweep(ctx)
 
     out.update(sent=sent, contacts_with_new_sends=len(touched), replied=replied, auto_replies_left_to_poll_replies=auto,
                unsubscribed=dict(out["unsubscribed"]), dropped=dict(dropped))

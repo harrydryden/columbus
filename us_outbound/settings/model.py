@@ -210,6 +210,12 @@ class General:
     # (build) Harry, 6 Oct 2026: Clay's cross-check of the HQ state and size Apollo leaves in doubt, before the weekly
     # hand-check (us_outbound/clay_cross_check.py), through clay_accounts_function_id; no until that function is built.
     clay_cross_check: bool = False
+    # (build) Harry, 6 Oct 2026: a second contact, of another role, at accounts of second_contact_min_employees or
+    # more staff (company_size), second_contact_delay_days after the first contact's email 1, from the same sender
+    # (enrol/second.py). Off by default: sending capacity is the binding limit today.
+    second_contact: bool = False
+    second_contact_min_employees: int = 50
+    second_contact_delay_days: int = 3
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
     # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.

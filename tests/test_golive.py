@@ -88,6 +88,9 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
     # auto_send = no by default (Harry, 2 Oct 2026): every email waits for approval, so no hand-check line.
     assert got["auto_send"] == "PASS  auto_send: auto_send = no: every email waits for approval in Slack"
     assert "Hand-check" not in got
+    # The second-contact switch, off by default (Harry, 6 Oct 2026): a line for information.
+    assert got["Second contact"] == ("PASS  Second contact: off (General second_contact = no): one person per "
+                                     "company.")
     assert got["Enrollment"].startswith("PASS")
     assert got["Jobs"].startswith("PASS")  # every job a live send needs is built and scheduled
     assert got["clay_verification"] == "PASS  clay_verification: skip: accounts are verified on Apollo data and HubSpot"
@@ -96,7 +99,7 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
                                   "paste them on the General tab, then `us-outbound sync`")
     assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of the unsubscribe link not done")
     assert got["Opt-out tested"].endswith("set optout_tested = yes on the General tab, then `us-outbound sync`")
-    assert out.splitlines()[-1] == ("NO-GO: 7 FAIL, 1 WARN, 7 PASS. Fix every FAIL, then run `us-outbound golive` "
+    assert out.splitlines()[-1] == ("NO-GO: 7 FAIL, 1 WARN, 8 PASS. Fix every FAIL, then run `us-outbound golive` "
                                     "again.")
     assert not [line for line in report if "SPEC" in line]  # plain words for Harry
     # Read-only: no write was attempted anywhere.
@@ -148,7 +151,7 @@ def test_golive_is_a_go_when_every_blocker_is_cleared(monkeypatch, capsys):
     assert "Hand-check" not in got  # every email is approved in Slack
     assert got["clay_verification"] == "PASS  clay_verification: skip: accounts are verified on Apollo data and HubSpot"
     assert got["HubSpot ids"] == "PASS  HubSpot ids: pipeline, deal stage and owner set: a positive reply creates a deal"
-    assert out.splitlines()[-1] == ("GO: 0 FAIL, 1 WARN, 14 PASS. Next: `us-outbound start --live`; cards arrive in "
+    assert out.splitlines()[-1] == ("GO: 0 FAIL, 1 WARN, 15 PASS. Next: `us-outbound start --live`; cards arrive in "
                                     "#us-outbound after enrol at 12:00 UK.")
 
 

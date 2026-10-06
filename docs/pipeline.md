@@ -198,11 +198,42 @@ An account also needs at least one candidate contact: a person matching the Role
 
 A sheet made before 1 Oct 2026 has the Roles tab in SPEC 5's layout. It is still read, as the old order, until `us-outbound settings load --tab Roles --live` replaces it; settings_sync says so meanwhile.
 
+**A second contact (multi-threading; Harry, 6 Oct 2026; `enrol/second.py`).** Behind the General switch
+`second_contact` (no by default: sending capacity is the binding limit today):
+- **Where:** enrolled accounts of `second_contact_min_employees` (50) or more staff, read as the Roles tab
+  reads size (a 50–99 band is 50), still in a queue tier.
+- **Who:** the best-ranked person, by the Roles tab's order for the size, whose copy role is not the
+  first contact's: the founder after a People leader, a People leader after a founder. An HR manager writes
+  as a People leader, so never follows one. `pick_contacts` reveals them through every check a first
+  contact passes (verified email from Apollo or Clay's fallback, not in CA or WA, not suppressed, not a
+  personal domain, shared mailbox or customer domain, nobody's contact yet; at most two reveals), against
+  the same Apollo budget, and only with what the first contacts of new accounts leave of its lookahead.
+- **When:** never before the first contact is enrolled, and only `second_contact_delay_days` (3) after
+  `sync_outcomes` records the first contact's email 1 as sent, so the two first emails never arrive the same
+  day. The account must still be enrolled, with nobody at it who replied, bounced, unsubscribed or
+  complained, and no second contact yet. One second contact an account, never more.
+- **Its `contact_pick` fact** has `slot` 2; the contact is written with `contact_slot` 2 when enrolled.
+
 **5. Enrol: weekdays at 12:00, `enrol`.**
 - It works out today's number (below), re-checks HubSpot, assigns the test version and renders the copy.
 - With `auto_send` = no (the pilot; Harry, 2 Oct 2026), it adds no lead: it posts a send approval, a card with the whole sequence, to #us-outbound. Only an approver's ✅ (or `us-outbound approvals send ID --live`) adds the lead to its sender's campaign, after re-checking HubSpot, opt-outs and the pauses. A card not approved by the end of the next send day lapses, and the account goes back to the queue. Cards still waiting hold their sender's slots and count towards the week.
 - With `auto_send` = yes, it adds the leads straight away, once the weekly hand-check is approved.
 - In a live run, an owner whose campaign is not active in Instantly gets no capacity and no cards: `us-outbound start --live` activates it. **Status: `enrolled`** once the lead is added.
+- **Second contacts** (with `second_contact` = yes) count in ready accounts, so in today's number, in the
+  week (`weekly_enrol_cap` counts contacts: a second contact is one more) and in their sender's slots, but
+  are walked after every first contact, so they take only what new accounts leave. They keep the account's
+  sender (its campaign; a paused or full sender's second contacts wait), get their own role's Copy row
+  (falling back as a first contact's does: the industry, its group, then General; skipped when none is
+  approved, or when the row is the very one the first contact got) and their own opener, and share the
+  account's test version, opener holdout and subject arm. Their card is headed "Send approval · second
+  contact" and names the first contact and when their email 1 went. The industry focus shares out new
+  accounts only, so a second contact is outside it.
+- **Both sequences stop when anyone at the account replies, bounces, unsubscribes or complains**
+  (`replies/account_stop.py`, run by `sync_outcomes` every 15 minutes). Instantly's own stop for the
+  company covers most replies; the sweep covers bounces, unsubscribes, complaints and replies Instantly
+  ties to no lead. The colleague's lead is paused once phase 0 confirms Instantly's lead pause
+  (`LEAD_PAUSE_CONFIRMED`), and deleted from the campaign until then; each stop is a `lead_stopped` event.
+  Suppression stays per address: an unsubscribe or bounce suppresses only that address, never the colleague.
 
 ### Why fit, not signals, finds accounts
 
@@ -262,7 +293,7 @@ Today's number is the smallest of three terms:
 | :- | :- | :- |
 | **Weekly target** | What's left of `weekly_enrol_cap` ÷ the send days left this week | A higher `weekly_enrol_cap` |
 | **Sending capacity** | Each sender's new leads today, after the follow-ups already due and Instantly's backlog (next section) | Another mailbox, or a higher daily cap once warm |
-| **Ready accounts** | Verified accounts with a sendable email | Whatever is short behind it (below) |
+| **Ready accounts** | Verified accounts with a sendable email, and second contacts due today (with `second_contact` = yes) | Whatever is short behind it (below) |
 
 When ready accounts is the limit, the explanation walks back through the stages and names the first one that is short:
 1. verified accounts still waiting for an email, and whether Apollo's budget is used (for today, or until the 1st);

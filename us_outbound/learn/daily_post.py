@@ -22,7 +22,8 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
     enrol counts them (enrol/approvals.waiting: their accounts are not ready again, and they hold
     their senders' slots); and why enrollment waits today, from enrol.gate (a blackout or non-send
     day, an operator stop, the stop rule, a positive reply waiting too long), plus the hand-check
-    only while auto_send = yes, and a note when live_sending is no (enrol then runs dry);
+    only while auto_send = yes, and a note when live_sending is no (enrol then runs dry); and the
+    second-contact switch (enrol/second.py; 6 Oct 2026): "Second contact: off", or how many are ready;
   * Sources: the careers and benefits page reader's coverage, its last run, every account read so
     far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
     what Apollo's organization enrich found, with funding in the last 180 and 365 days
@@ -52,7 +53,7 @@ from typing import Any
 
 from us_outbound import budget, limits
 from us_outbound.context import UK, Context
-from us_outbound.enrol import approvals, enrol
+from us_outbound.enrol import approvals, enrol, second
 from us_outbound.learn import daily_report, holds, kill_rules
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify
@@ -240,7 +241,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     hand_check_waits, pulled = enrol.hand_check(ctx, today_et)
     held = approvals.waiting(ctx)
     ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, today_et, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
+    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
+    lim = limits.today(ctx, today_et, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
+                       second_ready=len(seconds))
     nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
 
     # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.
@@ -262,6 +265,8 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     # the hand-check only while auto_send = yes (with no, every email is approved in Slack instead).
     lines += ["", "*Today's number*", lim.explanation]
     lines += [f"  {line}" for line in lim.detail]
+    if not second.on(ctx.settings):  # when on, limits.py's own line says how many are ready
+        lines.append(f"  {second.describe(ctx.settings)}")
     why = enrol.gate(ctx, today_et)
     if why is None and ctx.settings.general.auto_send:
         why = hand_check_waits
