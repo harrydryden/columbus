@@ -66,7 +66,7 @@ EXPECTED: dict[str, int] = {
     "kill_rules": 150,  # hourly
     "heartbeat_check": 150,  # hourly (nothing watches this one; the daily post reports it)
     "daily_post": 26 * _H,  # 09:00 daily
-    "monday_readout": 8 * _DAY,  # Mon 09:00
+    "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
     # Monthly jobs (build additions, Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack, so a monthly
     # job is never "missed" between its runs.

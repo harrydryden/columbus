@@ -28,6 +28,7 @@ from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES
 from us_outbound.settings.model import (
+    AB_TEST,
     ACTIONS,
     CLAY_VERIFICATION_MODES,
     COPY_STATUSES,
@@ -39,6 +40,8 @@ from us_outbound.settings.model import (
     GENERIC_LINE_TOKENS,
     GENERIC_OPENER_KEY,
     GENERIC_OPENER_KEYS,
+    HOLDOUT_ARMS,
+    HOLDOUT_TEST,
     MAILBOX_STATUSES,
     OPENER_COLUMNS,
     OPENER_SELF_COLUMN,
@@ -55,6 +58,7 @@ from us_outbound.settings.model import (
     SOURCE_FIELDS,
     SOURCE_KEYS,
     TABS,
+    TEST_KINDS,
     TEST_STATUSES,
     TEXT_SOURCES,
     Angle,
@@ -86,6 +90,7 @@ TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Roles": frozenset({"copy_role", "industry_groups"}),
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
     "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
+    "Tests": frozenset({"kind", "looks"}),  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -205,6 +210,24 @@ def parse_date(text: str) -> date:
         return date.fromisoformat(t)
     except ValueError:
         raise ValueError(f"must be a date written YYYY-MM-DD, not {text!r}") from None
+
+
+def parse_looks(text: str) -> tuple[int | date, ...]:
+    """"200; 2026-11-16" -> (200, date(2026, 11, 16)): a test's pre-registered looks (Harry, 6 Oct 2026), each a
+    whole number of accounts per arm with closed reply windows, or a date. Separated by semicolons or commas."""
+    out: list[int | date] = []
+    for part in split_list(text, ";,"):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
+            look: int | date = parse_date(part)
+        elif re.fullmatch(r"\d+", part) and int(part) >= 1:
+            look = int(part)
+        else:
+            raise ValueError(f"each look is a number of accounts per version, like 200, or a date written "
+                             f"YYYY-MM-DD, not {part!r}")
+        if look in out:
+            raise ValueError(f"{part} is listed twice")
+        out.append(look)
+    return tuple(out)
 
 
 def split_list(text: str, seps: str = ";") -> tuple[str, ...]:
@@ -1088,18 +1111,33 @@ def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
     return out
 
 
+def _holdout_arms(a: str, b: str) -> str:
+    """Why a holdout test's versions are not the two arms of one split, or ""."""
+    col_a, col_b = HOLDOUT_ARMS.get(a.casefold()), HOLDOUT_ARMS.get(b.casefold())
+    if col_a and col_a == col_b and a.casefold() != b.casefold():
+        return ""
+    return ("a holdout test compares the two arms of one split enrol records: opener and holdout (the opener "
+            "holdout), or personal and copy (email 1's subject)")
+
+
 def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
+    """The Tests tab. kind (ab, the default, or holdout) and looks (Harry, 6 Oct 2026) are optional columns."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
     for r in rows:
         test_id = r.parse("test_id", str)
         _unique(r, "test_id", test_id, seen, f"test {test_id!r}")
+        kind = r.parse("kind", one_of(TEST_KINDS), required=False, default=AB_TEST)
         hypothesis = r.parse("hypothesis", str)
         a = r.parse("version_a", str)
         b = r.parse("version_b", str)
         if a and b and a == b:
             r.fail("version_b", "must differ from version_a")
+        elif a and b and kind == HOLDOUT_TEST and (why := _holdout_arms(a, b)):
+            r.fail("version_b", why)
+        elif kind == HOLDOUT_TEST and a and b:
+            a, b = a.casefold(), b.casefold()  # the arms as enrol writes them
         n = r.parse("accounts_per_version", parse_int)
         if n is not None and n < 1:
             r.fail("accounts_per_version", "must be 1 or more")
@@ -1110,13 +1148,24 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
         rule = r.parse("decision_rule", str, required=is_running, default="")
         if start and read and read <= start:
             r.fail("read_date", "must be after start_date")
-        if is_running:
+        looks = r.parse("looks", parse_looks, required=False, default=())
+        for look in looks:
+            if isinstance(look, date):
+                if start and look <= start:
+                    r.fail("looks", f"{look} must be after start_date ({start})")
+                if read and look >= read:
+                    r.fail("looks", f"{look} must be before read_date ({read}), which is always the last look")
+            elif n is not None and look > n:
+                r.fail("looks", f"{look} is more than accounts_per_version ({n})")
+        # SPEC 9: one copy test at a time, since it decides each account's copy. A holdout assigns nothing.
+        if is_running and kind == AB_TEST:
             if running is not None:
                 r.fail("status", f"only one test runs at a time; row {running} is already running")
             else:
                 running = r.number
         if r.ok:
-            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result")), r.number))
+            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks),
+                        r.number))
     return out
 
 
@@ -1227,7 +1276,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
     # A test's versions may be written after it is planned; a running test needs both approved.
     versions = {_cell(r, "copy_version").casefold(): _cell(r, "status").lower() for r in raw["Copy"] or ()}
     for t, row in values["Tests"]:
-        if t.status != "running":
+        if t.status != "running" or t.kind != AB_TEST:  # a holdout's arms are no copy versions
             continue
         for col, version in (("version_a", t.version_a), ("version_b", t.version_b)):
             status = versions.get(version.casefold())

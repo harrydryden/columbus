@@ -52,6 +52,7 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
                  "tier_at_enrol", "data_record", "subject_arm",
                  "contact_slot"},  # enrol/second.py (Harry, 6 Oct 2026)
     "suppression": {"expires_at"},
+    "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
@@ -115,6 +116,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
     },
+    ("events", "source"): {"hubspot_meeting", "hubspot_deal"},  # crm/readback.py (Harry, 6 Oct 2026)
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",

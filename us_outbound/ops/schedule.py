@@ -82,7 +82,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
     ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
-    ScheduledJob("monday_readout", "0 9 * * 1", live=True, enabled=False, timeout_minutes=20, phase=3),
+    # Harry, 6 Oct 2026 ("push ahead with building"): Mondays at 08:30, after the hand-check (08:00) and before the
+    # daily post (09:00; SPEC 9 had both at 09:00). It only reads and posts: the alert channel needs --live, and in
+    # dry-run the post goes to the dev channel (learn/readout.py).
+    ScheduledJob("monday_readout", "30 8 * * 1", live=True, enabled=True, timeout_minutes=20, phase=3),
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
