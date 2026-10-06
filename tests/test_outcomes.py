@@ -24,7 +24,10 @@ def run(world):
 
 
 def test_the_event_names_are_the_ones_capacity_reads():
-    assert set(STOP_EVENTS) == {outcomes.REPLIED, outcomes.BOUNCED, outcomes.UNSUBSCRIBED}
+    from us_outbound.replies import account_stop
+
+    # lead_stopped: the account-level stop of a colleague's lead (Harry, 6 Oct 2026).
+    assert set(STOP_EVENTS) == {outcomes.REPLIED, outcomes.BOUNCED, outcomes.UNSUBSCRIBED, account_stop.STOPPED}
     assert outcomes.SENT == "sent"
 
 

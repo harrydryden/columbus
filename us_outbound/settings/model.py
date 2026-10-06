@@ -197,6 +197,12 @@ class General:
     clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
     clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
     clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
+    # (build) Harry, 6 Oct 2026: a second contact, of another role, at accounts of second_contact_min_employees or
+    # more staff (company_size), second_contact_delay_days after the first contact's email 1, from the same sender
+    # (enrol/second.py). Off by default: sending capacity is the binding limit today.
+    second_contact: bool = False
+    second_contact_min_employees: int = 50
+    second_contact_delay_days: int = 3
     apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
     # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.

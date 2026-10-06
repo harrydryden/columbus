@@ -7,7 +7,8 @@ Harry, 30 Sep 2026:
     today, so the budget lasts the month instead of going in the first week. The jobs that
     spend (source_universe, verify_in_clay, pick_contacts) check this before every batch and
     stop at zero (SPEC 1.6). Enrolment spends no credits, so budgets never hold it back directly.
-  * weekly_enrol_cap is the most new accounts enrolled in a week, Monday to Sunday, UK time.
+  * weekly_enrol_cap is the most new accounts enrolled in a week, Monday to Sunday, UK time (a second
+    contact at an account counts as one more; enrol/second.py, 6 Oct 2026).
     Each send day takes what is left of it ÷ the send days left in the week, so a short day
     is made up later in the same week.
 The Claude cap is monthly too, a UTC month as the Anthropic Console counts it (clients/claude.py).
@@ -259,5 +260,6 @@ def weekly_target_today(settings: Settings, enrolled_this_week: int, days_left: 
 
 
 def enrolled_this_week(contacts: list[Mapping[str, Any]], now: datetime) -> int:
-    """Accounts first enrolled this week (one contact per account in v1), from contacts.enrolled_at."""
-    return len({c.get("account_id") or c.get("contact_id") for c in contacts if in_week(c.get("enrolled_at"), now)})
+    """Contacts enrolled this week, from contacts.enrolled_at: one a company, and a second contact at a company
+    counts as one more (enrol/second.py; Harry, 6 Oct 2026: it "counts against the day's enrolment number")."""
+    return len({c.get("contact_id") or c.get("account_id") for c in contacts if in_week(c.get("enrolled_at"), now)})

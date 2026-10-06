@@ -27,6 +27,12 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      contact yet. Otherwise the next candidate, at most MAX_REVEALS per account.
   6. Write: one contact per account (v1); or, when nobody suitable exists, a contact_pick fact
      saying why, which limits.py reports as "no suitable contact".
+  7. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026):
+     after the first contacts, and only with what they leave of the lookahead, enrolled accounts of
+     second_contact_min_employees or more staff whose second contact is due within the next two send
+     days get the same search, ranking, checks and reveals, leaving out people of the first contact's
+     copy role. Their reveals count against the Apollo budget like any; their contact_pick fact has
+     slot 2.
 
 Every reveal and every outcome is a signal_events fact with source pick_contacts (no names or
 emails), so nobody is paid for twice. SOURCE is not a SPEC 7 source key, so no Signals row can
@@ -68,7 +74,7 @@ from us_outbound.clients.clay import WORK_EMAIL_FUNCTION_ID, ClayError, parse_co
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
-from us_outbound.enrol import enrol, queue
+from us_outbound.enrol import enrol, queue, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
@@ -375,9 +381,12 @@ def full_search_is_fresh(ctx: Context, account_id: str) -> bool:
 
 def rank_candidates(
     people: Sequence[Mapping[str, Any]], account: Mapping[str, Any], settings: Settings, today: date,
-    revealed: Container[str] = frozenset(),
+    revealed: Container[str] = frozenset(), exclude_roles: Container[str] = frozenset(),
 ) -> tuple[list[Candidate], Counter[str]]:
-    """(the people who may be contacted, best first; how many were left out and why)."""
+    """(the people who may be contacted, best first; how many were left out and why).
+
+    exclude_roles: copy roles (lower case) left out, for a second contact: the first contact's (enrol/second.py).
+    """
     size, group = account_size(account), settings.industry_group_of(account)
     out: list[Candidate] = []
     left_out: Counter[str] = Counter()
@@ -392,6 +401,9 @@ def rank_candidates(
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is None:
             left_out["title not contacted at this size"] += 1
+            continue
+        if r.role.writes_as.strip().lower() in exclude_roles:
+            left_out["the first contact's role"] += 1
             continue
         out.append(Candidate(dict(p), r))
     out.sort(key=lambda c: (c.ranked.key, c.id))
@@ -605,9 +617,10 @@ def _most(c: Counter[str]) -> str:
 
 def pick_account(
     ctx: Context, account: Mapping[str, Any], batch: _Run, revealed: Container[str],
-    domains: set[str], hashes: set[str], known: set[str],
+    domains: set[str], hashes: set[str], known: set[str], exclude_roles: Container[str] = frozenset(),
 ) -> Outcome:
-    """Search, rank and reveal for one account; writes the contact and the reveal facts."""
+    """Search, rank and reveal for one account; writes the contact and the reveal facts. exclude_roles: for a
+    second contact, the first contact's copy role (rank_candidates)."""
     s = ctx.settings
     size = account_size(account)
     if size is None:
@@ -624,7 +637,7 @@ def pick_account(
     if not people:
         return Outcome(NO_CONTACT, "nobody at Apollo with a Roles-tab title for its size, in the US, with a verified email",
                        detail={"found": 0})
-    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed)
+    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed, exclude_roles)
     detail: dict[str, Any] = {"found": len(people), "candidates": len(cands), "left_out": dict(left_out)}
     if not cands:
         return Outcome(NO_CONTACT, f"nobody suitable ({_most(left_out)})", detail=detail)
@@ -668,20 +681,24 @@ def pick_account(
 # -- the job --------------------------------------------------------------------------------------
 
 
-def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run) -> None:
+def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run, slot: int = 1) -> None:
     aid = account["account_id"]
     value = {"outcome": out.outcome, "reason": out.reason, **out.detail}
+    if slot != 1:
+        value["slot"] = slot  # a second contact (enrol/second.py)
     if out.outcome == PICKED and out.contact and out.candidate:
         value.update(contact_id=out.contact["contact_id"], row=out.candidate.ranked.role.role,
                      role=out.contact["role"], seniority=SENIORITY[out.candidate.ranked.seniority],
                      apollo_person_id=out.candidate.id,  # the opener knows when the contact is the new leader
                      email_source=out.contact["email_source"])
         batch.picked.append({"account_id": aid, "domain": account.get("domain"), "row": value["row"],
-                             "role": value["role"], "seniority": value["seniority"]})
+                             "role": value["role"], "seniority": value["seniority"],
+                             **({"slot": slot} if slot != 1 else {})})
     else:
-        batch.no_contact[out.reason] += 1
+        reason = out.reason if slot == 1 else f"second contact: {out.reason}"
+        batch.no_contact[reason] += 1
         if len(batch.no_contact_accounts) < LIST_LIMIT:
-            batch.no_contact_accounts.append({"account_id": aid, "domain": account.get("domain"), "reason": out.reason})
+            batch.no_contact_accounts.append({"account_id": aid, "domain": account.get("domain"), "reason": reason})
     ctx.store.insert("signal_events", [_fact(aid, OUTCOME_FACT, value, ctx.now)])
     log("pick_contacts_account", account_id=aid, outcome=out.outcome, reason=out.reason, row=value.get("row"))
 
@@ -717,12 +734,20 @@ def run(ctx: Context) -> dict:
     due = [a for a in need if not past.cooling(a["account_id"], ctx.now)]
     want = max(0, lookahead(s) - ready)
     summary.update(ready_before=ready, wanted=want, waiting=len(need), tried_recently=len(need) - len(due))
+    # Second contacts (enrol/second.py; Harry, 6 Oct 2026), due within the same lookahead: ([], 0), without a
+    # read, while second_contact is no. They are revealed only with what the first contacts leave of `want`.
+    need2, ready2 = second.to_pick(ctx, second.due_by(ctx, LOOKAHEAD_SEND_DAYS))
+    due2 = [(a, role) for a, role in need2 if not past.cooling(a["account_id"], ctx.now)]
+    if second.on(s):
+        summary["second_contacts"] = {"ready_before": ready2, "waiting": len(need2),
+                                      "tried_recently": len(need2) - len(due2), "picked": 0}
 
     month = budget.monthly(store, s, "apollo", ctx.now)
     batch = _Run(left=month.left_today, balance=None, floor=s.general.apollo_floor)
     why = None
-    if not want or not due:
-        why = "enough accounts are ready for the next two send days" if not want else "no account is waiting for a contact"
+    if not want or not (due or (due2 and want > ready2)):
+        enough = not want or (not due and due2)
+        why = "enough accounts are ready for the next two send days" if enough else "no account is waiting for a contact"
     elif month.budget <= 0:
         why = "no monthly Apollo budget (apollo_monthly_credits is 0)"
     why = why or batch.why_not_reveal()
@@ -753,6 +778,28 @@ def run(ctx: Context) -> dict:
             break
         batch.tried += 1
         _record(ctx, account, out, batch)
+    # Then second contacts, with what is left of the lookahead once the first contacts are counted: the first
+    # contacts of new accounts come first when capacity is short (Harry, 6 Oct 2026).
+    room2 = max(0, lookahead(s) - ready - len(batch.picked) - ready2)
+    picked2 = 0
+    for account, role in due2:
+        if picked2 >= room2 or batch.stopped:
+            break
+        try:
+            out = pick_account(ctx, account, batch, past.revealed[account["account_id"]], domains, hashes, known,
+                               exclude_roles=frozenset({role}))
+        except ApiError as exc:
+            batch.errors.append(f"{account.get('domain')}: {str(exc)[:200]}")
+            if len(batch.errors) >= MAX_ERRORS:
+                batch.stopped = f"{MAX_ERRORS} Apollo errors"
+            continue
+        if out.outcome == STOPPED:
+            break
+        batch.tried += 1
+        picked2 += out.outcome == PICKED
+        _record(ctx, account, out, batch, slot=second.SECOND)
+    if "second_contacts" in summary:
+        summary["second_contacts"]["picked"] = picked2
 
     summary.update(
         status="ok",

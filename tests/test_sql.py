@@ -48,7 +48,8 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
-                 "tier_at_enrol", "data_record", "subject_arm"},
+                 "tier_at_enrol", "data_record", "subject_arm",
+                 "contact_slot"},  # enrol/second.py (Harry, 6 Oct 2026)
     "suppression": {"expires_at"},
 }
 # Tables the build adds, with the layouts every agent codes to.
@@ -81,7 +82,7 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned", "score_at_enrol"}
+        "us_active", "us_churned", "score_at_enrol", "contact_slot"}
 FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 
@@ -111,6 +112,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
+        "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
     },
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",

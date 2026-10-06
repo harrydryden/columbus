@@ -51,8 +51,10 @@ def group_rank(group: str, settings: Settings) -> int:
 
 
 def done_this_week(ctx: Context) -> Counter[str]:
-    """Accounts enrolled this week per share (by the account's group now)."""
-    ids = {c.get("account_id") for c in ctx.store.select("contacts") if budget.in_week(c.get("enrolled_at"), ctx.now)}
+    """Accounts enrolled this week per share (by the account's group now). A second contact (contact_slot 2;
+    enrol/second.py) is no new account, and the focus shares out new accounts."""
+    ids = {c.get("account_id") for c in ctx.store.select("contacts")
+           if budget.in_week(c.get("enrolled_at"), ctx.now) and c.get("contact_slot") != 2}
     out: Counter[str] = Counter()
     for a in ctx.store.select("accounts"):
         if a.get("account_id") in ids:

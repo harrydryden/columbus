@@ -551,6 +551,11 @@ def _check_general_value(key: str, value: Any) -> None:
             raise ValueError("; ".join(problems))
     if key == "escalation_hours" and value < 1:
         raise ValueError("must be at least 1")
+    # A second contact (enrol/second.py; Harry, 6 Oct 2026).
+    if key == "second_contact_min_employees" and value < 1:
+        raise ValueError("is a number of staff, like 50")
+    if key == "second_contact_delay_days" and value < 1:
+        raise ValueError("must be at least 1, so the two people's first emails never arrive the same day")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
     if key == "escalation_email":

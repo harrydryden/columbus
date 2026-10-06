@@ -18,7 +18,8 @@ steady), and fewer when, on any of the four days a lead enrolled today would sen
 follow-ups already due leave less room than that. So no step of any lead, old or new, has
 to wait for a full inbox, including on the Mondays that collect steps due at the weekend.
 
-Leads that have stopped (a reply, bounce or unsubscribe, or an account no longer enrolled)
+Leads that have stopped (a reply, bounce or unsubscribe, the account-level stop that ends a
+second contact's lead with the first's, or an account no longer enrolled)
 hold nothing. A send approval still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026)
 holds one of today's slots for its sender until it is approved or expires (limits.today), so
 the next enrol run never proposes more than the senders can send.
@@ -69,7 +70,9 @@ from us_outbound.settings.model import Settings
 # Days after the step before, from the campaign's own step days (0, 7, 14, 21 -> 0, 7, 7, 7),
 # so the forecast and the Instantly campaign cannot drift apart.
 STEP_DELAYS = (0,) + tuple(b - a for a, b in zip(STEP_DAYS, STEP_DAYS[1:]))
-STOP_EVENTS = ("replied", "bounced", "unsubscribed")
+# lead_stopped: the account-level stop ended this lead because someone else at the account replied, bounced,
+# unsubscribed or complained (replies/account_stop.py; written only once Instantly has stopped it).
+STOP_EVENTS = ("replied", "bounced", "unsubscribed", "lead_stopped")
 OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
 MAX_SCAN_DAYS = 400  # no send day in this long means the settings allow none
@@ -352,7 +355,8 @@ def free_slots(
 
 
 def stopped_contacts(store: Store) -> set[str]:
-    """Contacts whose sequence has stopped: a reply, bounce or unsubscribe, or an account no longer enrolled.
+    """Contacts whose sequence has stopped: a reply, bounce or unsubscribe, the account-level stop of a colleague's
+    lead (lead_stopped), or an account no longer enrolled.
 
     An out-of-office reply stops nothing: stop_on_auto_reply is off (SPEC 9), so Instantly keeps sending.
     """

@@ -18,7 +18,10 @@ The bot seeds ✅ and ❌ on the card (Slack.react), so approving is one click; 
 count. Waiting items hold their sender's slots today and their place in the week (limits.today), and
 an account with one waiting is not proposed again. With auto_send = no the weekly hand-check is not
 a gate (every email is approved anyway): hand_check_post records only the accounts verify_accounts
-held for doubtful facts, and golive's Hand-check line passes.
+held for doubtful facts, and golive's Hand-check line passes. A second contact at an account (General
+second_contact; enrol/second.py; Harry, 6 Oct 2026) waits for its own ✅ like any email: its card is headed
+"Send approval · second contact" and says who the first contact was and when their email 1 went; 🚫 on it
+stops any further contact with the company, not the first person's emails.
 
 Approving (poll_approvals, every 5 minutes, after the reply desk; poll below). Only an id on
 approver_slack_ids counts; anyone else, and the bot, is ignored. Thread replies are read in order,
@@ -89,7 +92,8 @@ opener_source, subject_arm (personal or copy: email 1's subject, render.subject_
 industry, industry_group, role, tier, score, send_day (YYYY-MM-DD, UK), edited,
 original (the first custom variables once edited, else {}) and reason (why blocked or expired, else
 ""); and the keys this module keeps for itself (expires_on, the card's facts, the steps as text and as
-editable source, the render variables, approve_ts, seen_ts, choices_ts, ...). Each closing decision is
+editable source, the render variables, approve_ts, seen_ts, choices_ts, contact_slot (2 for a second
+contact) and first_contact (who the first was), ...). Each closing decision is
 one events row: event_id "send-approval:{item_id}", type "send_approval", approval = the outcome,
 approved_by, account_id, contact_id, step 1, mailbox, occurred_at.
 
@@ -119,7 +123,7 @@ from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.enrol import capacity, copy_markup, enrol, openers, queue, render
+from us_outbound.enrol import capacity, copy_markup, enrol, openers, queue, render, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
@@ -420,6 +424,8 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
         "slot": slot, "slots": slots, "before": history(ctx, str(a["account_id"])),
         "approve_ts": "", "seen_ts": "", "choices_ts": "", "edit_ts": "", "followups_ts": "",
         "decided": {}, "added": {}, "edits": [],
+        # A second contact at the account (enrol/second.py; Harry, 6 Oct 2026): 2, and who the first was.
+        "contact_slot": p.slot, "first_contact": dict(p.first or {}),
     }
 
 
@@ -475,6 +481,26 @@ def _source_line(p: Mapping[str, Any]) -> str:
     return {"apollo": "Apollo"}.get(name.lower(), name) or "source not recorded"
 
 
+def is_second(p: Mapping[str, Any]) -> bool:
+    """The card is for the account's second contact (enrol/second.py)."""
+    return str(p.get("contact_slot") or "1") == "2"
+
+
+def _second_line(p: Mapping[str, Any]) -> str:
+    """"*Second contact* at Acme: the first was Jane Doe, Head of People (People leader), email 1 on Tue 27 Oct. ...",
+    or "" for a first contact's card."""
+    if not is_second(p):
+        return ""
+    f = p.get("first_contact") or {}
+    name = " ".join(x for x in (_text(f.get("first_name")), _text(f.get("last_name"))) if x) or "the first contact"
+    title, role = _text(f.get("title")), _text(f.get("role"))
+    who = ", ".join(x for x in (_esc(name), _esc(title)) if x) + (f" ({_esc(role)})" if role and role != title else "")
+    sent = _date(f.get("email_1"))
+    when = f", email 1 on {_day(sent)}" if sent else ""
+    return (f"*Second contact* at {_esc(p.get('company') or 'this company')}: the first was {who}{when}. Same sender; "
+            "both people's emails stop when either replies.")
+
+
 def _before_line(p: Mapping[str, Any]) -> str:
     b = p.get("before") or {}
     company = _esc(p.get("company") or "this company")
@@ -512,11 +538,12 @@ def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     to = ", ".join(x for x in (_esc(name), _esc(title)) if x) + (f" ({_esc(role)})" if role and role != title else "")
     boxes = p.get("mailboxes") or ([p["mailbox"]] if p.get("mailbox") else [])
     sender = " or ".join(_esc(b) for b in boxes) + (" (Instantly picks)" if len(boxes) > 1 else "")
-    people = "\n".join([
+    people = "\n".join(x for x in [
         f"*To:* {to} · {_esc(_text((p.get('lead') or {}).get('email')))} · {_source_line(p)}",
+        _second_line(p),
         f"*From:* {_esc(owner)}" + (f" · {sender}" if sender else ""),
         f"*Subject:* {_esc(first.get('subject'))}",
-    ])
+    ] if x)
     days = ", ".join(str(d) for d in FOLLOW_UP_DAYS[:-1]) + f" and {FOLLOW_UP_DAYS[-1]}"
     counts = "\n".join([
         f"*Emails:* Email 1 of {len(render.STEPS)} · follow-ups on days {days} (in the thread)",
@@ -526,14 +553,16 @@ def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     blocks = []
     if status:
         blocks.append(_section(status))
-    blocks += [_section(f"Send approval · {head}"), _context(" · ".join(_esc(f) for f in facts if f)), _section(people)]
+    kind = "Send approval · second contact" if is_second(p) else "Send approval"
+    blocks += [_section(f"{kind} · {head}"), _context(" · ".join(_esc(f) for f in facts if f)), _section(people)]
     blocks += [_section(q) for q in _quoted(first.get("text") or "")]
     blocks.append(_section(counts))
     if status:
         blocks.append(_context(status))
     else:
         blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread."))
-    text = _esc(f"Send approval: {company} · {name} · from {owner}: {first.get('subject') or ''}")
+    text = _esc(f"{'Send approval (second contact)' if is_second(p) else 'Send approval'}: {company} · {name} · "
+                f"from {owner}: {first.get('subject') or ''}")
     return (f"{status} {text}" if status else text), blocks  # status is mrkdwn already (it may mention)
 
 
@@ -555,10 +584,13 @@ def choices_text(p: Mapping[str, Any], by: str) -> str:
     company = _esc(p.get("company") or "the company")
     c = p.get("contact") or {}
     name = _esc(" ".join(x for x in (_text(c.get("first_name")), _text(c.get("last_name"))) if x) or "this person")
+    # A second contact's company is enrolled already: dropping it stops any further contact, not the first's emails.
+    drop = (f"drop {company}: no second contact there (the first person's emails carry on)" if is_second(p)
+            else f"drop {company}")
     return (f"❌ Not sent ({_who(by)}). What next? React to this message, or reply with the word:\n"
             "✏️ *edit*: change the email (or a follow-up), then approve it again\n"
             f"👤 *contact*: not {name}; you'll get a card for the next person at {company}\n"
-            f"🚫 *company*: drop {company}\n"
+            f"🚫 *company*: {drop}\n"
             f"If nothing is chosen, it expires at the end of {_day(_date(p.get('expires_on')))} (UK) and "
             f"{company} goes back to the queue.")
 
@@ -877,7 +909,10 @@ def recheck(ctx: Context, item: Item) -> Recheck:
     active in Instantly, and Instantly or HubSpot not answering. Approving at the weekend is fine: Instantly
     sends on its next weekday. Blocks: the account or contact gone, no longer verified or in a queue tier, the
     enrol run's own eligibility check (eligibility), the email changed, no Active mailbox for the owner, another
-    sender, and a HubSpot exclusion. Instantly and HubSpot are asked only when nothing else holds or blocks.
+    sender, and a HubSpot exclusion. A second contact's card (enrol/second.py) needs its account enrolled, not
+    verified, and the second-contact rules still met: second_contact yes, nobody at the account who replied,
+    bounced, unsubscribed or complained, and another role than the first's. Instantly and HubSpot are asked only
+    when nothing else holds or blocks.
     """
     s = holds.with_holds(ctx.store, ctx.settings)
     p = item.payload
@@ -900,9 +935,14 @@ def recheck(ctx: Context, item: Item) -> Recheck:
         out.blocks.append("the account or its contact is no longer on file")
         return out
     company = item.company
-    if account.get("status") != "verified":
+    in_queue = account.get("tier") in queue.QUEUE_TIERS
+    if is_second(p):  # its account is enrolled: the second-contact rules, as of now (enrol/second.py)
+        why = second.recheck(ctx, account, contact) if in_queue else None
+        if why:
+            out.blocks.append(f"{company}: no second contact now: {why}")
+    elif account.get("status") != "verified":
         out.blocks.append(f"{company} is {account.get('status') or 'without a status'} now, not verified")
-    if account.get("tier") not in queue.QUEUE_TIERS:
+    if not in_queue:
         reason = _text(account.get("tier_reason"))
         out.blocks.append(f"{company} is {account.get('tier') or 'untiered'} now" + (f" ({reason})" if reason else ""))
     why = eligibility(ctx, item, account, contact)
@@ -982,6 +1022,7 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
         opener_source=_text(p.get("opener_source")),
         # A card posted before the split (5 Oct 2026) was rendered with the Copy row's subject.
         subject_arm=_text(p.get("subject_arm")) or render.COPY_SUBJECT,
+        slot=second.SECOND if is_second(p) else second.FIRST,  # a second contact leaves its account as it is
     )
 
 

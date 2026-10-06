@@ -89,7 +89,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "no (the pilot): every email waits for an approver's ✅ on its card in #us-outbound. yes: emails go straight "
         "to Instantly once the weekly hand-check is approved. Nothing goes out while live_sending is no.",
     ),
-    ("weekly_enrol_cap", "150", "Most new accounts enrolled in a week (Monday to Sunday, UK time). Each send day takes what is left of it ÷ the send days left in the week."),
+    ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company, and a second contact (second_contact) counts too. Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
     ("priority_threshold", "50", "Score at or above this is Priority."),
     ("standard_threshold", "20", "Score at or above this is Standard; below it is Control."),
@@ -184,6 +184,28 @@ _GENERAL: list[tuple[str, str, str]] = [
         "yes: when Apollo has no verified email for the chosen person (a miss or a catch-all), pick_contacts asks "
         "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
         "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed.",
+    ),
+    (
+        "second_contact",
+        "no",
+        "yes: at companies of second_contact_min_employees or more staff, a second person of another role (the "
+        "founder, say, when the first was the People leader) gets their own emails, from the same sender, "
+        "second_contact_delay_days after the first person's email 1. Second contacts take only the room the first "
+        "contacts of new companies leave, and count towards the week and each sender's day like anyone. When anyone "
+        "at the company replies, bounces, unsubscribes or complains, both people's emails stop. no: one person per "
+        "company. Harry, 6 Oct 2026: no while sending capacity is the limit.",
+    ),
+    (
+        "second_contact_min_employees",
+        "50",
+        "The smallest company, by staff, that gets a second contact. Read as the Roles tab reads size, so a company "
+        "in the 50-99 band counts as 50.",
+    ),
+    (
+        "second_contact_delay_days",
+        "3",
+        "Days after the first person's email 1 before the second person's, so the two never arrive the same day "
+        "(at least 1). A multiple of 7 would put the second's emails on the days of the first's follow-ups.",
     ),
     ("apollo_credits_per_account", "1", "Not used yet; leave as it is."),
     (

@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   tier_at_enrol text,
   data_record jsonb,
   subject_arm text,
+  contact_slot integer,
   PRIMARY KEY (contact_id)
 );
 -- For databases created before enrolled_at, opener_arm, opener_source and the enrolment snapshot existed.
@@ -48,6 +49,8 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS tier_at_enrol text;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS data_record jsonb;
 -- Email 1's subject arm (Harry, 5 Oct 2026): the General email1_subject or the Copy row's s1_subject.
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS subject_arm text;
+-- Which of the account's contacts this is (Harry, 6 Oct 2026): 1 the first, 2 the second contact (enrol/second.py).
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS contact_slot integer;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
@@ -69,4 +72,5 @@ COMMENT ON COLUMN us_outbound.contacts.data_record IS 'Where the contact''s deta
 COMMENT ON COLUMN us_outbound.contacts.tier_at_enrol IS 'The account''s tier when this contact was enrolled: Priority, Standard or Control (build addition, 5 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.suppressed IS 'Never emailed: an opt-out or a bounce, or a person an approver declined at a send approval (enrol/approvals.py; Harry, 2 Oct 2026). A declined person is not added to the suppression table: they did not opt out.';
 COMMENT ON COLUMN us_outbound.contacts.suppressed_reason IS 'Why it is suppressed, e.g. declined in Slack by U01ABCDEF at a send approval (2 Oct 2026).';
+COMMENT ON COLUMN us_outbound.contacts.contact_slot IS 'Which of the account''s contacts this is, set at enrollment (build addition; Harry, 6 Oct 2026): 1 the first; 2 the second contact, a person of another role at an account of second_contact_min_employees or more staff, enrolled second_contact_delay_days after the first contact''s email 1 from the same sender (enrol/second.py). NULL: enrolled before 6 Oct 2026, read as 1.';
 COMMENT ON COLUMN us_outbound.contacts.enrolled_at IS 'When the lead was added to its sender''s campaign (build addition). The send forecast dates each lead''s later steps from it, and the weekly target counts it.';

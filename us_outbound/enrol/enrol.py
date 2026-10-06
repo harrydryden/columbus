@@ -46,6 +46,13 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      its lead is added only when an approver's ✅ is read (enrol/approvals.py, poll_approvals).
      A live run without US_OUTBOUND_SLACK_BOT_TOKEN refuses, as there is nowhere to approve.
 
+  6. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026): at
+     enrolled accounts of second_contact_min_employees or more staff, a person of another role,
+     second_contact_delay_days after the first contact's email 1. They count in ready accounts and so in
+     today's number, are walked after every first contact (so they take only what new accounts leave
+     of the number and of their sender's slots), keep the account's sender, and are prepared and
+     approved as above. Their contact_slot is 2; their account row is left as it is.
+
 Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is marked
 enrolled. With auto_send = no no item is written; a few cards are posted to the dev channel
 as a preview. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
@@ -234,6 +241,8 @@ def gate(ctx: Context, today: date) -> str | None:
 class Candidate:
     account: dict
     contact: dict
+    slot: int = 1  # contacts.contact_slot: 2 for a second contact at the account (enrol/second.py)
+    first: dict | None = None  # a second contact's first contact, as second.first_summary gives it
 
 
 def _in_force(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> tuple[set[str], set[str]]:
@@ -609,6 +618,8 @@ class Prepared:
     rendered: list[render.Rendered] = field(default_factory=list)
     values: dict[str, str] = field(default_factory=dict)
     render_mailbox: str = ""
+    slot: int = 1  # contacts.contact_slot (enrol/second.py)
+    first: dict | None = None  # a second contact's first contact (second.first_summary), for the card
 
 
 @dataclass
@@ -642,6 +653,9 @@ def prepare(
     row, test_id, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
     if row is None:
         return Skip("no approved copy", [why, copy_note] if copy_note else [why])
+    if cand.first and row.copy_version == cand.first.get("copy_version"):
+        # Two colleagues with the same email reads as a mail merge (enrol/second.py).
+        return Skip("same copy as the first contact", [f"{row.copy_version} is the row the first contact got"])
 
     host = render.is_demo_host(mb, s)
     exempt = (str(a.get("clean_name") or ""), str(c.get("first_name") or ""))
@@ -679,7 +693,8 @@ def prepare(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
-        subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address,
+        subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, slot=cand.slot,
+        first=cand.first,
     )
 
 
@@ -729,7 +744,7 @@ def _walk(
             continue
         p = prepare(ctx, cand, free, counts, rows, pace, not_sending)
         if isinstance(p, Skip):
-            run.skip(cand.account, p.reason, p.detail)
+            run.skip(cand.account, p.reason if cand.slot == 1 else f"second contact: {p.reason}", p.detail)
             if p.exclude_fact:
                 mark_excluded(ctx, cand.account, p.exclude_fact, p.detail[0])
                 run.excluded.append({"account_id": cand.account["account_id"], "reason": p.detail[0]})
@@ -738,7 +753,7 @@ def _walk(
         free[p.owner] -= 1
         if quota is not None:
             quota.take(cand.account)
-        if p.test_id:
+        if p.test_id and not (p.first and p.first.get("test_id") == p.test_id):  # the test counts accounts
             counts[p.copy_version] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
@@ -816,17 +831,19 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
     """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
     its opener and subject arms (the readout's two splits), and what the account looked like then: its signals,
     score and tier (signals_now); and where the contact's details came from and the lawful basis
-    (render.data_record), kept here since no email carries it."""
+    (render.data_record), kept here since no email carries it. A second contact (enrol/second.py) leaves its
+    account as it is: enrolled already, with its sender, and never moved back from engaged by a late approval."""
     accounts, contacts = [], []
     record = render.data_record(ctx.settings)
     signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
     for i, p in enumerate(items):
         if i not in ids:
             continue
-        row = {"account_id": p.account["account_id"], "status": ENROLLED}
-        if not p.account.get("sender"):
-            row["sender"] = p.owner  # set at first enrollment, never changed (SPEC 9)
-        accounts.append(row)
+        if p.slot == 1:
+            row = {"account_id": p.account["account_id"], "status": ENROLLED}
+            if not p.account.get("sender"):
+                row["sender"] = p.owner  # set at first enrollment, never changed (SPEC 9)
+            accounts.append(row)
         contacts.append({
             "contact_id": p.contact["contact_id"],
             "enrolment_month": month,
@@ -844,15 +861,17 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "score_at_enrol": p.account.get("score"),
             "tier_at_enrol": p.account.get("tier") or None,
             "data_record": record,
+            "contact_slot": p.slot,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
+    if contacts:
         ctx.store.upsert("contacts", contacts)
 
 
 def run(ctx: Context) -> dict:
     """The enrol job (JOB CONTRACT: run(ctx) -> summary)."""
-    from us_outbound.enrol import approvals  # it builds on this module
+    from us_outbound.enrol import approvals, second  # they build on this module
 
     s = ctx.settings
     today = ctx.now_et().date()
@@ -878,8 +897,11 @@ def run(ctx: Context) -> dict:
     # not proposed again, and hold their sender's slots and their place in the week.
     held = approvals.waiting(ctx)
     cands, skipped = candidates(ctx, pulled, held.accounts)
+    # Second contacts (enrol/second.py; Harry, 6 Oct 2026): none, without a read, while second_contact is no.
+    seconds, not_second = second.candidates(ctx, pulled, held.accounts)
     # campaigns=True: an owner whose Instantly campaign is not active gets no capacity in a live run (limits.py).
-    lim = limits.today(ctx, today, ready_accounts=len(cands), pending=held.by_owner, campaigns=True)
+    lim = limits.today(ctx, today, ready_accounts=len(cands) + len(seconds), pending=held.by_owner, campaigns=True,
+                       second_ready=len(seconds))
     stopped = lim.not_sending
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
@@ -907,6 +929,10 @@ def run(ctx: Context) -> dict:
         for p in fill:
             quota.take(p.account)
         prepared += fill
+    # Second contacts last, from what the first contacts of new accounts left of today's number and of their
+    # senders' slots; outside the industry focus, which shares out new accounts.
+    n_first = len(prepared)
+    prepared += _walk(ctx, iter(seconds), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:
@@ -977,6 +1003,7 @@ def run(ctx: Context) -> dict:
         subjects={"arms": dict(r.subject_arms)},
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
+        second_contacts=second.tally(seconds, not_second, len(prepared) - n_first, s),
         errors=r.errors,
     )
     if proposed is not None:  # by_owner: the cards posted (live) or that would be (dry-run)

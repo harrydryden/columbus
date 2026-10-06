@@ -28,6 +28,8 @@ missing key, an API error) FAILs with the reason.
   auto_send         the General switch (Harry, 2 Oct 2026): no PASSes, as every email then waits for
                     an approver's ✅ in Slack (enrol/approvals.py; the Slack line checks the token);
                     yes WARNs, as emails are then added to Instantly without approval
+  Second contact    the General switch (Harry, 6 Oct 2026; enrol/second.py), for information: off, or on
+                    with its size threshold and delay; either PASSes
   Hand-check        only while auto_send = yes: this week's hand-check approved (enrol waits for it);
                     with auto_send = no every email is approved in Slack, so the line is left out
   Enrollment        not stopped by an operator, the stop rule, or a positive reply waiting
@@ -57,7 +59,7 @@ from us_outbound import budget, limits
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.enrol import enrol
+from us_outbound.enrol import enrol, second
 from us_outbound.learn import holds
 from us_outbound.logs import redact
 from us_outbound.registry import ramp
@@ -316,7 +318,9 @@ def check_queue(ctx: Context) -> Check:
     # As enrol.run: the send approvals still waiting keep their accounts out and hold their senders' slots.
     held = approvals.waiting(ctx)
     ready, skipped = enrol.candidates(ctx, pulled, held.accounts)
-    lim = limits.today(ctx, day, ready_accounts=len(ready), pending=held.by_owner, campaigns=True)
+    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
+    lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
+                       second_ready=len(seconds))
     t = lim.terms
     detail = [lim.explanation, *lim.detail]
     if skipped:
@@ -332,6 +336,11 @@ def check_queue(ctx: Context) -> Check:
     pace = want or t["sending_capacity"]  # at the weekend, or once the week's target is met, today's number is 0
     supply = f"about {len(ready) / pace:.0f} send days at {pace} a day" if pace else "none go today"
     return Check(PASS, "Queue", f"{len(ready)} ready (verified with a sendable contact): {supply}{cards}", detail)
+
+
+def check_second_contact(ctx: Context) -> Check:
+    """The switch (Harry, 6 Oct 2026; enrol/second.py): informational, as either value is safe to go live with."""
+    return Check(PASS, "Second contact", second.describe(ctx.settings).removeprefix("Second contact: "))
 
 
 def check_hand_check(ctx: Context) -> Check | None:
@@ -423,6 +432,7 @@ CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
     ("Apollo budget", check_apollo),
     ("Queue", check_queue),
     ("auto_send", check_auto_send),
+    ("Second contact", check_second_contact),
     ("Hand-check", check_hand_check),
     ("Enrollment", check_enrolment),
     ("Jobs", check_jobs),

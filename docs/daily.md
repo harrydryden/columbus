@@ -10,6 +10,14 @@ worker: `railway ssh -- us-outbound <command>`. Nothing changes without `--live`
 | `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry, and enrol posts a few preview cards to #us-outbound-dev | Emails go out. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
 | `auto_send` | The pilot: every email waits for an approver's ✅ on its card in #us-outbound | Emails go straight to Instantly once the weekly hand-check is approved |
 
+**A second contact** (`second_contact`, no; Harry, 6 Oct 2026). With yes, a company of 50 or more staff
+(`second_contact_min_employees`) also gets a second person of another role, from the same sender, 3 days
+(`second_contact_delay_days`) after the first person's email 1, with the room new companies leave. Their
+card is headed "Send approval · second contact" and names the first person; approve it like any other.
+When anyone at the company replies, bounces or unsubscribes, both people's emails stop. To switch it on:
+`us-outbound settings load --tab General --set second_contact=yes --live`, then `us-outbound sync`.
+`us-outbound status` and the daily post say whether it is on.
+
 **Sheet edits apply at the next sync:** 02:00 UK every day, and 11:30 UK on weekdays, so a morning
 edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound sync`.
 `us-outbound start --live` syncs by itself first. `us-outbound status` says when the settings were last synced.
