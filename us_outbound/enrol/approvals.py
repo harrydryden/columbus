@@ -1273,6 +1273,17 @@ def expire(ctx: Context, item: Item, slack: Any) -> bool:
                   note=f"⌛ Expired: {reason}. Nothing was added; {company} goes back to the queue.")
 
 
+def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue: bool = True) -> bool:
+    """Closed by "system" before anyone decides, as an expiry is (`us-outbound relabel`, ops/relabel.py; Harry,
+    7 Oct 2026): the card was rendered under a label that turned out wrong. Nothing was added; the company goes
+    back to the queue for a card with the right copy, or, when it may not be emailed at all, does not."""
+    company = _esc(item.company)
+    after = f"{company} goes back to the queue for a new card" if back_to_queue else f"{company} will not be emailed"
+    return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=f"withdrawn: {reason}", via="relabel",
+                  status=f"↩️ Withdrawn: {_esc(reason)}; nothing was added and {after}",
+                  note=f"↩️ Withdrawn: {_esc(reason)}. Nothing was added; {after}.")
+
+
 # -- the poll_approvals pass ------------------------------------------------------------------------------------
 
 

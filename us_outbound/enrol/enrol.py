@@ -75,7 +75,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
+from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
@@ -323,6 +323,8 @@ def account_block(
     domain = _lower(account.get("domain"))
     if not domain:
         return "no domain"
+    if is_public_body(domain):
+        return "a public body, never prospected"
     if domain in domains:
         return "domain suppressed"
     if domain in partners:
@@ -355,6 +357,8 @@ def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: 
     domain = email.rsplit("@", 1)[1]
     if is_personal_domain(domain):
         return "personal email domain"
+    if is_public_body(domain):
+        return "a public body's email domain"
     if is_generic_mailbox(email):
         return "shared mailbox"
     if domain in domains:

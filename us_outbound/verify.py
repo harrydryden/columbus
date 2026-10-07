@@ -61,7 +61,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from us_outbound.accounts import any_us_state, us_country
-from us_outbound.clean.domains import is_personal_domain
+from us_outbound.clean.domains import is_personal_domain, is_public_body
 from us_outbound.clean.people import size_band, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
@@ -124,6 +124,8 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
         return "no domain"
     if is_personal_domain(domain):
         return "a personal email domain"
+    if is_public_body(domain):
+        return "a public body, never prospected"
     if domain in suppressed:
         return "domain suppressed"
     if domain in partners or tiers.partner_match(account, facts):

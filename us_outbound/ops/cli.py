@@ -639,6 +639,26 @@ def cmd_unenrol(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_relabel(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound relabel [--live]`: the queued companies under the labels the Industries rules give now
+    (ops/relabel.py; Harry, 7 Oct 2026)."""
+    from us_outbound.ops import relabel
+
+    ctx = factory("relabel", args.live, operator=True)
+    out = run_job(ctx, relabel.run)
+    print(f"{out['changed']} of {out['queued_accounts']} companies in the queue change label.")
+    for move, n in out["moves"].items():
+        print(f"  {n:>4}  {move}")
+    if args.all:
+        for line in out["changes"]:
+            print(f"  {line}")
+    cards = out["cards_withdrawn"] if ctx.live else out["cards_to_withdraw"]
+    if cards:
+        print(f"{'Withdrew' if ctx.live else 'Would withdraw'} {len(cards)} open card(s): {', '.join(cards)}.")
+    _dry_note(ctx, "no company or card was changed.")
+    return 0
+
+
 def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.ops.erase import erase
 
@@ -1662,6 +1682,9 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--last", required=True, help="your last name")
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
+    rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
+                 "withdraw open cards whose label changes", cmd_relabel, takes_live=True)
+    rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")
     er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
     er.add_argument("--email", required=True)
 

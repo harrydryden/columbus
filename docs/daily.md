@@ -178,6 +178,14 @@ docs/railway-setup.md, step h.
   campaign by itself once sending has gone live. A campaign Instantly shows as *completed* is fine:
   Instantly marks an active campaign completed whenever it has no lead left to email (straight after
   `start`, if it has none yet), and the next lead added resumes it.
+- **A card's industry is wrong** (a fulfilment firm pitched as a games studio): ❌ it, then ✏️ to fix
+  the words, or 🚫 if the company is no fit at all. Since 7 Oct a company gets a label within its
+  group (Games studios, Fintech) only when its Apollo keywords say so; otherwise it gets the group's
+  own copy (Technology & Startups). `us-outbound relabel` shows what the rule changes for the
+  companies in the queue; `us-outbound relabel --live` applies it and withdraws the open cards it
+  changes, and they come back on a later day with the right copy. Government domains (.gov, .mil)
+  are never prospected. If a label is still wrong, an Overrides row (field `industry`) fixes that
+  company for good.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual

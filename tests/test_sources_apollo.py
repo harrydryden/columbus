@@ -193,7 +193,15 @@ def test_a_company_becomes_one_account_with_one_label_and_the_facts_scoring_read
 @pytest.mark.parametrize("naics, keywords, label", [
     (("541511",), ("fintech", "payments"), "Fintech"),  # shared tech NAICS: the keyword decides
     (("541511",), ("saas", "software development"), "Technology & Startups"),
-    (("541810",), (), "Advertising agencies"),  # a 6-digit code beats its group's 4-digit one
+    # Codes alone place a company in its group's umbrella; a label within it needs its own words (7 Oct 2026).
+    (("541810",), (), "Marketing & Creative Agencies"),
+    (("541810",), ("advertising agency",), "Advertising agencies"),  # then its 6-digit code helps it win
+    (("541511",), (), "Technology & Startups"),  # not Games studios: custom programming says nothing of games
+    (("541511",), ("logistics", "supply chain consulting"), "Technology & Startups"),
+    (("541511",), ("mobile games", "game development"), "Games studios"),
+    (("541715",), (), None),  # R&D alone is no AI company (a surgeons' society, an orthopaedic practice)
+    (("541715",), ("machine learning",), "AI & deep tech"),
+    (("5415",), (), "Technology & Startups"),  # not Adtech & martech, the first label of the group
     (("541810",), ("marketing agency",), "Marketing & Creative Agencies"),
     ((), ("digital health", "telehealth"), "Digital health"),  # no NAICS: keywords alone
     (("111110",), ("soybeans",), None),

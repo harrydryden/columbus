@@ -59,6 +59,7 @@ us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (
 us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
 us-outbound clay check-email --first NAME --last NAME --domain spill.chat [--live]   one Work Email lookup for your own name, to confirm Clay's email fallback (exits 1 until it can go on)
 us-outbound erase --email <address> [--live]       an erasure request
+us-outbound relabel [--all] [--live]               the queued companies under the industry labels the rules give now; withdraws open cards it changes
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)
 us-outbound run <job> [--live]                     one job (what the scheduler starts)
 us-outbound unenrol --month YYYY-MM [--live]     * remove that month's leads from their campaigns

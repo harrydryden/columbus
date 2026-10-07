@@ -439,9 +439,18 @@ def best_label(codes: Sequence[str], keyword_text: str, settings: Settings) -> I
     """The one Industries label that fits best, active or not; None if none fits.
 
     Candidates are the labels whose NAICS prefixes match the company's codes (none of its
-    exclude_naics), or, when none does, the labels with a keyword match. Among them: the most
-    keyword matches, then the longest NAICS match, then a label over its group's umbrella label,
-    then the Industries priority, then the tab's order.
+    exclude_naics), or, when none does, the labels with a keyword match. A label within a group
+    (Games studios, Fintech) is a candidate on its NAICS codes only with a keyword match of its own;
+    the group's umbrella label (Technology & Startups) needs none. Among them: the most keyword
+    matches, then the longest NAICS match, then a label over its group's umbrella label, then the
+    Industries priority, then the tab's order.
+
+    Harry, 7 Oct 2026: the first cards went out as games studios, AI and adtech to a fulfilment
+    consultancy, a surgeons' society and a data-centre firm. The labels within Technology & Startups
+    share the umbrella's NAICS prefixes (5415 and the rest) and a few carry a longer one that says
+    little (Games studios 541511, custom programming; AI & deep tech 541715, R&D), so with no keyword
+    to tell them apart the tie-break picked the first, or the longest code. Codes alone now place a
+    company in its group, whose umbrella copy fits any company in it; a label's own copy needs its words.
     """
     rows = []
     for idx, ind in enumerate(settings.industries):
@@ -450,7 +459,7 @@ def best_label(codes: Sequence[str], keyword_text: str, settings: Settings) -> I
         naics = max((_naics_match(codes, p) for p in ind.naics_prefixes), default=0)
         words = len(find_terms(keyword_text, ind.apollo_keywords)) if keyword_text else 0
         rows.append((ind, naics, words, idx))
-    pool = [r for r in rows if r[1]] or [r for r in rows if r[2]]
+    pool = [r for r in rows if r[1] and (r[2] or r[0].industry == r[0].industry_group)] or [r for r in rows if r[2]]
     if not pool:
         return None
     return min(pool, key=lambda r: (-r[2], -r[1], r[0].industry == r[0].industry_group, r[0].priority, r[3]))[0]
