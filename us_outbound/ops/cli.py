@@ -27,6 +27,10 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       signal-value table from v_signal_value, with meetings and the rates
                                       against the companies without each signal (learn/signal_value.py)
   readout                             the Monday readout for last week (learn/readout.py), printed only
+  cohorts [--cut CUT] [--age N]       each enrolment week's companies at 7, 14, 21 and 28 days after email 1,
+    [--weeks N] | changes [A B] |     with what changed between them (learn/cohorts.py; Harry, 7 Oct 2026);
+    in-flight                         changes: what differs between two config versions (default the last
+                                      two); in-flight: each campaign's leads with a step still to send
   test start|read <test_id>           start a test on the Tests tab (SPEC 12), or read it at its latest
                                       pre-registered look; read refuses before the first look, so nobody
                                       peeks (learn/looks.py; Harry, 6 Oct 2026)
@@ -1148,6 +1152,27 @@ def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_cohorts(args: argparse.Namespace, factory: Factory) -> int:
+    """The cohort report (learn/cohorts.py; Harry, 7 Oct 2026): performance by enrolment week at fixed ages, what
+    changed between versions, or the leads in flight per campaign. Read-only."""
+    from us_outbound.learn import cohorts
+
+    ctx = factory("cohorts", False)
+    if args.action == "changes":
+        if len(args.versions) not in (0, 2):
+            raise Refused("cohorts changes takes two config versions, or none for the last two")
+        lines = cohorts.changes_lines(ctx, *args.versions)
+    elif args.action == "in-flight":
+        lines = cohorts.in_flight_lines(ctx)
+    else:
+        if args.versions:
+            raise Refused("config versions go with `cohorts changes`")
+        lines = cohorts.lines(ctx, cut=args.cut, age=args.age, weeks=args.weeks)
+    for line in lines:
+        print(line)
+    return 0
+
+
 def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
     return _job("suppression_load", args.live, factory)
 
@@ -1534,6 +1559,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="review: each signal's verdict from the events; value: the table, with meetings, against "
                          "the companies without it")
     command("readout", "the Monday readout for last week, printed here and posted nowhere (read-only)", cmd_readout)
+    # The choices are written out here, so --help does not import the report (learn/cohorts.py CUTS, AGES).
+    ch = command("cohorts", "each enrolment week's results at 7, 14, 21 and 28 days; what changed between versions "
+                 "(changes); the leads in flight (in-flight). Read-only", cmd_cohorts)
+    ch.add_argument("action", nargs="?", choices=["changes", "in-flight"],
+                    help="changes: what differs between two config versions (default: the last two); in-flight: "
+                         "each campaign's leads with a step still to send")
+    ch.add_argument("versions", nargs="*", metavar="VERSION", help="changes: two config versions, older first")
+    ch.add_argument("--cut", default="all",
+                    choices=["all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm",
+                             "opener_arm", "config_version"],
+                    help="split each week by this (default all)")
+    ch.add_argument("--age", type=int, choices=[7, 14, 21, 28], help="only this age, in days after email 1")
+    ch.add_argument("--weeks", type=int, default=8, help="how many enrolment weeks, the latest first (default 8)")
     ts = command("test", "start a test on the Tests tab, or read it at a pre-registered look", cmd_test,
                  takes_live=True)
     ts.add_argument("action", choices=["start", "read"],
