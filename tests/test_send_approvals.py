@@ -1112,20 +1112,43 @@ def test_an_approvers_industry_reply_sets_the_label_records_it_and_withdraws_the
                              "item_id": row["item_id"], "rules": None, "model": None, "confidence": None}
     assert sheet.appended == [["acmecreative.com", "industry", "Fintech",
                                f"set by {HARRY_ID} in Slack at a send approval, 27 Oct 2026"]]
+    [new] = [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
     assert out["relabelled"] == [{"item": row["item_id"][:8], "from": "Advertising agencies", "to": "Fintech",
-                                  "sheet": "added"}]
-    done = item_for(ctx, "acc-1")
+                                  "sheet": "added", "new_card": new["item_id"][:8]}]
+    done = next(r for r in items(ctx) if r["item_id"] == row["item_id"])
     assert (done["status"], done["payload"]["outcome"]) == ("handled", "expired") and instantly_posts(t) == []
     assert done["payload"]["reason"] == f"withdrawn: its industry is Fintech now, set by <@{HARRY_ID}>"
     assert (f"🏷️ Industry set to Fintech (by <@{HARRY_ID}>); added to the Overrides tab. This card was written for "
-            "Advertising agencies, so it is withdrawn: nothing was sent, and the next enrol (12:00 UK on a send day) "
-            "proposes Acme Creative again with the Fintech emails.") in sl.texts()
-    # The next enrol proposes it again, under its new label.
+            "Advertising agencies, so it is withdrawn: nothing was sent, and a new card for Acme Creative with the "
+            "Fintech emails is posted in the channel. Approve that one.") in sl.texts()
+    # The new card, at once (design §7 v2): the same contact and sender, in the old card's slot, the new label.
+    p = new["payload"]
+    assert (new["contact_id"], p["owner"], p["slot"], p["replaces"]) == ("con-1", "Harry Dryden", 1, row["item_id"])
+    assert (p["industry"], p["industry_group"], p["label_source"], p["copy_level"]) == (
+        "Fintech", "Technology & Startups", "approver", "label")
+    assert p["copy_version"] == "general-v1"  # no Fintech or tech row in this world: General, never the agencies' pitch
+    assert p["config_version"] and new["slack_ts"]
+    assert sl.thread(new["slack_ts"])[-1]["text"] == (
+        f"🏷️ This card replaces the earlier one for Acme Creative: written for Advertising agencies, its industry is "
+        f"Fintech now, set by <@{HARRY_ID}>.")
+    assert "*Industry:* Fintech (Technology &amp; Startups) · set by an approver · General copy" in blocks_text(
+        next(c for c in sl.cards() if c["ts"] == new["slack_ts"]))
+    # It is waiting, so the next enrol does not propose the company again.
     at(ctx, datetime(2026, 10, 28, 11, 0, tzinfo=UTC), job="enrol")
     enrol.run(ctx)
-    again = [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
-    assert len(again) == 1 and again[0]["payload"]["industry"] == "Fintech"
-    assert again[0]["payload"]["label_source"] == "approver"
+    assert len([r for r in items(ctx, "open") if r["account_id"] == "acc-1"]) == 1
+
+
+def test_when_the_company_cannot_be_made_ready_again_the_next_enrol_proposes_it(monkeypatch):
+    ctx, t, sl, _ = proposed()
+    FakeOverrides(t)
+    monkeypatch.setattr(enrol, "prepare", lambda *a, **k: enrol.Skip("sender full today"))
+    sl.say(HARRY_ID, "industry: Fintech", item_for(ctx, "acc-1")["slack_ts"])
+    out = poll(ctx)
+    assert out["relabelled"][0]["new_card"] == ""
+    assert not [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
+    assert any("the next enrol (12:00 UK on a send day) proposes Acme Creative again with the Fintech emails" in x
+               for x in sl.texts())
 
 
 def test_an_overrides_row_the_domain_has_is_updated_never_duplicated():

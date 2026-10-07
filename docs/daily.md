@@ -87,7 +87,7 @@ one click decides.
 | — | `send: …` | Sends that text instead of the draft |
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
 | 🚫 | — | Drop the company for good |
-| `industry: Fintech` (any label on the Industries tab; any case, and a unique part of one, like `games`, will do) | — | The company is that, not what the card says: its label is set, kept on the Overrides tab, and the card is withdrawn. The next enrol (12:00 on a send day) proposes it again with that label's emails. Works whether you have ❌'d it or not. An unknown label gets the list of labels in the thread |
+| `industry: Fintech` (any label on the Industries tab; any case, and a unique part of one, like `games`, will do) | — | The company is that, not what the card says: its label is set, kept on the Overrides tab, the card is withdrawn and a new card with that label's emails is posted at once (if it can't be, the next enrol proposes the company). Works whether you have ❌'d it or not. An unknown label gets the list of labels in the thread |
 
 Each send card's **Industry** line says how its label was checked (Harry, 7 Oct 2026; the label check):
 `rules and model agree · Fintech copy` is the normal case; `⚠️ … · the rules say X, the model says Y (medium) ·
@@ -221,8 +221,8 @@ docs/railway-setup.md, step h.
   `start`, if it has none yet), and the next lead added resumes it.
 - **A card's industry is wrong** (a fulfilment firm pitched as a games studio): reply `industry: <label>`
   in its thread (or `us-outbound approvals industry ID "<label>" --live`). The label is set and kept
-  on the Overrides tab, the card is withdrawn, and the company comes back at the next enrol with the
-  right emails; 🚫 if the company is no fit at all. For a company with no card,
+  on the Overrides tab, the card is withdrawn, and a new card with the right emails is posted in its
+  place; 🚫 if the company is no fit at all. For a company with no card,
   `us-outbound labels set DOMAIN "<label>" --live`; `us-outbound labels show DOMAIN` gives its label's
   history. Since 7 Oct the task model checks each company's label before it can get a card (the
   label check, docs/pipeline.md stage 3), so this should be rare: the daily post's **Labels** line

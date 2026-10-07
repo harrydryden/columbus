@@ -83,9 +83,10 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
   "industry: Fintech"            in any state (Harry, 7 Oct 2026; labels.py): the company is that label, not the
                                  card's. Its label is set (label_source approver: the label check, relabel and the
                                  universe refresh never move it), a label_corrected fact recorded and the Overrides
-                                 tab's row for the domain set (updated in place, or added), and the card withdrawn:
-                                 the next enrol proposes the company with that label's emails, or, for a label
-                                 switched off, not at all. An unknown label gets the list in the thread.
+                                 tab's row for the domain set (updated in place, or added), and the card withdrawn;
+                                 a new card with that label's emails is posted in its slot at once (reprepare: the
+                                 enrol run's own checks and prepare), or, when that cannot be, the next enrol proposes
+                                 the company; for a label switched off, nothing. An unknown label gets the list.
                                  `approvals industry ID LABEL --live` is the same.
 A card whose company's label is decided again after it was rendered, and no longer fits (verify_accounts' label
 check, `relabel`, `labels set`), is withdrawn by the next poll_approvals before any ✅ on it is read (unfit_cards).
@@ -1360,11 +1361,63 @@ def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue
 # -- an approver's industry correction (labels.py; Harry, 7 Oct 2026) ---------------------------------------------
 
 
+def reprepare(ctx: Context, item: Item) -> enrol.Prepared | None:
+    """The card's company and contact made ready again under the company's label as it is now (Harry, 7 Oct 2026;
+    design §7 v2): the enrol run's own eligibility check (eligibility), then enrol.prepare with the card's sender and
+    slot, the running test's counts and the sendable Copy rows, stamped with the config version in force. None when it
+    cannot be (a second contact's card, a skip of any kind, another sender, HubSpot or Instantly not answering): the
+    next enrol proposes the company instead."""
+    from us_outbound import config_version
+
+    if is_second(item.payload):
+        return None
+    account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+    contact = ctx.store.get("contacts", contact_id=item.contact_id) if item.contact_id else None
+    if account is None or contact is None or eligibility(ctx, item, account, contact):
+        return None
+    owner = _text(item.payload.get("owner"))
+    try:
+        p = enrol.prepare(ctx, enrol.Candidate(dict(account), dict(contact)), Counter({owner: 1}),
+                          enrol.running_test_counts(ctx), enrol.sendable_copy(ctx.settings))
+    except (ApiError, ConfigError, LookupError) as exc:
+        log("send_approval_reprepare_failed", item_id=item.id, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return None
+    if isinstance(p, enrol.Skip) or p.owner != owner:
+        log("send_approval_reprepare_skipped", item_id=item.id, reason=getattr(p, "reason", "another sender"))
+        return None
+    cv = config_version.current(ctx)
+    config_version.record(ctx, cv)
+    p.config_version, p.code_sha = cv.id, cv.code_sha
+    return p
+
+
+def repropose(ctx: Context, old: Item, p: enrol.Prepared, slack: Any, why: str) -> Item:
+    """A new card for the prepared company, in the old card's slot (its sender's place today), its thread saying
+    which card it replaces (why: mrkdwn, escaped by the caller). Posted now when Slack answers; else the next
+    poll_approvals posts it."""
+    payload = build_payload(ctx, p, slot=int(old.payload.get("slot") or 1), slots=int(old.payload.get("slots") or 1))
+    payload["replaces"] = old.id
+    row = {"item_id": new_id(), "kind": KIND, "account_id": p.account["account_id"],
+           "contact_id": p.contact["contact_id"], "slack_channel": "", "slack_ts": "", "status": OPEN,
+           "created_at": ctx.now, "payload": payload}
+    ctx.store.upsert(TABLE, [row])
+    item = Item(row)
+    if slack is not None:
+        try:
+            if post_card(ctx, slack, item):
+                _thread(slack, item, f"🏷️ This card replaces the earlier one for {_esc(item.company)}: {why}.")
+        except (ApiError, LookupError) as exc:
+            log("send_approval_slack_failed", item_id=item.id, error=str(exc)[:200])
+    log("send_approval_reproposed", item_id=item.id, replaces=old.id, account_id=item.account_id)
+    return item
+
+
 def set_industry(ctx: Context, item: Item, text: str, *, by: str, via: str, slack: Any) -> dict:
     """"industry: Fintech" from an approver (or `approvals industry`), live: the company takes the label
     (labels.correct: the account, a label_corrected fact, the Overrides tab) and the card, written for the old one,
-    is withdrawn, so the next enrol proposes the company again with the new label's emails. An unknown label, or the
-    card's own, changes nothing and says so in the thread."""
+    is withdrawn; a new card with the new label's emails is posted in its place at once (reprepare, repropose), or,
+    when that cannot be, the next enrol proposes the company again. An unknown label, or the card's own, changes
+    nothing and says so in the thread."""
     s = ctx.settings
     ind = labels.resolve(text, s)
     wanted = _esc(_text(text)[:60])
@@ -1385,16 +1438,24 @@ def set_industry(ctx: Context, item: Item, text: str, *, by: str, via: str, slac
                          who="at the command line" if by == CLI_APPROVER else f"by {by} in Slack")
     sheet = {"updated": "recorded on the Overrides tab", "added": "added to the Overrides tab"}.get(got["sheet"], got["sheet"])
     company, new = _esc(item.company), _esc(ind.industry)
-    if ind.active:
+    p = reprepare(ctx, item) if ind.active else None
+    if p is not None:
+        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and a new "
+                 f"card for {company} with the {new} emails is posted in the channel. Approve that one.")
+    elif ind.active:
         after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and the "
                  f"next enrol (12:00 UK on a send day) proposes {company} again with the {new} emails.")
     else:
         after = (f"This card is withdrawn: nothing was sent. {new} is switched off on the Industries tab, so {company} "
                  "will not be emailed unless it is switched on.")
     note = f"🏷️ Industry set to {new} ({who}); {_esc(sheet)}. {after}"
-    withdraw(ctx, item, slack, f"its industry is {ind.industry} now, set {who}", back_to_queue=ind.active,
-             via="industry", note=note)
-    return {"done": True, "from": old, "to": ind.industry, "sheet": got["sheet"]}
+    reason = f"its industry is {ind.industry} now, set {who}"
+    if not withdraw(ctx, item, slack, reason, back_to_queue=ind.active, via="industry", note=note):
+        return {"done": False, "why": "another run closed the card first"}
+    again = repropose(ctx, item, p, slack, f"written for {_esc(old) or 'no label'}, its industry is {new} now, set "
+                                           f"{who}") if p is not None else None
+    return {"done": True, "from": old, "to": ind.industry, "sheet": got["sheet"],
+            "new_card": again.short_id if again else ""}
 
 
 # -- cards a label decision has overtaken (labels.py; Harry, 7 Oct 2026) ------------------------------------------
@@ -1535,7 +1596,8 @@ def _act(ctx: Context, item: Item, cmd: Command, by: str, via: str, slack: Any, 
     if cmd.kind == "industry":  # in any state: the card closes once the label is set (Harry, 7 Oct 2026)
         res = set_industry(ctx, item, cmd.text, by=by, via=via, slack=slack)
         if res.get("done"):
-            run.add("relabelled", {"item": item.short_id, "from": res["from"], "to": res["to"], "sheet": res["sheet"]})
+            run.add("relabelled", {"item": item.short_id, "from": res["from"], "to": res["to"], "sheet": res["sheet"],
+                                   "new_card": res.get("new_card", "")})
         return bool(res.get("done"))
     fn = drop_contact if cmd.kind == "contact" else drop_company
     res = fn(ctx, item, by=by, via=via, slack=slack)
