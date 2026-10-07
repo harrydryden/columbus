@@ -22,7 +22,9 @@ to action.
     email 1 links only {{industry_url}}, a page on the site, so it shows the booking or the reviews line
     by rotation; emails 2 to 4 all link {{demo_url}}, so they always show the booking line.
   * render_sequence() renders emails 1 to 4 and checks the sequence links the industry page;
-    custom_variables() turns them into the lead's Instantly custom variables.
+    custom_variables() turns them into the lead's Instantly custom variables. Its written emails, when given, take
+    the place of the Copy row's own: a copy test's arm (enrol/variants.py; Harry, 7 Oct 2026), rendered and checked
+    like any email.
   * subject_arm() is email 1's subject arm (Harry, 5 Oct 2026: a personal subject, as a measured split). The
     General email1_subject_share of accounts, by sha256 of the salted account id (its own salt, so the split is
     independent of the opener holdout's), are personal: email 1's subject is General email1_subject ("support
@@ -53,7 +55,7 @@ from pathlib import Path
 from typing import Any
 
 from us_outbound.enrol import copy_markup, copy_rules, utm
-from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, Mailbox, Settings
+from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
 
 STEPS = COPY_STEPS
 VARIABLES = (
@@ -424,16 +426,18 @@ def data_record(settings: Settings) -> dict[str, Any]:
 
 def render_step(
     copy_row: CopyRow, variables: Mapping[str, str], *, step: int, mailbox: Mailbox, settings: Settings,
-    for_send: bool = True, subject: str = "",
+    for_send: bool = True, subject: str = "", written: CopyStep | None = None,
 ) -> Rendered:
     """One email, signature included, with every copy-rule violation.
 
     for_send=False leaves out the approval and QA checks, for previews and the sheet check. subject, when given,
     is the subject as written in place of the Copy row's (email 1's personal subject, email1_subject), and goes
-    through the same rules.
+    through the same rules. written, when given, is the email as written in place of the Copy row's own: a copy
+    test's arm (enrol/variants.py; Harry, 7 Oct 2026). It goes through every rule; the Copy row's approval and QA
+    still decide whether it may be sent.
     """
     g = settings.general
-    st = copy_row.step(step)
+    st = written or copy_row.step(step)
     if subject.strip():
         st = replace(st, subject=subject)
     problems: list[str] = []
@@ -478,18 +482,21 @@ def render_step(
 
 def render_sequence(
     copy_row: CopyRow, variables: Mapping[str, str], *, mailbox: Mailbox, settings: Settings, for_send: bool = True,
-    subject_arm: str = COPY_SUBJECT,
+    subject_arm: str = COPY_SUBJECT, written: Mapping[int, CopyStep] | None = None,
 ) -> list[Rendered]:
     """Emails 1 to 4 of one Copy row, and the sequence's own check: it links the industry page.
 
     subject_arm personal gives email 1 the General email1_subject; emails 2 to 4 keep the Copy row's subjects.
+    written: the emails, by number, as written in place of the Copy row's own (a copy test's arm, enrol/variants.py).
     """
     first = email1_subject(subject_arm, settings)
+    written = written or {}
     out = [render_step(copy_row, variables, step=n, mailbox=mailbox, settings=settings, for_send=for_send,
-                       subject=first if n == SUBJECT_STEP else "")
+                       subject=first if n == SUBJECT_STEP else "", written=written.get(n))
            for n in STEPS]
     page = str(variables.get("industry_url") or "").strip()
-    uses = any("industry_url" in copy_markup.VARIABLE.findall(copy_row.step(n).body) for n in STEPS)
+    uses = any("industry_url" in copy_markup.VARIABLE.findall((written.get(n) or copy_row.step(n)).body)
+               for n in STEPS)
     if page and not uses:
         out[1] = replace(out[1], violations=(*out[1].violations,
                                              "the sequence never links the industry page ({{industry_url}})"))

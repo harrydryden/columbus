@@ -527,6 +527,18 @@ read says what it would have said on time. `kind` = `holdout` reads a split enro
 holdout, `contacts.opener_arm`; email 1's subject, `contacts.subject_arm`) for the companies enrolled from
 `start_date`, and may run beside the one copy test SPEC 9 allows.
 
+**Copy variants.** `kind` = `variant` (Harry, 7 Oct 2026; `enrol/variants.py`) is a copy test that changes one
+part of one email for every company, whatever its Copy row: a line after the greeting (`first_line`), a line
+before the sign-off (`last_line`), the exact words in `find` (`replace`), or the subject, with each arm's text in
+`text_a` and `text_b` (blank: the Copy row's email as it is). The arm is a hash of the company and the test, as an
+`ab` test splits (SPEC 9), independent of the opener holdout and the subject split; every tier is in it, and a
+second contact shares its company's arm. The sync checks each text against the copy rules that apply to it alone,
+and every email again as it is rendered; where the change cannot be made, or would break a rule in that
+company's email under either arm, the company is left out of the test and gets the Copy row's email. Enrol
+records `contacts.test_id` and `test_arm`; the card names the arm; `learn/looks.py` reads the arms, counting an
+email an approver edited in the arm it was given; and the running copy test is in the config version
+(`copy_test`). One copy test, `ab` or `variant`, runs at a time.
+
 **How a demo is booked, and read back.** The signature's "Book a call here" opens Harry's HubSpot meetings
 link (General `booking_link`); the emails' call to action opens spill.chat/us/book-demo (`booking_page`),
 which books into the same calendar (SPEC 4). `hubspot_readback` reads both ways: the meetings on Harry's

@@ -28,11 +28,13 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
-     contact's role, else its group's, else General; the running test's hash split takes
+     contact's role, else its group's, else General; a running ab test's hash split takes
      half of version_a's accounts), its opener for that contact (enrol/openers.py: the angle
      setter's line for the contact's copy role, filled with the account's stored facts, or none,
      and the opener_holdout_share held out with none), its email-1 subject arm (render.subject_arm: the
      email1_subject_share get General email1_subject, the rest the Copy row's s1_subject; Harry, 5 Oct 2026),
+     a running variant test's arm (enrol/variants.py; Harry, 7 Oct 2026: one part of one email changed for every
+     account, whatever its Copy row; an account where the change cannot be made is left out of the test),
      its four rendered emails (any copy-rule violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. auto_send = yes: each owner's leads are bulk-added to "US Outbound – {owner}" with the
@@ -60,7 +62,7 @@ Dry-run: all of it runs, the guard refuses the Instantly write, and nothing is m
 enrolled. With auto_send = no no item is written; a few cards are posted to the dev channel
 as a preview. HubSpot exclusions found on the way are still written to the database (SPEC 0.3).
 Live (phase 2, after Harry signs off): accounts become enrolled with their sender, and each
-contact records when and in which month it was enrolled, its angle, copy version, test, mailbox,
+contact records when and in which month it was enrolled, its angle, copy version, test and arm, mailbox,
 campaign and lead id, its opener arm and source (opener, holdout or none; which line), so the
 readout can compare opener against none, and its subject arm (personal or copy), so it can compare
 email 1's personal subject against the Copy row's.
@@ -82,12 +84,12 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, config_version, labels, limits
 from us_outbound.clients import instantly as instantly_client
-from us_outbound.enrol import capacity, focus, openers, plan, queue, render
+from us_outbound.enrol import capacity, focus, openers, plan, queue, render, variants
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
-from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
+from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
 
 
 JOB = "enrol"
@@ -500,25 +502,29 @@ def pick_copy(account: Mapping[str, Any], role: str, settings: Settings,
 
 
 def running_test_counts(ctx: Context) -> Counter[str]:
-    """Accounts already in the running test, per copy version."""
+    """Accounts already in the running copy test, per arm ("a" or "b"). A contact enrolled in an ab test before
+    test_arm existed (8 Oct 2026) is placed by its copy version."""
     t = ctx.settings.running_test()
     if t is None:
         return Counter()
     seen: dict[str, set[str]] = defaultdict(set)
+    by_version = {t.version_a: "a", t.version_b: "b"} if t.kind == AB_TEST else {}
     for c in ctx.store.select("contacts", {"test_id": t.test_id}):
-        seen[str(c.get("copy_version") or "")].add(str(c.get("account_id")))
-    return Counter({v: len(ids) for v, ids in seen.items()})
+        arm = str(c.get("test_arm") or "") or by_version.get(str(c.get("copy_version") or ""), "")
+        if arm:
+            seen[arm].add(str(c.get("account_id")))
+    return Counter({arm: len(ids) for arm, ids in seen.items()})
 
 
 def choose_copy(
     account: Mapping[str, Any], role: str, settings: Settings, counts: Mapping[str, int], rows: Mapping[str, CopyRow]
-) -> tuple[CopyRow | None, str, str, str]:
-    """(Copy row, test_id or "", why there is none, fallback note).
+) -> tuple[CopyRow | None, str, str, str, str]:
+    """(Copy row, test_id or "", its arm "a" or "b" or "", why there is none, fallback note).
 
     The account gets the most specific sendable row for its industry and its contact's role
-    (copy_targets). The running test takes accounts that would get its version_a, other than
-    Control, and sends half of them (by account hash) version_b instead, while each version
-    has fewer than accounts_per_version.
+    (copy_targets). A running ab test takes accounts that would get its version_a, other than
+    Control, and sends half of them (by account hash) version_b instead, while each arm
+    has fewer than accounts_per_version. (A variant test changes the row's emails instead: variants.choose.)
     """
     row, note = pick_copy(account, role, settings, rows)
     if row is None:
@@ -527,14 +533,14 @@ def choose_copy(
         where = {labels.LABEL_COPY: f"{label}, its group or General",
                  labels.GROUP_COPY: f"{label}'s group or General (its label earns the group's copy)",
                  labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
-        return None, "", f"no approved copy that has passed QA for {where}", note
+        return None, "", "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
-    if t and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
-        v = t.version_a if queue.test_version(str(account["account_id"]), t.test_id) == "a" else t.version_b
-        chosen = rows.get(v)
-        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(v, 0) < t.accounts_per_version):
-            return chosen, t.test_id, "", note
-    return row, "", "", note
+    if t and t.kind == AB_TEST and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
+        arm = queue.test_version(str(account["account_id"]), t.test_id)
+        chosen = rows.get(t.arm_name(arm))
+        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(arm, 0) < t.accounts_per_version):
+            return chosen, t.test_id, arm, "", note
+    return row, "", "", "", note
 
 
 # -- opener -------------------------------------------------------------------------------------
@@ -625,7 +631,7 @@ class Prepared:
     mailbox: str  # the address that sends step 1, when the owner has one Active mailbox; else ""
     copy_version: str
     angle: str
-    test_id: str
+    test_id: str  # the running copy test the contact is in, else ""
     lead: dict
     opener_note: str = ""  # the opener lines passed over, and why (enrol/openers.py)
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
@@ -648,6 +654,11 @@ class Prepared:
     # earns, for the card's Industry line.
     label_check: dict = field(default_factory=dict)
     copy_level: str = ""
+    # The running copy test (Harry, 7 Oct 2026; enrol/variants.py): the contact's arm ("a" or "b", with test_id), or
+    # why it is not in the test; and the emails as written in place of the Copy row's own (a variant's change).
+    test_arm: str = ""
+    test_note: str = ""
+    written: dict[int, CopyStep] = field(default_factory=dict)
 
 
 @dataclass
@@ -678,7 +689,7 @@ def prepare(
     boxes: tuple[Mailbox, ...] = s.mailboxes_for(owner, "Active")
     mb = boxes[0]
 
-    row, test_id, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
+    row, test_id, test_arm, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
     if row is None:
         return Skip("no approved copy", [why, copy_note] if copy_note else [why])
     if cand.first and row.copy_version == cand.first.get("copy_version"):
@@ -697,7 +708,19 @@ def prepare(
         op = openers.Opener("", openers.NONE, "", (*op.notes, note))
     values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
     arm = render.subject_arm(a.get("account_id"), s)  # Harry, 5 Oct 2026: email 1's personal subject, as a split
-    rendered = render.render_sequence(row, values, mailbox=mb, settings=s, subject_arm=arm)
+    first_subject = render.email1_subject(arm, s)
+
+    def email_problems(n: int, written: CopyStep) -> list[str]:
+        return list(render.render_step(row, values, step=n, mailbox=mb, settings=s, for_send=False, written=written,
+                                       subject=first_subject if n == render.SUBJECT_STEP else "").violations)
+
+    # A variant test (Harry, 7 Oct 2026): the account's arm, made in its Copy row's email, or why it is not in the test.
+    variant = variants.choose(s.running_test(), a, row, today=ctx.today_uk(), subject_arm=arm, counts=counts,
+                              check=email_problems, first=cand.first)
+    if variant is not None and variant.arm:
+        test_id, test_arm = variant.test_id, variant.arm
+    written = dict(variant.written) if variant is not None else {}
+    rendered = render.render_sequence(row, values, mailbox=mb, settings=s, subject_arm=arm, written=written)
     problems = render.violations(rendered)
     if problems:
         return Skip("copy blocked", [f"{row.copy_version}: {p}" for p in problems])
@@ -725,6 +748,8 @@ def prepare(
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
         subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, slot=cand.slot,
         first=cand.first, copy_hash=row.content_hash(), label_check=verdict or {}, copy_level=labels.copy_level(a),
+        test_arm=test_arm, test_note=variant.note if variant is not None else "",
+        written=written,
     )
 
 
@@ -740,6 +765,8 @@ class _Run:
     opener_arms: Counter[str] = field(default_factory=Counter)  # opener, holdout, none
     opener_sources: Counter[str] = field(default_factory=Counter)  # "<signal> / <column>", "focus", "opener_generic_ops"
     subject_arms: Counter[str] = field(default_factory=Counter)  # personal, copy
+    test_arms: Counter[str] = field(default_factory=Counter)  # the running copy test's arms: a, b
+    not_in_test: Counter[str] = field(default_factory=Counter)  # why a contact is not in the running variant test
     copy_fallbacks: Counter[str] = field(default_factory=Counter)
     errors: list[str] = field(default_factory=list)
 
@@ -784,7 +811,11 @@ def _walk(
         if quota is not None:
             quota.take(cand.account)
         if p.test_id and not (p.first and p.first.get("test_id") == p.test_id):  # the test counts accounts
-            counts[p.copy_version] += 1
+            counts[p.test_arm] += 1
+        if p.test_arm:
+            run.test_arms[p.test_arm] += 1
+        elif p.test_note:
+            run.not_in_test[p.test_note] += 1
         if p.opener_note and len(run.opener_fallbacks) < LIST_LIMIT:
             run.opener_fallbacks.append({"account_id": cand.account["account_id"], "reason": p.opener_note})
         run.opener_arms[p.opener_arm] += 1
@@ -883,6 +914,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "angle": p.angle,
             "copy_version": p.copy_version,
             "test_id": p.test_id or None,
+            "test_arm": (p.test_arm or None) if p.test_id else None,  # Harry, 7 Oct 2026: a or b (enrol/variants.py)
             "mailbox": p.mailbox or None,
             "instantly_campaign": campaign,
             "instantly_lead_id": ids[i],
@@ -903,6 +935,16 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
         ctx.store.upsert("accounts", accounts)
     if contacts:
         ctx.store.upsert("contacts", contacts)
+
+
+def _copy_test_summary(s: Settings, r: _Run) -> dict[str, Any] | None:
+    """The enrol summary's copy_test: the running copy test, today's contacts in each arm, and why others were not in
+    it (a variant whose change could not be made, or whose arm is full)."""
+    t = s.running_test()
+    if t is None:
+        return None
+    return {"test_id": t.test_id, "kind": t.kind, "arms": {t.arm_name(a): r.test_arms[a] for a in ("a", "b")},
+            "not_in_test": dict(r.not_in_test.most_common(LIST_LIMIT // 10))}
 
 
 def run(ctx: Context) -> dict:
@@ -1062,6 +1104,7 @@ def run(ctx: Context) -> dict:
         opener_fallbacks=r.opener_fallbacks,
         openers={"arms": dict(r.opener_arms), "sources": dict(r.opener_sources)},
         subjects={"arms": dict(r.subject_arms)},
+        copy_test=_copy_test_summary(s, r),
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
         second_contacts=second.tally(seconds, not_second, len(prepared) - n_first, s),

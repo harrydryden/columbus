@@ -40,7 +40,8 @@ blocking the email, and the rule that is the opener's alone: it never mentions f
 (money_violations; Harry, 2 Oct 2026: funding is a signal, never a line). Email bodies are not
 held to that one: nonprofit copy says "funding cycles" and fintech copy "a long fundraise".
 subject_violations() is the subject rules on a subject alone, for the General tab's personal subject for email 1
-(email1_subject; Harry, 5 Oct 2026), which no Copy row carries.
+(email1_subject; Harry, 5 Oct 2026), which no Copy row carries. line_violations() is the rules that read a piece of
+body on its own, for a copy test's line (the Tests tab's variant kind; enrol/variants.py, Harry, 7 Oct 2026).
 """
 
 from __future__ import annotations
@@ -440,13 +441,14 @@ def email_violations(
     return list(dict.fromkeys(out))
 
 
-def subject_violations(subject: str, *, exempt: Iterable[str] = ()) -> list[str]:
+def subject_violations(subject: str, *, exempt: Iterable[str] = (), step: int = 1) -> list[str]:
     """The rules on email 1's subject alone, as filled: General email1_subject, filled for a sample prospect, is
     checked with these when the General tab is read (settings/validate.py; Harry, 5 Oct 2026).
 
     The subject rules render_step applies to a Copy row's subject, as written (no exclamation mark, price, "Re:"
     or emoji) and as sent (one line, the word rules, no unrendered variable, no spam phrase), and the rule email 1
-    keeps for its words: no demo, call or meeting ask.
+    keeps for its words: no demo, call or meeting ask. step: the email the subject is for (a variant test's
+    subject may be for emails 2 to 4, which may name a demo; enrol/variants.py, Harry, 7 Oct 2026).
     """
     masked = _mask(subject, exempt)
     out: list[str] = []
@@ -466,8 +468,39 @@ def subject_violations(subject: str, *, exempt: Iterable[str] = ()) -> list[str]
         out.append("has an emoji")
     out += content_violations(subject, exempt=exempt) + structure_violations(subject)
     out += [f'says "{_quoted(m)}", which reads as spam' for rx in SPAM_PHRASES for m in rx.finditer(masked)]
-    out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
-            for m in _STEP1_ASK.finditer(masked)]
+    if step == 1:
+        out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
+                for m in _STEP1_ASK.finditer(masked)]
+    return list(dict.fromkeys(out))
+
+
+def line_violations(source: str, words: str, *, step: int, exempt: Iterable[str] = ()) -> list[str]:
+    """The rules on a piece of one email's body, alone: a copy test's line (enrol/variants.py; Harry, 7 Oct 2026),
+    checked when the Tests tab is read, before it reaches any email.
+
+    source is the text as written (no exclamation mark, and no price but {{price_line}}); words is the text as
+    filled with sample values, anchor text only: the word rules for either kind of sender (content_violations),
+    no unrendered variable or line over MAX_LINE characters, no spam phrase (email 4 may allude to the free trial),
+    no bare address, and in email 1 no demo, call or meeting ask. The rules that read a whole email (its word count,
+    links, greeting and sign-off) are checked when each email is rendered for its lead (render.render_step).
+    """
+    masked = _mask(words, exempt)
+    out: list[str] = []
+    if "!" in source:
+        out.append("has an exclamation mark; the style is calm, not salesy")
+    out += [f'has the price "{_quoted(m)}"; the price comes only from {{{{price_line}}}} (General price_from)'
+            for m in _DOLLARS.finditer(source)]
+    for harry in (True, False):  # demos are with the demo host whoever sends: both rules apply to a shared line
+        out += content_violations(words, sender_is_harry=harry, exempt=exempt)
+    out += structure_violations(words)
+    for rx in SPAM_PHRASES:
+        if step == TRIAL_STEP and rx.pattern == FREE_TRIAL.pattern:
+            continue  # the free trial belongs in the last email (Harry, 1 Oct 2026)
+        out += [f'says "{_quoted(m)}", which reads as spam' for m in rx.finditer(masked)]
+    if step == 1:
+        out += [f'says "{_quoted(m)}"; email 1 asks only for a visit to the site, never a demo, call or meeting'
+                for m in _STEP1_ASK.finditer(masked)]
+    out += [f'has the bare address "{bare}"; write it as [anchor text](link)' for bare in links(masked)]
     return list(dict.fromkeys(out))
 
 

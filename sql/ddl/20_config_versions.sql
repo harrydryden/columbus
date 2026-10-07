@@ -18,10 +18,13 @@ CREATE TABLE IF NOT EXISTS us_outbound.config_versions (
   general jsonb,
   labels_hash text,
   run_id text,
+  copy_test jsonb,
   PRIMARY KEY (config_version)
 );
 -- Build addition (Harry, 7 Oct 2026): the industry label check's prompt and label list (labels.labels_hash).
 ALTER TABLE us_outbound.config_versions ADD COLUMN IF NOT EXISTS labels_hash text;
+-- Build addition (Harry, 7 Oct 2026: A/B tests of email copy): the running copy test (config_version.copy_test).
+ALTER TABLE us_outbound.config_versions ADD COLUMN IF NOT EXISTS copy_test jsonb;
 COMMENT ON TABLE us_outbound.config_versions IS 'One row per config version: the settings, copy, templates, campaign constants and code that contacts were enrolled under (build addition, Harry 7 Oct 2026; SPEC 6, 12). Contacts carry the id in contacts.config_version; the cohort report diffs two rows.';
 COMMENT ON COLUMN us_outbound.config_versions.config_version IS 'The first 12 hex characters of the sha256 of the snapshot (the other columns but first_seen and run_id) as canonical JSON.';
 COMMENT ON COLUMN us_outbound.config_versions.first_seen IS 'When an enrol run first computed this version.';
@@ -34,3 +37,4 @@ COMMENT ON COLUMN us_outbound.config_versions.copy_hashes IS 'JSON object: copy_
 COMMENT ON COLUMN us_outbound.config_versions.general IS 'JSON object: the General content keys (config_version.CONTENT_KEYS) as text, so a report can say x to y.';
 COMMENT ON COLUMN us_outbound.config_versions.run_id IS 'The heartbeats run that first computed it.';
 COMMENT ON COLUMN us_outbound.config_versions.labels_hash IS '12 hex characters over the industry label check''s prompt version, instructions, label list, definitions and keywords (labels.labels_hash; Harry, 7 Oct 2026): which label, and so which copy, a new company earns.';
+COMMENT ON COLUMN us_outbound.config_versions.copy_test IS 'JSON object: the running copy test, ab or variant (config_version.copy_test; Harry, 7 Oct 2026): test_id, kind, version_a, version_b, accounts_per_version and start_date, and for a variant (enrol/variants.py) email, change, text_a, text_b and find. NULL while no copy test runs, and in a version recorded before 8 Oct 2026.';

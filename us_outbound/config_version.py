@@ -12,13 +12,18 @@ was enrolled under, so the cohort report (learn/cohorts.py) can compare like wit
   settings_versions  the effective_from of the version in force of each content tab (CONTENT_TABS): the tabs
                      render and the openers read at enrolment. General and Copy are in by value instead (below),
                      so an edit to live_sending, the Claude cap or a draft Copy row starts no new version.
-                     Mailboxes, Tests, States, Focus and Named accounts change who is enrolled and by whom, which
-                     each contact records already (sender, copy_version, test_id) and the weekly cuts show;
+                     Mailboxes, States, Focus and Named accounts change who is enrolled and by whom, which
+                     each contact records already (sender, copy_version, test_id) and the weekly cuts show; of the
+                     Tests tab, only the running copy test changes what is sent, and it is in by value (copy_test);
   copy_hashes        copy_version -> CopyRow.content_hash for every sendable Copy row (approved, QA passed);
   general            the General content keys (CONTENT_KEYS) as text, so a report can say "0.5 → 0.3";
   signature_hash     templates/copy/signature.txt;
   labels_hash        the industry label check's prompt version, label list and definitions (labels.labels_hash;
                      Harry, 7 Oct 2026): they decide which label, and so which copy, a new company earns;
+  copy_test          the running copy test (copy_test; Harry, 7 Oct 2026: A/B tests of email copy), ab or variant:
+                     its id, kind, arms, start and size, and a variant's email, change, texts and find. It decides
+                     what part of a new contact's emails say, so a test starting, stopping or changing starts a new
+                     version and `cohorts changes` says so; null while none runs;
   campaign_fingerprint, step_days   the campaign constants: STEP_DAYS, CAMPAIGN_SETTINGS and the step templates
                      (tests/test_cohorts.py pins the fingerprint, so changing one fails a test by name);
   code_sha           the deploy's git commit, RAILWAY_GIT_COMMIT_SHA (Railway sets it on every deploy from GitHub;
@@ -44,7 +49,7 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, STEP_DAYS
 from us_outbound.context import Context
 from us_outbound.logs import log
-from us_outbound.settings.model import General, SendWindow, Settings
+from us_outbound.settings.model import VARIANT_TEST, General, SendWindow, Settings
 
 TABLE, LOG_TABLE = "config_versions", "config_log"
 CODE_SHA_ENV = "RAILWAY_GIT_COMMIT_SHA"  # set by Railway on a deploy from GitHub; not a secret
@@ -125,6 +130,20 @@ def _iso(v: Any) -> str:
     return v.isoformat() if isinstance(v, (date, datetime)) else str(v)
 
 
+def copy_test(settings: Settings) -> dict[str, Any] | None:
+    """The running copy test as the snapshot keeps it (module docstring), or None while none runs. A contact records
+    its own arm (contacts.test_id, test_arm); this says which test, and what it changed, was in force."""
+    t = settings.running_test()
+    if t is None:
+        return None
+    out: dict[str, Any] = {"test_id": t.test_id, "kind": t.kind, "version_a": t.version_a, "version_b": t.version_b,
+                           "accounts_per_version": t.accounts_per_version,
+                           "start_date": _iso(t.start_date) if t.start_date else ""}
+    if t.kind == VARIANT_TEST:
+        out.update(email=t.email, change=t.change, text_a=t.text_a, text_b=t.text_b, find=t.find)
+    return out
+
+
 @dataclass(frozen=True)
 class ConfigVersion:
     id: str
@@ -145,6 +164,7 @@ def snapshot(settings: Settings) -> dict[str, Any]:
         "general": general_values(settings.general),
         "signature_hash": signature_hash(),
         "labels_hash": labels.labels_hash(settings),
+        "copy_test": copy_test(settings),
         "campaign_fingerprint": campaign_fingerprint(),
         "step_days": list(STEP_DAYS),
         "code_sha": code_sha(),

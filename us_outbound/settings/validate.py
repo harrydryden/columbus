@@ -23,13 +23,14 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from us_outbound.clean.people import title_key
-from us_outbound.enrol import copy_markup
+from us_outbound.enrol import copy_markup, variants
 from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES, bundled_definitions
 from us_outbound.settings.model import (
     AB_TEST,
     ACTIONS,
+    COPY_TEST_KINDS,
     CLAY_VERIFICATION_MODES,
     LABEL_CHECK_MODES,
     COPY_STATUSES,
@@ -62,6 +63,9 @@ from us_outbound.settings.model import (
     TEST_KINDS,
     TEST_STATUSES,
     TEXT_SOURCES,
+    REPLACE,
+    VARIANT_CHANGES,
+    VARIANT_TEST,
     Angle,
     CopyRow,
     CopyStep,
@@ -83,6 +87,8 @@ from us_outbound.settings.model import (
 
 HEADER_ROW = 1
 FIRST_DATA_ROW = 2
+# The Tests tab's columns for a variant test (Harry, 7 Oct 2026; enrol/variants.py).
+VARIANT_COLUMNS = ("email", "change", "text_a", "text_b", "find")
 OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
 # Columns added after the sheet was first made (Harry, 30 Sep 2026): a tab without them reads them as blank.
 TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
@@ -92,7 +98,8 @@ TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Roles": frozenset({"copy_role", "industry_groups"}),
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
     "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
-    "Tests": frozenset({"kind", "looks"}),  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
+    "Tests": frozenset({"kind", "looks",  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
+                        *VARIANT_COLUMNS}),  # a variant test's (Harry, 7 Oct 2026): blank on any other kind
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -1130,8 +1137,62 @@ def _holdout_arms(a: str, b: str) -> str:
             "holdout), or personal and copy (email 1's subject)")
 
 
+def _variant_text(r: _Row, col: str, change: str, email: int) -> str:
+    """One arm's text: the render variables only ({{opener}} and {{legal_overlay}} are the Copy row's lines), then
+    the copy rules that apply to it alone (variants.text_violations)."""
+    text = r.text(col)
+    bad = False
+    for name in _VARIABLE.findall(text):
+        if name not in variants.TEXT_VARIABLES:
+            bad = True
+            hint = _hint(name, variants.TEXT_VARIABLES)
+            r.fail(col, f"{{{{{name}}}}} is a line of its own the Copy row places; a test's text may not use it"
+                   if name in COPY_VARIABLES else f"unknown variable {{{{{name}}}}}{hint}")
+    for name in _SINGLE_BRACE.findall(text):
+        bad = True
+        r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
+    if text and not bad:
+        for problem in variants.text_violations(text, change=change, email=email):
+            r.fail(col, problem)
+    return text
+
+
+def _variant(r: _Row, kind: str) -> tuple[int, str, str, str, str]:
+    """A variant test's columns (Harry, 7 Oct 2026; enrol/variants.py): (email, change, text_a, text_b, find).
+
+    email is 1 to 4 (1 when blank); change one of VARIANT_CHANGES; text_a and text_b each arm's text, checked against
+    the copy rules that apply to a line of body or to a subject, and blank for "the Copy row's email as it is"; find,
+    for a replace only, the exact text it changes. Both texts blank, or the same, compares nothing. Whether find is
+    in a given Copy row's email is not checked here: an email without it is left as it is, and its account is not in
+    the test (enrol/variants.py). Every column is blank on a test of another kind."""
+    if kind != VARIANT_TEST:
+        for col in VARIANT_COLUMNS:
+            if r.text(col):
+                r.fail(col, f"is for a variant test (kind variant); a {kind} test leaves it blank")
+        return 1, "", "", "", ""
+    email = r.parse("email", parse_int, required=False, default=1)
+    if email not in COPY_STEPS:
+        r.fail("email", f"must be 1, 2, 3 or 4: the email of the sequence the test changes, not {r.text('email')!r}")
+        email = 1
+    change = r.parse("change", one_of(VARIANT_CHANGES), default="")
+    find = r.text("find")
+    if change == REPLACE and not find:
+        r.fail("find", "is required for change replace: the exact text, as written on the Copy tab, that each arm's "
+                       "text takes the place of")
+    elif find and change and change != REPLACE:
+        r.fail("find", f"is used only by change replace; change {change} leaves it blank")
+    texts = [_variant_text(r, col, change, email) if change else r.text(col) for col in ("text_a", "text_b")]
+    if not any(texts):
+        r.fail("text_a", "text_a and text_b are both blank, so both arms would get the same email; write the text "
+                         "one arm gets (a blank text leaves that arm's email as the Copy row has it)")
+    elif texts[0] == texts[1]:
+        r.fail("text_b", "must differ from text_a, or both arms get the same email")
+    return email, change, texts[0], texts[1], find
+
+
 def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
-    """The Tests tab. kind (ab, the default, or holdout) and looks (Harry, 6 Oct 2026) are optional columns."""
+    """The Tests tab. kind (ab, the default, holdout or variant) and looks (Harry, 6 Oct 2026) are optional columns,
+    and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026)."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
@@ -1167,15 +1228,18 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
                     r.fail("looks", f"{look} must be before read_date ({read}), which is always the last look")
             elif n is not None and look > n:
                 r.fail("looks", f"{look} is more than accounts_per_version ({n})")
-        # SPEC 9: one copy test at a time, since it decides each account's copy. A holdout assigns nothing.
-        if is_running and kind == AB_TEST:
+        email, change, text_a, text_b, find = _variant(r, kind or AB_TEST)
+        # SPEC 9: one copy test at a time, since it decides each account's copy; a variant test decides part of it,
+        # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it runs beside either.
+        if is_running and kind in COPY_TEST_KINDS:
             if running is not None:
-                r.fail("status", f"only one test runs at a time; row {running} is already running")
+                r.fail("status", f"only one copy test (ab or variant) runs at a time; row {running} is already "
+                                 "running")
             else:
                 running = r.number
         if r.ok:
-            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks),
-                        r.number))
+            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks,
+                             email, change, text_a, text_b, find), r.number))
     return out
 
 

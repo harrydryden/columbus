@@ -65,7 +65,8 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "raw_layoffs": frozenset({"payload"}),
     "events": frozenset({"language_terms"}),
     "contacts": frozenset({"signals_at_enrol", "data_record"}),  # enrol._record_enrolled (5 Oct 2026)
-    "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general"}),  # 7 Oct 2026
+    "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general",  # 7 Oct 2026
+                                  "copy_test"}),  # the running copy test (config_version.copy_test; 7 Oct 2026)
     "config_log": frozenset({"changed_keys", "detail"}),
 }
 

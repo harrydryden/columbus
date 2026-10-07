@@ -629,7 +629,7 @@ def test_tests(tabs):
     assert settings.running_test().start_date == date(2026, 11, 2)
     second = dict(_row(t, "Tests", test_id="t1-eap-opener")[1], test_id="t2")
     t["Tests"].append(second)
-    assert "only one test runs at a time" in _one(t, "Tests", "status").message
+    assert "only one copy test (ab or variant) runs at a time" in _one(t, "Tests", "status").message
 
 
 # -- tab-level ---------------------------------------------------------------------
