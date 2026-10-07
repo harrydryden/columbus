@@ -292,6 +292,21 @@ def test_the_label_checks_naics_trims(settings):
     assert "522320" in settings.industry("Fintech").naics_prefixes  # kept: payment processing
 
 
+def test_every_label_the_check_lists_has_a_definition_saying_what_it_is_and_is_not(settings):
+    """Harry, 7 Oct 2026: the label check's list (labels.entries: the labels of every prospected group, and one row
+    for each group not prospected) carries the build's one-line definition of each, so it works before the column
+    reaches the sheet."""
+    from us_outbound import labels
+
+    entries = labels.entries(settings)
+    assert len(entries) == 50 and all(e.definition for e in entries)
+    assert settings.industry("Games studios").definition == (
+        "Makes and publishes video games itself; not tools, engines or platforms for game makers (Gametech), and not "
+        "an agency or app studio building software for clients.")
+    assert "not FP&A or budgeting tools for finance teams" in settings.industry("Fintech").definition
+    assert sum(bool(i.definition) for i in settings.industries) == 50  # the rest are not in the list
+
+
 IT_SERVICES = ("541512", "541513", "541519")  # computer systems design, facilities management, other IT services
 
 

@@ -77,6 +77,7 @@ BUILD_TABLES: dict[str, set[str]] = {
     "config_versions": {  # Harry, 7 Oct 2026: what a cohort was enrolled under (config_version.py)
         "config_version", "first_seen", "code_sha", "campaign_fingerprint", "signature_hash", "step_days",
         "settings_versions", "copy_hashes", "general", "run_id",
+        "labels_hash",  # the label check's prompt and list (labels.py; Harry, 7 Oct 2026)
     },
     "config_log": {  # Harry, 7 Oct 2026: changes to what in-flight leads share (registry/mailboxes.py)
         "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",

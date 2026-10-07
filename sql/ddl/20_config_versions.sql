@@ -16,9 +16,12 @@ CREATE TABLE IF NOT EXISTS us_outbound.config_versions (
   settings_versions jsonb,
   copy_hashes jsonb,
   general jsonb,
+  labels_hash text,
   run_id text,
   PRIMARY KEY (config_version)
 );
+-- Build addition (Harry, 7 Oct 2026): the industry label check's prompt and label list (labels.labels_hash).
+ALTER TABLE us_outbound.config_versions ADD COLUMN IF NOT EXISTS labels_hash text;
 COMMENT ON TABLE us_outbound.config_versions IS 'One row per config version: the settings, copy, templates, campaign constants and code that contacts were enrolled under (build addition, Harry 7 Oct 2026; SPEC 6, 12). Contacts carry the id in contacts.config_version; the cohort report diffs two rows.';
 COMMENT ON COLUMN us_outbound.config_versions.config_version IS 'The first 12 hex characters of the sha256 of the snapshot (the other columns but first_seen and run_id) as canonical JSON.';
 COMMENT ON COLUMN us_outbound.config_versions.first_seen IS 'When an enrol run first computed this version.';
@@ -30,3 +33,4 @@ COMMENT ON COLUMN us_outbound.config_versions.settings_versions IS 'JSON object:
 COMMENT ON COLUMN us_outbound.config_versions.copy_hashes IS 'JSON object: copy_version to CopyRow.content_hash, for every sendable Copy row (approved, QA passed on that wording).';
 COMMENT ON COLUMN us_outbound.config_versions.general IS 'JSON object: the General content keys (config_version.CONTENT_KEYS) as text, so a report can say x to y.';
 COMMENT ON COLUMN us_outbound.config_versions.run_id IS 'The heartbeats run that first computed it.';
+COMMENT ON COLUMN us_outbound.config_versions.labels_hash IS '12 hex characters over the industry label check''s prompt version, instructions, label list, definitions and keywords (labels.labels_hash; Harry, 7 Oct 2026): which label, and so which copy, a new company earns.';

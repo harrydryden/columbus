@@ -380,6 +380,8 @@ def diff(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
         out.append("campaign template or settings changed (the unsubscribe line, text_only or the SPEC 9 settings)")
     if a.get("signature_hash") != b.get("signature_hash"):
         out.append("signature template changed")
+    if (a.get("labels_hash") or b.get("labels_hash")) and a.get("labels_hash") != b.get("labels_hash"):
+        out.append("industry label check changed (its prompt, label list or definitions; labels.py)")
     old_g, new_g = a.get("general") or {}, b.get("general") or {}
     for k in config_version.CONTENT_KEYS:
         if old_g.get(k) != new_g.get(k):
