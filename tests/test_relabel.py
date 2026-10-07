@@ -77,16 +77,37 @@ def test_live_relabels_and_withdraws_the_card_so_a_later_enrol_proposes_it_again
     assert enrol.run(ctx)["send_approvals"]["posted"] >= 1  # acc-1 comes back, under its new label
 
 
-def test_a_public_body_or_a_company_no_label_fits_is_disqualified_and_its_card_withdrawn():
+def test_a_public_body_is_disqualified_but_no_rules_label_is_left_for_the_label_check():
+    """Harry, 7 Oct 2026: the rules alone never rule a company out (the first relabel disqualified 89 software
+    companies whose Apollo codes include IT services); a public body always is."""
     ctx, t, sl = world()
     ctx.store.update("accounts", {"account_id": "acc-3"}, {"domain": "braintreema.gov"})
     fact(ctx, "acc-1", "naics", ["111110"], at=datetime(2026, 12, 1, tzinfo=UTC))  # the latest: soybeans, no label fits
     out = relabel.run(ctx)
     a1, a3 = (ctx.store.get("accounts", account_id=a) for a in ("acc-1", "acc-3"))
     assert (a3["status"], a3["tier"], a3["tier_reason"]) == ("disqualified", "Excluded", "a public body, never prospected")
-    assert a1["status"] == "disqualified" and "no Industries label fits" in a1["tier_reason"]
-    assert sorted(out["cards_withdrawn"]) == ["Acme Creative", "Loop Studio"]
+    assert (a1["status"], a1["industry"]) == ("verified", "Advertising agencies")  # untouched: the label check decides
+    assert out["cards_withdrawn"] == ["Loop Studio"]
     assert any("Loop Studio will not be emailed" in blocks_text(u) for u in sl.updates)
+
+
+def test_a_company_an_earlier_relabel_disqualified_on_the_rules_alone_is_put_back_for_the_label_check():
+    ctx, t, sl = world()
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"status": "disqualified", "tier": "Excluded",
+                                                          "tier_reason": relabel.NO_LABEL_FITS})
+    ctx.store.update("accounts", {"account_id": "acc-3"}, {"status": "disqualified", "tier": "Excluded",
+                                                          "tier_reason": relabel.PUBLIC_BODY})
+    at(ctx, ctx.now, live=False, job="relabel")
+    assert relabel.run(ctx)["restored"] == ["acmecreative.com"]
+    assert ctx.store.get("accounts", account_id="acc-1")["status"] == "disqualified"  # dry-run: unchanged
+    at(ctx, ctx.now, live=True, job="relabel")
+    out = relabel.run(ctx)
+    a1, a3 = (ctx.store.get("accounts", account_id=a) for a in ("acc-1", "acc-3"))
+    assert out["restored"] == ["acmecreative.com"]
+    assert (a1["status"], a1["tier"], a1["tier_reason"]) == ("queued", None, None)
+    assert a1["label_source"] == "rules"  # the rules' label with its group's copy until the label check asks
+    assert a3["status"] == "disqualified"  # a public body stays out
+    assert relabel.run(ctx)["restored"] == []  # once
 
 
 def test_an_overrides_row_keeps_its_industry():

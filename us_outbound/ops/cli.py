@@ -691,6 +691,12 @@ def cmd_relabel(args: argparse.Namespace, factory: Factory) -> int:
     if args.all:
         for line in out["changes"]:
             print(f"  {line}")
+    if out.get("restored"):
+        print(f"{'Put back' if ctx.live else 'Would put back'} {len(out['restored'])} compan"
+              f"{'y' if len(out['restored']) == 1 else 'ies'} an earlier relabel disqualified on the rules alone: the "
+              "label check decides them (`us-outbound labels audit --live`, or verify_accounts at 04:30).")
+        if args.all:
+            print("  " + ", ".join(out["restored"]))
     cards = out["cards_withdrawn"] if ctx.live else out["cards_to_withdraw"]
     if cards:
         print(f"{'Withdrew' if ctx.live else 'Would withdraw'} {len(cards)} open card(s): {', '.join(cards)}.")

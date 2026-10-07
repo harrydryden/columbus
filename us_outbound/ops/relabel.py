@@ -12,9 +12,13 @@ and from the label check's stored verdict (labels.py: no model call either):
   * the label is what labels.decide gives from the rules' label and the stored verdict; with no verdict yet, the
     rules' label with the group's copy (the label check asks about it at the next verify_accounts, or with
     `us-outbound labels audit --live`). An Overrides row's industry, or an approver's correction, always stands;
-  * a company no label fits (with no verdict), whose domain is a public body's (clean/domains.is_public_body), or
-    that the stored verdict rules out, is disqualified (status "disqualified", tier Excluded with the reason), so
-    nothing proposes it again;
+  * a company whose domain is a public body's (clean/domains.is_public_body), or that the stored verdict rules out,
+    is disqualified (status "disqualified", tier Excluded with the reason), so nothing proposes it again. A company
+    the rules find no label for, with no verdict yet, is left as it is for the label check to decide: the rules
+    alone are not enough to rule a company out (Harry, 7 Oct 2026: the first relabel disqualified 89 software
+    companies, 37signals and Postmark among them, whose Apollo codes include IT services, which Technology &
+    Startups excludes). A company an earlier relabel disqualified that way is put back in the queue (status queued,
+    tier and label cleared), so the label check asks about it;
   * a company with no Apollo codes or keywords on file keeps its label;
   * an open send-approval card that no longer fits its company's label (approvals.unfit_cards: another label,
     disqualified, or a pitch more specific than the label now allows) is withdrawn: closed by "system" like an
@@ -90,10 +94,8 @@ def decide(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], ctx:
     stored = labels.latest_verdict(events)
     v = verdict or (labels.Verdict.from_value(stored) if stored else None)
     if v is None and rules is None:
-        d = labels.Decision(account.get("industry"), account.get("industry_group"), labels.RULES, "",
-                            labels.GROUP_COPY, labels.DISQUALIFY, NO_LABEL_FITS)
-    else:
-        d = labels.decide(rules, v, s, mode=labels.SKIP)
+        return None  # the rules alone never rule a company out: the label check decides (the module docstring)
+    d = labels.decide(rules, v, s, mode=labels.SKIP)
     if d is None:
         return None
     if d.action == labels.HOLD:  # the hand-check is verify_accounts' to run: here, the safe label and copy only
@@ -124,8 +126,27 @@ def _cards(ctx: Context, after: Mapping[str, Mapping[str, Any]]) -> tuple[list[s
     return [item.company for item, _, _ in found], withdrawn
 
 
+def ruled_out_on_rules(ctx: Context) -> list[dict]:
+    """The companies an earlier relabel disqualified because the rules found no label, with no label check verdict
+    since: the label check, not the rules, decides them (the module docstring)."""
+    found = [a for a in ctx.store.select("accounts", {"status": DISQUALIFIED}) if a.get("tier_reason") == NO_LABEL_FITS]
+    events = label_events(ctx, [str(a["account_id"]) for a in found])
+    return [a for a in found if not labels.latest_verdict(events.get(str(a["account_id"]), []))]
+
+
+def restore(ctx: Context, found: Sequence[Mapping[str, Any]]) -> None:
+    """Back in the queue for the label check (live): queued, so verify_accounts verifies it again and asks."""
+    rows = [{"account_id": a["account_id"], "status": "queued", "tier": None, "tier_reason": None,
+             "label_source": None, "label_confidence": None, "label_checked_at": None} for a in found]
+    if rows:
+        ctx.store.upsert("accounts", rows)
+
+
 def run(ctx: Context) -> dict:
     """The relabel command: every open company decided again from the rules and its stored verdict."""
+    back = ruled_out_on_rules(ctx)
+    if ctx.live:
+        restore(ctx, back)
     accounts = list(ctx.store.select("accounts", {"status": list(universe.OPEN_STATUSES)}))
     events = label_events(ctx, [str(a["account_id"]) for a in accounts])
     changes: dict[str, tuple[dict, labels.Decision, labels.Verdict | None, Industry | None]] = {}
@@ -150,6 +171,7 @@ def run(ctx: Context) -> dict:
         "dry_run": ctx.dry_run, "queued_accounts": len(accounts), "changed": len(changes),
         "moves": dict(moves.most_common()), "changes": lines,
         "cards_to_withdraw": cards, "cards_withdrawn": withdrawn,
+        "restored": sorted(str(a.get("domain")) for a in back),
     }
 
 
