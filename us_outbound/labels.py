@@ -600,7 +600,7 @@ class Checker:
         self.budget.made += 1
         answer = self.ctx.clients.claude_task.json(
             self.system, material.prompt(), self.schema, max_tokens=MAX_TOKENS, purpose=self.purpose,
-            now=self.ctx.now, timeout=CALL_TIMEOUT, effort=MODEL_EFFORT,
+            now=self.ctx.now, timeout=CALL_TIMEOUT, effort=MODEL_EFFORT, cache_system=True,
         )
         self.asked += 1
         v = check_answer(answer, material, self.names, labels_hash=self.hash, model_id=self.model)

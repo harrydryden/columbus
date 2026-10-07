@@ -330,7 +330,9 @@ def test_one_call_on_the_task_model_with_the_list_in_the_system_block_and_its_sp
     [call] = ctx.clients.claude_task.client.calls
     assert call["model"] == "claude-sonnet-5-5" and call["max_tokens"] == labels.MAX_TOKENS
     assert call["output_config"]["effort"] == "low" and call["output_config"]["format"]["schema"] == ch.schema
-    assert "\nGames studios — Technology & Startups — Makes and publishes" in call["system"]
+    [system] = call["system"]  # one block, cached: the same for every company (step 9)
+    assert system["cache_control"] == {"type": "ephemeral"} and system["text"] == ch.system
+    assert "\nGames studios — Technology & Startups — Makes and publishes" in system["text"]
     assert call["messages"][0]["content"].startswith("<company>\nName: Brightline")
     [spend] = ctx.store.select("credit_ledger")
     assert spend["job"] == "label_check" and ch.usd() == round(spend["usd"], 4) > 0

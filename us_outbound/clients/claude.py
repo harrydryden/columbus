@@ -14,6 +14,12 @@ effort sets output_config.effort. Sonnet 5.5 and Opus 5.5 think before answering
 is billed as output and counts against max_tokens, and Sonnet's default effort is high
 (docs/gtm-review/04-tool-capabilities.md §5). A caller that leaves effort out gets the model's
 default, as before.
+
+cache_system (Harry, 7 Oct 2026; the industry label check, labels.py, asks with the same long system
+block for every company): the system prompt goes as one text block marked cache_control ephemeral
+(5 minutes), so each call after the first reads it at the cache rate. usage_cost_usd prices the cache
+write and reads; the cap's estimate stays the uncached upper bound. A prefix under the model's minimum
+(512 tokens on Sonnet 5.5) is simply not cached.
 """
 
 from __future__ import annotations
@@ -198,8 +204,9 @@ class Claude:
         now: datetime | None = None,
         timeout: float | None = None,
         effort: str | None = None,
+        cache_system: bool = False,
     ) -> dict:
-        """One structured-output call; returns the parsed JSON object."""
+        """One structured-output call; returns the parsed JSON object. cache_system: the system prompt is cached."""
         import anthropic
 
         _check_schema(schema)
@@ -229,7 +236,8 @@ class Claude:
             response = client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                system=system,
+                system=([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if cache_system
+                        else system),
                 messages=[{"role": "user", "content": prompt}],
                 output_config=output_config,
             )
@@ -258,13 +266,18 @@ class Claude:
                     "credits": 0.0,
                     "usd": cost,
                     "occurred_at": now,
-                    "note": f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}",
+                    "note": f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}"
+                            + (f" cache_read={getattr(usage, 'cache_read_input_tokens', 0) or 0}"
+                               f" cache_write={getattr(usage, 'cache_creation_input_tokens', 0) or 0}"
+                               if cache_system else ""),
                 }
             ],
         )
         stop = getattr(response, "stop_reason", None)
         log("claude_call", model=self.model, purpose=purpose, stop_reason=stop, usd=round(cost, 6),
-            input_tokens=getattr(usage, "input_tokens", None), output_tokens=getattr(usage, "output_tokens", None))
+            input_tokens=getattr(usage, "input_tokens", None), output_tokens=getattr(usage, "output_tokens", None),
+            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", None),
+            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", None))
 
         if stop == "refusal":
             raise ClaudeError("Claude declined the request (stop_reason refusal)")
