@@ -87,6 +87,13 @@ one click decides.
 | — | `send: …` | Sends that text instead of the draft |
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
 | 🚫 | — | Drop the company for good |
+| `industry: Fintech` (any label on the Industries tab; any case, and a unique part of one, like `games`, will do) | — | The company is that, not what the card says: its label is set, kept on the Overrides tab, and the card is withdrawn. The next enrol (12:00 on a send day) proposes it again with that label's emails. Works whether you have ❌'d it or not. An unknown label gets the list of labels in the thread |
+
+Each send card's **Industry** line says how its label was checked (Harry, 7 Oct 2026; the label check):
+`rules and model agree · Fintech copy` is the normal case; `⚠️ … · the rules say X, the model says Y (medium) ·
+General copy` means they disagreed and the email is the safe General one; `⚠️ … · not checked by the model` is a
+card from before the check, or with `label_check` = `skip`. **They do** is what the model read the company does,
+with its quote. If either is wrong, reply `industry: <label>`.
 
 ## Mondays: the readout
 
@@ -204,14 +211,16 @@ docs/railway-setup.md, step h.
   campaign by itself once sending has gone live. A campaign Instantly shows as *completed* is fine:
   Instantly marks an active campaign completed whenever it has no lead left to email (straight after
   `start`, if it has none yet), and the next lead added resumes it.
-- **A card's industry is wrong** (a fulfilment firm pitched as a games studio): ❌ it, then ✏️ to fix
-  the words, or 🚫 if the company is no fit at all. Since 7 Oct a company gets a label within its
-  group (Games studios, Fintech) only when its Apollo keywords say so; otherwise it gets the group's
-  own copy (Technology & Startups). `us-outbound relabel` shows what the rule changes for the
-  companies in the queue; `us-outbound relabel --live` applies it and withdraws the open cards it
-  changes, and they come back on a later day with the right copy. Government domains (.gov, .mil)
-  are never prospected. If a label is still wrong, an Overrides row (field `industry`) fixes that
-  company for good.
+- **A card's industry is wrong** (a fulfilment firm pitched as a games studio): reply `industry: <label>`
+  in its thread (or `us-outbound approvals industry ID "<label>" --live`). The label is set and kept
+  on the Overrides tab, the card is withdrawn, and the company comes back at the next enrol with the
+  right emails; 🚫 if the company is no fit at all. For a company with no card,
+  `us-outbound labels set DOMAIN "<label>" --live`; `us-outbound labels show DOMAIN` gives its label's
+  history. Since 7 Oct the task model checks each company's label before it can get a card (the
+  label check, docs/pipeline.md stage 3), so this should be rare: the daily post's **Labels** line
+  counts the corrections. `us-outbound relabel` shows what the rules and the stored checks change for
+  the companies in the queue; `--live` applies it and withdraws the open cards it changes. Government
+  domains (.gov, .mil) are never prospected.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual
@@ -313,7 +322,8 @@ commands instead.
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
 | `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
-| `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`) | Send cards without Slack |
+| `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`, `industry ID "Fintech"`) | Send cards without Slack |
+| `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as `industry: Fintech` on a card does), or show its label and its check history |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |

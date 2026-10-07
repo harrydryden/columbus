@@ -80,6 +80,15 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
                                  scoring/tiers.py reads as a hard exclusion, so a rescore keeps it out
                                  (enrol.mark_excluded; outcome company_rejected).
   When more than one choice is on the choices message, the least drastic wins (✏️, then 👤, then 🚫).
+  "industry: Fintech"            in any state (Harry, 7 Oct 2026; labels.py): the company is that label, not the
+                                 card's. Its label is set (label_source approver: the label check, relabel and the
+                                 universe refresh never move it), a label_corrected fact recorded and the Overrides
+                                 tab's row for the domain set (updated in place, or added), and the card withdrawn:
+                                 the next enrol proposes the company with that label's emails, or, for a label
+                                 switched off, not at all. An unknown label gets the list in the thread.
+                                 `approvals industry ID LABEL --live` is the same.
+A card whose company's label is decided again after it was rendered, and no longer fits (verify_accounts' label
+check, `relabel`, `labels set`), is withdrawn by the next poll_approvals before any ✅ on it is read (unfit_cards).
 The 2-hour re-post and the 24-hour escalation of the reply desk do not apply to send approvals.
 
 Expiry (a simple rule): an item may be approved on the UK day it was posted (send_day) and through
@@ -620,7 +629,8 @@ def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     if status:
         blocks.append(_context(status))
     else:
-        blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread."))
+        blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread. Wrong industry? "
+                               "Reply \"industry: <label>\"."))
     text = _esc(f"{'Send approval (second contact)' if is_second(p) else 'Send approval'}: {company} · {name} · "
                 f"from {owner}: {first.get('subject') or ''}")
     return (f"{status} {text}" if status else text), blocks  # status is mrkdwn already (it may mention)
@@ -782,7 +792,7 @@ def propose(ctx: Context, prepared: Sequence[enrol.Prepared], lim: Any, slack: A
 
 @dataclass(frozen=True)
 class Command:
-    kind: str  # send | reject | edit | contact | company | edit_text
+    kind: str  # send | reject | edit | contact | company | edit_text | industry
     text: str = ""
 
 
@@ -793,6 +803,8 @@ _COMMANDS = (
     (re.compile(r"^(?:(?:new|another|change|other)\s+)?contact[\s.!]*$", re.I), "contact"),
     (re.compile(r"^(?:(?:drop|cancel)\s+(?:the\s+)?)?company[\s.!]*$", re.I), "company"),
 )
+# An approver's industry correction (Harry, 7 Oct 2026; labels.py): "industry: Fintech", in any state.
+_INDUSTRY = re.compile(r"^(?:industry|label)\s*[:=]\s*(.+?)[\s.!]*$", re.I)
 _EDIT_TEXT = re.compile(r"^edit\s*:\s*(.+)$", re.I | re.S)
 _STEP = re.compile(r"^email\s*([1-4])\s*:?[ \t]*", re.I)
 _SUBJECT = re.compile(r"^subject\s*:\s*(.*)$", re.I)
@@ -805,6 +817,9 @@ def parse_command(text: Any, state: str = WAITING) -> Command | None:
     for rx, kind in _COMMANDS:
         if rx.match(t):
             return Command(kind)
+    m = _INDUSTRY.match(t)
+    if m and "\n" not in t:
+        return Command("industry", m.group(1).strip())
     m = _EDIT_TEXT.match(t)
     if m:
         return Command("edit_text", m.group(1).strip())
@@ -1330,15 +1345,56 @@ def expire(ctx: Context, item: Item, slack: Any) -> bool:
 
 
 def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue: bool = True,
-             via: str = "relabel") -> bool:
+             via: str = "relabel", note: str = "") -> bool:
     """Closed by "system" before anyone decides, as an expiry is (`us-outbound relabel`, ops/relabel.py; Harry,
     7 Oct 2026): the card was rendered under a label that turned out wrong. Nothing was added; the company goes
-    back to the queue for a card with the right copy, or, when it may not be emailed at all, does not."""
+    back to the queue for a card with the right copy, or, when it may not be emailed at all, does not. note: the
+    thread's words, when not the plain ones (an approver's correction says what happens next)."""
     company = _esc(item.company)
     after = f"{company} goes back to the queue for a new card" if back_to_queue else f"{company} will not be emailed"
     return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=f"withdrawn: {reason}", via=via,
                   status=f"↩️ Withdrawn: {_esc(reason)}; nothing was added and {after}",
-                  note=f"↩️ Withdrawn: {_esc(reason)}. Nothing was added; {after}.")
+                  note=note or f"↩️ Withdrawn: {_esc(reason)}. Nothing was added; {after}.")
+
+
+# -- an approver's industry correction (labels.py; Harry, 7 Oct 2026) ---------------------------------------------
+
+
+def set_industry(ctx: Context, item: Item, text: str, *, by: str, via: str, slack: Any) -> dict:
+    """"industry: Fintech" from an approver (or `approvals industry`), live: the company takes the label
+    (labels.correct: the account, a label_corrected fact, the Overrides tab) and the card, written for the old one,
+    is withdrawn, so the next enrol proposes the company again with the new label's emails. An unknown label, or the
+    card's own, changes nothing and says so in the thread."""
+    s = ctx.settings
+    ind = labels.resolve(text, s)
+    wanted = _esc(_text(text)[:60])
+    if ind is None:
+        _thread(slack, item, f"No Industries label called “{wanted}”. The labels are:\n{_esc(labels.active_list(s))}\n"
+                             "Reply `industry: <label>` with one of them (any label on the Industries tab will do).")
+        return {"done": False, "why": f"no Industries label called {text!r}"}
+    old = _text(item.payload.get("industry"))
+    if ind.industry.casefold() == old.casefold():
+        _thread(slack, item, f"The card already has {_esc(ind.industry)}.")
+        return {"done": False, "why": f"the card already has {ind.industry}"}
+    account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+    if account is None:
+        _thread(slack, item, "The company is no longer on file, so its industry cannot be set.")
+        return {"done": False, "why": "the account is no longer on file"}
+    who = _who(by)
+    got = labels.correct(ctx, account, ind, by=by, via=via, item_id=item.id, card_label=old,
+                         who="at the command line" if by == CLI_APPROVER else f"by {by} in Slack")
+    sheet = {"updated": "recorded on the Overrides tab", "added": "added to the Overrides tab"}.get(got["sheet"], got["sheet"])
+    company, new = _esc(item.company), _esc(ind.industry)
+    if ind.active:
+        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and the "
+                 f"next enrol (12:00 UK on a send day) proposes {company} again with the {new} emails.")
+    else:
+        after = (f"This card is withdrawn: nothing was sent. {new} is switched off on the Industries tab, so {company} "
+                 "will not be emailed unless it is switched on.")
+    note = f"🏷️ Industry set to {new} ({who}); {_esc(sheet)}. {after}"
+    withdraw(ctx, item, slack, f"its industry is {ind.industry} now, set {who}", back_to_queue=ind.active,
+             via="industry", note=note)
+    return {"done": True, "from": old, "to": ind.industry, "sheet": got["sheet"]}
 
 
 # -- cards a label decision has overtaken (labels.py; Harry, 7 Oct 2026) ------------------------------------------
@@ -1431,6 +1487,7 @@ class _Run:
     not_added: list[dict] = field(default_factory=list)
     held: list[dict] = field(default_factory=list)  # approvals a hold stopped this run; they stay valid
     cards_posted: int = 0
+    relabelled: list[dict] = field(default_factory=list)  # approvers' industry corrections (labels.py)
     unsure: list[str] = field(default_factory=list)
     would: list[dict] = field(default_factory=list)
     ignored: int = 0
@@ -1475,6 +1532,11 @@ def _act(ctx: Context, item: Item, cmd: Command, by: str, via: str, slack: Any, 
     if cmd.kind == "edit_text":
         run.edits["accepted" if apply_edit(ctx, item, cmd.text, by=by, slack=slack) else "refused"] += 1
         return False
+    if cmd.kind == "industry":  # in any state: the card closes once the label is set (Harry, 7 Oct 2026)
+        res = set_industry(ctx, item, cmd.text, by=by, via=via, slack=slack)
+        if res.get("done"):
+            run.add("relabelled", {"item": item.short_id, "from": res["from"], "to": res["to"], "sheet": res["sheet"]})
+        return bool(res.get("done"))
     fn = drop_contact if cmd.kind == "contact" else drop_company
     res = fn(ctx, item, by=by, via=via, slack=slack)
     if res.get("done"):
@@ -1669,6 +1731,7 @@ def poll(ctx: Context, slack: Any | None) -> dict:
         "edits": dict(run.edits), "not_added": run.not_added, "held": run.held, "cards_posted": run.cards_posted,
         "unsure": run.unsure, "instantly_plan_full": run.plan_full,
         "ignored_non_approvers": run.ignored, "errors": run.errors, "withdrawn": withdrawn[:LIST_LIMIT],
+        "relabelled": run.relabelled,
     }
     if ctx.dry_run:
         out["would"] = run.would
@@ -1723,6 +1786,22 @@ def approve(ctx: Context, ref: str) -> dict:
         raise ValueError(f"send approval {item.short_id} expired at the end of {item.payload.get('expires_on')}; "
                          "the account goes back to the queue")
     return {"dry_run": ctx.dry_run, **send(ctx, item, by=CLI_APPROVER, via="cli", slack=slack_or_none(ctx))}
+
+
+def industry_item(ctx: Context, ref: str, text: str) -> dict:
+    """`approvals industry ID LABEL`: the same correction as an approver's "industry: LABEL" reply, by "cli". A dry
+    run says what would change and changes nothing."""
+    item = find_item(ctx, ref)
+    _actionable(item)
+    ind = labels.resolve(text, ctx.settings)
+    if ind is None:
+        raise ValueError(f"no Industries label called {text!r}; the labels are:\n{labels.active_list(ctx.settings)}")
+    if ctx.dry_run:
+        return {"dry_run": True, "item": item.short_id, "company": item.company,
+                "from": _text(item.payload.get("industry")), "to": ind.industry,
+                "would": "set the label, record it on the Overrides tab and withdraw the card"}
+    return {"dry_run": False, "item": item.short_id, "company": item.company,
+            **set_industry(ctx, item, ind.industry, by=CLI_APPROVER, via="cli", slack=slack_or_none(ctx))}
 
 
 def reject_item(ctx: Context, ref: str, what: str) -> dict:

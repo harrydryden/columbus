@@ -142,3 +142,61 @@ def run(ctx: Context) -> dict:
         "moves": dict(moves.most_common()), "changes": lines,
         "cards_to_withdraw": cards, "cards_withdrawn": withdrawn,
     }
+
+
+# -- `us-outbound labels set | show` (labels.py; Harry, 7 Oct 2026) --------------------------------------------------
+
+
+def _account(ctx: Context, domain: str) -> dict:
+    from us_outbound.clean.domains import root_domain
+
+    d = root_domain(domain) or str(domain or "").strip().lower()
+    found = ctx.store.select("accounts", {"domain": d})
+    if not found:
+        raise LookupError(f"no company with the domain {d!r}")
+    return dict(found[0])
+
+
+def set_label(ctx: Context, domain: str, text: str) -> dict:
+    """`labels set DOMAIN LABEL`: an approver's correction for a company with no card (or any), by "cli": the label
+    (labels.correct: the account, a label_corrected fact, the Overrides tab), and an open card that no longer fits it
+    withdrawn. A dry run says what would change and changes nothing."""
+    a = _account(ctx, domain)
+    ind = labels.resolve(text, ctx.settings)
+    if ind is None:
+        raise ValueError(f"no Industries label called {text!r}; the labels are:\n{labels.active_list(ctx.settings)}")
+    out: dict[str, Any] = {"dry_run": ctx.dry_run, "domain": a.get("domain"), "from": a.get("industry"),
+                           "to": ind.industry, "active": ind.active}
+    if ctx.dry_run:
+        after = {**a, "industry": ind.industry, "industry_group": ind.industry_group,
+                 "label_source": labels.APPROVER, "label_checked_at": ctx.now}
+        out["cards_to_withdraw"] = [item.company for item, _, _ in approvals.unfit_cards(ctx, {a["account_id"]: after})]
+        return out
+    got = labels.correct(ctx, a, ind, by=approvals.CLI_APPROVER, via="cli", who="at the command line (labels set)")
+    found = approvals.unfit_cards(ctx, {a["account_id"]: ctx.store.get("accounts", account_id=a["account_id"])})
+    return {**out, "sheet": got["sheet"], "cards_withdrawn": approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx),
+                                                                                       found)}
+
+
+def show(ctx: Context, domain: str) -> dict:
+    """`labels show DOMAIN`: the company's label, where it came from, and its label check history, newest first."""
+    a = _account(ctx, domain)
+    events = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": labels.JOB})
+    history = []
+    for e in sorted(events, key=lambda e: str(e.get("observed_at") or ""), reverse=True):
+        v = e.get("value") or {}
+        if e.get("fact") == labels.CORRECTED_FACT:
+            history.append({"at": str(e.get("observed_at")), "corrected": f"{v.get('from') or 'no label'} → {v.get('to')}",
+                            "by": v.get("by"), "via": v.get("via")})
+        elif e.get("fact") == labels.VERDICT_FACT:
+            d = v.get("decision") or {}
+            history.append({"at": str(e.get("observed_at")), "asked": bool(v.get("asked")), "rules": v.get("rules"),
+                            "model": v.get("model"), "confidence": v.get("confidence"), "entity": v.get("entity"),
+                            "evidence": v.get("evidence"), "what_they_do": v.get("what_they_do"),
+                            "decision": f"{d.get('action')}: {d.get('label')} ({d.get('source')}, {d.get('copy')} copy)"
+                                        + (f"; {d.get('reason')}" if d.get("reason") else ""),
+                            "labels_hash": v.get("labels_hash")})
+    return {"domain": a.get("domain"), "industry": a.get("industry"), "industry_group": a.get("industry_group"),
+            "status": a.get("status"), "label_source": a.get("label_source") or "not checked yet",
+            "copy_level": labels.copy_level(a), "label_confidence": a.get("label_confidence"),
+            "label_checked_at": str(a.get("label_checked_at") or ""), "history": history}

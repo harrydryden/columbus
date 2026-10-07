@@ -1059,3 +1059,153 @@ def test_a_checked_account_s_card_carries_its_verdict_and_stays_under_slacks_lim
             "the group's copy") in text
     assert f"*They do:* advertising for consumer brands · “{'x' * 160}”" in text
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
+
+
+# -- "industry: Fintech": an approver's correction in one reply (labels.py; Harry, 7 Oct 2026) ----------------------
+
+
+class FakeOverrides:
+    """The settings sheet's Overrides tab behind the transport: read, a cell updated, rows appended."""
+
+    HEAD = ["domain", "field", "value", "note"]
+
+    def __init__(self, t, rows=(), *, fail=False):
+        self.rows = [dict(r) for r in rows]
+        self.appended: list[list[str]] = []
+        self.updated: list[tuple[str, list]] = []
+        status = 500 if fail else 200
+        t.route("GET", "Overrides", status=status, fn=None if fail else (
+            lambda r: {"values": [self.HEAD] + [[x.get(h, "") for h in self.HEAD] for x in self.rows]}),
+            body={"error": {"message": "down"}} if fail else None)
+        t.route("PUT", "Overrides", fn=self._put)
+        t.route("POST", ":append", fn=self._append)
+
+    def _put(self, req):
+        self.updated.append((req.json["range"], req.json["values"]))
+        row = int(req.json["range"].rsplit("C", 1)[1]) - 2  # the value column, C
+        self.rows[row]["value"] = req.json["values"][0][0]
+        return {}
+
+    def _append(self, req):
+        for values in req.json["values"]:
+            self.appended.append(values)
+            self.rows.append(dict(zip(self.HEAD, values)))
+        return {}
+
+
+def corrected(text="industry: Fintech", *, user=HARRY_ID, rows=(), fail=False, account_id="acc-1"):
+    ctx, t, sl, _ = proposed()
+    sheet = FakeOverrides(t, rows, fail=fail)
+    row = item_for(ctx, account_id)
+    sl.say(user, text, row["slack_ts"])
+    return ctx, t, sl, sheet, row, poll(ctx)
+
+
+def test_an_approvers_industry_reply_sets_the_label_records_it_and_withdraws_the_card():
+    ctx, t, sl, sheet, row, out = corrected()
+    a = ctx.store.get("accounts", account_id="acc-1")
+    assert (a["industry"], a["industry_group"], a["label_source"], a["label_confidence"]) == (
+        "Fintech", "Technology & Startups", "approver", "high")
+    [fact] = ctx.store.select("signal_events", {"source": "label_check", "fact": "label_corrected"})
+    assert fact["value"] == {"from": "Advertising agencies", "from_source": None, "to": "Fintech",
+                             "to_group": "Technology & Startups", "by": HARRY_ID, "via": "thread",
+                             "item_id": row["item_id"], "rules": None, "model": None, "confidence": None}
+    assert sheet.appended == [["acmecreative.com", "industry", "Fintech",
+                               f"set by {HARRY_ID} in Slack at a send approval, 27 Oct 2026"]]
+    assert out["relabelled"] == [{"item": row["item_id"][:8], "from": "Advertising agencies", "to": "Fintech",
+                                  "sheet": "added"}]
+    done = item_for(ctx, "acc-1")
+    assert (done["status"], done["payload"]["outcome"]) == ("handled", "expired") and instantly_posts(t) == []
+    assert done["payload"]["reason"] == f"withdrawn: its industry is Fintech now, set by <@{HARRY_ID}>"
+    assert (f"🏷️ Industry set to Fintech (by <@{HARRY_ID}>); added to the Overrides tab. This card was written for "
+            "Advertising agencies, so it is withdrawn: nothing was sent, and the next enrol (12:00 UK on a send day) "
+            "proposes Acme Creative again with the Fintech emails.") in sl.texts()
+    # The next enrol proposes it again, under its new label.
+    at(ctx, datetime(2026, 10, 28, 11, 0, tzinfo=UTC), job="enrol")
+    enrol.run(ctx)
+    again = [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
+    assert len(again) == 1 and again[0]["payload"]["industry"] == "Fintech"
+    assert again[0]["payload"]["label_source"] == "approver"
+
+
+def test_an_overrides_row_the_domain_has_is_updated_never_duplicated():
+    rows = [{"domain": "AcmeCreative.com", "field": "industry", "value": "Advertising agencies", "note": "Harry's"}]
+    ctx, t, sl, sheet, row, out = corrected(rows=rows)
+    assert sheet.appended == [] and [r["value"] for r in sheet.rows] == ["Fintech"] and sheet.rows[0]["note"] == "Harry's"
+    assert out["relabelled"][0]["sheet"] == "updated"
+    assert any("recorded on the Overrides tab" in x for x in sl.texts())
+
+
+def test_a_sheet_that_cannot_be_written_is_said_and_the_database_keeps_the_label():
+    ctx, t, sl, sheet, row, out = corrected(fail=True)
+    assert ctx.store.get("accounts", account_id="acc-1")["label_source"] == "approver"
+    assert out["relabelled"][0]["sheet"].startswith("not written to the Overrides tab (")
+    assert any("not written to the Overrides tab" in x and "the database keeps it" in x for x in sl.texts())
+
+
+def test_an_unknown_label_lists_the_labels_and_changes_nothing():
+    ctx, t, sl, sheet, row, out = corrected("industry: crypto")
+    assert item_for(ctx, "acc-1")["status"] == "open" and out["relabelled"] == []
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Advertising agencies"
+    [reply] = [x for x in sl.texts() if x.startswith("No Industries label called")]
+    assert reply.startswith("No Industries label called “crypto”. The labels are:\nMarketing &amp; Creative Agencies: "
+                            "Marketing &amp; Creative Agencies, Advertising agencies\nTechnology &amp; Startups: ")
+    assert sheet.appended == []
+
+
+def test_the_cards_own_label_and_a_non_approver_change_nothing():
+    ctx, t, sl, sheet, row, out = corrected("Industry: advertising agencies")
+    assert item_for(ctx, "acc-1")["status"] == "open" and "The card already has Advertising agencies." in sl.texts()
+    ctx, t, sl, sheet, row, out = corrected(user=SOMEONE)
+    assert item_for(ctx, "acc-1")["status"] == "open" and out["ignored_non_approvers"] >= 1
+    assert ctx.store.select("signal_events", {"fact": "label_corrected"}) == []
+
+
+def test_a_label_switched_off_means_the_company_is_not_emailed():
+    ctx, t, sl, sheet, row, out = corrected("label = Staffing agencies.")
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Staffing agencies"
+    assert any("Staffing agencies is switched off on the Industries tab, so Acme Creative will not be emailed unless "
+               "it is switched on." in x for x in sl.texts())
+
+
+def test_it_works_after_a_cross_too():
+    ctx, t, sl, _ = proposed()
+    FakeOverrides(t)
+    row = item_for(ctx, "acc-1")
+    sl.say(HARRY_ID, "skip", row["slack_ts"])
+    poll(ctx)
+    assert item_for(ctx, "acc-1")["payload"]["state"] == "rejected"
+    sl.say(HARRY_ID, "industry: fintech", row["slack_ts"])
+    poll(ctx)
+    assert item_for(ctx, "acc-1")["status"] == "handled"
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Fintech"
+
+
+def test_the_command_line_twin(capsys):
+    ctx, t, sl, _ = proposed()
+    sheet = FakeOverrides(t)
+    row = item_for(ctx, "acc-1")
+    at(ctx, ctx.now, live=False, job="approvals_industry")
+    dry = approvals.industry_item(ctx, row["item_id"][:8], "fintech")
+    assert dry == {"dry_run": True, "item": row["item_id"][:8], "company": "Acme Creative",
+                   "from": "Advertising agencies", "to": "Fintech",
+                   "would": "set the label, record it on the Overrides tab and withdraw the card"}
+    assert item_for(ctx, "acc-1")["status"] == "open"
+    with pytest.raises(ValueError, match="no Industries label called 'crypto'"):
+        approvals.industry_item(ctx, row["item_id"][:8], "crypto")
+    at(ctx, ctx.now, live=True, job="approvals_industry")
+    out = approvals.industry_item(ctx, row["item_id"][:8], "fintech")
+    assert out["done"] is True and out["to"] == "Fintech" and item_for(ctx, "acc-1")["status"] == "handled"
+    [fact] = ctx.store.select("signal_events", {"fact": "label_corrected"})
+    assert (fact["value"]["by"], fact["value"]["via"]) == ("cli", "cli")
+    assert sheet.appended[0][3].startswith("set at the command line at a send approval")
+
+
+def test_the_footer_says_how_to_fix_an_industry():
+    ctx, t, sl, _ = proposed()
+    card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
+    assert blocks_text(card).endswith("Wrong industry? Reply \"industry: <label>\".")
+    assert approvals.parse_command("industry: Fintech") == approvals.Command("industry", "Fintech")
+    assert approvals.parse_command("Label=Games studios!") == approvals.Command("industry", "Games studios")
+    assert approvals.parse_command("industry: Fintech", approvals.EDITING) == approvals.Command("industry", "Fintech")
+    assert approvals.parse_command("industry is wrong") is None

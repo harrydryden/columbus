@@ -650,3 +650,61 @@ def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping
     if v is None and why == NO_MATERIAL:
         return on_rules(why)
     return decide(rules, v, s, mode=mode), v, rules, why, asked
+
+
+# -- an approver's correction (Harry, 7 Oct 2026: one thread reply, "industry: Fintech") ------------------------------
+
+OVERRIDES_TAB = "Overrides"
+
+
+def active_list(settings: Settings) -> str:
+    """The active labels, one line per group, as a reply naming an unknown label lists them."""
+    groups: dict[str, list[str]] = {}
+    for i in settings.industries:
+        if i.active:
+            groups.setdefault(i.industry_group, []).append(i.industry)
+    return "\n".join(f"{g}: {', '.join(names)}" for g, names in groups.items())
+
+
+def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: str, via: str, item_id: str = "",
+            card_label: str = "", who: str = "") -> dict:
+    """An approver's label for a company (a card's thread reply, `approvals industry` or `labels set`), live.
+
+    The account takes the label as label_source approver (it earns the label's own copy, and the label check,
+    relabel and the universe refresh never move it); a label_corrected fact records the change and what the rules
+    and the model had said (the gold set and the accuracy numbers read it); and the Overrides tab gets the row
+    (domain, industry, label), updated in place when the domain has one, so the next settings_sync keeps it too.
+    A sheet that cannot be written is said in the result; the database keeps the label either way."""
+    from us_outbound.clients.guard import GuardViolation
+    from us_outbound.clients.http import ApiError
+
+    aid, domain = account["account_id"], str(account.get("domain") or "").strip().lower()
+    stored = latest_verdict(ctx.store.select("signal_events", {"account_id": aid, "source": JOB,
+                                                                "fact": VERDICT_FACT})) or {}
+    was = card_label or str(account.get("industry") or "")
+    ctx.store.upsert("accounts", [{"account_id": aid, "industry": label.industry, "industry_group": label.industry_group,
+                                   "label_source": APPROVER, "label_confidence": HIGH, "label_checked_at": ctx.now}])
+    value = {"from": was or None, "from_source": account.get("label_source") or None, "to": label.industry,
+             "to_group": label.industry_group, "by": by, "via": via, "item_id": item_id or None,
+             "rules": stored.get("rules"), "model": stored.get("model"), "confidence": stored.get("confidence")}
+    ctx.store.insert("signal_events", [{
+        "event_id": new_id(), "account_id": aid, "source": JOB, "fact": CORRECTED_FACT, "value": value,
+        "quote": f"{was or 'no label'} → {label.industry}", "source_url": "", "observed_at": ctx.now}])
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not sheet_id or not domain:
+        sheet = "not written to the Overrides tab (no settings sheet); the database keeps it"
+    else:
+        try:
+            match = {"domain": domain, "field": "industry"}
+            if ctx.clients.sheets.update_cell(sheet_id, OVERRIDES_TAB, match, "value", label.industry):
+                sheet = "updated"
+            else:  # never a second row for the domain: a duplicate fails the tab's validation at the next sync
+                note = f"set {who or by} at a send approval, {ctx.today_uk():%-d %b %Y}" if item_id else \
+                    f"set {who or by}, {ctx.today_uk():%-d %b %Y}"
+                ctx.clients.sheets.append_rows(sheet_id, OVERRIDES_TAB, [{**match, "value": label.industry,
+                                                                          "note": note}])
+                sheet = "added"
+        except (ApiError, LookupError, ValueError, ConfigError, GuardViolation) as exc:
+            sheet = f"not written to the Overrides tab ({str(exc)[:160]}); the database keeps it"
+    log("label_corrected", run_id=ctx.run_id, account_id=aid, to=label.industry, via=via, sheet=sheet[:80])
+    return {"from": was, "to": label.industry, "sheet": sheet}

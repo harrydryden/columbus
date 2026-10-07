@@ -149,3 +149,31 @@ def test_a_stored_verdict_that_rules_a_company_out_disqualifies_it():
     out = relabel.run(ctx)
     a = ctx.store.get("accounts", account_id="acc-2")
     assert (a["status"], a["tier"]) == ("disqualified", "Excluded") and "Brightfin" in out["cards_withdrawn"]
+
+
+def test_labels_set_corrects_a_company_and_withdraws_its_card_and_show_tells_the_story(capsys):
+    from tests.test_send_approvals import FakeOverrides
+    from us_outbound.ops import cli
+
+    ctx, t, sl = world()
+    sheet = FakeOverrides(t)
+    at(ctx, ctx.now, live=False, job="labels_set")
+    dry = relabel.set_label(ctx, "https://www.loopstudio.com/", "fintech")
+    assert dry == {"dry_run": True, "domain": "loopstudio.com", "from": "Advertising agencies", "to": "Fintech",
+                   "active": True, "cards_to_withdraw": ["Loop Studio"]}
+    assert ctx.store.get("accounts", account_id="acc-3")["industry"] == "Advertising agencies"
+    at(ctx, ctx.now, live=True, job="labels_set")
+    out = relabel.set_label(ctx, "loopstudio.com", "fintech")
+    assert (out["sheet"], out["cards_withdrawn"]) == ("added", ["Loop Studio"])
+    assert sheet.appended[0][:3] == ["loopstudio.com", "industry", "Fintech"]
+    shown = relabel.show(ctx, "loopstudio.com")
+    assert (shown["industry"], shown["label_source"], shown["copy_level"]) == ("Fintech", "approver", "label")
+    assert shown["history"][0]["corrected"] == "Advertising agencies → Fintech" and shown["history"][0]["via"] == "cli"
+    with pytest.raises(LookupError, match="no company with the domain 'nobody.com'"):
+        relabel.set_label(ctx, "nobody.com", "fintech")
+    with pytest.raises(ValueError, match="no Industries label called 'crypto'"):
+        relabel.set_label(ctx, "loopstudio.com", "crypto")
+    assert cli.main(["labels", "show", "loopstudio.com"], context_factory=lambda *a, **k: ctx) == 0
+    assert '"label_source": "approver"' in capsys.readouterr().out
+    assert cli.main(["labels", "set", "loopstudio.com"], context_factory=lambda *a, **k: ctx) == 2
+    assert "labels set needs the label" in capsys.readouterr().err

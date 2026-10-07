@@ -22,6 +22,11 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
                                       person, company = 🚫 not this company. approve, reject --contact and
                                       reject --company are the same; approved_by "cli"
+  approvals industry ID LABEL         the card's company is LABEL ("industry: LABEL" in its thread): set,
+                                      kept on the Overrides tab, and the card withdrawn for a new one
+  labels set DOMAIN LABEL | show      the industry label check (us_outbound/labels.py; Harry, 7 Oct 2026):
+    DOMAIN                            set a company's label (an approver's correction, for a company with no
+                                      card), or show its label and check history
   replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
     [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
                                       send, HubSpot and close path as Slack. approve is the same as send
@@ -1097,6 +1102,17 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     if not args.item_id:
         raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
     action = args.action
+    if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
+        if not args.label:
+            raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
+        ctx = factory("approvals_industry", args.live, operator=True)  # it reaches no prospect: --live alone
+        try:
+            summary = run_job(ctx, lambda c: approvals.industry_item(c, args.item_id, args.label))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "the label, the Overrides tab and the card are unchanged.")
+        return 0
     if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
         if args.contact or args.company:
             raise Refused(f"`approvals {action}` takes no --contact or --company")
@@ -1131,6 +1147,31 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     elif summary.get("outcome") == approvals.BLOCKED:
         print("Not sent, and closed: " + "; ".join(summary.get("why") or ()) + ".")
     return 0 if summary.get("added") or ctx.dry_run else 2
+
+
+def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound labels set | show` (us_outbound/labels.py, ops/relabel.py; Harry, 7 Oct 2026)."""
+    from us_outbound.ops import relabel
+
+    if not args.domain:
+        raise Refused(f"labels {args.action} needs a company's domain")
+    if args.action == "show":
+        _only_reads(args)
+        try:
+            _print(relabel.show(factory("labels_show", False, operator=True), args.domain))
+        except LookupError as exc:
+            raise Refused(str(exc)) from exc
+        return 0
+    if not args.label:
+        raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
+    ctx = factory("labels_set", args.live, operator=True)  # it reaches no prospect: --live alone
+    try:
+        summary = run_job(ctx, lambda c: relabel.set_label(c, args.domain, args.label))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the label, the Overrides tab and any card are unchanged.")
+    return 0
 
 
 def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
@@ -1576,10 +1617,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
                  cmd_approvals, takes_live=True)
-    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject"],
+    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject", "industry"],
                     help="send = ✅ (approve); contact = 👤 not this person; company = 🚫 not this company "
-                         "(reject --contact / --company)")
+                         "(reject --contact / --company); industry = the company's label is another")
     ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters)")
+    ap.add_argument("label", nargs="?", help="industry: the Industries label, like \"Fintech\"")
     ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
     ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")
 
@@ -1702,6 +1744,11 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--last", required=True, help="your last name")
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
+    lb = command("labels", "the industry label check: set a company's label, or show its label and history",
+                 cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["set", "show"])
+    lb.add_argument("domain", nargs="?", help="the company's domain")
+    lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
     rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
                  "withdraw open cards whose label changes", cmd_relabel, takes_live=True)
     rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")

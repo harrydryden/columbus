@@ -82,9 +82,10 @@ def test_the_job_records_this_week_s_sample_and_posts_it():
     text = post.json["text"]
     assert text.startswith("<@U_HARRY> Week 44 check: 17 accounts drawn at random from the queue. Is each one right: "
                            "the name, HQ state, size band, the contact's role and title, and what the opener rests on?")
+    d = p['accounts'][0]['domain']
     assert text.endswith("All fine: `railway ssh -- us-outbound handcheck approve --live`. Any wrong: add "
-                         f"`--pull {p['accounts'][0]['domain']}`, or fix it on the Overrides tab. Until then no new "
-                         "leads go to Instantly this week.")
+                         f"`--pull {d}`, or fix it on the Overrides tab (a wrong industry: `railway ssh -- us-outbound "
+                         f"labels set {d} \"<label>\" --live`). Until then no new leads go to Instantly this week.")
     assert "SPEC" not in text and "2026" not in text
     assert item["slack_ts"] == "1.1"
     # Enrollment waits for it.
@@ -235,7 +236,8 @@ def test_with_auto_send_off_the_doubtful_accounts_still_go_to_a_person():
     assert text.startswith("<@U_HARRY> Week 44 check: 1 account has doubtful Apollo facts, so it won't get a card "
                            "until you look.\n  1. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70\n")
     assert text.endswith("All fine: `railway ssh -- us-outbound handcheck approve --live`. Any wrong: add "
-                         "`--pull mar70.com`, or fix it on the Overrides tab. Ignoring this is safe: only these "
+                         "`--pull mar70.com`, or fix it on the Overrides tab (a wrong industry: `railway ssh -- "
+                         "us-outbound labels set mar70.com \"<label>\" --live`). Ignoring this is safe: only these "
                          "accounts wait.")
     assert "SPEC" not in text and "Harry, 2 Oct" not in text
 
