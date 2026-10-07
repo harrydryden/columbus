@@ -54,10 +54,12 @@ COLUMNS: dict[str, list[str]] = {
         "slack_id",
     ],
     "Overrides": ["domain", "field", "value", "note"],
-    # kind and looks (Harry, 6 Oct 2026: tests read only at pre-registered looks) are optional columns.
+    # kind and looks (Harry, 6 Oct 2026: tests read only at pre-registered looks) are optional columns, and so are
+    # a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026; enrol/variants.py), at the end
+    # as they were added to the sheet.
     "Tests": [
         "test_id", "kind", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "looks",
-        "read_date", "decision_rule", "status", "result",
+        "read_date", "decision_rule", "status", "result", "email", "change", "text_a", "text_b", "find",
     ],
     # Added 30 Sep 2026 (Harry); a sheet without them reads as if they were empty.
     "Focus": ["industry_group", "share", "note"],
@@ -891,6 +893,11 @@ _FIRST_TEST = {
     ),
     "status": "planned",
     "result": "",
+    "email": "",
+    "change": "",
+    "text_a": "",
+    "text_b": "",
+    "find": "",
 }
 
 

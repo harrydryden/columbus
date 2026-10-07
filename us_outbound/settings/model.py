@@ -128,7 +128,15 @@ TEST_STATUSES = ("planned", "running", "read", "stopped")
 # The Tests tab's kind (Harry, 6 Oct 2026; learn/looks.py). ab: a copy A/B, version_a and version_b are Copy-tab
 # copy_versions, accounts split by hash (SPEC 9), and only one runs at a time. holdout: a split enrol already
 # records on each contact, read by its two arms; it assigns nothing, so it may run beside the copy test.
-AB_TEST, HOLDOUT_TEST = TEST_KINDS = ("ab", "holdout")
+# variant (Harry, 7 Oct 2026; enrol/variants.py): one part of one email changed for every account, whatever its
+# Copy row; version_a and version_b name the arms, text_a and text_b say what each arm's email carries.
+AB_TEST, HOLDOUT_TEST, VARIANT_TEST = TEST_KINDS = ("ab", "holdout", "variant")
+# The tests that decide what a new contact is sent: one runs at a time (SPEC 9's rule, extended to variants).
+COPY_TEST_KINDS = frozenset({AB_TEST, VARIANT_TEST})
+# What a variant test changes in its email (enrol/variants.py): a line of its own after "Hi {{first_name}},", a
+# line of its own before the sign-off, the exact text in its find column, or the subject.
+FIRST_LINE, LAST_LINE, REPLACE, SUBJECT = VARIANT_CHANGES = ("first_line", "last_line", "replace", "subject")
+VARIANT_ARMS = ("a", "b")  # contacts.test_arm: version_a's accounts and version_b's
 # A holdout test's arms: the value enrol writes, and the contacts column it is in. The opener holdout
 # (enrol/openers.py: opener or holdout) and email 1's subject split (render.subject_arm: personal or copy).
 HOLDOUT_ARMS: dict[str, str] = {"opener": "opener_arm", "holdout": "opener_arm",
@@ -513,7 +521,11 @@ class Override:
 class Test:
     """A Tests-tab row. looks are the pre-registered interim looks (Harry, 6 Oct 2026; learn/looks.py), in order:
     a whole number N (the smaller arm has N accounts with step 1 delivered and their reply window closed) or a
-    date. read_date is always the last look."""
+    date. read_date is always the last look.
+
+    A variant test (Harry, 7 Oct 2026; enrol/variants.py) also says which email it changes (1 to 4), how
+    (VARIANT_CHANGES), and what each arm's email carries: text_a for version_a's accounts, text_b for version_b's,
+    "" for the Copy row's email as it is. find is the exact text a replace changes."""
 
     test_id: str
     hypothesis: str
@@ -527,6 +539,19 @@ class Test:
     result: str = ""
     kind: str = AB_TEST
     looks: tuple[int | date, ...] = ()
+    email: int = 1
+    change: str = ""
+    text_a: str = ""
+    text_b: str = ""
+    find: str = ""
+
+    def arm_name(self, arm: str) -> str:
+        """The name of arm "a" or "b": version_a or version_b ("warm intro", "no intro")."""
+        return self.version_a if arm == "a" else self.version_b
+
+    def text(self, arm: str) -> str:
+        """A variant test's text for arm "a" or "b"; "" leaves that arm's email as the Copy row has it."""
+        return self.text_a if arm == "a" else self.text_b
 
 
 @dataclass(frozen=True)
@@ -621,8 +646,9 @@ class Settings:
         return tuple(seen)
 
     def running_test(self) -> Test | None:
-        """The copy test enrol assigns versions for: the running test of kind ab (a holdout assigns nothing)."""
-        return next((t for t in self.tests if t.status == "running" and t.kind == AB_TEST), None)
+        """The copy test enrol assigns arms for: the running test of kind ab or variant, one at a time (a holdout
+        assigns nothing)."""
+        return next((t for t in self.tests if t.status == "running" and t.kind in COPY_TEST_KINDS), None)
 
     def copy_row(self, copy_version: str) -> CopyRow | None:
         return next((c for c in self.copy if c.copy_version == copy_version), None)

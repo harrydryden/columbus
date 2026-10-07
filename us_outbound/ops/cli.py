@@ -486,7 +486,8 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     else:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
-    print(f"Running test: {running.test_id} (read on {running.read_date})" if running else "Running test: none")
+    print(f"Running test: {running.test_id} ({running.kind}, read on {running.read_date})" if running
+          else "Running test: none")
     from us_outbound.enrol import second
 
     print(second.describe(s))  # the second-contact switch (Harry, 6 Oct 2026)
@@ -720,11 +721,13 @@ def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def _test_start(ctx: Context, test_id: str) -> dict:
-    """Pre-registration first (SPEC 12; Harry, 6 Oct 2026: kind and looks, learn/looks.py). One copy test (kind ab)
-    runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns nothing, so it may run beside
-    it, and its versions are the arms enrol records, not Copy rows."""
-    from us_outbound.settings.model import AB_TEST, HOLDOUT_TEST
-    from us_outbound.settings.validate import parse_looks
+    """Pre-registration first (SPEC 12; Harry, 6 Oct 2026: kind and looks, learn/looks.py). One copy test (kind ab,
+    or variant: Harry, 7 Oct 2026) runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns
+    nothing, so it may run beside it, and its versions are the arms enrol records, not Copy rows. A variant's row is
+    checked as settings_sync checks it (its texts against the copy rules; enrol/variants.py), and refused when it
+    breaks one."""
+    from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
+    from us_outbound.settings.validate import parse_looks, validate_tab
 
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
@@ -737,12 +740,17 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     def kind(r: dict) -> str:
         return (r.get("kind") or "").strip().lower() or AB_TEST
 
-    if kind(row) not in (AB_TEST, HOLDOUT_TEST):
-        raise Refused(f"kind {row.get('kind')!r} on the Tests tab is neither {AB_TEST} nor {HOLDOUT_TEST}")
+    if kind(row) not in TEST_KINDS:
+        raise Refused(f"kind {row.get('kind')!r} on the Tests tab is not one of {', '.join(TEST_KINDS)}")
     others = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
-              and r.get("test_id", "").strip() != test_id and kind(r) == AB_TEST]
-    if others and kind(row) == AB_TEST:
-        raise Refused(f"only one copy test runs at a time (SPEC 9); {', '.join(others)} is running")
+              and r.get("test_id", "").strip() != test_id and kind(r) in COPY_TEST_KINDS]
+    if others and kind(row) in COPY_TEST_KINDS:
+        raise Refused(f"only one copy test (ab or variant) runs at a time (SPEC 9); {', '.join(others)} is running")
+    if kind(row) == VARIANT_TEST:
+        _, errors = validate_tab("Tests", [row])
+        if errors:
+            raise Refused("the Tests tab's row does not pass the checks settings_sync makes: "
+                          + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
     if row.get("status", "").strip().lower() == "running":
         return {"test_id": test_id, "status": "running", "changed": False}
     read_date = row.get("read_date", "").strip()

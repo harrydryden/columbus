@@ -87,7 +87,7 @@ from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
-from us_outbound.settings.model import GENERAL_COPY, CopyRow, Mailbox, Settings
+from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, Mailbox, Settings
 
 
 JOB = "enrol"
@@ -529,7 +529,7 @@ def choose_copy(
                  labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
         return None, "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
-    if t and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
+    if t and t.kind == AB_TEST and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
         v = t.version_a if queue.test_version(str(account["account_id"]), t.test_id) == "a" else t.version_b
         chosen = rows.get(v)
         if chosen is not None and (t.accounts_per_version <= 0 or counts.get(v, 0) < t.accounts_per_version):

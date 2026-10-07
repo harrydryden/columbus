@@ -114,14 +114,14 @@ def test_a_holdout_may_run_beside_the_copy_test_but_two_copy_tests_may_not(tabs)
     assert not any(errors.values()) and settings.running_test().test_id == "t1-eap-opener"
     second = dict(tabs["Tests"][0], test_id="t3")
     _, errors = validate_all({**tabs, "Tests": [*tabs["Tests"], holdout, second]})
-    assert "only one test runs at a time" in errors["Tests"][0].message
+    assert "only one copy test (ab or variant) runs at a time" in errors["Tests"][0].message
 
 
 def test_settings_load_brings_the_new_columns_and_keeps_harrys_values():
     sheet = [{k: v for k, v in _tests_tab(test_id="t1-eap-opener", status="running", start_date="2026-10-05").items()},
              _tests_tab(test_id="harrys-own")]
     plan = load.plan_tab("Tests", sheet, default_tabs()["Tests"])
-    assert plan.new_columns == ["kind", "looks"]
+    assert plan.new_columns == ["kind", "looks", "email", "change", "text_a", "text_b", "find"]
     rows = {r["test_id"]: r for r in plan.rows}
     assert rows["t1-eap-opener"]["status"] == "running" and rows["t1-eap-opener"]["kind"] == "ab"
     assert rows["harrys-own"]["kind"] == "" and plan.extra == ["harrys-own"]
@@ -221,7 +221,7 @@ def test_a_holdout_starts_without_copy_and_beside_the_running_copy_test(capsys):
     third = _tests_tab(test_id="t3")
     h2 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [running, third]})
     assert h2.run("test", "start", "t3", "--live") == 2
-    assert "only one copy test runs at a time" in capsys.readouterr().err
+    assert "only one copy test (ab or variant) runs at a time" in capsys.readouterr().err
     h3 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [_tests_tab(looks="soon")]})
     assert h3.run("test", "start", "t1", "--live") == 2
     assert "looks on the Tests tab" in capsys.readouterr().err
