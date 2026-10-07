@@ -9,12 +9,14 @@ import copy
 import dataclasses
 import json
 from collections import Counter
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from tests.test_cli import Harness, _approved, _tests_tab
 from tests.test_enrol import default_openers, instantly_posts, make  # noqa: F401  (default_openers: autouse)
+from tests.test_looks import T0, emailed
+from tests.test_looks import world as looks_world
 from tests.test_registry import SETTINGS
 from tests.test_send_approvals import HARRY_ID, _rejected, at, blocks_text, item_for, items, poll, proposed
 from tests.test_render import (
@@ -31,6 +33,7 @@ from tests.test_render import (
     values_for,
 )
 from us_outbound.enrol import approvals, enrol, openers, queue, render, variants
+from us_outbound.learn import looks
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import CopyStep
 from us_outbound.settings.model import Test as CopyTest  # aliased so pytest does not collect it
@@ -481,3 +484,75 @@ def test_redo_and_reprepare_give_the_same_arm():
         p = r["payload"]
         assert (p["test_id"], p["test_arm"], p["test_name"]) == (old["test_id"], old["test_arm"], old["test_name"])
         assert p["lead"]["custom_variables"]["s1_body"] == old["lead"]["custom_variables"]["s1_body"]
+
+
+# -- the reads -----------------------------------------------------------------------------------------------------------------
+
+
+def edited(ctx, i: int) -> None:
+    """Account i's step-1 contact's card was edited before it was approved (enrol/approvals.py)."""
+    ctx.store.insert("events", [{"event_id": f"send-approval:e{i}", "type": "send_approval",
+                                 "approval": "approved_edited", "account_id": f"a{i}", "contact_id": f"k{i}",
+                                 "step": 1, "occurred_at": T0 - timedelta(hours=1)}])
+
+
+def test_a_variant_test_is_read_from_its_arms_since_its_start():
+    test = dataclasses.replace(WARM_TEST, start_date=date(2026, 9, 28), looks=(2,))
+    ctx = looks_world(test)
+    arm = {"column": "test_arm", "test_id": "warm-intro"}
+    emailed(ctx, 0, "a", T0, reply="positive", **arm)
+    emailed(ctx, 1, "a", T0 + timedelta(days=1), **arm)
+    emailed(ctx, 2, "b", T0, reply="objection", **arm)
+    emailed(ctx, 3, "b", T0 + timedelta(days=1), **arm)
+    emailed(ctx, 4, "a", T0, reply="positive", enrolled_at=datetime(2026, 9, 20, tzinfo=UTC), **arm)  # before start
+    emailed(ctx, 5, "a", T0, reply="positive", column="test_arm", test_id=None)  # in no test
+    emailed(ctx, 6, None, T0, reply="positive", column="test_arm", test_id="warm-intro")  # not in the test: no arm
+    result = looks.read(ctx, "warm-intro")
+    assert (result["kind"], list(result["versions"])) == ("variant", ["warm intro", "no intro"])
+    warm, none = result["versions"]["warm intro"], result["versions"]["no intro"]
+    assert (warm["accounts"], warm["delivered"], warm["replied"], warm["positive"]) == (2, 2, 1, 1)
+    assert (none["accounts"], none["delivered"], none["replied"], none["positive"]) == (2, 2, 1, 0)
+    assert looks.summary_line(result) == ("warm intro 1 of 2 replied (50.0%); no intro 1 of 2 replied (50.0%) "
+                                          "· p = 1.00")
+    lines, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=60))
+    assert at_look == ["warm-intro"] and lines[0].startswith("  warm-intro (variant) reached look 1: 2 accounts")
+
+
+def test_before_its_first_look_a_variant_test_shows_no_reply():
+    test = dataclasses.replace(WARM_TEST, start_date=date(2026, 9, 28), looks=(5,))
+    ctx = looks_world(test)
+    emailed(ctx, 0, "a", T0, reply="positive", column="test_arm", test_id="warm-intro")
+    with pytest.raises(looks.NotYet) as exc:
+        looks.read(ctx, "warm-intro")
+    assert "warm intro 1 emailed (1 window closed), no intro 0 emailed" in str(exc.value)
+    assert "replied" not in str(exc.value)
+
+
+def test_an_edited_email_counts_in_its_arm_and_the_read_says_how_many():
+    test = dataclasses.replace(WARM_TEST, start_date=date(2026, 9, 28), looks=(2,))
+    ctx = looks_world(test)
+    arm = {"column": "test_arm", "test_id": "warm-intro"}
+    for i, (a, reply) in enumerate([("a", "positive"), ("a", None), ("b", None), ("b", None)]):
+        emailed(ctx, i, a, T0 + timedelta(days=i), reply=reply, **arm)
+    edited(ctx, 0)
+    result = looks.read(ctx, "warm-intro")
+    warm = result["versions"]["warm intro"]
+    assert (warm["delivered"], warm["replied"], warm["edited"]) == (2, 1, 1)  # counted, as assigned
+    assert result["versions"]["no intro"]["edited"] == 0
+    assert looks.edited_line(result) == ("Edited by an approver before sending, and counted in the arm they were "
+                                         "given: warm intro 1 of 2, no intro 0 of 2.")
+
+
+def test_test_read_prints_a_variant_test_with_its_edits(capsys):
+    test = dataclasses.replace(WARM_TEST, start_date=date(2026, 8, 31), looks=(1,), read_date=date(2027, 3, 29))
+    h = Harness(dataclasses.replace(SETTINGS, tests=(test,)))
+    ctx = h("seed", False)
+    sent = datetime(2026, 9, 7, 15, tzinfo=UTC)
+    emailed(ctx, 0, "a", sent, reply="positive", column="test_arm", test_id="warm-intro")
+    emailed(ctx, 1, "b", sent, column="test_arm", test_id="warm-intro")
+    ctx.store.insert("events", [{"event_id": "send-approval:e1", "type": "send_approval", "approval": "approved_edited",
+                                 "account_id": "a1", "contact_id": "k1", "step": 1, "occurred_at": sent}])
+    assert h.run("test", "read", "warm-intro") == 0
+    out = capsys.readouterr().out
+    assert "warm intro 1 of 1 replied (100.0%); no intro 0 of 1 replied (0.0%)" in out
+    assert "counted in the arm they were given: warm intro 0 of 1, no intro 1 of 1." in out

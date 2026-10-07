@@ -821,6 +821,8 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
     print(f"Read at {look['label']}" + ("." if look["final"] else f"; the next is {result['next_look']}."
                                          if result["next_look"] else "."))
     print(looks.summary_line(result))
+    if looks.edited_line(result):
+        print(looks.edited_line(result))
     print("Reply rate decides (a 2x difference is what the test detects); positive and meeting rates are for information.")
     print("Harry writes the result on the Tests tab.")
     return 0
