@@ -340,15 +340,20 @@ def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
 # -- the rules' label and the decision ------------------------------------------------------------------------------
 
 
-def rules_label(account: Mapping[str, Any], events: Iterable[Mapping[str, Any]], settings: Settings) -> Industry | None:
-    """The label the Industries rules give the company now (best_label over its newest Apollo NAICS codes, keywords
-    and Apollo industry, as `us-outbound relabel` reads them). A company with none of those on file keeps the label
-    its source gave it."""
+def _rules_material(events: Iterable[Mapping[str, Any]]) -> tuple[list[str], str]:
+    """(the newest Apollo NAICS codes, its keywords and Apollo industry as one text): what the rules read."""
     events = list(events)
     codes = _texts((_newest(events, APOLLO_SOURCE, "naics") or {}).get("value"))
     words = _texts((_newest(events, APOLLO_SOURCE, "keywords") or {}).get("value"))
     industry = _clean((_newest(events, APOLLO_SOURCE, "apollo_industry") or {}).get("value"))
-    text = " ; ".join([*words, industry]).strip(" ;")
+    return codes, " ; ".join([*words, industry]).strip(" ;")
+
+
+def rules_label(account: Mapping[str, Any], events: Iterable[Mapping[str, Any]], settings: Settings) -> Industry | None:
+    """The label the Industries rules give the company now (best_label over its newest Apollo NAICS codes, keywords
+    and Apollo industry, as `us-outbound relabel` reads them). A company with none of those on file keeps the label
+    its source gave it."""
+    codes, text = _rules_material(events)
     if not codes and not text:
         return settings.industry(str(account.get("industry") or ""))
     return best_label(codes, text, settings)
@@ -510,8 +515,8 @@ def resolve(text: Any, settings: Settings) -> Industry | None:
 class Budget:
     """A run's share of label checks: at most `calls` model calls, started within `seconds`."""
 
-    calls: int = MAX_LABEL_CALLS_PER_RUN
-    seconds: float = LABEL_SECONDS
+    calls: int = field(default_factory=lambda: MAX_LABEL_CALLS_PER_RUN)
+    seconds: float = field(default_factory=lambda: LABEL_SECONDS)
     made: int = 0
     started: float = field(default_factory=time.monotonic)
 
@@ -541,6 +546,7 @@ class Checker:
         self.spend, self.budget = spend, budget or Budget()
         self.asked = 0
         self.unavailable = ""
+        self.answers: dict[str, tuple[Verdict | None, str, bool]] = {}  # account_id -> this run's verdict()
 
     def fresh(self, stored: Mapping[str, Any] | None) -> bool:
         """Whether a stored verdict was asked under today's label list and prompt."""
@@ -555,7 +561,16 @@ class Checker:
     def verdict(self, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> tuple[Verdict | None, str, bool]:
         """(the verdict to decide on, why none was asked now, whether it was asked now). A fresh stored verdict is
         used as it is; otherwise the model is asked, within the budget. When it cannot be, a stale verdict still
-        stands (with why), so a definition edit never stops the queue."""
+        stands (with why), so a definition edit never stops the queue. Each account is asked at most once a run."""
+        aid = str(account.get("account_id") or "")
+        if aid and aid in self.answers:
+            return self.answers[aid]
+        got = self._verdict(account, events)
+        if aid:
+            self.answers[aid] = got
+        return got
+
+    def _verdict(self, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> tuple[Verdict | None, str, bool]:
         stored = latest_verdict(events)
         old = Verdict.from_value(stored) if stored else None
         if self.fresh(stored):
@@ -620,9 +635,18 @@ def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping
     rules = rules_label(account, events, s)
     if label:
         return decide(rules, None, s, override=label, override_source=source), None, rules, "", False
+
+    def on_rules(why: str) -> tuple[Decision | None, Verdict | None, Industry | None, str, bool]:
+        d = decide(rules, None, s, mode=SKIP)
+        if d is not None and rules is None and not any(_rules_material(events)):
+            # Nothing on file for the rules either: the label its source gave it stays as it is.
+            d = Decision(account.get("industry") or None, account.get("industry_group") or None, RULES, "",
+                         GROUP_COPY, VERIFY)
+        return d, None, rules, why, False
+
     if mode == SKIP:
-        return decide(rules, None, s, mode=SKIP), None, rules, "label_check is skip", False
+        return on_rules("label_check is skip")
     v, why, asked = checker.verdict(account, events)
     if v is None and why == NO_MATERIAL:
-        return decide(rules, None, s, mode=SKIP), None, rules, why, False
+        return on_rules(why)
     return decide(rules, v, s, mode=mode), v, rules, why, asked

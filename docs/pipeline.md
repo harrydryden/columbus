@@ -171,6 +171,25 @@ An account also needs at least one candidate contact: a person matching the Role
   dropped; one it disagrees with reaches the hand-check with both values ("Clay says 62 staff,
   Apollo says 49"); a missing HQ state or size is filled in from Clay, so the account can verify the
   same day. Industry stays with the hand-check.
+- **The industry label check** (Harry, 7 Oct 2026: "industry categorisation is critical to the efficacy of the
+  system"; `us_outbound/labels.py`). Once an account passes the free checks, the task model (Sonnet, effort low,
+  about $0.01 a company, once) reads its Apollo facts (name, domain, Apollo industry, NAICS codes, keywords,
+  description; never the rules' label) and picks one label from the Industries list, with its confidence, what kind
+  of body it is, a quote and a short "what they do". One rule combines it with the rules' label:
+  - they agree: the label's own copy (`label_source` rules+model);
+  - they disagree: the model's label when it is sure (model); otherwise, within one group, the group's own label and
+    copy (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed);
+  - a public body is disqualified; a society or membership body, a company no label fits, or one whose industry is
+    switched off is disqualified when the model is sure and held for the weekly hand-check ("industry uncertain: …")
+    when it is not; an Overrides `industry` row or an approver's correction stands, and nothing is asked.
+  - The verdict is kept (a `label_verdict` fact) and asked again only when the label list, a definition, keywords or
+    the prompt change (`labels_hash`). Each run asks at most 150 (12 minutes), Focus groups first, then queue order;
+    accounts already verified with no fresh verdict are checked in the same share, so the queue converges in about
+    three weekdays with no command run. A card rendered before its company's label was decided, which no longer fits
+    it, is withdrawn by the next `poll_approvals`, and the next enrol proposes the company with the right copy.
+  - `label_check` (General): `required` (the default) keeps a new account unverified while the model cannot be asked
+    (the Claude cap, an error), and the daily post asks; accounts already verified keep going, an unchecked one with
+    its group's copy. `skip` runs on the rules alone, with the group's copy.
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
@@ -450,6 +469,8 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | Turn an industry on or off | Industries: `active` | The universe search and the queue include it or leave it out. For only some industries, switch the others off |
 | Put an industry first | Industries: `priority` | Its accounts go ahead of others at the same score and size |
 | Widen or narrow an industry | Industries: `naics_prefixes`, `exclude_naics`, `apollo_keywords` | Changes the Apollo filters and the Python re-check |
+| Say what an industry is | Industries: `definition` (Harry, 7 Oct 2026) | The label check's line for the label: what a company under it is, and is not. Blank takes the build's. An edit (or a keyword edit) has the queue checked again over the next weekdays |
+| Run on the rules alone | General: `label_check` = `skip` | For a Claude outage: new companies are verified on the rules' label with the group's copy. `required` is the default |
 | Where | States | HQ states in or out (CA and WA never) |
 | Who | Roles | Titles and who comes first by company size |
 | What counts | Signals | Weights, new keyword signals on an existing source, Hold and Exclude rules |

@@ -120,7 +120,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, labels
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients import instantly as instantly_client
@@ -1037,6 +1037,15 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
     p = item.payload
     outcome = APPROVED_EDITED if p.get("edited") else APPROVED
     result: dict[str, Any] = {"item": item.short_id, "account_id": item.account_id, "by": by, "via": via}
+    account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+    unfit = label_unfit(item, account, ctx.settings)
+    if unfit is not None:  # its label was decided again after the card: withdrawn, never sent (labels.py)
+        result.update(added=False, outcome=EXPIRED, withdrawn=unfit[0])
+        if ctx.dry_run:
+            result["dry_run"] = True
+        else:
+            withdraw(ctx, item, slack, unfit[0], back_to_queue=unfit[1], via=labels.JOB)
+        return result
     check = recheck(ctx, item)
     if check.blocks:
         result.update(added=False, outcome=BLOCKED, why=check.blocks)
@@ -1268,15 +1277,94 @@ def expire(ctx: Context, item: Item, slack: Any) -> bool:
                   note=f"⌛ Expired: {reason}. Nothing was added; {company} goes back to the queue.")
 
 
-def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue: bool = True) -> bool:
+def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue: bool = True,
+             via: str = "relabel") -> bool:
     """Closed by "system" before anyone decides, as an expiry is (`us-outbound relabel`, ops/relabel.py; Harry,
     7 Oct 2026): the card was rendered under a label that turned out wrong. Nothing was added; the company goes
     back to the queue for a card with the right copy, or, when it may not be emailed at all, does not."""
     company = _esc(item.company)
     after = f"{company} goes back to the queue for a new card" if back_to_queue else f"{company} will not be emailed"
-    return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=f"withdrawn: {reason}", via="relabel",
+    return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=f"withdrawn: {reason}", via=via,
                   status=f"↩️ Withdrawn: {_esc(reason)}; nothing was added and {after}",
                   note=f"↩️ Withdrawn: {_esc(reason)}. Nothing was added; {after}.")
+
+
+# -- cards a label decision has overtaken (labels.py; Harry, 7 Oct 2026) ------------------------------------------
+
+
+def card_copy_level(p: Mapping[str, Any], settings: Settings) -> str:
+    """The copy level the card's emails were written at: General's row, the group's, or the label's own. A card
+    whose Copy row is not on the tab any more counts as the label's (the most specific), so it is never kept on a
+    guess."""
+    row_industry = _text(p.get("copy_industry"))
+    if not row_industry:
+        row = settings.copy_row(_text(p.get("copy_version")))
+        row_industry = row.industry if row else ""
+    found = row_industry.casefold()
+    if found == GENERAL_COPY.casefold():
+        return labels.GENERAL_COPY_LEVEL
+    if found and found == _text(p.get("industry_group")).casefold():
+        return labels.GROUP_COPY
+    return labels.LABEL_COPY
+
+
+def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Settings) -> tuple[str, bool] | None:
+    """(why the card no longer fits its company's label, whether the company goes back to the queue), or None.
+
+    Only a label decided after the card was rendered counts (accounts.label_checked_at), so a card waiting in Slack
+    keeps what it shows until the label check, an approver or `relabel` decides the label again. It no longer fits
+    when its company is disqualified, held for the hand-check, under another label, or when its emails are more
+    specific than the label now allows (a label's pitch where the group's copy is allowed). A second contact's card
+    is left alone: its company is enrolled already."""
+    if account is None or is_second(item.payload):
+        return None
+    decided, created = parse_ts(account.get("label_checked_at")), parse_ts(item.row.get("created_at"))
+    if decided is None or created is None or decided <= created:
+        return None
+    p, company = item.payload, item.company
+    status = _text(account.get("status"))
+    if status == labels.DISQUALIFIED:
+        return f"{company} is left out: {_text(account.get('tier_reason')) or 'disqualified'}", False
+    if status in ("new", "queued"):
+        return "the label check doubts its industry, so it waits for the weekly hand-check", True
+    if status != "verified":
+        return None
+    old, new = _text(p.get("industry")), _text(account.get("industry"))
+    if old.casefold() != new.casefold():
+        return f"its industry was {old or 'not set'} and is now {new or 'not set'}", True
+    used, allowed = card_copy_level(p, settings), labels.copy_level(account)
+    if labels.more_specific(used, allowed):
+        group = _text(account.get("industry_group")) or _text(p.get("industry_group"))
+        now = f"{group}'s copy" if allowed == labels.GROUP_COPY else "General copy"
+        return f"its emails were written for {new}, and the label check allows {now} now", True
+    return None
+
+
+def unfit_cards(ctx: Context, accounts: Mapping[str, Mapping[str, Any]] | None = None) -> list[tuple[Item, str, bool]]:
+    """The open cards that no longer fit their company's label (label_unfit), with why and whether it goes back to
+    the queue. accounts: the companies as they will be (a dry run's decisions); else as the database has them."""
+    found = [i for i in items(ctx.store, (OPEN,)) if accounts is None or i.account_id in accounts]
+    rows: Mapping[str, Mapping[str, Any]] = accounts if accounts is not None else {
+        a["account_id"]: a for a in ctx.store.select("accounts", {"account_id": sorted({i.account_id for i in found})})
+    } if found else {}
+    out = []
+    for item in found:
+        unfit = label_unfit(item, rows.get(item.account_id), ctx.settings)
+        if unfit is not None:
+            out.append((item, *unfit))
+    return out
+
+
+def withdraw_unfit(ctx: Context, slack: Any, found: Sequence[tuple[Item, str, bool]] | None = None) -> list[str]:
+    """Withdraw each card a label decision has overtaken (unfit_cards), live: the companies withdrawn. The next
+    enrol proposes them again with the right copy (verify_accounts decides at 04:30 and runs dry, so the next
+    poll_approvals does this; `relabel` and `labels audit --live` do it themselves)."""
+    out = []
+    for item, why, back in (found if found is not None else unfit_cards(ctx)):
+        if withdraw(ctx, item, slack, why, back_to_queue=back, via=labels.JOB):
+            out.append(item.company)
+            log("send_approval_withdrawn", item_id=item.id, account_id=item.account_id, reason=why[:200])
+    return out
 
 
 # -- the poll_approvals pass ------------------------------------------------------------------------------------
@@ -1489,6 +1577,16 @@ def poll(ctx: Context, slack: Any | None) -> dict:
     run = _Run()
     if ctx.live and slack is not None:
         _post_missing(ctx, slack, run)
+    # Cards a label decision has overtaken go first, so no ✅ sends one (labels.py; Harry, 7 Oct 2026).
+    overtaken = unfit_cards(ctx)
+    if ctx.dry_run:
+        for item, why, _ in overtaken:
+            run.add("would", {"item": item.short_id, "action": "withdraw", "why": why})
+        withdrawn: list[str] = []
+    else:
+        withdrawn = withdraw_unfit(ctx, slack, overtaken)
+        if withdrawn:
+            run.outcomes["withdrawn"] += len(withdrawn)
     today = ctx.today_uk()
     todo = items(ctx.store)
     bot: str | None = None  # the bot's own user id, asked once when an item is read
@@ -1518,7 +1616,7 @@ def poll(ctx: Context, slack: Any | None) -> dict:
         "items": len(todo), "outcomes": dict(run.outcomes), "rejected": run.rejected, "editing": run.editing,
         "edits": dict(run.edits), "not_added": run.not_added, "held": run.held, "cards_posted": run.cards_posted,
         "unsure": run.unsure, "instantly_plan_full": run.plan_full,
-        "ignored_non_approvers": run.ignored, "errors": run.errors,
+        "ignored_non_approvers": run.ignored, "errors": run.errors, "withdrawn": withdrawn[:LIST_LIMIT],
     }
     if ctx.dry_run:
         out["would"] = run.would

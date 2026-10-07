@@ -44,6 +44,28 @@ Overrides win over the account's columns, as in scoring. Then the score job runs
 runs after the sources), so the new accounts and the sources' new facts have a tier and an angle
 before pick_contacts at 05:30.
 
+The industry label check (Harry, 7 Oct 2026: "industry categorisation is critical to the efficacy of the system";
+us_outbound/labels.py). Once an account passes checks 1 to 4 (or fails only on its label: no Industries label, or one
+switched off), the task model checks its label, once (a stored verdict is kept until the label list or a definition
+changes), and labels.decide sets its label, label_source (which copy it may get: the label's own, its group's or
+General's) and whether it goes on:
+  * the model unavailable while General label_check = required (the default): the account is not verified ("label
+    not checked: why") and the next run asks again; label_check = skip decides on the rules alone, with the group's
+    copy. Accounts already verified are never un-verified for it: they keep their label, and an unchecked one gets
+    its group's copy (labels.copy_level);
+  * a public body is disqualified, as are a membership body or society, a company no label fits or one whose
+    industry is switched off when the model is sure; when it is not, the doubt ("industry uncertain: ...") joins
+    the account's doubts for the weekly hand-check, and approving it verifies the account with General copy;
+  * otherwise the account goes on to HubSpot with the label the rule gives.
+The run also checks accounts already verified that have no fresh verdict, so the queue converges with no command
+run; their decisions are written the same way (a held one goes back to queued and to the hand-check). Both kinds
+share the run's share of calls (labels.MAX_LABEL_CALLS_PER_RUN, LABEL_SECONDS), Focus groups first, then queue
+order; the rest wait for the next run. A send-approval card rendered before its account's label was decided, which
+no longer fits it (another label, a less specific copy level, held or disqualified), is withdrawn by the next
+poll_approvals (enrol/approvals.withdraw_unfit: this job runs dry and edits no card in Slack), so the next enrol
+proposes the company again with the right copy. A verdict is a paid read that reaches no prospect, like an Apollo
+search page, so it is asked in dry-run too (each call is about $0.01, within the Claude cap).
+
 An account verified here has clay_checked_at empty, which is how to find them once Clay is built.
 Weekdays at 04:30 UK, after source_universe (03:00), apollo_signals (03:30), read_pages (03:45) and
 apollo_enrich (04:10), whose exact headcounts it checks like any other.
@@ -57,9 +79,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from us_outbound import labels
 from us_outbound.accounts import any_us_state, us_country
 from us_outbound.clean.domains import is_personal_domain, is_public_body
 from us_outbound.clean.people import size_band, state_code
@@ -96,6 +120,9 @@ NO_SIZE = "Apollo gives no employee count or size band"
 NO_INDUSTRY = "Apollo gives no industry"
 # Doubts approving cannot settle: only an Overrides row fills the fact in (Harry, 6 Oct 2026).
 MISSING = frozenset({NO_STATE, NO_SIZE, NO_INDUSTRY})
+# check() reasons the label check can settle: it sets the label, so the account is checked again after it.
+LABEL_REASONS = frozenset({"no Industries label", "industry switched off"})
+OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 
 
 def _lower(v: Any) -> str:
@@ -321,12 +348,81 @@ def hubspot_check(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str] |
     return None
 
 
-def _facts(ctx: Context, account_ids: list[str]) -> dict[str, dict[str, Any]]:
+def _events(ctx: Context, account_ids: list[str]) -> dict[str, list[dict]]:
     events: dict[str, list[dict]] = defaultdict(list)
     for i in range(0, len(account_ids), ID_CHUNK):
         for e in ctx.store.select("signal_events", {"account_id": account_ids[i : i + ID_CHUNK]}):
             events[e["account_id"]].append(e)
-    return {aid: latest_facts(evs) for aid, evs in events.items()}
+    return events
+
+
+def _facts(ctx: Context, account_ids: list[str]) -> dict[str, dict[str, Any]]:
+    return {aid: latest_facts(evs) for aid, evs in _events(ctx, account_ids).items()}
+
+
+@dataclass
+class LabelRun:
+    """The run's label checks: the Checker, the candidates asked first, and the tally for the summary."""
+
+    checker: labels.Checker
+    tally: Counter[str] = field(default_factory=Counter)
+    changed: list[dict] = field(default_factory=list)  # verified accounts whose label, copy level or status moved
+
+    def decided(self, d: labels.Decision) -> None:
+        self.tally[{labels.HOLD: "held", labels.DISQUALIFY: "disqualified"}.get(d.action, d.source)] += 1
+
+    def summary(self) -> dict[str, Any]:
+        ch = self.checker
+        return {"checked": ch.asked, **dict(self.tally), "unavailable_reason": ch.unavailable,
+                "usd": ch.usd() if ch.asked else 0.0, "labels_hash": ch.hash, "changed": self.changed[:LIST_LIMIT]}
+
+
+def needs_verdict(run: LabelRun, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> bool:
+    """Whether the model would be asked about this account: no Overrides or approver label, no fresh verdict, and
+    something to check against."""
+    if labels.override_for(account, run.checker.settings)[0]:
+        return False
+    return not run.checker.fresh(labels.latest_verdict(events)) and not labels.Material.of(account, events).empty
+
+
+def ask_first(run: LabelRun, accounts: Iterable[Mapping[str, Any]], events: Mapping[str, Sequence[Mapping[str, Any]]],
+              settings: Settings) -> None:
+    """Ask about the run's candidates (new and verified alike) in Focus-group, then queue, order, within the run's
+    share; the Checker keeps each answer for the decisions after (labels.Checker.verdict)."""
+    order = sorted(accounts, key=lambda a: (focus.group_rank(settings.industry_group_of(a), settings),
+                                            queue.order_key(a, settings)))
+    for a in order:
+        if run.checker.unavailable or run.checker.budget.why_not():
+            return
+        run.checker.verdict(a, events.get(a["account_id"], []))
+
+
+def converge(ctx: Context, run: LabelRun, accounts: Sequence[Mapping[str, Any]],
+             events: Mapping[str, Sequence[Mapping[str, Any]]], cleared: Mapping[str, set[str]]) -> list[dict]:
+    """The label check for accounts already verified (Harry, 7 Oct 2026: the queue converges with no command run).
+    A held one goes back to queued with its doubt, for the hand-check; a disqualified one leaves the queue; the model
+    unavailable changes nothing (they keep flowing). Returns the doubt rows to write."""
+    rows: list[dict] = []
+    for a in accounts:
+        evs = events.get(a["account_id"], [])
+        d, v, rules, _, asked = labels.judge(run.checker, a, evs)
+        if d is None:
+            run.tally["verified_unchecked"] += 1
+            continue
+        level = labels.copy_level(a)
+        cols = labels.apply(ctx, a, d, v, rules=rules, asked=asked, stored=labels.latest_verdict(evs))
+        run.decided(d)
+        held = d.action == labels.HOLD and d.reason not in cleared.get(a["account_id"], set())
+        if held:
+            ctx.store.upsert("accounts", [{"account_id": a["account_id"], "status": "queued"}])
+            rows.append(doubt_fact(ctx, a, [d.reason]))
+        after = {**a, **cols}
+        if held or d.action == labels.DISQUALIFY or after.get("industry") != a.get("industry") \
+                or labels.copy_level(after) != level:
+            run.changed.append({"account_id": a["account_id"], "domain": a.get("domain"),
+                                "from": a.get("industry"), "to": d.label, "source": d.source, "action": d.action,
+                                "reason": d.reason})
+    return rows
 
 
 def _rescore(ctx: Context) -> dict:
@@ -348,7 +444,11 @@ def run(ctx: Context) -> dict:
 
     todo = sorted(waiting, key=lambda a: (focus.group_rank(s.industry_group_of(a), s), queue.order_key(a, s)))
     todo = todo[:MAX_ACCOUNTS_PER_RUN]
-    facts = _facts(ctx, [a["account_id"] for a in todo])
+    required = s.general.label_check == labels.REQUIRED
+    verified_open = [a for a in ctx.store.select("accounts", {"status": VERIFIED})
+                     if a.get("tier") not in OUT_OF_QUEUE_TIERS] if required else []
+    events = _events(ctx, [a["account_id"] for a in [*todo, *verified_open]])
+    facts = {aid: latest_facts(evs) for aid, evs in events.items()}
     suppressed, _ = enrol.suppressed(ctx)
     partners = {_lower(p.get("domain")) for p in ctx.store.select("partners")}
     failed: Counter[str] = Counter()
@@ -364,14 +464,45 @@ def run(ctx: Context) -> dict:
         if len(examples) < LIST_LIMIT:
             examples.append({"account_id": account["account_id"], "domain": account.get("domain"), "reason": why})
 
-    recorded, cleared = doubt_history(ctx, [a["account_id"] for a in todo])
+    recorded, cleared = doubt_history(ctx, [a["account_id"] for a in [*todo, *verified_open]])
     summary["clay_cross_check"] = clay_pre_pass(ctx, todo, facts, suppressed, partners, cleared)
-    doubt_rows: list[dict] = []
+    # The label check (labels.py): the model is asked first about the candidates, new and verified alike, in
+    # Focus-group then queue order, so the run's share of calls goes where it matters most.
+    lab = LabelRun(labels.Checker(ctx))
+
+    def cheap_ok(a: Mapping[str, Any]) -> bool:
+        """Checks 1 to 4 pass, or fail only on the label: an account failing on its state or size costs no call."""
+        why = check(with_overrides(a, s), facts.get(a["account_id"], {}), s, suppressed, partners)
+        return why is None or why in LABEL_REASONS
+
+    def asks(a: Mapping[str, Any]) -> bool:
+        return needs_verdict(lab, a, events.get(a["account_id"], []))
+
+    unchecked = [a for a in verified_open if cheap_ok(a) and (asks(a) or not a.get("label_source"))]
+    ask_first(lab, [*(a for a in todo if required and cheap_ok(a) and asks(a)), *filter(asks, unchecked)], events, s)
+    doubt_rows: list[dict] = converge(ctx, lab, unchecked, events, cleared)
     for a in todo:
         acct = with_overrides(a, s)
         why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
+        label_doubt = ""
+        if why is None or why in LABEL_REASONS:
+            evs = events.get(a["account_id"], [])
+            d, v, rules, not_asked, asked = labels.judge(lab.checker, a, evs)
+            if d is None:
+                lab.tally["unchecked"] += 1
+                fail(a, f"label not checked: {not_asked}")
+                continue
+            cols = labels.apply(ctx, a, d, v, rules=rules, asked=asked, stored=labels.latest_verdict(evs))
+            lab.decided(d)
+            if d.action == labels.DISQUALIFY:
+                fail(a, f"disqualified: {d.reason}")
+                continue
+            acct = with_overrides({**a, **cols}, s)
+            label_doubt = d.reason if d.action == labels.HOLD else ""
+            why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
         if doubtable(why, s):
-            still = standing(cross_check(ctx, acct, doubts(acct, s)), cleared.get(a["account_id"], set()))
+            found = [*cross_check(ctx, acct, doubts(acct, s)), *([label_doubt] if label_doubt else [])]
+            still = standing(found, cleared.get(a["account_id"], set()))
             if still:
                 if (recorded.get(a["account_id"]) or {}).get("reasons") != still:
                     doubt_rows.append(doubt_fact(ctx, acct, still))
@@ -404,6 +535,7 @@ def run(ctx: Context) -> dict:
         ctx.store.insert("signal_events", doubt_rows)
 
     scored = _rescore(ctx)
+    summary["labels"] = lab.summary()
     summary.update(
         status="ok", waiting=len(waiting), checked=len(todo), verified=len(verified), excluded=excluded[:LIST_LIMIT],
         to_hand_check=len(doubtful), to_hand_check_accounts=doubtful[:LIST_LIMIT],

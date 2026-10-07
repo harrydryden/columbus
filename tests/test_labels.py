@@ -345,7 +345,8 @@ def test_a_fresh_verdict_is_used_as_it_is_and_a_stale_one_asked_again():
                     "value": stored, "observed_at": NOW - timedelta(days=3)}]
     assert ch.verdict(acct(), ev) == (v, "", False) and ctx.clients.claude_task.client.calls == []
     stale = [*EVENTS, {**ev[-1], "value": {**stored, "labels_hash": "old"}}]
-    assert ch.verdict(acct(), stale)[2] is True and len(ctx.clients.claude_task.client.calls) == 1
+    assert ch.verdict(acct("a2"), stale)[2] is True and len(ctx.clients.claude_task.client.calls) == 1
+    assert ch.verdict(acct("a2"), stale)[2] is True and len(ctx.clients.claude_task.client.calls) == 1  # once a run
 
 
 def test_beyond_the_runs_share_a_stale_verdict_stands_and_none_is_none():
@@ -357,7 +358,7 @@ def test_beyond_the_runs_share_a_stale_verdict_stands_and_none_is_none():
                                                                                           mode="skip"), asked=True)
     stale = [*EVENTS, {"event_id": "v1", "account_id": "a2", "source": "label_check", "fact": "label_verdict",
                        "value": old, "observed_at": NOW}]
-    v, why, asked = ch.verdict(acct("a2"), stale)
+    v, why, asked = ch.verdict(acct("a3"), stale)
     assert (v.label, v.labels_hash, asked) == ("Fintech", "old", False) and why.startswith("this run's 1 label")
 
 

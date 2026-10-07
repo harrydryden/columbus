@@ -919,3 +919,75 @@ def test_a_card_posted_before_the_stamp_leaves_the_contact_unstamped():
     assert poll(ctx)["outcomes"] == {"approved": 1}
     jane = ctx.store.get("contacts", contact_id="con-1")
     assert (jane["config_version"], jane["code_sha"], jane["copy_hash"]) == (None, None, None)
+
+
+# -- cards a label decision has overtaken (labels.py; Harry, 7 Oct 2026) -------------------------------------------
+
+
+def test_a_card_whose_label_was_decided_again_is_withdrawn_before_any_tick_and_the_others_stay():
+    """verify_accounts runs dry at 04:30 and decides labels; the next poll_approvals withdraws each card they
+    overtake, before reading its ✅, so the next enrol proposes the company with the right copy."""
+    from us_outbound import labels
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")  # Advertising agencies, the group's copy (agencies-v1)
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    later = ctx.now + timedelta(hours=16)
+    at(ctx, later, live=False, job="verify_accounts")
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    labels.apply(ctx, acme, labels.Decision("Fintech", "Technology & Startups", "model", "high", "label", "verify"))
+    other = ctx.store.get("accounts", account_id="acc-2")  # a decision that keeps its card's label and copy
+    labels.apply(ctx, other, labels.Decision(other["industry"], other["industry_group"], "rules+model", "high",
+                                             "label", "verify"))
+    at(ctx, later + timedelta(minutes=5), live=False)
+    dry = desk.poll_approvals(ctx)["send_approvals"]
+    assert [w for w in dry["would"] if w["action"] == "withdraw"] == [
+        {"item": row["item_id"][:8], "action": "withdraw", "why": "its industry was Advertising agencies and is now Fintech"}]
+    assert item_for(ctx, "acc-1")["status"] == "open"  # a dry run withdraws nothing
+    ctx.guard.configure(live=True)
+    out = poll(ctx)
+    assert out["outcomes"] == {"withdrawn": 1} and out["withdrawn"] == ["Acme Creative"] and instantly_posts(t) == []
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", "system", "expired")
+    assert row["payload"]["reason"] == "withdrawn: its industry was Advertising agencies and is now Fintech"
+    assert row["payload"]["decided"]["via"] == "label_check"
+    assert any(blocks_text(u).startswith("↩️ Withdrawn: its industry was Advertising agencies") for u in sl.updates)
+    assert {r["account_id"] for r in items(ctx, "open")} == {"acc-2", "acc-3"}
+
+
+def test_a_card_with_a_labels_pitch_is_withdrawn_when_the_label_now_earns_only_general_copy():
+    from us_outbound import labels
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    item = approvals.Item(row)
+    later = ctx.now + timedelta(hours=1)
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    at(ctx, later, job="verify_accounts")
+    labels.apply(ctx, acme, labels.Decision("Advertising agencies", acme["industry_group"], "disputed", "medium",
+                                            "general", "verify"))
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    assert approvals.card_copy_level(row["payload"], ctx.settings) == "group"  # agencies-v1 is the group's row
+    assert approvals.label_unfit(item, acme, ctx.settings) == (
+        "its emails were written for Advertising agencies, and the label check allows General copy now", True)
+    labels.apply(ctx, acme, labels.Decision("Advertising agencies", acme["industry_group"], "umbrella", "medium",
+                                            "group", "verify"))
+    assert approvals.label_unfit(item, ctx.store.get("accounts", account_id="acc-1"), ctx.settings) is None
+    held = {**acme, "status": "queued", "label_checked_at": later}
+    assert approvals.label_unfit(item, held, ctx.settings)[1] is True
+    out = {**acme, "status": "disqualified", "tier_reason": "a public body, never prospected", "label_checked_at": later}
+    assert approvals.label_unfit(item, out, ctx.settings) == (
+        "Acme Creative is left out: a public body, never prospected", False)
+
+
+def test_approving_at_the_command_line_withdraws_an_overtaken_card_instead_of_sending_it():
+    from us_outbound import labels
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    at(ctx, ctx.now + timedelta(hours=1), job=approvals.APPROVALS_CLI_JOB)
+    labels.apply(ctx, ctx.store.get("accounts", account_id="acc-1"),
+                 labels.Decision("Fintech", "Technology & Startups", "model", "high", "label", "verify"))
+    out = approvals.approve(ctx, row["item_id"][:8])
+    assert out["added"] is False and out["withdrawn"] == "its industry was Advertising agencies and is now Fintech"
+    assert instantly_posts(t) == [] and item_for(ctx, "acc-1")["status"] == "handled"
