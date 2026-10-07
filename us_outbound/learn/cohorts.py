@@ -393,17 +393,26 @@ def diff(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
 
 
 def log_lines(ctx: Context, start: datetime | None, end: datetime | None) -> list[str]:
-    """The config_log rows in [start, end): campaign changes made under leads in flight, and From names set."""
+    """The config_log rows in [start, end): campaign changes made under leads in flight, From names set, and the
+    campaigns paused over a blackout and started again after it (registry/blackout.py)."""
     out = []
     found = [(t, r) for r in ctx.store.select(config_version.LOG_TABLE) if (t := _ts(r.get("changed_at"))) is not None
              and (start is None or t >= start) and (end is None or t < end)]
     for t, r in sorted(found, key=lambda x: (x[0], str(x[1].get("log_id")))):
         when = t.astimezone(UK).strftime("%a %d %b %H:%M")
         n = int(r.get("leads_in_flight") or 0)
+        detail = r.get("detail") or {}
         if r.get("kind") == config_version.SENDER_NAME:
-            name = " ".join(str(x) for x in ((r.get("detail") or {}).get("to") or ()))
+            name = " ".join(str(x) for x in (detail.get("to") or ()))
             out.append(f"{when}: From name of {', '.join(r.get('changed_keys') or ())} set to \"{name}\" "
                        f"({_n(n, 'lead')} in flight)")
+        elif r.get("kind") == config_version.BLACKOUT_PAUSE:
+            until = f" until {detail['resumes_on']}" if detail.get("resumes_on") else ""
+            out.append(f"{when}: {r.get('campaign')} paused for the blackout{until} ({_n(n, 'lead')} in flight)")
+        elif r.get("kind") == config_version.BLACKOUT_RESUME:
+            done = ("started again after the blackout" if detail.get("outcome") == "resumed"
+                    else f"not started again after the blackout: {detail.get('why') or detail.get('outcome')}")
+            out.append(f"{when}: {r.get('campaign')} {done} ({_n(n, 'lead')} in flight)")
         else:
             out.append(f"{when}: {', '.join(r.get('changed_keys') or ())} applied to {r.get('campaign')} with "
                        f"{_n(n, 'lead')} in flight")

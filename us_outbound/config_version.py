@@ -48,6 +48,9 @@ TABLE, LOG_TABLE = "config_versions", "config_log"
 CODE_SHA_ENV = "RAILWAY_GIT_COMMIT_SHA"  # set by Railway on a deploy from GitHub; not a secret
 DEV = "dev"  # code_sha outside a Railway deploy
 CAMPAIGN_CHANGE, SENDER_NAME = "campaign_change", "sender_name"  # config_log.kind
+# config_log.kind too: a campaign paused over the blackout dates, and started again (or left paused) after them
+# (registry/blackout.py; Harry, 7 Oct 2026).
+BLACKOUT_PAUSE, BLACKOUT_RESUME = "blackout_pause", "blackout_resume"
 # The tabs render and the openers read at enrolment (besides General and Copy, which are in by value).
 CONTENT_TABS = ("Signals", "Angles", "Industries", "Roles", "Overrides")
 # The General keys that shape what a contact gets, or how and when it is sent.

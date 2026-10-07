@@ -143,7 +143,8 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
     ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
     ("lookalike_growth", "growth_band"): {"shrinking", "flat", "growing", "fast", "unknown"},
-    ("config_log", "kind"): {"campaign_change", "sender_name"},  # registry/mailboxes.py (Harry, 7 Oct 2026)
+    ("config_log", "kind"): {"campaign_change", "sender_name",  # registry/mailboxes.py (Harry, 7 Oct 2026)
+                             "blackout_pause", "blackout_resume"},  # registry/blackout.py (Harry, 7 Oct 2026)
 }
 
 

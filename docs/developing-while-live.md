@@ -14,8 +14,8 @@ everything it was enrolled under, so the Monday readout and `us-outbound cohorts
 | :- | :- | :- |
 | Fixed per contact | Every email's subject and body: the Copy row, the signature, the opener, the price line, the links, email 1's subject arm, UTM tags; the sender | Rendered once at enrolment (or when a send-approval card is posted) into the lead's custom variables. Nothing rewrites a lead's variables afterwards (the only lead write is its status). A card waiting in Slack keeps what it shows |
 | Shared by every lead in a campaign | The step template (the unsubscribe line and its link), the step delays (`STEP_DAYS`), `text_only` and `first_email_text_only` (from `email_format`) | Drift in these is **held** while the campaign has leads in flight: `campaigns ensure --fix` leaves it, and says so. `--in-flight` applies it to them too |
-| Changes for everyone, by design | The daily limit and the sending list (the ramp and the sheet), the send window, the From name, the other campaign settings (always put back to their pinned values) | Put right as before; every change other than the daily limit and sending list is logged in `config_log` with the leads it reached |
-| Always applies to everyone | Unsubscribes, bounces, complaints, kill rules, `stop`, the account-level stop, suppression (a HubSpot opt-out loaded after enrolment stops the lead in flight), erasure, a booking read back, a step that has lost the unsubscribe link | Never held for a cohort or a version |
+| Changes for everyone, by design | The daily limit and the sending list (the ramp and the sheet), the send window, the From name, the other campaign settings (always put back to their pinned values), the pause over the blackout dates (the `blackout` job) | Put right as before; every change other than the daily limit and sending list is logged in `config_log` with the leads it reached, the blackout's pause and restart included |
+| Always applies to everyone | Unsubscribes, bounces, complaints, kill rules, `stop`, the account-level stop, suppression (a HubSpot opt-out loaded after enrolment, or a company that has become a Spill customer, read nightly, stops the lead in flight), erasure, a booking read back, a step that has lost the unsubscribe link | Never held for a cohort or a version |
 
 "In flight" is a lead in a US Outbound campaign, not stopped, with a step still to send by the send forecast
 (`enrol/capacity.in_flight`). `us-outbound cohorts in-flight` lists them per campaign, with the day each
@@ -78,5 +78,9 @@ Tests tab, not a cause.
   Instantly hands them to the owner's other mailbox (PHASE0-CONFIRM, docs/build-plan.md item 7).
 - Instantly applies a changed step template or delay at each lead's next step (seen with the footer change of
   6-7 Oct 2026; PHASE0-CONFIRM for delays).
-- Follow-ups of leads in flight still go out on blackout dates: Instantly's schedule knows weekdays only
-  (docs/open-questions.md item 78).
+- Instantly's schedule knows weekdays only, so the hourly `blackout` job pauses every campaign over the blackout
+  dates and starts the ones it paused again after them (Harry, 7 Oct 2026; docs/daily.md "Blackout dates"): the
+  follow-ups that fell due go out on the next send day, as the send forecast assumes. A cohort enrolled just before
+  a blackout reaches its 7, 14, 21 and 28 days with fewer of its emails sent; the cohort report lists the pause and
+  the restart under *Settings changes*. PHASE0-CONFIRM: that Instantly sends the steps that fell due once a paused
+  campaign is activated again, rather than skipping them.

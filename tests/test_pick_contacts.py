@@ -252,6 +252,46 @@ def test_the_budget_stops_the_batch_partway(ctx, transport):
     assert {e["account_id"] for e in facts(ctx, pick.OUTCOME_FACT)} == {"acc-1"}  # acc-2 is tried next run
 
 
+def pause_source(ctx, source: str, reason: str = "5% bounced", status: str = "open") -> None:
+    from us_outbound.learn import holds
+
+    ctx.store.upsert("hitl_items", [{"item_id": f"k-{source}", "kind": holds.KIND, "status": status,
+                                     "payload": {"action": holds.PAUSE_SOURCE, "target": source, "reason": reason}}])
+
+
+def test_a_kill_rule_pausing_the_apollo_source_stops_every_reveal_and_says_so(ctx, transport):
+    """Harry, 7 Oct 2026: no Apollo reveal (no credit) while a kill rule pauses the apollo email source, as no Clay
+    lookup is made while it pauses the clay source; and Clay alone is not used meanwhile, even when it is on."""
+    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified(), clay_email_fallback=True)
+    pause_source(ctx, "apollo")
+    out = pick.run(ctx)
+    why = ("a kill rule pauses the apollo email source (5% bounced): no Apollo reveals, and Clay alone is not used, "
+           "as it is the fallback for Apollo's misses; `us-outbound killrules clear ITEM_ID --live` lifts it once "
+           "checked")
+    assert (out["status"], out["reason"], out["apollo_paused"]) == ("skipped", why, why)
+    assert apollo.searches == [] and apollo.revealed == [] and transport.requests == []  # nor Clay, nor the balance
+    assert ctx.store.select("credit_ledger") == [] and ctx.store.select("contacts") == []
+    assert facts(ctx, pick.OUTCOME_FACT) == []  # nobody is marked "no contact": it is tried again once cleared
+    # Clay's own pause leaves Apollo's reveals going, as before.
+    pause_source(ctx, "apollo", status="handled")
+    pause_source(ctx, "clay")
+    out = pick.run(ctx)
+    assert out["picked"] == 1 and apollo.revealed == ["p-ceo"] and "apollo_paused" not in out
+
+
+def test_the_heartbeat_says_the_apollo_source_is_paused(default_settings):
+    from tests.test_cli import Harness
+
+    h = Harness(default_settings)
+    h.store.insert("accounts", [account()])
+    FakeApollo(h.transport, {ORG: TEAM}, everyone_verified())
+    pause_source(h, "apollo")
+    assert h.run("dry-run", "pick_contacts") == 0
+    [beat] = h.beats("pick_contacts")
+    assert beat["status"] == "ok" and beat["detail"]["status"] == "skipped"
+    assert beat["detail"]["reason"].startswith("a kill rule pauses the apollo email source (5% bounced)")
+
+
 def test_apollo_balance_at_the_floor_spends_nothing(ctx, transport):
     ctx.store.insert("accounts", [account()])
     apollo = FakeApollo(transport, {ORG: TEAM}, everyone_verified(), balance=5000.0)

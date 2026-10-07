@@ -9,6 +9,18 @@ last the signal's counts_for_days (SPEC 9 scoring step 3; scoring writes those).
 load_from_hubspot is the suppression_load job: HubSpot contacts who opted out of email
 or hard-bounced are added, hashed. Re-running it adds nothing new.
 
+Customers daily (Harry, 7 Oct 2026: "customers stop within a day, not a month"): the same job then
+reads Spill's customer companies from HubSpot (sources/lookalikes.read_customers, read only, company
+fields only) and keeps their domains out (lookalikes.exclude: each root domain suppressed for
+SUPPRESS_DAYS, renewed daily, and the hubspot_customer fact on an account already on it, which the
+02:00 settings_sync rescore tiers Excluded). Only the monthly lookalikes job rebuilds the lookalike
+cells. A company that becomes a customer mid-month is kept out by the next night, and its leads in
+flight are stopped by sync_outcomes' sweep below. The read is about 270 HubSpot calls, a minute or
+two: the customer companies (about 700) at 100 a search page, the Spill 3.0 deals, and one association
+read for each won, onboarding or churned deal (about 250). It comes after the opt-outs, which are written
+first: a failed customer read is recorded as customers_error, which heartbeat_check reports, and the
+job still finishes ok with the opt-outs loaded; yesterday's customer entries stand.
+
 Enrol checks this list, and so does the sending already under way (Harry, 7 Oct 2026): a contact
 whose address, email domain or company domain is suppressed while their lead is in flight, by this
 job or any other, has their lead stopped, and everyone else's at their account, by sync_outcomes'
@@ -22,8 +34,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from us_outbound.clients.db import Store
+from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
-from us_outbound.logs import hash_email, log, normalise_email
+from us_outbound.logs import hash_email, log, normalise_email, redact
 
 TABLE = "suppression"
 HUBSPOT_REASON, HUBSPOT_SOURCE = "hubspot_opt_out_or_bounce", "hubspot"
@@ -134,8 +147,27 @@ def is_suppressed(store: Store, email: str | None = None, domain: str | None = N
     return any(_active(r, now) for r in store.select(TABLE, {"domain": domains, "email_sha256": None}))
 
 
+def load_customers(ctx: Context) -> dict:
+    """Spill's HubSpot customers kept out, daily (the module docstring): the domains and accounts lookalikes.exclude
+    counts, or customers_error when HubSpot could not be read; never raises but for a guardrail."""
+    from us_outbound.sources import lookalikes
+
+    try:
+        customers = lookalikes.read_customers(ctx)
+    except GuardViolation:
+        raise
+    except Exception as exc:  # the opt-outs are loaded already; yesterday's customer entries stand
+        log("suppression_customers_failed", run_id=ctx.run_id, error=redact(str(exc))[:200])
+        return {"customers_error": f"Spill's customers could not be read from HubSpot ({type(exc).__name__}: "
+                                   f"{redact(str(exc))[:200]}); yesterday's entries stand"}
+    if not customers:  # surely a fault, as the lookalikes job's NoCustomers says
+        return {"customers_error": "HubSpot returned no Spill customer companies; yesterday's entries stand"}
+    return {"customers": lookalikes.exclude(ctx, customers)}
+
+
 def load_from_hubspot(ctx: Context) -> dict:
-    """The suppression_load job: HubSpot opt-outs and hard bounces into suppression, hashed."""
+    """The suppression_load job: HubSpot opt-outs and hard bounces into suppression, hashed; then Spill's customers'
+    domains (load_customers)."""
     seen = 0
     added = 0
     batch: list[str] = []
@@ -147,6 +179,6 @@ def load_from_hubspot(ctx: Context) -> dict:
             batch = []
     if batch:
         added += add_emails(ctx.store, batch, reason=HUBSPOT_REASON, source=HUBSPOT_SOURCE, now=ctx.now)
-    summary = {"seen": seen, "added": added, "already_suppressed": seen - added}
+    summary = {"seen": seen, "added": added, "already_suppressed": seen - added, **load_customers(ctx)}
     log("suppression_load", **summary)
     return summary

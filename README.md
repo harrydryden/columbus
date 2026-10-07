@@ -173,7 +173,11 @@ Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slac
 errors a job caught and a key a service rejected, `ops/job_errors.py`; it then pings the outside
 watchdog, Healthchecks.io, which emails Harry when the worker, the database or Slack is down,
 `ops/watchdog.py`; Harry, 7 Oct 2026),
-`suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (the 1st of each month, from
+`blackout` (hourly at :40: every US Outbound campaign paused over the General `blackout_dates`, in US Eastern dates,
+and exactly the ones it paused started again after them, as Instantly's schedule knows weekdays only; a stop, a kill
+rule or an empty sending list keeps one paused; each pause and restart is a `config_log` row; `registry/blackout.py`,
+Harry, 7 Oct 2026), `suppression_load` (daily: HubSpot opt-outs and bounces, and Spill's customers' domains, so a new
+customer is kept out and its leads in flight stopped by the next night; Harry, 7 Oct 2026), `lookalikes` (the 1st of each month, from
 5 Oct 2026: Spill's HubSpot customers as lookalike cells, their growth from Apollo in aggregate, the
 lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oct 2026;
 `us-outbound lookalikes show` lists the cells, `lookalikes fit` the fits) and `hand_check_post` (Mondays
@@ -190,7 +194,8 @@ Developing while live (Harry, 7 Oct 2026; [docs/developing-while-live.md](docs/d
 `campaigns ensure --fix` holds drift in a campaign's steps, delays or text_only while it has leads in flight
 (they are shared by every lead in it), and `--in-flight` applies it to them too, as a `config_log` row with
 the count. `mailbox_health` and `mailbox check --fix` never apply it. A lead whose address or domain is
-suppressed while it is in flight (a HubSpot opt-out from `suppression_load`) is stopped by `sync_outcomes`.
+suppressed while it is in flight (a HubSpot opt-out from `suppression_load`, or a company that has become a Spill
+customer, which `suppression_load` reads nightly) is stopped by `sync_outcomes`.
 
 The sender name (Harry, 5 Oct 2026): each Instantly account's first and last name, which make the
 From name prospects see, are its owner's full name from the Mailboxes tab ("Hannah Spalding", not

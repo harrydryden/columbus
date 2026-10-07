@@ -10,6 +10,8 @@ Active mailbox, and one a kill rule's pause left with no Active mailbox (_sync_c
 pauses it) once that mailbox is Active again. A campaign holds only approved leads, so
 activating an empty one sends nothing by itself. Before go-live, or if Instantly refuses,
 the summary says "<owner>'s campaign is ready: run `us-outbound start --live` to start it".
+Over a blackout it starts nothing, and a campaign the blackout paused is the blackout job's to
+start again (registry/blackout.py; Harry, 7 Oct 2026).
 
 Registry commands (SPEC 9):
   mailbox_add     adds the row (added_on today, Warming, or Active at once if Instantly
@@ -88,6 +90,7 @@ from us_outbound.enrol import capacity
 from us_outbound.learn import holds
 from us_outbound.logs import log
 from us_outbound.ops.heartbeat import OPERATOR_START, OPERATOR_STOP
+from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Mailbox, Settings
 from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
@@ -573,14 +576,18 @@ def start_waiting(ctx: Context, settings: Settings, created: Collection[str],
     (it holds only approved leads, so this sends nothing by itself), unless it has drift left that
     was not put right (drifted: `start` would refuse it too); a campaign paused for another reason is
     reported. Before go-live a campaign created this run is reported as ready.
+    The blackout dates (registry/blackout.py; Harry, 7 Oct 2026): a campaign the blackout job paused is reported
+    under blackout ("paused for the blackout until …"), never as a pause to look into, and is left to that job;
+    and while a blackout holds nothing is started: the first morning check after it starts what waits.
     """
     live_since = went_live(ctx.store)
     settings = holds.with_holds(ctx.store, settings)
     inst = ctx.clients.instantly
     found = {c["name"]: c for c in inst.list_campaigns()}
     kill_paused = _kill_rule_pauses(ctx.store, live_since) if live_since else {}
+    held, by_blackout = blackout.hold(settings, ctx.now), blackout.words(ctx.store, settings, ctx.now)
     out: dict[str, Any] = {"went_live": live_since.isoformat() if live_since else None, "started": [],
-                           "would_start": [], "ready": [], "paused": [], "errors": []}
+                           "would_start": [], "ready": [], "paused": [], "errors": [], "blackout": {}}
     for owner in settings.owners():
         name = campaign_name(owner)
         campaign = found.get(name) or ({"status": DRAFT} if name in created else None)  # dry-run: not created
@@ -591,12 +598,20 @@ def start_waiting(ctx: Context, settings: Settings, created: Collection[str],
             if name in created:
                 out["ready"].append(owner)
             continue
+        if status == PAUSED_CAMPAIGN and name in by_blackout:  # the blackout job starts it again after
+            out["blackout"][owner] = f"{by_blackout[name]}; the blackout job starts it again then"
+            continue
         if not (name in created or status == DRAFT or (status == PAUSED_CAMPAIGN and name in kill_paused)):
             if status == PAUSED_CAMPAIGN:
                 out["paused"].append(owner)
             continue
         if name in drifted:  # the summary's drift line says what to fix first
             out["ready"].append(owner)
+            continue
+        if held is not None:  # nothing starts over a blackout: the first morning check after it does
+            out["blackout"][owner] = (f"not started over the blackout; the first mailbox check after it starts it "
+                                      f"(sends resume {held.until:%a} {held.until.day} {held.until:%b})"
+                                      if held.until else "not started over the blackout")
             continue
         if ctx.dry_run:
             out["would_start"].append(name)
@@ -714,6 +729,8 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
     for owner in starting.get("paused") or ():
         lines.append(f"{campaign_name(owner)} is paused, though {owner} has an Active mailbox: run "
                      "`us-outbound start --live` to start it.")
+    for owner, why in (starting.get("blackout") or {}).items():  # never a reason to post on its own
+        lines.append(f"{campaign_name(owner)}: {why}.")
     if campaigns.get("pending"):
         lines.append(f"Campaigns waiting for an Active mailbox: {', '.join(campaigns['pending'])}")
     if campaigns.get("unknown"):

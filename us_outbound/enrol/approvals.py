@@ -119,7 +119,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from us_outbound import budget
 from us_outbound.clients.db import new_id
@@ -131,6 +130,7 @@ from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import capacity, copy_markup, enrol, openers, plan, queue, render, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
+from us_outbound.registry import blackout
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
 from us_outbound.replies.items import ts as parse_ts
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
@@ -898,14 +898,8 @@ class Recheck:
 def instantly_send_day(ctx: Context) -> date | None:
     """The day Instantly would send email 1 if the lead were added now: its schedule's next weekday (the send
     window's days, in the window's time zone), today if the window has not closed yet. Instantly knows the
-    weekdays, not our blackout dates."""
-    w = ctx.settings.general.send_window
-    now = ctx.now.astimezone(ZoneInfo(w.tz))
-    day = now.date() + timedelta(days=1 if now.time() >= w.end else 0)
-    for i in range(14):
-        if (day + timedelta(days=i)).weekday() in w.days:
-            return day + timedelta(days=i)
-    return None
+    weekdays, not our blackout dates (registry/blackout.instantly_day, which the blackout pause reads too)."""
+    return blackout.instantly_day(ctx.settings, ctx.now)
 
 
 def recheck(ctx: Context, item: Item) -> Recheck:
@@ -967,7 +961,8 @@ def recheck(ctx: Context, item: Item) -> Recheck:
     if out.holds or out.blocks:
         return out
     try:
-        why = capacity.campaign_problem(owner, ctx.clients.instantly.list_campaigns())
+        why = capacity.campaign_problem(owner, ctx.clients.instantly.list_campaigns(),
+                                        blackout.words(ctx.store, ctx.settings, ctx.now))
     except (ApiError, ConfigError, LookupError) as exc:
         out.holds[HOLD_INSTANTLY] = f"Instantly could not be read ({type(exc).__name__}: {str(exc)[:160]})"
         return out

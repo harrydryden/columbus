@@ -161,6 +161,9 @@ LEAD_PAUSE_CONFIRMED = False
 # POST /leads/update-interest-status values. PHASE0-CONFIRM: that 2 is "Meeting booked" and that a
 # lead marked so gets no further steps (stop_lead).
 INTEREST_MEETING_BOOKED = 2
+# PHASE0-CONFIRM: that 1 is "Interested" (Harry, 7 Oct 2026: set when a reply is classified positive;
+# mark_interested), and that marking it changes nothing else about the lead, which Instantly stopped on the reply.
+INTEREST_INTERESTED = 1
 
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~@")
 _RE_PREFIX = ("re:", "re ")
@@ -797,6 +800,16 @@ class Instantly(HttpClient):
             json={"status": status}, dry_result={"id": lead_id, "status": status, "dry_run": True},
         )
 
+    def _set_interest(self, name: str, email: str, value: int, action: str, caller: str) -> dict | None:
+        """Set a lead's interest status in this campaign only (POST /leads/update-interest-status, campaign_id set)."""
+        cid = self._campaign_id(name, action, True)
+        lead = str(email or "").strip().lower()
+        if "@" not in lead:
+            raise ValueError(f"{caller} needs the lead's email address")
+        op = Op(action, target=name, write=True, detail={"id": cid, "interest_value": value})
+        payload = {"lead_email": lead, "campaign_id": cid, "interest_value": value}
+        return self.request("POST", "/leads/update-interest-status", op, json=payload, dry_result={"dry_run": True})
+
     def stop_lead(self, name: str, email: str) -> dict | None:
         """Stop a lead's remaining steps in this campaign once a meeting is booked (SPEC 9 hubspot_readback).
 
@@ -805,13 +818,15 @@ class Instantly(HttpClient):
         PHASE0-CONFIRM: the endpoint and its fields, INTEREST_MEETING_BOOKED, and that Instantly then
         sends the lead no further step; if it does not, delete_lead is the stop that is certain.
         """
-        cid = self._campaign_id(name, "lead.stop", True)
-        lead = str(email or "").strip().lower()
-        if "@" not in lead:
-            raise ValueError("stop_lead needs the lead's email address")
-        op = Op("lead.stop", target=name, write=True, detail={"id": cid, "interest_value": INTEREST_MEETING_BOOKED})
-        payload = {"lead_email": lead, "campaign_id": cid, "interest_value": INTEREST_MEETING_BOOKED}
-        return self.request("POST", "/leads/update-interest-status", op, json=payload, dry_result={"dry_run": True})
+        return self._set_interest(name, email, INTEREST_MEETING_BOOKED, "lead.stop", "stop_lead")
+
+    def mark_interested(self, name: str, email: str) -> dict | None:
+        """Mark a lead "Interested" in this campaign once its reply is classified positive (Harry, 7 Oct 2026;
+        replies/poll.py), so Instantly's own views and reports show it. The same call as stop_lead with
+        INTEREST_INTERESTED; nothing else about the lead changes (Instantly stopped it on the reply).
+        PHASE0-CONFIRM: INTEREST_INTERESTED.
+        """
+        return self._set_interest(name, email, INTEREST_INTERESTED, "lead.interest", "mark_interested")
 
     # -- emails ----------------------------------------------------------------
 

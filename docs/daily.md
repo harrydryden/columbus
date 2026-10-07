@@ -35,6 +35,31 @@ edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound syn
 sending its follow-ups. To resume, run `us-outbound start --live`. It syncs the sheet, checks the
 campaigns still match the settings, and activates them.
 
+## Blackout dates
+
+The General tab's `blackout_dates` (23 to 27 November 2026, and 18 December 2026 to 4 January 2027) are days
+nothing is sent. Enrol skips them, and a ✅ whose email 1 would land on one waits. Instantly's own schedule
+knows weekdays only, so since 7 October 2026 the hourly `blackout` job also pauses every US Outbound campaign
+once the send window has closed (16:00 ET) on the last send day before a blackout, and starts the same
+campaigns again from midnight ET after it. The follow-ups that fell due go out on the next send day (Monday
+30 November; Tuesday 5 January), as the send forecast already assumed. One line in #us-outbound says when it
+pauses them and one when it starts them again. `us-outbound status`, `golive` and the daily post say "paused
+for the blackout until Mon 30 Nov": there is nothing to do.
+
+- **`us-outbound stop --live` during a blackout** still stops everything, and the campaigns stay paused after
+  it (the line says so) until `us-outbound start --live`.
+- **`us-outbound start --live` during a blackout** resumes enrolment but leaves the campaigns paused: the job
+  starts them after it.
+- **A kill rule** that pauses a campaign during a blackout, or an owner with no Active mailbox when it ends,
+  keeps that campaign paused: the morning mailbox check starts it once its mailbox is Active.
+- **A campaign already paused** before a blackout (by `stop`, a kill rule or by hand) is never touched by it.
+- **To send on a blackout date after all,** take the date off `blackout_dates`, then `us-outbound sync`: the next
+  hourly run starts the campaigns. Starting one by hand in Instantly during a blackout does not last: the next
+  run pauses it again. A pause made by hand in Instantly during a blackout cannot be told from the job's, so use
+  `us-outbound stop --live` to pause.
+- **With `live_sending` = no** the job only says what it would do (in #us-outbound-dev), as every job does; pause
+  by hand with `us-outbound stop --live`.
+
 ## Your day in #us-outbound (UK times)
 
 | When | What arrives | What to do |
@@ -46,6 +71,7 @@ campaigns still match the settings, and activates them.
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
+| Around a blackout | "Paused N US Outbound campaigns for the blackout…" (the evening before, UK time), then "Started N … again after the blackout" | Nothing (see **Blackout dates** above). A "Left paused" line names what to run |
 
 ## The words and emojis
 
@@ -238,7 +264,9 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
 
 - **Lookalikes (the 1st, 02:30 UK):** the `lookalikes` job reads Spill's customers from HubSpot (read
   only), their 12-month headcount growth from Apollo (counts only, at most 60 credits), and works out
-  each account's lookalike fit (industry, size and growth). Nothing to do. `us-outbound lookalikes show`
+  each account's lookalike fit (industry, size and growth). Nothing to do. Customers themselves are kept
+  out every night: `suppression_load` (01:30) reads them too, so a company that signs up mid-month gets no
+  more emails from the next morning (7 Oct 2026). `us-outbound lookalikes show`
   lists the customers by industry and size; `us-outbound lookalikes fit` shows the fits and the tier
   mix the lookalike rows give, without changing anything. To put the graded rows on the sheet, run
   `us-outbound settings load --tab Signals --live`: it adds "Close match" and "Some match to Spill's

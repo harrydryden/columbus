@@ -15,12 +15,6 @@ None of these blocks the pilot; each has a safe default. The go-live steps thems
 - **72. Page-only claims** to confirm for the US (HIPAA, booking by text, languages, and so on).
 - **74. The first copy test**: what it compares, before phase 3.
 - **77. The duplicate Nonprofits page** to archive on the site.
-- **78. Follow-ups on blackout dates** (7 Oct 2026): enrol skips a blackout date, but Instantly's schedule
-  knows weekdays only, so the later steps of leads already in flight still go out on one (Thanksgiving week,
-  23 to 27 Nov). Default: they go. To stop them, `us-outbound stop --live` for those days and
-  `us-outbound start --live` after; or a later change puts the dates into Instantly's schedule.
-  (The other gap found then, a HubSpot opt-out not stopping a lead already in flight, is fixed: see
-  docs/developing-while-live.md.)
 
 ## Archive
 
@@ -191,3 +185,16 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 75. **Role-specific copy** is a line per role in email 1. A row with `role` set (for example CPA firms for Operations) overrides it for that role, if you want to go further. [role lines]
 76. **Industries not contacted** (Insurance, HR consulting, Substance use treatment: partners) are on the Industries tab, off, with no copy. [no copy]
 77. **Duplicate page.** The 1 October export has a second Nonprofits item, `nonprofits-us`, a draft named "(duplicate item, archive)". The build ignores it; archive it on the site. Retail & E-commerce is now live, and only Small Businesses is still a draft. The eight pages with another page's copy (question 73) are unchanged.
+
+### Since the pilot started
+
+78. **Follow-ups on blackout dates** (7 Oct 2026): enrol skipped a blackout date, but Instantly's schedule knows
+    weekdays only, so the later steps of leads already in flight still went out on one (Thanksgiving week, 23 to
+    27 Nov). (The other gap found then, a HubSpot opt-out not stopping a lead already in flight, was fixed the same
+    day: see docs/developing-while-live.md.)
+    *Built (Harry, 7 Oct 2026): the hourly `blackout` job pauses every US Outbound campaign from the close of the
+    send window (16:00 ET) on the last send day before a blackout date, and starts exactly the campaigns it paused
+    again from midnight ET after it, so Instantly sends the follow-ups that fell due on the next send day, as the
+    send forecast already assumed (`registry/blackout.py`; docs/daily.md, "Blackout dates"). One that a stop, a
+    kill rule or an empty sending list holds by then is left paused, and the line in Slack says so; one paused
+    before the blackout is never touched.*

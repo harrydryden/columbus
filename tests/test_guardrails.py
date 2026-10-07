@@ -145,7 +145,7 @@ def spec_violation(rec: CallRecord) -> str | None:
             if not t.startswith(PREFIX) or ("accounts" in d and not in_registry):
                 return f"Instantly {a} on {t!r}"
             return None
-        if a in {"lead.add", "lead.delete", "lead.update", "lead.stop"}:
+        if a in {"lead.add", "lead.delete", "lead.update", "lead.stop", "lead.interest"}:
             return None if t.startswith(PREFIX) else f"Instantly {a} on {t!r}"
         if a == "email.forward" and set(d.get("to") or ()) != set(redact([ESCALATION])):
             return "Instantly forward to someone other than escalation_email"
@@ -569,6 +569,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
                                w.as_job("replies_approve", lambda: c.reply(
                                    "hannah@meetspill.org", "E1", None, "Thanks, Jane.", approved_by="cli"))),
         "stop_lead": lambda c, w: c.stop_lead(HANNAH_CAMPAIGN, JANE),
+        "mark_interested": lambda c, w: c.mark_interested(HANNAH_CAMPAIGN, JANE),
         "forward": lambda c, w: c.forward("hannah@meetspill.org", "E1", "harry@spill.chat", "Waiting 24 hours."),
         "blocklist_add": lambda c, w: c.blocklist_add([JANE]),
         "step_analytics": lambda c, w: c.step_analytics(HANNAH_CAMPAIGN),
@@ -840,6 +841,7 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "instantly reply approved cli outside replies approve": lambda w: w.as_job("poll_approvals", lambda: w.clients[
         "Instantly"].reply("hannah@meetspill.org", "E1", "Re", "Hi", approved_by="cli")),
     "instantly lead stop in the EU campaign": lambda w: w.clients["Instantly"].stop_lead(EU_CAMPAIGN, JANE),
+    "instantly lead interest in the EU campaign": lambda w: w.clients["Instantly"].mark_interested(EU_CAMPAIGN, JANE),
     "instantly forward outside Spill": lambda w: w.clients["Instantly"].forward(
         "hannah@meetspill.org", "E1", "someone@other.com", "Waiting 24 hours."),
     "instantly workspace settings": lambda w: w.clients["Instantly"].request(
