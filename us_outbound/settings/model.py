@@ -150,6 +150,11 @@ def band_bounds(band: str) -> tuple[int, int]:
 # can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
 CLAY_REQUIRED, CLAY_SKIP = "required", "skip"
 CLAY_VERIFICATION_MODES = (CLAY_REQUIRED, CLAY_SKIP)
+# General label_check (Harry, 7 Oct 2026: "industry categorisation is critical"; us_outbound/labels.py): required, a
+# new account is verified only once the task model has checked its industry label; skip, on the rules alone (the
+# group's copy), for a Claude outage.
+LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP = "required", "skip"
+LABEL_CHECK_MODES = (LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP)
 
 
 @dataclass(frozen=True)
@@ -243,6 +248,9 @@ class General:
     claude_model: str = "claude-opus-5-5"  # Harry, 30 Sep 2026: writing (copy drafts, reply drafts)
     claude_task_model: str = "claude-sonnet-5-5"  # (build) well-defined tasks: copy QA, reply classification
     claude_monthly_cap_usd: float = 10.0
+    # (build) Harry, 7 Oct 2026: the task model's check of each account's industry label in verify_accounts
+    # (us_outbound/labels.py). required: a new account waits unverified until it is checked; skip: rules only.
+    label_check: str = LABEL_CHECK_REQUIRED
     email_format: str = "html"  # (build) html: links and bullets; text: plain text, links written out
     # (build) The learning loop (Harry, 6 Oct 2026). yes: the links to our site and Harry's booking link carry
     # UTM parameters, in the HTML only (enrol/utm.py); the words of every link stay as they are. no (the default):
@@ -347,6 +355,9 @@ class Industry:
     proof_point: str = ""
     priority: int = 99
     page: IndustryPage = field(default_factory=lambda: IndustryPage())
+    # What a company under this label is, and is not, in one line: the model's label check reads it (labels.py;
+    # Harry, 7 Oct 2026). A blank cell, or a sheet without the column, takes the build's (data/industries.csv).
+    definition: str = ""
 
 
 @dataclass(frozen=True)

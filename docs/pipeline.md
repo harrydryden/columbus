@@ -432,7 +432,8 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **Loading the new tabs into the sheet** (`settings/load.py`):
 - `us-outbound settings load` (dry-run) prints what would change; `--live` writes it, then `us-outbound settings sync` brings it in.
-- Industries rows are matched by label. Harry's `active`, `priority` and `proof_point` are kept, the build's other columns win, and rows Harry added stay.
+- The dry-run lists every cell the load would change, row by row and column by column (`Games studios: naics_prefixes: '513210; 5112; 541511' → '513210; 5112'`); a long cell shows the part that differs, with a little either side (Harry, 7 Oct 2026).
+- Industries rows are matched by label. Harry's `active`, `priority` and `proof_point` are kept, the build's other columns win, and rows Harry added stay. `--keep COLUMN` keeps the sheet's value in one more column for that load, such as a `page_faqs` line edited on the sheet.
 - A Copy tab still in the old one-row-per-step layout is replaced. Its rows stay in the database's settings history, and until it is replaced the sync reads it as no copy and says so.
 - A Copy tab already in the new layout keeps every row as it is; only missing versions are added.
 

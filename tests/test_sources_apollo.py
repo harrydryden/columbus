@@ -198,7 +198,10 @@ def test_a_company_becomes_one_account_with_one_label_and_the_facts_scoring_read
     (("541810",), ("advertising agency",), "Advertising agencies"),  # then its 6-digit code helps it win
     (("541511",), (), "Technology & Startups"),  # not Games studios: custom programming says nothing of games
     (("541511",), ("logistics", "supply chain consulting"), "Technology & Startups"),
-    (("541511",), ("mobile games", "game development"), "Games studios"),
+    # Harry, 7 Oct 2026: 541511 is off Games studios' codes, so a games studio needs a code of its own (513210); on
+    # custom programming alone the rules place it in the group, and the label check (labels.py) names it.
+    (("541511",), ("mobile games", "game development"), "Technology & Startups"),
+    (("513210",), ("mobile games", "game development"), "Games studios"),
     (("541715",), (), None),  # R&D alone is no AI company (a surgeons' society, an orthopaedic practice)
     (("541715",), ("machine learning",), "AI & deep tech"),
     (("5415",), (), "Technology & Startups"),  # not Adtech & martech, the first label of the group

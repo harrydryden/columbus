@@ -798,7 +798,7 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
             sets[key.strip()] = value.strip()
         try:
             summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
-                                                   take=args.take or ()))
+                                                   take=args.take or (), keep=args.keep or ()))
         except ValueError as exc:
             raise Refused(str(exc)) from exc
         for t in summary["tabs"]:
@@ -1683,6 +1683,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--take", action="append", metavar="COLUMN",
                     help="load: let the build's value win for a column Harry owns (Industries active, priority; "
                          "any Signals column, like weight; General note)")
+    st.add_argument("--keep", action="append", metavar="COLUMN",
+                    help="load: keep the sheet's value in this column for this load, where the build's would win "
+                         "(an edit made on the sheet, like a page_faqs line)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")

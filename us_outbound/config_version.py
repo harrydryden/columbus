@@ -60,6 +60,7 @@ CONTENT_KEYS = (
     "price_from", "booking_link", "booking_page", "site_url", "demo_host", "utm_links", "send_window",
     "second_contact", "second_contact_min_employees", "second_contact_delay_days", "control_share",
     "weekly_enrol_cap",
+    "label_check",  # Harry, 7 Oct 2026: required or skip decides which copy a new company's label earns (labels.py)
 )
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 

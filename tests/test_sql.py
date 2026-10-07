@@ -47,7 +47,8 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 }
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
-    "accounts": {"hq_country"},  # accounts.any_us_state (Harry, 6 Oct 2026)
+    "accounts": {"hq_country",  # accounts.any_us_state (Harry, 6 Oct 2026)
+                 "label_source", "label_confidence", "label_checked_at"},  # the label check (labels.py, 7 Oct 2026)
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
                  "tier_at_enrol", "data_record", "subject_arm",
                  "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
@@ -117,6 +118,9 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
+    # The label check (us_outbound/labels.py; Harry, 7 Oct 2026).
+    ("accounts", "label_source"): {"override", "approver", "rules+model", "model", "umbrella", "disputed", "rules"},
+    ("accounts", "label_confidence"): {"high", "medium", "low"},
     ("contacts", "email_source"): {"apollo", "clay"},
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
