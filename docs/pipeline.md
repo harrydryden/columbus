@@ -470,6 +470,9 @@ Nothing re-weights or decides by itself: the system counts, and Harry changes th
 | Test reads | Tests tab `kind` and `looks`, `learn/looks.py`, `us-outbound test read ID` | A test is read only at a pre-registered look, over what that look covers; before the first, the read refuses and shows no reply |
 | Bookings | `crm/readback.py` (`hubspot_readback`, every 15 minutes), `events.source` | A meeting on Harry's calendar booked through his link (`hubspot_meeting`), or a Spill 3.0 deal at Demo requested or later at an enrolled company (`hubspot_deal`), recorded as `meeting_booked` |
 | UTM tags | `enrol/utm.py`, General `utm_links` | Our links say which sequence and email a website visit or booking came from |
+| The config version | `config_version.py`, `contacts.config_version`, `code_sha`, `copy_hash`, the `config_versions` table | What each contact was rendered under, as a 12-character id: the content tabs' versions, the sendable Copy rows, the General content keys, the signature template, the campaign constants and the code (Harry, 7 Oct 2026). Stamped at enrolment; a card waiting in Slack keeps the version it was rendered under |
+| Cohorts | `learn/cohorts.py`, `us-outbound cohorts`, the readout's *Cohorts* section | Each enrolment week's companies at 7, 14, 21 and 28 days after email 1, by any cut (tier, angle, industry group, sender, copy version, subject and opener arms, config version); consecutive weeks compared at the same age from 30 companies a side, with what changed between them named as a change to test, not a cause |
+| The settings report | `us-outbound cohorts changes`, the readout's *Settings changes*, the `config_log` table | What differs between two config versions in plain words (code, step days, the campaign template, the signature, General values, Copy rows, the content tabs' rows), and each change made to what leads in flight share (`campaigns ensure --fix --in-flight`, From names) |
 
 **Small numbers read as small.** Under 30 companies on either side, a rate is "too few to read" and only
 the counts are given (`signal_value.MIN_TO_READ`, the view's `too_few`, the readout). From 30, the signal
@@ -482,6 +485,13 @@ enrolment), angle, industry group, sender (the account's) and step (sends, bounc
 last week's activity (sends, bounces, replies, positive replies, meetings by company, unsubscribes,
 complaints) beside the cohort by week of step 1. `v_signal_value` keeps SPEC 12's Control comparison and the
 below-Control flag after 200, and adds the enrolled, sent and meeting counts and the "without" side.
+
+**Cohorts, and developing while live.** A contact's emails are rendered at enrolment and never rewritten, so a
+change to copy or settings reaches only the contacts enrolled after it; the campaign's step template, delays
+and text_only are shared by every lead in it, so drift in those is held while leads are in flight
+(docs/developing-while-live.md). A cohort is the UK week of a company's first enrolment, split by config
+version when a week has two; contacts enrolled before 8 Oct 2026 are "unstamped". A company counts at an age
+once it has reached it, so two weeks are compared over the same days after email 1.
 
 **Pre-registered looks.** A count look `N` is reached when both versions have `N` companies whose 28-day
 reply window has closed, and reads exactly the first `N` of each; a date look reads the companies whose window
@@ -525,6 +535,7 @@ the website's page raises a Spill 3.0 deal itself).
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |
 | — | `claude_model` (Opus) writes; `claude_task_model` (Sonnet) checks and classifies | Harry | 1.1 | Done |
 | — | The learning loop: `monday_readout` (Mondays 08:30), the signal table, tests read only at pre-registered looks (Tests tab `kind`, `looks`), UTM tags (General `utm_links`), demo bookings read back from Spill 3.0 | Harry, 6 Oct 2026: "push ahead with building" | 9, 12 | Done; `settings load --tab General --tab Tests --live` brings the new key and columns |
+| — | Cohorts: each contact stamped with its config version; campaign drift in the steps, delays or text_only held while leads are in flight (`campaigns ensure --fix --in-flight` applies it to them, logged); reports by enrolment week at fixed ages with what changed between them; a lead suppressed while in flight is stopped | Harry, 7 Oct 2026: "a cohort system in place for contacts that have started not being interrupted by changes" | 6, 9, 12, 13 | Done; `us-outbound db apply --live` on deploy adds the columns and tables |
 | 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |
 | 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
 | 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Replaced 1 Oct by lookalikes from Spill's HubSpot customers (Harry); built |
