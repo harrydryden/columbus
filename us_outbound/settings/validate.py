@@ -101,7 +101,7 @@ MAX_ROLE_RANK = 20
 MAY_BE_EMPTY = frozenset({"Overrides", "Tests", *OPTIONAL_TABS})  # an empty tab anywhere else is almost surely a mistake
 NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
-CLAUDE_CAP_USD = 10.0  # SPEC 1.1
+CLAUDE_CAP_USD = 100.0  # a guard against a typo; the sheet's value is the cap (SPEC 1.1 set $10; Harry, 7 Oct 2026: $50)
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
 CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
 # Variables a copy row may use (render.VARIABLES; style.md).
@@ -583,7 +583,7 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "second_contact_delay_days" and value < 1:
         raise ValueError("must be at least 1, so the two people's first emails never arrive the same day")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
-        raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
+        raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (a guard against a typo: settings/validate.py)")
     if key == "escalation_email":
         _email(value)
     # A model id the cap cannot price is refused at call time (clients/claude.py), not here, so a typo

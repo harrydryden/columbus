@@ -248,7 +248,7 @@ def test_general_types(tabs):
         ("send_window", "weekdays", "must look like"),
         ("blackout_dates", "2026-11-27..2026-11-23", "ends before it starts"),
         ("blackout_dates", "23/11/2026", "YYYY-MM-DD"),
-        ("claude_monthly_cap_usd", "50", "$10"),
+        ("claude_monthly_cap_usd", "150", "$100"),  # Harry, 7 Oct 2026: $50 is allowed; past $100 is a typo
         ("alert_channel", "us-outbound", "channel"),
         ("escalation_email", "harry", "email"),
         ("approver_slack_ids", "harry", "Slack user id"),
@@ -674,3 +674,11 @@ def test_parsers():
     assert parse_fallback_order("10-49:2; 50-249:3") == {"10-49": 2, "50-249": 3}
     with pytest.raises(ValueError):
         parse_fallback_order("10-49:1")
+
+
+def test_the_claude_cap_takes_harrys_50_a_month(tabs):
+    """Harry, 7 Oct 2026: the cap went from $10 (SPEC 1.1) to $50; the guard refuses only a typo past $100."""
+    t = copy.deepcopy(BASE)
+    next(r for r in t["General"] if r["key"] == "claude_monthly_cap_usd")["value"] = "50"
+    settings, errors = validate_all(t)
+    assert not errors["General"] and settings.general.claude_monthly_cap_usd == 50.0

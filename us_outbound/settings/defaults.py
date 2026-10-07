@@ -277,7 +277,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "unsubscribe links are never tagged. no (the default): plain links. Tagged links can read as marketing to "
         "inbox filters, so try yes on a seed send first. Added by the build.",
     ),
-    ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend; SPEC 1.1 allows at most $10 a month."),
+    ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend each month (UTC), in dollars; at most $100. SPEC 1.1 set $10."),
     (
         "opener_holdout_share",
         "0.3",

@@ -3,7 +3,7 @@
 Uses the official anthropic SDK with structured outputs (output_config.format =
 json_schema), so every answer is one JSON object matching the caller's schema.
 
-The key's spend is capped at claude_monthly_cap_usd (SPEC 1.1, $10). Before each call the
+The key's spend is capped at claude_monthly_cap_usd (SPEC 1.1 set $10; the sheet may set up to $100). Before each call the
 month's spend is read from credit_ledger (system "claude", this UTC month) and the call is
 refused if that spend plus a conservative estimate of this call would pass the cap less a
 small reserve. After each call its actual cost, from response.usage, is written to the
