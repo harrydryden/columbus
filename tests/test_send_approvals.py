@@ -33,6 +33,7 @@ CONTRACT_KEYS = {
     "opener_source", "industry", "industry_group", "role", "tier", "score", "send_day", "edited", "original", "reason",
     "subject_arm",  # email 1's subject arm (Harry, 5 Oct 2026)
     "config_version", "code_sha", "copy_hash",  # what the card was rendered under (Harry, 7 Oct 2026)
+    "test_arm", "test_name", "test_note",  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
 }
 
 

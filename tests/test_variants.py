@@ -16,6 +16,7 @@ import pytest
 from tests.test_cli import Harness, _approved, _tests_tab
 from tests.test_enrol import default_openers, instantly_posts, make  # noqa: F401  (default_openers: autouse)
 from tests.test_registry import SETTINGS
+from tests.test_send_approvals import HARRY_ID, _rejected, at, blocks_text, item_for, items, poll, proposed
 from tests.test_render import (
     BODIES,
     EAP_OPENER,
@@ -29,7 +30,7 @@ from tests.test_render import (
     make_settings,
     values_for,
 )
-from us_outbound.enrol import enrol, openers, queue, render, variants
+from us_outbound.enrol import approvals, enrol, openers, queue, render, variants
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import CopyStep
 from us_outbound.settings.model import Test as CopyTest  # aliased so pytest does not collect it
@@ -402,3 +403,81 @@ def test_a_second_contact_gets_its_account_s_arm_and_is_not_a_new_account():
     before = dict(first, test_id="")  # the first contact was enrolled before the test: the account is not in it
     p = enrol.prepare(ctx, enrol.Candidate(account(sender="Hannah Spalding"), ops, 2, before), free, Counter(), rows)
     assert (p.test_id, p.test_arm, p.test_note) == ("", "", "") and WARM not in p.rendered[0].text
+
+
+# -- the card ----------------------------------------------------------------------------------------------------------------
+# For "warm-intro", acc-1 and acc-2 hash to "b" (no intro) and acc-3, the Control account, to "a" (warm intro).
+
+
+def card_for(ctx, sl, account_id: str) -> str:
+    row = item_for(ctx, account_id)
+    [post] = [x for x in sl.posts if x["ts"] == row["slack_ts"]]
+    return blocks_text(post)
+
+
+def test_the_card_names_the_test_and_the_arm_and_shows_the_arm_s_email():
+    ctx, t, sl, _ = proposed(tests=(WARM_TEST,))
+    assert [variants.arm_for(WARM_TEST, a) for a in ("acc-1", "acc-2", "acc-3")] == ["b", "b", "a"]
+    loop = item_for(ctx, "acc-3")["payload"]
+    assert (loop["test_id"], loop["test_arm"], loop["test_name"], loop["test_note"]) == ("warm-intro", "a",
+                                                                                        "warm intro", "")
+    text = card_for(ctx, sl, "acc-3")
+    facts = text.split("\n")[1]  # the context line under the head
+    assert facts.startswith("Control · score 5 · General · ") and facts.endswith(" · Test: warm-intro · warm intro")
+    assert f"> Hi Lee,\n> \n> {WARM}\n> \n> {GENERAL_OPENER}" in text
+    assert loop["steps"][0]["source"].startswith(f"Hi Lee,\n\n{WARM}\n\n{GENERAL_OPENER}")  # an edit starts here
+    assert WARM in loop["lead"]["custom_variables"]["s1_body"]
+    acme = item_for(ctx, "acc-1")["payload"]
+    assert "Test: warm-intro · no intro" in card_for(ctx, sl, "acc-1") and WARM not in acme["steps"][0]["source"]
+    assert acme["test_arm"] == "b" and acme["test_name"] == "no intro"
+
+
+def test_the_card_says_when_the_account_is_not_in_the_test():
+    swap = dataclasses.replace(WARM_TEST, change="replace", find="the strain stays hidden",
+                               text_a="the strain shows up late")
+    general = copy_row("general-v1", "General", bodies={**BODIES, 1: BODIES[1].replace("stays hidden", "hides")})
+    ctx, t, sl, _ = proposed(tests=(swap,), copy=(make_settings().copy[0], general))
+    p = item_for(ctx, "acc-2")["payload"]
+    assert (p["test_id"], p["test_arm"]) == ("", "")
+    assert ("Test: warm-intro · not in the test (its email 1 (general-v1) does not have the text the test replaces)"
+            in card_for(ctx, sl, "acc-2"))
+    assert approvals.test_label({"test_id": "", "test_note": ""}) == ""  # no copy test running
+    assert approvals.test_label({"test_id": "t1-agencies", "copy_version": "agencies-v2"}) == "Test: t1-agencies · " \
+                                                                                              "agencies-v2"
+
+
+def test_an_edited_card_keeps_its_arm_and_is_recorded_as_edited():
+    ctx, t, sl, _ = proposed(tests=(WARM_TEST,))
+    row = _rejected(ctx, sl, "acc-3")
+    sl.react("pencil2", HARRY_ID, ts=row["payload"]["choices_ts"])
+    poll(ctx)
+    source = item_for(ctx, "acc-3")["payload"]["steps"][0]["source"]
+    new = source.replace(WARM, "I hope this week is treating you well.").replace(
+        "(https://www.spill.chat/us/industry/advertising)", "(<https://www.spill.chat/us/industry/advertising>)")
+    sl.say(HARRY_ID, new, row["slack_ts"])
+    assert poll(ctx)["edits"] == {"accepted": 1}
+    p = item_for(ctx, "acc-3")["payload"]
+    assert (p["edited"], p["test_id"], p["test_arm"]) == (True, "warm-intro", "a")
+    assert "I hope this week is treating you well." in p["lead"]["custom_variables"]["s1_body"]
+    assert WARM in p["original"]["s1_body"]
+    sl.react("white_check_mark", HARRY_ID, ts=p["approve_ts"])
+    assert poll(ctx)["outcomes"] == {"approved_edited": 1}
+    con = ctx.store.get("contacts", contact_id="con-3")
+    assert (con["test_id"], con["test_arm"]) == ("warm-intro", "a")  # the arm as assigned, edited or not
+    item = item_for(ctx, "acc-3")
+    assert ctx.store.get("events", event_id=f"send-approval:{item['item_id']}")["approval"] == "approved_edited"
+
+
+def test_redo_and_reprepare_give_the_same_arm():
+    ctx, t, sl, _ = proposed(tests=(WARM_TEST,))
+    before = {r["account_id"]: r["payload"] for r in items(ctx, "open")}
+    again = approvals.reprepare(ctx, approvals.Item(item_for(ctx, "acc-3")))
+    assert (again.test_id, again.test_arm) == ("warm-intro", "a") and WARM in again.rendered[0].text
+    at(ctx, ctx.now, job="approvals_redo")
+    out = approvals.redo(ctx, "all")
+    assert len(out["posted_again"]) == 3
+    for r in items(ctx, "open"):
+        old = before[r["account_id"]]
+        p = r["payload"]
+        assert (p["test_id"], p["test_arm"], p["test_name"]) == (old["test_id"], old["test_arm"], old["test_name"])
+        assert p["lead"]["custom_variables"]["s1_body"] == old["lead"]["custom_variables"]["s1_body"]

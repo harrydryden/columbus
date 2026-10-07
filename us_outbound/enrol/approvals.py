@@ -17,7 +17,11 @@ Instantly sends email 1 in the next send window and the follow-ups on days 7, 14
 The bot seeds ✅ and ❌ on the card (Slack.react), so approving is one click; its own reactions never
 count. Under the people, the card's Industry line (Harry, 7 Oct 2026; labels.py) gives the label, whether the rules
 and the task model agreed, and which copy the emails are ("rules and model agree · Fintech copy", "⚠️ … · General
-copy", "not checked by the model"); its They do line gives what the model read the company does, with its quote. Waiting items hold their sender's slots today and their place in the week (limits.today), and
+copy", "not checked by the model"); its They do line gives what the model read the company does, with its quote.
+The facts line names the running copy test and the contact's arm ("Test: warm-intro · warm intro"), or says the
+account is not in it and why (Harry, 7 Oct 2026; enrol/variants.py); the emails shown are the arm's. An edit keeps
+the arm: ✅ records it on the contact, and the item's outcome approved_edited says it was edited (learn/looks.py
+counts it in its arm, and says how many were). Waiting items hold their sender's slots today and their place in the week (limits.today), and
 an account with one waiting is not proposed again. With auto_send = no the weekly hand-check is not
 a gate (every email is approved anyway): hand_check_post records only the accounts verify_accounts
 held for doubtful facts, and golive's Hand-check line passes. A second contact at an account (General
@@ -104,6 +108,9 @@ has state (waiting, rejected, editing, sending, done), outcome ("" while open, t
 approved_edited, contact_rejected, company_rejected, expired or blocked), owner, mailbox, campaign,
 lead (the Instantly lead, custom variables included), copy_version, angle, test_id, opener_arm,
 opener_source, subject_arm (personal or copy: email 1's subject, render.subject_arm; Harry, 5 Oct 2026),
+test_arm and test_name (the running copy test's arm, a or b, and its name, version_a or version_b; "" when the
+contact is in no test) and test_note (why the account is left out of a running variant test, else ""; Harry,
+7 Oct 2026; enrol/variants.py),
 config_version, code_sha and copy_hash (what the card was rendered under, stamped on the contact at ✅, never
 what is in force then; config_version.py, Harry, 7 Oct 2026; "" on a card posted before), industry, industry_group, role, tier, score, send_day (YYYY-MM-DD, UK), edited,
 original (the first custom variables once edited, else {}) and reason (why blocked or expired, else
@@ -418,16 +425,23 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
     row = s.copy_row(p.copy_version)
     steps = []
     for r in sorted(p.rendered, key=lambda r: r.step):
-        source = editable(row.step(r.step).body, p.values) if row else r.text
+        # As written: the Copy row's, or a variant test's arm in its place (enrol/variants.py), so an edit starts there.
+        written = p.written.get(r.step) or (row.step(r.step) if row else None)
+        source = editable(written.body, p.values) if written else r.text
         steps.append({"step": r.step, "subject": r.subject, "text": r.text, "source": source})
     send_day = ctx.today_uk()
     group = s.industry_group_of(a)
+    test = s.running_test()
     return {
         # The contract (the daily report reads these).
         "state": WAITING, "outcome": "", "owner": p.owner, "mailbox": p.mailbox,
         "campaign": queue.campaign_name(p.owner), "lead": dict(p.lead), "copy_version": p.copy_version,
         "angle": p.angle, "test_id": p.test_id, "opener_arm": p.opener_arm, "opener_source": p.opener_source,
         "subject_arm": p.subject_arm,
+        # The running copy test (Harry, 7 Oct 2026; enrol/variants.py): the contact's arm and its name, or why the
+        # account is not in the test. ✅ records test_id and test_arm on the contact, an edited card's included.
+        "test_arm": p.test_arm, "test_name": test.arm_name(p.test_arm) if test and p.test_arm else "",
+        "test_note": f"{test.test_id} · not in the test ({p.test_note})" if test and p.test_note else "",
         # What the card was rendered under (config_version.py; Harry, 7 Oct 2026): ✅ stamps these, not today's.
         "config_version": p.config_version, "code_sha": p.code_sha, "copy_hash": p.copy_hash,
         "industry": _text(a.get("industry")), "industry_group": group, "role": _text(c.get("role")),
@@ -464,6 +478,16 @@ def opener_label(arm: str, source: str) -> str:
     if source.startswith(openers.GENERIC_OPENER_KEY):
         return "opener: the generic line"
     return f"opener from the signal {source.split(' / ')[0]}"
+
+
+def test_label(p: Mapping[str, Any]) -> str:
+    """The card's test fact (Harry, 7 Oct 2026): "Test: warm-intro · warm intro", the running copy test and the arm the
+    contact is in; "Test: warm-intro · not in the test (…)" when the account is left out of a variant test; else ""."""
+    test_id = _text(p.get("test_id"))
+    if test_id:
+        return f"Test: {test_id} · {_text(p.get('test_name')) or _text(p.get('copy_version'))}"
+    note = _text(p.get("test_note"))
+    return f"Test: {note}" if note else ""
 
 
 def _quoted(text: str) -> list[str]:
@@ -601,7 +625,8 @@ def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     if isinstance(score, float) and score.is_integer():
         score = int(score)
     facts = [f"{_text(p.get('tier'))} · score {score}" if p.get("tier") else "",
-             _text(p.get("angle")), opener_label(_text(p.get("opener_arm")), _text(p.get("opener_source"))), where]
+             _text(p.get("angle")), opener_label(_text(p.get("opener_arm")), _text(p.get("opener_source"))), where,
+             test_label(p)]
     title = _text(c.get("title"))
     role = _text(p.get("role"))
     to = ", ".join(x for x in (_esc(name), _esc(title)) if x) + (f" ({_esc(role)})" if role and role != title else "")
@@ -1093,6 +1118,8 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
         opener_source=_text(p.get("opener_source")),
         # A card posted before the split (5 Oct 2026) was rendered with the Copy row's subject.
         subject_arm=_text(p.get("subject_arm")) or render.COPY_SUBJECT,
+        # The arm the card was rendered in (Harry, 7 Oct 2026), edited or not: the contact records it at ✅.
+        test_arm=_text(p.get("test_arm")),
         slot=second.SECOND if is_second(p) else second.FIRST,  # a second contact leaves its account as it is
         # A card posted before the stamp (8 Oct 2026) has none: the contact is left unstamped.
         config_version=_text(p.get("config_version")), code_sha=_text(p.get("code_sha")),
