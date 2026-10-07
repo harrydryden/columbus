@@ -304,3 +304,79 @@ def test_the_job_runs_with_a_heartbeat():
     summary = run_job(w.ctx, retention.run)
     [beat] = w.ctx.store.select("heartbeats", {"job": "retention"})
     assert beat["status"] == "ok" and beat["detail"]["leads"]["deleted"] == 1 and summary["errors"] == []
+
+
+# -- 2. Reply text, after 90 days (SPEC 6) -----------------------------------------------------------------------------
+
+
+def reply_card(item_id: str, created: datetime, kind: str = "reply", **payload) -> dict:
+    base = {"reply_class": "objection", "objection": "already have an EAP", "demo_requested": False,
+            "language_terms": ["EAP"], "competitor_named": "Lyra", "reply_excerpt": "We already use Lyra, thanks.",
+            "summary": "Has an EAP already.", "draft": "Thanks Jane, ...", "draft_problems": [],
+            "referral": {"name": "Sam Roe", "title": "COO", "email": "sam@acme.com"}, "received_at": created.isoformat(),
+            "instantly_email_id": f"em-{item_id}", "mailbox": "hannah@meetspill.org", "desk": {"edited_by": "U_HARRY"}}
+    return {"item_id": item_id, "kind": kind, "status": "handled", "contact_id": "k1", "account_id": "a1",
+            "event_id": f"em-{item_id}", "payload": {**base, **payload}, "created_at": created}
+
+
+def reply_world(live: bool = True) -> World:
+    w = World(live=live)
+    old, recent = NOW - timedelta(days=91), NOW - timedelta(days=89)
+    w.ctx.store.insert("events", [
+        {"event_id": "em-old", "contact_id": "k1", "account_id": "a1", "type": "replied", "reply_class": "objection",
+         "reply_text": "We already use Lyra, thanks.", "language_terms": ["EAP"], "competitor_named": "Lyra",
+         "step": 2, "mailbox": "hannah@meetspill.org", "occurred_at": old},
+        {"event_id": "em-recent", "contact_id": "k2", "type": "replied", "reply_class": "positive",
+         "reply_text": "Yes, let's talk.", "occurred_at": recent},
+        {"event_id": "b-old", "contact_id": "k3", "type": "bounced", "reply_text": "550 5.1.1", "occurred_at": old},
+        {"event_id": "s-old", "contact_id": "k1", "type": "sent", "step": 1, "occurred_at": old},
+    ])
+    w.ctx.store.insert("hitl_items", [
+        reply_card("old", old), reply_card("ooo", old, kind="out_of_office", reply_class="out_of_office"),
+        reply_card("first-name", old, kind="reply_approval", sent_text="Thanks Jane"), reply_card("recent", recent),
+        {"item_id": "card", "kind": "send_approval", "contact_id": "k1", "created_at": NOW - timedelta(days=200),
+         "payload": {"lead": {"email": "jane@acme.com"}, "outcome": "approved"}},
+    ])
+    return w
+
+
+def test_reply_text_is_purged_after_90_days_and_the_rest_stays():
+    w = reply_world()
+    out = w.run()["reply_text"]
+    assert out == {"events_due": 2, "events_cleared": 2, "items_due": 3, "items_cleared": 3}
+    ev = {e["event_id"]: e for e in w.ctx.store.select("events")}
+    assert ev["em-old"]["reply_text"] is None and ev["b-old"]["reply_text"] is None
+    assert ev["em-recent"]["reply_text"] == "Yes, let's talk."
+    old = ev["em-old"]
+    assert (old["type"], old["reply_class"], old["language_terms"], old["competitor_named"], old["step"],
+            old["mailbox"], old["occurred_at"]) == ("replied", "objection", ["EAP"], "Lyra", 2,
+                                                    "hannah@meetspill.org", NOW - timedelta(days=91))
+    items = {i["item_id"]: i for i in w.ctx.store.select("hitl_items")}
+    for item_id in ("old", "ooo", "first-name"):
+        p = items[item_id]["payload"]
+        assert all(p.get(k) is None for k in retention.REPLY_TEXT_KEYS), item_id
+        assert p[retention.PURGED] == NOW.isoformat()
+        assert p["reply_class"] and p["objection"] == "already have an EAP" and p["language_terms"] == ["EAP"]
+        assert p["instantly_email_id"] == f"em-{item_id}" and p["received_at"] and p["desk"] == {"edited_by": "U_HARRY"}
+        assert "Lyra, thanks" not in repr(p) and "sam@acme.com" not in repr(p)
+    assert items["recent"]["payload"]["reply_excerpt"] == "We already use Lyra, thanks."
+    assert items["card"]["payload"]["lead"] == {"email": "jane@acme.com"}  # a send approval quotes no reply
+    again = w.run()["reply_text"]
+    assert again == {"events_due": 0, "events_cleared": 0, "items_due": 0, "items_cleared": 0}
+
+
+def test_a_purged_card_still_reads_on_the_reply_desk():
+    from us_outbound.replies.items import ReplyItem
+
+    w = reply_world()
+    w.run()
+    item = ReplyItem(w.ctx.store.get("hitl_items", item_id="old"))
+    assert (item.excerpt, item.draft, item.referral, item.reply_class) == ("", "", {}, "objection")
+    assert item.email_id == "em-old" and item.received_at == NOW - timedelta(days=91)
+
+
+def test_reply_text_dry_run_counts_and_changes_nothing():
+    w = reply_world(live=False)
+    before = {t: [dict(r) for r in w.ctx.store.select(t)] for t in ("events", "hitl_items")}
+    assert w.run()["reply_text"] == {"events_due": 2, "events_cleared": 0, "items_due": 3, "items_cleared": 0}
+    assert {t: w.ctx.store.select(t) for t in before} == before

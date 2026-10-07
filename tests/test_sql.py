@@ -374,6 +374,7 @@ def test_tables_have_spec_comments(tables):
 def test_retention_is_noted_where_it_applies(tables):
     text = {name: (ddl.SQL_DIR / t.file).read_text(encoding="utf-8") for name, t in tables.items()}
     assert "90 days" in text["events"] and "reply_text" in text["events"]
+    assert "90 days" in text["hitl_items"] and "reply_text_purged_at" in text["hitl_items"]  # the reply cards
     assert "12 months" in text["contacts"] and "last_step_at" in text["contacts"]
     assert "12 months" in text["accounts"]
     assert "indefinitely" in text["suppression"]

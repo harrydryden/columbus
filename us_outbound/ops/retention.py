@@ -36,6 +36,19 @@ having no lead, which it no longer has. Its enrolment (enrolled_at, enrolment_mo
 the send forecast, the second-contact rules and the cohorts read it as before. At most LEADS_PER_RUN leads a run,
 oldest first; the rest are due again the next day.
 
+Reply text, after 90 days (SPEC 6: "Reply text: purged after 90 days"). The prospect's words are kept in two
+places in the database, and both go REPLY_TEXT_DAYS after the reply:
+  * events.reply_text, on the replied row (poll_replies keeps up to 5,000 characters): set to NULL;
+  * the reply card (hitl_items of kind reply, or reply_approval, its first name, and out_of_office): in its payload,
+    the reply's words and everything written from them (REPLY_TEXT_KEYS: the excerpt, the classifier's summary, a
+    referral's name, title and email, the draft, its first wording, a refused draft and its problems, and the text
+    sent) are set to null, and reply_text_purged_at says when, so the card is read once.
+What stays is what the readout and the reply desk count by: the class and the classifier's other fields (objection,
+demo_requested, dates, language_terms, competitor_named), the step, the mailbox, the approval, every date and id.
+Copies outside the database are not ours to purge here: the Slack cards (#us-outbound's own retention), the
+escalation emails in Harry's inbox, the HubSpot note of a positive or referral reply (a warm lead's record in the
+CRM), and Instantly's own thread, which leaves Instantly with its lead (PHASE0-CONFIRM, ops/erase.py).
+
 Suppression is never touched: it is kept indefinitely, as hashes (SPEC 6).
 
 Dry-run (the default; live needs --live and live_sending = yes, as for every job): it reads Instantly's lead
@@ -47,7 +60,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
@@ -57,9 +70,12 @@ from us_outbound.context import ET, ConfigError, Context
 from us_outbound.enrol import capacity
 from us_outbound.logs import log
 from us_outbound.replies import optout
+from us_outbound.replies.items import REPLY_KINDS
+from us_outbound.replies.poll import OOO_KIND
 
 JOB = "retention"
 LEAD_DAYS = 31  # SPEC 13: leads stay in Instantly this long after their last step
+REPLY_TEXT_DAYS = 90  # SPEC 6: reply text is purged after this
 # Two Instantly requests a lead (delete_lead checks the lead's campaign first). The pilot adds about 650 leads a
 # month, some 30 a send day, so a backlog of a few hundred clears within days, well inside the run's timeout.
 LEADS_PER_RUN = 200
@@ -71,6 +87,16 @@ OWN_STOPS = ("replied", "bounced", "unsubscribed", "complained", "lead_stopped")
 # A booking at the company stops every lead there (crm/readback.py).
 ACCOUNT_STOPS = ("meeting_booked", "demo_held")
 NOT_FINISHED = frozenset({LEAD_ACTIVE, LEAD_PAUSED})  # Instantly may still send a lead in these statuses
+REPLY_ITEM_KINDS = (*REPLY_KINDS, OOO_KIND)  # the hitl_items that quote a reply (replies/poll.py)
+# A reply card's payload keys that hold the prospect's words, or text written from them (replies/poll.py, desk.py).
+REPLY_TEXT_KEYS = ("reply_excerpt", "summary", "referral", "draft", "draft_original", "draft_rejected", "draft_problems",
+                   "sent_text")
+PURGED = "reply_text_purged_at"  # set on a card's payload once its text is gone
+EVENTS_TEXT_SQL = "SELECT event_id FROM {schema}.events WHERE reply_text IS NOT NULL AND occurred_at < %(before)s"
+ITEMS_TEXT_SQL = (
+    "SELECT item_id, payload FROM {schema}.hitl_items WHERE kind = ANY(%(kinds)s) AND created_at < %(before)s"
+    " AND payload IS NOT NULL AND payload ->> 'reply_text_purged_at' IS NULL"
+)
 
 # Why a due lead waits (the summary's leads.held).
 IN_FLIGHT = "in flight"
@@ -284,6 +310,49 @@ def delete_leads(ctx: Context, ends: Ends, today: date, errors: list[str]) -> di
     return out
 
 
+# -- 2. Reply text, after 90 days (SPEC 6) ---------------------------------------------------------------------------
+
+
+def _old_reply_texts(ctx: Context, before: datetime) -> tuple[list[str], list[dict]]:
+    """(events whose reply_text is older than `before`, reply cards created before it not yet purged)."""
+    store = ctx.store
+    try:
+        events = [str(r["event_id"]) for r in store.query(EVENTS_TEXT_SQL.format(schema=store.schema),
+                                                          {"before": before})]
+        items = store.query(ITEMS_TEXT_SQL.format(schema=store.schema), {"before": before,
+                                                                         "kinds": list(REPLY_ITEM_KINDS)})
+    except NotImplementedError:  # MemoryStore without a handler: the same in Python
+        events = [str(e["event_id"]) for e in store.select("events")
+                  if e.get("reply_text") is not None and (t := _ts(e.get("occurred_at"))) is not None and t < before]
+        items = [i for i in store.select("hitl_items", {"kind": list(REPLY_ITEM_KINDS)})
+                 if isinstance(i.get("payload"), Mapping) and PURGED not in i["payload"]
+                 and (t := _ts(i.get("created_at"))) is not None and t < before]
+    return sorted(events), [i for i in items if isinstance(i.get("payload"), Mapping)]
+
+
+def _has_text(v: Any) -> bool:
+    return bool(v) if not isinstance(v, str) else bool(v.strip())
+
+
+def purge_reply_text(ctx: Context) -> dict:
+    """Clear the prospect's words from events and the reply cards REPLY_TEXT_DAYS after the reply (SPEC 6)."""
+    events, items = _old_reply_texts(ctx, ctx.now - timedelta(days=REPLY_TEXT_DAYS))
+    with_text = [i for i in items if any(_has_text(i["payload"].get(k)) for k in REPLY_TEXT_KEYS)]
+    out = {"events_due": len(events), "events_cleared": 0, "items_due": len(with_text), "items_cleared": 0}
+    if ctx.dry_run:
+        return out
+    for chunk in _chunks(events):
+        out["events_cleared"] += ctx.store.update("events", {"event_id": list(chunk)}, {"reply_text": None})
+    for i in items:  # each card once: those with nothing left to clear are only marked
+        p = dict(i["payload"])
+        p.update({k: None for k in REPLY_TEXT_KEYS if k in p}, **{PURGED: ctx.now.isoformat()})
+        ctx.store.update("hitl_items", {"item_id": i["item_id"]}, {"payload": p})
+    out["items_cleared"] = len(with_text)
+    if events or with_text:
+        log("retention_reply_text_purged", run_id=ctx.run_id, events=out["events_cleared"], items=len(with_text))
+    return out
+
+
 # -- the job ---------------------------------------------------------------------------------------------------------
 
 
@@ -294,6 +363,7 @@ def run(ctx: Context) -> dict:
     ends = Ends(ctx)
     out: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run}
     out["leads"] = delete_leads(ctx, ends, today, errors)
+    out["reply_text"] = purge_reply_text(ctx)
     out["errors"] = errors
     log("retention_done", run_id=ctx.run_id, **out)
     return out

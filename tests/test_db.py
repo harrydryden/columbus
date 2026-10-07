@@ -606,6 +606,31 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
+def test_retention_sql_runs_on_postgres(store):
+    """ops/retention.py finds old reply text with SQL on Postgres (the tests' MemoryStore does it in Python)."""
+    from us_outbound.ops import retention
+
+    old, recent = T0 - timedelta(days=91), T0 - timedelta(days=89)
+    store.insert("events", [
+        {"event_id": "e-old", "type": "replied", "reply_text": "Not for us", "occurred_at": old},
+        {"event_id": "e-empty", "type": "replied", "reply_text": "", "occurred_at": old},
+        {"event_id": "e-none", "type": "replied", "reply_text": None, "occurred_at": old},
+        {"event_id": "e-recent", "type": "replied", "reply_text": "Yes", "occurred_at": recent},
+    ])
+    store.insert("hitl_items", [
+        {"item_id": "i-old", "kind": "reply", "created_at": old, "payload": {"reply_excerpt": "Not for us"}},
+        {"item_id": "i-ooo", "kind": "out_of_office", "created_at": old, "payload": {"reply_excerpt": "Away"}},
+        {"item_id": "i-done", "kind": "reply", "created_at": old,
+         "payload": {"reply_excerpt": None, "reply_text_purged_at": old.isoformat()}},
+        {"item_id": "i-erased", "kind": "reply", "created_at": old, "payload": None},
+        {"item_id": "i-recent", "kind": "reply", "created_at": recent, "payload": {"reply_excerpt": "Yes"}},
+        {"item_id": "i-card", "kind": "send_approval", "created_at": old, "payload": {"lead": {}}},
+    ])
+    events, items = retention._old_reply_texts(SimpleNamespace(store=store), T0 - timedelta(days=90))
+    assert events == ["e-empty", "e-old"]
+    assert sorted(i["item_id"] for i in items) == ["i-old", "i-ooo"] and items[0]["payload"]["reply_excerpt"]
+
+
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
     """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
     events (Harry, 7 Oct 2026)."""

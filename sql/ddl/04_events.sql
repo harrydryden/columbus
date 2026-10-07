@@ -1,7 +1,8 @@
 -- events: one row per send, reply, visit, meeting, deal or escalation (SPEC 6).
 -- event_id is the idempotency key: the Instantly email id or the HubSpot object id.
--- Retention (SPEC 6): "Reply text: purged after 90 days." The retention job sets
--- reply_text to NULL on rows whose occurred_at is more than 90 days old; not DDL.
+-- Retention (SPEC 6): "Reply text: purged after 90 days." The retention job (ops/retention.py, daily)
+-- sets reply_text to NULL on rows whose occurred_at is more than 90 days old; not DDL. The rows
+-- themselves stay: they carry ids, classes and dates, not personal data.
 CREATE TABLE IF NOT EXISTS us_outbound.events (
   event_id text NOT NULL,
   contact_id text,
@@ -31,7 +32,7 @@ COMMENT ON COLUMN us_outbound.events.type IS 'One of: sent, bounced, replied, un
 COMMENT ON COLUMN us_outbound.events.step IS 'Sequence step, 1 to 4 (SPEC 10).';
 COMMENT ON COLUMN us_outbound.events.mailbox IS 'The registry mailbox that sent or received it.';
 COMMENT ON COLUMN us_outbound.events.reply_class IS 'One of: positive, referral, objection, not_now, negative, out_of_office, wrong_person, unsubscribe, other (SPEC 11).';
-COMMENT ON COLUMN us_outbound.events.reply_text IS 'Purged after 90 days (SPEC 6) by the retention job.';
+COMMENT ON COLUMN us_outbound.events.reply_text IS 'The prospect''s own words on a replied row, quotes and our footer cut, at most 5,000 characters (replies/poll.py). Purged after 90 days (SPEC 6): the retention job sets it to NULL once occurred_at is more than 90 days old (ops/retention.py); the class, language_terms, competitor_named, dates and ids stay.';
 COMMENT ON COLUMN us_outbound.events.language_terms IS 'JSON: the list of language terms from classification (SPEC 11).';
 COMMENT ON COLUMN us_outbound.events.source IS 'Where a booking was read from (crm/readback.py; build addition, Harry, 6 Oct 2026), or why a lead was stopped (Harry, 7 Oct 2026). One of: hubspot_meeting, hubspot_deal, suppression. hubspot_meeting: a meeting on Harry''s calendar booked through his HubSpot meetings link (the signature''s booking line, and the website''s demo page, which books into the same calendar). hubspot_deal: a Spill 3.0 deal at Demo requested or later at an enrolled company (one of ours only once it is past Demo requested). suppression: a lead_stopped row made because the contact''s address, email domain or company domain was suppressed while the lead was in flight (a HubSpot opt-out loaded by suppression_load, a customer domain, a Suppress signal), for that contact and the others at the account (replies/account_stop.py). Blank on every other event.';
 COMMENT ON COLUMN us_outbound.events.approval IS 'One of: approved, edited, skipped, approved_edited, contact_rejected, company_rejected, expired, blocked. A reply is approved, edited or skipped; a send approval has its outcome: approved, approved_edited, contact_rejected, company_rejected, expired or blocked, with approved_by a Slack user id, cli or system.';
