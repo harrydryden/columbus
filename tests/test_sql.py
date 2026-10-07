@@ -126,7 +126,8 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
     },
-    ("events", "source"): {"hubspot_meeting", "hubspot_deal"},  # crm/readback.py (Harry, 6 Oct 2026)
+    ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
+                           "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",

@@ -8,6 +8,11 @@ last the signal's counts_for_days (SPEC 9 scoring step 3; scoring writes those).
 
 load_from_hubspot is the suppression_load job: HubSpot contacts who opted out of email
 or hard-bounced are added, hashed. Re-running it adds nothing new.
+
+Enrol checks this list, and so does the sending already under way (Harry, 7 Oct 2026): a contact
+whose address, email domain or company domain is suppressed while their lead is in flight, by this
+job or any other, has their lead stopped, and everyone else's at their account, by sync_outcomes'
+account-level stop within 15 minutes (replies/account_stop.py; live only, as every Instantly write).
 """
 
 from __future__ import annotations

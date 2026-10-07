@@ -73,7 +73,8 @@ from us_outbound.settings.model import Settings
 # so the forecast and the Instantly campaign cannot drift apart.
 STEP_DELAYS = (0,) + tuple(b - a for a, b in zip(STEP_DAYS, STEP_DAYS[1:]))
 # lead_stopped: the account-level stop ended this lead because someone else at the account replied, bounced,
-# unsubscribed or complained (replies/account_stop.py; written only once Instantly has stopped it).
+# unsubscribed or complained, or an address or domain at the account was suppressed while it was in flight
+# (replies/account_stop.py; written only once Instantly has stopped it).
 STOP_EVENTS = ("replied", "bounced", "unsubscribed", "lead_stopped")
 OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
