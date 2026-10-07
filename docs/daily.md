@@ -121,6 +121,30 @@ about **11** once Harry's two are warm. Volume grows as the ramp rises to 20 sen
 new contacts a mailbox) and then 30 (about 8). In the pilot, `weekly_enrol_cap` (150) is well
 above this.
 
+## What Slack will ask you to do
+
+Since 7 Oct 2026 the system asks in #us-outbound, with the approvers mentioned, whenever it needs a
+decision or a purchase. Each line is posted once (a day, a week or a month, as below), so a line that
+comes back is new.
+
+| Ask | When | What to do |
+| :- | :- | :- |
+| "Apollo has N credits; at this pace it reaches apollo_floor (F) in about D days…" | 09:00, once a day, when the floor is under 21 days away at the last fortnight's pace, or Apollo is already under it (then sourcing and email reveals have stopped) | Buy Apollo credits, or lower `apollo_monthly_credits` on the General tab (below the floor: buy, or lower `apollo_floor`) |
+| "Apollo: … credits used this month (80%)", or "… are used" | 09:00, at 80% and at 100%, once a month each | At 100% sourcing and email reveals stop until the 1st. Raise `apollo_monthly_credits` on the General tab to allow more |
+| "Clay: … (80%)", or "… are used" | The same, for `clay_monthly_credits` (only while Clay is used) | Raise `clay_monthly_credits` |
+| "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, and copy QA stops. Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
+| "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
+| "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 09:00, once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
+| "Instantly's plan has no room for new leads, so nothing new is being sent…" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and a ✅ already given goes through once there is room (the card says it is held) |
+| "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
+| "Errors the jobs met: • enrol … carried on past 2 errors…" | Hourly, once a day per job and kind | Usually nothing: each job tries again on its next run. If it keeps coming, `us-outbound status` and the worker's logs in Railway |
+| "HubSpot rejected its key: replace US_OUTBOUND_HUBSPOT_TOKEN in Railway (Variables), then redeploy." (or Apollo, Clay, Instantly, Slack, Google, Anthropic) | Hourly, once a day per key | Make a new key, replace the variable in the us-outbound service's **Variables**, then **Deploy** |
+| "The settings are unusable (…): every job refuses to run…" | Hourly, once a day | Fix the sheet (the errors are in the settings sync's message), then `us-outbound sync` |
+
+**If Slack itself is down or its token is revoked,** none of this can be posted. Healthchecks.io
+then emails you, because the hourly check pings it "fail" (or stops pinging, if the worker is down):
+docs/railway-setup.md, step h.
+
 ## When something is wrong
 
 - **Stop everything:** `us-outbound stop --live`. Resume with `us-outbound start --live`.

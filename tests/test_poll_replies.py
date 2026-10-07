@@ -449,6 +449,7 @@ def test_a_model_error_is_retried_then_handed_to_a_person(world):
     world.reply("E1", at=NOW - timedelta(minutes=5))
     out = run(world)
     assert out["retry_later"] == 1 and world.items() == [] and world.events("replied") == []
+    assert out["claude_error"] == "Claude API error 529"  # for heartbeat_check (ops/job_errors.py; 7 Oct 2026)
     world.at(NOW + timedelta(minutes=40))
     run(world)
     p = only_item(world)["payload"]

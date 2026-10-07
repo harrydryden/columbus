@@ -163,7 +163,10 @@ next send day expires. With `auto_send` = `yes`, `enrol` adds leads straight awa
 hand-check, as before. `us_outbound/enrol/approvals.py` has the hitl_items and events contract the
 daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
 
-Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack),
+Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack, and so do the
+errors a job caught and a key a service rejected, `ops/job_errors.py`; it then pings the outside
+watchdog, Healthchecks.io, which emails Harry when the worker, the database or Slack is down,
+`ops/watchdog.py`; Harry, 7 Oct 2026),
 `suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (the 1st of each month, from
 5 Oct 2026: Spill's HubSpot customers as lookalike cells, their growth from Apollo in aggregate, the
 lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oct 2026;

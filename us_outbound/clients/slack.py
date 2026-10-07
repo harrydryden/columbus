@@ -153,6 +153,15 @@ class Slack(HttpClient):
         ) or {}
         return str(body.get("permalink") or "")
 
+    def auth_test(self) -> dict:
+        """auth.test (no scope needed): Slack's answer for this token. Raises ApiError when Slack rejects it
+        (invalid_auth, not_authed, token_revoked, account_inactive): the outside watchdog's check that alerts can
+        still be posted (ops/watchdog.py)."""
+        body = self._api("GET", "auth.test", Op("auth.test")) or {}
+        if body.get("user_id"):
+            self._bot_user = str(body["user_id"])
+        return body
+
     def bot_user_id(self) -> str:
         """The bot's own Slack user id (auth.test, no scope needed), cached; "" when Slack will not say.
 
@@ -160,7 +169,7 @@ class Slack(HttpClient):
         """
         if self._bot_user is None:
             try:
-                body = self._api("GET", "auth.test", Op("auth.test")) or {}
+                body = self.auth_test()
             except ApiError as exc:
                 log("slack_auth_test_failed", error=str(exc)[:200])
                 return ""
@@ -296,6 +305,9 @@ class SlackOff:
 
     def permalink(self, channel: str, ts: str) -> str:
         return ""
+
+    def auth_test(self) -> dict:
+        return {"ok": True, "off": True}  # no token, by design in dry-run: nothing to test
 
     def bot_user_id(self) -> str:
         return ""

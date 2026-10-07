@@ -606,6 +606,29 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
+def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
+    """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
+    events (Harry, 7 Oct 2026)."""
+    from us_outbound.ops import job_errors, notify
+
+    now = datetime.now(UTC)
+    store.insert("heartbeats", [
+        {"run_id": "e1", "job": "enrol", "status": "ok", "started_at": now - timedelta(hours=2),
+         "detail": {"errors": ["older"]}},
+        {"run_id": "e2", "job": "enrol", "status": "ok", "started_at": now - timedelta(hours=1),
+         "detail": {"errors": ["latest"], "send_approvals": {"errors": []}}},
+        {"run_id": "e3", "job": "enrol", "status": "running", "started_at": now},
+        {"run_id": "k1", "job": "kill_rules", "status": "ok", "started_at": now - timedelta(hours=30), "detail": {}},
+    ])
+    ctx = SimpleNamespace(store=store, now=now)
+    runs = job_errors.latest_finished(ctx, ["enrol", "kill_rules"])
+    assert set(runs) == {"enrol"} and runs["enrol"]["run_id"] == "e2"
+    assert runs["enrol"]["detail"] == {"errors": ["latest"], "send_approvals": {"errors": []}}
+    store.upsert("events", [{"event_id": "alert:apollo_floor:2026-10-07", "type": "alert", "occurred_at": now}])
+    ctx = SimpleNamespace(store=store, dry_run=False)
+    assert notify.sent_before(ctx, ["apollo_floor:2026-10-07", "claude_cap_80:2026-10"]) == {"apollo_floor:2026-10-07"}
+
+
 # -- DB-free: the store's rules hold before any SQL ---------------------------------------------
 
 

@@ -143,7 +143,7 @@ JOBS: dict[str, str] = {
     "daily_post": "us_outbound.learn.daily_post:run",
     "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
     # Build additions (README "Deviations").
-    "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
+    "heartbeat_check": "us_outbound.ops.heartbeat:run",  # missed jobs, caught errors, the outside watchdog
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly

@@ -78,6 +78,7 @@ API. It can only be replaced.
 | `US_OUTBOUND_HUBSPOT_TOKEN` | HubSpot service key with the SPEC 13 scopes (phase0-runbook.md §5) | yes |
 | `US_OUTBOUND_SLACK_BOT_TOKEN` | Slack bot token (`xoxb-…`) from `deploy/slack-app-manifest.yaml`. Optional for now (Harry, 30 Sep): without it, dry-run jobs write their Slack messages to the log. Live runs refuse to start without it | yes |
 | `US_OUTBOUND_CLAUDE_API_KEY` | The new Claude key, with a $10 monthly limit set in the Anthropic console (SPEC 1.1) | yes |
+| `US_OUTBOUND_WATCHDOG_URL` | Optional: the Healthchecks.io ping URL of the outside watchdog (step h). Without it, `us-outbound golive` warns | yes |
 | `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | `30`. On a redeploy the scheduler gets 30 s between SIGTERM and SIGKILL. It gives running jobs 25 s, then stops them | no (a setting) |
 | `US_OUTBOUND_MAX_PARALLEL` | Optional: how many jobs may run at once (default `2`) | no (a setting) |
 
@@ -181,6 +182,39 @@ phase-0 steps are in [phase0-runbook.md](phase0-runbook.md).
   account.
 - **Claude:** the key's own $10 monthly cap (SPEC 1.1), as before.
 
+## h. The outside watchdog
+
+Every Slack alert comes from inside the worker, so if the worker, the database or the Slack token
+dies, nothing is said at all. So `heartbeat_check`, at five past every hour, ends by pinging a
+Healthchecks.io check, which emails Harry when the ping is late or says something is wrong (Harry,
+7 Oct 2026; `us_outbound/ops/watchdog.py`).
+
+1. At healthchecks.io, sign in (the free plan is enough) and choose **Add Check**. Name it
+   **US Outbound worker**. Under **Schedule**, keep **Simple** and set **Period** to **1 hour** and
+   **Grace Time** to **1 hour**. Under **Integrations**, keep **Email** on, sent to Harry
+   (harry@spill.chat).
+2. Copy the check's **Ping URL** (`https://hc-ping.com/…`). In the **us-outbound** service's
+   **Variables**, add `US_OUTBOUND_WATCHDOG_URL` with it and **Seal** it: anyone who has the URL can
+   report the worker alive. Press **Deploy**. Within the hour the check shows its first ping, and
+   `us-outbound golive` stops warning "no outside watchdog".
+3. Point Railway's deploy failures at Slack: **Project Settings → Webhooks → New Webhook**, with a
+   Slack incoming-webhook URL for `#us-outbound` (Slack: **Apps → Incoming Webhooks**), for deployment
+   status changes. Railway formats the message for Slack itself. A build that fails, or a worker that
+   crashes and stops restarting, then reaches the channel even though no job runs.
+
+What Healthchecks' emails mean:
+
+- **Down, after a /fail ping:** `heartbeat_check` ran and found something to look at: a job that
+  missed its heartbeat, a daily job whose latest run failed, or Slack refusing the bot token (or
+  out of reach). `#us-outbound` says which, unless Slack is the problem: then replace
+  `US_OUTBOUND_SLACK_BOT_TOKEN` and redeploy. `railway ssh -- us-outbound status` lists the jobs.
+- **Down, because the ping is late:** no `heartbeat_check` for two hours, so the worker, the
+  scheduler or the database is down. Open the service's **Deployments** and **View logs**.
+- **Up:** the next ping found nothing wrong.
+
+The ping goes in dry-run too, so the check works before `live_sending` = yes. An unset or bad URL is
+logged and skipped, and a ping that fails never fails the job.
+
 ## How the scheduler behaves
 
 `us_outbound/ops/scheduler.py` has the full rules. In short:
@@ -207,9 +241,8 @@ phase-0 steps are in [phase0-runbook.md](phase0-runbook.md).
 - A `--live` job is still dry until `live_sending = yes` in the synced settings (SPEC 0.3): a sheet
   edit counts from the next settings_sync (02:00, and 11:30 on weekdays) or `us-outbound sync`.
 - Nothing inside the worker can report that the worker itself is down. Railway restarts it
-  on failure, up to 10 times. To be alerted, add a project webhook that sends deployment
-  status changes to a Slack incoming-webhook URL for `#us-outbound-dev` (**Project Settings
-  → Webhooks**; open question 6f).
+  on failure, up to 10 times. The outside watchdog (step h) emails Harry when `heartbeat_check`
+  stops pinging, and Railway's deploy webhook posts failed deployments to Slack.
 
 ## Where this differs from SPEC (Harry, 30 Sep 2026)
 

@@ -254,6 +254,7 @@ def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, An
         out["claude_cap_reached"] += 1
         return classify.Verdict.fallback("Claude's monthly cap is used up")
     except ClaudeError as exc:
+        out.setdefault("claude_error", str(exc)[:200])  # the run's first, for heartbeat_check (ops/job_errors.py)
         if ctx.now - received < RETRY:
             out["retry_later"] += 1
             return None
@@ -261,7 +262,7 @@ def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, An
 
 
 def _draft(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any], text: str,
-           follow_up: date | None, given: bool) -> dict[str, Any]:
+           follow_up: date | None, given: bool, out: dict | None = None) -> dict[str, Any]:
     owner = info["owner"]
     req = draft.Request(
         reply_class=verdict.reply_class, reply_text=text, first_name=info["first_name"], sender_name=owner,
@@ -278,6 +279,8 @@ def _draft(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any], tex
     except BudgetExceeded:
         return {"draft": "", "draft_problems": ["Claude's monthly cap is used up, so there is no draft"], "draft_rejected": ""}
     except ClaudeError as exc:
+        if out is not None:
+            out.setdefault("claude_error", str(exc)[:200])
         return {"draft": "", "draft_problems": [f"Claude could not draft it: {exc}"], "draft_rejected": ""}
     return {"draft": d.text, "draft_problems": d.problems, "draft_rejected": d.rejected}
 
@@ -409,7 +412,7 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
         cont, paused = _pause_if_needed(ctx, email, info)
         payload = {
             **info, **verdict.as_payload(), "reply_excerpt": text[:EXCERPT_CHARS],
-            **_draft(ctx, verdict, info, text, follow_up, given),
+            **_draft(ctx, verdict, info, text, follow_up, given, out),
             "follow_up_date": follow_up.isoformat() if follow_up else None,
             "follow_up_source": ("reply" if given else "default") if follow_up else None,
             "sequence_may_continue": cont, "sequence_paused": paused, "slack_channel": None, "slack_ts": None,

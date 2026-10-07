@@ -133,6 +133,7 @@ def test_the_key_variables():
         "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
         "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",
         "claude": "US_OUTBOUND_CLAUDE_API_KEY",
+        "watchdog": "US_OUTBOUND_WATCHDOG_URL",  # optional: the outside watchdog's ping URL (ops/watchdog.py)
     }
 
 

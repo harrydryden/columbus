@@ -122,7 +122,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
     assert cli.JOBS["mailbox_health"] == "us_outbound.registry.mailboxes:mailbox_health"
-    assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:check_heartbeats"
+    assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:run"
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
     assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
     assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"

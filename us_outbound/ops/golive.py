@@ -16,6 +16,8 @@ missing key, an API error) FAILs with the reason.
   live_sending      yes in the synced settings (the [ASK HARRY] sign-off, SPEC 14 phase 2)
   Approvers         approver_slack_ids is set (SPEC 11: only approvers' ✅ counts, on send cards and replies)
   Slack             the bot token is set and the bot can see the alert channel
+  Watchdog          US_OUTBOUND_WATCHDOG_URL is set (Harry, 7 Oct 2026; ops/watchdog.py): without it a dead
+                    worker, database or Slack token says nothing, so it WARNs
   Campaigns         one "US Outbound – {owner}" campaign per owner, matching the settings, the
                     registry and the ramp (the daily drift check; fix: campaigns ensure --fix --live).
                     With live_sending = yes, every owner with an Active mailbox must have it active
@@ -239,6 +241,18 @@ def check_slack(ctx: Context) -> Check:
     return Check(PASS, "Slack", f"token set; the bot can see {channel}")
 
 
+def check_watchdog(ctx: Context) -> Check:
+    from us_outbound.ops import watchdog
+
+    url, why = watchdog.read(ctx.clients.secrets)
+    if url:
+        return Check(PASS, "Watchdog", "set: heartbeat_check pings it every hour, and Healthchecks.io emails if it stops")
+    if why.endswith("is not set"):
+        return Check(WARN, "Watchdog", f"no outside watchdog: set {watchdog.VAR} (docs/railway-setup.md, step h)")
+    return Check(WARN, "Watchdog", f"{why}: paste the check's ping URL from Healthchecks.io (docs/railway-setup.md, "
+                                   "step h)")
+
+
 def check_campaigns(ctx: Context) -> Check:
     from us_outbound.clients.instantly import CAMPAIGN_STATUS
     from us_outbound.registry import mailboxes as reg
@@ -431,6 +445,7 @@ CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
     ("live_sending", check_live_sending),
     ("Approvers", check_approvers),
     ("Slack", check_slack),
+    ("Watchdog", check_watchdog),
     ("Campaigns", check_campaigns),
     ("Apollo budget", check_apollo),
     ("Queue", check_queue),

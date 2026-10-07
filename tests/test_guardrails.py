@@ -45,6 +45,7 @@ from us_outbound.clients.instantly import Instantly
 from us_outbound.clients.public import Public
 from us_outbound.clients.sheets import Sheets
 from us_outbound.clients.slack import Slack
+from us_outbound.clients.watchdog import Watchdog
 from us_outbound.logs import redact
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
@@ -61,6 +62,7 @@ ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
 APPROVER = "U_HARRY"  # approver_slack_ids (SPEC 1.3): the only reply approver, and the only Slack DM recipient
 HANNAH_SLACK = "U_HANNAH"  # D11: Hannah approves replies to her own mailbox only
+WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/watchdog.py; Harry, 7 Oct 2026)
 
 BOUNDS = Boundaries(
     registry_addresses=frozenset(ADDRESSES),
@@ -74,6 +76,7 @@ BOUNDS = Boundaries(
     escalation_email=ESCALATION,
     approver_slack_ids=frozenset({APPROVER}),
     owner_slack_ids=frozenset({("hannah@meetspill.org", HANNAH_SLACK)}),
+    watchdog_url=WATCHDOG,
 )
 
 # -- SPEC 1.2 restated as data (deliberately not imported from guard.py) ----------------------
@@ -116,6 +119,7 @@ HOSTS = {
     "api.instantly.ai": "instantly",
     "api.apollo.io": "apollo",
     "api.clay.com": "clay",
+    "hc-ping.com": "watchdog",
 }
 
 
@@ -215,6 +219,8 @@ def spec_violation(rec: CallRecord) -> str | None:
         return None if t == SHEET else f"write to sheet {t!r}"
     if s == "db":
         return None if t.split(".")[0] == DB_SCHEMA else f"database write to {t!r}"
+    if s == "watchdog":  # the outside watchdog's ping: a GET of the configured URL or its /fail form, nothing else
+        return None if a == "get" and d.get("url") in {WATCHDOG, WATCHDOG + "/fail"} else f"watchdog {a} to {t!r}"
     return f"{s} is never written to (SPEC 1.2)"  # apollo, clay, public, claude, secrets
 
 
@@ -436,6 +442,7 @@ def make_world(live: bool, tmp: Path) -> World:
         "Apollo": Apollo(guard, t, "tok"),
         "Clay": Clay(guard, t, "tok", sleep=lambda s: None),
         "Public": Public(guard, t),
+        "Watchdog": Watchdog(guard, t, WATCHDOG),
         "Claude": Claude(guard, memory, api_key=None, model="claude-haiku-4-5", monthly_cap_usd=10.0, sdk=sdk),
         "MemoryStore": memory,
         "PostgresStore": PostgresStore(guard, "postgresql://fake", connect=pg.connect),
@@ -525,6 +532,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "dm": lambda c, w: c.dm(APPROVER, "A positive reply has waited 24 hours."),
         "react": lambda c, w: (c.react(ALERT, "1.1", "white_check_mark"), c.react(DEV, "1.1", "x")),
         "bot_user_id": lambda c, w: c.bot_user_id(),
+        "auth_test": lambda c, w: c.auth_test(),
     },
     "Sheets": {
         "read_tabs": lambda c, w: c.read_tabs(SHEET, ["General"]),
@@ -599,12 +607,15 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "month_spend_usd": lambda c, w: c.month_spend_usd(NOW),
         "estimate_usd": lambda c, w: c.estimate_usd("Classify the reply.", "Sounds good", SCHEMA, 256),
     },
+    "Watchdog": {
+        "ping": lambda c, w: (c.ping(), c.ping(fail=True)),
+    },
     "MemoryStore": _store_exercises(),
     "PostgresStore": _store_exercises(),
 }
 
-CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Clay, Public, Claude,
-                                                MemoryStore, PostgresStore)}
+CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Clay, Public, Watchdog,
+                                                Claude, MemoryStore, PostgresStore)}
 # HttpClient's own plumbing: request() is the guarded path every method above goes through
 # (the negative cases call it directly), and headers() builds auth headers.
 PLUMBING = frozenset({"request", "headers"})
@@ -854,6 +865,11 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "clay Work Email function": lambda w: w.clients["Clay"].run_function("t_0tk0v4lhJ895hhhhTHJ", {"domain": "a.com"}),
     "clay Company Latest Funding function": lambda w: w.clients["Clay"].run_function("t_0tk0v4ehpQ6WaeuCoQf", {}),
     "clay table write": lambda w: w.clients["Clay"].request("POST", "/tables/t1/rows", Op("table.write", write=True)),
+    # The outside watchdog (Harry, 7 Oct 2026): a GET of the configured ping URL or its /fail form only.
+    "watchdog ping to another URL": lambda w: Watchdog(w.guard, w.transport, "https://hc-ping.com/someone-else").ping(),
+    "watchdog ping to a look-alike of the URL": lambda w: Watchdog(w.guard, w.transport, WATCHDOG + "/start").ping(),
+    "watchdog POST": lambda w: w.clients["Watchdog"].request(
+        "POST", WATCHDOG, Op("post", target="ok", write=True, detail={"url": WATCHDOG})),
     # Public sources: allowlisted GETs only.
     "public unlisted host": lambda w: w.clients["Public"].get("https://evil.example/jobs"),
     "public site read off the account's domain": lambda w: w.clients["Public"].site_get(
