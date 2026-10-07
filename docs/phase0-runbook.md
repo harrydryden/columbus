@@ -158,6 +158,28 @@ as no, if it is missing. Since 4 Oct `--set` refuses the sign-off keys `live_sen
 | The copy, row by row: read each industry's four emails, then set `status = approved` and `approved_by` | The Copy tab; `us-outbound copy preview --industry "CPA firms" --html cpa.html` shows one as a prospect sees it; `us-outbound copy check` before approving; `us-outbound copy qa --live` after any edit |
 | The claims the emails may make, and the voice | `templates/copy/facts.md`, `templates/copy/style.md` (open questions 65 to 72) |
 
+## 12. The PHASE0-CONFIRM check (7 Oct 2026)
+
+The API details the build could not check are listed in [phase0-confirm.md](phase0-confirm.md): 37 of 116 were
+confirmed by the first live runs. `us-outbound phase0 check` settles most of the rest, once. It takes about two
+minutes and spends no Apollo credit unless you add `--apollo-credits` (3 at most). Run it from your laptop:
+
+| Step | Command | What it does |
+| :- | :- | :- |
+| 1. See what it would call | `railway ssh -- us-outbound phase0 check` | Calls nothing |
+| 2. Pick two seed leads | `railway ssh -- us-outbound seed check` | Lists the seed leads. You need one marked *active* that has had email 1 (if none, `seed send ADDRESS --owner "Hannah Spalding" --live` and wait for email 1) and one marked *unsubscribed* (the one from 6 Oct) |
+| 3. Reply to a seed email | In the seed inbox | Reply to any seed email, any words, and wait five minutes: INST-REPLY-CAMPAIGN reads that reply |
+| 4. The check | `railway ssh -- us-outbound phase0 check --seed ACTIVE_ADDRESS --seed UNSUBSCRIBED_ADDRESS --live` | The read-only probes, then on those two seed leads only: pauses the active one and sets it going again, marks the unsubscribed one "Meeting booked" and sets it back, and forwards one seed email to harry@spill.chat (expect it in your inbox) |
+| 5. Optional: the paid probes | Add `--apollo-credits` to step 4 | Three Apollo searches or enriches, 1 credit each |
+| 6. A week later | `railway ssh -- us-outbound phase0 check --seed ACTIVE_ADDRESS --live` on or after the date SEED-RESUME gives | Reads whether the paused seed lead went on with its next step; it pauses nothing again |
+| 7. Clay | `railway ssh -- us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` | The one Work Email lookup the Clay items wait for (§8) |
+
+**Paste back** everything steps 4 and 6 print, from "Phase 0 check" to "Paste all of this back to the build." (the
+lines that start with `{` are the log and can be left out). It holds no key and no address: addresses show as
+`email:…` hashes. Each line is `ID  CONFIRMED`, `ID  DIFFERS: what it saw` or `ID  COULD NOT CHECK: why`, and "What
+to change" says what the build then edits. `LEAD_PAUSE_CONFIRMED` is switched on only once SEED-PAUSE and SEED-RESUME
+both say CONFIRMED.
+
 ## Acceptance (SPEC 14)
 
 | Check | How |

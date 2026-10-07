@@ -208,7 +208,9 @@ verification and contact choice write only the database; enrol, replies and post
      through Spill's own website flow; that the deal search takes `pipeline` and `hs_lastmodifieddate` filters.
    - The job-board feeds (`sources/job_posts.py`): Greenhouse's `company_name` and escaped `content`,
      Lever's `lists`, Ashby's `descriptionHtml`, Workable's `details=true` descriptions.
-   Fix whatever the first runs show.
+   Fix whatever the first runs show. *7 Oct:* every marker and its status is in
+   [phase0-confirm.md](phase0-confirm.md) (37 of 116 confirmed live from the first runs); `us-outbound phase0 check`
+   settles most of the rest ([phase0-runbook.md](phase0-runbook.md#12-the-phase0-confirm-check-7-oct-2026) §12).
 2. **Tokenized openers: built (2 Oct).** One line per signal and copy role, filled with the
    account's own stored facts (`enrol/openers.py`). This is the biggest remaining lever on Harry's
    "personalised, relevant data and hook".
