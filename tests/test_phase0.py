@@ -325,6 +325,7 @@ def test_seed_pause_pauses_and_resumes_the_seed_lead_alone(w, capsys):
 
 def test_a_later_run_reads_whether_the_resumed_lead_went_on(w, capsys):
     mine = w.lead(SEED, timestamp_last_contact=at(26))
+    w.sent(SEED, at(26))
     assert w.run("phase0", "check", "--seed", SEED, "--live") == 0
     capsys.readouterr()
     mine["timestamp_last_contact"] = at(27, 18)  # Instantly sent its next step after the pause and resume
@@ -335,6 +336,7 @@ def test_a_later_run_reads_whether_the_resumed_lead_went_on(w, capsys):
                                                                  "again on 27 Oct")
     assert seed_result(out, "SEED-PAUSE")[0] == phase0.CONFIRMED and "by an earlier run" in out
     assert not [r for r in w.writes()[before:] if r.method == "PATCH"]  # not paused a second time
+    assert seed_result(out, "SEED-FORWARD")[0] == phase0.CONFIRMED and len(w.forwards) == 1  # nor forwarded again
     assert "set LEAD_PAUSE_CONFIRMED = True in clients/instantly.py" in out
 
 

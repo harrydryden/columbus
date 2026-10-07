@@ -24,10 +24,11 @@ the output back to the build.
   * --seed ADDRESS (live only) also writes, on that seed lead alone: Harry's own seed inbox, a lead `seed send`
     added (company "Seed test (Spill)") in a US Outbound campaign, checked as `seed send` checks an address. On a
     seed lead still in its sequence (status 1) it pauses it and sets it active again, reading each back (SEED-PAUSE,
-    LEAD_PAUSE_CONFIRMED's first half), and forwards its email 1 to escalation_email (SEED-FORWARD). On a seed lead
-    that has finished (unsubscribed or completed) it marks it "Meeting booked" and sets the interest back
-    (SEED-INTEREST). Repeat --seed for both. A later run with the same address reads whether the paused lead went
-    on with its next step (SEED-RESUME, the second half): this run's heartbeat keeps when it was paused.
+    LEAD_PAUSE_CONFIRMED's first half). On a seed lead that has finished (unsubscribed or completed) it marks it
+    "Meeting booked" and sets the interest back (SEED-INTEREST). Repeat --seed for both. It also forwards the first
+    seed lead's email 1 to escalation_email, once (SEED-FORWARD). A later run with the same address reads whether
+    the paused lead went on with its next step (SEED-RESUME, the second half), and pauses and forwards nothing again:
+    the heartbeat keeps what an earlier run did.
 
 Output never carries a key or a personal detail: an address is shown as its hash ("email:…", logs.hash_email),
 every line passes logs.redact, and a prospect's email is never read beyond its fields' presence.
@@ -435,6 +436,9 @@ def seed_forward(r: Run, address: str) -> Result:
     to = r.ctx.settings.general.escalation_email.strip()
     if not to:
         return Result(NOT_CHECKED, "escalation_email is blank on the General tab")
+    earlier = _earlier_forward(r)
+    if earlier:
+        return Result(CONFIRMED, f"Instantly took a forward on {earlier[:10]}, in an earlier run (not repeated)")
     sent = [e for e in r.emails("sent")
             if address in {_lower(x) for x in (e.get("lead"), e.get("to_address_email_list")) if x}]
     if not sent:
@@ -445,7 +449,17 @@ def seed_forward(r: Run, address: str) -> Result:
         r.ctx.clients.instantly.forward(_lower(first.get("eaccount")), str(first.get("id")), to, note)
     except ApiError as exc:
         return Result(DIFFERS, f"Instantly answered the forward with HTTP {exc.status}: {clip(str(exc.body), 160)}")
+    r.record["seed_forward"] = {"confirmed": True, "at": r.ctx.now.isoformat()}
     return Result(CONFIRMED, "Instantly took the forward: it should reach escalation_email within minutes")
+
+
+def _earlier_forward(r: Run) -> str:
+    """When an earlier phase0 check's forward was taken, from its heartbeat; "" if none was."""
+    for row in r.ctx.store.select("heartbeats", {"job": JOB}):
+        done = ((row.get("detail") or {}) if isinstance(row.get("detail"), Mapping) else {}).get("seed_forward") or {}
+        if isinstance(done, Mapping) and done.get("confirmed"):
+            return str(done.get("at") or "")
+    return ""
 
 
 # -- HubSpot and Slack ---------------------------------------------------------------------------------------
