@@ -72,6 +72,12 @@ are compared over the same days. Rates need 30 companies (a bounce rate 100 send
 A difference between two cohorts names what changed between them: a change worth a pre-registered test on the
 Tests tab, not a cause.
 
+Cohorts are read from contacts, and contacts who never replied are deleted 12 months after their last step
+(SPEC 6; `ops/retention.py`). So a cohort more than a year old loses the companies left with no contact, and reads as
+replying more than it did: compare cohorts within the year. The Monday readout's views count each company from its
+events, which stay, so its numbers do not move (only that contact's enrolment snapshot goes, and the signal table
+then reads that company's signals as they are now).
+
 ## Known effects, not changed here
 
 - A lead's later steps go out from the mailbox that sent step 1 while it stays on the sending list; after a pause,

@@ -7,7 +7,7 @@ Apollo has no API that lists them, and the jobs only read Apollo (SPEC 1.2), so 
 The database (in any mode; dry-run writes to the database, SPEC 0.3):
   * contacts rows with that email (by email_sha256 or email) are deleted;
   * their events keep their counts but lose reply_text; their hitl_items lose payload;
-  * anywhere else the address is written, it goes too (Harry, 7 Oct 2026): a reply card of someone else that names
+  * anywhere else the address is written, it goes too (7 Oct 2026): a reply card of someone else that names
     them (a colleague's reply, a referral) loses its reply text (ops/retention.REPLY_TEXT_KEYS), and its whole
     payload if the address is still in it; a replied event whose text holds the address loses reply_text;
   * raw_clay_contacts rows holding the email are deleted;

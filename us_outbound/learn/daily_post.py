@@ -35,7 +35,10 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
     (learn/kill_rules.py), and the human-in-the-loop items waiting for approval, by kind, and the
-    oldest (a kill-rule hold is not waiting for approval: it is listed as a hold).
+    oldest (a kill-rule hold is not waiting for approval: it is listed as a hold);
+  * Retention (SPEC 6, 13), one line and only when the day's retention run (00:40 UK) deleted or
+    cleared anything: the counts of Instantly leads, reply texts, contacts and companies
+    (ops/retention.py post_line).
 Each section has a bold title (Slack mrkdwn) after a blank line, and no table. It is one plain-text
 message, as before, well under Slack's 40,000-character limit on text (about 5,000 in the tests):
 account lists stop at LIST_LIMIT, and the funnel sections are aggregates that name no company or person.
@@ -62,7 +65,7 @@ from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, second
 from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
 from us_outbound.logs import clip, log
-from us_outbound.ops import notify
+from us_outbound.ops import notify, retention
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
@@ -343,6 +346,12 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     else:
         lines.append("Waiting for approval: nothing.")
     nums.update(waiting=len(waiting), waiting_by_kind=dict(by_kind))
+
+    # Retention (SPEC 6, 13): one line, counts only, when today's run deleted or cleared anything.
+    line, done = retention.post_line(ctx)
+    if line:
+        lines += ["", line]
+    nums.update(retention=done)
     return lines, nums
 
 

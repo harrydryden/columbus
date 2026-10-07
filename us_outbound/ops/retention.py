@@ -88,6 +88,10 @@ Suppression is never touched: it is kept indefinitely, as hashes (SPEC 6).
 Dry-run (the default; live needs --live and live_sending = yes, as for every job): it reads Instantly's lead
 lists, counts what is due and what is held, and changes nothing, in Instantly or in the database. A deletion
 cannot be undone, so unlike other jobs (SPEC 0.3) its database writes wait for live too.
+
+What it did shows in three places, as counts only: its heartbeat's summary (`us-outbound run retention` prints it),
+one line in the daily post when the day's run deleted or cleared anything (post_line), and one line in
+`us-outbound status` (status_line), with what is held back and why.
 """
 
 from __future__ import annotations
@@ -101,7 +105,7 @@ from typing import Any
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED, STEP_DAYS
-from us_outbound.context import ET, ConfigError, Context
+from us_outbound.context import ET, UK, ConfigError, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.openers import FOCUS_SOURCE
 from us_outbound.logs import log, normalise_email
@@ -134,8 +138,8 @@ ACCOUNT_STOPS = ("meeting_booked", "demo_held")
 NOT_FINISHED = frozenset({LEAD_ACTIVE, LEAD_PAUSED})  # Instantly may still send a lead in these statuses
 REPLY_ITEM_KINDS = (*REPLY_KINDS, OOO_KIND)  # the hitl_items that quote a reply (replies/poll.py)
 # A reply card's payload keys that hold the prospect's words, or text written from them (replies/poll.py, desk.py).
-REPLY_TEXT_KEYS = ("reply_excerpt", "summary", "referral", "draft", "draft_original", "draft_rejected", "draft_problems",
-                   "sent_text")
+REPLY_TEXT_KEYS = ("reply_excerpt", "summary", "referral", "draft", "draft_original", "draft_rejected",
+                   "draft_problems", "sent_text")
 PURGED = "reply_text_purged_at"  # set on a card's payload once its text is gone
 # Not a reply, for SPEC 6's "never replied": an away message, and a reply that only asked to stop (an opt-out).
 NOT_A_REPLY = frozenset({OUT_OF_OFFICE, "unsubscribe"})
@@ -254,7 +258,8 @@ class Ends:
     def stop(self, contact: Mapping[str, Any]) -> date | None:
         """The first day a stop ended the contact's emails, on or after the day it was enrolled; None if none did."""
         enrolled = _et_day(contact.get("enrolled_at"))
-        days = [*self.own.get(str(contact.get("contact_id")), ()), *self.company.get(str(contact.get("account_id")), ())]
+        days = [*self.own.get(str(contact.get("contact_id")), ()),
+                *self.company.get(str(contact.get("account_id")), ())]
         days = [d for d in days if enrolled is None or d >= enrolled]
         return min(days) if days else None
 
@@ -542,6 +547,95 @@ def delete_accounts(ctx: Context) -> dict:
         out["deleted"] += ctx.store.delete("accounts", {"account_id": list(chunk)})
     log("retention_accounts_deleted", run_id=ctx.run_id, accounts=out["deleted"], facts=facts)
     return out
+
+
+# -- what it did: the daily post and status --------------------------------------------------------------------------
+
+
+def _n(count: int, one: str, many: str | None = None) -> str:
+    return f"{count:,} {one if count == 1 else (many or one + 's')}"
+
+
+def _done(detail: Mapping[str, Any]) -> dict[str, int]:
+    """What one run's summary says it deleted or cleared (live), or found due (dry-run)."""
+    def get(section: str, key: str) -> int:
+        part = detail.get(section)
+        return int((part or {}).get(key) or 0) if isinstance(part, Mapping) else 0
+
+    dry = bool(detail.get("dry_run"))
+    return {"leads": get("leads", "due" if dry else "deleted"),
+            "replies": get("reply_text", "events_due" if dry else "events_cleared"),
+            "reply_cards": get("reply_text", "items_due" if dry else "items_cleared"),
+            "contacts": get("contacts", "due" if dry else "deleted"),
+            "companies": get("accounts", "due" if dry else "deleted")}
+
+
+def describe(counts: Mapping[str, int]) -> str:
+    """"12 Instantly leads (31 days after their last step), the reply text of 3 replies and 3 reply cards (90 days)
+    and 2 contacts who never replied (12 months)"; "" when every count is 0."""
+    parts = []
+    if counts.get("leads"):
+        parts.append(f"{_n(counts['leads'], 'Instantly lead')} ({LEAD_DAYS} days after their last step)")
+    texts = [_n(counts[k], one, many) for k, one, many in (("replies", "reply", "replies"),
+                                                           ("reply_cards", "reply card", None)) if counts.get(k)]
+    if texts:
+        parts.append(f"the reply text of {' and '.join(texts)} ({REPLY_TEXT_DAYS} days)")
+    if counts.get("contacts"):
+        parts.append(f"{_n(counts['contacts'], 'contact')} who never replied ({CONTACT_MONTHS} months)")
+    if counts.get("companies"):
+        companies = _n(counts["companies"], "company", "companies")
+        parts.append(f"{companies} no source has refreshed ({UNIVERSE_MONTHS} months)")
+    return ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1] if parts else ""
+
+
+def _runs(store: Any, since: datetime) -> list[dict]:
+    """This job's runs that finished ok since then, oldest first."""
+    rows = [r for r in store.select("heartbeats", {"job": JOB, "status": "ok"}) if isinstance(r.get("detail"), Mapping)
+            and (t := _ts(r.get("started_at"))) is not None and t >= since]
+    return sorted(rows, key=lambda r: _ts(r["started_at"]))
+
+
+def post_line(ctx: Context) -> tuple[str, dict[str, Any]]:
+    """The daily post's one line on what today's retention runs (since midnight UK) deleted or cleared, counts only,
+    and the counts for its summary; ("", {}) when they changed nothing. A dry run says what it would have done."""
+    today = ctx.today_uk()
+    runs = _runs(ctx.store, datetime(today.year, today.month, today.day, tzinfo=UK))
+    live = [r for r in runs if not r.get("dry_run")]
+    if live:
+        counts = {k: sum(_done(r["detail"])[k] for r in live) for k in _done({})}
+        text = describe(counts)
+        return (f"Retention deleted {text}." if text else ""), ({**counts, "dry_run": False} if text else {})
+    if runs:
+        counts = _done(runs[-1]["detail"])
+        text = describe(counts)
+        if text:
+            return f"Retention would delete {text} (dry-run: nothing changed).", {**counts, "dry_run": True}
+    return "", {}
+
+
+def status_line(store: Any) -> str:
+    """`us-outbound status`'s line: the last run, what it did or found due, what waits and why."""
+    last = store.latest("heartbeats", "started_at", {"job": JOB, "status": "ok"})
+    detail = (last or {}).get("detail")
+    if not isinstance(detail, Mapping):
+        return "Retention (00:40 UK daily): not run yet"
+    when = _ts(last.get("started_at"))
+    stamp = when.astimezone(UK).strftime("%a %d %b %H:%M UK") if when else "?"
+    text = describe(_done(detail))
+    dry = bool(detail.get("dry_run"))
+    line = f"Retention: last run {stamp} ({'dry-run' if dry else 'live'}): "
+    line += (f"would delete {text}" if dry else f"deleted {text}") if text else "nothing due"
+    held: Counter[str] = Counter()
+    left = 0
+    for section in ("leads", "contacts", "accounts"):
+        part = detail.get(section) if isinstance(detail.get(section), Mapping) else {}
+        held.update({str(k): int(v) for k, v in (part.get("held") or {}).items()})
+        left += int(part.get("left_for_next_run") or 0)
+    if held:
+        line += "; held: " + ", ".join(f"{why} {n}" for why, n in sorted(held.items(), key=lambda x: (-x[1], x[0])))
+    if left:
+        line += f"; {left:,} left for the next run"
+    return line
 
 
 # -- the job ---------------------------------------------------------------------------------------------------------

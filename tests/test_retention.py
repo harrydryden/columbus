@@ -541,3 +541,63 @@ def test_universe_rows_dry_run_and_the_cap(monkeypatch):
     w.ctx.guard.configure(live=True)
     assert w.run()["accounts"] == {"due": 2, "deleted": 1, "left_for_next_run": 1}
     assert w.ctx.store.get("accounts", account_id="a-stale") is None
+
+
+# -- what it did: the daily post and status ------------------------------------------------------------------------------
+
+
+def beat(ctx, run_id: str, started: datetime, dry_run: bool, **detail) -> None:
+    sections = {"leads": {"due": 0, "deleted": 0, "already_gone": 0, "held": {}, "left_for_next_run": 0},
+                "reply_text": {"events_due": 0, "events_cleared": 0, "items_due": 0, "items_cleared": 0},
+                "contacts": {"due": 0, "deleted": 0, "held": {}, "left_for_next_run": 0},
+                "accounts": {"due": 0, "deleted": 0, "left_for_next_run": 0}}
+    for k, v in detail.items():
+        sections[k] = {**sections[k], **v}
+    ctx.store.insert("heartbeats", [{"run_id": run_id, "job": "retention", "status": "ok", "dry_run": dry_run,
+                                     "started_at": started, "finished_at": started,
+                                     "detail": {"job": "retention", "dry_run": dry_run, **sections, "errors": []}}])
+
+
+def test_the_daily_post_line_has_today_s_counts_only():
+    w = World(now=datetime(2026, 12, 15, 9, tzinfo=UTC))  # 09:00 UK
+    assert retention.post_line(w.ctx) == ("", {})
+    beat(w.ctx, "yesterday", datetime(2026, 12, 14, 0, 40, tzinfo=UTC), False, leads={"deleted": 9})
+    beat(w.ctx, "nothing", datetime(2026, 12, 15, 0, 40, tzinfo=UTC), False)
+    assert retention.post_line(w.ctx) == ("", {})
+    beat(w.ctx, "by-hand", datetime(2026, 12, 15, 7, 0, tzinfo=UTC), False, leads={"deleted": 12, "already_gone": 3},
+         reply_text={"events_cleared": 3, "items_cleared": 1}, contacts={"deleted": 1})
+    line, counts = retention.post_line(w.ctx)
+    assert line == ("Retention deleted 12 Instantly leads (31 days after their last step), the reply text of 3 replies "
+                    "and 1 reply card (90 days) and 1 contact who never replied (12 months).")
+    assert counts == {"leads": 12, "replies": 3, "reply_cards": 1, "contacts": 1, "companies": 0, "dry_run": False}
+
+
+def test_a_dry_run_says_what_it_would_delete():
+    w = World(live=False, now=datetime(2026, 12, 15, 9, tzinfo=UTC))
+    beat(w.ctx, "r", datetime(2026, 12, 15, 0, 40, tzinfo=UTC), True, leads={"due": 4}, accounts={"due": 2})
+    line, counts = retention.post_line(w.ctx)
+    assert line == ("Retention would delete 4 Instantly leads (31 days after their last step) and 2 companies no source "
+                    "has refreshed (12 months) (dry-run: nothing changed).")
+    assert counts["dry_run"] is True
+
+
+def test_the_status_line():
+    w = World()
+    assert retention.status_line(w.ctx.store) == "Retention (00:40 UK daily): not run yet"
+    beat(w.ctx, "r1", datetime(2026, 12, 15, 0, 40, tzinfo=UTC), False)
+    assert retention.status_line(w.ctx.store) == "Retention: last run Tue 15 Dec 00:40 UK (live): nothing due"
+    beat(w.ctx, "r2", datetime(2026, 12, 16, 0, 40, tzinfo=UTC), False,
+         leads={"deleted": 200, "held": {retention.OPT_OUT_PENDING: 1}, "left_for_next_run": 40},
+         contacts={"held": {retention.LEAD_LEFT: 2}})
+    assert retention.status_line(w.ctx.store) == (
+        "Retention: last run Wed 16 Dec 00:40 UK (live): deleted 200 Instantly leads (31 days after their last step); "
+        "held: its Instantly lead is not deleted yet 2, an opt-out not recorded yet 1; 40 left for the next run")
+
+
+def test_the_summary_never_names_a_person():
+    w, c = contact_world()
+    w.ctx.store.insert("events", [{"event_id": "em-x", "contact_id": c["silent"]["contact_id"], "type": "replied",
+                                   "reply_class": "out_of_office", "reply_text": "Away until Monday, p1@co1.com",
+                                   "occurred_at": LATER - timedelta(days=100)}])
+    out = w.run()
+    assert "@" not in repr(out) and "Away until" not in repr(out)

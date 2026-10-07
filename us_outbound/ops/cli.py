@@ -3,8 +3,9 @@
 What Harry uses (`us-outbound --help` lists these, in this order):
   status                              the two switches and what they mean, when the settings were
                                       synced, what waits for him (send approvals, replies, kill-rule
-                                      holds), the jobs that failed or missed their heartbeat, mailboxes,
-                                      this week's number and the campaigns
+                                      holds), the jobs that failed or missed their heartbeat, what the
+                                      retention job last deleted, mailboxes, this week's number and the
+                                      campaigns
   golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
   accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py):
     [--tier T] [--industry TEXT]      a summary and the list in queue order, one company in full (exits 1
@@ -473,6 +474,12 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
 
     print(second.describe(s))  # the second-contact switch (Harry, 6 Oct 2026)
     _status_heartbeats(ctx.store, ctx.now)
+    try:
+        from us_outbound.ops import retention
+
+        print(retention.status_line(ctx.store))  # SPEC 6 and 13: what the daily retention job deleted, and what waits
+    except Exception as exc:  # status still prints what it can
+        print(f"Retention: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     print("Mailboxes:")
     try:
         from us_outbound.learn.holds import held_mailboxes

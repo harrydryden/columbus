@@ -284,6 +284,18 @@ People hire (likely)" counts only where Apollo knows at least half the company's
 finding no People leader there means something. Once, after this reaches the worker:
 `us-outbound settings load --tab Signals --live`, then `us-outbound sync`.
 
+**Retention** (7 Oct 2026; SPEC 6 and 13). The `retention` job runs at 00:40 UK every night and needs nothing from
+you. It deletes each Instantly lead 31 days after its last step (or after the reply, bounce, unsubscribe or booking
+that stopped it), so the Instantly plan's lead count stays down; it never deletes a lead still being emailed, or one
+whose unsubscribe or bounce the jobs have not recorded yet. It clears the text of replies 90 days after they came
+(the class, dates and ids stay, so the readout counts as before). It deletes the people who never replied 12 months
+after their last email, and companies no source has seen again in 12 months that nothing else holds. The
+suppression list is never touched. When it deleted anything, the daily post ends with one line of counts, and
+`us-outbound status` says what it last did and what it is holding back and why. `us-outbound run retention` shows
+what is due now without changing anything. Like every job it stays dry while `live_sending` is no. Copies outside
+the database are not its to delete: replies quoted in Slack (set #us-outbound's message retention in Slack if you
+want them to go too), escalation emails, and the notes of warm replies in HubSpot.
+
 **Don't edit rows by hand in Railway's Data tab.** An edit there bypasses the system's checks
 (suppression, one company per domain, a sender kept for life). Make changes with the sheet and the
 commands instead.
@@ -292,7 +304,7 @@ commands instead.
 
 | Command | What it does |
 | :- | :- |
-| `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, mailboxes, today's number |
+| `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number |
 | `golive` | The read-only go/no-go check |
 | `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
@@ -310,4 +322,5 @@ commands instead.
 | `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
 | `test start ID --live`, `test read ID` | Start a test on the Tests tab; read it at its latest pre-registered look |
 
-Also `handcheck show|approve`, `erase --email` and `schedule`. `us-outbound --help` lists every command.
+Also `handcheck show|approve`, `erase --email` (and for an Apollo deletion notice), `run retention` and `schedule`.
+`us-outbound --help` lists every command.

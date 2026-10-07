@@ -428,6 +428,17 @@ def test_status_prints_jobs_and_mailboxes(capsys):
     assert "Credit budgets this month (UK time):" in out and "Enrolment this week (Monday to Sunday, UK time):" in out
     assert "Today: 0, limited by ready accounts" in out
     assert "Apollo: 0 of 2,000 credits used this month (0%)" in out
+    assert "Retention (00:40 UK daily): not run yet" in out  # ops/retention.py
+
+
+def test_retention_runs_by_hand_and_shows_in_status(capsys):
+    h = Harness()
+    assert h.run("run", "retention", "--live") == 0  # live_sending is no: it stays dry
+    out = capsys.readouterr().out
+    assert "Running dry: live_sending is no" in out and '"leads"' in out
+    assert h.beats("retention")[0]["status"] == "ok" and h.beats("retention")[0]["dry_run"] is True
+    assert h.run("status") == 0
+    assert "Retention: last run Tue 27 Oct 12:00 UK (dry-run): nothing due" in capsys.readouterr().out
 
 
 # -- copy tests -------------------------------------------------------------------------------------------

@@ -85,7 +85,7 @@ def test_erase_twice_is_harmless():
 
 def test_erase_reaches_where_else_the_address_is_written_and_names_what_it_cannot():
     """A colleague's reply card that names them, a reply quoting their address, and the manual steps for Slack, the
-    escalation inbox and HubSpot's note and task (Harry, 7 Oct 2026)."""
+    escalation inbox and HubSpot's note and task (7 Oct 2026)."""
     from datetime import UTC, datetime
 
     ctx, t, inst, lead = setup(live=False)
