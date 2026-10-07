@@ -138,7 +138,7 @@ comes back is new.
 | "Instantly's plan has no room for new leads, so nothing new is being sent…" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and a ✅ already given goes through once there is room (the card says it is held) |
 | "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
 | "Errors the jobs met: • enrol … carried on past 2 errors…" | Hourly, once a day per job and kind | Usually nothing: each job tries again on its next run. If it keeps coming, `us-outbound status` and the worker's logs in Railway |
-| "HubSpot rejected its key: replace US_OUTBOUND_HUBSPOT_TOKEN in Railway (Variables), then redeploy." (or Apollo, Clay, Instantly, Slack, Google, Anthropic) | Hourly, once a day per key | Make a new key, replace the variable in the us-outbound service's **Variables**, then **Deploy** |
+| "HubSpot refused our key or this request: if the key was revoked, replace US_OUTBOUND_HUBSPOT_TOKEN in Railway (Variables), then redeploy; if it is current, the HubSpot plan may not allow this." (or Apollo, Clay, Instantly, Slack, Google, Anthropic) | Hourly, once a day per key | If the key was revoked: make a new one, replace the variable in the us-outbound service's **Variables**, then **Deploy**. If the key is current, check what the plan allows (Apollo answers 403 for a search its plan does not include) |
 | "The settings are unusable (…): every job refuses to run…" | Hourly, once a day | Fix the sheet (the errors are in the settings sync's message), then `us-outbound sync` |
 
 **If Slack itself is down or its token is revoked,** none of this can be posted. Healthchecks.io

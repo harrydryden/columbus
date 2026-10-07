@@ -22,7 +22,7 @@ Clay lookups), and is left out. Each finding quotes its first error, shortened (
 logs.redact.
 A failure that says a service rejected its key (HTTP 401 or 403 from a client, Slack's invalid_auth, not_authed,
 token_revoked or account_inactive, Google's 401 or 403 or a service-account key refused, Anthropic's
-authentication_error or permission_error) is told apart: "<System> rejected its key: replace <variable> in Railway
+authentication_error or permission_error) is told apart: "<System> refused our key or this request: if the key was revoked, replace <variable> in Railway
 (Variables), then redeploy", the variable from context.SECRET_NAMES (and ops/bootstrap.GOOGLE_KEY_VAR).
 Each (job, kind) is posted at most once a UK day, and each rejected key once a day whichever jobs met it
 (notify.post_once keeps what was sent in events). A dead Slack token cannot post any of this: the outside
@@ -221,7 +221,8 @@ def lines(found: Iterable[Finding], day: str) -> list[tuple[str, str]]:
         name, var = KEYS[system]
         jobs = ", ".join(dict.fromkeys(j for j, _ in hits))
         out.insert(0, (f"key_rejected:{system}:{day}",
-                       f"• {name} rejected its key: replace {var} in Railway (Variables), then redeploy. "
+                       f"• {name} refused our key or this request: if the key was revoked, replace {var} in Railway "
+                       f"(Variables), then redeploy; if it is current, the {name} plan may not allow this. "
                        f"({jobs}: {_quote(hits[0][1])})"))
     return out
 

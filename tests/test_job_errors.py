@@ -53,21 +53,28 @@ def test_errors_a_job_carried_on_past_are_posted_once_a_day_with_the_first_quote
 
 @pytest.mark.parametrize("job, detail, error, says", [
     ("hubspot_readback", {"errors": ["meetings: hubspot HTTP 401 for /crm/v3/objects/meetings/search: expired"]}, None,
-     "HubSpot rejected its key: replace US_OUTBOUND_HUBSPOT_TOKEN in Railway (Variables), then redeploy."),
+     "HubSpot refused our key or this request: if the key was revoked, replace US_OUTBOUND_HUBSPOT_TOKEN in Railway "
+     "(Variables), then redeploy; if it is current, the HubSpot plan may not allow this."),
     ("poll_approvals", {"errors": [], "send_approvals": {"errors": [
         "abc1: ApiError: instantly HTTP 403 for /api/v2/campaigns: forbidden"]}}, None,
-     "Instantly rejected its key: replace US_OUTBOUND_INSTANTLY_API_KEY in Railway (Variables), then redeploy."),
+     "Instantly refused our key or this request: if the key was revoked, replace US_OUTBOUND_INSTANTLY_API_KEY in Railway "
+     "(Variables), then redeploy; if it is current, the Instantly plan may not allow this."),
     ("kill_rules", {"vitals_error": "apollo HTTP 401 for /usage_stats: invalid"}, None,
-     "Apollo rejected its key: replace US_OUTBOUND_APOLLO_API_KEY in Railway (Variables), then redeploy."),
+     "Apollo refused our key or this request: if the key was revoked, replace US_OUTBOUND_APOLLO_API_KEY in Railway "
+     "(Variables), then redeploy; if it is current, the Apollo plan may not allow this."),
     ("daily_post", {"alert": {"posted": False, "error": "slack HTTP 200 for /api/chat.postMessage: {'ok': False, "
                                                          "'error': 'token_revoked'}"}}, None,
-     "Slack rejected its key: replace US_OUTBOUND_SLACK_BOT_TOKEN in Railway (Variables), then redeploy."),
+     "Slack refused our key or this request: if the key was revoked, replace US_OUTBOUND_SLACK_BOT_TOKEN in Railway "
+     "(Variables), then redeploy; if it is current, the Slack plan may not allow this."),
     ("poll_replies", {"claude_error": "Claude API error 401"}, None,
-     "Anthropic (Claude) rejected its key: replace US_OUTBOUND_CLAUDE_API_KEY in Railway (Variables), then redeploy."),
+     "Anthropic (Claude) refused our key or this request: if the key was revoked, replace US_OUTBOUND_CLAUDE_API_KEY in Railway "
+     "(Variables), then redeploy; if it is current, the Anthropic (Claude) plan may not allow this."),
     ("settings_sync", None, "RefreshError: ('invalid_grant: Invalid JWT Signature.', {'error': 'invalid_grant'})",
-     "Google rejected its key: replace US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON in Railway (Variables), then redeploy."),
+     "Google refused our key or this request: if the key was revoked, replace US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON in Railway "
+     "(Variables), then redeploy; if it is current, the Google plan may not allow this."),
     ("pick_contacts", None, "ApiError: clay HTTP 401 for /v1/sources: unauthorized",
-     "Clay rejected its key: replace US_OUTBOUND_CLAY_API_KEY in Railway (Variables), then redeploy."),
+     "Clay refused our key or this request: if the key was revoked, replace US_OUTBOUND_CLAY_API_KEY in Railway "
+     "(Variables), then redeploy; if it is current, the Clay plan may not allow this."),
 ])
 def test_a_rejected_key_names_the_railway_variable_to_replace(job, detail, error, says):
     ctx, t = world()
@@ -85,7 +92,7 @@ def test_a_rejected_key_is_told_once_a_day_whichever_jobs_met_it():
                                                                "cd34: instantly HTTP 502 for /api: busy"]})
     out = check(ctx)
     body = text(t)
-    assert body.count("HubSpot rejected its key") == 1 and "(hubspot_readback, poll_approvals: “" in body
+    assert body.count("HubSpot refused our key") == 1 and "(hubspot_readback, poll_approvals: “" in body
     assert "• poll_approvals (Mon 11:50 UK) carried on past 1 error; the first: “cd34: instantly HTTP 502" in body
     assert out["posted"] == ["key_rejected:hubspot:2026-10-26", "job_error:poll_approvals:errors:2026-10-26"]
 
@@ -114,7 +121,7 @@ def test_a_frequent_job_that_failed_once_is_left_to_its_next_run_unless_its_key_
     check(ctx)
     body = text(t)
     assert "Terminated" not in body and "poll_approvals" not in body
-    assert "Instantly rejected its key: replace US_OUTBOUND_INSTANTLY_API_KEY" in body and "(poll_replies: “" in body
+    assert "Instantly refused our key or this request: if the key was revoked, replace US_OUTBOUND_INSTANTLY_API_KEY" in body and "(poll_replies: “" in body
 
 
 def test_what_is_no_error_is_left_out():
