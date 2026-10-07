@@ -607,7 +607,8 @@ class Instantly(HttpClient):
         self.request("POST", f"/campaigns/{_segment(cid)}/pause", Op("campaign.pause", target=name, write=True))
 
     def activate_campaign(self, name: str) -> None:
-        """Start or resume. Only the `start` command calls this, never create_campaign."""
+        """Start or resume: `start`, mailbox_health after go-live, and a lead add that finds the campaign completed
+        (enrol/capacity.resume_if_completed). Never create_campaign."""
         cid = self._campaign_id(name, "campaign.activate", True)
         self.request("POST", f"/campaigns/{_segment(cid)}/activate", Op("campaign.activate", target=name, write=True))
 

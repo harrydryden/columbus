@@ -43,9 +43,11 @@ What Instantly reports back, from the latest mailbox_health run (registry/mailbo
 Each campaign's own status, read from Instantly when enrol runs (campaigns_not_sending; limits.today
 with campaigns=True). Campaigns are created paused (draft) and only `us-outbound start --live`
 activates them, so a lead added to one that is not active (Instantly status 1) would wait there
-unsent. In a live run an owner whose campaign is not active, is missing, or cannot be read (the safe
-direction) has no capacity today, so enrol proposes no card and adds no lead for them, and the limiter
-line says why. A dry run counts them as usual, so previews still work, and only says so.
+unsent. Instantly marks an active campaign "completed" (3) once no lead is left to email, as it does
+straight after `start` when the campaign has none yet; that one still takes leads, and adding them
+resumes it (resume_if_completed, after each add). In a live run an owner whose campaign takes no
+leads (draft or paused), is missing, or cannot be read (the safe direction) has no capacity today, so
+enrol proposes no card and adds no lead for them, and the limiter line says why. A dry run counts them as usual, so previews still work, and only says so.
 """
 
 from __future__ import annotations
@@ -77,6 +79,8 @@ OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
 MAX_SCAN_DAYS = 400  # no send day in this long means the settings allow none
 CAMPAIGN_ACTIVE = 1  # Instantly's campaign status for active (clients/instantly.CAMPAIGN_STATUS)
+CAMPAIGN_COMPLETED = 3  # active with no lead left to email; the next lead added resumes it (resume_if_completed)
+TAKES_LEADS = frozenset({CAMPAIGN_ACTIVE, CAMPAIGN_COMPLETED})
 
 
 def next_send_day(d: date, settings: Settings) -> date | None:
@@ -135,10 +139,25 @@ def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
     if len(mine) > 1:
         return f"more than one Instantly campaign is named {name}: fix it by hand in Instantly"
     status = _status(mine[0])
-    if status != CAMPAIGN_ACTIVE:
+    if status not in TAKES_LEADS:
         what = CAMPAIGN_STATUS.get(status, f"status {mine[0].get('status')}") if status is not None else "status unknown"
         return f"{owner}'s campaign is not active in Instantly ({what}): run `us-outbound start --live`"
     return ""
+
+
+def resume_if_completed(ctx: Context, campaign: str) -> bool:
+    """Activate the campaign again when Instantly has marked it completed; True when it did.
+
+    Instantly marks an active campaign "completed" once it has no lead left to email, as it did straight after
+    `start` for the campaigns with no leads yet (6 Oct 2026: Harry Dryden's and Hannah MacIntosh's), and a lead
+    added after that waits unsent until the campaign is activated again. So every lead add (enrol, a send approval,
+    a seed) calls this once the lead is in. A paused campaign (a stop, a kill rule) is left paused.
+    """
+    found = [c for c in ctx.clients.instantly.list_campaigns() if str(c.get("name") or "") == campaign]
+    if len(found) != 1 or _status(found[0]) != CAMPAIGN_COMPLETED:
+        return False
+    ctx.clients.instantly.activate_campaign(campaign)
+    return True
 
 
 def unreadable(exc: Exception) -> str:

@@ -78,7 +78,7 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
-from us_outbound.enrol import focus, openers, queue, render
+from us_outbound.enrol import capacity, focus, openers, queue, render
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
@@ -960,6 +960,12 @@ def run(ctx: Context) -> dict:
         if ctx.dry_run or not result or result.get("dry_run"):
             would[owner] = len(items)
             continue
+        try:
+            if capacity.resume_if_completed(ctx, campaign):
+                log("campaign_resumed", campaign=campaign, leads=len(items))
+        except (ApiError, LookupError) as exc:
+            r.errors.append(f"{campaign} is completed in Instantly and could not be resumed ({str(exc)[:160]}): "
+                            "run `us-outbound start --live`, or the leads just added wait unsent")
         ids = _created_ids(result, leads)
         missing = [i for i in range(len(items)) if i not in ids]
         found: dict[str, str] | None = {}
