@@ -174,7 +174,8 @@ An account also needs at least one candidate contact: a person matching the Role
 - **The industry label check** (Harry, 7 Oct 2026: "industry categorisation is critical to the efficacy of the
   system"; `us_outbound/labels.py`). Once an account passes the free checks, the task model (Sonnet, effort low,
   about $0.01 a company, once) reads its Apollo facts (name, domain, Apollo industry, NAICS codes, keywords,
-  description; never the rules' label) and picks one label from the Industries list, with its confidence, what kind
+  description) and, once `read_pages` has read it, its home page's title, description and first 600 characters
+  (never the rules' label) and picks one label from the Industries list, with its confidence, what kind
   of body it is, a quote and a short "what they do". One rule combines it with the rules' label:
   - they agree: the label's own copy (`label_source` rules+model);
   - they disagree: the model's label when it is sure (model); otherwise, within one group, the group's own label and

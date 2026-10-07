@@ -30,7 +30,10 @@ One account, cheapest and most structured first:
 Facts (the shapes scoring matches, and those of the Clay Accounts function, SPEC 8):
   careers_pages  benefit {item}, mental_health_provision {type, provider}, values_page,
                  read_status, and page_read: the account's read in one fact (outcome, what each
-                 part found, the pages tried, the run), which coverage() counts
+                 part found, the pages tried, the run), which coverage() counts; and home_page
+                 {title, meta_description, text}: what the home page says the company is (at most
+                 HOME_TEXT_CHARS of its first text), which no signal scores and the industry label
+                 check reads beside Apollo's facts (labels.py; Harry, 7 Oct 2026)
   job_posts      posting_text {text, posting}, ats_feed {vendor, slug, found_by, postings},
                  read_status
 Outcomes (SPEC 8): read, no_pages_found, blocked, error, per source and for the account. A
@@ -103,6 +106,8 @@ FEED_TIMEOUT = 15.0
 MAX_REDIRECTS = 3
 MAX_HTML = 1_500_000  # characters of a page read
 PAGES_KEPT = 10  # pages listed in the page_read fact
+HOME_FACT = "home_page"  # the home page's title, meta description and first text, for the label check (labels.py)
+HOME_TEXT_CHARS = 600
 REFRESH_DAYS = 180  # SPEC 7: re-read after 180 days
 RETRY_DAYS = 14  # a read that failed with an error is tried again sooner
 COMMON_PATHS = ("/careers", "/jobs", "/benefits")
@@ -283,6 +288,8 @@ class Reader:
         self.fetches = 0  # pages of the site asked for, against PAGE_BUDGET
         self.not_started = False  # the run had no time left for this account: it is not recorded
         self._seen_snippets: set[str] = set()
+        self.home: dict[str, str] = {}  # the home page's title, description and first text (home_summary)
+        self.home_url = ""
 
     @property
     def outcome(self) -> str:
@@ -417,7 +424,9 @@ class Reader:
             return
         found: list[tuple[int, str]] = []
         if home.status == "ok":
-            found = self._use(parse_html(home.html, home.url))
+            page = parse_html(home.html, home.url)
+            self.home, self.home_url = home_summary(page), home.url
+            found = self._use(page)
         elif home.status == "offsite":
             self.notes.append(f"the home page redirects to {home.url}")
         queue_ = list(dict.fromkeys(u for _, u in sorted(found, key=lambda x: x[0])))  # benefits pages first
@@ -503,6 +512,18 @@ class Reader:
 # -- facts ---------------------------------------------------------------------------------------
 
 
+def home_summary(page: Page) -> dict[str, str]:
+    """What the home page says the company is, for the label check (labels.py; Harry, 7 Oct 2026): its <title>, its
+    meta description and its first text blocks, at most HOME_TEXT_CHARS of text; {} when it says nothing."""
+    text = ""
+    for b in page.blocks:
+        if len(text) >= HOME_TEXT_CHARS:
+            break
+        text = f"{text} {b.text}".strip()
+    out = {"title": page.title, "meta_description": page.description, "text": text[:HOME_TEXT_CHARS]}
+    return {k: v for k, v in out.items() if v}
+
+
 def facts(r: Reader, now: datetime, run_id: str, good: set[str]) -> list[dict]:
     """The account's facts from one read. A failed read_status never replaces an earlier good one."""
     aid = r.account["account_id"]
@@ -522,6 +543,8 @@ def facts(r: Reader, now: datetime, run_id: str, good: set[str]) -> list[dict]:
         add(FEED_SOURCE, "posting_text", {"text": s.text, "posting": post.title}, s.text, post.url)
     if r.values_page is not None and r.site in (READ, NO_PAGES):
         add(SOURCE, "values_page", r.values_page)
+    if r.home:  # no Signals row reads it (scoring matches terms in TEXT_FACTS only): the label check's material
+        add(SOURCE, HOME_FACT, r.home, (r.home.get("title") or r.home.get("meta_description") or "")[:300], r.home_url)
     if r.board is not None:
         add(FEED_SOURCE, FEED_FACT, {"vendor": r.board.vendor, "slug": r.board.slug, "found_by": r.board.found_by,
                                      "confirmed_by": r.confirmed_by, "postings": r.postings}, url=r.board.url)

@@ -8,8 +8,9 @@ AI, a crypto firm and a data-centre operator as adtech, a town council as fintec
 The rules stay primary: a source labels a company from the Industries tab's NAICS codes and keywords
 (apollo_universe.best_label). The task model (General claude_task_model) is the independent check of that label,
 asked once per company in verify_accounts, before it can ever be verified (verify.py), from the company's Apollo
-facts only (its name, domain, Apollo industry, NAICS codes, keywords and description). It never sees the rules'
-label, so their agreement means something. It answers one label from the list (entries: every label of a group with
+facts (its name, domain, Apollo industry, NAICS codes, keywords and description) and, once read_pages has read it,
+what its home page says (its title, meta description and first text: sources/pages.py's home_page fact). It never
+sees the rules' label, so their agreement means something. It answers one label from the list (entries: every label of a group with
 an active label, and one row for each group with none, marked "not prospected"), its confidence, what kind of body
 the company is, a quote from the material and a short "what they do" phrase.
 
