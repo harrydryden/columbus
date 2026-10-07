@@ -115,6 +115,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
+        "alert",  # ops/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal"},  # crm/readback.py (Harry, 6 Oct 2026)
     ("events", "reply_class"): {

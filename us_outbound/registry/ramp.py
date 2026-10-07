@@ -102,6 +102,11 @@ class Ramp:
         sheet = max(0, int(self.sheet_cap or 0))
         return min(sheet, RAMP_CAPS[week - 1]) if week <= len(RAMP_CAPS) else sheet
 
+    @property
+    def full_cap(self) -> int:
+        """What it may send a day once the ramp is over (learn/capacity_ahead.py plans three weeks out with it)."""
+        return self._cap_in_week(len(RAMP_CAPS) + 1)
+
     def next_step(self) -> tuple[date, int] | None:
         """(the day its cap next rises, the cap from then), while it is ramping and has started."""
         if not self.ramping or self.start is None:

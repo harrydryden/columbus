@@ -343,6 +343,12 @@ class SenderCapacity:
         return f"{self.owner}: {self.free} new leads today, {self.cap} sends a day ({why}){extra}{note}"
 
 
+def steady_pace(cap: int) -> int:
+    """New leads a day that keep `cap` sends a day steady: each lead sends 4 emails (STEP_DELAYS), so cap ÷ 4,
+    rounded up. free_slots' pace, and learn/capacity_ahead.py's capacity at full ramp."""
+    return math.ceil(max(0, cap) / len(STEP_DELAYS))
+
+
 def free_slots(
     settings: Settings, committed: Counter[tuple[str, date]], caps: list[MailboxCap], today: date
 ) -> dict[str, SenderCapacity]:
@@ -368,7 +374,7 @@ def free_slots(
             continue
         tight = min(days, key=lambda d: (cap - committed[(owner, d)], d))
         room = max(0, cap - committed[(owner, tight)])
-        pace = math.ceil(cap / len(STEP_DELAYS))
+        pace = steady_pace(cap)
         out[owner] = SenderCapacity(owner, cap, min(pace, room), tight, committed[(owner, tight)], pace, room, boxes)
     return out
 

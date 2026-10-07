@@ -172,6 +172,27 @@ def credits_left(usage: Mapping[str, Any], credit_type: str = "lead_credit") -> 
     return float(stats["left_over"])
 
 
+VISITOR_CREDIT = "inbound_website_visitor_credit"  # what Apollo spends to name a company that visits our site
+
+
+def credit_stats(usage: Mapping[str, Any], credit_type: str) -> dict[str, float] | None:
+    """{limit, consumed, left_over} for one credit type from credit_usage(), as numbers; None when Apollo gave
+    no limit or no left_over for it (learn/spend.py reads the website-visitor credits this way).
+
+    PHASE0-CONFIRM: the website-visitor credits are inbound_website_visitor_credit, with the same three
+    fields as lead_credit (Apollo's usage tool showed 1,200 of them on 1 Oct 2026; docs/gtm-review/04).
+    """
+    stats = (usage.get("credit_usage_stats") or {}).get(credit_type)
+    if not isinstance(stats, Mapping):
+        return None
+    try:
+        out = {k: float(stats[k]) for k in ("limit", "left_over")}
+        out["consumed"] = float(stats.get("consumed") or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return out
+
+
 def _enrich_domain(domain: str) -> str:
     return str(domain or "").strip().lower().removeprefix("www.")
 

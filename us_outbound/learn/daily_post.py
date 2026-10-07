@@ -41,6 +41,12 @@ message, as before, well under Slack's 40,000-character limit on text (about 5,0
 account lists stop at LIST_LIMIT, and the funnel sections are aggregates that name no company or person.
 It posts to the alert channel (the dev channel in dry-run), or to the log with no Slack token
 (ops/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
+
+Before it, the asks (Harry, 7 Oct 2026), each in its own message with the approvers mentioned and each
+line once (ops/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
+apollo_floor, the monthly Apollo and Clay budgets, Claude's spend against its cap, Apollo's website-visitor
+credits), and on Mondays the mailboxes to add three weeks ahead (learn/capacity_ahead.py). The credit
+budget lines end with the one-line spend summary (spend.summary_line).
 """
 
 from __future__ import annotations
@@ -54,7 +60,7 @@ from typing import Any
 from us_outbound import budget, limits
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, second
-from us_outbound.learn import daily_report, holds, kill_rules
+from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify
 from us_outbound.registry import ramp
@@ -187,8 +193,8 @@ def needs_you(ctx: Context, w: ForYou) -> str:
     return "*Needs you:* " + (" · ".join(parts) if parts else "nothing")
 
 
-def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
-    """(the message lines, the numbers for the summary)."""
+def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], dict[str, Any]]:
+    """(the message lines, the numbers for the summary). spent: what learn/spend.py read (read here when not given)."""
     start, end, label = period(ctx)
     types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit"]
     rows = [e for e in ctx.store.select("events", {"type": types})
@@ -279,6 +285,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
                      "as a preview).")
     lines.append("Credit budgets this month:")
     lines += [f"  {line}" for line in lim.budget_lines]
+    spent = spent if spent is not None else spend.read(ctx)
+    lines.append(f"  {spend.summary_line(spent)}.")
+    nums.update(spend=spent.as_dict())
 
     # The careers and benefits page reader's coverage, for Harry's call on enhancing it (2 Oct 2026).
     lines += ["", "*Sources*", *pages.post_lines(ctx)]
@@ -343,8 +352,11 @@ def run(ctx: Context) -> dict:
     The summary (kept in the heartbeat row) has the numbers, not the text: the text quotes
     replies, and reply text is purged after 90 days (SPEC 6), which a heartbeat row is not.
     """
-    lines, nums = build(ctx)
+    spent, asked = spend.check(ctx)  # the credit and spend asks first, so a failing post below never holds them
+    lines, nums = build(ctx, spent)
+    mailboxes = capacity_ahead.check(ctx, int(nums.get("ready_accounts") or 0))  # Mondays only
     sent = notify.alert(ctx, "\n".join(lines))
-    summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent}
+    summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent, "spend_alert": asked,
+               "mailboxes_ahead": mailboxes}
     log("daily_post_done", run_id=ctx.run_id, **summary)
     return summary

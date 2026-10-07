@@ -133,6 +133,23 @@ def usage_cost_usd(price: Price, usage: Any) -> float:
     ) / 1_000_000
 
 
+def month_spend_usd(store: Store, now: datetime) -> float:
+    """USD recorded for Claude in credit_ledger in now's UTC calendar month: what the cap counts, and what the
+    daily post and its spend alerts show (learn/spend.py), without a key or a model."""
+    now = _as_utc(now) or datetime.now(UTC)
+    total = 0.0
+    for row in store.select("credit_ledger", {"system": "claude"}):
+        at = _as_utc(row.get("occurred_at"))
+        if at and (at.year, at.month) == (now.year, now.month):
+            total += float(row.get("usd") or 0.0)
+    return total
+
+
+def cap_reached_at(monthly_cap_usd: float) -> float:
+    """The month's spend from which every call is refused: the cap less its reserve (Claude.json)."""
+    return float(monthly_cap_usd) * (1 - CAP_RESERVE_SHARE)
+
+
 class Claude:
     def __init__(
         self,
@@ -156,13 +173,7 @@ class Claude:
 
     def month_spend_usd(self, now: datetime) -> float:
         """USD recorded for Claude in credit_ledger in now's UTC calendar month."""
-        now = _as_utc(now) or datetime.now(UTC)
-        total = 0.0
-        for row in self.store.select("credit_ledger", {"system": "claude"}):
-            at = _as_utc(row.get("occurred_at"))
-            if at and (at.year, at.month) == (now.year, now.month):
-                total += float(row.get("usd") or 0.0)
-        return total
+        return month_spend_usd(self.store, now)
 
     def _price(self) -> Price:
         price = PRICES.get(self.model)
@@ -201,7 +212,7 @@ class Claude:
         price = self._price()
         spent = self.month_spend_usd(now)
         estimate = self.estimate_usd(system, prompt, schema, max_tokens)
-        limit = self.monthly_cap_usd * (1 - CAP_RESERVE_SHARE)
+        limit = cap_reached_at(self.monthly_cap_usd)
         if spent + estimate > limit:
             log("claude_budget_refused", model=self.model, purpose=purpose, spent_usd=round(spent, 4),
                 estimate_usd=round(estimate, 4), cap_usd=self.monthly_cap_usd)
