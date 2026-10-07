@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from tests.fakes import make_context
 from tests.test_cli import Harness, _approved, _tests_tab
 from tests.test_enrol import default_openers, instantly_posts, make  # noqa: F401  (default_openers: autouse)
 from tests.test_looks import T0, emailed
@@ -32,7 +33,9 @@ from tests.test_render import (
     make_settings,
     values_for,
 )
+from us_outbound import config_version
 from us_outbound.enrol import approvals, enrol, openers, queue, render, variants
+from us_outbound.learn import cohorts
 from us_outbound.learn import looks
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import CopyStep
@@ -68,7 +71,7 @@ def errors_for(row: dict[str, str]) -> list[tuple[str, str]]:
     return [(e.column, e.message) for e in errors]
 
 
-# -- the Tests tab ------------------------------------------------------------------------------------------------------
+# -- the Tests tab -----------------------------------------------------------------------------------------------------
 
 
 def test_the_warm_intro_row_validates(tabs):
@@ -136,7 +139,8 @@ def test_both_blank_or_the_same_compares_nothing():
 def test_replace_needs_find_and_only_replace_takes_it():
     [(col, message)] = errors_for(variant_row(change="replace", text_a="Spill gives every team quick support."))
     assert col == "find" and "required for change replace" in message
-    assert errors_for(variant_row(change="replace", find="Spill is that place.", text_a="Spill can be that place.")) == []
+    assert errors_for(variant_row(change="replace", find="Spill is that place.",
+                                  text_a="Spill can be that place.")) == []
     [(col, message)] = errors_for(variant_row(find="Spill is that place."))
     assert col == "find" and "only by change replace" in message
 
@@ -161,7 +165,7 @@ def test_a_variant_may_not_run_beside_the_ab_test_but_may_beside_a_holdout(tabs)
     assert not any(errors.values()) and settings.running_test().test_id == "warm-intro"
 
 
-# -- test start ----------------------------------------------------------------------------------------------------------
+# -- test start --------------------------------------------------------------------------------------------------------
 
 
 def test_test_start_starts_a_variant(capsys):
@@ -206,7 +210,7 @@ def test_test_start_says_which_copy_rows_the_change_fits_and_refuses_one_it_fits
     assert "cannot be made in any sendable Copy row" in capsys.readouterr().err
 
 
-# -- the arms ------------------------------------------------------------------------------------------------------------
+# -- the arms ----------------------------------------------------------------------------------------------------------
 
 
 def test_the_arm_is_the_account_s_own_hash_about_half_and_half():
@@ -234,7 +238,7 @@ def test_the_arm_is_independent_of_the_opener_holdout_and_the_subject_split():
         assert 0.45 < counts["a"] / sum(counts.values()) < 0.55, counts
 
 
-# -- the change, rendered -------------------------------------------------------------------------------------------------
+# -- the change, rendered ----------------------------------------------------------------------------------------------
 
 
 def rendered(test, *, arm="a", settings=None, row=None, **kw):
@@ -284,7 +288,7 @@ def test_apply_says_when_the_change_cannot_be_made():
     assert variants.apply(CopyStep("s", "Hi {{first_name}},\n\nBody.\n\nThanks"), "last_line", WARM) is None
 
 
-# -- enrol ------------------------------------------------------------------------------------------------------------------
+# -- enrol -------------------------------------------------------------------------------------------------------------
 
 
 def agencies(n: int, **kw) -> tuple[list[dict], list[dict]]:
@@ -408,7 +412,7 @@ def test_a_second_contact_gets_its_account_s_arm_and_is_not_a_new_account():
     assert (p.test_id, p.test_arm, p.test_note) == ("", "", "") and WARM not in p.rendered[0].text
 
 
-# -- the card ----------------------------------------------------------------------------------------------------------------
+# -- the card ----------------------------------------------------------------------------------------------------------
 # For "warm-intro", acc-1 and acc-2 hash to "b" (no intro) and acc-3, the Control account, to "a" (warm intro).
 
 
@@ -426,7 +430,8 @@ def test_the_card_names_the_test_and_the_arm_and_shows_the_arm_s_email():
                                                                                         "warm intro", "")
     text = card_for(ctx, sl, "acc-3")
     facts = text.split("\n")[1]  # the context line under the head
-    assert facts.startswith("Control · score 5 · General · ") and facts.endswith(" · Test: warm-intro · warm intro")
+    assert facts.startswith("Control · score 5 · General · ")
+    assert facts.endswith(" · Test: warm-intro · warm intro")
     assert f"> Hi Lee,\n> \n> {WARM}\n> \n> {GENERAL_OPENER}" in text
     assert loop["steps"][0]["source"].startswith(f"Hi Lee,\n\n{WARM}\n\n{GENERAL_OPENER}")  # an edit starts here
     assert WARM in loop["lead"]["custom_variables"]["s1_body"]
@@ -486,7 +491,7 @@ def test_redo_and_reprepare_give_the_same_arm():
         assert p["lead"]["custom_variables"]["s1_body"] == old["lead"]["custom_variables"]["s1_body"]
 
 
-# -- the reads -----------------------------------------------------------------------------------------------------------------
+# -- the reads ---------------------------------------------------------------------------------------------------------
 
 
 def edited(ctx, i: int) -> None:
@@ -556,3 +561,48 @@ def test_test_read_prints_a_variant_test_with_its_edits(capsys):
     out = capsys.readouterr().out
     assert "warm intro 1 of 1 replied (100.0%); no intro 0 of 1 replied (0.0%)" in out
     assert "counted in the arm they were given: warm intro 0 of 1, no intro 1 of 1." in out
+
+
+# -- the config version ------------------------------------------------------------------------------------------------
+
+
+def test_the_running_copy_test_is_in_the_config_version(monkeypatch):
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    ctx = make_context(make_settings())
+
+    def current(*tests):
+        ctx.settings = make_settings(tests=tests)
+        return config_version.current(ctx)
+
+    none = current()
+    assert none.snapshot["copy_test"] is None
+    holdout = dataclasses.replace(WARM_TEST, test_id="t2", kind="holdout", version_a="opener", version_b="holdout",
+                                  change="", text_a="")
+    assert current(holdout).id == none.id  # a holdout changes nothing a contact is sent
+    warm = current(WARM_TEST)
+    assert warm.id != none.id and warm.snapshot["copy_test"] == {
+        "test_id": "warm-intro", "kind": "variant", "version_a": "warm intro", "version_b": "no intro",
+        "accounts_per_version": 400, "start_date": "2026-10-12", "email": 1, "change": "first_line", "text_a": WARM,
+        "text_b": "", "find": ""}
+    assert current(dataclasses.replace(WARM_TEST, text_a="Great to be connected.")).id != warm.id
+    assert current(dataclasses.replace(WARM_TEST, status="read")).id == none.id  # stopped: as before it started
+    assert current(FIRST_TEST).snapshot["copy_test"]["kind"] == "ab"
+    config_version.record(ctx, warm)
+    assert ctx.store.get("config_versions", config_version=warm.id)["copy_test"]["text_a"] == WARM
+
+
+def test_cohorts_changes_say_when_a_copy_test_started_changed_or_stopped():
+    ctx = make_context(make_settings())
+    base = {"code_sha": "dev", "campaign_fingerprint": "f1", "signature_hash": "s1", "step_days": [0, 7, 14, 21],
+            "settings_versions": {}, "copy_hashes": {}, "general": {}}
+    snap = config_version.copy_test(make_settings(tests=(WARM_TEST,)))
+    rows = {"v1": None, "v2": snap, "v3": {**snap, "text_a": "Great to be connected.", "accounts_per_version": 500},
+            "v4": None, "v5": None}
+    for i, (vid, test) in enumerate(rows.items()):
+        ctx.store.insert("config_versions", [{"config_version": vid, "run_id": "r", **base, "copy_test": test,
+                                              "first_seen": datetime(2026, 10, 12 + i, tzinfo=UTC)}])
+    assert cohorts.changes(ctx, "v1", "v2") == [
+        "Copy test warm-intro (variant: email 1, first_line; warm intro against no intro) started"]
+    assert cohorts.changes(ctx, "v2", "v3") == ["Copy test warm-intro: accounts_per_version 400 → 500, text_a changed"]
+    assert cohorts.changes(ctx, "v3", "v4") == ["Copy test warm-intro stopped"]
+    assert cohorts.changes(ctx, "v4", "v5") == ["No change."]

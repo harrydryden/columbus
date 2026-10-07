@@ -21,7 +21,8 @@ copy", "not checked by the model"); its They do line gives what the model read t
 The facts line names the running copy test and the contact's arm ("Test: warm-intro · warm intro"), or says the
 account is not in it and why (Harry, 7 Oct 2026; enrol/variants.py); the emails shown are the arm's. An edit keeps
 the arm: ✅ records it on the contact, and the item's outcome approved_edited says it was edited (learn/looks.py
-counts it in its arm, and says how many were). Waiting items hold their sender's slots today and their place in the week (limits.today), and
+counts it in its arm, and says how many were).
+Waiting items hold their sender's slots today and their place in the week (limits.today), and
 an account with one waiting is not proposed again. With auto_send = no the weekly hand-check is not
 a gate (every email is approved anyway): hand_check_post records only the accounts verify_accounts
 held for doubtful facts, and golive's Hand-check line passes. A second contact at an account (General
@@ -481,8 +482,9 @@ def opener_label(arm: str, source: str) -> str:
 
 
 def test_label(p: Mapping[str, Any]) -> str:
-    """The card's test fact (Harry, 7 Oct 2026): "Test: warm-intro · warm intro", the running copy test and the arm the
-    contact is in; "Test: warm-intro · not in the test (…)" when the account is left out of a variant test; else ""."""
+    """The card's test fact (Harry, 7 Oct 2026): "Test: warm-intro · warm intro", the running copy test and the arm
+    the contact is in; "Test: warm-intro · not in the test (…)" when the account is left out of a variant test; else
+    ""."""
     test_id = _text(p.get("test_id"))
     if test_id:
         return f"Test: {test_id} · {_text(p.get('test_name')) or _text(p.get('copy_version'))}"

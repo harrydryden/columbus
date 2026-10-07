@@ -103,7 +103,7 @@ def text_violations(text: str, *, change: str, email: int) -> list[str]:
     return out + rendered.problems + copy_rules.line_violations(text, rendered.words, step=email, exempt=EXEMPT)
 
 
-# -- one email, changed -------------------------------------------------------------------------------------------------
+# -- one email, changed ------------------------------------------------------------------------------------------------
 
 
 def _strip_blank(lines: Sequence[str], *, end: bool) -> list[str]:
@@ -160,7 +160,7 @@ def arms_written(test: Test, row: CopyRow, check: Check) -> tuple[dict[str, Copy
     return written, ""  # type: ignore[return-value]  # no None left
 
 
-# -- one contact --------------------------------------------------------------------------------------------------------
+# -- one contact -------------------------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,8 @@ Apollo credits are counted per cohort from credit_ledger rows that carry a compa
 so its spend is the month's, on one line, and not split by cohort.
 
 Settings (changes): what differs between two config versions in plain words, from their config_versions rows (the
-code, the campaign constants, the signature, the General content keys, the sendable Copy rows) and the settings
+code, the campaign constants, the signature, the General content keys, the sendable Copy rows, the running copy test
+starting, stopping or changing: Harry, 7 Oct 2026) and the settings
 table's history (the content tabs' rows then in force), and the campaign changes made under leads in flight
 between them (config_log).
 
@@ -368,6 +369,24 @@ def _copy_lines(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> lis
     return out
 
 
+def _test_words(t: Mapping[str, Any]) -> str:
+    """"warm-intro (variant: email 1, first_line; warm intro against no intro)"."""
+    what = f"email {t.get('email')}, {t.get('change')}; " if t.get("kind") == "variant" else ""
+    return f"{t.get('test_id')} ({t.get('kind')}: {what}{t.get('version_a')} against {t.get('version_b')})"
+
+
+def _test_lines(a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
+    """The running copy test (config_version.copy_test) started, stopped or changed between two versions."""
+    old, new = a.get("copy_test") or None, b.get("copy_test") or None
+    if old == new:
+        return []
+    if old and new and old.get("test_id") == new.get("test_id"):
+        keys = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+        return [f"Copy test {new['test_id']}: " + ", ".join(_value_change(k, old.get(k), new.get(k)) for k in keys)]
+    return ([f"Copy test {old.get('test_id')} stopped"] if old else []) + (
+        [f"Copy test {_test_words(new)} started"] if new else [])
+
+
 def diff(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
     """What differs between two config_versions rows, in plain words; [] when nothing does."""
     out: list[str] = []
@@ -387,6 +406,7 @@ def diff(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
         if old_g.get(k) != new_g.get(k):
             out.append(_value_change(f"General {k}:", old_g.get(k), new_g.get(k)))
     out += _copy_lines(ctx, a, b)
+    out += _test_lines(a, b)
     old_v, new_v = a.get("settings_versions") or {}, b.get("settings_versions") or {}
     for tab in config_version.CONTENT_TABS:
         if old_v.get(tab) != new_v.get(tab):
