@@ -57,7 +57,9 @@ opt-out from suppression_load, a customer domain) has their lead stopped, with e
 Directory, since() and mark_engaged() are shared with poll_replies.
 
 SPEC 9's other sync_outcomes duties are not here: the daily retention job deletes leads 31 days after
-their last step (ops/retention.py), and Apollo deletion notices are not yet handled.
+their last step (ops/retention.py), and Apollo deletion notices, which Apollo offers no API for, are
+honoured by hand with `us-outbound erase --email ADDRESS --live` within 30 days (ops/erase.py,
+docs/daily.md).
 """
 
 from __future__ import annotations

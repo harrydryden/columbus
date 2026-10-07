@@ -180,8 +180,30 @@ docs/railway-setup.md, step h.
   `start`, if it has none yet), and the next lead added resumes it.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
-- **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual
-  steps it prints.
+- **Someone asks to be forgotten, or Apollo sends a deletion notice:** within 30 days,
+  `us-outbound erase --email ADDRESS --live`, then do the manual steps it prints (below, **Erasure and
+  Apollo deletion notices**).
+
+## Erasure and Apollo deletion notices
+
+Apollo emails a deletion notice when someone has asked Apollo to remove their data, and we honour each one
+within 30 days (SPEC 2). Apollo has no API that lists these notices, and the jobs only ever read Apollo, so
+nothing picks them up by itself. For each notice, and for anyone who asks us directly to be forgotten:
+
+1. Within 30 days of the notice, run `us-outbound erase --email ADDRESS` to see what it will do (it already
+   clears our database), then `us-outbound erase --email ADDRESS --live`.
+2. It deletes the person from our database: their contact rows, the text of their replies, what their cards held
+   in the database, Clay's raw rows, and anywhere else the address is written, such as a colleague's reply naming
+   them. It GDPR-deletes their HubSpot contact, deletes their leads from every US Outbound campaign, and puts the
+   address's hash on suppression, so no job ever stores, proposes or emails them again. It prints what it did for
+   each system, with the address only as a hash; the run's heartbeat keeps that report as the record it was done.
+3. Do the manual steps it prints: Clay's rows (Clay has no API for this) and the Unibox check in Instantly; and,
+   when they apply, the Slack cards that showed them (the jobs never delete a Slack message), the escalation
+   email of their reply, and the note and task the reply desk added in HubSpot, which GDPR delete leaves on the
+   company.
+
+If they unsubscribed earlier, the Instantly blocklist keeps their address. That is the one copy kept on purpose,
+so that no campaign in the workspace emails them again, as our suppression list keeps their hash.
 
 ## Website visits
 

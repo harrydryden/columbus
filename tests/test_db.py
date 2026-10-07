@@ -600,6 +600,13 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     ctx = SimpleNamespace(store=store)
     assert [c["contact_id"] for c in erase._contacts_by_email(ctx, "jane.doe@acme.com")] == ["k1"]
     assert erase._raw_contact_keys(ctx, "jane.doe@acme.com") == ["acme.com|Jane Doe"]
+    store.insert("hitl_items", [{"item_id": "i1", "contact_id": "k2", "payload": {"referral": {"email": "Jane.Doe@acme.com"}}},
+                                {"item_id": "i2", "contact_id": "k2", "payload": {"reply_excerpt": "no"}},
+                                {"item_id": "i3", "contact_id": "k2", "payload": None}])
+    store.insert("events", [{"event_id": "e1", "contact_id": "k2", "reply_text": "ask JANE.DOE@ACME.COM"},
+                            {"event_id": "e2", "contact_id": "k2", "reply_text": "no"}])
+    items, events = erase._mentions(ctx, "jane.doe@acme.com")
+    assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
     runs = heartbeat.latest_runs(store)
