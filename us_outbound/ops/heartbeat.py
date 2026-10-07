@@ -79,6 +79,7 @@ EXPECTED: dict[str, int] = {
     "lookalikes": 32 * _DAY,  # the 1st at 02:30 (weekly until 5 Oct 2026)
     "lookalike_leads": 32 * _DAY,  # the 1st at 02:50
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
+    "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
 WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people",

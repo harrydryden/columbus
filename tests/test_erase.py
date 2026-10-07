@@ -81,3 +81,47 @@ def test_erase_twice_is_harmless():
     again = erase(ctx, JANE)
     assert again["database"]["contacts_deleted"] == 0 and again["database"]["suppression"] == "already suppressed"
     assert len(ctx.store.tables["suppression"]) == 1
+
+
+def test_erase_reaches_where_else_the_address_is_written_and_names_what_it_cannot():
+    """A colleague's reply card that names them, a reply quoting their address, and the manual steps for Slack, the
+    escalation inbox and HubSpot's note and task (7 Oct 2026)."""
+    from datetime import UTC, datetime
+
+    ctx, t, inst, lead = setup(live=False)
+    s = ctx.store
+    s.update("hitl_items", {"item_id": "h1"}, {"slack_ts": "1.1", "created_at": datetime(2026, 10, 5, 11, tzinfo=UTC),
+                                               "escalated_at": datetime(2026, 10, 6, 11, tzinfo=UTC),
+                                               "payload": {"draft": "Hi Jane", "hubspot": {"note_id": "n9",
+                                                                                           "task_id": "t9"}}})
+    s.insert("hitl_items", [
+        {"item_id": "h-referral", "contact_id": "k3", "kind": "reply", "status": "handled",
+         "payload": {"reply_class": "referral", "reply_excerpt": "Ask Jane: jane.doe@acme.com",
+                     "referral": {"name": "Jane Doe", "email": "Jane.Doe@acme.com"}, "mailbox": "hannah@meetspill.org"}},
+        {"item_id": "h-elsewhere", "contact_id": "k3", "kind": "reply", "status": "handled",
+         "payload": {"reply_class": "other", "note": "cc jane.doe@acme.com"}},
+        {"item_id": "h-unrelated", "contact_id": "k3", "kind": "reply", "payload": {"reply_excerpt": "Not now"}},
+    ])
+    s.insert("events", [{"event_id": "e3", "contact_id": "k3", "account_id": "a1", "type": "replied",
+                         "reply_text": "Write to jane.doe@acme.com instead", "reply_class": "referral"}])
+    report = erase(ctx, JANE)
+    items = {i["item_id"]: i for i in s.tables["hitl_items"]}
+    referral = items["h-referral"]["payload"]
+    assert referral["reply_excerpt"] is None and referral["referral"] is None and referral["reply_class"] == "referral"
+    assert items["h-elsewhere"]["payload"] is None  # the address was outside the reply text: the payload goes
+    assert items["h-unrelated"]["payload"] == {"reply_excerpt": "Not now"}
+    events = {e["event_id"]: e for e in s.tables["events"]}
+    assert events["e3"]["reply_text"] is None and events["e2"]["reply_text"] == "Not now"
+    assert report["database"]["mentions_cleared"] == {"hitl_items": 2, "events_reply_text": 1}
+    steps = report["manual_steps"]
+    assert any(x.startswith("Slack: 1 card in #us-outbound showed them (posted Mon 05 Oct 2026 12:00 UK)") for x in steps)
+    assert any(x.startswith("Inbox: their reply was escalated to harry@spill.chat (Tue 06 Oct 2026 12:00 UK)")
+               for x in steps)
+    assert any("take them out of note n9, task t9 by hand" in x for x in steps)
+    assert "jane" not in repr(report).lower()
+
+
+def test_erase_without_traces_lists_only_clay_and_instantly():
+    ctx, t, inst, lead = setup(live=True)
+    report = erase(ctx, JANE)
+    assert [x.split(":")[0] for x in report["manual_steps"]] == ["Clay", "Instantly"]

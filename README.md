@@ -33,7 +33,7 @@ Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
 of it (marked * below).
 
 ```
-us-outbound status                                 the switches, when settings synced, what waits, jobs that need a look
+us-outbound status                                 the switches, when settings synced, what waits, jobs that need a look, retention
 us-outbound golive                                 the read-only go/no-go check before sending (exits 1 on a FAIL)
 us-outbound accounts [DOMAIN] [--csv]              the companies and contacts we hold (read-only): a summary and the list, one company, a CSV
 us-outbound accounts [--status S] [--tier T] [--industry X] [--limit N]   the list, narrowed (default 25; --limit 0 lists all)
@@ -114,7 +114,7 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | :- | :- |
 | 0 Foundations | Built and running on Railway: clients, guard, settings sync (02:00, and 11:30 on weekdays), DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the scheduler |
 | 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders at every account (`apollo_people`), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts` while Clay verification is not built. Not built: public signals, `verify_in_clay` |
-| 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment with send approvals in Slack (`auto_send` = no), the sending ramp, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback` |
+| 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment with send approvals in Slack (`auto_send` = no), the sending ramp, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback`; `retention` (7 Oct 2026: SPEC 6's retention rules and SPEC 13's 31 days) |
 | 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); the Monday readout, the signal table, tests read at pre-registered looks, UTM tags and demo bookings read back (6 Oct 2026; docs/pipeline.md "How the system learns"); cohorts by enrolment week with the config version each contact was enrolled under (7 Oct 2026; docs/developing-while-live.md) |
 
 ## Deviations from the SPEC 13 layout
@@ -141,7 +141,8 @@ Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_alias
 `partners`, `lookalike_cells`, `lookalike_growth`, `config_versions` and `config_log` (Harry, 7 Oct 2026: what
 each cohort was enrolled under, and each change to what the leads in flight share; `config_version.py`).
 `suppression` gains `expires_at` (only Suppress-signal domains expire) and
-`contacts` gains `last_step_at` (for retention), and `config_version`, `code_sha` and `copy_hash` (what the
+`contacts` gains `last_step_at` and `lead_deleted_at` (for retention: when its Instantly lead was deleted, 31 days
+after its last step), and `config_version`, `code_sha` and `copy_hash` (what the
 contact's emails were rendered under; NULL, "unstamped", before 8 Oct 2026). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
@@ -169,7 +170,17 @@ next send day expires. With `auto_send` = `yes`, `enrol` adds leads straight awa
 hand-check, as before. `us_outbound/enrol/approvals.py` has the hitl_items and events contract the
 daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
 
-Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slack, and so do the
+Jobs beyond SPEC 9: `retention` (daily 00:40, live: SPEC 6's retention rules and SPEC 13's 31 days, which SPEC 9
+gave to sync_outcomes; `ops/retention.py`, built 7 Oct 2026): it deletes each Instantly lead more than 31 days after
+its last step (dated as the send forecast dates it, or from its stop, or the conversation's last email; never in
+flight, never while a reply waits for a person or an opt-out or bounce is still to record; at most 200 a run),
+clears reply text from events and the reply cards 90 days after the reply, deletes contacts who never replied 12
+months after their last step and company rows no source has refreshed in 12 months (only those nothing else
+holds), and never touches suppression. Dry-run counts and changes nothing,
+the database included. The daily post has one line when it deleted anything, and `us-outbound status` says what it
+last did and what waits; `us-outbound run retention` shows what is due now. Apollo deletion notices have no API:
+Harry honours each within 30 days with `us-outbound erase --email ADDRESS --live` (docs/daily.md).
+`heartbeat_check` (hourly: a missed heartbeat alerts in Slack, and so do the
 errors a job caught and a key a service rejected, `ops/job_errors.py`; it then pings the outside
 watchdog, Healthchecks.io, which emails Harry when the worker, the database or Slack is down,
 `ops/watchdog.py`; Harry, 7 Oct 2026),

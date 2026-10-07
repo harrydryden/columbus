@@ -214,8 +214,30 @@ docs/railway-setup.md, step h.
   company for good.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
-- **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual
-  steps it prints.
+- **Someone asks to be forgotten, or Apollo sends a deletion notice:** within 30 days,
+  `us-outbound erase --email ADDRESS --live`, then do the manual steps it prints (below, **Erasure and
+  Apollo deletion notices**).
+
+## Erasure and Apollo deletion notices
+
+Apollo emails a deletion notice when someone has asked Apollo to remove their data, and we honour each one
+within 30 days (SPEC 2). Apollo has no API that lists these notices, and the jobs only ever read Apollo, so
+nothing picks them up by itself. For each notice, and for anyone who asks us directly to be forgotten:
+
+1. Within 30 days of the notice, run `us-outbound erase --email ADDRESS` to see what it will do (it already
+   clears our database), then `us-outbound erase --email ADDRESS --live`.
+2. It deletes the person from our database: their contact rows, the text of their replies, what their cards held
+   in the database, Clay's raw rows, and anywhere else the address is written, such as a colleague's reply naming
+   them. It GDPR-deletes their HubSpot contact, deletes their leads from every US Outbound campaign, and puts the
+   address's hash on suppression, so no job ever stores, proposes or emails them again. It prints what it did for
+   each system, with the address only as a hash; the run's heartbeat keeps that report as the record it was done.
+3. Do the manual steps it prints: Clay's rows (Clay has no API for this) and the Unibox check in Instantly; and,
+   when they apply, the Slack cards that showed them (the jobs never delete a Slack message), the escalation
+   email of their reply, and the note and task the reply desk added in HubSpot, which GDPR delete leaves on the
+   company.
+
+If they unsubscribed earlier, the Instantly blocklist keeps their address. That is the one copy kept on purpose,
+so that no campaign in the workspace emails them again, as our suppression list keeps their hash.
 
 ## Website visits
 
@@ -298,6 +320,19 @@ People hire (likely)" counts only where Apollo knows at least half the company's
 finding no People leader there means something. Once, after this reaches the worker:
 `us-outbound settings load --tab Signals --live`, then `us-outbound sync`.
 
+**Retention** (7 Oct 2026; SPEC 6 and 13). The `retention` job runs at 00:40 UK every night and needs nothing from
+you. It deletes each Instantly lead 31 days after its last step (or after the reply, bounce, unsubscribe or booking
+that stopped it, or the last email of a conversation with them), so the Instantly plan's lead count stays down; it
+never deletes a lead still being emailed, one whose reply waits for you, or one whose unsubscribe or bounce the jobs
+have not recorded yet. It clears the text of replies 90 days after they came
+(the class, dates and ids stay, so the readout counts as before). It deletes the people who never replied 12 months
+after their last email, and companies no source has seen again in 12 months that nothing else holds. The
+suppression list is never touched. When it deleted anything, the daily post ends with one line of counts, and
+`us-outbound status` says what it last did and what it is holding back and why. `us-outbound run retention` shows
+what is due now without changing anything. Like every job it stays dry while `live_sending` is no. Copies outside
+the database are not its to delete: replies quoted in Slack (set #us-outbound's message retention in Slack if you
+want them to go too), escalation emails, and the notes of warm replies in HubSpot.
+
 **Don't edit rows by hand in Railway's Data tab.** An edit there bypasses the system's checks
 (suppression, one company per domain, a sender kept for life). Make changes with the sheet and the
 commands instead.
@@ -306,7 +341,7 @@ commands instead.
 
 | Command | What it does |
 | :- | :- |
-| `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, mailboxes, today's number |
+| `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number |
 | `golive` | The read-only go/no-go check |
 | `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
@@ -324,4 +359,5 @@ commands instead.
 | `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
 | `test start ID --live`, `test read ID` | Start a test on the Tests tab; read it at its latest pre-registered look |
 
-Also `handcheck show|approve`, `erase --email` and `schedule`. `us-outbound --help` lists every command.
+Also `handcheck show|approve`, `erase --email` (and for an Apollo deletion notice), `run retention` and `schedule`.
+`us-outbound --help` lists every command.

@@ -111,7 +111,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
                                                "hand_check_post", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
-                                               "blackout"}
+                                               "blackout", "retention"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
@@ -133,6 +133,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["blackout"] == "us_outbound.registry.blackout:run"  # Harry, 7 Oct 2026: pause over blackouts
     assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
     assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
+    assert cli.JOBS["retention"] == "us_outbound.ops.retention:run"  # SPEC 6 and 13
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 
@@ -428,6 +429,17 @@ def test_status_prints_jobs_and_mailboxes(capsys):
     assert "Credit budgets this month (UK time):" in out and "Enrolment this week (Monday to Sunday, UK time):" in out
     assert "Today: 0, limited by ready accounts" in out
     assert "Apollo: 0 of 2,000 credits used this month (0%)" in out
+    assert "Retention (00:40 UK daily): not run yet" in out  # ops/retention.py
+
+
+def test_retention_runs_by_hand_and_shows_in_status(capsys):
+    h = Harness()
+    assert h.run("run", "retention", "--live") == 0  # live_sending is no: it stays dry
+    out = capsys.readouterr().out
+    assert "Running dry: live_sending is no" in out and '"leads"' in out
+    assert h.beats("retention")[0]["status"] == "ok" and h.beats("retention")[0]["dry_run"] is True
+    assert h.run("status") == 0
+    assert "Retention: last run Tue 27 Oct 12:00 UK (dry-run): nothing due" in capsys.readouterr().out
 
 
 # -- copy tests -------------------------------------------------------------------------------------------
@@ -551,7 +563,7 @@ def test_no_http_library_outside_the_http_client():
 
     root = Path(cli.__file__).resolve().parents[1]
     mine = ["ops/cli.py", "ops/heartbeat.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
-            "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
+            "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
     for rel in mine:
         text = (root / rel).read_text()
         assert not re.search(r"^\s*(import|from)\s+(requests|httpx|urllib)", text, re.M), rel

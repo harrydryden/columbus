@@ -106,6 +106,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
     ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
+    # SPEC 6 and 13: Instantly leads 31 days after their last step (SPEC 9 had it in sync_outcomes), daily at a quiet
+    # hour: after Instantly's send window (09:00 to 16:00 US Eastern) and before suppression_load (01:30). It deletes
+    # leads in Instantly, so it needs --live, and like every job it stays dry until live_sending = yes
+    # (ops/retention.py).
+    ScheduledJob("retention", "40 0 * * *", live=True, enabled=True, timeout_minutes=30, phase=2),
 )
 
 

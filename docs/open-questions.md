@@ -15,6 +15,15 @@ None of these blocks the pilot; each has a safe default. The go-live steps thems
 - **72. Page-only claims** to confirm for the US (HIPAA, booking by text, languages, and so on).
 - **74. The first copy test**: what it compares, before phase 3.
 - **77. The duplicate Nonprofits page** to archive on the site.
+- **79. People revealed but never emailed** (7 Oct 2026, the retention job, `ops/retention.py`): SPEC 6 deletes
+  contacts who never replied 12 months after their last step, so a person pick_contacts revealed but nobody
+  emailed (declined with 👤 on a card, or at a company that left the queue) has no last step and is kept.
+  Default: kept. Option: delete them 12 months after they were found (`contacts.created_at`), unless their
+  company is still in the queue; a person declined with 👤 could then be revealed and proposed again.
+- **80. A reply that only asks to stop** (7 Oct 2026, the retention job): it is read as an opt-out, not a
+  conversation, so that contact is deleted 12 months after their last step like one who never replied; their
+  suppression hash stays, so they are never emailed again. Default: as described. Say if they should be kept like
+  the people who replied.
 
 ## Archive
 

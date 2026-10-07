@@ -600,10 +600,59 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     ctx = SimpleNamespace(store=store)
     assert [c["contact_id"] for c in erase._contacts_by_email(ctx, "jane.doe@acme.com")] == ["k1"]
     assert erase._raw_contact_keys(ctx, "jane.doe@acme.com") == ["acme.com|Jane Doe"]
+    store.insert("hitl_items", [{"item_id": "i1", "contact_id": "k2", "payload": {"referral": {"email": "Jane.Doe@acme.com"}}},
+                                {"item_id": "i2", "contact_id": "k2", "payload": {"reply_excerpt": "no"}},
+                                {"item_id": "i3", "contact_id": "k2", "payload": None}])
+    store.insert("events", [{"event_id": "e1", "contact_id": "k2", "reply_text": "ask JANE.DOE@ACME.COM"},
+                            {"event_id": "e2", "contact_id": "k2", "reply_text": "no"}])
+    items, events = erase._mentions(ctx, "jane.doe@acme.com")
+    assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
     runs = heartbeat.latest_runs(store)
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
+
+
+def test_retention_sql_runs_on_postgres(store):
+    """ops/retention.py finds old reply text with SQL on Postgres (the tests' MemoryStore does it in Python)."""
+    from us_outbound.ops import retention
+
+    old, recent = T0 - timedelta(days=91), T0 - timedelta(days=89)
+    store.insert("events", [
+        {"event_id": "e-old", "type": "replied", "reply_text": "Not for us", "occurred_at": old},
+        {"event_id": "e-empty", "type": "replied", "reply_text": "", "occurred_at": old},
+        {"event_id": "e-none", "type": "replied", "reply_text": None, "occurred_at": old},
+        {"event_id": "e-recent", "type": "replied", "reply_text": "Yes", "occurred_at": recent},
+    ])
+    store.insert("hitl_items", [
+        {"item_id": "i-old", "kind": "reply", "created_at": old, "payload": {"reply_excerpt": "Not for us"}},
+        {"item_id": "i-ooo", "kind": "out_of_office", "created_at": old, "payload": {"reply_excerpt": "Away"}},
+        {"item_id": "i-done", "kind": "reply", "created_at": old,
+         "payload": {"reply_excerpt": None, "reply_text_purged_at": old.isoformat()}},
+        {"item_id": "i-erased", "kind": "reply", "created_at": old, "payload": None},
+        {"item_id": "i-recent", "kind": "reply", "created_at": recent, "payload": {"reply_excerpt": "Yes"}},
+        {"item_id": "i-card", "kind": "send_approval", "created_at": old, "payload": {"lead": {}}},
+    ])
+    events, items = retention._old_reply_texts(SimpleNamespace(store=store), T0 - timedelta(days=90))
+    assert events == ["e-empty", "e-old"]
+    assert sorted(i["item_id"] for i in items) == ["i-old", "i-ooo"] and items[0]["payload"]["reply_excerpt"]
+
+    store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
+                                       {"key": "x.com|J", "payload": {"email": "j@x.com"}},
+                                       {"key": "y.com|K", "payload": {"email": "jane_doe@acme.com"}}])
+    ctx = SimpleNamespace(store=store)
+    assert retention._raw_contact_keys(ctx, ["jane.doe@acme.com", "nobody@z.com"]) == ["acme.com|Jane Doe"]
+    assert retention._raw_contact_keys(ctx, []) == []
+
+
+def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
+    """The universe rule's SQL (Postgres) and its Python (the tests' MemoryStore) agree on every case."""
+    from tests.test_retention import UNIVERSE_NOW, universe_rows
+    from us_outbound.ops import retention
+
+    universe_rows(store)
+    before = retention.months_before(UNIVERSE_NOW, retention.UNIVERSE_MONTHS)
+    assert retention.stale_accounts(SimpleNamespace(store=store), before) == ["a-stale", "a-stale-too"]
 
 
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):

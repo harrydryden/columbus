@@ -18,7 +18,7 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature. Interest status written back to Instantly ("Interested" on a positive reply, "Meeting booked" on a booking; 7 Oct) | — |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
 | Hand-off | `poll_approvals`: Slack ✅/edit/❌ from Harry or the mailbox owner, or `us-outbound replies list|approve|skip` without Slack. HubSpot company, contact, note, task and deal on positive or referral replies. 24-hour escalation. `hubspot_readback` for booked meetings, and (6 Oct) demo requests in Spill 3.0 at companies we emailed | — |
-| Safety | Every email approved in Slack before it is sent (while `auto_send` = no), `kill_rules` (bounces, blocks, complaints), `stop --live` as the brake, `daily_post` with its "Needs you" line, `golive`, heartbeats, the guard on every outbound call, dry-run by default. The weekly `hand_check_post` covers only accounts with doubtful Apollo facts while `auto_send` = no; it is enrol's gate only with `auto_send` = yes | Retention jobs (deleting leads 31 days after their last step; Apollo deletion notices) |
+| Safety | Every email approved in Slack before it is sent (while `auto_send` = no), `kill_rules` (bounces, blocks, complaints), `stop --live` as the brake, `daily_post` with its "Needs you" line, `golive`, heartbeats, the guard on every outbound call, dry-run by default. The weekly `hand_check_post` covers only accounts with doubtful Apollo facts while `auto_send` = no; it is enrol's gate only with `auto_send` = yes. Retention (7 Oct 2026): the daily `retention` job (00:40) deletes Instantly leads 31 days after their last step, clears reply text after 90 days, and deletes contacts who never replied and stale company rows after 12 months; Apollo deletion notices are honoured by hand with `erase --email` (docs/daily.md) | Apollo deletion notices read by a job: Apollo has no API for them |
 | Learn | The events table and the readout views. The learning loop (6 Oct): `monday_readout` (Mondays 08:30: last week, the targets, the exit criteria, the cuts, the signal table, the tests at a look), the signal table (`signals value`), tests read only at pre-registered looks (Tests tab `kind` and `looks`), UTM tags on our links (`utm_links`), demo bookings read back from Spill 3.0 (`hubspot_readback`) | The readout's limit and budget lines (pipeline.md Proposed 11); SPEC 12's three observations drawn from the reply text; monthly state and role cuts |
 
 About 70 API details are marked `PHASE0-CONFIRM` in the code: endpoint shapes and status codes we
@@ -356,8 +356,20 @@ verification and contact choice write only the database; enrol, replies and post
    - Harry, once deployed: `us-outbound settings load --tab General --tab Tests --live`, then `us-outbound
      sync` (adds `utm_links` and the `kind` and `looks` columns, keeping his values); pre-register `looks` on
      a test before `test start`.
-5. **Retention and compliance:** delete leads 31 days after their last step, act on Apollo
-   deletion notices within 30 days, and purge reply text after 90 days.
+5. **Retention and compliance:** *built 7 Oct 2026* (`ops/retention.py`, the daily `retention` job at 00:40 UK,
+   live like the other Instantly jobs, so dry until `live_sending` = yes; docs/daily.md "Retention"):
+   - Instantly leads more than 31 days after their last step are deleted (SPEC 13), the last step dated as the send
+     forecast dates it (US Eastern, blackout dates skipped), or from a stop of the lead's own or a booking at its
+     company, or from a send or a conversation's email recorded later; never a lead in flight, one whose reply waits
+     for a person, one Instantly still lists as sending with steps unrecorded, or one whose opt-out or bounce is
+     still to record. At most 200 a run;
+     `contacts.lead_deleted_at` records it;
+   - reply text is purged 90 days after the reply, from `events.reply_text` and the reply cards in `hitl_items`;
+   - contacts who never replied are deleted 12 months after their last step, and company rows no source has
+     refreshed in 12 months, only when nothing else holds them (docs/open-questions.md 79 and 80);
+   - Apollo deletion notices: Apollo has no API for them, so Harry runs `us-outbound erase --email ADDRESS --live`
+     within 30 days of each (docs/daily.md); erase now also reaches a colleague's card naming the person and lists
+     the Slack cards, escalation email and HubSpot note and task it cannot delete.
 6. **Lookalike leads: do UK customers make good US seeds?** Apollo's likeness may favour companies in
    the seed's own country. Each monthly run counts, for US and for non-US seeds apart, the searches
    (and the empty ones), the rows returned, and the companies admitted, refused and not US (the daily

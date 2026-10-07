@@ -488,11 +488,12 @@ SPEC9_CRONS = {
     "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after apollo_signals (03:30), before verify_accounts (04:30)
     "apollo_enrich": "10 4 * * 1-5",  # Harry, 2 Oct 2026: after read_pages starts (03:45), before verify_accounts
     "apollo_people": "20 4 * * 1-5",  # Harry, 5 Oct 2026: after apollo_enrich, before verify_accounts' rescore
+    "retention": "40 0 * * *",  # SPEC 6 and 13 (SPEC 9 had the lead deletions in sync_outcomes at 01:00)
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
         "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post",
-        "blackout"}
+        "blackout", "retention"}
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
@@ -518,7 +519,7 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "monday_readout",
                        "heartbeat_check",
-                       "suppression_load", "lookalikes", "lookalike_leads", "hand_check_post"]
+                       "suppression_load", "lookalikes", "lookalike_leads", "hand_check_post", "retention"]
     assert set(enabled) <= set(hb.EXPECTED)
     assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]
