@@ -67,7 +67,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included. With `clay_cross_check` = yes, only the doubts Clay couldn't settle, with both values ("Clay says 62 staff, Apollo says 49") | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 | The daily post | Read the **Needs you** line under the headline first |
+| 09:00 | The daily post | Read the **Needs you** line under the headline first. Its **Labels** block says how many companies the label check checked and decided, and how many cards' industry you corrected (`1 industry correction of 28 decided (96% right)`) |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -118,10 +118,15 @@ to bottom:
    copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
    table, `us-outbound cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
    two versions, `us-outbound cohorts changes`.
-6. **Signal value:** the signals whose companies replied more or less than the companies without them. For
+6. **Industry labels** (Harry, 7 Oct 2026): last week's and all cards with the right industry against the 95%
+   target ("met" or "not met", from 30 cards), the corrections approvers made (`Games studios → Technology &
+   Startups (2)`), how often the rules and the model agreed, and the companies held or left out. Many of one
+   correction means a definition or keywords on the Industries tab need a change; run `us-outbound labels eval
+   --live` before and after.
+7. **Signal value:** the signals whose companies replied more or less than the companies without them. For
    the whole table, `us-outbound signals value`. To act on it, change a weight on the Signals tab, then
    `us-outbound sync`. Nothing re-weights itself.
-7. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
+8. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
    far each running test has got.
 
 **Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
@@ -172,9 +177,12 @@ comes back is new.
 | "Apollo has N credits; at this pace it reaches apollo_floor (F) in about D days…" | 09:00, once a day, when the floor is under 21 days away at the last fortnight's pace, or Apollo is already under it (then sourcing and email reveals have stopped) | Buy Apollo credits, or lower `apollo_monthly_credits` on the General tab (below the floor: buy, or lower `apollo_floor`) |
 | "Apollo: … credits used this month (80%)", or "… are used" | 09:00, at 80% and at 100%, once a month each | At 100% sourcing and email reveals stop until the 1st. Raise `apollo_monthly_credits` on the General tab to allow more |
 | "Clay: … (80%)", or "… are used" | The same, for `clay_monthly_credits` (only while Clay is used) | Raise `clay_monthly_credits` |
-| "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, and copy QA stops. Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
+| "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, copy QA stops, and new companies wait unverified for the industry label check (those already verified carry on). Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
 | "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
 | "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 09:00, once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
+| "labels: N industry corrections since the last send day…" | 09:00, once a day, when you corrected 3 or more cards' industry, or 10% of at least 10 | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
+| "labels: the rules and the model agreed on only N%…" | 09:00, once a day, under 70% of at least 20 companies checked | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: trim them on the Industries tab |
+| "The label check did not run (…); N companies wait unverified" | 09:00, once a day, while the model cannot be asked (the Claude cap, an error) | At the cap, raise `claude_monthly_cap_usd`; on an error, it usually clears itself next run. Verified companies carry on meanwhile. To run on the rules alone, set `label_check` to `skip` |
 | "Instantly's plan has no room for new leads, so nothing new is being sent…" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and a ✅ already given goes through once there is room (the card says it is held) |
 | "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
 | "Errors the jobs met: • enrol … carried on past 2 errors…" | Hourly, once a day per job and kind | Usually nothing: each job tries again on its next run. If it keeps coming, `us-outbound status` and the worker's logs in Railway |

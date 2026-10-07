@@ -15,6 +15,8 @@ rerun or a restart never repeats a line):
   * Claude's spend this month (credit_ledger, the UTC month, as clients/claude.py counts it) at 50%, 80% and 100%
     of claude_monthly_cap_usd, once a UTC month each. 100% is where the client refuses every call (the cap less
     its reserve, claude.cap_reached_at): replies are then classified "other" with no draft and copy QA stops.
+  * The industry label check (labels.asks; Harry, 7 Oct 2026): many industry corrections at the cards, the rules and
+    the model agreeing on too few companies, or the check unable to ask the model while new companies wait.
   * Apollo's website-visitor credits while site visits are on (site_visit_domain set, site_visits scheduled):
     under VISITOR_WARN_SHARE left, once a month. Not by pace: Apollo spends them itself each time its tracker names
     a visiting company, so credit_ledger has no record of their pace, and its answer gives no cycle dates.
@@ -50,7 +52,8 @@ LOOKBACK = timedelta(hours=26)  # a source's skip for the floor this recent stan
 FLOOR_JOBS = ("source_universe", "apollo_signals", "apollo_enrich", "site_visits", "lookalikes", "lookalike_leads",
               "pick_contacts")
 STOPS = {"apollo": "sourcing and email reveals", "clay": "Clay's verification and email lookups"}
-CLAUDE_STOPS = 'replies are classified "other" with no draft, and copy QA stops'
+CLAUDE_STOPS = ('replies are classified "other" with no draft, copy QA stops, and new companies wait unverified for '
+                'the industry label check')
 HEAD = "Credits and spend: a purchase or a setting needs you."
 
 
@@ -214,10 +217,12 @@ def visitors_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
 
 
 def asks(ctx: Context, sp: Spend) -> list[tuple[str, str]]:
-    """Every (key, line) due today, before deduplication."""
+    """Every (key, line) due today, before deduplication; the industry label check's asks last (labels.asks)."""
+    from us_outbound import labels
+
     found = [apollo_floor_ask(ctx, sp), *(budget_ask(sp.budgets[sys]) for sys in ("apollo", "clay")),
              claude_ask(ctx, sp), visitors_ask(ctx, sp)]
-    return [a for a in found if a is not None]
+    return [a for a in found if a is not None] + labels.asks(ctx)
 
 
 def check(ctx: Context) -> tuple[Spend, dict[str, Any]]:

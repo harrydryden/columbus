@@ -15,6 +15,7 @@ from tests.test_client_claude import FakeSDK
 from us_outbound import labels
 from us_outbound.clients.claude import BudgetExceeded
 from us_outbound.context import Secrets
+from us_outbound.learn.daily_post import period
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import Override
 from us_outbound.settings.validate import validate_all
@@ -514,3 +515,113 @@ def test_the_eval_reads_the_approvers_corrections_too():
 ])
 def test_score(d, expect, verdict):
     assert labels.score(d, expect) == verdict
+
+
+# -- measurement: the daily post's Labels block, its asks and the readout -----------------------------------------------
+
+TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK, Tue 27 Oct: the post covers Monday 26 Oct
+MON = datetime(2026, 10, 26, 14, 0, tzinfo=UTC)
+
+
+def checked_fact(i, source, *, action="verify", rules="Fintech", model="Fintech", group=TECH, at=MON):
+    return {"event_id": f"v{i}", "account_id": f"a{i}", "source": "label_check", "fact": "label_verdict",
+            "value": {"rules": rules, "rules_group": group, "model": model, "asked": True,
+                      "decision": {"source": source, "action": action}}, "observed_at": at}
+
+
+def correction(i, frm, to, at=MON):
+    return {"event_id": f"c{i}", "account_id": f"a{i}", "source": "label_check", "fact": "label_corrected",
+            "value": {"from": frm, "to": to, "by": "U_HARRY", "via": "thread"}, "observed_at": at}
+
+
+def decided(i, approval="approved", at=MON):
+    return {"event_id": f"send-approval:{i}", "type": "send_approval", "approval": approval, "occurred_at": at}
+
+
+def measured(facts_=(), events=(), verify_labels=None, now=TUE_9):
+    ctx = make_context(DEFAULT, now=now)
+    ctx.store.insert("signal_events", list(facts_))
+    ctx.store.insert("events", list(events))
+    if verify_labels is not None:
+        ctx.store.insert("heartbeats", [{"run_id": "v1", "job": "verify_accounts", "status": "ok",
+                                         "started_at": now - timedelta(hours=4), "detail": {"labels": verify_labels}}])
+    return ctx
+
+
+def test_the_daily_posts_labels_block():
+    facts_ = [*(checked_fact(i, "rules+model") for i in range(5)), checked_fact(5, "model", model="Edtech"),
+              checked_fact(6, "umbrella", model="Edtech"), checked_fact(7, "disputed", action="hold"),
+              checked_fact(8, "disputed", action="disqualify", model="none"),
+              checked_fact(9, "rules+model", at=MON - timedelta(days=3)),  # before the period
+              {**checked_fact(10, "model"), "value": {**checked_fact(10, "model")["value"], "asked": False}},  # re-decided
+              correction(1, "Games studios", "Technology & Startups")]
+    events = [*(decided(i) for i in range(18)), decided(30, "company_rejected"), decided(31, "expired")]
+    ctx = measured(facts_, events, {"unchecked": 3, "unavailable_reason": "the monthly Claude cap is reached"})
+    start, end, _ = period(ctx)
+    assert labels.post_lines(ctx, start, end) == [
+        "  Checked: 9 (rules and model agreed on 5, 56%; model overruled 1; group copy 1; General copy 0; held 1; "
+        "disqualified 1; waiting unchecked 3).",
+        "  The label check could not ask the model at the last verify run: the monthly Claude cap is reached.",
+        "  Cards: 1 industry correction of 20 decided (95% right): Games studios → Technology & Startups.",
+    ]
+    assert labels.post_lines(measured(), start, end)[-1] == "  Cards: none decided."
+
+
+def test_the_daily_post_carries_the_block():
+    from tests.test_daily_post import world as post_world
+    from us_outbound.learn import daily_post
+
+    ctx, _ = post_world()
+    lines, _ = daily_post.build(ctx)
+    i = lines.index("*Labels*")
+    assert lines[i + 1].startswith("  Checked: 0 (rules and model agreed on 0, n/a;") and lines.index("*Mailboxes*") > i
+
+
+def test_the_asks_trip_once_a_day_on_corrections_agreement_and_an_unavailable_check():
+    facts_ = [*(correction(i, "Adtech & martech", "Fintech") for i in range(3)),
+              *(checked_fact(10 + i, "rules+model") for i in range(10)),
+              *(checked_fact(30 + i, "model", rules="Adtech & martech", model="Fintech") for i in range(12))]
+    ctx = measured(facts_, [decided(i) for i in range(20)], {"unchecked": 4, "unavailable_reason": "Claude did not answer"})
+    got = dict(labels.asks(ctx))
+    assert got["labels_corrections:2026-10-27"] == (
+        "labels: 3 industry corrections since the last send day (3 of 23 cards). Check the Industries tab's definitions "
+        "and keywords for Adtech & martech → Fintech (3); `us-outbound labels audit --live` checks the queue again.")
+    assert got["labels_agreement:2026-10-27"] == (
+        "labels: the rules and the model agreed on only 45% of 22 companies; the Industries tab's NAICS codes or "
+        "keywords for Technology & Startups need a look.")
+    assert got["labels_unavailable:2026-10-27"].startswith(
+        "The label check did not run (Claude did not answer); 4 companies wait unverified")
+    assert labels.asks(measured([checked_fact(1, "rules+model")], [decided(1)])) == []
+
+
+def test_the_asks_go_out_with_the_spend_asks():
+    from us_outbound.learn import spend
+
+    ctx = measured([correction(i, "Games studios", "Fintech") for i in range(3)], [decided(1)])
+    sp = spend.read(ctx)
+    keys = [k for k, _ in spend.asks(ctx, sp)]
+    assert "labels_corrections:2026-10-27" in keys
+
+
+def test_the_readout_block():
+    start, end = datetime(2026, 10, 19, tzinfo=UTC), datetime(2026, 10, 26, tzinfo=UTC)
+    at = datetime(2026, 10, 21, 12, tzinfo=UTC)
+    facts_ = [*(checked_fact(i, "rules+model", at=at) for i in range(8)), checked_fact(8, "disputed", action="hold", at=at),
+              correction(1, "Games studios", "Technology & Startups", at=at),
+              correction(2, "Games studios", "Technology & Startups", at=at)]
+    ctx = measured(facts_, [decided(i, at=at) for i in range(38)], now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
+    lines = labels.readout_lines(ctx, start, end)
+    assert lines[1] == "*Industry labels* (the label check; target: 95% of cards with the right industry)"
+    assert lines[2] == ("Last week: 38 of 40 cards had the right industry (95%): met. 9 checked, the rules and the "
+                        "model agreeing on 89%; held 1, disqualified 0.")
+    assert lines[3] == "  Corrections: Games studios → Technology & Startups (2)"
+    few = labels.readout_lines(measured([correction(1, "a", "b", at=at)], [decided(1, at=at)]), start, end)
+    assert few[2].startswith("Last week: 1 of 2 cards had the right industry (too few to read).")
+
+
+def test_the_monday_readout_carries_the_block():
+    from us_outbound.learn import readout
+
+    ctx = make_context(DEFAULT, now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
+    lines, _ = readout.build(ctx)
+    assert any(x.startswith("*Industry labels*") for x in lines)

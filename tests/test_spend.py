@@ -143,12 +143,12 @@ def test_a_month_that_jumps_past_80_gets_only_the_100_line():
 @pytest.mark.parametrize("usd, line", [
     (20.0, None),
     (26.0, 'Claude: $26.00 of the $50 monthly cap spent this month (52%). At the cap, replies are classified "other" '
-           "with no draft, and copy QA stops."),
+           "with no draft, copy QA stops, and new companies wait unverified for the industry label check."),
     (41.0, 'Claude: $41.00 of the $50 monthly cap spent this month (82%). At the cap, replies are classified "other" '
-           "with no draft, and copy QA stops."),
+           "with no draft, copy QA stops, and new companies wait unverified for the industry label check."),
     (49.6, 'Claude\'s monthly cap is used up: $49.60 of $50 this month, so replies are classified "other" with no draft, '
-           "and copy QA stops until 1 Nov (UTC). To go on, raise claude_monthly_cap_usd on the General tab (up to $100) "
-           "and the Anthropic Console spend limit."),
+           "copy QA stops, and new companies wait unverified for the industry label check until 1 Nov (UTC). To go on, "
+           "raise claude_monthly_cap_usd on the General tab (up to $100) and the Anthropic Console spend limit."),
 ])
 def test_claude_s_spend_against_its_cap(usd, line):
     ctx, _ = world(claude_monthly_cap_usd=50.0)

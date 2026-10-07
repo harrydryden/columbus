@@ -22,6 +22,9 @@ words, top to bottom:
     their companies have reached after email 1; the latest two compared where both have 30 companies; and what
     changed last week in the settings, the copy, the campaign constants and the code (config versions, and the
     campaign changes made under leads in flight). `us-outbound cohorts` has the full table.
+  * Industry labels (Harry, 7 Oct 2026; labels.py): last week's and all cards with the right industry against the 95%
+    target (a rate from 30 cards), the approvers' corrections, how often the rules and the model agreed, and the
+    companies held or disqualified.
   * The signal table's headline (v_signal_value, learn/signal_value.py).
   * Tests: each running test that reached a pre-registered look in the last week, with its read, or how far it
     has got (learn/looks.py).
@@ -41,7 +44,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, labels
 from us_outbound.context import UK, Context
 from us_outbound.learn import cohorts, looks, signal_value
 from us_outbound.learn.kill_rules import COMPLAINT
@@ -338,6 +341,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
             lines += cut_lines(rows, cut, title, start)
     section, by_cohort = cohorts.readout_lines(ctx, start, end)
     lines += section
+    lines += labels.readout_lines(ctx, start, end)  # the industry label check (labels.py; Harry, 7 Oct 2026)
     table = signal_value.rows(ctx)
     lines += ["", "*Signal value* (companies with the signal at enrolment, against those without)",
               *signal_value.headline(table)]
