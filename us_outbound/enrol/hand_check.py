@@ -59,7 +59,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import timedelta
 from typing import Any
 
-from us_outbound import accounts, verify
+from us_outbound import accounts, labels, verify
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
@@ -184,6 +184,9 @@ def facts(ctx: Context, account: Mapping[str, Any], domains: set[str], hashes: s
         "contact": {"role": person.get("role") or "", "title": person.get("title") or "", "note": note},
         "opener": _clip(op.text or op.would_be, 300), "opener_arm": op.arm, "opener_source": op.source,
         "evidence": evidence,
+        # The label check (labels.py; Harry, 7 Oct 2026): where the label came from and what the model read.
+        "label_source": account.get("label_source") or "", "label_confidence": account.get("label_confidence") or "",
+        "what_they_do": str((labels.latest_verdict(events) or {}).get("what_they_do") or ""),
     }
 
 
@@ -236,6 +239,12 @@ def _opener(a: Mapping[str, Any]) -> str:
     return line or "none"
 
 
+def _label(a: Mapping[str, Any]) -> str:
+    """" (rules+model: payroll software for restaurants)": how the label check placed it, when it has."""
+    source, phrase = a.get("label_source") or "", a.get("what_they_do") or ""
+    return f" ({': '.join(x for x in (source, phrase) if x)})" if source or phrase else ""
+
+
 def _evidence(a: Mapping[str, Any]) -> str:
     parts = []
     for e in a.get("evidence") or ():
@@ -279,7 +288,8 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
             if detailed:
                 lines += [
                     f"  {n}. {a.get('clean_name') or '?'} ({a.get('domain')})  id {aid}",
-                    f"     {_where(a)} · {_size(a)} · {a.get('industry')} · {a.get('tier')} {a.get('score')} · {a.get('status')}",
+                    f"     {_where(a)} · {_size(a)} · {a.get('industry')}{_label(a)} · {a.get('tier')} {a.get('score')} · "
+                    f"{a.get('status')}",
                     f"     Contact: {_who(a)}",
                     f"     Opener ({a.get('angle') or 'no angle'}): {_opener(a)}",
                     f"     Evidence: {_evidence(a)}",
@@ -307,7 +317,9 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
     command = "us-outbound handcheck approve --live" if detailed else "railway ssh -- us-outbound handcheck approve --live"
     meanwhile = ("Until then no new leads go to Instantly this week." if sample
                  else "Ignoring this is safe: only these accounts wait.")
-    lines.append(f"All fine: `{command}`. Any wrong: add `--pull {example}`, or fix it on the Overrides tab. {meanwhile}")
+    relabel = f"{'' if detailed else 'railway ssh -- '}us-outbound labels set {example} \"<label>\" --live"
+    lines.append(f"All fine: `{command}`. Any wrong: add `--pull {example}`, or fix it on the Overrides tab (a wrong "
+                 f"industry: `{relabel}`). {meanwhile}")
     return "\n".join(lines)
 
 

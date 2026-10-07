@@ -31,6 +31,7 @@ from us_outbound.clients.public import absolute_location
 from us_outbound.settings.conditions import ContextRules, find_terms
 
 QUOTE_LIMIT = 300  # SPEC 6: signal_events.quote is at most 300 characters
+TITLE_CHARS = 200  # a page's <title>, kept
 MAX_SNIPPETS = 40  # per page or feed
 NEVER_CLOSES = 7  # the level of a dt, a summary or a label block: only a real heading (h1-h6) ends its section
 
@@ -104,6 +105,10 @@ class Page:
     links: list[Link] = field(default_factory=list)
     blocks: list[Block] = field(default_factory=list)
     raw: str = ""  # the HTML, for links a script builds (an ATS embed)
+    # The page's <title> and its meta description: what a home page says the company is (the label check, labels.py;
+    # Harry, 7 Oct 2026).
+    title: str = ""
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -123,6 +128,9 @@ class _Reader(HTMLParser):
         self._skip = 0
         self._no_text = 0
         self._anchor: tuple[str, list[str]] | None = None
+        self.title: list[str] = []
+        self.description = ""
+        self._in_title = False
 
     def _flush(self) -> None:
         text = " ".join("".join(self._parts).split())
@@ -143,6 +151,11 @@ class _Reader(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = {k: v or "" for k, v in attrs}
+        if tag == "title":
+            self._in_title = True
+        elif tag == "meta" and not self.description and \
+                (a.get("name") or a.get("property") or "").strip().lower() in ("description", "og:description"):
+            self.description = " ".join(a.get("content", "").split())
         attr = LINK_ATTRS.get(tag)
         if attr and a.get(attr):
             if tag == "a":
@@ -158,6 +171,8 @@ class _Reader(HTMLParser):
             self._level = HEADING_LEVELS.get(tag, 0)
 
     def handle_endtag(self, tag: str) -> None:
+        if tag == "title":
+            self._in_title = False
         if tag == "a" and self._anchor is not None:
             href, parts = self._anchor
             self._link(href, "".join(parts))
@@ -170,6 +185,8 @@ class _Reader(HTMLParser):
             self._flush()
 
     def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title.append(data)
         if self._skip:
             return
         if self._anchor is not None:
@@ -194,7 +211,8 @@ def parse_html(html: str, url: str) -> Page:
         reader.close()
     except AssertionError:  # html.parser's last resort on badly broken markup
         reader._flush()
-    return Page(url=url, links=reader.links, blocks=reader.blocks, raw=html or "")
+    return Page(url=url, links=reader.links, blocks=reader.blocks, raw=html or "",
+                title=" ".join("".join(reader.title).split())[:TITLE_CHARS], description=reader.description[:QUOTE_LIMIT])
 
 
 def _sentences(text: str) -> list[str]:

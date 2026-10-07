@@ -67,7 +67,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included. With `clay_cross_check` = yes, only the doubts Clay couldn't settle, with both values ("Clay says 62 staff, Apollo says 49") | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 | The daily post | Read the **Needs you** line under the headline first |
+| 09:00 | The daily post | Read the **Needs you** line under the headline first. Its **Labels** block says how many companies the label check checked and decided, and how many cards' industry you corrected (`1 industry correction of 28 decided (96% right)`) |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -87,6 +87,13 @@ one click decides.
 | — | `send: …` | Sends that text instead of the draft |
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
 | 🚫 | — | Drop the company for good |
+| `industry: Fintech` (any label on the Industries tab; any case, and a unique part of one, like `games`, will do) | — | The company is that, not what the card says: its label is set, kept on the Overrides tab, the card is withdrawn and a new card with that label's emails is posted at once (if it can't be, the next enrol proposes the company). Works whether you have ❌'d it or not. An unknown label gets the list of labels in the thread |
+
+Each send card's **Industry** line says how its label was checked (Harry, 7 Oct 2026; the label check):
+`rules and model agree · Fintech copy` is the normal case; `⚠️ … · the rules say X, the model says Y (medium) ·
+General copy` means they disagreed and the email is the safe General one; `⚠️ … · not checked by the model` is a
+card from before the check, or with `label_check` = `skip`. **They do** is what the model read the company does,
+with its quote. If either is wrong, reply `industry: <label>`.
 
 ## Mondays: the readout
 
@@ -111,10 +118,15 @@ to bottom:
    copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
    table, `us-outbound cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
    two versions, `us-outbound cohorts changes`.
-6. **Signal value:** the signals whose companies replied more or less than the companies without them. For
+6. **Industry labels** (Harry, 7 Oct 2026): last week's and all cards with the right industry against the 95%
+   target ("met" or "not met", from 30 cards), the corrections approvers made (`Games studios → Technology &
+   Startups (2)`), how often the rules and the model agreed, and the companies held or left out. Many of one
+   correction means a definition or keywords on the Industries tab need a change; run `us-outbound labels eval
+   --live` before and after.
+7. **Signal value:** the signals whose companies replied more or less than the companies without them. For
    the whole table, `us-outbound signals value`. To act on it, change a weight on the Signals tab, then
    `us-outbound sync`. Nothing re-weights itself.
-7. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
+8. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
    far each running test has got.
 
 **Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
@@ -165,9 +177,12 @@ comes back is new.
 | "Apollo has N credits; at this pace it reaches apollo_floor (F) in about D days…" | 09:00, once a day, when the floor is under 21 days away at the last fortnight's pace, or Apollo is already under it (then sourcing and email reveals have stopped) | Buy Apollo credits, or lower `apollo_monthly_credits` on the General tab (below the floor: buy, or lower `apollo_floor`) |
 | "Apollo: … credits used this month (80%)", or "… are used" | 09:00, at 80% and at 100%, once a month each | At 100% sourcing and email reveals stop until the 1st. Raise `apollo_monthly_credits` on the General tab to allow more |
 | "Clay: … (80%)", or "… are used" | The same, for `clay_monthly_credits` (only while Clay is used) | Raise `clay_monthly_credits` |
-| "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, and copy QA stops. Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
+| "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, copy QA stops, and new companies wait unverified for the industry label check (those already verified carry on). Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
 | "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
 | "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 09:00, once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
+| "labels: N industry corrections since the last send day…" | 09:00, once a day, when you corrected 3 or more cards' industry, or 10% of at least 10 | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
+| "labels: the rules and the model agreed on only N%…" | 09:00, once a day, under 70% of at least 20 companies checked | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: trim them on the Industries tab |
+| "The label check did not run (…); N companies wait unverified" | 09:00, once a day, while the model cannot be asked (the Claude cap, an error) | At the cap, raise `claude_monthly_cap_usd`; on an error, it usually clears itself next run. Verified companies carry on meanwhile. To run on the rules alone, set `label_check` to `skip` |
 | "Instantly's plan has no room for new leads, so nothing new is being sent…" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and a ✅ already given goes through once there is room (the card says it is held) |
 | "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
 | "Errors the jobs met: • enrol … carried on past 2 errors…" | Hourly, once a day per job and kind | Usually nothing: each job tries again on its next run. If it keeps coming, `us-outbound status` and the worker's logs in Railway |
@@ -204,14 +219,16 @@ docs/railway-setup.md, step h.
   campaign by itself once sending has gone live. A campaign Instantly shows as *completed* is fine:
   Instantly marks an active campaign completed whenever it has no lead left to email (straight after
   `start`, if it has none yet), and the next lead added resumes it.
-- **A card's industry is wrong** (a fulfilment firm pitched as a games studio): ❌ it, then ✏️ to fix
-  the words, or 🚫 if the company is no fit at all. Since 7 Oct a company gets a label within its
-  group (Games studios, Fintech) only when its Apollo keywords say so; otherwise it gets the group's
-  own copy (Technology & Startups). `us-outbound relabel` shows what the rule changes for the
-  companies in the queue; `us-outbound relabel --live` applies it and withdraws the open cards it
-  changes, and they come back on a later day with the right copy. Government domains (.gov, .mil)
-  are never prospected. If a label is still wrong, an Overrides row (field `industry`) fixes that
-  company for good.
+- **A card's industry is wrong** (a fulfilment firm pitched as a games studio): reply `industry: <label>`
+  in its thread (or `us-outbound approvals industry ID "<label>" --live`). The label is set and kept
+  on the Overrides tab, the card is withdrawn, and a new card with the right emails is posted in its
+  place; 🚫 if the company is no fit at all. For a company with no card,
+  `us-outbound labels set DOMAIN "<label>" --live`; `us-outbound labels show DOMAIN` gives its label's
+  history. Since 7 Oct the task model checks each company's label before it can get a card (the
+  label check, docs/pipeline.md stage 3), so this should be rare: the daily post's **Labels** line
+  counts the corrections. `us-outbound relabel` shows what the rules and the stored checks change for
+  the companies in the queue; `--live` applies it and withdraws the open cards it changes. Government
+  domains (.gov, .mil) are never prospected.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten, or Apollo sends a deletion notice:** within 30 days,
@@ -348,7 +365,10 @@ commands instead.
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
 | `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
-| `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`) | Send cards without Slack |
+| `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`, `industry ID "Fintech"`) | Send cards without Slack |
+| `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as `industry: Fintech` on a card does), or show its label and its check history |
+| `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
+| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies approvers corrected). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |

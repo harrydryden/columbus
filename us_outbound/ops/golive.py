@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from us_outbound import budget, limits
+from us_outbound import budget, labels, limits
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
@@ -127,7 +127,8 @@ def check_copy(ctx: Context) -> Check:
     roles = contacted_roles(ctx)
     detail, statuses, own = [], [], 0
     for ind in active:
-        account = {"industry": ind.industry, "industry_group": ind.industry_group}
+        # A label the label check confirmed (labels.py): the most specific copy any of its companies can get.
+        account = {"industry": ind.industry, "industry_group": ind.industry_group, "label_source": labels.AGREED}
         missing, general, notes, used = [], [], [], set()
         for role in roles:
             row, note = enrol.pick_copy(account, role, s, rows)

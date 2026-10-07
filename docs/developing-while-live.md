@@ -25,7 +25,13 @@ campaign's last one finishes.
 
 1. **Content is per lead and fixed at enrolment.** Copy, the signature, openers, General content keys,
    Industries, Roles, Signals and Overrides reach only contacts enrolled after the next `settings sync` (or
-   deploy). Safe at any time. Cards already waiting in Slack keep the version they show.
+   deploy). Safe at any time. Cards already waiting in Slack keep the version they show. The industry label
+   check (`labels.py`; Harry, 7 Oct 2026) is content too: its prompt (`PROMPT_VERSION`), the label list and the
+   Industries `definition` and `apollo_keywords` decide which label, and so which copy, a new company earns
+   (`labels_hash`, in the config version). An edit to one makes every stored verdict stale: verify_accounts asks
+   again about 150 companies a run, so the queue is re-checked over about three weekdays (`us-outbound labels
+   audit --live` does it at once). Run `us-outbound labels eval --live` before shipping a change to the prompt,
+   the decision rule, a definition or keywords, and put its score in the commit message.
 2. **Campaign constants are shared by every lead in flight:** `STEP_DAYS`, the step template
    (`UNSUBSCRIBE_*` in `clients/instantly.py`), `CAMPAIGN_SETTINGS`, `email_format`.
    `tests/test_cohorts.py::test_campaign_constants_are_pinned` fails when you change one. To ship it: bump the
@@ -58,9 +64,10 @@ Each contact carries `config_version`, `code_sha` and `copy_hash` (`config_versi
 send approval's ✅). The version is a 12-character hash of: the versions in force of the Signals, Angles,
 Industries, Roles and Overrides tabs; each sendable Copy row's content hash; the General keys that shape what is
 sent (`config_version.CONTENT_KEYS`: the subject and opener keys, `price_from`, the links, `email_format`,
-`send_window`, `utm_links`, the second-contact keys, `control_share`, `weekly_enrol_cap`); the signature template;
-the campaign constants; and the code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev"
-elsewhere). An edit to `live_sending`, the Claude cap, a draft Copy row or a mailbox's status starts no new
+`send_window`, `utm_links`, the second-contact keys, `control_share`, `weekly_enrol_cap`, `label_check`); the
+signature template;
+the campaign constants; the label check's `labels_hash` (its prompt version, label list and definitions); and
+the code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev" elsewhere). An edit to `live_sending`, the Claude cap, a draft Copy row or a mailbox's status starts no new
 version: they change nothing a contact is sent. The `config_versions` table keeps each version's snapshot, so
 `us-outbound cohorts changes` can say what differs in plain words.
 

@@ -17,6 +17,7 @@ from tests.test_render import AGENCIES, TECH
 from tests.test_send_approvals import at, blocks_text, item_for, items, proposed  # noqa: F401
 from tests.test_send_approvals import default_openers  # noqa: F401  (the autouse fixture)
 from us_outbound.clean.domains import is_public_body
+from us_outbound import labels
 from us_outbound.enrol import enrol
 from us_outbound.ops import relabel
 from us_outbound.settings.model import Industry, Override
@@ -102,3 +103,122 @@ def test_an_overrides_row_keeps_its_industry():
 ])
 def test_public_bodies(domain, public):
     assert is_public_body(domain) is public
+
+
+
+# -- with the label check (labels.py; Harry, 7 Oct 2026) ------------------------------------------------------------
+
+
+def verdict_fact(ctx, aid: str, model: str, confidence: str = "high", entity: str = "company") -> None:
+    v = labels.Verdict(model, confidence, entity, labels_hash="h-old")
+    d = labels.decide(None, v, ctx.settings)
+    ctx.store.insert("signal_events", [{
+        "event_id": f"{aid}-verdict", "account_id": aid, "source": labels.JOB, "fact": labels.VERDICT_FACT,
+        "value": labels.verdict_value(None, v, d, asked=True), "quote": "", "source_url": "", "observed_at": ctx.now}])
+
+
+def test_a_stored_verdict_is_honoured_when_the_rules_change_and_no_model_is_asked():
+    ctx, t, sl = world()
+    verdict_fact(ctx, "acc-1", "Advertising agencies")  # the model said so when it was checked
+    out = relabel.run(ctx)
+    a = ctx.store.get("accounts", account_id="acc-1")
+    # The rules alone now give the agencies' own label; with the model sure of Advertising agencies, it stays.
+    assert out["changed"] == 0 and (a["industry"], a.get("label_source")) == ("Advertising agencies", None)
+    assert len(items(ctx, "open")) == 3
+    assert ctx.store.select("credit_ledger", {"job": labels.JOB}) == []
+
+
+def test_an_approvers_label_never_moves():
+    ctx, t, sl = world()
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"label_source": "approver"})
+    assert relabel.run(ctx)["changed"] == 0
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Advertising agencies"
+
+
+def test_a_relabelled_company_gets_the_rules_source_and_its_check_time():
+    ctx, t, sl = world()
+    relabel.run(ctx)
+    a = ctx.store.get("accounts", account_id="acc-1")
+    assert (a["industry"], a["label_source"], a["label_checked_at"]) == (AGENCIES, "rules", ctx.now)
+    assert labels.copy_level(a) == "group"
+
+
+def test_a_stored_verdict_that_rules_a_company_out_disqualifies_it():
+    ctx, t, sl = world()
+    verdict_fact(ctx, "acc-2", "none", entity="association")
+    out = relabel.run(ctx)
+    a = ctx.store.get("accounts", account_id="acc-2")
+    assert (a["status"], a["tier"]) == ("disqualified", "Excluded") and "Brightfin" in out["cards_withdrawn"]
+
+
+def test_labels_set_corrects_a_company_and_withdraws_its_card_and_show_tells_the_story(capsys):
+    from tests.test_send_approvals import FakeOverrides
+    from us_outbound.ops import cli
+
+    ctx, t, sl = world()
+    sheet = FakeOverrides(t)
+    at(ctx, ctx.now, live=False, job="labels_set")
+    dry = relabel.set_label(ctx, "https://www.loopstudio.com/", "fintech")
+    assert dry == {"dry_run": True, "domain": "loopstudio.com", "from": "Advertising agencies", "to": "Fintech",
+                   "active": True, "cards_to_withdraw": ["Loop Studio"]}
+    assert ctx.store.get("accounts", account_id="acc-3")["industry"] == "Advertising agencies"
+    at(ctx, ctx.now, live=True, job="labels_set")
+    out = relabel.set_label(ctx, "loopstudio.com", "fintech")
+    assert (out["sheet"], out["cards_withdrawn"]) == ("added", ["Loop Studio"])
+    assert sheet.appended[0][:3] == ["loopstudio.com", "industry", "Fintech"]
+    shown = relabel.show(ctx, "loopstudio.com")
+    assert (shown["industry"], shown["label_source"], shown["copy_level"]) == ("Fintech", "approver", "label")
+    assert shown["history"][0]["corrected"] == "Advertising agencies → Fintech" and shown["history"][0]["via"] == "cli"
+    with pytest.raises(LookupError, match="no company with the domain 'nobody.com'"):
+        relabel.set_label(ctx, "nobody.com", "fintech")
+    with pytest.raises(ValueError, match="no Industries label called 'crypto'"):
+        relabel.set_label(ctx, "loopstudio.com", "crypto")
+    assert cli.main(["labels", "show", "loopstudio.com"], context_factory=lambda *a, **k: ctx) == 0
+    assert '"label_source": "approver"' in capsys.readouterr().out
+    assert cli.main(["labels", "set", "loopstudio.com"], context_factory=lambda *a, **k: ctx) == 2
+    assert "labels set needs the label" in capsys.readouterr().err
+
+
+# -- `us-outbound labels audit` ----------------------------------------------------------------------------------------
+
+
+def audit_world(live=True):
+    from tests.test_verify import LabelSDK
+
+    ctx, t, sl = world()
+    sdk = LabelSDK({"acmecreative.com": {"label": "Fintech", "evidence": "advertising agency"},
+                    "brightfin.com": {"label": "Fintech", "evidence": "fintech"}})
+    ctx.clients.claude_sdk = sdk
+    fact(ctx, "acc-1", "keywords", ["advertising agency"])
+    fact(ctx, "acc-2", "description", "Brightfin builds fintech for shops.")
+    at(ctx, ctx.now, live=live, job=relabel.AUDIT_JOB)
+    return ctx, t, sl, sdk
+
+
+def test_a_dry_audit_counts_prices_and_shows_a_prompt_and_asks_nothing():
+    ctx, t, sl, sdk = audit_world(live=False)
+    out = relabel.audit(ctx)
+    assert (out["to_check"], out["open_accounts"], out["stale"]) == (2, 3, 0)  # acc-3 has nothing to check against
+    assert 0.005 < out["per_call_usd"] < 0.03 and out["most_usd"] == round(out["per_call_usd"] * 2, 2)
+    assert out["sample_prompt"].startswith("<company>\nName: ") and sdk.calls == []
+    assert out["stored"]["dry_run"] is True and len(items(ctx, "open")) == 3
+
+
+def test_a_live_audit_asks_decides_and_withdraws_the_cards_that_no_longer_fit(capsys):
+    from us_outbound.ops import cli
+
+    ctx, t, sl, sdk = audit_world()
+    out = relabel.audit(ctx)
+    assert out["asked"] == 2 and out["usd"] > 0 and out["unavailable"] == ""
+    a1 = ctx.store.get("accounts", account_id="acc-1")
+    # The rules say Advertising agencies (its own keyword); the model is sure it is Fintech: the model's label.
+    assert (a1["industry"], a1["label_source"]) == ("Fintech", "model")
+    assert out["disagreements"][0]["domain"] == "acmecreative.com"
+    assert out["cards_withdrawn"] == ["Acme Creative"] and {r["account_id"] for r in items(ctx, "open")} == {
+        "acc-2", "acc-3"}
+    assert out["decisions"] == {"model": 1, "rules+model": 1}
+    # Asked once: a second audit finds nothing left to check.
+    again = relabel.audit(ctx)
+    assert again["to_check"] == 0 and len(sdk.calls) == 2
+    assert cli.main(["labels", "audit"], context_factory=lambda *a, **k: ctx) == 0
+    assert "0 of 3 open companies have no fresh label check" in capsys.readouterr().out

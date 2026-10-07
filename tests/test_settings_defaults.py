@@ -86,6 +86,10 @@ def test_the_general_notes_harry_reads(tabs):
         assert notes[key] == "Not used yet; leave as it is.", key
     assert not [k for k, n in notes.items() if k in ("live_sending", "auto_send", "approver_slack_ids", "optout_tested")
                 and "SPEC" in n]
+    # Harry, 7 Oct 2026: the label check (labels.py), required from the start.
+    row = next(r for r in tabs["General"] if r["key"] == "label_check")
+    assert row["value"] == "required" and notes["label_check"].startswith("required: before a new company can get")
+    assert "companies already verified keep going with their group's copy" in notes["label_check"]
 
 
 # signal, weight, max_weight, action, suggests_angle, counts_for_days, active: SPEC 5's rows as the design
@@ -276,6 +280,31 @@ def test_industries(settings):
     active_groups = {i.industry_group for i in settings.industries if i.active}
     assert active_groups == {"Technology & Startups", "Marketing & Creative Agencies", "Legal Teams", "Healthcare"}
     assert sum(i.active for i in settings.industries) == 28  # 17 tech labels (Digital health moved), 10 agencies, Legal
+
+
+def test_the_label_checks_naics_trims(settings):
+    """Harry, 7 Oct 2026 (the label check, labels.py): codes that brought in the first cards' misfits are off their
+    labels. R&D labs (541715, 541713) brought a surgeons' society and an orthopaedic practice in as AI & deep tech;
+    custom programming (541511) brought any app shop in as Games studios; travel agencies (5615) are no Traveltech."""
+    assert settings.industry("AI & deep tech").naics_prefixes == ("5112", "513210", "5415", "518210")
+    assert settings.industry("Games studios").naics_prefixes == ("513210", "5112")
+    assert settings.industry("Traveltech").naics_prefixes == ("5112", "513210", "5415", "518210")
+    assert "522320" in settings.industry("Fintech").naics_prefixes  # kept: payment processing
+
+
+def test_every_label_the_check_lists_has_a_definition_saying_what_it_is_and_is_not(settings):
+    """Harry, 7 Oct 2026: the label check's list (labels.entries: the labels of every prospected group, and one row
+    for each group not prospected) carries the build's one-line definition of each, so it works before the column
+    reaches the sheet."""
+    from us_outbound import labels
+
+    entries = labels.entries(settings)
+    assert len(entries) == 50 and all(e.definition for e in entries)
+    assert settings.industry("Games studios").definition == (
+        "Makes and publishes video games itself; not tools, engines or platforms for game makers (Gametech), and not "
+        "an agency or app studio building software for clients.")
+    assert "not FP&A or budgeting tools for finance teams" in settings.industry("Fintech").definition
+    assert sum(bool(i.definition) for i in settings.industries) == 50  # the rest are not in the list
 
 
 IT_SERVICES = ("541512", "541513", "541519")  # computer systems design, facilities management, other IT services

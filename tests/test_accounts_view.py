@@ -194,6 +194,7 @@ def test_one_company_in_full(capsys):
     h = harness()
     assert h.run("accounts", "https://www.Acme.com/about") == 0  # a web address is cut to its domain
     lines = printed(capsys.readouterr().out)
+    assert lines.pop(4) == "  Label check: not checked yet (the group's copy)"  # the label check (labels.py)
     assert lines[:13] == [
         "Company: Acme (acme.com)",
         "  Legal name: Acme Holdings Inc",
@@ -334,3 +335,21 @@ def test_accounts_takes_no_live_flag_and_is_in_help():
     sub = " ".join(cli.build_parser()._subparsers._group_actions[0].choices["accounts"].format_help().split())
     for name in (*view.STATUSES, *TIERS):  # --help writes the choices out, so it need not import the view
         assert name in sub, name
+
+
+
+def test_one_company_says_how_the_label_check_placed_it(capsys):
+    h = harness()
+    [acme] = [a for a in h.store.tables["accounts"] if a["domain"] == "acme.com"]
+    acme.update(label_source="model", label_confidence="high", label_checked_at=datetime(2026, 10, 8, 3, 30, tzinfo=UTC))
+    aid = acme["account_id"]
+    h.store.tables["signal_events"].extend([{
+        "event_id": "lv1", "account_id": aid, "source": "label_check", "fact": "label_verdict",
+        "value": {"rules": "Adtech & martech", "model": "Fintech", "confidence": "high", "entity": "company",
+                  "what_they_do": "payroll software", "evidence": "payroll software for restaurants"},
+        "observed_at": datetime(2026, 10, 8, 3, 30, tzinfo=UTC)}])
+    assert h.run("accounts", "acme.com") == 0
+    [line] = [x for x in printed(capsys.readouterr().out) if x.startswith("  Label check:")]
+    assert line == ("  Label check: model (high) · label copy · decided 08 Oct 2026 04:30 UK · the rules said Adtech & "
+                    "martech, the model Fintech (high, company) · they do: payroll software · “payroll software for "
+                    "restaurants”")

@@ -32,7 +32,10 @@ COLUMNS: dict[str, list[str]] = {
         "landing_page_url", "proof_point", "priority",
         # The industry's spill.chat page, as material for its emails (Harry, 30 Sep 2026); optional columns.
         "page_blurb", "page_intro", "page_ticks", "page_challenges", "page_stats", "page_benefits",
-        "page_features", "page_faqs", "page_customers", "note",
+        "page_features", "page_faqs", "page_customers",
+        # What a company under the label is and is not, for the model's label check (labels.py; Harry, 7 Oct 2026);
+        # optional: a blank cell takes the build's line from data/industries.csv.
+        "definition", "note",
     ],
     "States": ["state", "active", "note"],
     # One row per group of titles, with its order at each size (Harry, 1 Oct 2026).
@@ -278,6 +281,16 @@ _GENERAL: list[tuple[str, str, str]] = [
         "inbox filters, so try yes on a seed send first. Added by the build.",
     ),
     ("claude_monthly_cap_usd", "10", "Hard cap on Claude API spend each month (UTC), in dollars; at most $100. SPEC 1.1 set $10."),
+    (
+        "label_check",
+        "required",
+        "required: before a new company can get a send-approval card, verify_accounts has the task model check its "
+        "industry label against its Apollo facts (about $0.01 a company, once): agreement earns the label's own copy, "
+        "a doubt the group's or General copy, and a public body, society or company no label fits is held for the "
+        "hand-check or left out. While the model cannot be asked (the Claude cap, an error), new companies wait "
+        "unverified and the daily post asks; companies already verified keep going with their group's copy. "
+        "skip: the rules alone, with the group's copy (for a Claude outage). Harry, 7 Oct 2026. Added by the build.",
+    ),
     (
         "opener_holdout_share",
         "0.3",
@@ -723,6 +736,22 @@ def _csv_rows(path: Path, tab: str) -> list[dict[str, str]]:
 
 def _industries() -> list[dict[str, str]]:
     return _csv_rows(INDUSTRIES_FILE, "Industries")
+
+
+_DEFINITIONS: dict[str, str] | None = None
+
+
+def bundled_definitions() -> dict[str, str]:
+    """Industries label (casefolded) -> the build's one-line definition from data/industries.csv (Harry, 7 Oct 2026).
+
+    validate.py gives a label with a blank definition cell, or a sheet without the column, the build's line, so the
+    model's label check (labels.py) works before the column reaches the sheet, and loading it changes nothing the
+    check reads unless Harry has edited a line."""
+    global _DEFINITIONS
+    if _DEFINITIONS is None:
+        _DEFINITIONS = {r["industry"].strip().casefold(): " ".join(r["definition"].split()) for r in _industries()
+                        if r["definition"].strip()}  # spaces folded, as validate.py folds a sheet cell
+    return _DEFINITIONS
 
 
 # -- Focus (Harry, 30 Sep 2026; the shares at launch from the design review, Appendix A.4) -------------

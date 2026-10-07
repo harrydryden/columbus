@@ -285,6 +285,9 @@ def test_the_card_shows_what_harry_asked_for():
     assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
     assert "*Before:* no email to Acme Creative from us before" in text
     assert "*Harry today:* card 1 of 15" in text
+    # The label check (labels.py; Harry, 7 Oct 2026): not checked yet, so the group's copy, and the card says so.
+    assert ("*Industry:* ⚠️ Advertising agencies (Marketing &amp; Creative Agencies) · not checked by the model · "
+            "the group's copy") in text and "*They do:*" not in text
     assert "✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread." in text
     assert "us-outbound" not in text  # no command line hint on a card
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
@@ -919,3 +922,313 @@ def test_a_card_posted_before_the_stamp_leaves_the_contact_unstamped():
     assert poll(ctx)["outcomes"] == {"approved": 1}
     jane = ctx.store.get("contacts", contact_id="con-1")
     assert (jane["config_version"], jane["code_sha"], jane["copy_hash"]) == (None, None, None)
+
+
+# -- cards a label decision has overtaken (labels.py; Harry, 7 Oct 2026) -------------------------------------------
+
+
+def test_a_card_whose_label_was_decided_again_is_withdrawn_before_any_tick_and_the_others_stay():
+    """verify_accounts runs dry at 04:30 and decides labels; the next poll_approvals withdraws each card they
+    overtake, before reading its ✅, so the next enrol proposes the company with the right copy."""
+    from us_outbound import labels
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")  # Advertising agencies, the group's copy (agencies-v1)
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    later = ctx.now + timedelta(hours=16)
+    at(ctx, later, live=False, job="verify_accounts")
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    labels.apply(ctx, acme, labels.Decision("Fintech", "Technology & Startups", "model", "high", "label", "verify"))
+    other = ctx.store.get("accounts", account_id="acc-2")  # a decision that keeps its card's label and copy
+    labels.apply(ctx, other, labels.Decision(other["industry"], other["industry_group"], "rules+model", "high",
+                                             "label", "verify"))
+    at(ctx, later + timedelta(minutes=5), live=False)
+    dry = desk.poll_approvals(ctx)["send_approvals"]
+    assert [w for w in dry["would"] if w["action"] == "withdraw"] == [
+        {"item": row["item_id"][:8], "action": "withdraw", "why": "its industry was Advertising agencies and is now Fintech"}]
+    assert item_for(ctx, "acc-1")["status"] == "open"  # a dry run withdraws nothing
+    ctx.guard.configure(live=True)
+    out = poll(ctx)
+    assert out["outcomes"] == {"withdrawn": 1} and out["withdrawn"] == ["Acme Creative"] and instantly_posts(t) == []
+    row = item_for(ctx, "acc-1")
+    assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", "system", "expired")
+    assert row["payload"]["reason"] == "withdrawn: its industry was Advertising agencies and is now Fintech"
+    assert row["payload"]["decided"]["via"] == "label_check"
+    assert any(blocks_text(u).startswith("↩️ Withdrawn: its industry was Advertising agencies") for u in sl.updates)
+    assert {r["account_id"] for r in items(ctx, "open")} == {"acc-2", "acc-3"}
+
+
+def test_a_card_with_a_labels_pitch_is_withdrawn_when_the_label_now_earns_only_general_copy():
+    from us_outbound import labels
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    item = approvals.Item(row)
+    later = ctx.now + timedelta(hours=1)
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    at(ctx, later, job="verify_accounts")
+    labels.apply(ctx, acme, labels.Decision("Advertising agencies", acme["industry_group"], "disputed", "medium",
+                                            "general", "verify"))
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    assert approvals.card_copy_level(row["payload"], ctx.settings) == "group"  # agencies-v1 is the group's row
+    assert approvals.label_unfit(item, acme, ctx.settings) == (
+        "its emails were written for Advertising agencies, and the label check allows General copy now", True)
+    labels.apply(ctx, acme, labels.Decision("Advertising agencies", acme["industry_group"], "umbrella", "medium",
+                                            "group", "verify"))
+    assert approvals.label_unfit(item, ctx.store.get("accounts", account_id="acc-1"), ctx.settings) is None
+    held = {**acme, "status": "queued", "label_checked_at": later}
+    assert approvals.label_unfit(item, held, ctx.settings)[1] is True
+    out = {**acme, "status": "disqualified", "tier_reason": "a public body, never prospected", "label_checked_at": later}
+    assert approvals.label_unfit(item, out, ctx.settings) == (
+        "Acme Creative is left out: a public body, never prospected", False)
+
+
+def test_approving_at_the_command_line_withdraws_an_overtaken_card_instead_of_sending_it():
+    from us_outbound import labels
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    at(ctx, ctx.now + timedelta(hours=1), job=approvals.APPROVALS_CLI_JOB)
+    labels.apply(ctx, ctx.store.get("accounts", account_id="acc-1"),
+                 labels.Decision("Fintech", "Technology & Startups", "model", "high", "label", "verify"))
+    out = approvals.approve(ctx, row["item_id"][:8])
+    assert out["added"] is False and out["withdrawn"] == "its industry was Advertising agencies and is now Fintech"
+    assert instantly_posts(t) == [] and item_for(ctx, "acc-1")["status"] == "handled"
+
+
+# -- the card's Industry line (labels.py; Harry, 7 Oct 2026) --------------------------------------------------------
+
+
+def lc(source, rules, model, confidence="high", evidence="", what=""):
+    return {"rules": rules, "model": model, "confidence": confidence, "evidence": evidence, "what_they_do": what,
+            "decision": {"source": source}}
+
+
+@pytest.mark.parametrize("payload, line", [
+    ({"industry": "Fintech", "label_source": "rules+model", "copy_industry": "Fintech",
+      "label_check": lc("rules+model", "Fintech", "Fintech")},
+     "*Industry:* Fintech (Technology &amp; Startups) · rules and model agree · Fintech copy"),
+    ({"industry": "Technology & Startups", "label_source": "model", "copy_industry": "Technology & Startups",
+      "label_check": lc("model", "Games studios", "Technology & Startups")},
+     "*Industry:* Technology &amp; Startups · the rules said Games studios; the model says Technology &amp; Startups "
+     "(high) · Technology &amp; Startups copy"),
+    ({"industry": "Technology & Startups", "label_source": "umbrella", "copy_industry": "Technology & Startups",
+      "label_check": lc("umbrella", "Adtech & martech", "Fintech", "medium")},
+     "*Industry:* Technology &amp; Startups · the rules said Adtech &amp; martech, the model Fintech (medium): "
+     "Technology &amp; Startups copy"),
+    ({"industry": "Games studios", "label_source": "disputed", "copy_industry": "General",
+      "label_check": lc("disputed", "Games studios", "Logistics", "medium")},
+     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · the rules say Games studios, the model says Logistics "
+     "(medium) · General copy"),
+    ({"industry": "Games studios", "copy_industry": "Technology & Startups"},  # a card posted before the check
+     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · not checked by the model · the group's copy"),
+    ({"industry": "Fintech", "label_source": "override", "copy_industry": "Fintech"},
+     "*Industry:* Fintech (Technology &amp; Startups) · set on the Overrides tab · Fintech copy"),
+])
+def test_the_industry_line(payload, line):
+    p = {"industry_group": "Technology & Startups", **payload}
+    assert approvals.industry_lines(p)[0] == line
+
+
+def test_they_do_and_the_quote_are_escaped_and_left_out_when_empty():
+    p = {"industry": "Fintech", "industry_group": "Technology & Startups", "label_source": "rules+model",
+         "copy_industry": "Fintech", "label_check": lc("rules+model", "Fintech", "Fintech", evidence=(
+             "Brightline <makes> payroll & tax software"), what="payroll software for restaurants")}
+    assert approvals.industry_lines(p)[1] == (
+        "*They do:* payroll software for restaurants · “Brightline &lt;makes&gt; payroll &amp; tax software”")
+    p["label_check"] = lc("rules+model", "Fintech", "Fintech")
+    assert len(approvals.industry_lines(p)) == 1
+
+
+def test_a_checked_account_s_card_carries_its_verdict_and_stays_under_slacks_limit():
+    from us_outbound import labels
+
+    ctx, t, sl = world()
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    v = labels.Verdict("Advertising agencies", "high", "company", "x" * 160, "advertising for consumer brands")
+    d = labels.decide(ctx.settings.industry("Advertising agencies"), v, ctx.settings)
+    labels.apply(ctx, acme, d, v, rules=ctx.settings.industry("Advertising agencies"), asked=True)
+    enrol.run(ctx)
+    p = item_for(ctx, "acc-1")["payload"]
+    assert (p["label_source"], p["copy_level"], p["copy_industry"]) == (
+        "rules+model", "label", "Marketing & Creative Agencies")
+    assert p["label_check"]["model"] == "Advertising agencies" and p["label_check"]["evidence"] == "x" * 160
+    card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
+    text = blocks_text(card)
+    assert ("*Industry:* Advertising agencies (Marketing &amp; Creative Agencies) · rules and model agree · "
+            "the group's copy") in text
+    assert f"*They do:* advertising for consumer brands · “{'x' * 160}”" in text
+    assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
+
+
+# -- "industry: Fintech": an approver's correction in one reply (labels.py; Harry, 7 Oct 2026) ----------------------
+
+
+class FakeOverrides:
+    """The settings sheet's Overrides tab behind the transport: read, a cell updated, rows appended."""
+
+    HEAD = ["domain", "field", "value", "note"]
+
+    def __init__(self, t, rows=(), *, fail=False):
+        self.rows = [dict(r) for r in rows]
+        self.appended: list[list[str]] = []
+        self.updated: list[tuple[str, list]] = []
+        status = 500 if fail else 200
+        t.route("GET", "Overrides", status=status, fn=None if fail else (
+            lambda r: {"values": [self.HEAD] + [[x.get(h, "") for h in self.HEAD] for x in self.rows]}),
+            body={"error": {"message": "down"}} if fail else None)
+        t.route("PUT", "Overrides", fn=self._put)
+        t.route("POST", ":append", fn=self._append)
+
+    def _put(self, req):
+        self.updated.append((req.json["range"], req.json["values"]))
+        row = int(req.json["range"].rsplit("C", 1)[1]) - 2  # the value column, C
+        self.rows[row]["value"] = req.json["values"][0][0]
+        return {}
+
+    def _append(self, req):
+        for values in req.json["values"]:
+            self.appended.append(values)
+            self.rows.append(dict(zip(self.HEAD, values)))
+        return {}
+
+
+def corrected(text="industry: Fintech", *, user=HARRY_ID, rows=(), fail=False, account_id="acc-1"):
+    ctx, t, sl, _ = proposed()
+    sheet = FakeOverrides(t, rows, fail=fail)
+    row = item_for(ctx, account_id)
+    sl.say(user, text, row["slack_ts"])
+    return ctx, t, sl, sheet, row, poll(ctx)
+
+
+def test_an_approvers_industry_reply_sets_the_label_records_it_and_withdraws_the_card():
+    ctx, t, sl, sheet, row, out = corrected()
+    a = ctx.store.get("accounts", account_id="acc-1")
+    assert (a["industry"], a["industry_group"], a["label_source"], a["label_confidence"]) == (
+        "Fintech", "Technology & Startups", "approver", "high")
+    [fact] = ctx.store.select("signal_events", {"source": "label_check", "fact": "label_corrected"})
+    assert fact["value"] == {"from": "Advertising agencies", "from_source": None, "to": "Fintech",
+                             "to_group": "Technology & Startups", "by": HARRY_ID, "via": "thread",
+                             "item_id": row["item_id"], "rules": None, "model": None, "confidence": None}
+    assert sheet.appended == [["acmecreative.com", "industry", "Fintech",
+                               f"set by {HARRY_ID} in Slack at a send approval, 27 Oct 2026"]]
+    [new] = [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
+    assert out["relabelled"] == [{"item": row["item_id"][:8], "from": "Advertising agencies", "to": "Fintech",
+                                  "sheet": "added", "new_card": new["item_id"][:8]}]
+    done = next(r for r in items(ctx) if r["item_id"] == row["item_id"])
+    assert (done["status"], done["payload"]["outcome"]) == ("handled", "expired") and instantly_posts(t) == []
+    assert done["payload"]["reason"] == f"withdrawn: its industry is Fintech now, set by <@{HARRY_ID}>"
+    assert (f"🏷️ Industry set to Fintech (by <@{HARRY_ID}>); added to the Overrides tab. This card was written for "
+            "Advertising agencies, so it is withdrawn: nothing was sent, and a new card for Acme Creative with the "
+            "Fintech emails is posted in the channel. Approve that one.") in sl.texts()
+    # The new card, at once (design §7 v2): the same contact and sender, in the old card's slot, the new label.
+    p = new["payload"]
+    assert (new["contact_id"], p["owner"], p["slot"], p["replaces"]) == ("con-1", "Harry Dryden", 1, row["item_id"])
+    assert (p["industry"], p["industry_group"], p["label_source"], p["copy_level"]) == (
+        "Fintech", "Technology & Startups", "approver", "label")
+    assert p["copy_version"] == "general-v1"  # no Fintech or tech row in this world: General, never the agencies' pitch
+    assert p["config_version"] and new["slack_ts"]
+    assert sl.thread(new["slack_ts"])[-1]["text"] == (
+        f"🏷️ This card replaces the earlier one for Acme Creative: written for Advertising agencies, its industry is "
+        f"Fintech now, set by <@{HARRY_ID}>.")
+    assert "*Industry:* Fintech (Technology &amp; Startups) · set by an approver · General copy" in blocks_text(
+        next(c for c in sl.cards() if c["ts"] == new["slack_ts"]))
+    # It is waiting, so the next enrol does not propose the company again.
+    at(ctx, datetime(2026, 10, 28, 11, 0, tzinfo=UTC), job="enrol")
+    enrol.run(ctx)
+    assert len([r for r in items(ctx, "open") if r["account_id"] == "acc-1"]) == 1
+
+
+def test_when_the_company_cannot_be_made_ready_again_the_next_enrol_proposes_it(monkeypatch):
+    ctx, t, sl, _ = proposed()
+    FakeOverrides(t)
+    monkeypatch.setattr(enrol, "prepare", lambda *a, **k: enrol.Skip("sender full today"))
+    sl.say(HARRY_ID, "industry: Fintech", item_for(ctx, "acc-1")["slack_ts"])
+    out = poll(ctx)
+    assert out["relabelled"][0]["new_card"] == ""
+    assert not [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
+    assert any("the next enrol (12:00 UK on a send day) proposes Acme Creative again with the Fintech emails" in x
+               for x in sl.texts())
+
+
+def test_an_overrides_row_the_domain_has_is_updated_never_duplicated():
+    rows = [{"domain": "AcmeCreative.com", "field": "industry", "value": "Advertising agencies", "note": "Harry's"}]
+    ctx, t, sl, sheet, row, out = corrected(rows=rows)
+    assert sheet.appended == [] and [r["value"] for r in sheet.rows] == ["Fintech"] and sheet.rows[0]["note"] == "Harry's"
+    assert out["relabelled"][0]["sheet"] == "updated"
+    assert any("recorded on the Overrides tab" in x for x in sl.texts())
+
+
+def test_a_sheet_that_cannot_be_written_is_said_and_the_database_keeps_the_label():
+    ctx, t, sl, sheet, row, out = corrected(fail=True)
+    assert ctx.store.get("accounts", account_id="acc-1")["label_source"] == "approver"
+    assert out["relabelled"][0]["sheet"].startswith("not written to the Overrides tab (")
+    assert any("not written to the Overrides tab" in x and "the database keeps it" in x for x in sl.texts())
+
+
+def test_an_unknown_label_lists_the_labels_and_changes_nothing():
+    ctx, t, sl, sheet, row, out = corrected("industry: crypto")
+    assert item_for(ctx, "acc-1")["status"] == "open" and out["relabelled"] == []
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Advertising agencies"
+    [reply] = [x for x in sl.texts() if x.startswith("No Industries label called")]
+    assert reply.startswith("No Industries label called “crypto”. The labels are:\nMarketing &amp; Creative Agencies: "
+                            "Marketing &amp; Creative Agencies, Advertising agencies\nTechnology &amp; Startups: ")
+    assert sheet.appended == []
+
+
+def test_the_cards_own_label_and_a_non_approver_change_nothing():
+    ctx, t, sl, sheet, row, out = corrected("Industry: advertising agencies")
+    assert item_for(ctx, "acc-1")["status"] == "open" and "The card already has Advertising agencies." in sl.texts()
+    ctx, t, sl, sheet, row, out = corrected(user=SOMEONE)
+    assert item_for(ctx, "acc-1")["status"] == "open" and out["ignored_non_approvers"] >= 1
+    assert ctx.store.select("signal_events", {"fact": "label_corrected"}) == []
+
+
+def test_a_label_switched_off_means_the_company_is_not_emailed():
+    ctx, t, sl, sheet, row, out = corrected("label = Staffing agencies.")
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Staffing agencies"
+    assert any("Staffing agencies is switched off on the Industries tab, so Acme Creative will not be emailed unless "
+               "it is switched on." in x for x in sl.texts())
+
+
+def test_it_works_after_a_cross_too():
+    ctx, t, sl, _ = proposed()
+    FakeOverrides(t)
+    row = item_for(ctx, "acc-1")
+    sl.say(HARRY_ID, "skip", row["slack_ts"])
+    poll(ctx)
+    assert item_for(ctx, "acc-1")["payload"]["state"] == "rejected"
+    sl.say(HARRY_ID, "industry: fintech", row["slack_ts"])
+    poll(ctx)
+    assert item_for(ctx, "acc-1")["status"] == "handled"
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Fintech"
+
+
+def test_the_command_line_twin(capsys):
+    ctx, t, sl, _ = proposed()
+    sheet = FakeOverrides(t)
+    row = item_for(ctx, "acc-1")
+    at(ctx, ctx.now, live=False, job="approvals_industry")
+    dry = approvals.industry_item(ctx, row["item_id"][:8], "fintech")
+    assert dry == {"dry_run": True, "item": row["item_id"][:8], "company": "Acme Creative",
+                   "from": "Advertising agencies", "to": "Fintech",
+                   "would": "set the label, record it on the Overrides tab and withdraw the card"}
+    assert item_for(ctx, "acc-1")["status"] == "open"
+    with pytest.raises(ValueError, match="no Industries label called 'crypto'"):
+        approvals.industry_item(ctx, row["item_id"][:8], "crypto")
+    at(ctx, ctx.now, live=True, job="approvals_industry")
+    out = approvals.industry_item(ctx, row["item_id"][:8], "fintech")
+    assert out["done"] is True and out["to"] == "Fintech" and item_for(ctx, "acc-1")["status"] == "handled"
+    [fact] = ctx.store.select("signal_events", {"fact": "label_corrected"})
+    assert (fact["value"]["by"], fact["value"]["via"]) == ("cli", "cli")
+    assert sheet.appended[0][3].startswith("set at the command line at a send approval")
+
+
+def test_the_footer_says_how_to_fix_an_industry():
+    ctx, t, sl, _ = proposed()
+    card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
+    assert blocks_text(card).endswith("Wrong industry? Reply \"industry: <label>\".")
+    assert approvals.parse_command("industry: Fintech") == approvals.Command("industry", "Fintech")
+    assert approvals.parse_command("Label=Games studios!") == approvals.Command("industry", "Games studios")
+    assert approvals.parse_command("industry: Fintech", approvals.EDITING) == approvals.Command("industry", "Fintech")
+    assert approvals.parse_command("industry is wrong") is None

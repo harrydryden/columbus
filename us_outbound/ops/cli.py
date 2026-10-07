@@ -23,6 +23,17 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
                                       person, company = 🚫 not this company. approve, reject --contact and
                                       reject --company are the same; approved_by "cli"
+  approvals industry ID LABEL         the card's company is LABEL ("industry: LABEL" in its thread): set,
+                                      kept on the Overrides tab, and the card withdrawn for a new one
+  labels audit [--limit N] | eval     the industry label check (us_outbound/labels.py; Harry, 7 Oct 2026):
+    [--from-corrections] | set        audit: the model asked about every open company with no fresh verdict
+    DOMAIN LABEL | show DOMAIN        now (verify_accounts asks about 150 a run), cards that no longer fit
+                                      withdrawn; dry-run says how many, the cost and a sample prompt. eval:
+                                      the model scored on the gold set (and, with --from-corrections, the
+                                      approvers' corrections); exits 1 below 90% acceptable or on any unsafe
+                                      answer. set: a company's label (an approver's correction, for a company
+                                      with no card). show: its label and check history. audit and eval call
+                                      the model only with --live (about $0.01 a company)
   replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
     [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
                                       send, HubSpot and close path as Slack. approve is the same as send
@@ -809,7 +820,7 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
             sets[key.strip()] = value.strip()
         try:
             summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
-                                                   take=args.take or ()))
+                                                   take=args.take or (), keep=args.keep or ()))
         except ValueError as exc:
             raise Refused(str(exc)) from exc
         for t in summary["tabs"]:
@@ -1108,6 +1119,17 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     if not args.item_id:
         raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
     action = args.action
+    if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
+        if not args.label:
+            raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
+        ctx = factory("approvals_industry", args.live, operator=True)  # it reaches no prospect: --live alone
+        try:
+            summary = run_job(ctx, lambda c: approvals.industry_item(c, args.item_id, args.label))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "the label, the Overrides tab and the card are unchanged.")
+        return 0
     if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
         if args.contact or args.company:
             raise Refused(f"`approvals {action}` takes no --contact or --company")
@@ -1142,6 +1164,88 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     elif summary.get("outcome") == approvals.BLOCKED:
         print("Not sent, and closed: " + "; ".join(summary.get("why") or ()) + ".")
     return 0 if summary.get("added") or ctx.dry_run else 2
+
+
+def _audit_report(out: dict, live: bool) -> None:
+    print(f"{out['to_check']} of {out['open_accounts']} open companies have no fresh label check"
+          f" ({out['stale']} with one under an older label list or prompt).")
+    if not live:
+        print(f"A live audit asks {out['model']} about each: at most ${out['per_call_usd']:.4f} a company, "
+              f"${out['most_usd']:.2f} in all (the Claude cap applies).")
+        if out.get("sample_prompt"):
+            print("The first company's prompt, as the model reads it:\n" + out["sample_prompt"])
+        stored = out.get("stored") or {}
+        print(f"From the rules and the stored checks alone, {stored.get('changed', 0)} companies change:")
+        for move, n in (stored.get("moves") or {}).items():
+            print(f"  {n:>4}  {move}")
+        return
+    print(f"Asked {out['asked']} (${out['usd']:.2f})." + (f" Stopped: {out['unavailable']}." if out["unavailable"] else ""))
+    print("Decisions: " + (", ".join(f"{k} {v}" for k, v in sorted(out["decisions"].items())) or "none"))
+    if out["disagreements"]:
+        print("Where the rules and the model differ:")
+        for d in out["disagreements"]:
+            quote = f" · “{d['evidence']}”" if d.get("evidence") else ""
+            print(f"  {d['domain']} · rules {d['rules'] or 'no label'} · model {d['model']} ({d['confidence']}, "
+                  f"{d['entity']}) · now {d['now']}{quote}")
+    for line in out["relabelled"]:
+        print(f"  {line}")
+    if out["cards_withdrawn"]:
+        print(f"Withdrew {len(out['cards_withdrawn'])} open card(s): {', '.join(out['cards_withdrawn'])}.")
+
+
+def _eval_report(out: dict, live: bool) -> int:
+    if not live:
+        print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
+        return 0
+    for r in out["results"]:
+        if r.get("error"):
+            print(f"  {r['domain']}: {r['error']}")
+            continue
+        print(f"  {r['score']:<10} {r['domain']} · expected {r['expected']} ({r['expected_action']}) · rules "
+              f"{r['rules'] or 'no label'} · model {r['model']} ({r['confidence']}, {r['entity']}) · {r['decision']}")
+    print(f"{out.get('acceptable', 0)} acceptable, {out.get('wrong', 0)} wrong, {out.get('unsafe', 0)} unsafe of "
+          f"{out['rows']} (${out.get('usd', 0):.2f}; labels_hash {out['labels_hash']}). "
+          + ("Passed." if out.get("passed") else "Failed: it needs 90% acceptable and nothing unsafe."))
+    return 0 if out.get("passed") else 1
+
+
+def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound labels audit | eval | set | show` (us_outbound/labels.py, ops/relabel.py; Harry, 7 Oct 2026)."""
+    from us_outbound import labels
+    from us_outbound.ops import relabel
+
+    if args.action == "audit":  # the model is asked only with --live; it reaches no prospect: --live alone
+        ctx = factory(relabel.AUDIT_JOB, args.live, operator=True)
+        out = run_job(ctx, lambda c: relabel.audit(c, args.limit))
+        _audit_report(out, ctx.live)
+        _dry_note(ctx, "no model was asked and no company or card was changed.")
+        return 0
+    if args.action == "eval":
+        ctx = factory("labels_eval", args.live, operator=True)
+        rows = labels.gold_rows() + (labels.corrected_rows(ctx) if args.from_corrections else [])
+        out = run_job(ctx, lambda c: labels.evaluate(c, rows))
+        code = _eval_report(out, ctx.live)
+        _dry_note(ctx, "no model was asked.")
+        return code
+    if not args.domain:
+        raise Refused(f"labels {args.action} needs a company's domain")
+    if args.action == "show":
+        _only_reads(args)
+        try:
+            _print(relabel.show(factory("labels_show", False, operator=True), args.domain))
+        except LookupError as exc:
+            raise Refused(str(exc)) from exc
+        return 0
+    if not args.label:
+        raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
+    ctx = factory("labels_set", args.live, operator=True)  # it reaches no prospect: --live alone
+    try:
+        summary = run_job(ctx, lambda c: relabel.set_label(c, args.domain, args.label))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the label, the Overrides tab and any card are unchanged.")
+    return 0
 
 
 def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
@@ -1602,10 +1706,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
                  cmd_approvals, takes_live=True)
-    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject"],
+    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject", "industry"],
                     help="send = ✅ (approve); contact = 👤 not this person; company = 🚫 not this company "
-                         "(reject --contact / --company)")
+                         "(reject --contact / --company); industry = the company's label is another")
     ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters)")
+    ap.add_argument("label", nargs="?", help="industry: the Industries label, like \"Fintech\"")
     ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
     ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")
 
@@ -1718,6 +1823,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--take", action="append", metavar="COLUMN",
                     help="load: let the build's value win for a column Harry owns (Industries active, priority; "
                          "any Signals column, like weight; General note)")
+    st.add_argument("--keep", action="append", metavar="COLUMN",
+                    help="load: keep the sheet's value in this column for this load, where the build's would win "
+                         "(an edit made on the sheet, like a page_faqs line)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
@@ -1734,6 +1842,14 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--last", required=True, help="your last name")
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
+    lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
+                 "company's label, or show its label and history", cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show"])
+    lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
+    lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
+    lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")
+    lb.add_argument("--from-corrections", action="store_true",
+                    help="eval: also score the companies approvers corrected, expecting their new label")
     rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
                  "withdraw open cards whose label changes", cmd_relabel, takes_live=True)
     rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")

@@ -80,7 +80,7 @@ from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
-from us_outbound import budget, config_version, limits
+from us_outbound import budget, config_version, labels, limits
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render
 from us_outbound.learn import holds
@@ -457,11 +457,18 @@ def sendable_copy(settings: Settings) -> dict[str, CopyRow]:
     return {c.copy_version: c for c in settings.copy if c.status == "approved" and c.qa_current}
 
 
-def copy_targets(account: Mapping[str, Any], role: str, settings: Settings) -> list[tuple[str, str]]:
+def copy_targets(account: Mapping[str, Any], role: str, settings: Settings,
+                 level: str | None = None) -> list[tuple[str, str]]:
     """(industry, role) from the most specific Copy row an account could get to the least:
-    its label for its role, its label, its group for its role, its group, General for its role, General."""
-    label = str(account.get("industry") or "").strip()
-    group = settings.industry_group_of(account)
+    its label for its role, its label, its group for its role, its group, General for its role, General.
+
+    The label check (labels.copy_level; Harry, 7 Oct 2026) says how specific the copy may be: a label's own rows only
+    when its label was confirmed (the rules and the model agree, the model is sure, an Overrides row or an approver),
+    the group's when the two disagreed within the group or it is not checked yet, General's when they disagreed
+    across groups. So a doubtful label never carries a label's pitch. level: that level, when not the account's."""
+    level = level or labels.copy_level(account)
+    label = str(account.get("industry") or "").strip() if level == labels.LABEL_COPY else ""
+    group = settings.industry_group_of(account) if level in (labels.LABEL_COPY, labels.GROUP_COPY) else ""
     out: list[tuple[str, str]] = []
     for industry in (label, group, GENERAL_COPY):
         for r in (role, ""):
@@ -516,7 +523,11 @@ def choose_copy(
     row, note = pick_copy(account, role, settings, rows)
     if row is None:
         label = str(account.get("industry") or settings.industry_group_of(account) or "its industry")
-        return None, "", f"no approved copy that has passed QA for {label}, its group or General", note
+        level = labels.copy_level(account)
+        where = {labels.LABEL_COPY: f"{label}, its group or General",
+                 labels.GROUP_COPY: f"{label}'s group or General (its label earns the group's copy)",
+                 labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
+        return None, "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
     if t and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
         v = t.version_a if queue.test_version(str(account["account_id"]), t.test_id) == "a" else t.version_b
@@ -633,6 +644,10 @@ class Prepared:
     config_version: str = ""
     code_sha: str = ""
     copy_hash: str = ""
+    # The label check (labels.py; Harry, 7 Oct 2026): its latest verdict ({} when none) and the copy level its label
+    # earns, for the card's Industry line.
+    label_check: dict = field(default_factory=dict)
+    copy_level: str = ""
 
 
 @dataclass
@@ -702,12 +717,14 @@ def prepare(
         "company_name": values["company"],
         "custom_variables": render.custom_variables(rendered),
     }
+    verdict = labels.latest_verdict(ctx.store.select(
+        "signal_events", {"account_id": a["account_id"], "source": labels.JOB, "fact": labels.VERDICT_FACT}))
     return Prepared(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
         subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, slot=cand.slot,
-        first=cand.first, copy_hash=row.content_hash(),
+        first=cand.first, copy_hash=row.content_hash(), label_check=verdict or {}, copy_level=labels.copy_level(a),
     )
 
 

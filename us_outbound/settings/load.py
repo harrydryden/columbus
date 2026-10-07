@@ -44,9 +44,14 @@ command merges them into the sheet without losing Harry's own edits:
     dates, status and result are Harry's), and rows Harry added stay; the load brings the new kind and looks
     columns (learn/looks.py), with the build's values for the build's own rows (t1-eap-opener: ab, no
     interim look).
+  * `--keep COLUMN` (Harry, 7 Oct 2026) keeps the sheet's value in that column for one load, blank included,
+    where the build's would win: an edit made on the sheet (a page_faqs line, say) survives a load that brings
+    something else (the Industries definition column and NAICS trims for the label check, labels.py).
 
-Dry-run (the default) prints what would change and writes nothing. --live rewrites the tab
-(values only; the sheet's formatting stays), then `us-outbound settings sync` brings it in.
+Dry-run (the default) prints what would change and writes nothing: the rows added, and for each row the sheet
+already has, every cell the load would change, column by column, as "Fintech: definition: blank → '…'" (a long
+cell shows the part that differs, with a little either side). --live rewrites the tab (values only; the sheet's
+formatting stays), then `us-outbound settings sync` brings it in.
 """
 
 from __future__ import annotations
@@ -99,6 +104,8 @@ SUPERSEDED_TAKES = ("active", "note")
 # Tabs whose old layout is replaced whole, and whose rows in the new layout stay as Harry has them.
 LEGACY_LAYOUT = {"Copy": is_legacy_copy, "Roles": is_legacy_roles}
 SHOW = 12  # names listed per change in the summary
+CELL_CHARS = 300  # a changed cell up to this long is shown whole; a longer one shows the part that differs
+CONTEXT_CHARS = 40  # either side of the part that differs
 
 
 @dataclass
@@ -112,6 +119,7 @@ class Plan:
     extra: list[str] = field(default_factory=list)  # sheet rows the build does not have
     replaced_layout: bool = False
     new_columns: list[str] = field(default_factory=list)
+    changes: list[str] = field(default_factory=list)  # every cell a row the sheet has would change: "row: column: a → b"
 
     def summary(self) -> dict:
         def few(xs: Sequence[str]) -> list[str] | str:
@@ -123,7 +131,32 @@ class Plan:
             "updated": len(self.updated), "updated_names": few(self.updated),
             "kept_from_sheet": few(self.kept_from_sheet), "extra_sheet_rows_kept": few(self.extra),
             "replaced_old_layout": self.replaced_layout, "new_columns": self.new_columns,
+            "cells_changed": len(self.changes), "changes": list(self.changes),
         }
+
+
+def _shown(text: str) -> str:
+    return repr(text) if text else "blank"
+
+
+def cell_change(old: str, new: str) -> str:
+    """"'a' → 'b'" for one cell; for a long cell, only the part that differs, with CONTEXT_CHARS either side."""
+    old, new = old.strip(), new.strip()
+    if not old or (len(old) <= CELL_CHARS and len(new) <= CELL_CHARS):
+        return f"{_shown(old)} → {_shown(new)}"
+    i = 0
+    while i < min(len(old), len(new)) and old[i] == new[i]:
+        i += 1
+    j = 0
+    while j < min(len(old), len(new)) - i and old[-1 - j] == new[-1 - j]:
+        j += 1
+    lo = max(0, i - CONTEXT_CHARS)
+
+    def part(text: str) -> str:
+        hi = min(len(text), len(text) - j + CONTEXT_CHARS)
+        return ("…" if lo else "") + text[lo:hi] + ("…" if hi < len(text) else "")
+
+    return f"{_shown(part(old))} → {_shown(part(new))}"
 
 
 def _key(row: Mapping[str, str], tab: str) -> str:
@@ -182,7 +215,9 @@ def plan_general(sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[M
 
 def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequence[Mapping[str, str]],
              sets: Mapping[str, str] | None = None, *, replace_drafts: bool = False,
-             take: Sequence[str] = ()) -> Plan:
+             take: Sequence[str] = (), hold: Sequence[str] = ()) -> Plan:
+    """The tab as the load would write it, and what changes. hold: the --keep columns, whose sheet value stays
+    (blank included) wherever the sheet has the column."""
     if tab == "General":
         return plan_general(sheet_rows, build_rows, sets, take=take)
     cols = COLUMNS[tab]
@@ -221,6 +256,8 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
     if tab in SHEET_WINS:
         keep = tuple(c for c in cols if c in present and c != KEY[tab] and c not in take
                      and c not in BUILD_OWNS.get(tab, ()))
+    held = tuple(c for c in hold if c in cols and c in present and c != KEY[tab])
+    keep = (*keep, *(c for c in held if c not in keep))
     for k, r in build.items():
         row = {c: str(r.get(c, "")) for c in cols}
         old = sheet.get(k)
@@ -229,10 +266,10 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
         else:
             sup = SUPERSEDED.get(tab, {}).get(k)
             kept = [c for c in keep if str(old.get(c, "")).strip() != row[c].strip()
-                    and (tab in SHEET_WINS or str(old.get(c, "")).strip())
+                    and (tab in SHEET_WINS or c in held or str(old.get(c, "")).strip())
                     and not (sup and c in SUPERSEDED_TAKES)]
             for c in kept:
-                row[c] = str(old[c])
+                row[c] = str(old.get(c, ""))
             if kept:
                 p.kept_from_sheet.append(f"{row[KEY[tab]]} ({', '.join(kept)})")
             if sup and "active" in cols and str(old.get("active", "")).strip().casefold() not in ("no", "false") \
@@ -240,6 +277,11 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
                 p.updated.append(f"{row[KEY[tab]]} switched off (replaced by {sup[0]})")
             elif any(str(old.get(c, "")).strip() != row[c].strip() for c in cols if c not in kept):
                 p.updated.append(row[KEY[tab]])
+            for c in cols:  # every cell the write changes (Harry, 7 Oct 2026: see it before --live)
+                was = str(old.get(c, ""))
+                if was.strip() != row[c].strip():
+                    new_col = " (a new column)" if c not in present else ""
+                    p.changes.append(f"{row[KEY[tab]]}: {c}{new_col}: {cell_change(was, row[c])}")
         p.rows.append(row)
     for k, old in sheet.items():
         if k not in build:
@@ -255,8 +297,9 @@ def plan_tab(tab: str, sheet_rows: Sequence[Mapping[str, str]], build_rows: Sequ
 
 
 def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = None, *,
-         replace_drafts: bool = False, take: Sequence[str] = ()) -> dict:
-    """Plan (and, live, write) each tab; refuses if the result would not validate."""
+         replace_drafts: bool = False, take: Sequence[str] = (), keep: Sequence[str] = ()) -> dict:
+    """Plan (and, live, write) each tab; refuses if the result would not validate. keep: columns whose sheet value
+    stays for this load (--keep)."""
     bad = [t for t in tabs if t not in LOADABLE]
     if bad:
         raise ValueError(f"only {', '.join(LOADABLE)} can be loaded, not {', '.join(bad)}")
@@ -276,7 +319,10 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
     unknown = sorted(set(take) - kept)
     if unknown:
         raise ValueError(f"--take names a column the loaded tabs do not keep: {', '.join(unknown)}")
-    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets, replace_drafts=replace_drafts, take=take)
+    unknown = sorted(set(keep) - {c for t in tabs if t != "General" for c in COLUMNS[t]})
+    if unknown:
+        raise ValueError(f"--keep names a column the loaded tabs do not have: {', '.join(unknown)}")
+    plans = {t: plan_tab(t, sheet.get(t) or [], build[t], sets, replace_drafts=replace_drafts, take=take, hold=keep)
              for t in tabs}
     merged = {**sheet, **{t: p.rows for t, p in plans.items()}}
     _, errors = validate_all(merged)
@@ -287,5 +333,6 @@ def load(ctx: Context, tabs: Sequence[str], sets: Mapping[str, str] | None = Non
         if t in OPTIONAL_TABS and not sheet.get(t) and p.rows:
             ctx.clients.sheets.add_tab(sheet_id, t)  # Focus may not be on the sheet yet; a no-op in dry-run
         ctx.clients.sheets.replace_tab(sheet_id, t, COLUMNS[t], p.rows)  # the guard skips it in dry-run
-        log("settings_load", tab=t, dry_run=ctx.dry_run, **{k: v for k, v in p.summary().items() if k != "tab"})
+        log("settings_load", tab=t, dry_run=ctx.dry_run,
+            **{k: v for k, v in p.summary().items() if k not in ("tab", "changes")})
     return {"dry_run": ctx.dry_run, "tabs": [p.summary() for p in plans.values()]}

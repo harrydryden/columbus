@@ -31,6 +31,9 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
     pages, or, when its tracker sends no data, to check it (sources/site_visits.py); and, on the morning of
     the monthly lookalike_leads run (the 1st, 02:50), what it found, with the yield of US and non-US seeds
     (sources/lookalike_leads.py);
+  * Labels (Harry, 7 Oct 2026; labels.py): the industry label check's companies checked in the period and their
+    decisions (agreed, overruled, the group's or General copy, held, disqualified), the companies the last
+    verify_accounts left unchecked and why, and the cards' industry corrections against the cards decided;
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
@@ -60,7 +63,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, limits
+from us_outbound import budget, labels, limits
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, second
 from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
@@ -305,6 +308,9 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
 
     # Website visits from Apollo, or that its tracker sends no data (Harry, 5 Oct 2026): one line.
     lines.append(site_visits.post_line(ctx))
+
+    # The industry label check (labels.py; Harry, 7 Oct 2026): its checks, and the cards' corrections.
+    lines += ["", "*Labels*", *labels.post_lines(ctx, start, end)]
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
     lines += ["", "*Mailboxes*"]

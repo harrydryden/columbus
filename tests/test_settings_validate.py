@@ -258,6 +258,8 @@ def test_general_types(tabs):
         ("claude_model", "Haiku", "Claude model id"),
         ("claude_task_model", "Sonnet", "Claude model id"),
         ("email_format", "rich", "html, text"),
+        ("label_check", "maybe", "required, skip"),  # Harry, 7 Oct 2026: the label check (labels.py)
+        ("label_check", "", "required"),
     ]:
         t = copy.deepcopy(BASE)
         n, row = _row(t, "General", key=key)
@@ -509,6 +511,33 @@ def test_new_industries_columns_are_optional():
             del r[c]
     settings, errors = validate_all(t)
     assert not any(errors.values()) and settings.industry("CPA firms").page.intro == ""
+
+
+def test_the_definition_column_is_optional_and_a_blank_cell_takes_the_builds_line():
+    """Harry, 7 Oct 2026: the label check (labels.py) reads each label's definition. A sheet without the column,
+    or a blank cell, gets the build's line from data/industries.csv; a line Harry writes wins."""
+    built = validate_all(BASE)[0].industry("Games studios").definition
+    assert built.startswith("Makes and publishes video games itself; not tools")
+    t = copy.deepcopy(BASE)
+    for r in t["Industries"]:
+        del r["definition"]
+    settings, errors = validate_all(t)
+    assert not any(errors.values()) and settings.industry("Games studios").definition == built
+    t = copy.deepcopy(BASE)
+    _row(t, "Industries", industry="Games studios")[1]["definition"] = ""
+    _row(t, "Industries", industry="Fintech")[1]["definition"] = "  Payments   software,\n not banks. "
+    settings, _ = validate_all(t)
+    assert settings.industry("Games studios").definition == built
+    assert settings.industry("Fintech").definition == "Payments software, not banks."  # Harry's, spaces folded
+    assert settings.industry("CPA firms").definition == ""  # not in the check's list: no line, which is fine
+
+
+def test_label_check_defaults_to_required_and_takes_skip(tabs):
+    assert validate_all(tabs)[0].general.label_check == "required"
+    _row(tabs, "General", key="label_check")[1]["value"] = "skip"
+    assert validate_all(tabs)[0].general.label_check == "skip"
+    tabs["General"] = [r for r in tabs["General"] if r["key"] != "label_check"]
+    assert validate_all(tabs)[0].general.label_check == "required"  # a sheet without the row: the code default
 
 
 def test_industry_pages_are_on_spill_chat():

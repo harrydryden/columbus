@@ -1,0 +1,405 @@
+{
+  "about": "The first send-approval cards' 13 companies (7 Oct 2026), with made-up names: their Apollo facts, the label each went out under, what the rules give now, what a right model answers, and the acceptable outcome. `us-outbound labels eval` and tests/test_labels.py read it.",
+  "rows": [
+    {
+      "name": "Northgate Fulfilment Advisors",
+      "domain": "northgatefa.com",
+      "went_out_as": "Games studios",
+      "apollo_industry": "management consulting",
+      "naics": [
+        "541614",
+        "541511"
+      ],
+      "keywords": [
+        "logistics consulting",
+        "fulfillment",
+        "supply chain",
+        "warehouse operations"
+      ],
+      "description": "Northgate Fulfilment Advisors is a consultancy helping consumer brands run their fulfillment and warehouse operations.",
+      "rules": "Management consulting",
+      "model_answer": {
+        "label": "Professional Services",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "a consultancy helping consumer brands run their fulfillment",
+        "what_they_do": "fulfillment and warehouse operations consulting"
+      },
+      "expect": {
+        "accept": [],
+        "action": "disqualify"
+      },
+      "why": "a logistics consultancy: Professional Services, a group not prospected"
+    },
+    {
+      "name": "Brightpath Apps",
+      "domain": "brightpathapps.com",
+      "went_out_as": "Games studios",
+      "apollo_industry": "computer software",
+      "naics": [
+        "541511"
+      ],
+      "keywords": [
+        "mobile app development",
+        "custom software",
+        "app development agency"
+      ],
+      "description": "Brightpath Apps is an agency that designs and builds mobile apps for its clients.",
+      "rules": "Technology & Startups",
+      "model_answer": {
+        "label": "Technology & Startups",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "an agency that designs and builds mobile apps for its clients",
+        "what_they_do": "mobile app development for clients"
+      },
+      "expect": {
+        "accept": [
+          "Technology & Startups"
+        ],
+        "action": "verify"
+      },
+      "why": "an app agency, not a games studio: the group's own label"
+    },
+    {
+      "name": "American Society of Spine Surgeons",
+      "domain": "spinesurgeons-society.org",
+      "went_out_as": "AI & deep tech",
+      "apollo_industry": "medical practice",
+      "naics": [
+        "541715"
+      ],
+      "keywords": [
+        "surgeons",
+        "annual meeting",
+        "members",
+        "spine surgery education"
+      ],
+      "description": "The American Society of Spine Surgeons is a professional society for spine surgeons, hosting an annual meeting and education for its members.",
+      "rules": "Physician practices",
+      "model_answer": {
+        "label": "none",
+        "confidence": "high",
+        "entity": "association",
+        "evidence": "a professional society for spine surgeons",
+        "what_they_do": "spine surgery education for members"
+      },
+      "expect": {
+        "accept": [],
+        "action": "disqualify"
+      },
+      "why": "a professional society, not an employer we prospect"
+    },
+    {
+      "name": "Lakeside Orthopaedic Associates",
+      "domain": "lakesideortho.com",
+      "went_out_as": "AI & deep tech",
+      "apollo_industry": "hospital & health care",
+      "naics": [
+        "621111",
+        "541715"
+      ],
+      "keywords": [
+        "orthopedic surgery",
+        "sports medicine",
+        "joint replacement"
+      ],
+      "description": "Lakeside Orthopaedic Associates is an orthopedic practice offering surgery and sports medicine to patients.",
+      "rules": "Healthcare",
+      "model_answer": {
+        "label": "Healthcare",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "an orthopedic practice offering surgery and sports medicine to patients",
+        "what_they_do": "orthopedic surgery and sports medicine"
+      },
+      "expect": {
+        "accept": [],
+        "action": "disqualify"
+      },
+      "why": "a clinic: Healthcare, switched off"
+    },
+    {
+      "name": "Ledgerchain Labs",
+      "domain": "ledgerchain.io",
+      "went_out_as": "Adtech & martech",
+      "apollo_industry": "financial services",
+      "naics": [
+        "541511"
+      ],
+      "keywords": [
+        "cryptocurrency",
+        "blockchain",
+        "marketing technology",
+        "crypto exchange infrastructure"
+      ],
+      "description": "Ledgerchain Labs builds trading and custody infrastructure for cryptocurrency exchanges.",
+      "rules": "Adtech & martech",
+      "model_answer": {
+        "label": "Fintech",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "builds trading and custody infrastructure for cryptocurrency exchanges",
+        "what_they_do": "custody infrastructure for cryptocurrency exchanges"
+      },
+      "expect": {
+        "accept": [
+          "Fintech"
+        ],
+        "action": "verify",
+        "copy": "label"
+      },
+      "why": "a crypto firm Apollo tagged marketing technology"
+    },
+    {
+      "name": "Ironcore Data Centers",
+      "domain": "ironcoredc.com",
+      "went_out_as": "Adtech & martech",
+      "apollo_industry": "information technology & services",
+      "naics": [
+        "518210"
+      ],
+      "keywords": [
+        "data center",
+        "colocation",
+        "marketing automation",
+        "cloud infrastructure"
+      ],
+      "description": "Ironcore Data Centers operates colocation data centers for enterprise customers.",
+      "rules": "Adtech & martech",
+      "model_answer": {
+        "label": "Technology & Startups",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "operates colocation data centers for enterprise customers",
+        "what_they_do": "colocation data centers"
+      },
+      "expect": {
+        "accept": [
+          "Technology & Startups"
+        ],
+        "action": "verify"
+      },
+      "why": "a data-centre operator Apollo tagged marketing automation"
+    },
+    {
+      "name": "Quantmark Financial Data",
+      "domain": "quantmark.com",
+      "went_out_as": "Adtech & martech",
+      "apollo_industry": "financial services",
+      "naics": [
+        "519290",
+        "541511"
+      ],
+      "keywords": [
+        "financial data",
+        "market data",
+        "analytics",
+        "martech"
+      ],
+      "description": "Quantmark sells market data and analytics to asset managers.",
+      "rules": "Adtech & martech",
+      "model_answer": {
+        "label": "Fintech",
+        "confidence": "medium",
+        "entity": "company",
+        "evidence": "sells market data and analytics to asset managers",
+        "what_they_do": "market data for asset managers"
+      },
+      "expect": {
+        "accept": [
+          "Fintech",
+          "Technology & Startups"
+        ],
+        "action": "verify",
+        "copy": "group"
+      },
+      "why": "financial data: a medium answer within the group earns the group's copy"
+    },
+    {
+      "name": "Labtrack LIMS",
+      "domain": "labtracklims.com",
+      "went_out_as": "Adtech & martech",
+      "apollo_industry": "computer software",
+      "naics": [
+        "541511"
+      ],
+      "keywords": [
+        "laboratory software",
+        "lims",
+        "laboratory information management",
+        "martech"
+      ],
+      "description": "Labtrack builds laboratory information management software for clinical and research labs.",
+      "rules": "Adtech & martech",
+      "model_answer": {
+        "label": "Healthtech",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "laboratory information management software for clinical and research labs",
+        "what_they_do": "laboratory information management software"
+      },
+      "expect": {
+        "accept": [
+          "Healthtech",
+          "Technology & Startups"
+        ],
+        "action": "verify"
+      },
+      "why": "lab software sold to clinics: Healthtech"
+    },
+    {
+      "name": "Planwise FP&A",
+      "domain": "planwisefpa.com",
+      "went_out_as": "Adtech & martech",
+      "apollo_industry": "computer software",
+      "naics": [
+        "541511"
+      ],
+      "keywords": [
+        "fp&a software",
+        "budgeting",
+        "financial planning",
+        "marketing automation"
+      ],
+      "description": "Planwise makes budgeting and planning software for finance teams.",
+      "rules": "Adtech & martech",
+      "model_answer": {
+        "label": "Technology & Startups",
+        "confidence": "medium",
+        "entity": "company",
+        "evidence": "makes budgeting and planning software for finance teams",
+        "what_they_do": "budgeting and planning software for finance teams"
+      },
+      "expect": {
+        "accept": [
+          "Technology & Startups",
+          "Fintech"
+        ],
+        "action": "verify",
+        "copy": "group"
+      },
+      "why": "planning software for finance teams: not Fintech by the definition, and not adtech"
+    },
+    {
+      "name": "Town of Braintree",
+      "domain": "braintreema.gov",
+      "went_out_as": "Fintech",
+      "apollo_industry": "government administration",
+      "naics": [
+        "921110"
+      ],
+      "keywords": [
+        "town council",
+        "municipal services"
+      ],
+      "description": "The Town of Braintree is the municipal government for Braintree, Massachusetts.",
+      "rules": null,
+      "model_answer": {
+        "label": "none",
+        "confidence": "high",
+        "entity": "public_body",
+        "evidence": "the municipal government for Braintree, Massachusetts",
+        "what_they_do": "municipal government"
+      },
+      "expect": {
+        "accept": [],
+        "action": "disqualify"
+      },
+      "why": "a town council: a public body (the .gov domain says so too)"
+    },
+    {
+      "name": "Crestline Games",
+      "domain": "crestlinegames.com",
+      "went_out_as": "Games studios",
+      "apollo_industry": "computer games",
+      "naics": [
+        "513210"
+      ],
+      "keywords": [
+        "video games",
+        "game development",
+        "indie games"
+      ],
+      "description": "Crestline Games is an independent studio making games for PC and consoles.",
+      "rules": "Games studios",
+      "model_answer": {
+        "label": "Games studios",
+        "confidence": "high",
+        "entity": "company",
+        "evidence": "an independent studio making games for PC and consoles",
+        "what_they_do": "games for PC and consoles"
+      },
+      "expect": {
+        "accept": [
+          "Games studios"
+        ],
+        "action": "verify",
+        "copy": "label"
+      },
+      "why": "a true games studio: the rules were right"
+    },
+    {
+      "name": "Harbor Creative",
+      "domain": "harborcreative.co",
+      "went_out_as": "Marketing & Creative Agencies",
+      "apollo_industry": "marketing & advertising",
+      "naics": [
+        "541810"
+      ],
+      "keywords": [
+        "creative agency",
+        "branding",
+        "campaigns"
+      ],
+      "description": "Harbor Creative is a creative agency doing branding and campaigns for consumer brands.",
+      "rules": "Marketing & Creative Agencies",
+      "model_answer": {
+        "label": "Creative & design agencies",
+        "confidence": "medium",
+        "entity": "company",
+        "evidence": "a creative agency doing branding and campaigns",
+        "what_they_do": "branding and campaigns for consumer brands"
+      },
+      "expect": {
+        "accept": [
+          "Marketing & Creative Agencies"
+        ],
+        "action": "verify",
+        "copy": "group"
+      },
+      "why": "an agency: the rules' umbrella stands when the model is not sure of a sub-label"
+    },
+    {
+      "name": "Meadow Health",
+      "domain": "meadowhealth.com",
+      "went_out_as": "Healthtech",
+      "apollo_industry": "hospital & health care",
+      "naics": [
+        "541511"
+      ],
+      "keywords": [
+        "healthtech",
+        "health technology",
+        "virtual care"
+      ],
+      "description": "Meadow Health offers virtual primary care to patients through its app.",
+      "rules": "Healthtech",
+      "model_answer": {
+        "label": "Digital health",
+        "confidence": "medium",
+        "entity": "company",
+        "evidence": "offers virtual primary care to patients through its app",
+        "what_they_do": "virtual primary care"
+      },
+      "expect": {
+        "accept": [
+          "Healthtech"
+        ],
+        "action": "verify",
+        "copy": "general"
+      },
+      "why": "the rules and the model in different groups, the model not sure: the rules' label, General copy"
+    }
+  ]
+}

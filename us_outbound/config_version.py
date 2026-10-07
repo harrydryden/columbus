@@ -17,6 +17,8 @@ was enrolled under, so the cohort report (learn/cohorts.py) can compare like wit
   copy_hashes        copy_version -> CopyRow.content_hash for every sendable Copy row (approved, QA passed);
   general            the General content keys (CONTENT_KEYS) as text, so a report can say "0.5 → 0.3";
   signature_hash     templates/copy/signature.txt;
+  labels_hash        the industry label check's prompt version, label list and definitions (labels.labels_hash;
+                     Harry, 7 Oct 2026): they decide which label, and so which copy, a new company earns;
   campaign_fingerprint, step_days   the campaign constants: STEP_DAYS, CAMPAIGN_SETTINGS and the step templates
                      (tests/test_cohorts.py pins the fingerprint, so changing one fails a test by name);
   code_sha           the deploy's git commit, RAILWAY_GIT_COMMIT_SHA (Railway sets it on every deploy from GitHub;
@@ -60,6 +62,7 @@ CONTENT_KEYS = (
     "price_from", "booking_link", "booking_page", "site_url", "demo_host", "utm_links", "send_window",
     "second_contact", "second_contact_min_employees", "second_contact_delay_days", "control_share",
     "weekly_enrol_cap",
+    "label_check",  # Harry, 7 Oct 2026: required or skip decides which copy a new company's label earns (labels.py)
 )
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -134,11 +137,14 @@ class ConfigVersion:
 
 def snapshot(settings: Settings) -> dict[str, Any]:
     """Everything a contact enrolled now is rendered and sent under (the module docstring)."""
+    from us_outbound import labels  # it builds on the sources, which build on enrol: imported when used
+
     return {
         "settings_versions": {t: _iso(settings.versions[t]) for t in CONTENT_TABS if settings.versions.get(t)},
         "copy_hashes": sendable_hashes(settings),
         "general": general_values(settings.general),
         "signature_hash": signature_hash(),
+        "labels_hash": labels.labels_hash(settings),
         "campaign_fingerprint": campaign_fingerprint(),
         "step_days": list(STEP_DAYS),
         "code_sha": code_sha(),

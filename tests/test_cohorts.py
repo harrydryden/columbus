@@ -89,7 +89,11 @@ def test_config_version_changes_only_for_content_tabs(monkeypatch):
     assert deployed.id != first.id and deployed.code_sha == "a4c5c27f00ba"
     assert first.code_sha == "dev"
     assert set(first.snapshot) == {"settings_versions", "copy_hashes", "general", "signature_hash",
-                                   "campaign_fingerprint", "step_days", "code_sha"}
+                                   "campaign_fingerprint", "step_days", "code_sha", "labels_hash"}
+    # The label check's definitions decide which copy a new company earns (labels.py; Harry, 7 Oct 2026).
+    defined = tuple(dataclasses.replace(i, definition="Payments software.") if i.industry == "Fintech" else i
+                    for i in base.industries)
+    assert vid(dataclasses.replace(base, industries=defined)) != first.id
     assert first.snapshot["settings_versions"] == {"Signals": t0.isoformat()}
     assert first.snapshot["general"]["send_window"] == "Mon–Fri 09:00–16:00 America/New_York"
 
