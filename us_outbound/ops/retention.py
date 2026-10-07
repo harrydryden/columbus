@@ -14,9 +14,13 @@ blackout date), with two corrections:
     booking at its company (meeting_booked, demo_held; crm/readback.py stops the company's leads). Only a stop on
     or after the day the contact was enrolled counts;
   * a send recorded later than that (contacts.last_step_at, which sync_outcomes keeps) moves it later: Instantly
-    sends late after a stop and a start, or a kill-rule hold, and the forecast cannot know.
+    sends late after a stop and a start, or a kill-rule hold, and the forecast cannot know; and so does a later
+    email in the conversation, a reply of theirs or one the reply desk sent (reply_sent), since the thread goes
+    on in the lead's mailbox and the desk answers in it.
 It is never deleted while:
   * it is in flight (enrol/capacity.in_flight: a step still to send by the forecast);
+  * a reply of theirs waits for a person (a reply card open, escalated or sending): the desk answers in the lead's
+    thread;
   * Instantly still lists it as active or paused, it has no stop, and sync_outcomes has recorded fewer sends than
     the sequence has steps: a campaign paused for longer than the forecast allows still holds its later steps;
   * Instantly lists it as unsubscribed and the opt-out is not recorded yet (no events row
@@ -28,6 +32,8 @@ It is never deleted while:
 A lead stopped by the account-level stop was deleted from its campaign then (until Instantly's lead pause is
 confirmed, clients/instantly.LEAD_PAUSE_CONFIRMED), so 31 days after its lead_stopped row Instantly answers 404,
 which counts as deleted already; once the pause is confirmed, the paused lead is deleted then like any other.
+PHASE0-CONFIRM: that GET /leads/{id} answers 404 for a deleted lead (delete_lead reads it first, as erase and the
+account-level stop rely on too).
 Each deletion is the guarded Instantly.delete_lead, scoped to the lead's own "US Outbound –" campaign (it checks the
 lead is that campaign's first). The contact keeps everything else and records it: lead_deleted_at is set and
 instantly_lead_id cleared, so the deletion is made once, and everything that reads instantly_lead_id (the
@@ -110,7 +116,7 @@ from us_outbound.enrol import capacity
 from us_outbound.enrol.openers import FOCUS_SOURCE
 from us_outbound.logs import log, normalise_email
 from us_outbound.replies import optout
-from us_outbound.replies.items import REPLY_KINDS
+from us_outbound.replies.items import REPLY_KINDS, WAITING
 from us_outbound.replies.poll import OOO_KIND
 from us_outbound.scoring.score import SCORING_SOURCE
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
@@ -135,6 +141,8 @@ OUT_OF_OFFICE = "out_of_office"
 OWN_STOPS = ("replied", "bounced", "unsubscribed", "complained", "lead_stopped")
 # A booking at the company stops every lead there (crm/readback.py).
 ACCOUNT_STOPS = ("meeting_booked", "demo_held")
+# The conversation in the lead's thread: their replies, and the replies the desk sent (replies/desk.py).
+CONVERSATION = ("replied", "reply_sent")
 NOT_FINISHED = frozenset({LEAD_ACTIVE, LEAD_PAUSED})  # Instantly may still send a lead in these statuses
 REPLY_ITEM_KINDS = (*REPLY_KINDS, OOO_KIND)  # the hitl_items that quote a reply (replies/poll.py)
 # A reply card's payload keys that hold the prospect's words, or text written from them (replies/poll.py, desk.py).
@@ -177,6 +185,7 @@ IN_FLIGHT = "in flight"
 UNDATED = "no enrolment or send to date it by"
 UNREADABLE = "its campaign's leads could not be read"
 STEPS_LEFT = "Instantly lists it as active or paused, with steps not recorded as sent"
+REPLY_WAITING = "a reply of theirs waits for a person"
 OPT_OUT_PENDING = "an opt-out not recorded yet"
 BOUNCE_PENDING = "a bounce not recorded yet"
 LEAD_LEFT = "its Instantly lead is not deleted yet"  # a due contact waits for rule 1
@@ -242,12 +251,18 @@ class Ends:
 
     def __init__(self, ctx: Context):
         self.settings = ctx.settings
-        events = ctx.store.select("events", {"type": [*OWN_STOPS, *ACCOUNT_STOPS]})
+        events = ctx.store.select("events", {"type": list(dict.fromkeys([*OWN_STOPS, *ACCOUNT_STOPS, *CONVERSATION]))})
         self.own: dict[str, list[date]] = {}
         self.company: dict[str, list[date]] = {}
+        self.talk: dict[str, date] = {}  # contact id -> the last email in its conversation
         for e in events:
             day = _et_day(e.get("occurred_at"))
-            if day is None or not _ends_emails(e):
+            if day is None:
+                continue
+            if e.get("type") in CONVERSATION and e.get("contact_id"):
+                cid = str(e["contact_id"])
+                self.talk[cid] = max(day, self.talk.get(cid, day))
+            if e.get("type") not in (*OWN_STOPS, *ACCOUNT_STOPS) or not _ends_emails(e):
                 continue
             if e.get("type") in ACCOUNT_STOPS:
                 if e.get("account_id"):
@@ -265,16 +280,22 @@ class Ends:
 
     def last_step(self, contact: Mapping[str, Any]) -> date | None:
         """The US Eastern day of the contact's last step (the module docstring); None when nothing dates it."""
-        sent, stop = _et_day(contact.get("last_step_at")), self.stop(contact)
+        stop = self.stop(contact)
         start = _et_day(contact.get("enrolled_at"))
         steps = capacity.step_days(start, self.settings) if start is not None else []
         end = min(steps[-1], stop) if steps and stop is not None else (steps[-1] if steps else stop)
-        if end is None:
-            return sent
-        return max(end, sent) if sent is not None else end
+        later = [d for d in (end, _et_day(contact.get("last_step_at")), self.talk.get(str(contact.get("contact_id"))))
+                 if d is not None]
+        return max(later) if later else None
 
 
 # -- 1. Instantly leads, 31 days after their last step (SPEC 13) -----------------------------------------------------
+
+
+def _replies_waiting(ctx: Context) -> set[str]:
+    """Contacts with a reply card still waiting for a person (open, escalated or sending)."""
+    return {str(i["contact_id"]) for i in ctx.store.select("hitl_items", {"status": list(WAITING)})
+            if i.get("contact_id") and str(i.get("kind") or "") in REPLY_KINDS}
 
 
 def _recorded(ctx: Context) -> tuple[set[str], set[str], set[str]]:
@@ -353,11 +374,14 @@ def delete_leads(ctx: Context, ends: Ends, today: date, errors: list[str]) -> di
         except (ApiError, LookupError, ConfigError) as exc:  # tried again the next day
             listed[name] = None
             errors.append(f"{name}: its leads could not be read: {type(exc).__name__}: {str(exc)[:160]}")
-    recorded = _recorded(ctx)
+    recorded, waiting = _recorded(ctx), _replies_waiting(ctx)
     sends = _sends(ctx, (c["contact_id"] for c in candidates))
     ready: list[tuple[dict, bool]] = []  # (contact, Instantly listed its lead)
     for c in candidates:
         leads = listed[str(c["instantly_campaign"])]
+        if str(c["contact_id"]) in waiting:
+            held[REPLY_WAITING] += 1
+            continue
         if leads is None:
             held[UNREADABLE] += 1
             continue

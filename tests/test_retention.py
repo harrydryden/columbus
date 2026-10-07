@@ -154,6 +154,30 @@ def test_a_booking_at_the_company_stops_its_leads():
     assert w.run()["leads"]["deleted"] == 1
 
 
+@pytest.mark.parametrize("now, due", [(datetime(2027, 1, 1, 17, tzinfo=UTC), 0), (datetime(2027, 1, 2, 17, tzinfo=UTC), 1)])
+def test_a_lead_stays_while_its_conversation_goes_on(now, due):
+    """A reply on 9 Nov stops it, but the desk answers on the 20th and they write again on 1 Dec: 31 days from then."""
+    w = World(now=now)
+    c = w.contact(date(2026, 11, 5), sends=1)
+    w.event(c, "replied", date(2026, 11, 9), reply_class="positive", event_id="em-1")
+    w.event(c, "reply_sent", date(2026, 11, 20), event_id="desk-1", approval="approved")
+    w.event(c, "replied", date(2026, 12, 1), reply_class="positive", event_id="em-2")
+    assert w.run()["leads"]["deleted"] == due
+
+
+def test_a_reply_waiting_for_a_person_holds_the_lead():
+    """The desk answers in the lead's thread (Instantly.reply), so a card still open keeps it."""
+    w = World(now=datetime(2026, 12, 11, 17, tzinfo=UTC))
+    c = w.contact(date(2026, 11, 5), sends=1)
+    w.event(c, "replied", date(2026, 11, 9), reply_class="positive", event_id="em-1")
+    w.ctx.store.insert("hitl_items", [{"item_id": "reply:em-1", "kind": "reply", "status": "escalated",
+                                       "contact_id": c["contact_id"], "created_at": NOW - timedelta(days=32)}])
+    out = w.run()["leads"]
+    assert out["due"] == 0 and out["held"] == {retention.REPLY_WAITING: 1}
+    w.ctx.store.update("hitl_items", {"item_id": "reply:em-1"}, {"status": "handled"})
+    assert w.run()["leads"]["deleted"] == 1
+
+
 @pytest.mark.parametrize("cls", ["out_of_office", None])
 def test_an_out_of_office_or_unclassified_reply_is_no_stop(cls):
     w = World(now=datetime(2026, 12, 11, 17, tzinfo=UTC))

@@ -171,10 +171,11 @@ daily report reads; `us-outbound approvals list|approve|reject` does the same wo
 
 Jobs beyond SPEC 9: `retention` (daily 00:40, live: SPEC 6's retention rules and SPEC 13's 31 days, which SPEC 9
 gave to sync_outcomes; `ops/retention.py`, built 7 Oct 2026): it deletes each Instantly lead more than 31 days after
-its last step (dated as the send forecast dates it, or from its stop; never in flight, never while an opt-out or
-bounce is still to record; at most 200 a run), clears reply text from events and the reply cards 90 days after the
-reply, deletes contacts who never replied 12 months after their last step and company rows no source has refreshed
-in 12 months (only those nothing else holds), and never touches suppression. Dry-run counts and changes nothing,
+its last step (dated as the send forecast dates it, or from its stop, or the conversation's last email; never in
+flight, never while a reply waits for a person or an opt-out or bounce is still to record; at most 200 a run),
+clears reply text from events and the reply cards 90 days after the reply, deletes contacts who never replied 12
+months after their last step and company rows no source has refreshed in 12 months (only those nothing else
+holds), and never touches suppression. Dry-run counts and changes nothing,
 the database included. The daily post has one line when it deleted anything, and `us-outbound status` says what it
 last did and what waits; `us-outbound run retention` shows what is due now. Apollo deletion notices have no API:
 Harry honours each within 30 days with `us-outbound erase --email ADDRESS --live` (docs/daily.md).

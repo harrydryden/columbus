@@ -348,8 +348,9 @@ verification and contact choice write only the database; enrol, replies and post
    live like the other Instantly jobs, so dry until `live_sending` = yes; docs/daily.md "Retention"):
    - Instantly leads more than 31 days after their last step are deleted (SPEC 13), the last step dated as the send
      forecast dates it (US Eastern, blackout dates skipped), or from a stop of the lead's own or a booking at its
-     company, or from a send recorded later; never a lead in flight, one Instantly still lists as sending with
-     steps unrecorded, or one whose opt-out or bounce is still to record. At most 200 a run;
+     company, or from a send or a conversation's email recorded later; never a lead in flight, one whose reply waits
+     for a person, one Instantly still lists as sending with steps unrecorded, or one whose opt-out or bounce is
+     still to record. At most 200 a run;
      `contacts.lead_deleted_at` records it;
    - reply text is purged 90 days after the reply, from `events.reply_text` and the reply cards in `hitl_items`;
    - contacts who never replied are deleted 12 months after their last step, and company rows no source has

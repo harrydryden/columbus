@@ -286,8 +286,9 @@ finding no People leader there means something. Once, after this reaches the wor
 
 **Retention** (7 Oct 2026; SPEC 6 and 13). The `retention` job runs at 00:40 UK every night and needs nothing from
 you. It deletes each Instantly lead 31 days after its last step (or after the reply, bounce, unsubscribe or booking
-that stopped it), so the Instantly plan's lead count stays down; it never deletes a lead still being emailed, or one
-whose unsubscribe or bounce the jobs have not recorded yet. It clears the text of replies 90 days after they came
+that stopped it, or the last email of a conversation with them), so the Instantly plan's lead count stays down; it
+never deletes a lead still being emailed, one whose reply waits for you, or one whose unsubscribe or bounce the jobs
+have not recorded yet. It clears the text of replies 90 days after they came
 (the class, dates and ids stay, so the readout counts as before). It deletes the people who never replied 12 months
 after their last email, and companies no source has seen again in 12 months that nothing else holds. The
 suppression list is never touched. When it deleted anything, the daily post ends with one line of counts, and
