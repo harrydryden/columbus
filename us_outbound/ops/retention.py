@@ -115,7 +115,7 @@ from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED
 from us_outbound.context import ET, UK, ConfigError, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.openers import FOCUS_SOURCE
-from us_outbound.logs import log, normalise_email
+from us_outbound.logs import log, normalise_email, redact
 from us_outbound.replies import optout
 from us_outbound.replies.items import REPLY_KINDS, WAITING
 from us_outbound.replies.poll import OOO_KIND
@@ -374,7 +374,7 @@ def delete_leads(ctx: Context, ends: Ends, today: date, errors: list[str]) -> di
             listed[name] = {str(lead.get("id")): lead for lead in inst.list_leads(name)}
         except (ApiError, LookupError, ConfigError) as exc:  # tried again the next day
             listed[name] = None
-            errors.append(f"{name}: its leads could not be read: {type(exc).__name__}: {str(exc)[:160]}")
+            errors.append(f"{name}: its leads could not be read: {type(exc).__name__}: {redact(str(exc))[:160]}")
     recorded, waiting = _recorded(ctx), _replies_waiting(ctx)
     sends = _sends(ctx, (c["contact_id"] for c in candidates))
     ready: list[tuple[dict, bool]] = []  # (contact, Instantly listed its lead)
@@ -401,14 +401,14 @@ def delete_leads(ctx: Context, ends: Ends, today: date, errors: list[str]) -> di
             inst.delete_lead(campaign, lead_id)  # 404 on its check: gone already, and it returns
         except ApiError as exc:
             if exc.status != 404:  # 404 on the delete itself: gone between the check and the delete
-                if len(errors) < LIST_LIMIT:
-                    errors.append(f"{cid}: {type(exc).__name__}: {str(exc)[:160]}")
+                if len(errors) < LIST_LIMIT:  # an address in Instantly's answer is kept only as its hash
+                    errors.append(f"{cid}: {type(exc).__name__}: {redact(str(exc))[:160]}")
                 log("retention_lead_failed", run_id=ctx.run_id, contact_id=cid, error=str(exc)[:200])
                 continue
             was_listed = False
         except (LookupError, ConfigError) as exc:  # the campaign is missing or named twice: the next day
             if len(errors) < LIST_LIMIT:
-                errors.append(f"{cid}: {type(exc).__name__}: {str(exc)[:160]}")
+                errors.append(f"{cid}: {type(exc).__name__}: {redact(str(exc))[:160]}")
             continue
         _record_deleted(ctx, c)
         out["deleted" if was_listed else "already_gone"] += 1

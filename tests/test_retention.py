@@ -296,9 +296,10 @@ def test_at_most_leads_per_run_oldest_first(monkeypatch):
 def test_a_failed_delete_is_reported_and_tried_again():
     w = World()
     c = w.contact(date(2026, 10, 6))
-    w.t.route("DELETE", f"/leads/{c['instantly_lead_id']}", body={"error": "busy"}, status=500)
+    w.t.route("DELETE", f"/leads/{c['instantly_lead_id']}", body={"error": "busy", "lead": c["email"]}, status=500)
     out = w.run()
     assert out["leads"]["deleted"] == 0 and len(out["errors"]) == 1 and out["errors"][0].startswith(c["contact_id"])
+    assert "@" not in out["errors"][0] and "email:" in out["errors"][0]  # the address only as its hash
     assert w.row(c)["instantly_lead_id"] == c["instantly_lead_id"]
     w.t.routes.pop()
     assert w.run()["leads"]["deleted"] == 1
