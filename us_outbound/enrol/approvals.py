@@ -39,7 +39,10 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
                                  suppressed, and pick_contacts finds the next person. If a run dies
                                  mid-add (or the lookup fails), a later run looks it up: there, it is
                                  approved; not there, a person approves it again; Instantly unreadable,
-                                 the thread asks a person to check the campaign first.
+                                 the thread asks a person to check the campaign first. A lead left out
+                                 because Instantly's plan is full is no refusal (enrol/plan.py; Harry,
+                                 7 Oct 2026): the card is held, the contact kept, the approvers asked
+                                 once a day to make room, and the rest of that run's ✅s held too.
                                  The re-check (recheck) tells holds from blocks. A hold is temporary:
                                  live_sending or optout_tested no, an operator stop, the stop rule, the
                                  reply pause, a blackout date on Instantly's next send day, the owner's
@@ -120,10 +123,11 @@ from zoneinfo import ZoneInfo
 from us_outbound import budget
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
+from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.enrol import capacity, copy_markup, enrol, openers, queue, render, second
+from us_outbound.enrol import capacity, copy_markup, enrol, openers, plan, queue, render, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
@@ -154,6 +158,7 @@ COMPANY_REACTIONS = frozenset({"no_entry_sign"})  # 🚫
 HOLD_LIVE, HOLD_OPTOUT, HOLD_STOP, HOLD_STOP_RULE = "live_sending", "optout_tested", "operator_stop", "stop_rule"
 HOLD_REPLIES, HOLD_BLACKOUT, HOLD_CAMPAIGN = "reply_pause", "blackout", "campaign"
 HOLD_INSTANTLY, HOLD_HUBSPOT = "instantly", "hubspot"
+HOLD_PLAN = "instantly_plan"  # Instantly's plan has no room (enrol/plan.py): found at the add, not by recheck
 SEED_APPROVE = ("white_check_mark", "x")  # what the bot puts on a card or a version, so a click decides
 SEED_CHOICES = ("pencil2", "bust_in_silhouette", "no_entry_sign")
 
@@ -1068,6 +1073,8 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         _cas(ctx, item, OPEN)
         raise
     except (ApiError, LookupError, ValueError, ConfigError) as exc:
+        if instantly_client.plan_full_error(exc):  # the whole add refused for want of room: held, not failed
+            return {**result, **_plan_full(ctx, item, by=by, via=via, slack=slack, alert=plan.full_alert(ctx))}
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
         note = _thread(slack, item, f"Not added: Instantly refused: {_esc(str(exc)[:200])}. Check {_esc(campaign)} in "
                                     f"Instantly for {_esc(item.email)} before you approve it again: ✅ this message, or "
@@ -1080,21 +1087,37 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         return result
     lead = dict(p.get("lead") or {})
     email = _text(lead.get("email")).lower()
+    room = plan.after_add(ctx, added)  # the plan-full ask, or the low-room warning (enrol/plan.py)
     ids = enrol._created_ids(added or {}, [lead])
     if 0 not in ids:  # not created: in the campaign after all, or refused (enrol.campaign_lead_ids)
         try:
             found = enrol.campaign_lead_ids(ctx, campaign, [email])
         except (ApiError, LookupError, ConfigError) as exc:  # left "sending": _stuck looks again after STUCK_AFTER
-            p["sending"] = {**(p.get("sending") or {}), "answered": True}  # Instantly had the add, and did not create it
+            # Instantly had the add, and did not create it (for want of room, when its plan was full: enrol/plan.py)
+            p["sending"] = {**(p.get("sending") or {}), "answered": True, **({"plan_full": True} if room["full"] else {})}
             _save(ctx, item)
             why = f"Instantly did not confirm the lead and {campaign} could not be read ({str(exc)[:160]}); looked up again"
             log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
             result.update(added=False, why=[why])
             return result
+        if email not in found and room["full"]:  # left out for want of room, not refused: held, the contact kept
+            return {**result, **_plan_full(ctx, item, by=by, via=via, slack=slack, alert=room.get("alert"))}
         if email not in found:
             return {**result, **_refused(ctx, item, by=by, via=via, slack=slack)}
         ids = {0: found[email]}
-    return {**result, **_added(ctx, item, ids[0], by=by, via=via, slack=slack)}
+    return {**result, **_added(ctx, item, ids[0], by=by, via=via, slack=slack), "instantly_plan": room}
+
+
+def _plan_full(ctx: Context, item: Item, *, by: str, via: str, slack: Any, alert: Any) -> dict:
+    """Instantly's plan has no room (enrol/plan.py): the add did not happen, so the item goes back to waiting, held
+    as a stop or a blackout holds it: the card stays open and the ✅ stays valid, each poll_approvals run tries
+    again until there is room or the card expires, and the contact is kept (never enrol.mark_not_added)."""
+    p = item.payload
+    p.update(state=WAITING)
+    p.pop("sending", None)
+    _cas(ctx, item, OPEN)
+    _hold(ctx, item, {HOLD_PLAN: plan.HOLD}, by=by, via=via, slack=slack)
+    return {"added": False, "held": [plan.HOLD], "plan_full": True, "alert": alert}
 
 
 def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: Any) -> dict:
@@ -1260,6 +1283,7 @@ class _Run:
     would: list[dict] = field(default_factory=list)
     ignored: int = 0
     errors: list[str] = field(default_factory=list)
+    plan_full: bool = False  # Instantly's plan had no room at an add this run: the rest are held without one
 
     def add(self, name: str, entry: Any) -> None:
         bucket = getattr(self, name)
@@ -1271,7 +1295,12 @@ def _act(ctx: Context, item: Item, cmd: Command, by: str, via: str, slack: Any, 
     """Carry out one decision (live). True when nothing more is read for the item this run."""
     state = item.state
     if cmd.kind == "send":
+        if run.plan_full:  # Instantly's plan was full earlier this run: held without another add (enrol/plan.py)
+            _hold(ctx, item, {HOLD_PLAN: plan.HOLD}, by=by, via=via, slack=slack)
+            run.add("held", {"item": item.short_id, "why": [plan.HOLD]})
+            return True
         res = send(ctx, item, by=by, via=via, slack=slack)
+        run.plan_full = run.plan_full or bool(res.get("plan_full"))
         if res.get("added"):
             run.outcomes[res["outcome"]] += 1
         elif res.get("outcome") == BLOCKED:
@@ -1405,6 +1434,10 @@ def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
         run.outcomes[res["outcome"]] += 1
         log("send_approval_found", item_id=item.id)
         return
+    if found is not None and sending.get("answered") and sending.get("plan_full"):  # no room then: held, kept
+        _plan_full(ctx, item, by=by, via=via, slack=slack, alert=None)
+        run.add("held", {"item": item.short_id, "why": [plan.HOLD]})
+        return
     if found is not None and sending.get("answered"):  # Instantly had the add and did not take it: refused
         run.outcomes[_refused(ctx, item, by=by, via=via, slack=slack)["outcome"]] += 1
         return
@@ -1472,7 +1505,7 @@ def poll(ctx: Context, slack: Any | None) -> dict:
     out: dict[str, Any] = {
         "items": len(todo), "outcomes": dict(run.outcomes), "rejected": run.rejected, "editing": run.editing,
         "edits": dict(run.edits), "not_added": run.not_added, "held": run.held, "cards_posted": run.cards_posted,
-        "unsure": run.unsure,
+        "unsure": run.unsure, "instantly_plan_full": run.plan_full,
         "ignored_non_approvers": run.ignored, "errors": run.errors,
     }
     if ctx.dry_run:

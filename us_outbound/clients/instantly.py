@@ -20,6 +20,7 @@ Endpoint shapes come from Instantly's published v2 OpenAPI document (api.instant
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any
@@ -121,6 +122,15 @@ ADD_COUNTS = frozenset(
      "incomplete_count", "duplicate_email_count"}
 )
 
+# The workspace's plan limits how many leads it holds (Harry, 7 Oct 2026). /leads/add answers with
+# remaining_in_plan, the room left after the add, and a status ("success"). A lead it leaves out when the plan is
+# full is not refused (no blocklist, no other campaign), so enrol and a send approval must keep its contact
+# (enrol/plan.py) rather than suppress it as they do a refusal (enrol.mark_not_added).
+# PHASE0-CONFIRM: what Instantly answers when the plan is full: remaining_in_plan 0, a status other than
+# "success" that names the limit (PLAN_LIMIT_WORDS), or an HTTP error (402, or a 4xx whose body says so).
+PLAN_LIMIT_WORDS = re.compile(r"\b(?:plan|limit|limits|quota|upgrade|exceed(?:s|ed)?)\b", re.I)
+PLAN_LIMIT_STATUS = 402  # Payment Required
+
 # PHASE0-CONFIRM: the custom-variable length limit (SPEC 9) is measured by hand in phase 0.
 CUSTOM_VARIABLE_LIMIT: int | None = None
 
@@ -154,6 +164,44 @@ INTEREST_MEETING_BOOKED = 2
 
 _UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~@")
 _RE_PREFIX = ("re:", "re ")
+
+
+def remaining_in_plan(answer: Mapping[str, Any] | None) -> int | None:
+    """The room for new leads Instantly reported after an add (remaining_in_plan), or None when it gave none."""
+    value = (answer or {}).get("remaining_in_plan")
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def plan_full(answer: Mapping[str, Any] | None) -> bool:
+    """Whether an add's answer shows the workspace's plan has no room for new leads: remaining_in_plan 0 (or
+    less), or leads left out with a status that names the plan's limit. PHASE0-CONFIRM (PLAN_LIMIT_WORDS)."""
+    a = answer or {}
+    remaining = remaining_in_plan(a)
+    if remaining is not None and remaining <= 0:
+        return True
+    status = str(a.get("status") or "").strip()
+    try:
+        left_out = int(a.get("leads_uploaded") or 0) < int(a.get("total_sent") or 0)
+    except (TypeError, ValueError):
+        left_out = False
+    return left_out and status.lower() != "success" and bool(PLAN_LIMIT_WORDS.search(status))
+
+
+def plan_full_error(exc: Exception) -> bool:
+    """Whether Instantly refused a whole add because the plan is full: HTTP 402, or a 4xx whose body names the
+    plan's limit. PHASE0-CONFIRM: Instantly may answer a full plan this way rather than in plan_full's fields."""
+    if not isinstance(exc, ApiError):
+        return False
+    if exc.status == PLAN_LIMIT_STATUS:
+        return True
+    body = str(exc.body or "")
+    return 400 <= exc.status < 500 and bool(re.search(r"\bplan\b", body, re.I)) and bool(PLAN_LIMIT_WORDS.search(
+        re.sub(r"\bplan\b", "", body, flags=re.I)))
 
 
 def reply_subject(subject: Any) -> str:

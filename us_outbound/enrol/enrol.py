@@ -40,6 +40,9 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      campaign (campaign_lead_ids): there, it is recorded; not there, Instantly refused it (its
      blocklist, or a lead in another campaign), so its contact is marked suppressed and
      pick_contacts finds the next person (mark_not_added) instead of the same one failing daily.
+     Unless Instantly's plan is full (enrol/plan.py; Harry, 7 Oct 2026): then a lead left out is
+     skipped as "Instantly plan limit" with its contact kept, no further owner's leads are added
+     that run, and the approvers are asked, once a day, to make room.
      auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
      comes to this channel first for approval"): each account becomes a send approval instead,
      a hitl_items row and a card in the alert channel showing every email of the sequence, and
@@ -78,7 +81,8 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound import budget, limits
-from us_outbound.enrol import capacity, focus, openers, queue, render
+from us_outbound.clients import instantly as instantly_client
+from us_outbound.enrol import capacity, focus, openers, plan, queue, render
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
@@ -946,20 +950,31 @@ def run(ctx: Context) -> dict:
         would = Counter(proposed["by_owner"])
         r.errors += proposed["errors"]
         by_owner = {}
+    plan_room: dict[str, Any] | None = None  # what the last live add said of Instantly's plan (enrol/plan.py)
     for owner, items in by_owner.items():
         campaign = queue.campaign_name(owner)
         leads = [p.lead for p in items]
+        if plan_room and plan_room.get("full"):  # no room: no more adds this run, and every contact is kept
+            for p in items:
+                r.skip(p.account, plan.SKIP, [plan.KEPT])
+            continue
         try:
             result = ctx.clients.instantly.add_leads(campaign, leads)
         except LookupError as exc:  # the owner's campaign is missing or duplicated
             r.errors.append(f"{campaign}: {exc}")
             continue
         except ApiError as exc:  # nothing is marked; the accounts stay verified for the next run
+            if instantly_client.plan_full_error(exc):
+                plan_room = {"remaining_in_plan": None, "full": True, "alert": plan.full_alert(ctx)}
+                for p in items:
+                    r.skip(p.account, plan.SKIP, [plan.KEPT])
+                continue
             r.errors.append(f"{campaign}: {str(exc)[:200]}")
             continue
         if ctx.dry_run or not result or result.get("dry_run"):
             would[owner] = len(items)
             continue
+        plan_room = plan.after_add(ctx, result)
         try:
             if capacity.resume_if_completed(ctx, campaign):
                 log("campaign_resumed", campaign=campaign, leads=len(items))
@@ -982,6 +997,8 @@ def run(ctx: Context) -> dict:
                        ["not in the add summary, and the campaign could not be read: the next run tries again"])
             elif email in found:
                 ids[i] = found[email]
+            elif plan_room.get("full"):  # left out for want of room, not refused: the contact is kept
+                r.skip(items[i].account, plan.SKIP, [plan.KEPT])
             else:
                 mark_not_added(ctx, items[i].contact.get("contact_id"))
                 r.skip(items[i].account, "not added by Instantly",
@@ -1010,6 +1027,7 @@ def run(ctx: Context) -> dict:
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
         second_contacts=second.tally(seconds, not_second, len(prepared) - n_first, s),
+        instantly_plan=plan_room,
         errors=r.errors,
     )
     if proposed is not None:  # by_owner: the cards posted (live) or that would be (dry-run)
