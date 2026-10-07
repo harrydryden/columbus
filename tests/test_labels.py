@@ -429,8 +429,11 @@ def test_the_gold_set_has_the_first_cards_thirteen_companies_with_made_up_names(
     assert sum(r["went_out_as"] != r["rules"] for r in GOLD) == 5
     # ... but Apollo's keyword artefacts keep five under adtech on the rules alone: the model's work.
     assert sum(r["rules"] == "Adtech & martech" for r in GOLD) == 5
-    assert {"Crestline Games", "Harbor Creative", "Meadow Health"} <= {r["name"] for r in GOLD if r["expect"]["accept"]
-                                                                       and r["rules"] in r["expect"]["accept"]}
+    assert {"Crestline Games", "Harbor Creative"} <= {r["name"] for r in GOLD if r["expect"]["accept"]
+                                                      and r["rules"] in r["expect"]["accept"]}
+    # Apollo's "healthtech" keyword puts a virtual-care provider under Healthtech; the definitions say Digital health.
+    [meadow] = [r for r in GOLD if r["name"] == "Meadow Health"]
+    assert (meadow["rules"], meadow["expect"]["accept"]) == ("Healthtech", ["Digital health"])
 
 
 @pytest.mark.parametrize("row", GOLD, ids=[r["domain"] for r in GOLD])
@@ -449,9 +452,7 @@ def test_the_gold_set(row):
     assert d.action == want["action"]
     if want["accept"]:
         assert d.label in want["accept"]
-    if "copy" in want:
-        assert d.copy == want["copy"]
-    assert not (d.copy == "label" and d.label not in want["accept"])  # never a label's own pitch to the wrong company
+    assert labels.score(d, want) == "acceptable"  # the expected copy too, and never a label's own pitch wrongly
 
 
 # -- `us-outbound labels eval` ----------------------------------------------------------------------------------------
@@ -520,6 +521,12 @@ def test_the_eval_reads_the_approvers_corrections_too():
      "acceptable"),
     (D("AI & deep tech", TECH, "model", "high", "label"), {"accept": [], "action": "disqualify"}, "unsafe"),
     (D("Fintech", TECH, "disputed", "medium", "general", "hold"), {"accept": [], "action": "disqualify"}, "wrong"),
+    # An umbrella's own copy is its group's copy: the group copy expected, and never a specific pitch.
+    (D(TECH, TECH, "model", "high", "label"), {"accept": [TECH, "Fintech"], "action": "verify", "copy": "group"},
+     "acceptable"),
+    (D(TECH, TECH, "model", "high", "label"), {"accept": ["Healthtech"], "action": "verify"}, "wrong"),
+    (D("Fintech", TECH, "model", "high", "label"), {"accept": ["Fintech"], "action": "verify", "copy": "group"},
+     "wrong"),
 ])
 def test_score(d, expect, verdict):
     assert labels.score(d, expect) == verdict

@@ -266,7 +266,7 @@
       "rules": "Adtech & martech",
       "model_answer": {
         "label": "Technology & Startups",
-        "confidence": "medium",
+        "confidence": "high",
         "entity": "company",
         "evidence": "makes budgeting and planning software for finance teams",
         "what_they_do": "budgeting and planning software for finance teams"
@@ -387,19 +387,18 @@
       "rules": "Healthtech",
       "model_answer": {
         "label": "Digital health",
-        "confidence": "medium",
+        "confidence": "high",
         "entity": "company",
         "evidence": "offers virtual primary care to patients through its app",
         "what_they_do": "virtual primary care"
       },
       "expect": {
         "accept": [
-          "Healthtech"
+          "Digital health"
         ],
-        "action": "verify",
-        "copy": "general"
+        "action": "verify"
       },
-      "why": "the rules and the model in different groups, the model not sure: the rules' label, General copy"
+      "why": "care given to patients through its own app: Digital health by the definitions, though Apollo's keywords say healthtech"
     }
   ]
 }

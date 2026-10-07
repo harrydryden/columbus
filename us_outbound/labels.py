@@ -752,13 +752,15 @@ def corrected_rows(ctx: Context) -> list[dict]:
 
 def score(d: Decision, expect: Mapping[str, Any]) -> str:
     """acceptable: the action expected, and a label among those accepted (when any are); unsafe: a label's own
-    copy for a label not accepted (a specific pitch to the wrong company); else wrong."""
+    copy for a label not accepted (a specific pitch to the wrong company); else wrong. An umbrella's own copy is its
+    group's copy (the label is the group), so it counts as group copy."""
     accept = list(expect.get("accept") or ())
-    if d.copy == LABEL_COPY and d.action != DISQUALIFY and d.label not in accept:
+    copy = GROUP_COPY if d.copy == LABEL_COPY and d.label and d.label == d.group else d.copy
+    if copy == LABEL_COPY and d.action != DISQUALIFY and d.label not in accept:
         return UNSAFE
     ok = d.action == expect.get("action") and (not accept or d.action != VERIFY or d.label in accept)
     if ok and expect.get("copy") and d.action == VERIFY:
-        ok = d.copy == expect["copy"]
+        ok = copy == expect["copy"]
     return ACCEPTABLE if ok else WRONG
 
 
