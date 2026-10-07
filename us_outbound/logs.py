@@ -44,8 +44,8 @@ def redact(value: Any, key: str = "") -> Any:
     k = key.lower()
     if k in SECRET_KEYS:
         return "[redacted]"
-    if isinstance(value, dict):
-        return {kk: redact(vv, str(kk)) for kk, vv in value.items()}
+    if isinstance(value, dict):  # a key can be an address too (mailbox_health's ramp and limits, by mailbox)
+        return {_hash_emails_in(kk) if isinstance(kk, str) else kk: redact(vv, str(kk)) for kk, vv in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [redact(v, key) for v in value]
     if isinstance(value, str):

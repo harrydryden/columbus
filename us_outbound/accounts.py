@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from us_outbound import suppression
-from us_outbound.clean.domains import canonical_domain, is_personal_domain
+from us_outbound.clean.domains import canonical_domain, is_personal_domain, is_public_body
 from us_outbound.clean.names import clean_company_name
 from us_outbound.clients.db import Store, new_id
 
@@ -57,6 +57,8 @@ def admit(store: Store, domain: str, *, source: str, now: datetime, name: str = 
         return Admitted(None, None, "not a company domain")
     if is_personal_domain(root):
         return Admitted(root, None, "a personal email domain")
+    if is_public_body(root):
+        return Admitted(root, None, "a public body, never prospected")
     existing = store.get("accounts", domain=root)
     if existing:
         return Admitted(root, existing["account_id"], "exists")

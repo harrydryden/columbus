@@ -3,7 +3,7 @@
 Uses the official anthropic SDK with structured outputs (output_config.format =
 json_schema), so every answer is one JSON object matching the caller's schema.
 
-The key's spend is capped at claude_monthly_cap_usd (SPEC 1.1, $10). Before each call the
+The key's spend is capped at claude_monthly_cap_usd (SPEC 1.1 set $10; the sheet may set up to $100). Before each call the
 month's spend is read from credit_ledger (system "claude", this UTC month) and the call is
 refused if that spend plus a conservative estimate of this call would pass the cap less a
 small reserve. After each call its actual cost, from response.usage, is written to the
@@ -14,6 +14,12 @@ effort sets output_config.effort. Sonnet 5.5 and Opus 5.5 think before answering
 is billed as output and counts against max_tokens, and Sonnet's default effort is high
 (docs/gtm-review/04-tool-capabilities.md §5). A caller that leaves effort out gets the model's
 default, as before.
+
+cache_system (Harry, 7 Oct 2026; the industry label check, labels.py, asks with the same long system
+block for every company): the system prompt goes as one text block marked cache_control ephemeral
+(5 minutes), so each call after the first reads it at the cache rate. usage_cost_usd prices the cache
+write and reads; the cap's estimate stays the uncached upper bound. A prefix under the model's minimum
+(512 tokens on Sonnet 5.5) is simply not cached.
 """
 
 from __future__ import annotations
@@ -133,6 +139,23 @@ def usage_cost_usd(price: Price, usage: Any) -> float:
     ) / 1_000_000
 
 
+def month_spend_usd(store: Store, now: datetime) -> float:
+    """USD recorded for Claude in credit_ledger in now's UTC calendar month: what the cap counts, and what the
+    daily post and its spend alerts show (learn/spend.py), without a key or a model."""
+    now = _as_utc(now) or datetime.now(UTC)
+    total = 0.0
+    for row in store.select("credit_ledger", {"system": "claude"}):
+        at = _as_utc(row.get("occurred_at"))
+        if at and (at.year, at.month) == (now.year, now.month):
+            total += float(row.get("usd") or 0.0)
+    return total
+
+
+def cap_reached_at(monthly_cap_usd: float) -> float:
+    """The month's spend from which every call is refused: the cap less its reserve (Claude.json)."""
+    return float(monthly_cap_usd) * (1 - CAP_RESERVE_SHARE)
+
+
 class Claude:
     def __init__(
         self,
@@ -156,13 +179,7 @@ class Claude:
 
     def month_spend_usd(self, now: datetime) -> float:
         """USD recorded for Claude in credit_ledger in now's UTC calendar month."""
-        now = _as_utc(now) or datetime.now(UTC)
-        total = 0.0
-        for row in self.store.select("credit_ledger", {"system": "claude"}):
-            at = _as_utc(row.get("occurred_at"))
-            if at and (at.year, at.month) == (now.year, now.month):
-                total += float(row.get("usd") or 0.0)
-        return total
+        return month_spend_usd(self.store, now)
 
     def _price(self) -> Price:
         price = PRICES.get(self.model)
@@ -187,8 +204,9 @@ class Claude:
         now: datetime | None = None,
         timeout: float | None = None,
         effort: str | None = None,
+        cache_system: bool = False,
     ) -> dict:
-        """One structured-output call; returns the parsed JSON object."""
+        """One structured-output call; returns the parsed JSON object. cache_system: the system prompt is cached."""
         import anthropic
 
         _check_schema(schema)
@@ -201,7 +219,7 @@ class Claude:
         price = self._price()
         spent = self.month_spend_usd(now)
         estimate = self.estimate_usd(system, prompt, schema, max_tokens)
-        limit = self.monthly_cap_usd * (1 - CAP_RESERVE_SHARE)
+        limit = cap_reached_at(self.monthly_cap_usd)
         if spent + estimate > limit:
             log("claude_budget_refused", model=self.model, purpose=purpose, spent_usd=round(spent, 4),
                 estimate_usd=round(estimate, 4), cap_usd=self.monthly_cap_usd)
@@ -218,7 +236,8 @@ class Claude:
             response = client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
-                system=system,
+                system=([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if cache_system
+                        else system),
                 messages=[{"role": "user", "content": prompt}],
                 output_config=output_config,
             )
@@ -247,13 +266,18 @@ class Claude:
                     "credits": 0.0,
                     "usd": cost,
                     "occurred_at": now,
-                    "note": f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}",
+                    "note": f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}"
+                            + (f" cache_read={getattr(usage, 'cache_read_input_tokens', 0) or 0}"
+                               f" cache_write={getattr(usage, 'cache_creation_input_tokens', 0) or 0}"
+                               if cache_system else ""),
                 }
             ],
         )
         stop = getattr(response, "stop_reason", None)
         log("claude_call", model=self.model, purpose=purpose, stop_reason=stop, usd=round(cost, 6),
-            input_tokens=getattr(usage, "input_tokens", None), output_tokens=getattr(usage, "output_tokens", None))
+            input_tokens=getattr(usage, "input_tokens", None), output_tokens=getattr(usage, "output_tokens", None),
+            cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", None),
+            cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", None))
 
         if stop == "refusal":
             raise ClaudeError("Claude declined the request (stop_reason refusal)")

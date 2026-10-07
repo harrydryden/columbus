@@ -160,7 +160,8 @@ class _Run:
 def screen(ctx: Context, batch: Sequence[dict], run: _Run, room: credits.Room) -> set[str] | None:
     """The Apollo ids in batch with at least one current posting; None if Apollo refused the search.
 
-    PHASE0-CONFIRM: organization_ids and organization_num_jobs_range together on mixed_companies/search.
+    Confirmed live 2 to 7 Oct 2026: organization_ids and organization_num_jobs_range together on
+    mixed_companies/search (each screen of 100 accounts returned 50 to 66 as hiring).
     """
     ids = [str(a["apollo_org_id"]) for a in batch]
     try:

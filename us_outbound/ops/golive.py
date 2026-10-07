@@ -16,12 +16,16 @@ missing key, an API error) FAILs with the reason.
   live_sending      yes in the synced settings (the [ASK HARRY] sign-off, SPEC 14 phase 2)
   Approvers         approver_slack_ids is set (SPEC 11: only approvers' ✅ counts, on send cards and replies)
   Slack             the bot token is set and the bot can see the alert channel
+  Watchdog          US_OUTBOUND_WATCHDOG_URL is set (Harry, 7 Oct 2026; ops/watchdog.py): without it a dead
+                    worker, database or Slack token says nothing, so it WARNs
   Campaigns         one "US Outbound – {owner}" campaign per owner, matching the settings, the
                     registry and the ramp (the daily drift check; fix: campaigns ensure --fix --live).
                     With live_sending = yes, every owner with an Active mailbox must have it active
                     (status 1; enrol gives an owner whose campaign is not active no capacity): FAIL,
                     "run start --live". With live_sending = no an active campaign WARNs, as
-                    live_sending does not stop Instantly: only `stop --live` pauses the campaigns
+                    live_sending does not stop Instantly: only `stop --live` pauses the campaigns.
+                    A campaign the blackout job paused PASSes, "paused for the blackout until <day>"
+                    (registry/blackout.py; Harry, 7 Oct 2026)
   Apollo budget     credits left this month for finding emails
   Queue             verified accounts with a sendable contact, against today's number, counting the
                     send approvals still waiting as enrol does (their accounts and their senders' slots)
@@ -35,13 +39,13 @@ missing key, an API error) FAILs with the reason.
   Enrollment        not stopped by an operator, the stop rule, or a positive reply waiting
   Jobs              the jobs a live send needs are built and scheduled: enrol, sync_outcomes (the
                     kill rules' data), poll_replies (replies and opt-outs), poll_approvals,
-                    kill_rules, mailbox_health
+                    kill_rules, mailbox_health, blackout (the campaigns paused over the blackout dates)
   clay_verification skip PASSes (accounts verified on Apollo data and HubSpot); required WARNs while
                     verify_in_clay is not built, as no new account is verified then
   HubSpot ids       hubspot_pipeline_id, hubspot_deal_stage_id and hubspot_owner_id are set; WARN
                     without them, as a positive reply then creates no HubSpot deal (crm/hubspot_writes.py)
   Opt-out tested    optout_tested = yes: the seed-inbox test of Instantly's unsubscribe link
-                    (blocker B1; PHASE0-CONFIRM in clients/instantly.py)
+                    (blocker B1; it passed on 6 Oct 2026)
 
 What Harry reads is plain: no SPEC numbers in a line. Every FAIL that asks him to change the sheet
 ends ", then `us-outbound sync`", since jobs read the synced copy of the sheet. The GO footer says
@@ -55,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from us_outbound import budget, limits
+from us_outbound import budget, labels, limits
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
@@ -63,13 +67,13 @@ from us_outbound.enrol import enrol, second
 from us_outbound.enrol.capacity import CAMPAIGN_COMPLETED, TAKES_LEADS
 from us_outbound.learn import holds
 from us_outbound.logs import redact
-from us_outbound.registry import ramp
+from us_outbound.registry import blackout, ramp
 from us_outbound.settings.model import GENERAL_COPY, ROLE_LINE_COLUMNS
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 RANK = {PASS: 0, WARN: 1, FAIL: 2}
 DETAIL_LIMIT = 30
-NEEDED_JOBS = ("enrol", "sync_outcomes", "poll_replies", "poll_approvals", "kill_rules", "mailbox_health")
+NEEDED_JOBS = ("enrol", "sync_outcomes", "poll_replies", "poll_approvals", "kill_rules", "mailbox_health", "blackout")
 CAMPAIGN_ACTIVE = 1  # Instantly's campaign status for active (clients/instantly.CAMPAIGN_STATUS)
 SYNC = ", then `us-outbound sync`"  # how a sheet edit comes into force
 
@@ -123,7 +127,8 @@ def check_copy(ctx: Context) -> Check:
     roles = contacted_roles(ctx)
     detail, statuses, own = [], [], 0
     for ind in active:
-        account = {"industry": ind.industry, "industry_group": ind.industry_group}
+        # A label the label check confirmed (labels.py): the most specific copy any of its companies can get.
+        account = {"industry": ind.industry, "industry_group": ind.industry_group, "label_source": labels.AGREED}
         missing, general, notes, used = [], [], [], set()
         for role in roles:
             row, note = enrol.pick_copy(account, role, s, rows)
@@ -239,6 +244,18 @@ def check_slack(ctx: Context) -> Check:
     return Check(PASS, "Slack", f"token set; the bot can see {channel}")
 
 
+def check_watchdog(ctx: Context) -> Check:
+    from us_outbound.ops import watchdog
+
+    url, why = watchdog.read(ctx.clients.secrets)
+    if url:
+        return Check(PASS, "Watchdog", "set: heartbeat_check pings it every hour, and Healthchecks.io emails if it stops")
+    if why.endswith("is not set"):
+        return Check(WARN, "Watchdog", f"no outside watchdog: set {watchdog.VAR} (docs/railway-setup.md, step h)")
+    return Check(WARN, "Watchdog", f"{why}: paste the check's ping URL from Healthchecks.io (docs/railway-setup.md, "
+                                   "step h)")
+
+
 def check_campaigns(ctx: Context) -> Check:
     from us_outbound.clients.instantly import CAMPAIGN_STATUS
     from us_outbound.registry import mailboxes as reg
@@ -257,30 +274,39 @@ def check_campaigns(ctx: Context) -> Check:
     no_mailbox = {reg.campaign_name(o) for o in settings.owners() if not reg.sending_list(settings, o)}
     waiting = [n for n in out["pending"] if n in no_mailbox]
     missing = [n for n in out["pending"] if n not in no_mailbox]
-    # An owner with an Active mailbox whose campaign exists but is not active gets no capacity in a live enrol.
+    # An owner with an Active mailbox whose campaign exists but is not active gets no capacity in a live enrol;
+    # one the blackout job paused waits for that job, not for `start` (registry/blackout.py; Harry, 7 Oct 2026).
     names = [reg.campaign_name(o) for o in settings.owners()]
-    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] not in TAKES_LEADS]
+    over = blackout.words(ctx.store, ctx.settings, ctx.now)
+    paused_over = {n: over[n] for n in names if n in over and raw.get(n) not in TAKES_LEADS}
+    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] not in TAKES_LEADS and n not in paused_over]
     done = {n for n in names if raw.get(n) == CAMPAIGN_COMPLETED}
     active = sorted(n for n, v in raw.items() if v == CAMPAIGN_ACTIVE)
+    # Drift held while leads are in flight (registry/mailboxes.IN_FLIGHT_KEYS; Harry, 7 Oct 2026) is a WARN: the
+    # campaign is consistent for the leads in it, and new leads are rendered under the same constants.
+    held = out.get("held") or {}
+    drifted = {n: d for n, d in out["drift"].items() if set(d) - set((held.get(n) or {}).get("keys") or ())}
     detail = [f"{name}: {', '.join(f'{k} {v[1]!r}, expected {v[0]!r}' for k, v in sorted(d.items()))}"
               for name, d in out["drift"].items()]
+    detail += [reg.held_words(name, h) for name, h in held.items()]
     detail += [f"{name}: missing" for name in missing]
     detail += [f"{name}: waits for a warm mailbox (created by mailbox_health once one is Active)" for name in waiting]
     detail += [f"{name}: matches ({status_of.get(name, '?')})"
                + ("; not sending: `us-outbound start --live` activates it" if name in idle else "")
                + ("; no lead left to email, and the next lead added resumes it" if name in done else "")
+               + (f"; {paused_over[name]}, when the blackout job starts it again" if name in paused_over else "")
                for name in out["ok"]]
     detail += [f"{name}: not an owner in the registry (left alone)" for name in out.get("unknown") or ()]
     fails, warns = [], []
-    if out["drift"] or missing:
-        fix = "`us-outbound campaigns ensure --fix --live`" if out["drift"] else "`us-outbound campaigns ensure --live`"
+    if drifted or missing:
+        fix = "`us-outbound campaigns ensure --fix --live`" if drifted else "`us-outbound campaigns ensure --live`"
         what = []
-        if out["drift"]:
-            what.append(f"{len(out['drift'])} drifted")
+        if drifted:
+            what.append(f"{len(drifted)} drifted")
         if missing:
             what.append(f"{len(missing)} missing")
         fails.append(f"{' and '.join(what)}; run {fix}, then `us-outbound start --live` to send")
-    elif not out["ok"]:
+    elif not out["ok"] and not held:
         fails.append("no campaign yet: every owner waits for a warm mailbox")
     if live and idle:
         whose = "its owner" if len(idle) == 1 else "their owners"
@@ -293,10 +319,17 @@ def check_campaigns(ctx: Context) -> Check:
         warns.append(f"{len(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a warm mailbox")
     if out.get("unknown"):
         warns.append("unknown US Outbound campaigns exist")
+    if held:
+        warns.append(f"{len(held)} with drift held while leads are in flight: `us-outbound campaigns ensure --fix "
+                     "--in-flight --live` applies it to them, or it waits until `us-outbound cohorts in-flight` shows 0")
     if fails:
         return Check(FAIL, "Campaigns", "; ".join(fails + warns), detail)
     if warns:
         return Check(WARN, "Campaigns", f"{len(out['ok'])} exist and match; {'; '.join(warns)}", detail)
+    if live and paused_over:
+        until = sorted(set(paused_over.values()))[0]
+        return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; {len(paused_over)} {until}",
+                     detail)
     if live:
         return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist, match and are active", detail)
     return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; `us-outbound start --live` activates them",
@@ -431,6 +464,7 @@ CHECKS: tuple[tuple[str, Callable[[Context], Check | None]], ...] = (
     ("live_sending", check_live_sending),
     ("Approvers", check_approvers),
     ("Slack", check_slack),
+    ("Watchdog", check_watchdog),
     ("Campaigns", check_campaigns),
     ("Apollo budget", check_apollo),
     ("Queue", check_queue),

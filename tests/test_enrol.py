@@ -347,19 +347,59 @@ def test_unchecked_copy_is_not_sent():
     assert "agencies-v1 is approved but has not passed QA" in next(iter(out["copy_fallbacks"]))
 
 
+def checked(source: str = "rules+model") -> list[dict]:
+    """The three accounts with their labels decided by the label check (labels.py; Harry, 7 Oct 2026)."""
+    return [{**a, "label_source": source} for a in accounts3()]
+
+
 def test_the_most_specific_row_wins_label_then_role():
     label = copy_row("advertising-v1", "Advertising agencies")
     ops = copy_row("agencies-ops-v1", AGENCIES, role="Operations")
     s = make_settings(live_sending=True, copy=COPY + (ops, label))
-    ctx, _ = make(live=True, settings=s)
+    ctx, _ = make(live=True, settings=s, accounts=checked())
     enrol.run(ctx)
     cons = rows(ctx, "contacts", "contact_id")
     assert cons["con-1"]["copy_version"] == "advertising-v1"  # its own label beats its group
     assert cons["con-3"]["copy_version"] == "advertising-v1"  # the label beats a role row for the group
     s = make_settings(live_sending=True, copy=COPY + (ops,))
-    ctx, _ = make(live=True, settings=s)
+    ctx, _ = make(live=True, settings=s, accounts=checked())
     enrol.run(ctx)
     assert rows(ctx, "contacts", "contact_id")["con-3"]["copy_version"] == "agencies-ops-v1"  # Lee is Operations
+
+
+@pytest.mark.parametrize("source, jane, lee", [
+    ("rules+model", "advertising-v1", "advertising-v1"),  # confirmed: the label's own rows
+    ("model", "advertising-v1", "advertising-v1"),
+    ("override", "advertising-v1", "advertising-v1"),
+    ("approver", "advertising-v1", "advertising-v1"),
+    ("umbrella", "agencies-v1", "agencies-ops-v1"),  # a doubt within the group: the group's rows
+    ("rules", "agencies-v1", "agencies-ops-v1"),
+    (None, "agencies-v1", "agencies-ops-v1"),  # not checked yet: the group's (Harry, 7 Oct 2026)
+    ("disputed", "general-v1", "general-v1"),  # a doubt across groups: General, whatever the label has approved
+])
+def test_the_label_check_says_how_specific_the_copy_may_be(source, jane, lee):
+    """labels.copy_level (Harry, 7 Oct 2026): a doubtful label never carries a label's pitch."""
+    label = copy_row("advertising-v1", "Advertising agencies")
+    ops = copy_row("agencies-ops-v1", AGENCIES, role="Operations")
+    s = make_settings(live_sending=True, copy=COPY + (ops, label))
+    ctx, _ = make(live=True, settings=s, accounts=checked(source))
+    enrol.run(ctx)
+    cons = rows(ctx, "contacts", "contact_id")
+    assert (cons["con-1"]["copy_version"], cons["con-3"]["copy_version"]) == (jane, lee)
+    a = accounts3()[0]
+    targets = enrol.copy_targets({**a, "label_source": source}, "Operations", s)
+    assert targets[-2:] == [("General", "Operations"), ("General", "")]
+    assert len(targets) == {"rules+model": 6, "umbrella": 4, "disputed": 2}.get(source, len(targets))
+
+
+def test_with_no_copy_at_its_level_the_reason_says_which_level():
+    s = make_settings(copy=(copy_row("advertising-v1", "Advertising agencies"),))  # the label's own row only
+    accounts = [{**accounts3()[0], "label_source": "disputed"}]
+    ctx, _ = make(settings=s, accounts=accounts, contacts=contacts3()[:1])
+    out = enrol.run(ctx)
+    [skip] = out["skipped_accounts"]
+    assert skip["detail"][0] == ("no approved copy that has passed QA for General (the label check left Advertising "
+                                 "agencies in doubt)")
 
 
 # -- gates ------------------------------------------------------------------------------------
@@ -770,3 +810,26 @@ def test_enrol_passes_over_an_unsendable_best_contact():
     # Without a Roles tab or an account, the first created, as before.
     assert enrol.pick_contact(cons, set(), set())[0]["contact_id"] == "k-om"
     assert enrol.pick_contact(cons, set(), set(), a, make_settings())[0]["contact_id"] == "k-om"
+
+
+# -- the cohort stamp (config_version.py; Harry, 7 Oct 2026) ---------------------------------------------------------
+
+
+def test_enrol_stamps_config_version_code_sha_and_copy_hash(monkeypatch):
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "a4c5c27f00ba7e1234567890")
+    ctx, _ = make()  # a dry run records the version too (a database write), and stamps no contact
+    out = enrol.run(ctx)
+    [version] = ctx.store.select("config_versions")
+    assert out["config_version"] == version["config_version"] and version["code_sha"] == "a4c5c27f00ba"
+    assert not any(c.get("config_version") for c in ctx.store.select("contacts"))
+    ctx, _ = make(live=True)
+    enrol.run(ctx)
+    [version] = ctx.store.select("config_versions")
+    cons = rows(ctx, "contacts", "contact_id")
+    for c in cons.values():
+        assert (c["config_version"], c["code_sha"]) == (version["config_version"], "a4c5c27f00ba")
+        assert c["copy_hash"] == version["copy_hashes"][c["copy_version"]]
+    assert (version["first_seen"], version["run_id"]) == (NOW, ctx.run_id)
+    ctx.now += timedelta(days=1)  # the next run, on the same settings and code: no second row
+    assert enrol.run(ctx)["config_version"] == version["config_version"]
+    assert len(ctx.store.select("config_versions")) == 1

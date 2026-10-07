@@ -47,10 +47,13 @@ SPEC_COLUMNS: dict[str, set[str]] = {
 }
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
-    "accounts": {"hq_country"},  # accounts.any_us_state (Harry, 6 Oct 2026)
+    "accounts": {"hq_country",  # accounts.any_us_state (Harry, 6 Oct 2026)
+                 "label_source", "label_confidence", "label_checked_at"},  # the label check (labels.py, 7 Oct 2026)
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
                  "tier_at_enrol", "data_record", "subject_arm",
-                 "contact_slot"},  # enrol/second.py (Harry, 6 Oct 2026)
+                 "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
+                 "config_version", "code_sha", "copy_hash",  # the cohort stamp (Harry, 7 Oct 2026)
+                 "lead_deleted_at"},  # the retention job's Instantly deletion (SPEC 13; ops/retention.py)
     "suppression": {"expires_at"},
     "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }
@@ -72,6 +75,15 @@ BUILD_TABLES: dict[str, set[str]] = {
         "cell_id", "industry_group", "growth_band", "active_customers", "churned_customers", "strength", "computed_at",
         "run_id",
     },
+    "config_versions": {  # Harry, 7 Oct 2026: what a cohort was enrolled under (config_version.py)
+        "config_version", "first_seen", "code_sha", "campaign_fingerprint", "signature_hash", "step_days",
+        "settings_versions", "copy_hashes", "general", "run_id",
+        "labels_hash",  # the label check's prompt and list (labels.py; Harry, 7 Oct 2026)
+    },
+    "config_log": {  # Harry, 7 Oct 2026: changes to what in-flight leads share (registry/mailboxes.py)
+        "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
+        "changed_by", "run_id",
+    },
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -84,7 +96,7 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned", "score_at_enrol", "contact_slot"}
+        "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight"}
 FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 
@@ -97,6 +109,7 @@ INDEXES = {
 HOT_INDEXES = {
     ("accounts", ("status",)), ("events", ("type", "occurred_at")), ("signal_events", ("source", "fact")),
     ("hitl_items", ("kind", "status")), ("heartbeats", ("job", "started_at")),
+    ("config_log", ("changed_at",)),
 }
 
 # Enum columns: their comment lists exactly these values after "One of: ".
@@ -107,6 +120,9 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
     },
+    # The label check (us_outbound/labels.py; Harry, 7 Oct 2026).
+    ("accounts", "label_source"): {"override", "approver", "rules+model", "model", "umbrella", "disputed", "rules"},
+    ("accounts", "label_confidence"): {"high", "medium", "low"},
     ("contacts", "email_source"): {"apollo", "clay"},
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
@@ -115,8 +131,10 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
+        "alert",  # ops/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
     },
-    ("events", "source"): {"hubspot_meeting", "hubspot_deal"},  # crm/readback.py (Harry, 6 Oct 2026)
+    ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
+                           "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
@@ -131,6 +149,8 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
     ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
     ("lookalike_growth", "growth_band"): {"shrinking", "flat", "growing", "fast", "unknown"},
+    ("config_log", "kind"): {"campaign_change", "sender_name",  # registry/mailboxes.py (Harry, 7 Oct 2026)
+                             "blackout_pause", "blackout_resume"},  # registry/blackout.py (Harry, 7 Oct 2026)
 }
 
 
@@ -360,6 +380,7 @@ def test_tables_have_spec_comments(tables):
 def test_retention_is_noted_where_it_applies(tables):
     text = {name: (ddl.SQL_DIR / t.file).read_text(encoding="utf-8") for name, t in tables.items()}
     assert "90 days" in text["events"] and "reply_text" in text["events"]
+    assert "90 days" in text["hitl_items"] and "reply_text_purged_at" in text["hitl_items"]  # the reply cards
     assert "12 months" in text["contacts"] and "last_step_at" in text["contacts"]
     assert "12 months" in text["accounts"]
     assert "indefinitely" in text["suppression"]

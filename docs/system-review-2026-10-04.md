@@ -89,7 +89,7 @@ proposals for Harry to confirm.
 
 | Item | Needed by |
 | :- | :- |
-| `sync_outcomes`: delete Instantly leads 31 days after their last step, which caps the lead list. Ask only for bounced or unsubscribed leads, if `/leads/list` filters by status | Before about 120 sends a day (weeks 3 to 4) |
+| `sync_outcomes`: delete Instantly leads 31 days after their last step, which caps the lead list. Ask only for bounced or unsubscribed leads, if `/leads/list` filters by status. *The deletion is built (7 Oct 2026) as the daily `retention` job, `ops/retention.py`* | Before about 120 sends a day (weeks 3 to 4) |
 | `poll_approvals`: read a thread only when something changed (one channel read per run) | Before about 120 open cards |
 | Rescore: skip enrolled and engaged accounts, load only the latest fact per source, write only changes | Before about 10,000 accounts |
 | `hubspot_readback`: one deals search by pipeline and last-modified date, instead of one per warm account | Within a month |

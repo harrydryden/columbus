@@ -20,7 +20,7 @@ enrol at 12:00, whose tiers the rescore at the end of the run sets.
      end no longer does, so the signal stops. A fact is written only when it changes, or again
      before the signals' counts_for_days would let it go stale while the company keeps visiting.
      The value is 1 for "visited in the window", not a count: a count needs a domain aggregates
-     call per company, whose cost Apollo does not state (PHASE0-CONFIRM before using it).
+     call per company, whose cost Apollo does not state (unconfirmed, so unused: APO-VISIT-AGGREGATES).
   3. Each account in the one-day list gets one events row of type site_visit per UK day,
      event_id site-visit:{account_id}:{day}, dated at the start of Apollo's one-day window (24 hours
      before the run), so a rerun adds nothing and a visit is never dated after an email it may have

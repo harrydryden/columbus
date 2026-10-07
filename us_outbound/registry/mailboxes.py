@@ -10,6 +10,8 @@ Active mailbox, and one a kill rule's pause left with no Active mailbox (_sync_c
 pauses it) once that mailbox is Active again. A campaign holds only approved leads, so
 activating an empty one sends nothing by itself. Before go-live, or if Instantly refuses,
 the summary says "<owner>'s campaign is ready: run `us-outbound start --live` to start it".
+Over a blackout it starts nothing, and a campaign the blackout paused is the blackout job's to
+start again (registry/blackout.py; Harry, 7 Oct 2026).
 
 Registry commands (SPEC 9):
   mailbox_add     adds the row (added_on today, Warming, or Active at once if Instantly
@@ -38,9 +40,21 @@ from the account's first_name and last_name. It is the owner's full name from th
 mailbox whose name differs; `mailbox check --fix --live` sets it (fix_names), and nothing else on
 the account. PHASE0-CONFIRM: see Instantly.set_sender_name.
 
-"Warm" (PHASE0-CONFIRM: what Instantly reports for our four mailboxes): warmup is on,
+"Warm" (what Instantly reports for our mailboxes: read live since 2 Oct 2026, when the first two were promoted):
+warmup is on,
 the account is active, and either Instantly's warmup score or health score is at least
 WARM_SCORE, or warmup (or the registry row) is at least WARM_DAYS old.
+
+Leads in flight (Harry, 7 Oct 2026: "a cohort system in place for contacts that have started not being
+interrupted by changes"): a lead's own emails are rendered at enrolment and never rewritten, but the step template
+(the unsubscribe line), the step delays and text_only are the campaign's, shared by every lead in it. So drift in
+those (IN_FLIGHT_KEYS) is held, not put right, while the campaign has leads in flight (enrol/capacity.in_flight):
+`campaigns ensure --fix --in-flight --live` applies it to them too, or it waits until `us-outbound cohorts
+in-flight` shows 0. Nothing else is held: the daily limit, sending list and schedule follow the sheet and the ramp,
+and the other campaign settings only ever go back to their pinned values, most of them safety (stop on reply, the
+unsubscribe header, tracking off). Nor is a step that has lost Instantly's unsubscribe link: putting the opt-out back
+is never held. Every change applied other than the daily limit and sending list, and every From name set, is a
+config_log row with the leads then in flight (config_version.log_change), which the cohort report lists.
 
 The sending ramp (registry/ramp.py; Harry, 1 Oct 2026): a campaign's daily limit is the sum
 of its Active mailboxes' caps today, each the lower of the ramp (10 a day in a mailbox's
@@ -55,14 +69,17 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections import Counter
 from collections.abc import Collection, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import config_version
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
     STEP_DAYS,
+    UNSUBSCRIBE_TAG,
     campaign_settings,
     instantly_schedule,
     sequences,
@@ -70,9 +87,11 @@ from us_outbound.clients.instantly import (
     unsubscribe_line,
 )
 from us_outbound.context import UK, Context, boundaries_for
+from us_outbound.enrol import capacity
 from us_outbound.learn import holds
 from us_outbound.logs import log
 from us_outbound.ops.heartbeat import OPERATOR_START, OPERATOR_STOP
+from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Mailbox, Settings
 from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
@@ -80,12 +99,16 @@ from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
 TAB = "Mailboxes"
 ACTIVE, WARMING, PAUSED, RETIRED = "Active", "Warming", "Paused", "Retired"
 WARM_DAYS = 21  # SPEC 9: promoted to Active after 21 days
-WARM_SCORE = 90  # PHASE0-CONFIRM: Instantly's warmup/health score (0-100) that counts as warm
+WARM_SCORE = 90  # Instantly's warmup/health score (0-100, read live since 2 Oct 2026) that counts as warm
 RETIRE_WAIT_DAYS = 30  # SPEC 9, 13: removed 30 days after retire, never within 30 days of last use
 DEFAULT_CAP = 30  # SPEC 13
 MAX_CAP = 30
 SIGNATURE = "{owner}\nSpill\nspill.chat/us"  # SPEC 5 default signature
 AUTO_FIX = frozenset({"daily_limit", "email_list"})  # drift mailbox_health puts right itself: it follows the sheet and ramp
+# Drift that would change what, or when, every lead already in the campaign gets: held while leads are in flight
+# (the module docstring; Harry, 7 Oct 2026).
+IN_FLIGHT_KEYS = frozenset({"text_only", "first_email_text_only", "steps.delays", "steps.variants",
+                            *(f"steps.{i}" for i in range(1, len(STEP_DAYS) + 1))})
 CREATED = "created (paused)"  # _sync_campaign's outcomes
 PAUSED_EMPTY = "paused: no Active mailbox left"
 DRAFT, PAUSED_CAMPAIGN = 0, 2  # Instantly campaign status (clients/instantly.CAMPAIGN_STATUS)
@@ -211,13 +234,35 @@ def campaign_drift(
     steps = ((campaign.get("sequences") or [{}])[0] or {}).get("steps") or []
     for i, step in enumerate(campaign_steps(text_only(settings))):
         variant = ((steps[i].get("variants") or [{}])[0] or {}) if i < len(steps) else {}
-        # PHASE0-CONFIRM: Instantly may hand bodies back as HTML; tags are ignored here.
+        # Instantly hands bodies back as HTML (read back 3 Oct 2026); tags are ignored here.
         want = {**{k: _plain(v) for k, v in step.items()}, "links": _hrefs(step["body"])}
         got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body")),
                "links": _hrefs(variant.get("body"))}
         if got != want:
             out[f"steps.{i + 1}"] = [dict(want), got]
     return out
+
+
+def leads_in_flight(ctx: Context, settings: Settings) -> Counter[str]:
+    """campaign name -> its leads with a step still to send (enrol/capacity.in_flight)."""
+    return Counter(str(c.get("instantly_campaign")) for c in capacity.in_flight(ctx.store, settings, ctx.now_et().date()))
+
+
+def _opt_out_lost(drift: Mapping[str, Any]) -> bool:
+    """A step in Instantly that no longer carries the unsubscribe link: putting it back is never held."""
+    for key, (_, got) in drift.items():
+        if key.startswith("steps.") and key[len("steps."):].isdigit() and isinstance(got, Mapping):
+            if UNSUBSCRIBE_TAG not in str(got.get("body") or "") and UNSUBSCRIBE_TAG not in (got.get("links") or ()):
+                return True
+    return False
+
+
+def held_words(name: str, held: Mapping[str, Any]) -> str:
+    """The plain-words line for drift held while leads are in flight (mailbox_health, start, golive, the CLI)."""
+    n = int(held.get("leads") or 0)
+    return (f"Campaign drift held, {name}: {', '.join(held.get('keys') or ())} would change {n} "
+            f"lead{'' if n == 1 else 's'} in flight. Apply to them with `us-outbound campaigns ensure --fix --in-flight "
+            "--live`, or wait until `us-outbound cohorts in-flight` shows 0.")
 
 
 def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
@@ -265,7 +310,7 @@ def _fix_fields(
 
 def ensure_campaigns(
     ctx: Context, *, fix: bool = False, create: bool = True, settings: Settings | None = None,
-    fix_only: Collection[str] | None = None,
+    fix_only: Collection[str] | None = None, in_flight: bool = False,
 ) -> dict:
     """One paused campaign per registry owner; reports drift, and with fix=True puts it right.
 
@@ -273,6 +318,9 @@ def ensure_campaigns(
     "US Outbound – " that match no registry owner are listed, never touched. fix_only: with
     fix=True, put right only these drift keys (mailbox_health: AUTO_FIX); the rest is reported.
     drift holds all that was found; fixed_fields says what was put right, per campaign.
+    held: per campaign, the IN_FLIGHT_KEYS drift left as it is because leads are in flight, and how many
+    ({"keys", "leads"}); in_flight=True (`campaigns ensure --fix --in-flight`) applies it to them too.
+    Each change applied other than AUTO_FIX is a config_log row (live only).
     """
     settings = holds.with_holds(ctx.store, settings or ctx.settings)
     caps = _caps(ctx, settings)
@@ -280,7 +328,8 @@ def ensure_campaigns(
     found = {c["name"]: c for c in inst.list_campaigns()}
     owners = settings.owners()
     out: dict[str, Any] = {"dry_run": ctx.dry_run, "created": [], "pending": [], "ok": [], "drift": {}, "fixed": [],
-                           "fixed_fields": {}}
+                           "fixed_fields": {}, "held": {}}
+    flying: Counter[str] | None = None  # read once, only when a campaign's drift needs it
     for owner in owners:
         name = campaign_name(owner)
         accounts = sending_list(settings, owner)
@@ -301,14 +350,26 @@ def ensure_campaigns(
             out["ok"].append(name)
             continue
         out["drift"][name] = drift
-        todo = {k: v for k, v in drift.items() if fix_only is None or k in fix_only} if fix else {}
+        hold = set() if in_flight or _opt_out_lost(drift) else set(drift) & IN_FLIGHT_KEYS
+        if hold:
+            flying = leads_in_flight(ctx, settings) if flying is None else flying
+            if flying[name]:
+                out["held"][name] = {"keys": sorted(hold), "leads": flying[name]}
+            else:
+                hold = set()
+        todo = {k: v for k, v in drift.items() if (fix_only is None or k in fix_only) and k not in hold} if fix else {}
         if todo:
+            shared = set(todo) - AUTO_FIX  # what every lead in it shares: on record when it changes, with who it reached
             if "email_list" in todo and not accounts:
                 inst.pause_campaign(name)
             else:
                 inst.update_campaign(
                     name, _fix_fields(todo, settings, owner, caps), accounts=accounts if "email_list" in todo else None
                 )
+                if shared and ctx.live:
+                    flying = leads_in_flight(ctx, settings) if flying is None else flying
+                    config_version.log_change(ctx, config_version.CAMPAIGN_CHANGE, name, shared,
+                                              {k: todo[k] for k in shared}, flying[name])
             out["fixed"].append(name)
             out["fixed_fields"][name] = sorted(todo)
     out["unknown"] = sorted(n for n in found if n[len(US_CAMPAIGN_PREFIX):] not in owners)
@@ -516,14 +577,18 @@ def start_waiting(ctx: Context, settings: Settings, created: Collection[str],
     (it holds only approved leads, so this sends nothing by itself), unless it has drift left that
     was not put right (drifted: `start` would refuse it too); a campaign paused for another reason is
     reported. Before go-live a campaign created this run is reported as ready.
+    The blackout dates (registry/blackout.py; Harry, 7 Oct 2026): a campaign the blackout job paused is reported
+    under blackout ("paused for the blackout until …"), never as a pause to look into, and is left to that job;
+    and while a blackout holds nothing is started: the first morning check after it starts what waits.
     """
     live_since = went_live(ctx.store)
     settings = holds.with_holds(ctx.store, settings)
     inst = ctx.clients.instantly
     found = {c["name"]: c for c in inst.list_campaigns()}
     kill_paused = _kill_rule_pauses(ctx.store, live_since) if live_since else {}
+    held, by_blackout = blackout.hold(settings, ctx.now), blackout.words(ctx.store, settings, ctx.now)
     out: dict[str, Any] = {"went_live": live_since.isoformat() if live_since else None, "started": [],
-                           "would_start": [], "ready": [], "paused": [], "errors": []}
+                           "would_start": [], "ready": [], "paused": [], "errors": [], "blackout": {}}
     for owner in settings.owners():
         name = campaign_name(owner)
         campaign = found.get(name) or ({"status": DRAFT} if name in created else None)  # dry-run: not created
@@ -534,12 +599,20 @@ def start_waiting(ctx: Context, settings: Settings, created: Collection[str],
             if name in created:
                 out["ready"].append(owner)
             continue
+        if status == PAUSED_CAMPAIGN and name in by_blackout:  # the blackout job starts it again after
+            out["blackout"][owner] = f"{by_blackout[name]}; the blackout job starts it again then"
+            continue
         if not (name in created or status == DRAFT or (status == PAUSED_CAMPAIGN and name in kill_paused)):
             if status == PAUSED_CAMPAIGN:
                 out["paused"].append(owner)
             continue
         if name in drifted:  # the summary's drift line says what to fix first
             out["ready"].append(owner)
+            continue
+        if held is not None:  # nothing starts over a blackout: the first morning check after it does
+            out["blackout"][owner] = (f"not started over the blackout; the first mailbox check after it starts it "
+                                      f"(sends resume {held.until:%a} {held.until.day} {held.until:%b})"
+                                      if held.until else "not started over the blackout")
             continue
         if ctx.dry_run:
             out["would_start"].append(name)
@@ -637,10 +710,14 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
     for name, fields in fixed.items():
         lines.append(f"{'Would update' if ctx.dry_run else 'Updated'} "
                      + _fixed_words(name, fields, (campaigns.get("drift") or {}).get(name) or {}))
+    held = campaigns.get("held") or {}
     for name, drift in (campaigns.get("drift") or {}).items():
-        rest = sorted(k for k in drift if k not in fixed.get(name, ()))
+        hold = set((held.get(name) or {}).get("keys") or ())
+        rest = sorted(k for k in drift if k not in fixed.get(name, ()) and k not in hold)
         if rest:
             lines.append(f"Campaign drift, {name}: {', '.join(rest)}. Fix with `us-outbound campaigns ensure --fix --live`.")
+        if hold:
+            lines.append(held_words(name, held[name]))
     starting = out.get("campaign_start") or {}
     for name in starting.get("started") or ():
         lines.append(f"Started {name}: its owner has an Active mailbox and sending is live.")
@@ -653,6 +730,8 @@ def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str
     for owner in starting.get("paused") or ():
         lines.append(f"{campaign_name(owner)} is paused, though {owner} has an Active mailbox: run "
                      "`us-outbound start --live` to start it.")
+    for owner, why in (starting.get("blackout") or {}).items():  # never a reason to post on its own
+        lines.append(f"{campaign_name(owner)}: {why}.")
     if campaigns.get("pending"):
         lines.append(f"Campaigns waiting for an Active mailbox: {', '.join(campaigns['pending'])}")
     if campaigns.get("unknown"):
@@ -749,8 +828,13 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
         inst.enable_warmup(out["warmup_turned_on"])  # SPEC 13: warmup always on
     for address, change in out["limit_set"].items():
         inst.set_daily_limit(address, change["to"])  # the sheet's daily_cap (or the ramp's) is the one place caps are set
+    # The From name of the follow-ups already in flight changes too: on record, with how many (Harry, 7 Oct 2026).
+    flying = leads_in_flight(ctx, settings) if out["names_set"] and ctx.live else Counter()
     for address in out["names_set"]:
         inst.set_sender_name(address, *out["name_drift"][address]["to"])  # the account's name only, nothing else
+        name = campaign_name(next((m.owner_name for m in registry if m.address.lower() == address), ""))
+        config_version.log_change(ctx, config_version.SENDER_NAME, name, [address], out["name_drift"][address],
+                                  flying[name])
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new_settings = settings
     for m, status in changes:
@@ -768,7 +852,9 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
     out["campaigns"] = ensure_campaigns(ctx, settings=new_settings, fix=True, fix_only=AUTO_FIX)
     found = out["campaigns"]
     created = {n for n, a in out["campaign_actions"].items() if a == CREATED} | set(found["created"])
-    drifted = {n for n, d in found["drift"].items() if set(d) - set(found["fixed_fields"].get(n, ()))}
+    # Held drift does not keep a campaign from starting: it is consistent for its leads in flight.
+    drifted = {n for n, d in found["drift"].items()
+               if set(d) - set(found["fixed_fields"].get(n, ())) - set((found["held"].get(n) or {}).get("keys") or ())}
     out["campaign_start"] = start_waiting(ctx, new_settings, created, drifted)
     out["post_reasons"] = _noteworthy(out)
     out["posted"] = bool(out["post_reasons"])

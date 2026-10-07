@@ -31,16 +31,28 @@ Sunday, so weekend replies are not lost), and reads top to bottom:
     pages, or, when its tracker sends no data, to check it (sources/site_visits.py); and, on the morning of
     the monthly lookalike_leads run (the 1st, 02:50), what it found, with the yield of US and non-US seeds
     (sources/lookalike_leads.py);
+  * Labels (Harry, 7 Oct 2026; labels.py): the industry label check's companies checked in the period and their
+    decisions (agreed, overruled, the group's or General copy, held, disqualified), the companies the last
+    verify_accounts left unchecked and why, and the cards' industry corrections against the cards decided;
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
     (learn/kill_rules.py), and the human-in-the-loop items waiting for approval, by kind, and the
-    oldest (a kill-rule hold is not waiting for approval: it is listed as a hold).
+    oldest (a kill-rule hold is not waiting for approval: it is listed as a hold);
+  * Retention (SPEC 6, 13), one line and only when the day's retention run (00:40 UK) deleted or
+    cleared anything: the counts of Instantly leads, reply texts, contacts and companies
+    (ops/retention.py post_line).
 Each section has a bold title (Slack mrkdwn) after a blank line, and no table. It is one plain-text
 message, as before, well under Slack's 40,000-character limit on text (about 5,000 in the tests):
 account lists stop at LIST_LIMIT, and the funnel sections are aggregates that name no company or person.
 It posts to the alert channel (the dev channel in dry-run), or to the log with no Slack token
 (ops/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
+
+Before it, the asks (Harry, 7 Oct 2026), each in its own message with the approvers mentioned and each
+line once (ops/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
+apollo_floor, the monthly Apollo and Clay budgets, Claude's spend against its cap, Apollo's website-visitor
+credits), and on Mondays the mailboxes to add three weeks ahead (learn/capacity_ahead.py). The credit
+budget lines end with the one-line spend summary (spend.summary_line).
 """
 
 from __future__ import annotations
@@ -51,12 +63,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, limits
+from us_outbound import budget, labels, limits
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, second
-from us_outbound.learn import daily_report, holds, kill_rules
+from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
 from us_outbound.logs import clip, log
-from us_outbound.ops import notify
+from us_outbound.ops import notify, retention
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
@@ -187,8 +199,8 @@ def needs_you(ctx: Context, w: ForYou) -> str:
     return "*Needs you:* " + (" · ".join(parts) if parts else "nothing")
 
 
-def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
-    """(the message lines, the numbers for the summary)."""
+def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], dict[str, Any]]:
+    """(the message lines, the numbers for the summary). spent: what learn/spend.py read (read here when not given)."""
     start, end, label = period(ctx)
     types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit"]
     rows = [e for e in ctx.store.select("events", {"type": types})
@@ -279,6 +291,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
                      "as a preview).")
     lines.append("Credit budgets this month:")
     lines += [f"  {line}" for line in lim.budget_lines]
+    spent = spent if spent is not None else spend.read(ctx)
+    lines.append(f"  {spend.summary_line(spent)}.")
+    nums.update(spend=spent.as_dict())
 
     # The careers and benefits page reader's coverage, for Harry's call on enhancing it (2 Oct 2026).
     lines += ["", "*Sources*", *pages.post_lines(ctx)]
@@ -293,6 +308,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
 
     # Website visits from Apollo, or that its tracker sends no data (Harry, 5 Oct 2026): one line.
     lines.append(site_visits.post_line(ctx))
+
+    # The industry label check (labels.py; Harry, 7 Oct 2026): its checks, and the cards' corrections.
+    lines += ["", "*Labels*", *labels.post_lines(ctx, start, end)]
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
     lines += ["", "*Mailboxes*"]
@@ -334,6 +352,12 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     else:
         lines.append("Waiting for approval: nothing.")
     nums.update(waiting=len(waiting), waiting_by_kind=dict(by_kind))
+
+    # Retention (SPEC 6, 13): one line, counts only, when today's run deleted or cleared anything.
+    line, done = retention.post_line(ctx)
+    if line:
+        lines += ["", line]
+    nums.update(retention=done)
     return lines, nums
 
 
@@ -343,8 +367,11 @@ def run(ctx: Context) -> dict:
     The summary (kept in the heartbeat row) has the numbers, not the text: the text quotes
     replies, and reply text is purged after 90 days (SPEC 6), which a heartbeat row is not.
     """
-    lines, nums = build(ctx)
+    spent, asked = spend.check(ctx)  # the credit and spend asks first, so a failing post below never holds them
+    lines, nums = build(ctx, spent)
+    mailboxes = capacity_ahead.check(ctx, int(nums.get("ready_accounts") or 0))  # Mondays only
     sent = notify.alert(ctx, "\n".join(lines))
-    summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent}
+    summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent, "spend_alert": asked,
+               "mailboxes_ahead": mailboxes}
     log("daily_post_done", run_id=ctx.run_id, **summary)
     return summary

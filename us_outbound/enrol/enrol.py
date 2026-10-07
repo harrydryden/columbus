@@ -40,6 +40,9 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      campaign (campaign_lead_ids): there, it is recorded; not there, Instantly refused it (its
      blocklist, or a lead in another campaign), so its contact is marked suppressed and
      pick_contacts finds the next person (mark_not_added) instead of the same one failing daily.
+     Unless Instantly's plan is full (enrol/plan.py; Harry, 7 Oct 2026): then a lead left out is
+     skipped as "Instantly plan limit" with its contact kept, no further owner's leads are added
+     that run, and the approvers are asked, once a day, to make room.
      auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
      comes to this channel first for approval"): each account becomes a send approval instead,
      a hitl_items row and a card in the alert channel showing every email of the sequence, and
@@ -72,13 +75,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain
+from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
-from us_outbound import budget, limits
-from us_outbound.enrol import capacity, focus, openers, queue, render
+from us_outbound import budget, config_version, labels, limits
+from us_outbound.clients import instantly as instantly_client
+from us_outbound.enrol import capacity, focus, openers, plan, queue, render
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
@@ -319,6 +323,8 @@ def account_block(
     domain = _lower(account.get("domain"))
     if not domain:
         return "no domain"
+    if is_public_body(domain):
+        return "a public body, never prospected"
     if domain in domains:
         return "domain suppressed"
     if domain in partners:
@@ -351,6 +357,8 @@ def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: 
     domain = email.rsplit("@", 1)[1]
     if is_personal_domain(domain):
         return "personal email domain"
+    if is_public_body(domain):
+        return "a public body's email domain"
     if is_generic_mailbox(email):
         return "shared mailbox"
     if domain in domains:
@@ -449,11 +457,18 @@ def sendable_copy(settings: Settings) -> dict[str, CopyRow]:
     return {c.copy_version: c for c in settings.copy if c.status == "approved" and c.qa_current}
 
 
-def copy_targets(account: Mapping[str, Any], role: str, settings: Settings) -> list[tuple[str, str]]:
+def copy_targets(account: Mapping[str, Any], role: str, settings: Settings,
+                 level: str | None = None) -> list[tuple[str, str]]:
     """(industry, role) from the most specific Copy row an account could get to the least:
-    its label for its role, its label, its group for its role, its group, General for its role, General."""
-    label = str(account.get("industry") or "").strip()
-    group = settings.industry_group_of(account)
+    its label for its role, its label, its group for its role, its group, General for its role, General.
+
+    The label check (labels.copy_level; Harry, 7 Oct 2026) says how specific the copy may be: a label's own rows only
+    when its label was confirmed (the rules and the model agree, the model is sure, an Overrides row or an approver),
+    the group's when the two disagreed within the group or it is not checked yet, General's when they disagreed
+    across groups. So a doubtful label never carries a label's pitch. level: that level, when not the account's."""
+    level = level or labels.copy_level(account)
+    label = str(account.get("industry") or "").strip() if level == labels.LABEL_COPY else ""
+    group = settings.industry_group_of(account) if level in (labels.LABEL_COPY, labels.GROUP_COPY) else ""
     out: list[tuple[str, str]] = []
     for industry in (label, group, GENERAL_COPY):
         for r in (role, ""):
@@ -508,7 +523,11 @@ def choose_copy(
     row, note = pick_copy(account, role, settings, rows)
     if row is None:
         label = str(account.get("industry") or settings.industry_group_of(account) or "its industry")
-        return None, "", f"no approved copy that has passed QA for {label}, its group or General", note
+        level = labels.copy_level(account)
+        where = {labels.LABEL_COPY: f"{label}, its group or General",
+                 labels.GROUP_COPY: f"{label}'s group or General (its label earns the group's copy)",
+                 labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
+        return None, "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
     if t and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
         v = t.version_a if queue.test_version(str(account["account_id"]), t.test_id) == "a" else t.version_b
@@ -620,6 +639,15 @@ class Prepared:
     render_mailbox: str = ""
     slot: int = 1  # contacts.contact_slot (enrol/second.py)
     first: dict | None = None  # a second contact's first contact (second.first_summary), for the card
+    # What the lead was rendered under (config_version.py; Harry, 7 Oct 2026): the run's config version and code,
+    # and the Copy row's wording. A send approval's card carries them, so ✅ stamps what the card shows.
+    config_version: str = ""
+    code_sha: str = ""
+    copy_hash: str = ""
+    # The label check (labels.py; Harry, 7 Oct 2026): its latest verdict ({} when none) and the copy level its label
+    # earns, for the card's Industry line.
+    label_check: dict = field(default_factory=dict)
+    copy_level: str = ""
 
 
 @dataclass
@@ -689,12 +717,14 @@ def prepare(
         "company_name": values["company"],
         "custom_variables": render.custom_variables(rendered),
     }
+    verdict = labels.latest_verdict(ctx.store.select(
+        "signal_events", {"account_id": a["account_id"], "source": labels.JOB, "fact": labels.VERDICT_FACT}))
     return Prepared(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
         subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, slot=cand.slot,
-        first=cand.first,
+        first=cand.first, copy_hash=row.content_hash(), label_check=verdict or {}, copy_level=labels.copy_level(a),
     )
 
 
@@ -830,9 +860,11 @@ def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
     """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
     its opener and subject arms (the readout's two splits), and what the account looked like then: its signals,
-    score and tier (signals_now); and where the contact's details came from and the lawful basis
-    (render.data_record), kept here since no email carries it. A second contact (enrol/second.py) leaves its
-    account as it is: enrolled already, with its sender, and never moved back from engaged by a late approval."""
+    score and tier (signals_now); where the contact's details came from and the lawful basis
+    (render.data_record), kept here since no email carries it; and what its emails were rendered under, its
+    config version, code and Copy wording (config_version.py; Harry, 7 Oct 2026), so the cohort report compares
+    like with like. A second contact (enrol/second.py) leaves its account as it is: enrolled already, with its
+    sender, and never moved back from engaged by a late approval."""
     accounts, contacts = [], []
     record = render.data_record(ctx.settings)
     signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
@@ -862,6 +894,10 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "tier_at_enrol": p.account.get("tier") or None,
             "data_record": record,
             "contact_slot": p.slot,
+            # The cohort stamp (Harry, 7 Oct 2026): NULL for a card posted before it existed, read as unstamped.
+            "config_version": p.config_version or None,
+            "code_sha": p.code_sha or None,
+            "copy_hash": p.copy_hash or None,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
@@ -892,6 +928,10 @@ def run(ctx: Context) -> dict:
         summary.update(status="skipped", reason=why)
         log("enrol_done", run_id=ctx.run_id, **summary)
         return summary
+    # What today's leads are rendered under (Harry, 7 Oct 2026): kept once per version, and stamped on each contact.
+    cv = config_version.current(ctx)
+    config_version.record(ctx, cv)
+    summary["config_version"] = cv.id
 
     # Send approvals still waiting (in either mode: auto_send may have been switched on since) are
     # not proposed again, and hold their sender's slots and their place in the week.
@@ -933,6 +973,8 @@ def run(ctx: Context) -> dict:
     # senders' slots; outside the industry focus, which shares out new accounts.
     n_first = len(prepared)
     prepared += _walk(ctx, iter(seconds), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
+    for p in prepared:
+        p.config_version, p.code_sha = cv.id, cv.code_sha
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:
@@ -946,20 +988,31 @@ def run(ctx: Context) -> dict:
         would = Counter(proposed["by_owner"])
         r.errors += proposed["errors"]
         by_owner = {}
+    plan_room: dict[str, Any] | None = None  # what the last live add said of Instantly's plan (enrol/plan.py)
     for owner, items in by_owner.items():
         campaign = queue.campaign_name(owner)
         leads = [p.lead for p in items]
+        if plan_room and plan_room.get("full"):  # no room: no more adds this run, and every contact is kept
+            for p in items:
+                r.skip(p.account, plan.SKIP, [plan.KEPT])
+            continue
         try:
             result = ctx.clients.instantly.add_leads(campaign, leads)
         except LookupError as exc:  # the owner's campaign is missing or duplicated
             r.errors.append(f"{campaign}: {exc}")
             continue
         except ApiError as exc:  # nothing is marked; the accounts stay verified for the next run
+            if instantly_client.plan_full_error(exc):
+                plan_room = {"remaining_in_plan": None, "full": True, "alert": plan.full_alert(ctx)}
+                for p in items:
+                    r.skip(p.account, plan.SKIP, [plan.KEPT])
+                continue
             r.errors.append(f"{campaign}: {str(exc)[:200]}")
             continue
         if ctx.dry_run or not result or result.get("dry_run"):
             would[owner] = len(items)
             continue
+        plan_room = plan.after_add(ctx, result)
         try:
             if capacity.resume_if_completed(ctx, campaign):
                 log("campaign_resumed", campaign=campaign, leads=len(items))
@@ -982,6 +1035,8 @@ def run(ctx: Context) -> dict:
                        ["not in the add summary, and the campaign could not be read: the next run tries again"])
             elif email in found:
                 ids[i] = found[email]
+            elif plan_room.get("full"):  # left out for want of room, not refused: the contact is kept
+                r.skip(items[i].account, plan.SKIP, [plan.KEPT])
             else:
                 mark_not_added(ctx, items[i].contact.get("contact_id"))
                 r.skip(items[i].account, "not added by Instantly",
@@ -1010,6 +1065,7 @@ def run(ctx: Context) -> dict:
         copy_fallbacks=dict(r.copy_fallbacks),
         copy_sendable=len(approved),
         second_contacts=second.tally(seconds, not_second, len(prepared) - n_first, s),
+        instantly_plan=plan_room,
         errors=r.errors,
     )
     if proposed is not None:  # by_owner: the cards posted (live) or that would be (dry-run)

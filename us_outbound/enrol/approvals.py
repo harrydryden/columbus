@@ -15,7 +15,9 @@ the whole four-email sequence: the card shows email 1 in full and its first thre
 emails 2 to 4, so the exact text of every message is seen before anything is sent; once approved,
 Instantly sends email 1 in the next send window and the follow-ups on days 7, 14 and 21 by itself.
 The bot seeds ✅ and ❌ on the card (Slack.react), so approving is one click; its own reactions never
-count. Waiting items hold their sender's slots today and their place in the week (limits.today), and
+count. Under the people, the card's Industry line (Harry, 7 Oct 2026; labels.py) gives the label, whether the rules
+and the task model agreed, and which copy the emails are ("rules and model agree · Fintech copy", "⚠️ … · General
+copy", "not checked by the model"); its They do line gives what the model read the company does, with its quote. Waiting items hold their sender's slots today and their place in the week (limits.today), and
 an account with one waiting is not proposed again. With auto_send = no the weekly hand-check is not
 a gate (every email is approved anyway): hand_check_post records only the accounts verify_accounts
 held for doubtful facts, and golive's Hand-check line passes. A second contact at an account (General
@@ -39,7 +41,10 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
                                  suppressed, and pick_contacts finds the next person. If a run dies
                                  mid-add (or the lookup fails), a later run looks it up: there, it is
                                  approved; not there, a person approves it again; Instantly unreadable,
-                                 the thread asks a person to check the campaign first.
+                                 the thread asks a person to check the campaign first. A lead left out
+                                 because Instantly's plan is full is no refusal (enrol/plan.py; Harry,
+                                 7 Oct 2026): the card is held, the contact kept, the approvers asked
+                                 once a day to make room, and the rest of that run's ✅s held too.
                                  The re-check (recheck) tells holds from blocks. A hold is temporary:
                                  live_sending or optout_tested no, an operator stop, the stop rule, the
                                  reply pause, a blackout date on Instantly's next send day, the owner's
@@ -75,6 +80,16 @@ then the reactions on the message whose ✅ counts now (the card, or the latest 
                                  scoring/tiers.py reads as a hard exclusion, so a rescore keeps it out
                                  (enrol.mark_excluded; outcome company_rejected).
   When more than one choice is on the choices message, the least drastic wins (✏️, then 👤, then 🚫).
+  "industry: Fintech"            in any state (Harry, 7 Oct 2026; labels.py): the company is that label, not the
+                                 card's. Its label is set (label_source approver: the label check, relabel and the
+                                 universe refresh never move it), a label_corrected fact recorded and the Overrides
+                                 tab's row for the domain set (updated in place, or added), and the card withdrawn;
+                                 a new card with that label's emails is posted in its slot at once (reprepare: the
+                                 enrol run's own checks and prepare), or, when that cannot be, the next enrol proposes
+                                 the company; for a label switched off, nothing. An unknown label gets the list.
+                                 `approvals industry ID LABEL --live` is the same.
+A card whose company's label is decided again after it was rendered, and no longer fits (verify_accounts' label
+check, `relabel`, `labels set`), is withdrawn by the next poll_approvals before any ✅ on it is read (unfit_cards).
 The 2-hour re-post and the 24-hour escalation of the reply desk do not apply to send approvals.
 
 Expiry (a simple rule): an item may be approved on the UK day it was posted (send_day) and through
@@ -89,7 +104,8 @@ has state (waiting, rejected, editing, sending, done), outcome ("" while open, t
 approved_edited, contact_rejected, company_rejected, expired or blocked), owner, mailbox, campaign,
 lead (the Instantly lead, custom variables included), copy_version, angle, test_id, opener_arm,
 opener_source, subject_arm (personal or copy: email 1's subject, render.subject_arm; Harry, 5 Oct 2026),
-industry, industry_group, role, tier, score, send_day (YYYY-MM-DD, UK), edited,
+config_version, code_sha and copy_hash (what the card was rendered under, stamped on the contact at ✅, never
+what is in force then; config_version.py, Harry, 7 Oct 2026; "" on a card posted before), industry, industry_group, role, tier, score, send_day (YYYY-MM-DD, UK), edited,
 original (the first custom variables once edited, else {}) and reason (why blocked or expired, else
 ""); and the keys this module keeps for itself (expires_on, the card's facts, the steps as text and as
 editable source, the render variables, approve_ts, seen_ts, choices_ts, contact_slot (2 for a second
@@ -115,17 +131,18 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from us_outbound import budget
+from us_outbound import budget, labels
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
+from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.enrol import capacity, copy_markup, enrol, openers, queue, render, second
+from us_outbound.enrol import capacity, copy_markup, enrol, openers, plan, queue, render, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
+from us_outbound.registry import blackout
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
 from us_outbound.replies.items import ts as parse_ts
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
@@ -154,6 +171,7 @@ COMPANY_REACTIONS = frozenset({"no_entry_sign"})  # 🚫
 HOLD_LIVE, HOLD_OPTOUT, HOLD_STOP, HOLD_STOP_RULE = "live_sending", "optout_tested", "operator_stop", "stop_rule"
 HOLD_REPLIES, HOLD_BLACKOUT, HOLD_CAMPAIGN = "reply_pause", "blackout", "campaign"
 HOLD_INSTANTLY, HOLD_HUBSPOT = "instantly", "hubspot"
+HOLD_PLAN = "instantly_plan"  # Instantly's plan has no room (enrol/plan.py): found at the add, not by recheck
 SEED_APPROVE = ("white_check_mark", "x")  # what the bot puts on a card or a version, so a click decides
 SEED_CHOICES = ("pencil2", "bust_in_silhouette", "no_entry_sign")
 
@@ -410,6 +428,8 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
         "campaign": queue.campaign_name(p.owner), "lead": dict(p.lead), "copy_version": p.copy_version,
         "angle": p.angle, "test_id": p.test_id, "opener_arm": p.opener_arm, "opener_source": p.opener_source,
         "subject_arm": p.subject_arm,
+        # What the card was rendered under (config_version.py; Harry, 7 Oct 2026): ✅ stamps these, not today's.
+        "config_version": p.config_version, "code_sha": p.code_sha, "copy_hash": p.copy_hash,
         "industry": _text(a.get("industry")), "industry_group": group, "role": _text(c.get("role")),
         "tier": _text(a.get("tier")), "score": a.get("score"), "send_day": send_day.isoformat(),
         "edited": False, "original": {}, "reason": "",
@@ -426,6 +446,10 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
         "decided": {}, "added": {}, "edits": [],
         # A second contact at the account (enrol/second.py; Harry, 6 Oct 2026): 2, and who the first was.
         "contact_slot": p.slot, "first_contact": dict(p.first or {}),
+        # The label check (labels.py; Harry, 7 Oct 2026): its latest verdict, where the label came from, the copy level
+        # it earns and the Copy row's own industry, for the card's Industry line and for unfit_cards.
+        "label_check": dict(p.label_check), "label_source": _text(a.get("label_source")),
+        "copy_level": p.copy_level or labels.copy_level(a), "copy_industry": row.industry if row else "",
     }
 
 
@@ -517,6 +541,51 @@ def _before_line(p: Mapping[str, Any]) -> str:
     return line
 
 
+def _copy_words(p: Mapping[str, Any]) -> str:
+    """Which copy the card's emails are: "Fintech copy", "the group's copy" or "General copy"."""
+    row = _text(p.get("copy_industry"))
+    if not row:
+        return "copy not recorded"
+    if row.casefold() == GENERAL_COPY.casefold():
+        return "General copy"
+    if row.casefold() == _text(p.get("industry_group")).casefold() and row.casefold() != _text(p.get("industry")).casefold():
+        return "the group's copy"
+    return f"{row} copy"
+
+
+def industry_lines(p: Mapping[str, Any]) -> list[str]:
+    """The card's Industry line, and its "They do" line (labels.py; Harry, 7 Oct 2026): the label, whether the rules
+    and the model agreed, and which copy the emails are; then what the model says the company does, with its quote.
+    Every value is escaped; a card posted before the check, or under label_check = skip, says it was not checked."""
+    industry, group = _text(p.get("industry")), _text(p.get("industry_group"))
+    where = f"{industry} ({group})" if group and group.casefold() != industry.casefold() else (industry or group or "no label")
+    lc = p.get("label_check") or {}
+    source = _text(p.get("label_source")) or _text((lc.get("decision") or {}).get("source"))
+    rules, model, conf = _text(lc.get("rules")) or "no label", _text(lc.get("model")), _text(lc.get("confidence"))
+    copy = _esc(_copy_words(p))
+    if source == labels.OVERRIDE:
+        line = f"*Industry:* {_esc(where)} · set on the Overrides tab · {copy}"
+    elif source == labels.APPROVER:
+        line = f"*Industry:* {_esc(where)} · set by an approver · {copy}"
+    elif not lc or source in ("", labels.RULES):
+        line = f"*Industry:* ⚠️ {_esc(where)} · not checked by the model · {copy}"
+    elif source == labels.AGREED:
+        line = f"*Industry:* {_esc(where)} · rules and model agree · {copy}"
+    elif source == labels.MODEL:
+        line = (f"*Industry:* {_esc(where)} · the rules said {_esc(rules)}; the model says {_esc(model)} ({_esc(conf)}) "
+                f"· {copy}")
+    elif source == labels.UMBRELLA:
+        line = f"*Industry:* {_esc(where)} · the rules said {_esc(rules)}, the model {_esc(model)} ({_esc(conf)}): {copy}"
+    else:  # disputed: the rules' label, General copy
+        line = (f"*Industry:* ⚠️ {_esc(where)} · the rules say {_esc(rules)}, the model says {_esc(model)} "
+                f"({_esc(conf)}) · {copy}")
+    out = [line]
+    phrase, quote = _text(lc.get("what_they_do")), _text(lc.get("evidence"))
+    if phrase or quote:
+        out.append("*They do:* " + " · ".join(x for x in (_esc(phrase), f"“{_esc(quote)}”" if quote else "") if x))
+    return out
+
+
 def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     """The card: (plain-text fallback, Block Kit blocks). status, once decided, replaces the footer."""
     c = p.get("contact") or {}
@@ -555,12 +624,14 @@ def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
         blocks.append(_section(status))
     kind = "Send approval · second contact" if is_second(p) else "Send approval"
     blocks += [_section(f"{kind} · {head}"), _context(" · ".join(_esc(f) for f in facts if f)), _section(people)]
+    blocks.append(_section("\n".join(industry_lines(p))))  # the label check (labels.py; Harry, 7 Oct 2026)
     blocks += [_section(q) for q in _quoted(first.get("text") or "")]
     blocks.append(_section(counts))
     if status:
         blocks.append(_context(status))
     else:
-        blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread."))
+        blocks.append(_context("✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread. Wrong industry? "
+                               "Reply \"industry: <label>\"."))
     text = _esc(f"{'Send approval (second contact)' if is_second(p) else 'Send approval'}: {company} · {name} · "
                 f"from {owner}: {first.get('subject') or ''}")
     return (f"{status} {text}" if status else text), blocks  # status is mrkdwn already (it may mention)
@@ -722,7 +793,7 @@ def propose(ctx: Context, prepared: Sequence[enrol.Prepared], lim: Any, slack: A
 
 @dataclass(frozen=True)
 class Command:
-    kind: str  # send | reject | edit | contact | company | edit_text
+    kind: str  # send | reject | edit | contact | company | edit_text | industry
     text: str = ""
 
 
@@ -733,6 +804,8 @@ _COMMANDS = (
     (re.compile(r"^(?:(?:new|another|change|other)\s+)?contact[\s.!]*$", re.I), "contact"),
     (re.compile(r"^(?:(?:drop|cancel)\s+(?:the\s+)?)?company[\s.!]*$", re.I), "company"),
 )
+# An approver's industry correction (Harry, 7 Oct 2026; labels.py): "industry: Fintech", in any state.
+_INDUSTRY = re.compile(r"^(?:industry|label)\s*[:=]\s*(.+?)[\s.!]*$", re.I)
 _EDIT_TEXT = re.compile(r"^edit\s*:\s*(.+)$", re.I | re.S)
 _STEP = re.compile(r"^email\s*([1-4])\s*:?[ \t]*", re.I)
 _SUBJECT = re.compile(r"^subject\s*:\s*(.*)$", re.I)
@@ -745,6 +818,9 @@ def parse_command(text: Any, state: str = WAITING) -> Command | None:
     for rx, kind in _COMMANDS:
         if rx.match(t):
             return Command(kind)
+    m = _INDUSTRY.match(t)
+    if m and "\n" not in t:
+        return Command("industry", m.group(1).strip())
     m = _EDIT_TEXT.match(t)
     if m:
         return Command("edit_text", m.group(1).strip())
@@ -890,14 +966,8 @@ class Recheck:
 def instantly_send_day(ctx: Context) -> date | None:
     """The day Instantly would send email 1 if the lead were added now: its schedule's next weekday (the send
     window's days, in the window's time zone), today if the window has not closed yet. Instantly knows the
-    weekdays, not our blackout dates."""
-    w = ctx.settings.general.send_window
-    now = ctx.now.astimezone(ZoneInfo(w.tz))
-    day = now.date() + timedelta(days=1 if now.time() >= w.end else 0)
-    for i in range(14):
-        if (day + timedelta(days=i)).weekday() in w.days:
-            return day + timedelta(days=i)
-    return None
+    weekdays, not our blackout dates (registry/blackout.instantly_day, which the blackout pause reads too)."""
+    return blackout.instantly_day(ctx.settings, ctx.now)
 
 
 def recheck(ctx: Context, item: Item) -> Recheck:
@@ -959,7 +1029,8 @@ def recheck(ctx: Context, item: Item) -> Recheck:
     if out.holds or out.blocks:
         return out
     try:
-        why = capacity.campaign_problem(owner, ctx.clients.instantly.list_campaigns())
+        why = capacity.campaign_problem(owner, ctx.clients.instantly.list_campaigns(),
+                                        blackout.words(ctx.store, ctx.settings, ctx.now))
     except (ApiError, ConfigError, LookupError) as exc:
         out.holds[HOLD_INSTANTLY] = f"Instantly could not be read ({type(exc).__name__}: {str(exc)[:160]})"
         return out
@@ -1023,6 +1094,9 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
         # A card posted before the split (5 Oct 2026) was rendered with the Copy row's subject.
         subject_arm=_text(p.get("subject_arm")) or render.COPY_SUBJECT,
         slot=second.SECOND if is_second(p) else second.FIRST,  # a second contact leaves its account as it is
+        # A card posted before the stamp (8 Oct 2026) has none: the contact is left unstamped.
+        config_version=_text(p.get("config_version")), code_sha=_text(p.get("code_sha")),
+        copy_hash=_text(p.get("copy_hash")),
     )
 
 
@@ -1031,6 +1105,15 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
     p = item.payload
     outcome = APPROVED_EDITED if p.get("edited") else APPROVED
     result: dict[str, Any] = {"item": item.short_id, "account_id": item.account_id, "by": by, "via": via}
+    account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+    unfit = label_unfit(item, account, ctx.settings)
+    if unfit is not None:  # its label was decided again after the card: withdrawn, never sent (labels.py)
+        result.update(added=False, outcome=EXPIRED, withdrawn=unfit[0])
+        if ctx.dry_run:
+            result["dry_run"] = True
+        else:
+            withdraw(ctx, item, slack, unfit[0], back_to_queue=unfit[1], via=labels.JOB)
+        return result
     check = recheck(ctx, item)
     if check.blocks:
         result.update(added=False, outcome=BLOCKED, why=check.blocks)
@@ -1068,6 +1151,8 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         _cas(ctx, item, OPEN)
         raise
     except (ApiError, LookupError, ValueError, ConfigError) as exc:
+        if instantly_client.plan_full_error(exc):  # the whole add refused for want of room: held, not failed
+            return {**result, **_plan_full(ctx, item, by=by, via=via, slack=slack, alert=plan.full_alert(ctx))}
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
         note = _thread(slack, item, f"Not added: Instantly refused: {_esc(str(exc)[:200])}. Check {_esc(campaign)} in "
                                     f"Instantly for {_esc(item.email)} before you approve it again: ✅ this message, or "
@@ -1080,21 +1165,37 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         return result
     lead = dict(p.get("lead") or {})
     email = _text(lead.get("email")).lower()
+    room = plan.after_add(ctx, added)  # the plan-full ask, or the low-room warning (enrol/plan.py)
     ids = enrol._created_ids(added or {}, [lead])
     if 0 not in ids:  # not created: in the campaign after all, or refused (enrol.campaign_lead_ids)
         try:
             found = enrol.campaign_lead_ids(ctx, campaign, [email])
         except (ApiError, LookupError, ConfigError) as exc:  # left "sending": _stuck looks again after STUCK_AFTER
-            p["sending"] = {**(p.get("sending") or {}), "answered": True}  # Instantly had the add, and did not create it
+            # Instantly had the add, and did not create it (for want of room, when its plan was full: enrol/plan.py)
+            p["sending"] = {**(p.get("sending") or {}), "answered": True, **({"plan_full": True} if room["full"] else {})}
             _save(ctx, item)
             why = f"Instantly did not confirm the lead and {campaign} could not be read ({str(exc)[:160]}); looked up again"
             log("send_approval_lookup_failed", item_id=item.id, error=str(exc)[:200])
             result.update(added=False, why=[why])
             return result
+        if email not in found and room["full"]:  # left out for want of room, not refused: held, the contact kept
+            return {**result, **_plan_full(ctx, item, by=by, via=via, slack=slack, alert=room.get("alert"))}
         if email not in found:
             return {**result, **_refused(ctx, item, by=by, via=via, slack=slack)}
         ids = {0: found[email]}
-    return {**result, **_added(ctx, item, ids[0], by=by, via=via, slack=slack)}
+    return {**result, **_added(ctx, item, ids[0], by=by, via=via, slack=slack), "instantly_plan": room}
+
+
+def _plan_full(ctx: Context, item: Item, *, by: str, via: str, slack: Any, alert: Any) -> dict:
+    """Instantly's plan has no room (enrol/plan.py): the add did not happen, so the item goes back to waiting, held
+    as a stop or a blackout holds it: the card stays open and the ✅ stays valid, each poll_approvals run tries
+    again until there is room or the card expires, and the contact is kept (never enrol.mark_not_added)."""
+    p = item.payload
+    p.update(state=WAITING)
+    p.pop("sending", None)
+    _cas(ctx, item, OPEN)
+    _hold(ctx, item, {HOLD_PLAN: plan.HOLD}, by=by, via=via, slack=slack)
+    return {"added": False, "held": [plan.HOLD], "plan_full": True, "alert": alert}
 
 
 def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: Any) -> dict:
@@ -1244,6 +1345,197 @@ def expire(ctx: Context, item: Item, slack: Any) -> bool:
                   note=f"⌛ Expired: {reason}. Nothing was added; {company} goes back to the queue.")
 
 
+def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue: bool = True,
+             via: str = "relabel", note: str = "") -> bool:
+    """Closed by "system" before anyone decides, as an expiry is (`us-outbound relabel`, ops/relabel.py; Harry,
+    7 Oct 2026): the card was rendered under a label that turned out wrong. Nothing was added; the company goes
+    back to the queue for a card with the right copy, or, when it may not be emailed at all, does not. note: the
+    thread's words, when not the plain ones (an approver's correction says what happens next)."""
+    company = _esc(item.company)
+    after = f"{company} goes back to the queue for a new card" if back_to_queue else f"{company} will not be emailed"
+    return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=f"withdrawn: {reason}", via=via,
+                  status=f"↩️ Withdrawn: {_esc(reason)}; nothing was added and {after}",
+                  note=note or f"↩️ Withdrawn: {_esc(reason)}. Nothing was added; {after}.")
+
+
+# -- an approver's industry correction (labels.py; Harry, 7 Oct 2026) ---------------------------------------------
+
+
+def reprepare(ctx: Context, item: Item) -> enrol.Prepared | None:
+    """The card's company and contact made ready again under the company's label as it is now (Harry, 7 Oct 2026;
+    design §7 v2): the enrol run's own eligibility check (eligibility), then enrol.prepare with the card's sender and
+    slot, the running test's counts and the sendable Copy rows, stamped with the config version in force. None when it
+    cannot be (a second contact's card, a skip of any kind, another sender, HubSpot or Instantly not answering): the
+    next enrol proposes the company instead."""
+    from us_outbound import config_version
+
+    if is_second(item.payload):
+        return None
+    account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+    contact = ctx.store.get("contacts", contact_id=item.contact_id) if item.contact_id else None
+    if account is None or contact is None or eligibility(ctx, item, account, contact):
+        return None
+    owner = _text(item.payload.get("owner"))
+    try:
+        p = enrol.prepare(ctx, enrol.Candidate(dict(account), dict(contact)), Counter({owner: 1}),
+                          enrol.running_test_counts(ctx), enrol.sendable_copy(ctx.settings))
+    except (ApiError, ConfigError, LookupError) as exc:
+        log("send_approval_reprepare_failed", item_id=item.id, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return None
+    if isinstance(p, enrol.Skip) or p.owner != owner:
+        log("send_approval_reprepare_skipped", item_id=item.id, reason=getattr(p, "reason", "another sender"))
+        return None
+    cv = config_version.current(ctx)
+    config_version.record(ctx, cv)
+    p.config_version, p.code_sha = cv.id, cv.code_sha
+    return p
+
+
+def repropose(ctx: Context, old: Item, p: enrol.Prepared, slack: Any, why: str) -> Item:
+    """A new card for the prepared company, in the old card's slot (its sender's place today), its thread saying
+    which card it replaces (why: mrkdwn, escaped by the caller). Posted now when Slack answers; else the next
+    poll_approvals posts it."""
+    payload = build_payload(ctx, p, slot=int(old.payload.get("slot") or 1), slots=int(old.payload.get("slots") or 1))
+    payload["replaces"] = old.id
+    row = {"item_id": new_id(), "kind": KIND, "account_id": p.account["account_id"],
+           "contact_id": p.contact["contact_id"], "slack_channel": "", "slack_ts": "", "status": OPEN,
+           "created_at": ctx.now, "payload": payload}
+    ctx.store.upsert(TABLE, [row])
+    item = Item(row)
+    if slack is not None:
+        try:
+            if post_card(ctx, slack, item):
+                _thread(slack, item, f"🏷️ This card replaces the earlier one for {_esc(item.company)}: {why}.")
+        except (ApiError, LookupError) as exc:
+            log("send_approval_slack_failed", item_id=item.id, error=str(exc)[:200])
+    log("send_approval_reproposed", item_id=item.id, replaces=old.id, account_id=item.account_id)
+    return item
+
+
+def set_industry(ctx: Context, item: Item, text: str, *, by: str, via: str, slack: Any) -> dict:
+    """"industry: Fintech" from an approver (or `approvals industry`), live: the company takes the label
+    (labels.correct: the account, a label_corrected fact, the Overrides tab) and the card, written for the old one,
+    is withdrawn; a new card with the new label's emails is posted in its place at once (reprepare, repropose), or,
+    when that cannot be, the next enrol proposes the company again. An unknown label, or the card's own, changes
+    nothing and says so in the thread."""
+    s = ctx.settings
+    ind = labels.resolve(text, s)
+    wanted = _esc(_text(text)[:60])
+    if ind is None:
+        _thread(slack, item, f"No Industries label called “{wanted}”. The labels are:\n{_esc(labels.active_list(s))}\n"
+                             "Reply `industry: <label>` with one of them (any label on the Industries tab will do).")
+        return {"done": False, "why": f"no Industries label called {text!r}"}
+    old = _text(item.payload.get("industry"))
+    if ind.industry.casefold() == old.casefold():
+        _thread(slack, item, f"The card already has {_esc(ind.industry)}.")
+        return {"done": False, "why": f"the card already has {ind.industry}"}
+    account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+    if account is None:
+        _thread(slack, item, "The company is no longer on file, so its industry cannot be set.")
+        return {"done": False, "why": "the account is no longer on file"}
+    who = _who(by)
+    got = labels.correct(ctx, account, ind, by=by, via=via, item_id=item.id, card_label=old,
+                         who="at the command line" if by == CLI_APPROVER else f"by {by} in Slack")
+    sheet = {"updated": "recorded on the Overrides tab", "added": "added to the Overrides tab"}.get(got["sheet"], got["sheet"])
+    company, new = _esc(item.company), _esc(ind.industry)
+    p = reprepare(ctx, item) if ind.active else None
+    if p is not None:
+        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and a new "
+                 f"card for {company} with the {new} emails is posted in the channel. Approve that one.")
+    elif ind.active:
+        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and the "
+                 f"next enrol (12:00 UK on a send day) proposes {company} again with the {new} emails.")
+    else:
+        after = (f"This card is withdrawn: nothing was sent. {new} is switched off on the Industries tab, so {company} "
+                 "will not be emailed unless it is switched on.")
+    note = f"🏷️ Industry set to {new} ({who}); {_esc(sheet)}. {after}"
+    reason = f"its industry is {ind.industry} now, set {who}"
+    if not withdraw(ctx, item, slack, reason, back_to_queue=ind.active, via="industry", note=note):
+        return {"done": False, "why": "another run closed the card first"}
+    again = repropose(ctx, item, p, slack, f"written for {_esc(old) or 'no label'}, its industry is {new} now, set "
+                                           f"{who}") if p is not None else None
+    return {"done": True, "from": old, "to": ind.industry, "sheet": got["sheet"],
+            "new_card": again.short_id if again else ""}
+
+
+# -- cards a label decision has overtaken (labels.py; Harry, 7 Oct 2026) ------------------------------------------
+
+
+def card_copy_level(p: Mapping[str, Any], settings: Settings) -> str:
+    """The copy level the card's emails were written at: General's row, the group's, or the label's own. A card
+    whose Copy row is not on the tab any more counts as the label's (the most specific), so it is never kept on a
+    guess."""
+    row_industry = _text(p.get("copy_industry"))
+    if not row_industry:
+        row = settings.copy_row(_text(p.get("copy_version")))
+        row_industry = row.industry if row else ""
+    found = row_industry.casefold()
+    if found == GENERAL_COPY.casefold():
+        return labels.GENERAL_COPY_LEVEL
+    if found and found == _text(p.get("industry_group")).casefold():
+        return labels.GROUP_COPY
+    return labels.LABEL_COPY
+
+
+def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Settings) -> tuple[str, bool] | None:
+    """(why the card no longer fits its company's label, whether the company goes back to the queue), or None.
+
+    Only a label decided after the card was rendered counts (accounts.label_checked_at), so a card waiting in Slack
+    keeps what it shows until the label check, an approver or `relabel` decides the label again. It no longer fits
+    when its company is disqualified, held for the hand-check, under another label, or when its emails are more
+    specific than the label now allows (a label's pitch where the group's copy is allowed). A second contact's card
+    is left alone: its company is enrolled already."""
+    if account is None or is_second(item.payload):
+        return None
+    decided, created = parse_ts(account.get("label_checked_at")), parse_ts(item.row.get("created_at"))
+    if decided is None or created is None or decided < created:
+        return None
+    p, company = item.payload, item.company
+    status = _text(account.get("status"))
+    if status == labels.DISQUALIFIED:
+        return f"{company} is left out: {_text(account.get('tier_reason')) or 'disqualified'}", False
+    if status in ("new", "queued"):
+        return "the label check doubts its industry, so it waits for the weekly hand-check", True
+    if status != "verified":
+        return None
+    old, new = _text(p.get("industry")), _text(account.get("industry"))
+    if old.casefold() != new.casefold():
+        return f"its industry was {old or 'not set'} and is now {new or 'not set'}", True
+    used, allowed = card_copy_level(p, settings), labels.copy_level(account)
+    if labels.more_specific(used, allowed):
+        group = _text(account.get("industry_group")) or _text(p.get("industry_group"))
+        now = f"{group}'s copy" if allowed == labels.GROUP_COPY else "General copy"
+        return f"its emails were written for {new}, and the label check allows {now} now", True
+    return None
+
+
+def unfit_cards(ctx: Context, accounts: Mapping[str, Mapping[str, Any]] | None = None) -> list[tuple[Item, str, bool]]:
+    """The open cards that no longer fit their company's label (label_unfit), with why and whether it goes back to
+    the queue. accounts: the companies as they will be (a dry run's decisions); else as the database has them."""
+    found = [i for i in items(ctx.store, (OPEN,)) if accounts is None or i.account_id in accounts]
+    rows: Mapping[str, Mapping[str, Any]] = accounts if accounts is not None else {
+        a["account_id"]: a for a in ctx.store.select("accounts", {"account_id": sorted({i.account_id for i in found})})
+    } if found else {}
+    out = []
+    for item in found:
+        unfit = label_unfit(item, rows.get(item.account_id), ctx.settings)
+        if unfit is not None:
+            out.append((item, *unfit))
+    return out
+
+
+def withdraw_unfit(ctx: Context, slack: Any, found: Sequence[tuple[Item, str, bool]] | None = None) -> list[str]:
+    """Withdraw each card a label decision has overtaken (unfit_cards), live: the companies withdrawn. The next
+    enrol proposes them again with the right copy (verify_accounts decides at 04:30 and runs dry, so the next
+    poll_approvals does this; `relabel` and `labels audit --live` do it themselves)."""
+    out = []
+    for item, why, back in (found if found is not None else unfit_cards(ctx)):
+        if withdraw(ctx, item, slack, why, back_to_queue=back, via=labels.JOB):
+            out.append(item.company)
+            log("send_approval_withdrawn", item_id=item.id, account_id=item.account_id, reason=why[:200])
+    return out
+
+
 # -- the poll_approvals pass ------------------------------------------------------------------------------------
 
 
@@ -1256,10 +1548,12 @@ class _Run:
     not_added: list[dict] = field(default_factory=list)
     held: list[dict] = field(default_factory=list)  # approvals a hold stopped this run; they stay valid
     cards_posted: int = 0
+    relabelled: list[dict] = field(default_factory=list)  # approvers' industry corrections (labels.py)
     unsure: list[str] = field(default_factory=list)
     would: list[dict] = field(default_factory=list)
     ignored: int = 0
     errors: list[str] = field(default_factory=list)
+    plan_full: bool = False  # Instantly's plan had no room at an add this run: the rest are held without one
 
     def add(self, name: str, entry: Any) -> None:
         bucket = getattr(self, name)
@@ -1271,7 +1565,12 @@ def _act(ctx: Context, item: Item, cmd: Command, by: str, via: str, slack: Any, 
     """Carry out one decision (live). True when nothing more is read for the item this run."""
     state = item.state
     if cmd.kind == "send":
+        if run.plan_full:  # Instantly's plan was full earlier this run: held without another add (enrol/plan.py)
+            _hold(ctx, item, {HOLD_PLAN: plan.HOLD}, by=by, via=via, slack=slack)
+            run.add("held", {"item": item.short_id, "why": [plan.HOLD]})
+            return True
         res = send(ctx, item, by=by, via=via, slack=slack)
+        run.plan_full = run.plan_full or bool(res.get("plan_full"))
         if res.get("added"):
             run.outcomes[res["outcome"]] += 1
         elif res.get("outcome") == BLOCKED:
@@ -1294,6 +1593,12 @@ def _act(ctx: Context, item: Item, cmd: Command, by: str, via: str, slack: Any, 
     if cmd.kind == "edit_text":
         run.edits["accepted" if apply_edit(ctx, item, cmd.text, by=by, slack=slack) else "refused"] += 1
         return False
+    if cmd.kind == "industry":  # in any state: the card closes once the label is set (Harry, 7 Oct 2026)
+        res = set_industry(ctx, item, cmd.text, by=by, via=via, slack=slack)
+        if res.get("done"):
+            run.add("relabelled", {"item": item.short_id, "from": res["from"], "to": res["to"], "sheet": res["sheet"],
+                                   "new_card": res.get("new_card", "")})
+        return bool(res.get("done"))
     fn = drop_contact if cmd.kind == "contact" else drop_company
     res = fn(ctx, item, by=by, via=via, slack=slack)
     if res.get("done"):
@@ -1405,6 +1710,10 @@ def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
         run.outcomes[res["outcome"]] += 1
         log("send_approval_found", item_id=item.id)
         return
+    if found is not None and sending.get("answered") and sending.get("plan_full"):  # no room then: held, kept
+        _plan_full(ctx, item, by=by, via=via, slack=slack, alert=None)
+        run.add("held", {"item": item.short_id, "why": [plan.HOLD]})
+        return
     if found is not None and sending.get("answered"):  # Instantly had the add and did not take it: refused
         run.outcomes[_refused(ctx, item, by=by, via=via, slack=slack)["outcome"]] += 1
         return
@@ -1444,6 +1753,16 @@ def poll(ctx: Context, slack: Any | None) -> dict:
     run = _Run()
     if ctx.live and slack is not None:
         _post_missing(ctx, slack, run)
+    # Cards a label decision has overtaken go first, so no ✅ sends one (labels.py; Harry, 7 Oct 2026).
+    overtaken = unfit_cards(ctx)
+    if ctx.dry_run:
+        for item, why, _ in overtaken:
+            run.add("would", {"item": item.short_id, "action": "withdraw", "why": why})
+        withdrawn: list[str] = []
+    else:
+        withdrawn = withdraw_unfit(ctx, slack, overtaken)
+        if withdrawn:
+            run.outcomes["withdrawn"] += len(withdrawn)
     today = ctx.today_uk()
     todo = items(ctx.store)
     bot: str | None = None  # the bot's own user id, asked once when an item is read
@@ -1472,8 +1791,9 @@ def poll(ctx: Context, slack: Any | None) -> dict:
     out: dict[str, Any] = {
         "items": len(todo), "outcomes": dict(run.outcomes), "rejected": run.rejected, "editing": run.editing,
         "edits": dict(run.edits), "not_added": run.not_added, "held": run.held, "cards_posted": run.cards_posted,
-        "unsure": run.unsure,
-        "ignored_non_approvers": run.ignored, "errors": run.errors,
+        "unsure": run.unsure, "instantly_plan_full": run.plan_full,
+        "ignored_non_approvers": run.ignored, "errors": run.errors, "withdrawn": withdrawn[:LIST_LIMIT],
+        "relabelled": run.relabelled,
     }
     if ctx.dry_run:
         out["would"] = run.would
@@ -1528,6 +1848,66 @@ def approve(ctx: Context, ref: str) -> dict:
         raise ValueError(f"send approval {item.short_id} expired at the end of {item.payload.get('expires_on')}; "
                          "the account goes back to the queue")
     return {"dry_run": ctx.dry_run, **send(ctx, item, by=CLI_APPROVER, via="cli", slack=slack_or_none(ctx))}
+
+
+def industry_item(ctx: Context, ref: str, text: str) -> dict:
+    """`approvals industry ID LABEL`: the same correction as an approver's "industry: LABEL" reply, by "cli". A dry
+    run says what would change and changes nothing."""
+    item = find_item(ctx, ref)
+    _actionable(item)
+    ind = labels.resolve(text, ctx.settings)
+    if ind is None:
+        raise ValueError(f"no Industries label called {text!r}; the labels are:\n{labels.active_list(ctx.settings)}")
+    if ctx.dry_run:
+        return {"dry_run": True, "item": item.short_id, "company": item.company,
+                "from": _text(item.payload.get("industry")), "to": ind.industry,
+                "would": "set the label, record it on the Overrides tab and withdraw the card"}
+    return {"dry_run": False, "item": item.short_id, "company": item.company,
+            **set_industry(ctx, item, ind.industry, by=CLI_APPROVER, via="cli", slack=slack_or_none(ctx))}
+
+
+REDO_WHY = "posted again with the company's industry label and emails as they are now"
+
+
+def redo(ctx: Context, ref: str) -> dict:
+    """`approvals redo ID|all`: withdraw waiting cards and post each again, made ready under the company's label and
+    copy as they are now (Harry, 7 Oct 2026: "bulk reject all of those contacts from today and send them round
+    again", after the label check). Each card is made ready first (reprepare: the same contact, sender and slot);
+    then the old card is withdrawn (nothing was sent) and the new one posted in its place, its thread naming the card
+    it replaces. A company that cannot be made ready now goes back to the queue for the next enrol, or, when it may
+    not be emailed at all (disqualified by the label check, suppressed, excluded), is not emailed. A card whose lead
+    is being added is left alone. A dry run lists the cards and changes nothing."""
+    todo = items(ctx.store, (OPEN,)) if str(ref).strip().lower() == "all" else [find_item(ctx, ref)]
+    if ref != "all":
+        _actionable(todo[0])
+    out: dict[str, Any] = {"dry_run": ctx.dry_run, "cards": len(todo), "posted_again": [], "back_to_queue": [],
+                           "not_emailed": [], "left_alone": []}
+    if ctx.dry_run:
+        out["would"] = [f"{i.short_id} {i.company}" for i in todo]
+        return out
+    slack = slack_or_none(ctx)
+    for item in todo:
+        if item.status != OPEN or item.state == ADDING:
+            out["left_alone"].append(item.company)
+            continue
+        p = reprepare(ctx, item)
+        why = ""
+        if p is None:
+            account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
+            contact = ctx.store.get("contacts", contact_id=item.contact_id) if item.contact_id else None
+            why = eligibility(ctx, item, account, contact) if account and contact else "no longer on file"
+        reason = REDO_WHY if p is not None else (why or "to be proposed again with its label and emails as they are now")
+        if not withdraw(ctx, item, slack, reason, back_to_queue=not why, via="redo"):
+            out["left_alone"].append(item.company)
+            continue
+        if p is not None:
+            new = repropose(ctx, item, p, slack, REDO_WHY)
+            out["posted_again"].append(f"{new.short_id} {item.company}")
+        else:
+            out["not_emailed" if why else "back_to_queue"].append(item.company)
+    log("send_approval_redo", run_id=ctx.run_id, cards=len(todo), posted_again=len(out["posted_again"]),
+        back_to_queue=len(out["back_to_queue"]), not_emailed=len(out["not_emailed"]))
+    return out
 
 
 def reject_item(ctx: Context, ref: str, what: str) -> dict:

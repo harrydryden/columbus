@@ -9,7 +9,11 @@ run_job(ctx, fn) wraps a job function run(ctx) -> dict:
 A job reports a skip by returning {"skipped": True, "reason": ...} or raising Skip.
 Errors are re-raised after the row is written, so the CLI exits non-zero.
 
-check_heartbeats(ctx) is the heartbeat_check job (hourly, beside kill_rules). A job is
+run(ctx) is the heartbeat_check job (hourly, beside kill_rules; Harry, 7 Oct 2026): check_heartbeats,
+then the errors the jobs caught (ops/job_errors.py), then the outside watchdog's ping (ops/watchdog.py),
+which fails when a job is missed, a daily (or rarer) job's latest run failed (failed_jobs), or Slack
+cannot take alerts. When the settings are unusable it starts on the General defaults
+(ops/bootstrap.py), so it still alerts and pings. check_heartbeats(ctx): a job is
 missed when it last showed it is alive longer ago than EXPECTED[job]; weekday jobs count
 only weekday time (UK), so a weekend is not a miss. Alive means a run that finished ok,
 or was skipped for a reason of its own (a blackout date). A "running" row is no evidence:
@@ -33,6 +37,7 @@ from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import clip, log, redact
+from us_outbound.ops import notify
 
 TABLE = "heartbeats"
 RUNNING, OK, ERROR, SKIPPED = "running", "ok", "error", "skipped"
@@ -64,7 +69,8 @@ EXPECTED: dict[str, int] = {
     "sync_outcomes": 45,  # every 15 min (SPEC 9 had 01:00 daily)
     "mailbox_health": 26 * _H,  # 07:00 daily
     "kill_rules": 150,  # hourly
-    "heartbeat_check": 150,  # hourly (nothing watches this one; the daily post reports it)
+    "blackout": 150,  # hourly (Harry, 7 Oct 2026; registry/blackout.py)
+    "heartbeat_check": 150,  # hourly; the outside watchdog watches this one (ops/watchdog.py: a late ping emails Harry)
     "daily_post": 26 * _H,  # 09:00 daily
     "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
@@ -73,6 +79,7 @@ EXPECTED: dict[str, int] = {
     "lookalikes": 32 * _DAY,  # the 1st at 02:30 (weekly until 5 Oct 2026)
     "lookalike_leads": 32 * _DAY,  # the 1st at 02:50
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
+    "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
 WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people",
@@ -294,9 +301,50 @@ def check_heartbeats(ctx: Context, jobs: Iterable[str] | None = None) -> list[st
         lines = ["Missed heartbeats: these US Outbound jobs have not run when they should have."]
         lines += [_describe(j, runs[j], now) for j in missed]
         lines.append("Check the worker's logs in Railway, or run `us-outbound status`.")
-        ctx.clients.slack.post(ctx.settings.general.alert_channel, "\n".join(lines))
+        notify.alert(ctx, "\n".join(lines))  # a Slack that fails is logged: the watchdog's ping still goes
     log("heartbeat_check", missed=missed, newly_missed=new, alerted=bool(new or reminder))
     return missed
+
+
+DAILY = 26 * _H  # a job expected this rarely (or rarer) waits hours for its next try
+
+
+def failed_jobs(runs: Mapping[str, Mapping[str, Any]], jobs: Iterable[str], now: datetime) -> list[str]:
+    """The jobs among these that run daily or less often and whose latest run failed in the last DAILY minutes:
+    their next try is hours or days away. A job that runs every few minutes is tried again within the hour; if it
+    keeps failing, it is missed. After a day a failed run no longer counts, so a monthly job's failure does not keep
+    the outside watchdog failing (and blind to anything new) for a month; it is missed once its window passes."""
+    out = []
+    for j in jobs:
+        run = runs.get(j) or {}
+        started = _ts(run.get("started_at"))
+        if (EXPECTED.get(j, 0) >= DAILY and run.get("status") == ERROR and started is not None
+                and now - started <= timedelta(minutes=DAILY)):
+            out.append(j)
+    return out
+
+
+def run(ctx: Context) -> dict:
+    """The heartbeat_check job (JOB CONTRACT: run(ctx) -> summary): missed heartbeats, the errors the jobs caught,
+    then the outside watchdog's ping, /fail when something needs a look (ops/watchdog.py)."""
+    from us_outbound.ops import job_errors, watchdog
+
+    jobs = scheduled_jobs()
+    try:
+        missed = check_heartbeats(ctx, jobs)
+        runs = latest_runs(ctx.store)
+    except GuardViolation:
+        raise
+    except Exception:  # the database, say: Healthchecks hears it at once, then the error is recorded
+        watchdog.ping(ctx, ["heartbeat_check could not read the heartbeats"])
+        raise
+    failed = failed_jobs(runs, jobs, ctx.now)
+    errors = job_errors.check(ctx, jobs)
+    slack = watchdog.slack_problem(ctx)
+    reasons = ([f"missed: {', '.join(missed)}"] if missed else []) + (
+        [f"failed: {', '.join(failed)}"] if failed else []) + ([slack] if slack else [])
+    ping = watchdog.ping(ctx, reasons)
+    return {"missed": missed, "failed": failed, "job_errors": errors, "slack": slack or "ok", "watchdog": ping}
 
 
 # -- operator stop / start (the enrolment pause) ------------------------------------

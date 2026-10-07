@@ -81,6 +81,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
     # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
     ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    # Harry, 7 Oct 2026 (docs/open-questions.md item 78): pause the campaigns over the blackout dates and start them
+    # again after, as Instantly's schedule knows weekdays only (registry/blackout.py). Hourly, deciding in US Eastern
+    # dates: the pause lands from 16:00 ET on the last send day before a blackout and the start from midnight ET after
+    # it, so many runs fall before 09:00 ET either way, whatever the UK and US clocks do. Instantly writes: --live.
+    ScheduledJob("blackout", "40 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     # Harry, 6 Oct 2026 ("push ahead with building"): Mondays at 08:30, after the hand-check (08:00) and before the
     # daily post (09:00; SPEC 9 had both at 09:00). It only reads and posts: the alert channel needs --live, and in
@@ -88,6 +93,7 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("monday_readout", "30 8 * * 1", live=True, enabled=True, timeout_minutes=20, phase=3),
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
+    # HubSpot opt-outs and bounces, and Spill's customers' domains (Harry, 7 Oct 2026: daily, not monthly).
     ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
     # The 1st of each month at 02:30, after settings_sync and before source_universe and apollo_signals (Harry,
     # 1 Oct 2026; monthly from 5 Oct 2026: "The customer base for Spill is fairly static"). Day-of-week is *, so
@@ -100,6 +106,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
     # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
     ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
+    # SPEC 6 and 13: Instantly leads 31 days after their last step (SPEC 9 had it in sync_outcomes), daily at a quiet
+    # hour: after Instantly's send window (09:00 to 16:00 US Eastern) and before suppression_load (01:30). It deletes
+    # leads in Instantly, so it needs --live, and like every job it stays dry until live_sending = yes
+    # (ops/retention.py).
+    ScheduledJob("retention", "40 0 * * *", live=True, enabled=True, timeout_minutes=30, phase=2),
 )
 
 

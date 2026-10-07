@@ -44,16 +44,19 @@ READ_ENDPOINTS: dict[str, tuple[str, str]] = {
     "usage.credits": ("POST", "/usage_stats/credit_usage_stats"),  # 0 credits
     "organizations.search": ("POST", "/mixed_companies/search"),  # 1 credit per page with results
     "organizations.enrich": ("GET", "/organizations/enrich"),  # 1 credit per organization found
-    # PHASE0-CONFIRM: Bulk Organization Enrichment's body. Apollo's docs list domains[] as query
-    # parameters; the JSON body {"domains": [...]} is what its own tools send (1 credit per company found).
+    # Bulk Organization Enrichment's body: Apollo's docs list domains[] as query parameters; the JSON body
+    # {"domains": [...]} is what its own tools send. Confirmed live 5 Oct 2026: apollo_enrich's bulk calls found
+    # 15 of 15 companies a run, none unmatched.
     "organizations.bulk_enrich": ("POST", "/organizations/bulk_enrich"),
-    # PHASE0-CONFIRM: REST path of Organization Job Postings (the MCP tool
-    # apollo_organizations_job_postings takes the organization id, page and per_page; 1 credit a request).
+    # REST path of Organization Job Postings (the MCP tool apollo_organizations_job_postings takes the
+    # organization id, page and per_page; 1 credit a request). Confirmed live 2 Oct 2026: apollo_signals reads
+    # 22 accounts' postings a run without an error.
     "organizations.job_postings": ("GET", "/organizations/{organization_id}/job_postings"),
     "people.search": ("POST", "/mixed_people/api_search"),  # 0 credits; no emails returned
     "people.bulk_match": ("POST", "/people/bulk_match"),  # credits per revealed email
-    # PHASE0-CONFIRM: REST path of Apollo's website-visitor domain aggregates (the MCP tool
-    # apollo_website_visitors_domain_aggregates takes organization_id, domain, from, to).
+    # Unused (docs/phase0-confirm.md, APO-VISIT-AGGREGATES): the REST path of Apollo's website-visitor domain
+    # aggregates, from the MCP tool apollo_website_visitors_domain_aggregates (organization_id, domain, from,
+    # to). Confirm it, and what a call costs, before a job calls it.
     "website_visitors.domain_aggregates": ("GET", "/website_visitors/domain_aggregates"),
     # Organization search filtered to the companies that visited our tracked domain (sources/site_visits.py):
     # the same endpoint and price as organizations.search, its own action so the guard and the logs show it.
@@ -77,8 +80,10 @@ def normalize_filters(filters: Mapping[str, Any]) -> dict[str, Any]:
 
     "organization_locations[]" -> "organization_locations";
     "organization_num_jobs_range[min]" -> {"organization_num_jobs_range": {"min": ...}}.
-    PHASE0-CONFIRM: the docs list these as query parameters; the JSON body form is the one
-    Apollo's own tools send, and it keeps 1,000-domain lists out of the URL.
+    The docs list these as query parameters; the JSON body form is the one Apollo's own tools send,
+    and it keeps 1,000-domain lists out of the URL. Confirmed live 2 to 7 Oct 2026: Apollo applies the
+    body's filters (site_visits' searches returned 57 and 72 companies, not the whole database; the
+    postings screen and the size-band backfill split their batches by id).
     """
     out: dict[str, Any] = {}
     for key, value in filters.items():
@@ -116,8 +121,9 @@ def organizations_in(page: Mapping[str, Any]) -> list[dict]:
 def enriched_in(body: Mapping[str, Any]) -> list[dict]:
     """The organizations of an enrich() or bulk_enrich() answer, each with organization_id and domain set.
 
-    PHASE0-CONFIRM: organizations/enrich answers {"organization": {...}}, and bulk_enrich
-    {"organizations": [...]}, with a company Apollo does not know left out (or null).
+    bulk_enrich answers {"organizations": [...]} (confirmed live 5 Oct 2026). PHASE0-CONFIRM:
+    organizations/enrich answers {"organization": {...}}, and a company Apollo does not know is left
+    out (or null): `phase0 check`, APO-ENRICH-NOTFOUND and APO-ENRICH-ONE.
     """
     rows = [body.get("organization")] if isinstance(body.get("organization"), Mapping) else []
     rows += [o for o in body.get("organizations") or () if isinstance(o, Mapping)]
@@ -140,9 +146,9 @@ def postings_in(page: Mapping[str, Any]) -> list[dict]:
 def total_entries(page: Mapping[str, Any]) -> int | None:
     """The total_entries of a search or postings page, if Apollo gave it.
 
-    People API Search gives it at the top level ({"total_entries": 2, "people": [...]}, Apollo's MCP
-    tool on 5 Oct 2026; PHASE0-CONFIRM over REST); the organization search and job postings under
-    pagination.
+    People API Search gives it at the top level ({"total_entries": 2, "people": [...]}; confirmed live
+    over REST on 6 Oct 2026, when apollo_people read a count for each of 134 accounts); the organization
+    search and job postings under pagination.
     """
     value = page.get("total_entries")
     if value is None:
@@ -163,13 +169,35 @@ def _segment(value: str) -> str:
 def credits_left(usage: Mapping[str, Any], credit_type: str = "lead_credit") -> float | None:
     """left_over for one credit type from credit_usage().
 
-    PHASE0-CONFIRM: which credit type holds the 30,078 credits of SPEC 4 (lead_credit funds
-    email reveals and enrichment).
+    lead_credit holds the credits of SPEC 4 and funds email reveals and enrichment: confirmed (Apollo's
+    usage tool, 29 Sep 2026, docs/phase0-facts.md), and its left_over read live by every source job from
+    2 Oct 2026 (none logged apollo_balance_unknown).
     """
     stats = (usage.get("credit_usage_stats") or {}).get(credit_type)
     if not stats or stats.get("left_over") is None:
         return None
     return float(stats["left_over"])
+
+
+VISITOR_CREDIT = "inbound_website_visitor_credit"  # what Apollo spends to name a company that visits our site
+
+
+def credit_stats(usage: Mapping[str, Any], credit_type: str) -> dict[str, float] | None:
+    """{limit, consumed, left_over} for one credit type from credit_usage(), as numbers; None when Apollo gave
+    no limit or no left_over for it (learn/spend.py reads the website-visitor credits this way).
+
+    PHASE0-CONFIRM: the website-visitor credits are inbound_website_visitor_credit, with the same three
+    fields as lead_credit (Apollo's usage tool showed 1,200 of them on 1 Oct 2026; docs/gtm-review/04).
+    """
+    stats = (usage.get("credit_usage_stats") or {}).get(credit_type)
+    if not isinstance(stats, Mapping):
+        return None
+    try:
+        out = {k: float(stats[k]) for k in ("limit", "left_over")}
+        out["consumed"] = float(stats.get("consumed") or 0)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return out
 
 
 def _enrich_domain(domain: str) -> str:
@@ -239,9 +267,10 @@ class Apollo(HttpClient):
         when pages are given, website_visitors_domain_pages (a page whose path CONTAINS any of them).
         It reads the visitor list only. The tracker's own settings are never read or changed: Apollo's
         tracker endpoint creates a tracker when there is none, which is a write.
-        PHASE0-CONFIRM: the REST body takes these keys as Apollo's MCP tool does, and the answer comes in
-        the usual two buckets (organizations_in). A filter Apollo ignored would return its whole
-        database, which sources/site_visits.py refuses to use.
+        Confirmed live 6 Oct 2026: the REST body takes these keys as Apollo's MCP tool does, and the answer
+        comes in the usual two buckets (organizations_in): the 30-day search returned 57 companies and the
+        one-day search 4. A filter Apollo ignored would return its whole database, which
+        sources/site_visits.py refuses to use.
         """
         if days not in VISITOR_WINDOWS:
             raise ValueError(f"website_visitors_from_past is one of {sorted(VISITOR_WINDOWS)} days, not {days}")
@@ -355,7 +384,7 @@ class Apollo(HttpClient):
                     "website_visitors.domain_aggregates", target=domain, params=params, detail={"organization_id": org_id}
                 ) or {}
             except ApiError as exc:
-                if exc.status in (404, 422):  # PHASE0-CONFIRM: the status Apollo uses for "stats not found"
+                if exc.status in (404, 422):  # "stats not found": unconfirmed, as this is unused (APO-VISIT-AGGREGATES)
                     out[org_id] = {}
                 else:
                     raise

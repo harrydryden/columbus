@@ -42,3 +42,25 @@ def transport():
 @pytest.fixture
 def ctx(default_settings, transport):
     return make_context(default_settings, transport=transport)
+
+
+@pytest.fixture(autouse=True)
+def no_claude_network(monkeypatch):
+    """No test reaches the Claude API (Harry, 7 Oct 2026: verify_accounts asks the label check in every mode). A
+    client built without a fake SDK (make_context(..., claude_sdk=sdk) gives one) gets an anthropic.Anthropic that
+    cannot connect, so the code under test takes its "Claude did not answer" path at once."""
+    import anthropic
+
+    class Offline:
+        def __init__(self, *args, **kwargs):
+            self.messages = self
+
+        def with_options(self, **kwargs):
+            return self
+
+        def create(self, **kwargs):
+            exc = anthropic.APIConnectionError.__new__(anthropic.APIConnectionError)
+            Exception.__init__(exc, "no network in tests")
+            raise exc
+
+    monkeypatch.setattr(anthropic, "Anthropic", Offline)

@@ -110,7 +110,8 @@ def test_dry_run_takes_no_live_flag():
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
-                                               "hand_check_post", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads"}
+                                               "hand_check_post", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
+                                               "blackout", "retention"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
@@ -122,15 +123,17 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
     assert cli.JOBS["mailbox_health"] == "us_outbound.registry.mailboxes:mailbox_health"
-    assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:check_heartbeats"
+    assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:run"
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
     assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
     assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
     assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_approvals"
     assert cli.JOBS["hubspot_readback"] == "us_outbound.crm.readback:hubspot_readback"
     assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
+    assert cli.JOBS["blackout"] == "us_outbound.registry.blackout:run"  # Harry, 7 Oct 2026: pause over blackouts
     assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
     assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
+    assert cli.JOBS["retention"] == "us_outbound.ops.retention:run"  # SPEC 6 and 13
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
 
 
@@ -426,6 +429,17 @@ def test_status_prints_jobs_and_mailboxes(capsys):
     assert "Credit budgets this month (UK time):" in out and "Enrolment this week (Monday to Sunday, UK time):" in out
     assert "Today: 0, limited by ready accounts" in out
     assert "Apollo: 0 of 2,000 credits used this month (0%)" in out
+    assert "Retention (00:40 UK daily): not run yet" in out  # ops/retention.py
+
+
+def test_retention_runs_by_hand_and_shows_in_status(capsys):
+    h = Harness()
+    assert h.run("run", "retention", "--live") == 0  # live_sending is no: it stays dry
+    out = capsys.readouterr().out
+    assert "Running dry: live_sending is no" in out and '"leads"' in out
+    assert h.beats("retention")[0]["status"] == "ok" and h.beats("retention")[0]["dry_run"] is True
+    assert h.run("status") == 0
+    assert "Retention: last run Tue 27 Oct 12:00 UK (dry-run): nothing due" in capsys.readouterr().out
 
 
 # -- copy tests -------------------------------------------------------------------------------------------
@@ -549,7 +563,48 @@ def test_no_http_library_outside_the_http_client():
 
     root = Path(cli.__file__).resolve().parents[1]
     mine = ["ops/cli.py", "ops/heartbeat.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
-            "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
+            "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
     for rel in mine:
         text = (root / rel).read_text()
         assert not re.search(r"^\s*(import|from)\s+(requests|httpx|urllib)", text, re.M), rel
+
+
+# -- leads in flight (Harry, 7 Oct 2026) ---------------------------------------------------------------------------
+
+
+def held_world() -> Harness:
+    """Live settings, every campaign standard and active but Sam's step 1 worded as before, and one lead in it."""
+    h = Harness(LIVE_SETTINGS)
+    for name, accounts, limit in ((C_HANNAH, [HANNAH], 30), (C_SAM, [SAM], 30), (C_HARRY, [HARRY, HARRY2], 60)):
+        h.instantly.standard(name, accounts, limit, status=2)
+    from tests.test_ramp import past_ramp
+
+    past_ramp(h.store, SETTINGS.mailboxes, datetime(2026, 10, 27, 12, 0, tzinfo=UTC))
+    variant = h.instantly.by_name(C_SAM)["sequences"][0]["steps"][0]["variants"][0]
+    variant["body"] = variant["body"].replace("Not relevant?", "To stop hearing from us,")
+    h.store.insert("contacts", [{"contact_id": "con-1", "account_id": "acc-1", "instantly_campaign": C_SAM,
+                                 "instantly_lead_id": "L1", "enrolled_at": datetime(2026, 10, 26, 15, tzinfo=UTC)}])
+    return h
+
+
+def test_start_goes_ahead_over_drift_held_for_leads_in_flight(capsys):
+    h = held_world()
+    assert h.run("start", "--live") == 0
+    assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
+    assert "Campaign drift held, US Outbound – Sam Jackson: steps.1 would change 1 lead in flight." in capsys.readouterr().out
+    h.instantly.by_name(C_SAM)["open_tracking"] = True  # drift that is not held still refuses
+    assert h.run("start", "--live") == 2
+    assert "US Outbound – Sam Jackson: open_tracking. Fix with" in capsys.readouterr().err
+
+
+def test_campaigns_ensure_fix_in_flight_applies_it_to_them_and_logs_it(capsys):
+    h = held_world()
+    assert h.run("campaigns", "ensure", "--fix", "--live") == 0
+    assert "Campaign drift held, US Outbound – Sam Jackson: steps.1" in capsys.readouterr().out
+    assert h.store.tables["config_log"] == []
+    assert h.run("campaigns", "ensure", "--fix", "--in-flight", "--live") == 0
+    [row] = h.store.tables["config_log"]
+    assert (row["campaign"], row["changed_keys"], row["leads_in_flight"], row["changed_by"]) == (
+        C_SAM, ["steps.1"], 1, "campaigns_ensure")
+    assert h.run("campaigns", "ensure", "--in-flight") == 2  # --in-flight goes with --fix
+    assert "--in-flight goes with ensure --fix" in capsys.readouterr().err

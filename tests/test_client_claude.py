@@ -174,3 +174,19 @@ def test_prompt_never_logged(capsys):
     claude, _, _, _ = make()
     claude.json("sys", "SECRET-PROMPT-TEXT from jane@acme.com", SCHEMA, now=NOW)
     assert "SECRET-PROMPT-TEXT" not in capsys.readouterr().out
+
+
+def test_a_cached_system_block_is_marked_and_its_reads_priced_at_the_cache_rate():
+    """Harry, 7 Oct 2026: the industry label check (labels.py) sends the same long system block for every company."""
+    sdk = FakeSDK()
+    sdk.usage = SimpleNamespace(input_tokens=500, output_tokens=200, cache_read_input_tokens=3500,
+                                cache_creation_input_tokens=0, cache_creation=None)
+    claude, store, sdk, _ = make(sdk, model="claude-sonnet-5-5")
+    claude.json("The label list.", "<company>…</company>", SCHEMA, purpose="label_check", now=NOW, cache_system=True)
+    [call] = sdk.calls
+    assert call["system"] == [{"type": "text", "text": "The label list.", "cache_control": {"type": "ephemeral"}}]
+    [row] = store.tables["credit_ledger"]
+    assert row["usd"] == pytest.approx((500 * 2.0 + 200 * 10.0 + 3500 * 0.20) / 1e6)
+    assert row["note"].endswith("cache_read=3500 cache_write=0")
+    claude.json("The label list.", "another", SCHEMA, purpose="classify", now=NOW)
+    assert sdk.calls[-1]["system"] == "The label list."  # not cached unless asked

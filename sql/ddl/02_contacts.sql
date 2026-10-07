@@ -1,6 +1,8 @@
 -- contacts: one row per person (SPEC 6), plus last_step_at and enrolled_at (added by the build).
 -- Retention (SPEC 6): "Contacts who never replied: deleted 12 months after their last
--- step." The retention job does this from last_step_at; erase --email deletes on request.
+-- step." The retention job (ops/retention.py, daily) does this, dating the last step from
+-- enrolled_at as the send forecast does, from a stop, and from last_step_at; erase --email
+-- deletes on request.
 CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   contact_id text NOT NULL,
   account_id text,
@@ -34,6 +36,10 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   data_record jsonb,
   subject_arm text,
   contact_slot integer,
+  config_version text,
+  code_sha text,
+  copy_hash text,
+  lead_deleted_at timestamptz,
   PRIMARY KEY (contact_id)
 );
 -- For databases created before enrolled_at, opener_arm, opener_source and the enrolment snapshot existed.
@@ -51,9 +57,17 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS data_record jsonb;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS subject_arm text;
 -- Which of the account's contacts this is (Harry, 6 Oct 2026): 1 the first, 2 the second contact (enrol/second.py).
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS contact_slot integer;
+-- What the contact was enrolled under (Harry, 7 Oct 2026: "a cohort system in place for contacts that have started
+-- not being interrupted by changes"): the config version (config_versions), the code and the Copy row's wording.
+-- Stamped by enrol._record_enrolled, from what the lead was rendered under; NULL before 8 Oct 2026.
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS config_version text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS code_sha text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS copy_hash text;
+-- When the retention job deleted the contact's Instantly lead, 31 days after its last step (SPEC 13; ops/retention.py).
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS lead_deleted_at timestamptz;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
-COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
+COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job (ops/retention.py), with their hitl_items payloads and raw_clay_contacts rows; their events and suppression hash stay.';
 COMMENT ON COLUMN us_outbound.contacts.role IS 'Role name from the Roles tab, e.g. People leader, Founder or executive, Operations.';
 COMMENT ON COLUMN us_outbound.contacts.email_sha256 IS 'sha256 of the lower-cased, trimmed email (logs.hash_email). One contact per email hash (SPEC 13).';
 COMMENT ON COLUMN us_outbound.contacts.email_status IS 'Verification status as the source gave it: Apollo (verified) or Clay (valid, catch_all_valid, invalid, not_found; SPEC 8).';
@@ -62,7 +76,8 @@ COMMENT ON COLUMN us_outbound.contacts.person_state IS 'USPS code. Never CA or W
 COMMENT ON COLUMN us_outbound.contacts.enrolment_month IS 'YYYY-MM of first enrollment (unenrol --month YYYY-MM, SPEC 13).';
 COMMENT ON COLUMN us_outbound.contacts.mailbox IS 'The sender''s address that sent step 1.';
 COMMENT ON COLUMN us_outbound.contacts.instantly_campaign IS 'The sender''s campaign, named ''US Outbound – '' plus the owner name (SPEC 9).';
-COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent (build addition, for retention).';
+COMMENT ON COLUMN us_outbound.contacts.instantly_lead_id IS 'The lead''s id in its sender''s campaign. Cleared when the retention job deletes the lead, 31 days after its last step (lead_deleted_at; SPEC 13).';
+COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent, from sync_outcomes (build addition, for retention: a send later than the forecast''s last step moves the 31-day and 12-month clocks; ops/retention.py).';
 COMMENT ON COLUMN us_outbound.contacts.opener_arm IS 'Email 1''s opener arm at enrollment (build addition; enrol/openers.py). One of: opener, holdout, none. holdout: the opener_holdout_share of accounts held out with no opener, by account hash, so replies compare opener against none.';
 COMMENT ON COLUMN us_outbound.contacts.subject_arm IS 'Email 1''s subject arm at enrollment (build addition; render.subject_arm; Harry, 5 Oct 2026). One of: personal, copy. personal: the email1_subject_share of accounts, by a hash of the account id independent of the opener holdout''s, whose email 1 had the General email1_subject instead of the Copy row''s s1_subject, so replies compare the two. Emails 2 to 4 keep the Copy row''s subjects.';
 COMMENT ON COLUMN us_outbound.contacts.opener_source IS 'The opener line used, or for a holdout the one it would have had: the signal and Signals-tab column (e.g. New People leader / opener_self), focus, or the generic line''s General key (e.g. opener_generic_ops) (build addition).';
@@ -74,3 +89,7 @@ COMMENT ON COLUMN us_outbound.contacts.suppressed IS 'Never emailed: an opt-out 
 COMMENT ON COLUMN us_outbound.contacts.suppressed_reason IS 'Why it is suppressed, e.g. declined in Slack by U01ABCDEF at a send approval (2 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.contact_slot IS 'Which of the account''s contacts this is, set at enrollment (build addition; Harry, 6 Oct 2026): 1 the first; 2 the second contact, a person of another role at an account of second_contact_min_employees or more staff, enrolled second_contact_delay_days after the first contact''s email 1 from the same sender (enrol/second.py). NULL: enrolled before 6 Oct 2026, read as 1.';
 COMMENT ON COLUMN us_outbound.contacts.enrolled_at IS 'When the lead was added to its sender''s campaign (build addition). The send forecast dates each lead''s later steps from it, and the weekly target counts it.';
+COMMENT ON COLUMN us_outbound.contacts.config_version IS 'The config version the contact''s emails were rendered and sent under (config_versions; config_version.py; Harry, 7 Oct 2026): a 12-character hash of the content settings, the sendable Copy rows, the signature template, the campaign constants and the code. Set when the lead was rendered (enrol.prepare, or the send approval''s card), not when it was approved. NULL: enrolled before 8 Oct 2026, unstamped.';
+COMMENT ON COLUMN us_outbound.contacts.code_sha IS 'The code the contact was rendered under: the first 12 characters of RAILWAY_GIT_COMMIT_SHA, or dev outside a Railway deploy (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';
+COMMENT ON COLUMN us_outbound.contacts.lead_deleted_at IS 'When the retention job deleted the contact''s Instantly lead, more than 31 days after its last step (SPEC 13; ops/retention.py), or found it gone already (Instantly answered 404). instantly_lead_id is cleared then, so the deletion is made once and nothing calls Instantly for a lead that no longer exists; enrolled_at, enrolment_month and instantly_campaign stay. NULL: the lead is still in Instantly, or the contact never had one.';
+COMMENT ON COLUMN us_outbound.contacts.copy_hash IS 'The Copy row''s content hash when the contact was rendered (CopyRow.content_hash), so two wordings under one copy_version are told apart (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';

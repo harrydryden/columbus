@@ -4,6 +4,8 @@
     alias list (table domain_aliases), so there is one account per root domain.
   * SPEC 1.5: never email a personal-domain address (gmail.com, outlook.com, yahoo.com ...).
   * SPEC 5: skip generic mailboxes (info@, hr@ ...).
+  * Public bodies (.gov, .mil, a US locality's .us name) are not companies: never prospected (Harry,
+    7 Oct 2026: the Town of Braintree's council president got a fintech card).
 
 The root is taken under the public suffix list bundled with tldextract (no network fetch).
 Private suffixes count as suffixes, so "acme.wixsite.com" and "beta.wixsite.com" stay two
@@ -158,6 +160,19 @@ def is_personal_domain(domain: str | None) -> bool:
     if not host:
         return False
     return host in PERSONAL_DOMAINS or root_domain(host) in PERSONAL_DOMAINS
+
+
+# A US locality's own .us names (RFC 1480): ci.boston.ma.us, co.kings.ny.us, k12.ny.us, state.ny.us.
+_LOCALITY_US = re.compile(r"(^|\.)(ci|co|town|vil|twp|cog|state|k12|lib|tec|cc)\.([a-z0-9-]+\.)?[a-z]{2}\.us$")
+
+
+def is_public_body(domain: str | None) -> bool:
+    """True for a government, military or US locality domain: a public body, not a company we email.
+    Takes a domain, a URL or an email address."""
+    host = host_of(domain)
+    if not host:
+        return False
+    return host.endswith((".gov", ".mil")) or host in ("gov", "mil") or bool(_LOCALITY_US.search(host))
 
 
 def is_generic_mailbox(local_part: str | None) -> bool:

@@ -32,6 +32,9 @@ SECRET_NAMES = {
     "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
     "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",
     "claude": "US_OUTBOUND_CLAUDE_API_KEY",
+    # Harry, 7 Oct 2026: the outside watchdog's Healthchecks.io ping URL (ops/watchdog.py). Optional, and
+    # sealed like a key: anyone holding it could report the worker alive.
+    "watchdog": "US_OUTBOUND_WATCHDOG_URL",
 }
 
 
@@ -73,7 +76,9 @@ class Secrets:
         return self._cache[name]
 
 
-def boundaries_for(settings: Settings, settings_sheet_id: str = "", job: str = "") -> Boundaries:
+def boundaries_for(settings: Settings, settings_sheet_id: str = "", job: str = "", watchdog_url: str = "") -> Boundaries:
+    """The containers a job may touch. watchdog_url: the ping URL heartbeat_check may GET (ops/watchdog.py), only
+    for that job; "" for every other."""
     from us_outbound.clients.clay import CHECK_EMAIL_JOB, WORK_EMAIL_FUNCTION_ID
 
     g = settings.general
@@ -97,6 +102,7 @@ def boundaries_for(settings: Settings, settings_sheet_id: str = "", job: str = "
         approver_slack_ids=frozenset(x.strip() for x in g.approver_slack_ids if x.strip()),
         # D11 (Harry, 1 Oct 2026): a mailbox's owner approves replies to that mailbox only.
         owner_slack_ids=frozenset((m.address.lower(), m.slack_id) for m in live_mailboxes if m.slack_id),
+        watchdog_url=watchdog_url,
     )
 
 
@@ -152,6 +158,14 @@ class Clients:
                 raise
             return SlackOff()  # dry-run without a token: posts go to the log
         return Slack(self.guard, self.transport, token)
+
+    @cached_property
+    def watchdog(self):
+        """The outside watchdog's pinger (ops/watchdog.py), to the URL the guard was given; None when it has none."""
+        from us_outbound.clients.watchdog import Watchdog
+
+        url = self.guard.bounds.watchdog_url
+        return Watchdog(self.guard, self.transport, url) if url else None
 
     @cached_property
     def sheets(self):

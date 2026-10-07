@@ -41,6 +41,8 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "partners": ("domain",),
     "lookalike_cells": ("cell_id",),  # sources/lookalikes.py (Harry, 1 Oct 2026)
     "lookalike_growth": ("cell_id",),  # sources/lookalikes.py: customers by growth band (Harry, 5 Oct 2026)
+    "config_versions": ("config_version",),  # config_version.py: what a cohort was enrolled under (Harry, 7 Oct 2026)
+    "config_log": ("log_id",),  # changes to what in-flight leads share (registry/mailboxes.py; Harry, 7 Oct 2026)
     "raw_irs_bmf": None,
     "raw_job_posts": None,
     "raw_clay_accounts": None,
@@ -63,6 +65,8 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "raw_layoffs": frozenset({"payload"}),
     "events": frozenset({"language_terms"}),
     "contacts": frozenset({"signals_at_enrol", "data_record"}),  # enrol._record_enrolled (5 Oct 2026)
+    "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general"}),  # 7 Oct 2026
+    "config_log": frozenset({"changed_keys", "detail"}),
 }
 
 Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL

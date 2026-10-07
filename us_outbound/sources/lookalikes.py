@@ -20,7 +20,9 @@ happen on a monthly cadence." It:
   3. Keeps customers out of the queue early (exclude): each customer's root domain is suppressed
      for SUPPRESS_DAYS (70: a monthly run may be missed once before an entry lapses), renewed by every
      run, so the front door (accounts.admit), v_queue and enrol refuse it before any Apollo or Clay
-     spend; an account already on that domain gets the HubSpot
+     spend. The daily suppression_load job reads the customers and calls exclude too (Harry, 7 Oct 2026:
+     a new customer is kept out by the next night, and its leads in flight are stopped by sync_outcomes'
+     sweep; suppression.load_customers), without the cells. An account already on that domain gets the HubSpot
      fact hubspot_customer (or hubspot_former_customer), which tiers it Excluded (scoring/tiers.py).
      enrol's HubSpot re-check stays as the last line, but it reads lifecyclestage only, and on
      1 Oct 2026 162 HubSpot companies at lifecycle "lead" had an Active Spill subscription.
@@ -147,9 +149,9 @@ GROWTH_PAGES = 3  # pages read for one band and chunk; more means the domain fil
 GROWTH_REFRESH_DAYS = 90  # an account's band is searched again after this
 GROWTH_FACT_DAYS = 180  # how long a band (or a 12-month growth figure) counts for the fit
 # Apollo credits a run may spend: at most 4 per 100 domains (a paid page per band), so up to 1,500 customer domains
-# at the worst case, and the rest for queue accounts. PHASE0-CONFIRM: how many customer domains HubSpot has; with
-# more than 1,500 the customers' growth is never searched at this cap, and each run's summary says so
-# (growth.customers.kept).
+# at the worst case, and the rest for queue accounts. Confirmed live 5 Oct 2026: HubSpot has 1,161 customer domains
+# (588 active customers, 582 churned), under 1,500. With more than 1,500 the customers' growth is never searched at
+# this cap, and each run's summary says so (growth.customers.kept).
 LOOKALIKE_GROWTH_CREDITS = 60
 GROWTH_MAX_ERRORS = 5  # Apollo errors before the growth searches stop
 # A guard until the filter is confirmed (PHASE0-CONFIRM above): if the first band searched (30% or more a year)
@@ -579,13 +581,14 @@ def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
     for chunk in _chunks(domains):
         for r in store.select("suppression", {"domain": chunk, "email_sha256": None}):
             existing[r["domain"]] = r
-    rows = []
+    rows, new = [], 0
     for domain in domains:
         old = existing.get(domain)
-        if old is not None:
-            old_expiry = _ts(old.get("expires_at"))
-            if old_expiry is None or old_expiry >= expires:
-                continue  # indefinite, or already suppressed for longer
+        old_expiry = _ts(old.get("expires_at")) if old is not None else None
+        if old is not None and (old_expiry is None or old_expiry >= expires):
+            continue  # indefinite, or already suppressed for longer
+        if old is None or (old_expiry is not None and old_expiry <= now):
+            new += 1  # kept out from now: a customer since the last run (suppression_load reads them daily)
         rows.append({
             "email_sha256": None, "domain": domain, "reason": reasons[domain], "source": SUPPRESS_SOURCE,
             "added_at": old.get("added_at") if old and old.get("source") == SUPPRESS_SOURCE else now,
@@ -609,7 +612,7 @@ def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
                       "value": True, "quote": quote, "source_url": "", "observed_at": now})
     if facts:
         store.insert("signal_events", facts)
-    return {"domains": len(domains), "suppressed": len(rows), "accounts_marked": len(facts)}
+    return {"domains": len(domains), "suppressed": len(rows), "new": new, "accounts_marked": len(facts)}
 
 
 # -- 12-month headcount growth (Apollo) -------------------------------------------------------------------

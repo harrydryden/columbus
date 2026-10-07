@@ -465,6 +465,27 @@ def test_stop_lead_marks_meeting_booked_in_the_campaign():
     assert len(t.requests) == n
 
 
+def test_mark_interested_sets_interested_in_the_campaign_and_nothing_else():
+    """Harry, 7 Oct 2026: a positive reply marks the lead "Interested" (1), beside stop_lead's "Meeting booked" (2)."""
+    from us_outbound.clients.instantly import INTEREST_INTERESTED
+
+    inst, t, guard = make(live=True)
+    inst.mark_interested(C_HANNAH, "Jane@Acme.example")
+    [post] = t.writes()
+    assert post.url == f"{BASE}/leads/update-interest-status" and INTEREST_INTERESTED == 1
+    assert post.json == {"lead_email": "jane@acme.example", "campaign_id": "c-hannah", "interest_value": 1}
+    [call] = guard.writes("instantly")
+    assert (call.action, call.target, call.sent) == ("lead.interest", C_HANNAH, True)
+    n = len(t.requests)
+    with pytest.raises(GuardViolation):
+        inst.mark_interested(C_EU, "jane@acme.example")
+    assert len(t.requests) == n
+    with pytest.raises(ValueError, match="mark_interested needs the lead's email address"):
+        inst.mark_interested(C_HANNAH, "")
+    dry, t, guard = make(live=False)
+    assert dry.mark_interested(C_HANNAH, "jane@acme.example") == {"dry_run": True} and t.writes() == []
+
+
 def test_forward_with_the_original_thread():
     inst, t, _ = make(live=True)
     t.route("GET", "/emails/e1", body={"id": "e1", "eaccount": HANNAH, "subject": "Re: hello"})

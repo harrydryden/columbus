@@ -258,7 +258,8 @@ def us_filters(band: str, settings: Settings) -> dict[str, Any]:
 def us_hq(org: Mapping[str, Any]) -> bool:
     """Apollo puts the HQ in the US: its country, or, with no country, a US state.
 
-    PHASE0-CONFIRM: search rows carry country and state (source_universe reads both).
+    Search rows carry country and state (source_universe reads both): confirmed live 6 Oct 2026, when
+    site_visits' rows put 11 companies outside the US by country and gave a state to 52 of 72.
     """
     country = " ".join(str(org.get("country") or "").split()).casefold()
     if country:

@@ -624,3 +624,42 @@ def test_the_reader_s_vocabulary_comes_from_the_signals_tab(default_settings):
     fact = {"account_id": "a", "source": "careers_pages", "fact": "benefit", "value": {"item": "EAP"},
             "quote": "Our EAP.", "source_url": "", "observed_at": NOW}
     assert match_signal(eap, [fact], NOW.date()) is not None
+
+
+# -- the home page, for the industry label check (labels.py; Harry, 7 Oct 2026) -----------------------------------
+
+
+def test_parse_html_keeps_the_title_and_the_meta_description():
+    page = text.parse_html('<html><head><title> Acme  Creative | Branding </title>'
+                           '<meta name="Description" content="  A branding studio   for clinics. ">'
+                           '<meta property="og:description" content="Second"></head><body><p>Hi</p></body></html>',
+                           "https://acmecreative.com/")
+    assert (page.title, page.description) == ("Acme Creative | Branding", "A branding studio for clinics.")
+    assert [b.text for b in page.blocks] == ["Hi"]  # the title is still no text block
+    assert text.parse_html("<p>No head</p>", "https://x.com/").title == ""
+
+
+def test_the_home_page_is_kept_as_a_fact_no_signal_scores_and_the_label_check_reads(world):
+    from us_outbound import labels
+
+    ctx, web = world
+    site(web, home=HOME.replace(
+        "<title>Acme</title>", '<title>Acme Creative</title><meta name="description" content="Brands for clinics.">'))
+    ctx.store.insert("accounts", [account()])
+    pages.run(ctx)
+    [home] = events(ctx, source="careers_pages", fact="home_page")
+    assert home["value"] == {"title": "Acme Creative", "meta_description": "Brands for clinics.",
+                             "text": "Acme Creative We make brands for clinics that offer therapy. Our values Open roles"}
+    assert (home["quote"], home["source_url"]) == ("Acme Creative", "https://acmecreative.com/")
+    # Not a text fact: no page signal matches it (scoring/score.TEXT_FACTS), so "therapy" on a home page scores nothing.
+    alone = score_account(account(), [home], ctx.settings, NOW.date())
+    assert not [m for m in alone.matches if m.signal.action == "Score" and "careers_pages" in m.signal.sources]
+    m = labels.Material.of(account(), [home])
+    assert m.home.startswith("Acme Creative · Brands for clinics. · Acme Creative We make brands")
+    assert "Home page: Acme Creative · Brands for clinics." in m.prompt() and not m.empty
+
+
+def test_a_long_home_page_is_cut_to_its_first_600_characters():
+    long = "<html><body>" + "".join(f"<p>{'word ' * 30}{i}</p>" for i in range(20)) + "</body></html>"
+    summary = pages.home_summary(text.parse_html(long, "https://x.com/"))
+    assert set(summary) == {"text"} and len(summary["text"]) == pages.HOME_TEXT_CHARS

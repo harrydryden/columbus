@@ -193,7 +193,18 @@ def test_a_company_becomes_one_account_with_one_label_and_the_facts_scoring_read
 @pytest.mark.parametrize("naics, keywords, label", [
     (("541511",), ("fintech", "payments"), "Fintech"),  # shared tech NAICS: the keyword decides
     (("541511",), ("saas", "software development"), "Technology & Startups"),
-    (("541810",), (), "Advertising agencies"),  # a 6-digit code beats its group's 4-digit one
+    # Codes alone place a company in its group's umbrella; a label within it needs its own words (7 Oct 2026).
+    (("541810",), (), "Marketing & Creative Agencies"),
+    (("541810",), ("advertising agency",), "Advertising agencies"),  # then its 6-digit code helps it win
+    (("541511",), (), "Technology & Startups"),  # not Games studios: custom programming says nothing of games
+    (("541511",), ("logistics", "supply chain consulting"), "Technology & Startups"),
+    # Harry, 7 Oct 2026: 541511 is off Games studios' codes, so a games studio needs a code of its own (513210); on
+    # custom programming alone the rules place it in the group, and the label check (labels.py) names it.
+    (("541511",), ("mobile games", "game development"), "Technology & Startups"),
+    (("513210",), ("mobile games", "game development"), "Games studios"),
+    (("541715",), (), None),  # R&D alone is no AI company (a surgeons' society, an orthopaedic practice)
+    (("541715",), ("machine learning",), "AI & deep tech"),
+    (("5415",), (), "Technology & Startups"),  # not Adtech & martech, the first label of the group
     (("541810",), ("marketing agency",), "Marketing & Creative Agencies"),
     ((), ("digital health", "telehealth"), "Digital health"),  # no NAICS: keywords alone
     (("111110",), ("soybeans",), None),
@@ -242,6 +253,24 @@ def test_an_account_found_again_keeps_its_source_and_status_and_overrides_win():
     assert (other["hq_state"], other["employees"], other["size_band"]) == ("IL", 30, "20-49")
     hq = ctx.store.select("signal_events", {"account_id": other["account_id"], "fact": "hq_state"})
     assert [e["value"] for e in hq] == ["NY"]  # the fact is what Apollo said; scoring applies the override
+
+
+def test_an_open_account_whose_label_was_checked_keeps_it_when_found_again_and_a_new_one_gets_the_rules():
+    """Harry, 7 Oct 2026: once the label check has decided (accounts.label_source), the monthly refresh never puts the
+    raw rules' label back; an account not checked yet takes the rules' label, and verify_accounts checks it."""
+    ctx, _, _ = make([org(1, domain="checked.co"), org(2, domain="unchecked.co"), org(3)])
+    ctx.store.insert("accounts", [
+        {"account_id": "c1", "domain": "checked.co", "source": "apollo", "status": "verified", "industry": "Edtech",
+         "industry_group": "Technology & Startups", "label_source": "model"},
+        {"account_id": "u1", "domain": "unchecked.co", "source": "apollo", "status": "queued", "industry": "Edtech",
+         "industry_group": "Technology & Startups"},
+    ])
+    out = uni.run(ctx)
+    assert out["created"] == 1 and out["updated"] == 2
+    by = accounts_by_domain(ctx)
+    assert (by["checked.co"]["industry"], by["checked.co"]["label_source"]) == ("Edtech", "model")
+    assert by["unchecked.co"]["industry"] == "Fintech" and not by["unchecked.co"].get("label_source")
+    assert by["company3.com"]["industry"] == "Fintech" and not by["company3.com"].get("label_source")
 
 
 @pytest.mark.banded

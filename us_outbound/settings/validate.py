@@ -26,11 +26,12 @@ from us_outbound.clean.people import title_key
 from us_outbound.enrol import copy_markup
 from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
-from us_outbound.settings.defaults import COLUMNS, US_STATES
+from us_outbound.settings.defaults import COLUMNS, US_STATES, bundled_definitions
 from us_outbound.settings.model import (
     AB_TEST,
     ACTIONS,
     CLAY_VERIFICATION_MODES,
+    LABEL_CHECK_MODES,
     COPY_STATUSES,
     COPY_STEPS,
     EMAIL1_SUBJECT_VARIABLES,
@@ -85,7 +86,8 @@ FIRST_DATA_ROW = 2
 OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
 # Columns added after the sheet was first made (Harry, 30 Sep 2026): a tab without them reads them as blank.
 TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
-    "Industries": frozenset(f"page_{f}" for f in PAGE_FIELDS),
+    # definition (Harry, 7 Oct 2026): the label check's line; a blank cell takes the build's (labels.py).
+    "Industries": frozenset({*(f"page_{f}" for f in PAGE_FIELDS), "definition"}),
     "Copy": frozenset({"qa_notes", "sources"}),
     "Roles": frozenset({"copy_role", "industry_groups"}),
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
@@ -101,7 +103,7 @@ MAX_ROLE_RANK = 20
 MAY_BE_EMPTY = frozenset({"Overrides", "Tests", *OPTIONAL_TABS})  # an empty tab anywhere else is almost surely a mistake
 NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
-CLAUDE_CAP_USD = 10.0  # SPEC 1.1
+CLAUDE_CAP_USD = 100.0  # a guard against a typo; the sheet's value is the cap (SPEC 1.1 set $10; Harry, 7 Oct 2026: $50)
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
 CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
 # Variables a copy row may use (render.VARIABLES; style.md).
@@ -134,7 +136,8 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "clay_verification"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "clay_verification",
+     "label_check"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -583,7 +586,7 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "second_contact_delay_days" and value < 1:
         raise ValueError("must be at least 1, so the two people's first emails never arrive the same day")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
-        raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (SPEC 1.1)")
+        raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (a guard against a typo: settings/validate.py)")
     if key == "escalation_email":
         _email(value)
     # A model id the cap cannot price is refused at call time (clients/claude.py), not here, so a typo
@@ -595,6 +598,9 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "clay_verification" and value not in CLAY_VERIFICATION_MODES:
         raise ValueError(f"must be one of {', '.join(CLAY_VERIFICATION_MODES)} (required: every account goes "
                          "through Clay; skip: verified on Apollo data and HubSpot)")
+    if key == "label_check" and value not in LABEL_CHECK_MODES:
+        raise ValueError(f"must be one of {', '.join(LABEL_CHECK_MODES)} (required: the task model checks each new "
+                         "company's industry label before it is verified; skip: the rules alone)")
     if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
     if key in ("booking_link", "booking_page") and value:
@@ -833,9 +839,13 @@ def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
         if priority is not None and priority < 1:
             r.fail("priority", "must be 1 or more")
         page = IndustryPage(**{f: r.text(f"page_{f}") for f in PAGE_FIELDS})
+        # A blank definition takes the build's line for the label (Harry, 7 Oct 2026), so the label check works
+        # on a sheet without the column, and the sheet changes what it reads only where Harry edits a line.
+        definition = " ".join(r.text("definition").split()) or bundled_definitions().get((label or "").casefold(), "")
         if r.ok:
             out.append((
-                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority, page),
+                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority, page,
+                         definition),
                 r.number,
             ))
     return out

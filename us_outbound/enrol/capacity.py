@@ -48,6 +48,10 @@ straight after `start` when the campaign has none yet; that one still takes lead
 resumes it (resume_if_completed, after each add). In a live run an owner whose campaign takes no
 leads (draft or paused), is missing, or cannot be read (the safe direction) has no capacity today, so
 enrol proposes no card and adds no lead for them, and the limiter line says why. A dry run counts them as usual, so previews still work, and only says so.
+A campaign the blackout job paused (registry/blackout.py; Harry, 7 Oct 2026) takes no leads either, and the line says
+"paused for the blackout until <day>" rather than asking for `start`: the job starts it again after the blackout. Enrol
+does not run on a blackout date anyway (enrol.gate), and the steps that fall due on one go on the next send day, as
+step_days has always assumed.
 """
 
 from __future__ import annotations
@@ -66,6 +70,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS, STEP_DAYS
 from us_outbound.context import ET, ConfigError, Context
 from us_outbound.learn import holds
+from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
 
@@ -73,7 +78,8 @@ from us_outbound.settings.model import Settings
 # so the forecast and the Instantly campaign cannot drift apart.
 STEP_DELAYS = (0,) + tuple(b - a for a, b in zip(STEP_DAYS, STEP_DAYS[1:]))
 # lead_stopped: the account-level stop ended this lead because someone else at the account replied, bounced,
-# unsubscribed or complained (replies/account_stop.py; written only once Instantly has stopped it).
+# unsubscribed or complained, or an address or domain at the account was suppressed while it was in flight
+# (replies/account_stop.py; written only once Instantly has stopped it).
 STOP_EVENTS = ("replied", "bounced", "unsubscribed", "lead_stopped")
 OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
@@ -128,9 +134,11 @@ def _status(campaign: Mapping[str, Any]) -> int | None:
         return None
 
 
-def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
+def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]],
+                     blackout_words: Mapping[str, str] | None = None) -> str:
     """Why the owner's "US Outbound – {owner}" campaign, among those Instantly listed, takes no new leads; ""
-    when it is active."""
+    when it is active. blackout_words: campaign -> "paused for the blackout until …" for the campaigns the blackout
+    job paused (registry/blackout.words), which wait for it rather than for `start`."""
     name = US_CAMPAIGN_PREFIX + owner
     mine = [c for c in found if str(c.get("name") or "") == name]
     if not mine:
@@ -139,6 +147,8 @@ def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
     if len(mine) > 1:
         return f"more than one Instantly campaign is named {name}: fix it by hand in Instantly"
     status = _status(mine[0])
+    if status not in TAKES_LEADS and name in (blackout_words or {}):
+        return f"{owner}'s campaign is {blackout_words[name]}"  # the blackout job starts it again then
     if status not in TAKES_LEADS:
         what = CAMPAIGN_STATUS.get(status, f"status {mine[0].get('status')}") if status is not None else "status unknown"
         return f"{owner}'s campaign is not active in Instantly ({what}): run `us-outbound start --live`"
@@ -176,7 +186,8 @@ def campaigns_not_sending(ctx: Context, owners: Iterable[str]) -> dict[str, str]
         found = ctx.clients.instantly.list_campaigns()
     except (ApiError, ConfigError, LookupError) as exc:
         return {o: unreadable(exc) for o in owners}
-    return {o: why for o in owners if (why := campaign_problem(o, found))}
+    paused = blackout.words(ctx.store, ctx.settings, ctx.now)
+    return {o: why for o in owners if (why := campaign_problem(o, found, paused))}
 
 
 def instantly_report(store: Store) -> Mapping[str, Any]:
@@ -343,6 +354,12 @@ class SenderCapacity:
         return f"{self.owner}: {self.free} new leads today, {self.cap} sends a day ({why}){extra}{note}"
 
 
+def steady_pace(cap: int) -> int:
+    """New leads a day that keep `cap` sends a day steady: each lead sends 4 emails (STEP_DELAYS), so cap ÷ 4,
+    rounded up. free_slots' pace, and learn/capacity_ahead.py's capacity at full ramp."""
+    return math.ceil(max(0, cap) / len(STEP_DELAYS))
+
+
 def free_slots(
     settings: Settings, committed: Counter[tuple[str, date]], caps: list[MailboxCap], today: date
 ) -> dict[str, SenderCapacity]:
@@ -368,7 +385,7 @@ def free_slots(
             continue
         tight = min(days, key=lambda d: (cap - committed[(owner, d)], d))
         room = max(0, cap - committed[(owner, tight)])
-        pace = math.ceil(cap / len(STEP_DELAYS))
+        pace = steady_pace(cap)
         out[owner] = SenderCapacity(owner, cap, min(pace, room), tight, committed[(owner, tight)], pace, room, boxes)
     return out
 
@@ -389,6 +406,26 @@ def stopped_contacts(store: Store) -> set[str]:
     for c in store.select("contacts"):
         if c.get("enrolled_at") and str(c.get("account_id")) in not_enrolled:
             out.add(str(c.get("contact_id")))
+    return out
+
+
+def in_flight(store: Store, settings: Settings, today: date) -> list[dict]:
+    """Contacts whose sequence is still running (Harry, 7 Oct 2026): enrolled, with a lead in a US Outbound campaign,
+    not stopped (stopped_contacts), and with a step due today or later (step_days from enrolled_at, US Eastern).
+
+    The campaign-drift hold reads it (registry/mailboxes.IN_FLIGHT_KEYS), as do `us-outbound cohorts in-flight` and
+    the stop of a lead whose address or domain was suppressed after it was enrolled (replies/account_stop.py).
+    """
+    stopped = stopped_contacts(store)
+    out: list[dict] = []
+    for c in store.select("contacts"):
+        start = _ts(c.get("enrolled_at"))
+        if (start is None or not c.get("instantly_lead_id") or not owner_of(str(c.get("instantly_campaign") or ""))
+                or str(c.get("contact_id")) in stopped):
+            continue
+        days = step_days(start.astimezone(ET).date(), settings)
+        if days and days[-1] >= today:
+            out.append(c)
     return out
 
 

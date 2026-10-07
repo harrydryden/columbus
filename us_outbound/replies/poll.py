@@ -35,6 +35,8 @@ hubspot_readback). This job writes one hitl_items row for each reply a human mus
     company, place, industry, tier, why (tier_reason), contact_name, first_name, title, role,
     from_is_contact      for the alert and the desk; from_is_contact is false when a colleague replied
     sequence_may_continue, sequence_paused   see "Stopping the sequence"
+    instantly_interest   for a positive reply: "interested" once Instantly's interest status is set, or why it
+                         was not (see "Interested in Instantly")
     slack_channel, slack_ts   once posted
 
 Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a human answers):
@@ -65,6 +67,14 @@ off, so the jobs can handle out-of-office replies) and a reply Instantly does no
 Both are flagged on the item and in the alert (sequence_may_continue), and the lead is paused once
 phase 0 confirms the pause call. An opt-out goes on the workspace blocklist either way.
 
+Interested in Instantly (Harry, 7 Oct 2026): once a reply is classified positive and its item and event are
+written, the lead's interest status in its own campaign is set to "Interested" (Instantly.mark_interested, through
+the guard, live only), as stop_lead sets "Meeting booked" when a meeting is booked; Instantly's own views and reports
+then show it. Once a contact: not again for a later positive reply, and not over a meeting already booked. A
+referral is not marked: the person who replied points to someone else, which Instantly would count as the wrong
+person rather than an interested one. Nothing else about the lead changes (Instantly stopped it on the reply). A
+failure is logged and kept as interest_error (heartbeat_check reports it), and never fails the reply's handling.
+
 Claude: classification is claude_task_model (Sonnet) at effort low, at most 1,024 tokens a call;
 the draft is claude_model (Opus) at effort medium, at most 3,000 tokens a call and two calls a reply.
 Both count against claude_monthly_cap_usd. When the cap is used, a reply still reaches a person: it
@@ -94,7 +104,7 @@ from typing import Any
 from us_outbound.budget import is_send_day
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError
-from us_outbound.clients.guard import WARM_REPLY_CLASSES
+from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, WARM_REPLY_CLASSES
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ET, ConfigError, Context
 from us_outbound.enrol import render
@@ -124,6 +134,8 @@ RUN_SECONDS = 6 * 60
 _clock = time.monotonic  # tests replace it
 NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply gives none
 OOO_RESUME_SEND_DAYS = 2  # set going again two send days after the return date (gtm-review 03 §6)
+INTERESTED_CLASSES = frozenset({"positive"})  # marked "Interested" in Instantly (not referral: see the docstring)
+INTERESTED = "interested"  # the payload's instantly_interest once it is set
 FOOTER = ('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: <new text>" to change it, '
           'then ✅ the new version · "send: <text>" sends your text now')
 NO_DRAFT_FOOTER = '❌ skips it (you\'ll answer yourself) · "send: <text>" sends your text now'
@@ -254,6 +266,7 @@ def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, An
         out["claude_cap_reached"] += 1
         return classify.Verdict.fallback("Claude's monthly cap is used up")
     except ClaudeError as exc:
+        out.setdefault("claude_error", str(exc)[:200])  # the run's first, for heartbeat_check (ops/job_errors.py)
         if ctx.now - received < RETRY:
             out["retry_later"] += 1
             return None
@@ -261,7 +274,7 @@ def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, An
 
 
 def _draft(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any], text: str,
-           follow_up: date | None, given: bool) -> dict[str, Any]:
+           follow_up: date | None, given: bool, out: dict | None = None) -> dict[str, Any]:
     owner = info["owner"]
     req = draft.Request(
         reply_class=verdict.reply_class, reply_text=text, first_name=info["first_name"], sender_name=owner,
@@ -278,6 +291,8 @@ def _draft(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any], tex
     except BudgetExceeded:
         return {"draft": "", "draft_problems": ["Claude's monthly cap is used up, so there is no draft"], "draft_rejected": ""}
     except ClaudeError as exc:
+        if out is not None:
+            out.setdefault("claude_error", str(exc)[:200])
         return {"draft": "", "draft_problems": [f"Claude could not draft it: {exc}"], "draft_rejected": ""}
     return {"draft": d.text, "draft_problems": d.problems, "draft_rejected": d.rejected}
 
@@ -326,6 +341,28 @@ def _record_ooo(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any]
         "account_id": info["account_id"], "contact_id": info["contact_id"], "event_id": info["instantly_email_id"],
         "payload": payload, "created_at": ctx.now, "handled_at": ctx.now, "handled_by": JOB,
     }])
+
+
+def _mark_interested(ctx: Context, info: Mapping[str, Any], m: Match, out: dict) -> str:
+    """Set the lead's interest status to "Interested" in its own campaign (the module docstring); returns what
+    happened, for the item's instantly_interest. Never raises but for a guardrail."""
+    cid, campaign = str(info.get("contact_id") or ""), str(info.get("instantly_campaign") or "")
+    email = _lower(m.contact.get("email"))
+    if not (campaign.startswith(US_CAMPAIGN_PREFIX) and email):
+        return "no lead in a US Outbound campaign"
+    if ctx.store.select("events", {"contact_id": cid, "type": "meeting_booked"}):
+        return "a meeting is booked already"  # stop_lead marked it "Meeting booked": never marked back
+    earlier = ctx.store.select("hitl_items", {"kind": KIND, "contact_id": cid})
+    if any((r.get("payload") or {}).get("instantly_interest") == INTERESTED for r in earlier):
+        return "marked for an earlier reply"
+    try:
+        ctx.clients.instantly.mark_interested(campaign, email)
+    except (ApiError, LookupError, ConfigError, ValueError) as exc:  # logged; the reply is handled all the same
+        out.setdefault("interest_error", f"{type(exc).__name__}: {str(exc)[:200]}")
+        log("instantly_interest_failed", run_id=ctx.run_id, contact_id=cid, error=str(exc)[:200])
+        return f"not set: {type(exc).__name__}"
+    out["marked_interested"] += 1
+    return INTERESTED
 
 
 def _opt_out_addresses(email: Mapping[str, Any], m: Match) -> list[str]:
@@ -409,7 +446,7 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
         cont, paused = _pause_if_needed(ctx, email, info)
         payload = {
             **info, **verdict.as_payload(), "reply_excerpt": text[:EXCERPT_CHARS],
-            **_draft(ctx, verdict, info, text, follow_up, given),
+            **_draft(ctx, verdict, info, text, follow_up, given, out),
             "follow_up_date": follow_up.isoformat() if follow_up else None,
             "follow_up_source": ("reply" if given else "default") if follow_up else None,
             "sequence_may_continue": cont, "sequence_paused": paused, "slack_channel": None, "slack_ts": None,
@@ -418,6 +455,9 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
                 "contact_id": info["contact_id"], "event_id": eid, "payload": payload, "created_at": ctx.now}
         ctx.store.upsert("hitl_items", [item])  # the item first: a run that stops here leaves no reply unseen
         ctx.store.upsert("events", [event])
+        if cls in INTERESTED_CLASSES:  # Instantly's interest status, once the class is on record (7 Oct 2026)
+            payload["instantly_interest"] = _mark_interested(ctx, info, m, out)
+            ctx.store.update("hitl_items", {"item_id": item["item_id"]}, {"payload": payload})
         seen.items[item["item_id"]] = item
         out["items"][cls] += 1
     seen.classified.add(eid)
@@ -590,7 +630,7 @@ def run(ctx: Context) -> dict:
     out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry")}
     out.update({k: 0 for k in ("unmatched", "already_handled", "retry_later", "claude_cap_reached", "would_classify",
                                "would_opt_out", "ooo_paused", "ooo_resumed", "alerts_posted", "slack_errors",
-                               "left_for_next_run")})
+                               "left_for_next_run", "marked_interested")})
     out["would_spend_usd_at_most"] = 0.0
     seen = _Seen(ctx)
     done = optout.done_markers(ctx.store)

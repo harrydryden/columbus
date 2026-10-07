@@ -101,6 +101,19 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     assert "text" not in out and "We already have" not in str(out)
 
 
+def test_the_post_has_one_retention_line_when_today_s_run_deleted_anything():
+    """ops/retention.py (SPEC 6, 13): counts only, and nothing when the run changed nothing."""
+    ctx, _ = world()
+    lines, nums = daily_post.build(ctx)
+    assert not any(x.startswith("Retention") for x in lines) and nums["retention"] == {}
+    ctx.store.insert("heartbeats", [{"run_id": "ret", "job": "retention", "status": "ok", "dry_run": False,
+                                     "started_at": TUE_9 - timedelta(hours=8), "finished_at": TUE_9,
+                                     "detail": {"dry_run": False, "leads": {"deleted": 5}}}])
+    lines, nums = daily_post.build(ctx)
+    assert lines[-1] == "Retention deleted 5 Instantly leads (31 days after their last step)."
+    assert nums["retention"]["leads"] == 5
+
+
 def test_monday_s_post_covers_friday_to_sunday():
     ctx, _ = world(now=datetime(2026, 10, 26, 9, 0, tzinfo=UTC))
     start, end, label = daily_post.period(ctx)

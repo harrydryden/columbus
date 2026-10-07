@@ -118,3 +118,64 @@ def test_take_note_needs_the_general_tab_and_a_dry_run_says_what_would_change():
     out = loader.load(ctx, ["General"], take=["note"])
     assert out["dry_run"] is True and "auto_send: note refreshed" in out["tabs"][0]["updated_names"]
     assert ctx.guard.bounds.settings_sheet_id == TEST_SHEET_ID
+
+
+# -- Industries: the label check's definitions and NAICS trims (Harry, 7 Oct 2026) -----------------------------------
+
+
+def live_industries():
+    """The live tab as it was on 7 Oct: no definition column, the old NAICS codes, and Harry's edits (a proof point,
+    one of his own columns; and a page_faqs line, which is the build's column)."""
+    sheet = default_tabs()
+    old_naics = {"AI & deep tech": "5112; 513210; 5415; 518210; 541715; 541713",
+                 "Games studios": "513210; 5112; 541511", "Traveltech": "5112; 513210; 5415; 518210; 5615"}
+    for r in sheet["Industries"]:
+        del r["definition"]
+        r["naics_prefixes"] = old_naics.get(r["industry"], r["naics_prefixes"])
+        if r["industry"] == "Fintech":
+            r["proof_point"] = "Harry's proof point"
+        if r["industry"] == "Technology & Startups":
+            r["page_faqs"] = r["page_faqs"].replace("Setup takes hours", "setup takes minutes")
+    return sheet
+
+
+def test_a_dry_run_load_of_industries_says_every_cell_it_would_change():
+    ctx = world(live_industries())
+    out = loader.load(ctx, ["Industries"])
+    [tab] = out["tabs"]
+    assert out["dry_run"] is True and tab["new_columns"] == ["definition"]  # the real client's guard skips the write
+    changes = tab["changes"]
+    assert tab["cells_changed"] == len(changes) == 50 + 3 + 1  # the definitions, the trims, Harry's FAQ line
+    assert ("AI & deep tech: naics_prefixes: '5112; 513210; 5415; 518210; 541715; 541713' → "
+            "'5112; 513210; 5415; 518210'") in changes
+    assert "Games studios: naics_prefixes: '513210; 5112; 541511' → '513210; 5112'" in changes
+    assert ("Games studios: definition (a new column): blank → 'Makes and publishes video games itself; not tools, "
+            "engines or platforms for game makers (Gametech), and not an agency or app studio building software for "
+            "clients.'") in changes
+    [faq] = [c for c in changes if "page_faqs" in c]
+    # A long cell shows the part that differs, with a little either side.
+    assert faq.startswith("Technology & Startups: page_faqs: '…") and "setup takes minutes" in faq
+    assert "Setup takes hours" in faq and len(faq) < 300
+    assert not any("proof_point" in c for c in changes) and tab["kept_from_sheet"] == ["Fintech (proof_point)"]
+
+
+def test_keep_holds_the_sheets_value_in_a_column_for_one_load():
+    ctx = world(live_industries(), live=True)
+    out = loader.load(ctx, ["Industries"], keep=["page_faqs"])
+    [tab] = out["tabs"]
+    assert not any("page_faqs" in c for c in tab["changes"]) and tab["cells_changed"] == 53
+    rows = {r["industry"]: r for r in ctx.clients.sheets.written["Industries"]}
+    assert "setup takes minutes" in rows["Technology & Startups"]["page_faqs"]  # Harry's line stays
+    assert rows["Games studios"]["naics_prefixes"] == "513210; 5112" and rows["Fintech"]["definition"]
+    assert "Technology & Startups (page_faqs)" in tab["kept_from_sheet"]
+    with pytest.raises(ValueError, match="--keep names a column the loaded tabs do not have: colour"):
+        loader.load(ctx, ["Industries"], keep=["colour"])
+
+
+def test_cell_change_shows_short_cells_whole_and_long_ones_by_the_part_that_differs():
+    assert loader.cell_change("", "a definition") == "blank → 'a definition'"
+    assert loader.cell_change("5112; 541511", "5112") == "'5112; 541511' → '5112'"
+    long_old, long_new = "x" * 400 + " hours " + "y" * 400, "x" * 400 + " minutes " + "y" * 400
+    old, new = loader.cell_change(long_old, long_new).split(" → ")
+    assert old.startswith("'…xxx") and old.endswith("yyy…'") and " hours " in old and len(old) < 100
+    assert new.startswith("'…xxx") and new.endswith("yyy…'") and " minutes " in new and len(new) < 100

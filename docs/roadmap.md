@@ -15,10 +15,10 @@ as Spill's HubSpot history shows. Use Spill's HubSpot customers to inform lookal
 | Score | The review's Appendix A: EAP de-weighted, hiring read from job postings, Q4 off, funding split by age (the funding facts come from Apollo's organization enrich, `apollo_enrich`, weekdays 04:10, for the industry groups named in the General `apollo_enrich_groups`, Technology & Startups by default, since Apollo's search rows carry no funding; 1 credit per company found, within 15% of the month's Apollo credits; 2 Oct), a size signal favouring 10–99, site visits to Priority, the lookalike signals graded by `lookalike_fit` (industry, size and growth rate; "Close match" +10 at 70 or more, "Some match" +3 at 45 to 69, so a close lookalike at 10–49 is Standard and a middling one orders accounts within a tier; 5 Oct, on the sheet after `settings load --tab Signals`, judged first with `us-outbound lookalikes fit`), IT services excluded from tech, Legal Teams on at 20% of the focus. The careers and benefits page reader, `read_pages` (2 Oct, no Clay credits), so the EAP, benefits and wellbeing signals and openers can fire. The People leaders at every queue account, `apollo_people` (weekdays 04:20, Apollo's free people search; 5 Oct), so "New People leader" scores before the queue is sorted, and "First People hire (likely)" in place of "First People hire", firing only where Apollo holds at least half the headcount | Enhancing the reader, if its coverage falls short (§4, "Decide after the first batches") |
 | Choose the person | `pick_contacts`: Roles by size and seniority. 10–49: founder, then a senior People leader, then operations. 50–249: a senior People leader, then the founder, then operations, then HR managers. It reveals one verified email (about 1 Apollo credit) and writes the People-leader facts its search sees, unless `apollo_people` searched the account in the last 30 days. Clay's Work Email waterfall for Apollo's misses and catch-alls, behind `clay_email_fallback` (no until `us-outbound clay check-email --live` confirms Clay's API; 2 and 6 Oct). A second contact of another role at 50 or more staff, 3 days after the first's email 1, behind `second_contact` (built 6 Oct, off; §4) | — |
 | Copy | 318 sequences, one per industry and role, at days 0, 7, 14 and 21. Email 1 is a hook with the industry link only; email 4 mentions the free trial. Tokenized openers (2 Oct): a line per signal and copy role, filled at enrol time with the account's own facts, with a 30% no-opener holdout. Render-time rules, plus QA by Sonnet against facts.md and each industry page | The careers-page facts that make the page-reader openers fire (§4 item 3) |
-| Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature | Interest status written back to Instantly |
+| Send | `enrol` (weekdays 12:00, dry until `live_sending` = yes). While `auto_send` = no (the pilot) it posts a send approval per email to #us-outbound, and only an approver's ✅ adds the lead (`enrol/approvals.py`). The per-mailbox ramp (10, then 20, then 30 a day), Instantly's own unsubscribe link and header, the signature. Interest status written back to Instantly ("Interested" on a positive reply, "Meeting booked" on a booking; 7 Oct) | — |
 | Replies | `sync_outcomes` and `poll_replies` every 15 minutes: classification (Sonnet), drafts (Opus), Instantly unsubscribes and "stop" replies into suppression and HubSpot, out-of-office dates | Pausing and resuming a lead around an out-of-office reply (switched off until Instantly's lead pause is confirmed) |
 | Hand-off | `poll_approvals`: Slack ✅/edit/❌ from Harry or the mailbox owner, or `us-outbound replies list|approve|skip` without Slack. HubSpot company, contact, note, task and deal on positive or referral replies. 24-hour escalation. `hubspot_readback` for booked meetings, and (6 Oct) demo requests in Spill 3.0 at companies we emailed | — |
-| Safety | Every email approved in Slack before it is sent (while `auto_send` = no), `kill_rules` (bounces, blocks, complaints), `stop --live` as the brake, `daily_post` with its "Needs you" line, `golive`, heartbeats, the guard on every outbound call, dry-run by default. The weekly `hand_check_post` covers only accounts with doubtful Apollo facts while `auto_send` = no; it is enrol's gate only with `auto_send` = yes | Retention jobs (deleting leads 31 days after their last step; Apollo deletion notices) |
+| Safety | Every email approved in Slack before it is sent (while `auto_send` = no), `kill_rules` (bounces, blocks, complaints), `stop --live` as the brake, `daily_post` with its "Needs you" line, `golive`, heartbeats, the guard on every outbound call, dry-run by default. The weekly `hand_check_post` covers only accounts with doubtful Apollo facts while `auto_send` = no; it is enrol's gate only with `auto_send` = yes. Retention (7 Oct 2026): the daily `retention` job (00:40) deletes Instantly leads 31 days after their last step, clears reply text after 90 days, and deletes contacts who never replied and stale company rows after 12 months; Apollo deletion notices are honoured by hand with `erase --email` (docs/daily.md) | Apollo deletion notices read by a job: Apollo has no API for them |
 | Learn | The events table and the readout views. The learning loop (6 Oct): `monday_readout` (Mondays 08:30: last week, the targets, the exit criteria, the cuts, the signal table, the tests at a look), the signal table (`signals value`), tests read only at pre-registered looks (Tests tab `kind` and `looks`), UTM tags on our links (`utm_links`), demo bookings read back from Spill 3.0 (`hubspot_readback`) | The readout's limit and budget lines (pipeline.md Proposed 11); SPEC 12's three observations drawn from the reply text; monthly state and role cuts |
 
 About 70 API details are marked `PHASE0-CONFIRM` in the code: endpoint shapes and status codes we
@@ -208,7 +208,9 @@ verification and contact choice write only the database; enrol, replies and post
      through Spill's own website flow; that the deal search takes `pipeline` and `hs_lastmodifieddate` filters.
    - The job-board feeds (`sources/job_posts.py`): Greenhouse's `company_name` and escaped `content`,
      Lever's `lists`, Ashby's `descriptionHtml`, Workable's `details=true` descriptions.
-   Fix whatever the first runs show.
+   Fix whatever the first runs show. *7 Oct:* every marker and its status is in
+   [phase0-confirm.md](phase0-confirm.md) (37 of 116 confirmed live from the first runs); `us-outbound phase0 check`
+   settles most of the rest ([phase0-runbook.md](phase0-runbook.md#12-the-phase0-confirm-check-7-oct-2026) §12).
 2. **Tokenized openers: built (2 Oct).** One line per signal and copy role, filled with the
    account's own stored facts (`enrol/openers.py`). This is the biggest remaining lever on Harry's
    "personalised, relevant data and hook".
@@ -278,10 +280,22 @@ verification and contact choice write only the database; enrol, replies and post
      pages already fetched are read);
    - JavaScript rendering, for careers pages built in the browser;
    - Clay's Claygent, through an "US Outbound – Accounts" function (Clay credits).
-4. **Interest status back to Instantly** (positive, meeting booked). Also stop the remaining steps
-   for an enrolled account that turns out to be a customer.
-5. **`pick_contacts` should skip email sources a kill rule has paused** (`holds.paused_sources`). Done for
-   Clay (2 Oct): no Clay lookup while the clay source is paused. Apollo's reveals still go ahead.
+4. **Interest status back to Instantly** (positive, meeting booked): *built 7 Oct*. A meeting booked marks the
+   lead "Meeting booked" (`hubspot_readback`, `Instantly.stop_lead`), and a reply classified positive marks it
+   "Interested" in its own campaign, once, live only (`poll_replies`, `Instantly.mark_interested`; PHASE0-CONFIRM
+   that the value is 1). A referral is not marked: Instantly would read it as the wrong person, not an interested
+   one. A failed call is logged and never holds up the reply. Also stop the remaining steps
+   for an enrolled account that turns out to be a customer: *built 7 Oct*. The nightly `suppression_load`
+   (01:30) reads Spill's customers from HubSpot as the monthly `lookalikes` job does and suppresses their
+   domains (`suppression.load_customers`), so `sync_outcomes`' sweep stops a new customer's leads in flight by
+   the next morning, and enrol never adds one; the lookalike cells are still rebuilt monthly.
+5. **`pick_contacts` skips email sources a kill rule has paused** (`holds.paused_sources`): *built*. Clay
+   (2 Oct): no Clay lookup while the clay source is paused. Apollo (7 Oct): no reveal and no credit while the
+   apollo source is paused, and the run's summary and heartbeat say why (`pick.apollo_paused`). Clay alone is
+   not used meanwhile, even with `clay_email_fallback` = yes: it is the fallback for Apollo's misses and
+   catch-alls, and making it the main source while Harry checks why Apollo's addresses bounced would spend
+   Clay's credits at a rate nobody chose. Contacts already found are still enrolled unless their own source is
+   paused; `us-outbound killrules clear ID --live` lifts the pause.
 
 ### Weeks 2–4, to scale
 1. **Clay, narrowed to what only it does** (Harry, 2 Oct 2026; *built 6 Oct*, "push ahead with
@@ -344,8 +358,20 @@ verification and contact choice write only the database; enrol, replies and post
    - Harry, once deployed: `us-outbound settings load --tab General --tab Tests --live`, then `us-outbound
      sync` (adds `utm_links` and the `kind` and `looks` columns, keeping his values); pre-register `looks` on
      a test before `test start`.
-5. **Retention and compliance:** delete leads 31 days after their last step, act on Apollo
-   deletion notices within 30 days, and purge reply text after 90 days.
+5. **Retention and compliance:** *built 7 Oct 2026* (`ops/retention.py`, the daily `retention` job at 00:40 UK,
+   live like the other Instantly jobs, so dry until `live_sending` = yes; docs/daily.md "Retention"):
+   - Instantly leads more than 31 days after their last step are deleted (SPEC 13), the last step dated as the send
+     forecast dates it (US Eastern, blackout dates skipped), or from a stop of the lead's own or a booking at its
+     company, or from a send or a conversation's email recorded later; never a lead in flight, one whose reply waits
+     for a person, one Instantly still lists as sending with steps unrecorded, or one whose opt-out or bounce is
+     still to record. At most 200 a run;
+     `contacts.lead_deleted_at` records it;
+   - reply text is purged 90 days after the reply, from `events.reply_text` and the reply cards in `hitl_items`;
+   - contacts who never replied are deleted 12 months after their last step, and company rows no source has
+     refreshed in 12 months, only when nothing else holds them (docs/open-questions.md 79 and 80);
+   - Apollo deletion notices: Apollo has no API for them, so Harry runs `us-outbound erase --email ADDRESS --live`
+     within 30 days of each (docs/daily.md); erase now also reaches a colleague's card naming the person and lists
+     the Slack cards, escalation email and HubSpot note and task it cannot delete.
 6. **Lookalike leads: do UK customers make good US seeds?** Apollo's likeness may favour companies in
    the seed's own country. Each monthly run counts, for US and for non-US seeds apart, the searches
    (and the empty ones), the rows returned, and the companies admitted, refused and not US (the daily

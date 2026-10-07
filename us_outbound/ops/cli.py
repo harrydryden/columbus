@@ -3,8 +3,9 @@
 What Harry uses (`us-outbound --help` lists these, in this order):
   status                              the two switches and what they mean, when the settings were
                                       synced, what waits for him (send approvals, replies, kill-rule
-                                      holds), the jobs that failed or missed their heartbeat, mailboxes,
-                                      this week's number and the campaigns
+                                      holds), the jobs that failed or missed their heartbeat, what the
+                                      retention job last deleted, mailboxes, this week's number and the
+                                      campaigns
   golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
   accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py):
     [--tier T] [--industry TEXT]      a summary and the list in queue order, one company in full (exits 1
@@ -14,12 +15,25 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       The same as `settings sync`
   start | stop                        resume or pause every US Outbound campaign, and enrollment. start
                                       --live syncs the sheet first, so live_sending just set counts.
-                                      stop --live is the brake: live_sending = no does not stop Instantly
+                                      stop --live is the brake: live_sending = no does not stop Instantly.
+                                      Over a blackout start leaves the campaigns paused, and the blackout
+                                      job starts them after it (registry/blackout.py; 7 Oct 2026)
   approvals list | send | contact |   send approvals without Slack (enrol/approvals.py; Harry, 2 Oct 2026:
     company [ID]                      while auto_send = no every email waits for approval), in the Slack
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
                                       person, company = 🚫 not this company. approve, reject --contact and
                                       reject --company are the same; approved_by "cli"
+  approvals industry ID LABEL         the card's company is LABEL ("industry: LABEL" in its thread): set,
+                                      kept on the Overrides tab, and the card withdrawn for a new one
+  labels audit [--limit N] | eval     the industry label check (us_outbound/labels.py; Harry, 7 Oct 2026):
+    [--from-corrections] | set        audit: the model asked about every open company with no fresh verdict
+    DOMAIN LABEL | show DOMAIN        now (verify_accounts asks about 150 a run), cards that no longer fit
+                                      withdrawn; dry-run says how many, the cost and a sample prompt. eval:
+                                      the model scored on the gold set (and, with --from-corrections, the
+                                      approvers' corrections); exits 1 below 90% acceptable or on any unsafe
+                                      answer. set: a company's label (an approver's correction, for a company
+                                      with no card). show: its label and check history. audit and eval call
+                                      the model only with --live (about $0.01 a company)
   replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
     [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
                                       send, HubSpot and close path as Slack. approve is the same as send
@@ -27,6 +41,10 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       signal-value table from v_signal_value, with meetings and the rates
                                       against the companies without each signal (learn/signal_value.py)
   readout                             the Monday readout for last week (learn/readout.py), printed only
+  cohorts [--cut CUT] [--age N]       each enrolment week's companies at 7, 14, 21 and 28 days after email 1,
+    [--weeks N] | changes [A B] |     with what changed between them (learn/cohorts.py; Harry, 7 Oct 2026);
+    in-flight                         changes: what differs between two config versions (default the last
+                                      two); in-flight: each campaign's leads with a step still to send
   test start|read <test_id>           start a test on the Tests tab (SPEC 12), or read it at its latest
                                       pre-registered look; read refuses before the first look, so nobody
                                       peeks (learn/looks.py; Harry, 6 Oct 2026)
@@ -35,7 +53,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   mailbox check [--fix]               is mailbox_health by hand, and --fix also sets each sender name to
                                       its owner's full name and runs campaigns ensure --fix
   campaigns show | ensure [--fix]     each owner's campaign as Instantly holds it (read-only); or create
-                                      the missing ones (paused) and put drift right
+    [--in-flight]                     the missing ones (paused) and put drift right. Drift in the steps,
+                                      delays or text_only is held while leads are in flight, unless
+                                      --in-flight (registry/mailboxes.IN_FLIGHT_KEYS; Harry, 7 Oct 2026)
   copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
                                       preview one, QA it (task model), draft one (writing model)
   settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
@@ -46,6 +66,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
     [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
                                       only says what it would send. With --live it exits 1 unless the
                                       fallback can go on
+  phase0 check [--seed ADDRESS]       the live checks of the API details still to confirm (ops/phase0.py,
+    [--apollo-credits] [--live]       docs/phase0-confirm.md): read-only probes, and with --seed writes on
+                                      that seed lead of ours alone; without --live it only says what it calls
   erase --email <address>             an erasure request (SPEC 6)
   schedule                            the job table and next runs (UK time)
   run <job> [--live]                  one job, what the scheduler starts
@@ -140,14 +163,16 @@ JOBS: dict[str, str] = {
     "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
     "kill_rules": "us_outbound.learn.kill_rules:run",
+    "blackout": "us_outbound.registry.blackout:run",  # Harry, 7 Oct 2026: campaigns paused over the blackout dates
     "daily_post": "us_outbound.learn.daily_post:run",
     "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
     # Build additions (README "Deviations").
-    "heartbeat_check": "us_outbound.ops.heartbeat:check_heartbeats",
+    "heartbeat_check": "us_outbound.ops.heartbeat:run",  # missed jobs, caught errors, the outside watchdog
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
+    "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 
@@ -466,6 +491,12 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
 
     print(second.describe(s))  # the second-contact switch (Harry, 6 Oct 2026)
     _status_heartbeats(ctx.store, ctx.now)
+    try:
+        from us_outbound.ops import retention
+
+        print(retention.status_line(ctx.store))  # SPEC 6 and 13: what the daily retention job deleted, and what waits
+    except Exception as exc:  # status still prints what it can
+        print(f"Retention: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     print("Mailboxes:")
     try:
         from us_outbound.learn.holds import held_mailboxes
@@ -484,10 +515,13 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     try:
         campaigns = ctx.clients.instantly.list_campaigns()
         from us_outbound.clients.instantly import CAMPAIGN_STATUS
+        from us_outbound.registry import blackout
 
+        over = blackout.words(ctx.store, ctx.settings, ctx.now)  # "paused for the blackout until …" (7 Oct 2026)
         print("Campaigns:")
         for c in campaigns:
-            print(f"  {c.get('name')}: {CAMPAIGN_STATUS.get(c.get('status'), c.get('status'))}")
+            state = CAMPAIGN_STATUS.get(c.get("status"), c.get("status"))
+            print(f"  {c.get('name')}: {over[c.get('name')] if state == 'paused' and c.get('name') in over else state}")
         if not campaigns:
             print("  none yet")
     except Exception as exc:  # status still prints what it can
@@ -519,28 +553,45 @@ def cmd_stop(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def _start(ctx: Context) -> dict:
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, sending_list
+    from us_outbound.registry import blackout
+    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words, sending_list
 
     check = ensure_campaigns(ctx, create=False)
-    if check["drift"]:
+    # Drift held while leads are in flight does not refuse: the campaign is consistent for them (Harry, 7 Oct 2026).
+    held = check.get("held") or {}
+    drift = {n: sorted(set(d) - set((held.get(n) or {}).get("keys") or ())) for n, d in check["drift"].items()}
+    if any(drift.values()):
         raise Refused(
             "campaign settings have drifted: "
-            + "; ".join(f"{n}: {', '.join(sorted(d))}" for n, d in check["drift"].items())
+            + "; ".join(f"{n}: {', '.join(keys)}" for n, keys in drift.items() if keys)
             + ". Fix with `us-outbound campaigns ensure --fix --live` first."
         )
     inst = ctx.clients.instantly
     found = {c["name"]: c for c in inst.list_campaigns()}
-    started, skipped = [], []
+    # Over a blackout the campaigns stay paused, recorded as the blackout's, and the blackout job starts them after
+    # it (registry/blackout.py; Harry, 7 Oct 2026): enrollment still resumes.
+    over = blackout.hold(ctx.settings, ctx.now)
+    started, skipped, waiting = [], [], []
     for owner in ctx.settings.owners():
         name = campaign_name(owner)
         if name not in found or not sending_list(ctx.settings, owner):
             skipped.append(name)
             continue
+        if found[name].get("status") != 1 and over is not None:
+            blackout.defer(ctx, name, found[name].get("status"), over)
+            waiting.append(name)
+            continue
         if found[name].get("status") != 1:
             inst.activate_campaign(name)
         started.append(name)
-    return {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
-            "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
+    out = {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
+           "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
+    if waiting:
+        out["paused_for_blackout"] = waiting
+        out["blackout"] = f"{over.words()}: the blackout job starts them then" if over else ""
+    if held:
+        out["drift_held"] = [held_words(n, h) for n, h in held.items()]
+    return out
 
 
 def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
@@ -624,6 +675,32 @@ def cmd_unenrol(args: argparse.Namespace, factory: Factory) -> int:
     ctx = factory("unenrol", args.live, operator=True)
     _print(run_job(ctx, lambda c: _unenrol(c, args.month)))
     _dry_note(ctx, "no lead was removed from Instantly.")
+    return 0
+
+
+def cmd_relabel(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound relabel [--live]`: the queued companies under the labels the Industries rules give now
+    (ops/relabel.py; Harry, 7 Oct 2026)."""
+    from us_outbound.ops import relabel
+
+    ctx = factory("relabel", args.live, operator=True)
+    out = run_job(ctx, relabel.run)
+    print(f"{out['changed']} of {out['queued_accounts']} companies in the queue change label.")
+    for move, n in out["moves"].items():
+        print(f"  {n:>4}  {move}")
+    if args.all:
+        for line in out["changes"]:
+            print(f"  {line}")
+    if out.get("restored"):
+        print(f"{'Put back' if ctx.live else 'Would put back'} {len(out['restored'])} compan"
+              f"{'y' if len(out['restored']) == 1 else 'ies'} an earlier relabel disqualified on the rules alone: the "
+              "label check decides them (`us-outbound labels audit --live`, or verify_accounts at 04:30).")
+        if args.all:
+            print("  " + ", ".join(out["restored"]))
+    cards = out["cards_withdrawn"] if ctx.live else out["cards_to_withdraw"]
+    if cards:
+        print(f"{'Withdrew' if ctx.live else 'Would withdraw'} {len(cards)} open card(s): {', '.join(cards)}.")
+    _dry_note(ctx, "no company or card was changed.")
     return 0
 
 
@@ -749,7 +826,7 @@ def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
             sets[key.strip()] = value.strip()
         try:
             summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
-                                                   take=args.take or ()))
+                                                   take=args.take or (), keep=args.keep or ()))
         except ValueError as exc:
             raise Refused(str(exc)) from exc
         for t in summary["tabs"]:
@@ -1048,6 +1125,26 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     if not args.item_id:
         raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
     action = args.action
+    if action == "redo":  # Harry, 7 Oct 2026: today's cards withdrawn and posted again under the checked labels
+        ctx = factory("approvals_redo", args.live, operator=True)  # it reaches no prospect: --live alone
+        try:
+            summary = run_job(ctx, lambda c: approvals.redo(c, args.item_id))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "no card was withdrawn or posted.")
+        return 0
+    if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
+        if not args.label:
+            raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
+        ctx = factory("approvals_industry", args.live, operator=True)  # it reaches no prospect: --live alone
+        try:
+            summary = run_job(ctx, lambda c: approvals.industry_item(c, args.item_id, args.label))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "the label, the Overrides tab and the card are unchanged.")
+        return 0
     if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
         if args.contact or args.company:
             raise Refused(f"`approvals {action}` takes no --contact or --company")
@@ -1084,6 +1181,88 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     return 0 if summary.get("added") or ctx.dry_run else 2
 
 
+def _audit_report(out: dict, live: bool) -> None:
+    print(f"{out['to_check']} of {out['open_accounts']} open companies have no fresh label check"
+          f" ({out['stale']} with one under an older label list or prompt).")
+    if not live:
+        print(f"A live audit asks {out['model']} about each: at most ${out['per_call_usd']:.4f} a company, "
+              f"${out['most_usd']:.2f} in all (the Claude cap applies).")
+        if out.get("sample_prompt"):
+            print("The first company's prompt, as the model reads it:\n" + out["sample_prompt"])
+        stored = out.get("stored") or {}
+        print(f"From the rules and the stored checks alone, {stored.get('changed', 0)} companies change:")
+        for move, n in (stored.get("moves") or {}).items():
+            print(f"  {n:>4}  {move}")
+        return
+    print(f"Asked {out['asked']} (${out['usd']:.2f})." + (f" Stopped: {out['unavailable']}." if out["unavailable"] else ""))
+    print("Decisions: " + (", ".join(f"{k} {v}" for k, v in sorted(out["decisions"].items())) or "none"))
+    if out["disagreements"]:
+        print("Where the rules and the model differ:")
+        for d in out["disagreements"]:
+            quote = f" · “{d['evidence']}”" if d.get("evidence") else ""
+            print(f"  {d['domain']} · rules {d['rules'] or 'no label'} · model {d['model']} ({d['confidence']}, "
+                  f"{d['entity']}) · now {d['now']}{quote}")
+    for line in out["relabelled"]:
+        print(f"  {line}")
+    if out["cards_withdrawn"]:
+        print(f"Withdrew {len(out['cards_withdrawn'])} open card(s): {', '.join(out['cards_withdrawn'])}.")
+
+
+def _eval_report(out: dict, live: bool) -> int:
+    if not live:
+        print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
+        return 0
+    for r in out["results"]:
+        if r.get("error"):
+            print(f"  {r['domain']}: {r['error']}")
+            continue
+        print(f"  {r['score']:<10} {r['domain']} · expected {r['expected']} ({r['expected_action']}) · rules "
+              f"{r['rules'] or 'no label'} · model {r['model']} ({r['confidence']}, {r['entity']}) · {r['decision']}")
+    print(f"{out.get('acceptable', 0)} acceptable, {out.get('wrong', 0)} wrong, {out.get('unsafe', 0)} unsafe of "
+          f"{out['rows']} (${out.get('usd', 0):.2f}; labels_hash {out['labels_hash']}). "
+          + ("Passed." if out.get("passed") else "Failed: it needs 90% acceptable and nothing unsafe."))
+    return 0 if out.get("passed") else 1
+
+
+def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound labels audit | eval | set | show` (us_outbound/labels.py, ops/relabel.py; Harry, 7 Oct 2026)."""
+    from us_outbound import labels
+    from us_outbound.ops import relabel
+
+    if args.action == "audit":  # the model is asked only with --live; it reaches no prospect: --live alone
+        ctx = factory(relabel.AUDIT_JOB, args.live, operator=True)
+        out = run_job(ctx, lambda c: relabel.audit(c, args.limit))
+        _audit_report(out, ctx.live)
+        _dry_note(ctx, "no model was asked and no company or card was changed.")
+        return 0
+    if args.action == "eval":
+        ctx = factory("labels_eval", args.live, operator=True)
+        rows = labels.gold_rows() + (labels.corrected_rows(ctx) if args.from_corrections else [])
+        out = run_job(ctx, lambda c: labels.evaluate(c, rows))
+        code = _eval_report(out, ctx.live)
+        _dry_note(ctx, "no model was asked.")
+        return code
+    if not args.domain:
+        raise Refused(f"labels {args.action} needs a company's domain")
+    if args.action == "show":
+        _only_reads(args)
+        try:
+            _print(relabel.show(factory("labels_show", False, operator=True), args.domain))
+        except LookupError as exc:
+            raise Refused(str(exc)) from exc
+        return 0
+    if not args.label:
+        raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
+    ctx = factory("labels_set", args.live, operator=True)  # it reaches no prospect: --live alone
+    try:
+        summary = run_job(ctx, lambda c: relabel.set_label(c, args.domain, args.label))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    _print(summary)
+    _dry_note(ctx, "the label, the Overrides tab and any card are unchanged.")
+    return 0
+
+
 def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
     """The DDL in sql/ (ops/ddl.py): printed in dry-run; run against DATABASE_URL with --live."""
     from us_outbound.clients.guard import Guard
@@ -1117,11 +1296,13 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns
+    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words
 
+    if args.in_flight and not (args.action == "ensure" and args.fix):
+        raise Refused("--in-flight goes with ensure --fix")
     if args.action == "show":
         # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
-        # Instantly kept of the settings and step templates it was given (PHASE0-CONFIRM items).
+        # Instantly kept of the settings and step templates it was given (docs/phase0-confirm.md).
         _only_reads(args)
         ctx = factory("campaigns_show", False)
         for owner in ctx.settings.owners():
@@ -1130,8 +1311,32 @@ def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
             print(json.dumps({"campaign": name, "instantly": body}, sort_keys=True, default=str))
         return 0
     ctx = factory("campaigns_ensure", args.live, operator=True)
-    _print(run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix)))
+    summary = run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix, in_flight=args.in_flight))
+    _print(summary)
+    for name, held in (summary.get("held") or {}).items():
+        print(held_words(name, held))
     _dry_note(ctx, "no campaign was created or changed.")
+    return 0
+
+
+def cmd_cohorts(args: argparse.Namespace, factory: Factory) -> int:
+    """The cohort report (learn/cohorts.py; Harry, 7 Oct 2026): performance by enrolment week at fixed ages, what
+    changed between versions, or the leads in flight per campaign. Read-only."""
+    from us_outbound.learn import cohorts
+
+    ctx = factory("cohorts", False)
+    if args.action == "changes":
+        if len(args.versions) not in (0, 2):
+            raise Refused("cohorts changes takes two config versions, or none for the last two")
+        lines = cohorts.changes_lines(ctx, *args.versions)
+    elif args.action == "in-flight":
+        lines = cohorts.in_flight_lines(ctx)
+    else:
+        if args.versions:
+            raise Refused("config versions go with `cohorts changes`")
+        lines = cohorts.lines(ctx, cut=args.cut, age=args.age, weeks=args.weeks)
+    for line in lines:
+        print(line)
     return 0
 
 
@@ -1392,6 +1597,21 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
+    """`phase0 check`: the API details to confirm that a live read, or a write on Harry's own seed lead, settles
+    (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
+    from us_outbound.ops import phase0
+
+    ctx = factory(phase0.JOB, args.live, operator=True)
+    try:
+        report = run_job(ctx, lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    for line in phase0.lines(report):
+        print(line)
+    return 0
+
+
 def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
     """The kill-rule holds in force (learn/kill_rules.py), and lifting one once Harry has checked it."""
     from us_outbound.learn import kill_rules
@@ -1501,10 +1721,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
                  cmd_approvals, takes_live=True)
-    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject"],
+    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject", "industry", "redo"],
                     help="send = ✅ (approve); contact = 👤 not this person; company = 🚫 not this company "
-                         "(reject --contact / --company)")
-    ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters)")
+                         "(reject --contact / --company); industry = the company's label is another; redo = withdraw "
+                         "the card and post it again under the company's label and emails as they are now")
+    ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters); redo: or all")
+    ap.add_argument("label", nargs="?", help="industry: the Industries label, like \"Fintech\"")
     ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
     ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")
 
@@ -1521,6 +1743,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="review: each signal's verdict from the events; value: the table, with meetings, against "
                          "the companies without it")
     command("readout", "the Monday readout for last week, printed here and posted nowhere (read-only)", cmd_readout)
+    # The choices are written out here, so --help does not import the report (learn/cohorts.py CUTS, AGES).
+    ch = command("cohorts", "each enrolment week's results at 7, 14, 21 and 28 days; what changed between versions "
+                 "(changes); the leads in flight (in-flight). Read-only", cmd_cohorts)
+    ch.add_argument("action", nargs="?", choices=["changes", "in-flight"],
+                    help="changes: what differs between two config versions (default: the last two); in-flight: "
+                         "each campaign's leads with a step still to send")
+    ch.add_argument("versions", nargs="*", metavar="VERSION", help="changes: two config versions, older first")
+    ch.add_argument("--cut", default="all",
+                    choices=["all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm",
+                             "opener_arm", "config_version"],
+                    help="split each week by this (default all)")
+    ch.add_argument("--age", type=int, choices=[7, 14, 21, 28], help="only this age, in days after email 1")
+    ch.add_argument("--weeks", type=int, default=8, help="how many enrolment weeks, the latest first (default 8)")
     ts = command("test", "start a test on the Tests tab, or read it at a pre-registered look", cmd_test,
                  takes_live=True)
     ts.add_argument("action", choices=["start", "read"],
@@ -1537,6 +1772,15 @@ def build_parser() -> argparse.ArgumentParser:
     sd.add_argument("--subject", choices=["personal", "copy"], default="copy",
                     help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
                          "s1_subject, the default)")
+
+    p0 = command("phase0", "the live checks of the API details still to confirm: read-only, or your own seed lead",
+                 cmd_phase0, takes_live=True)
+    p0.add_argument("action", choices=["check"])
+    p0.add_argument("--seed", action="append", metavar="ADDRESS",
+                    help="also the writes on this seed lead of ours (pause and resume, interest status, a forward to "
+                         "escalation_email); repeat it for a second seed lead")
+    p0.add_argument("--apollo-credits", action="store_true",
+                    help="also the probes that cost an Apollo credit each (3 at most)")
 
     kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
     kr.add_argument("action", choices=["show", "clear"])
@@ -1556,6 +1800,9 @@ def build_parser() -> argparse.ArgumentParser:
                  cmd_campaigns, takes_live=True)
     cp.add_argument("action", choices=["ensure", "show"])
     cp.add_argument("--fix", action="store_true", help="put drifted settings and sending lists right")
+    cp.add_argument("--in-flight", action="store_true",
+                    help="ensure --fix: also apply drift in the steps, delays or text_only to campaigns with leads in "
+                         "flight (held otherwise; it reaches every lead's remaining emails, and is logged)")
 
     co = command("copy", "check, preview, QA (task model) or draft (writing model) copy", cmd_copy, takes_live=True)
     co.add_argument("action", choices=["check", "preview", "qa", "draft"])
@@ -1592,6 +1839,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--take", action="append", metavar="COLUMN",
                     help="load: let the build's value win for a column Harry owns (Industries active, priority; "
                          "any Signals column, like weight; General note)")
+    st.add_argument("--keep", action="append", metavar="COLUMN",
+                    help="load: keep the sheet's value in this column for this load, where the build's would win "
+                         "(an edit made on the sheet, like a page_faqs line)")
     st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
@@ -1608,6 +1858,17 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--last", required=True, help="your last name")
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
+    lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
+                 "company's label, or show its label and history", cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show"])
+    lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
+    lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
+    lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")
+    lb.add_argument("--from-corrections", action="store_true",
+                    help="eval: also score the companies approvers corrected, expecting their new label")
+    rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
+                 "withdraw open cards whose label changes", cmd_relabel, takes_live=True)
+    rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")
     er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
     er.add_argument("--email", required=True)
 

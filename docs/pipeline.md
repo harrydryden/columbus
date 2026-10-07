@@ -171,6 +171,26 @@ An account also needs at least one candidate contact: a person matching the Role
   dropped; one it disagrees with reaches the hand-check with both values ("Clay says 62 staff,
   Apollo says 49"); a missing HQ state or size is filled in from Clay, so the account can verify the
   same day. Industry stays with the hand-check.
+- **The industry label check** (Harry, 7 Oct 2026: "industry categorisation is critical to the efficacy of the
+  system"; `us_outbound/labels.py`). Once an account passes the free checks, the task model (Sonnet, effort low,
+  about $0.01 a company, once) reads its Apollo facts (name, domain, Apollo industry, NAICS codes, keywords,
+  description) and, once `read_pages` has read it, its home page's title, description and first 600 characters
+  (never the rules' label) and picks one label from the Industries list, with its confidence, what kind
+  of body it is, a quote and a short "what they do". One rule combines it with the rules' label:
+  - they agree: the label's own copy (`label_source` rules+model);
+  - they disagree: the model's label when it is sure (model); otherwise, within one group, the group's own label and
+    copy (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed);
+  - a public body is disqualified; a society or membership body, a company no label fits, or one whose industry is
+    switched off is disqualified when the model is sure and held for the weekly hand-check ("industry uncertain: …")
+    when it is not; an Overrides `industry` row or an approver's correction stands, and nothing is asked.
+  - The verdict is kept (a `label_verdict` fact) and asked again only when the label list, a definition, keywords or
+    the prompt change (`labels_hash`). Each run asks at most 150 (12 minutes), Focus groups first, then queue order;
+    accounts already verified with no fresh verdict are checked in the same share, so the queue converges in about
+    three weekdays with no command run. A card rendered before its company's label was decided, which no longer fits
+    it, is withdrawn by the next `poll_approvals`, and the next enrol proposes the company with the right copy.
+  - `label_check` (General): `required` (the default) keeps a new account unverified while the model cannot be asked
+    (the Claude cap, an error), and the daily post asks; accounts already verified keep going, an unchecked one with
+    its group's copy. `skip` runs on the rules alone, with the group's copy.
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
@@ -186,6 +206,9 @@ An account also needs at least one candidate contact: a person matching the Role
   `email_source` = clay; `catch_all_valid` waits for change 8. Work Email gets its own input names
   (Full Name, Company Domain, Social Profile URL, Company Name). After three failed lookups the run
   stops asking Clay, and without the Clay key it does not start.
+- While a kill rule pauses the apollo email source (its addresses bounced), the run reveals nothing and
+  spends no credit, and says so in its heartbeat (7 Oct 2026). Clay alone is not used meanwhile: it is the
+  fallback for Apollo's misses, not a source of its own. `us-outbound killrules clear ID --live` lifts it.
 
 | Rank | 10–49 staff | 50–249 staff |
 | :- | :- | :- |
@@ -332,7 +355,7 @@ Instantly decides the moment each email goes. The jobs decide how many new leads
 | The campaign's daily limit | Set to the sum of the owner's Active caps. The morning mailbox check puts the daily limit and the sending list right itself; other drift is reported for `us-outbound campaigns ensure --fix --live` |
 | Sends per inbox per day | `GET /accounts/analytics/daily`, filtered to the registry inboxes, read each morning for the last 7 days. If yesterday's sends fall short of what the forecast had due, Instantly is behind, and the shortfall comes off today's room |
 | Why a campaign isn't sending | `GET /campaigns/{id}/sending-status`, read each morning. "Daily limit reached" (the campaign's, or every inbox's) marks the sender as full |
-| The send window | Mon–Fri 09:00–16:00 ET. No sends at weekends or on blackout dates |
+| The send window | Mon–Fri 09:00–16:00 ET. No sends at weekends or on blackout dates: enrol skips them, and the hourly `blackout` job pauses the campaigns over them, so no follow-up goes out on one either (7 Oct 2026) |
 | Step timing | Days 0, 7, 14 and 21. Instantly counts delays in calendar days and moves a step due at the weekend to Monday. A week apart, every step falls on the same weekday as the first, so none does |
 | Warmup | Instantly. Warmup emails are separate from the campaign limit, and warmup stays on (SPEC 13) |
 
@@ -358,6 +381,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **The Copy tab holds one row per industry** (Harry, 30 Sep 2026). Each row is a four-email sequence: `s1_subject`, `s1_body` … `s4_body`, plus one line per contacted role (`people_leader_line`, `founder_line`, `operations_line`), and `status`, `approved_by`, `qa`, `qa_notes`, `sources` and `note`.
 - **Which row a lead gets:** the most specific approved row that has passed QA. That is its own industry label for its contact's role, then the label, then the label's group for the role, then the group, then `General`. So an industry can go live as soon as its own row is approved, and a General row covers the rest if Harry approves one.
+- **How specific it may be** (the label check, Harry, 7 Oct 2026; `labels.copy_level`): a label's own rows only when its label is confirmed (the rules and the model agree, the model is sure, an Overrides row or an approver's correction); the group's rows when the two disagreed within the group, under `label_check` = `skip`, or before the company is checked; General's when they disagreed across groups. So a doubtful label never carries a label's pitch, and **an approved, QA-passed row for each active group's own label and for General must stay on the Copy tab**: the safety net lands on them. Each card's *Industry* line says which (`rules and model agree · Fintech copy`, `⚠️ … · General copy`), and its *They do* line what the model read.
 - **How it is personal:**
   - Industry-specific copy throughout.
   - The role line in email 1.
@@ -429,7 +453,8 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **Loading the new tabs into the sheet** (`settings/load.py`):
 - `us-outbound settings load` (dry-run) prints what would change; `--live` writes it, then `us-outbound settings sync` brings it in.
-- Industries rows are matched by label. Harry's `active`, `priority` and `proof_point` are kept, the build's other columns win, and rows Harry added stay.
+- The dry-run lists every cell the load would change, row by row and column by column (`Games studios: naics_prefixes: '513210; 5112; 541511' → '513210; 5112'`); a long cell shows the part that differs, with a little either side (Harry, 7 Oct 2026).
+- Industries rows are matched by label. Harry's `active`, `priority` and `proof_point` are kept, the build's other columns win, and rows Harry added stay. `--keep COLUMN` keeps the sheet's value in one more column for that load, such as a `page_faqs` line edited on the sheet.
 - A Copy tab still in the old one-row-per-step layout is replaced. Its rows stay in the database's settings history, and until it is replaced the sync reads it as no copy and says so.
 - A Copy tab already in the new layout keeps every row as it is; only missing versions are added.
 
@@ -446,6 +471,8 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | Turn an industry on or off | Industries: `active` | The universe search and the queue include it or leave it out. For only some industries, switch the others off |
 | Put an industry first | Industries: `priority` | Its accounts go ahead of others at the same score and size |
 | Widen or narrow an industry | Industries: `naics_prefixes`, `exclude_naics`, `apollo_keywords` | Changes the Apollo filters and the Python re-check |
+| Say what an industry is | Industries: `definition` (Harry, 7 Oct 2026) | The label check's line for the label: what a company under it is, and is not. Blank takes the build's. An edit (or a keyword edit) has the queue checked again over the next weekdays |
+| Run on the rules alone | General: `label_check` = `skip` | For a Claude outage: new companies are verified on the rules' label with the group's copy. `required` is the default |
 | Where | States | HQ states in or out (CA and WA never) |
 | Who | Roles | Titles and who comes first by company size |
 | What counts | Signals | Weights, new keyword signals on an existing source, Hold and Exclude rules |
@@ -470,6 +497,9 @@ Nothing re-weights or decides by itself: the system counts, and Harry changes th
 | Test reads | Tests tab `kind` and `looks`, `learn/looks.py`, `us-outbound test read ID` | A test is read only at a pre-registered look, over what that look covers; before the first, the read refuses and shows no reply |
 | Bookings | `crm/readback.py` (`hubspot_readback`, every 15 minutes), `events.source` | A meeting on Harry's calendar booked through his link (`hubspot_meeting`), or a Spill 3.0 deal at Demo requested or later at an enrolled company (`hubspot_deal`), recorded as `meeting_booked` |
 | UTM tags | `enrol/utm.py`, General `utm_links` | Our links say which sequence and email a website visit or booking came from |
+| The config version | `config_version.py`, `contacts.config_version`, `code_sha`, `copy_hash`, the `config_versions` table | What each contact was rendered under, as a 12-character id: the content tabs' versions, the sendable Copy rows, the General content keys, the signature template, the campaign constants and the code (Harry, 7 Oct 2026). Stamped at enrolment; a card waiting in Slack keeps the version it was rendered under |
+| Cohorts | `learn/cohorts.py`, `us-outbound cohorts`, the readout's *Cohorts* section | Each enrolment week's companies at 7, 14, 21 and 28 days after email 1, by any cut (tier, angle, industry group, sender, copy version, subject and opener arms, config version); consecutive weeks compared at the same age from 30 companies a side, with what changed between them named as a change to test, not a cause |
+| The settings report | `us-outbound cohorts changes`, the readout's *Settings changes*, the `config_log` table | What differs between two config versions in plain words (code, step days, the campaign template, the signature, General values, Copy rows, the content tabs' rows), and each change made to what leads in flight share (`campaigns ensure --fix --in-flight`, From names) |
 
 **Small numbers read as small.** Under 30 companies on either side, a rate is "too few to read" and only
 the counts are given (`signal_value.MIN_TO_READ`, the view's `too_few`, the readout). From 30, the signal
@@ -482,6 +512,13 @@ enrolment), angle, industry group, sender (the account's) and step (sends, bounc
 last week's activity (sends, bounces, replies, positive replies, meetings by company, unsubscribes,
 complaints) beside the cohort by week of step 1. `v_signal_value` keeps SPEC 12's Control comparison and the
 below-Control flag after 200, and adds the enrolled, sent and meeting counts and the "without" side.
+
+**Cohorts, and developing while live.** A contact's emails are rendered at enrolment and never rewritten, so a
+change to copy or settings reaches only the contacts enrolled after it; the campaign's step template, delays
+and text_only are shared by every lead in it, so drift in those is held while leads are in flight
+(docs/developing-while-live.md). A cohort is the UK week of a company's first enrolment, split by config
+version when a week has two; contacts enrolled before 8 Oct 2026 are "unstamped". A company counts at an age
+once it has reached it, so two weeks are compared over the same days after email 1.
 
 **Pre-registered looks.** A count look `N` is reached when both versions have `N` companies whose 28-day
 reply window has closed, and reads exactly the first `N` of each; a date look reads the companies whose window
@@ -525,6 +562,7 @@ the website's page raises a Spill 3.0 deal itself).
 | — | QA before approval: the sheet check, then the task model, stamped to the wording | Harry: "guards and QA" | 1.4, 10 | Done |
 | — | `claude_model` (Opus) writes; `claude_task_model` (Sonnet) checks and classifies | Harry | 1.1 | Done |
 | — | The learning loop: `monday_readout` (Mondays 08:30), the signal table, tests read only at pre-registered looks (Tests tab `kind`, `looks`), UTM tags (General `utm_links`), demo bookings read back from Spill 3.0 | Harry, 6 Oct 2026: "push ahead with building" | 9, 12 | Done; `settings load --tab General --tab Tests --live` brings the new key and columns |
+| — | Cohorts: each contact stamped with its config version; campaign drift in the steps, delays or text_only held while leads are in flight (`campaigns ensure --fix --in-flight` applies it to them, logged); reports by enrolment week at fixed ages with what changed between them; a lead suppressed while in flight is stopped | Harry, 7 Oct 2026: "a cohort system in place for contacts that have started not being interrupted by changes" | 6, 9, 12, 13 | Done; `us-outbound db apply --live` on deploy adds the columns and tables |
 | 9 | A weekly universe sweep over a quarter of the slices | Even Apollo spend through the month | 9 | Proposed (phase 1) |
 | 11 | Limit and budget lines in the Monday readout, with the two alerts | Shows the bottleneck without asking | 12 | Proposed (phase 3) |
 | 13 | A Seeds tab for lookalikes | More companies like the best ones | 5, 7 | Replaced 1 Oct by lookalikes from Spill's HubSpot customers (Harry); built |
@@ -609,7 +647,7 @@ Sources write facts only. One resolver sets the account's columns from the facts
 | domain | It is the key. If Clay's `domain_confirmed` is a different root domain that is not a known alias, the account goes to the hand-check |
 | hq_state, hq_city | Override → Clay → Apollo. A state disagreement goes to the hand-check |
 | employees, size_band | Override → Clay → Apollo (organisation enrich's exact count over the searched band). A band disagreement goes to the hand-check |
-| industry label | Override → Clay's label, if it is on the Industries tab → the label whose NAICS or keywords matched |
+| industry label | Override → an approver's correction (`label_source` approver) → the label check's decision once made (`label_source` set: a source finding the company again never puts the raw rules' label back) → Clay's label, if it is on the Industries tab → the label whose NAICS or keywords matched |
 | industry_group | Always from the label via the Industries tab, never a vendor's own category |
 | naics | Apollo |
 | founded_year | Override → Clay → Apollo |

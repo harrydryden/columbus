@@ -18,6 +18,12 @@ from us_outbound.registry import mailboxes as reg
 
 NOW = datetime(2026, 10, 5, 7, 30, tzinfo=UTC)  # Mon 5 Oct 2026, 08:30 UK: the pilot's first morning
 WEEK = "2026-W41"
+PING = "https://hc-ping.com/5a1b2c3d-golive"  # US_OUTBOUND_WATCHDOG_URL (ops/watchdog.py)
+
+
+def secrets_with(guard, watchdog=""):
+    """The test keys, and the watchdog's ping URL as given ("" = unset)."""
+    return Secrets(guard, fetch=lambda n: watchdog if n == "US_OUTBOUND_WATCHDOG_URL" else f"test-{n}")
 
 
 class Factory:
@@ -29,6 +35,7 @@ class Factory:
         self.instantly = FakeInstantly(self.transport, instantly_accounts)
         self.ctx = make_context(settings, transport=self.transport, now=NOW)
         self.ctx.clients.sheets = StubSheets(self.ctx.guard, {})
+        self.ctx.clients.secrets = secrets_with(self.ctx.guard)  # no outside watchdog until a test sets one
         self.calls = []
 
     def __call__(self, job, live_flag, operator=False):
@@ -99,7 +106,9 @@ def test_golive_against_the_default_settings_is_a_no_go(capsys):
                                   "paste them on the General tab, then `us-outbound sync`")
     assert got["Opt-out tested"].startswith("FAIL  Opt-out tested: seed-inbox test of the unsubscribe link not done")
     assert got["Opt-out tested"].endswith("set optout_tested = yes on the General tab, then `us-outbound sync`")
-    assert out.splitlines()[-1] == ("NO-GO: 7 FAIL, 1 WARN, 8 PASS. Fix every FAIL, then run `us-outbound golive` "
+    assert got["Watchdog"] == ("WARN  Watchdog: no outside watchdog: set US_OUTBOUND_WATCHDOG_URL "
+                               "(docs/railway-setup.md, step h)")
+    assert out.splitlines()[-1] == ("NO-GO: 7 FAIL, 2 WARN, 8 PASS. Fix every FAIL, then run `us-outbound golive` "
                                     "again.")
     assert not [line for line in report if "SPEC" in line]  # plain words for Harry
     # Read-only: no write was attempted anywhere.
@@ -122,6 +131,7 @@ def ready_world(monkeypatch):
     st.insert("contacts", [contact(contact_id=f"con-{i}", account_id=f"acc-{i}", email=f"jane@a{i}.com") for i in range(40)])
     st.insert("hitl_items", [{"item_id": f"hand_check-{WEEK}", "kind": "hand_check", "status": "handled",
                               "created_at": NOW - timedelta(hours=1), "payload": {"iso_week": WEEK, "pulled_account_ids": []}}])
+    f.ctx.clients.secrets = secrets_with(f.ctx.guard, PING)  # Healthchecks.io's check is set up
     for job in ("sync_outcomes", "poll_replies", "poll_approvals"):
         monkeypatch.setitem(cli.JOBS, job, "tests.test_golive:noop")
     monkeypatch.setattr(schedule_, "SCHEDULE", tuple(dataclasses.replace(j, enabled=True) if j.cron else j
@@ -151,7 +161,9 @@ def test_golive_is_a_go_when_every_blocker_is_cleared(monkeypatch, capsys):
     assert "Hand-check" not in got  # every email is approved in Slack
     assert got["clay_verification"] == "PASS  clay_verification: skip: accounts are verified on Apollo data and HubSpot"
     assert got["HubSpot ids"] == "PASS  HubSpot ids: pipeline, deal stage and owner set: a positive reply creates a deal"
-    assert out.splitlines()[-1] == ("GO: 0 FAIL, 1 WARN, 15 PASS. Next: `us-outbound start --live`; cards arrive in "
+    assert got["Watchdog"] == ("PASS  Watchdog: set: heartbeat_check pings it every hour, and Healthchecks.io emails "
+                               "if it stops")
+    assert out.splitlines()[-1] == ("GO: 0 FAIL, 1 WARN, 16 PASS. Next: `us-outbound start --live`; cards arrive in "
                                     "#us-outbound after enrol at 12:00 UK.")
 
 
@@ -311,3 +323,34 @@ def test_hubspot_ids_warn_until_they_are_pasted(monkeypatch, capsys):
     cli.main(["golive"], context_factory=f)
     assert lines_of(capsys.readouterr().out)["HubSpot ids"].startswith(
         "WARN  HubSpot ids: hubspot_deal_stage_id blank: a positive reply creates no HubSpot deal")
+
+
+def test_a_watchdog_url_that_is_not_https_warns(monkeypatch, capsys):
+    """Harry, 7 Oct 2026: the ping URL carries the check's secret id, so it is only ever sent over https."""
+    f = ready_world(monkeypatch)
+    f.ctx.clients.secrets = secrets_with(f.ctx.guard, "http://hc-ping.com/5a1b2c3d")
+    assert cli.main(["golive"], context_factory=f) == 0
+    got = lines_of(capsys.readouterr().out)
+    assert got["Watchdog"] == ("WARN  Watchdog: US_OUTBOUND_WATCHDOG_URL is not an https ping URL: paste the check's "
+                               "ping URL from Healthchecks.io (docs/railway-setup.md, step h)")
+    assert "5a1b2c3d" not in str(got)
+
+
+def test_drift_held_while_leads_are_in_flight_warns_rather_than_fails(monkeypatch, capsys):
+    """Harry, 7 Oct 2026: the steps of a campaign with leads in flight are not rewritten under them, so a code change
+    to the step template is held (registry/mailboxes.IN_FLIGHT_KEYS): consistent for those leads, so a WARN."""
+    f = ready_world(monkeypatch)
+    hannah = f.instantly.by_name("US Outbound – Hannah Spalding")
+    variant = hannah["sequences"][0]["steps"][0]["variants"][0]
+    variant["body"] = variant["body"].replace("Not relevant?", "To stop hearing from us,")
+    f.ctx.store.update("contacts", {"contact_id": "con-0"}, {
+        "instantly_campaign": "US Outbound – Hannah Spalding", "instantly_lead_id": "L0", "enrolled_at": NOW - timedelta(days=2)})
+    f.ctx.store.update("accounts", {"account_id": "acc-0"}, {"status": "enrolled", "sender": "Hannah Spalding"})
+    before = len(f.ctx.guard.writes())
+    assert cli.main(["golive"], context_factory=f) == 0
+    out = capsys.readouterr().out
+    assert lines_of(out)["Campaigns"] == (
+        "WARN  Campaigns: 2 exist and match; 1 with drift held while leads are in flight: `us-outbound campaigns ensure "
+        "--fix --in-flight --live` applies it to them, or it waits until `us-outbound cohorts in-flight` shows 0")
+    assert "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight." in out
+    assert len(f.ctx.guard.writes()) == before  # read-only still

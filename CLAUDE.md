@@ -13,4 +13,5 @@
 ## Working rules
 - Secrets live only in sealed Railway variables: never in the repo, logs, database or chat.
 - Every job is dry-run by default; `live_sending` = yes on the General tab is Harry's sign-off.
+- Campaign constants (STEP_DAYS, the step template, email_format) change only through docs/developing-while-live.md.
 - Develop on branch `claude/spec-review-build-plan-08kpuz`.

@@ -33,8 +33,8 @@ SYSTEM = "apollo"
 def floor_reason(ctx: Context) -> str | None:
     """Why no Apollo credit may be spent now (the balance is below apollo_floor), or None.
 
-    An unknown balance (credits_left gives None: PHASE0-CONFIRM the credit type) does not stop
-    the job: the monthly budget in credit_ledger still holds it.
+    An unknown balance (credits_left gives None; lead_credit's has been read every run since 2 Oct 2026)
+    does not stop the job: the monthly budget in credit_ledger still holds it.
     """
     left = credits_left(ctx.clients.apollo.credit_usage())
     floor = ctx.settings.general.apollo_floor
