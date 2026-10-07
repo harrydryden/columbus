@@ -535,8 +535,8 @@ class Checker:
     and nothing is asked. unavailable: the first reason the model could not be asked this run (the cap, an error,
     no key), after which nothing more is asked."""
 
-    def __init__(self, ctx: Context, *, spend: bool = True, budget: Budget | None = None):
-        self.ctx, self.settings = ctx, ctx.settings
+    def __init__(self, ctx: Context, *, spend: bool = True, budget: Budget | None = None, purpose: str = JOB):
+        self.ctx, self.settings, self.purpose = ctx, ctx.settings, purpose
         self.listed = entries(ctx.settings)
         self.names = {e.name for e in self.listed}
         self.system = system_prompt(ctx.settings, self.listed)
@@ -599,8 +599,8 @@ class Checker:
         """One call (raises ClaudeError, BudgetExceeded or ConfigError to the caller)."""
         self.budget.made += 1
         answer = self.ctx.clients.claude_task.json(
-            self.system, material.prompt(), self.schema, max_tokens=MAX_TOKENS, purpose=JOB, now=self.ctx.now,
-            timeout=CALL_TIMEOUT, effort=MODEL_EFFORT,
+            self.system, material.prompt(), self.schema, max_tokens=MAX_TOKENS, purpose=self.purpose,
+            now=self.ctx.now, timeout=CALL_TIMEOUT, effort=MODEL_EFFORT,
         )
         self.asked += 1
         v = check_answer(answer, material, self.names, labels_hash=self.hash, model_id=self.model)
@@ -609,8 +609,8 @@ class Checker:
         return v
 
     def usd(self) -> float:
-        """What this run's calls cost (credit_ledger rows of job label_check written at the run's time)."""
-        return round(sum(float(r.get("usd") or 0.0) for r in self.ctx.store.select("credit_ledger", {"job": JOB})
+        """What this run's calls cost (credit_ledger rows of its job written at the run's time)."""
+        return round(sum(float(r.get("usd") or 0.0) for r in self.ctx.store.select("credit_ledger", {"job": self.purpose})
                          if _when(r.get("occurred_at")) == _when(self.ctx.now)), 4)
 
 
@@ -708,3 +708,96 @@ def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: st
             sheet = f"not written to the Overrides tab ({str(exc)[:160]}); the database keeps it"
     log("label_corrected", run_id=ctx.run_id, account_id=aid, to=label.industry, via=via, sheet=sheet[:80])
     return {"from": was, "to": label.industry, "sheet": sheet}
+
+
+# -- `us-outbound labels eval`: the model scored on companies whose right answer is known -----------------------------
+
+EVAL_JOB = "label_eval"  # credit_ledger.job of the eval's calls, apart from the checks
+EVAL_PASS = 0.9  # the share acceptable below which the eval fails (and any unsafe row fails it)
+ACCEPTABLE, WRONG, UNSAFE = "acceptable", "wrong", "unsafe"
+
+
+def gold_rows() -> list[dict]:
+    """The gold set: the first cards' 13 companies with made-up names (GOLD_FILE)."""
+    return list(json.loads(GOLD_FILE.read_text(encoding="utf-8"))["rows"])
+
+
+def gold_events(row: Mapping[str, Any]) -> list[dict]:
+    """A gold row's Apollo facts as signal_events rows, as source_universe writes them."""
+    aid = f"gold:{row['domain']}"
+    facts = (("naics", list(row.get("naics") or ())), ("keywords", list(row.get("keywords") or ())),
+             ("apollo_industry", row.get("apollo_industry") or ""), ("description", row.get("description") or ""))
+    return [{"event_id": f"{aid}:{f}", "account_id": aid, "source": APOLLO_SOURCE, "fact": f, "value": v,
+             "observed_at": "2026-10-07T00:00:00+00:00"} for f, v in facts if v]
+
+
+def corrected_rows(ctx: Context) -> list[dict]:
+    """Every approver's correction as a row to score: the company's stored Apollo facts, expecting its new label."""
+    rows = []
+    for e in ctx.store.select("signal_events", {"source": JOB, "fact": CORRECTED_FACT}):
+        v = e.get("value") or {}
+        a = ctx.store.get("accounts", account_id=e["account_id"])
+        if a is None or not v.get("to"):
+            continue
+        facts = {f: (x.get("value") if (x := _newest(ctx.store.select("signal_events", {
+            "account_id": a["account_id"], "source": APOLLO_SOURCE, "fact": f}), APOLLO_SOURCE, f)) else None)
+            for f in MATERIAL_FACTS}
+        rows.append({"name": a.get("clean_name") or a.get("domain"), "domain": a.get("domain"),
+                     "went_out_as": v.get("from"), "apollo_industry": facts["apollo_industry"] or "",
+                     "naics": _texts(facts["naics"]), "keywords": _texts(facts["keywords"]),
+                     "description": facts["description"] or "",
+                     "expect": {"accept": [v["to"]], "action": VERIFY}, "why": f"corrected by {v.get('by')}"})
+    return rows
+
+
+def score(d: Decision, expect: Mapping[str, Any]) -> str:
+    """acceptable: the action expected, and a label among those accepted (when any are); unsafe: a label's own
+    copy for a label not accepted (a specific pitch to the wrong company); else wrong."""
+    accept = list(expect.get("accept") or ())
+    if d.copy == LABEL_COPY and d.action != DISQUALIFY and d.label not in accept:
+        return UNSAFE
+    ok = d.action == expect.get("action") and (not accept or d.action != VERIFY or d.label in accept)
+    if ok and expect.get("copy") and d.action == VERIFY:
+        ok = d.copy == expect["copy"]
+    return ACCEPTABLE if ok else WRONG
+
+
+def evaluate(ctx: Context, rows: Sequence[Mapping[str, Any]]) -> dict:
+    """`labels eval`: each row's rules label, the model asked (live only), the decision and its score. A dry run says
+    how many and what they would cost at most, and asks nothing. passed: at least EVAL_PASS acceptable and none
+    unsafe (live)."""
+    checker = Checker(ctx, spend=ctx.live, budget=Budget(calls=len(rows), seconds=float("inf")), purpose=EVAL_JOB)
+    s = ctx.settings
+    out: dict[str, Any] = {"dry_run": ctx.dry_run, "rows": len(rows), "model": checker.model,
+                           "labels_hash": checker.hash, "results": []}
+    if ctx.dry_run:
+        most = sum(checker.estimate_usd(Material.of({"domain": r.get("domain"), "clean_name": r.get("name")},
+                                                    gold_events(r))) for r in rows)
+        out["most_usd"] = round(most, 4)
+        return out
+    tally: dict[str, int] = {ACCEPTABLE: 0, WRONG: 0, UNSAFE: 0}
+    for r in rows:
+        account = {"account_id": f"gold:{r['domain']}", "domain": r["domain"], "clean_name": r.get("name"),
+                   "industry": r.get("went_out_as")}
+        events = gold_events(r)
+        rules = rules_label(account, events, s)
+        try:
+            v = checker.ask(Material.of(account, events))
+        except (ClaudeError, ConfigError) as exc:
+            out["results"].append({"domain": r["domain"], "error": str(exc)[:200]})
+            out["error"] = f"the model could not be asked ({str(exc)[:160]})"
+            break
+        d = decide(rules, v, s) or Decision(None, None, RULES, "", GROUP_COPY, VERIFY)
+        verdict = score(d, r.get("expect") or {})
+        tally[verdict] += 1
+        out["results"].append({
+            "domain": r["domain"], "expected": " or ".join(r["expect"].get("accept") or ()) or "left out",
+            "expected_action": r["expect"].get("action"), "rules": rules.industry if rules else None,
+            "model": v.label, "confidence": v.confidence, "entity": v.entity, "evidence": v.evidence,
+            "decision": f"{d.action}: {d.label} ({d.source}, {d.copy} copy)", "score": verdict})
+    done = sum(tally.values())
+    out.update(tally, asked=checker.asked, usd=checker.usd(),
+               acceptable_share=round(tally[ACCEPTABLE] / done, 3) if done else 0.0)
+    out["passed"] = bool(done) and not out.get("error") and tally[UNSAFE] == 0 and tally[ACCEPTABLE] >= EVAL_PASS * done
+    log("labels_eval", run_id=ctx.run_id, rows=len(rows), **tally, passed=out["passed"], usd=out["usd"])
+    return out

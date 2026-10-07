@@ -443,3 +443,74 @@ def test_the_gold_set(row):
     if "copy" in want:
         assert d.copy == want["copy"]
     assert not (d.copy == "label" and d.label not in want["accept"])  # never a label's own pitch to the wrong company
+
+
+# -- `us-outbound labels eval` ----------------------------------------------------------------------------------------
+
+
+def gold_sdk(overrides=None):
+    from tests.test_verify import LabelSDK
+
+    return LabelSDK({r["domain"]: {**r["model_answer"], **(overrides or {}).get(r["domain"], {})} for r in GOLD})
+
+
+def eval_ctx(sdk, live):
+    return make_context(DEFAULT, now=NOW, claude_sdk=sdk, live=live, job="labels_eval")
+
+
+def test_a_dry_eval_counts_and_prices_and_asks_nothing():
+    sdk = gold_sdk()
+    out = labels.evaluate(eval_ctx(sdk, False), labels.gold_rows())
+    assert (out["dry_run"], out["rows"], out["results"]) == (True, 13, []) and 0.1 < out["most_usd"] < 0.4
+    assert sdk.calls == []
+
+
+def test_the_eval_scores_the_gold_set_and_passes_with_right_answers():
+    sdk = gold_sdk()
+    out = labels.evaluate(eval_ctx(sdk, True), labels.gold_rows())
+    assert (out["acceptable"], out["wrong"], out["unsafe"], out["passed"]) == (13, 0, 0, True)
+    assert len(sdk.calls) == 13 and out["usd"] > 0
+    ctx = eval_ctx(gold_sdk(), True)
+    labels.evaluate(ctx, labels.gold_rows())
+    assert {r["job"] for r in ctx.store.select("credit_ledger")} == {"label_eval"}  # apart from the checks
+    assert ctx.store.select("signal_events") == [] and ctx.store.select("accounts") == []  # it changes nothing
+
+
+def test_a_specific_pitch_to_the_wrong_company_is_unsafe_and_fails_the_eval(capsys):
+    from us_outbound.ops import cli
+
+    bad = {"spinesurgeons-society.org": {"label": "AI & deep tech", "entity": "company"}}
+    out = labels.evaluate(eval_ctx(gold_sdk(bad), True), labels.gold_rows())
+    [row] = [r for r in out["results"] if r["domain"] == "spinesurgeons-society.org"]
+    assert row["score"] == "unsafe" and out["unsafe"] == 1 and out["passed"] is False
+    ctx = eval_ctx(gold_sdk(bad), True)
+    assert cli.main(["labels", "eval", "--live"], context_factory=lambda *a, **k: ctx) == 1
+    printed = capsys.readouterr().out
+    assert "unsafe     spinesurgeons-society.org · expected left out (disqualify)" in printed
+    assert "Failed: it needs 90% acceptable and nothing unsafe." in printed
+
+
+def test_the_eval_reads_the_approvers_corrections_too():
+    ctx = make_context(DEFAULT, now=NOW, live=True, job="labels_eval")
+    ctx.store.insert("accounts", [acct(industry="Adtech & martech")])
+    ctx.store.insert("signal_events", facts("a1", naics=["541511"], keywords=["payments"], industry="fintech",
+                                            description="Payments for shops."))
+    labels.correct(ctx, acct(industry="Adtech & martech"), ind("Fintech"), by="U_HARRY", via="thread")
+    [row] = labels.corrected_rows(ctx)
+    assert (row["domain"], row["naics"], row["expect"]) == ("a1co.com", ["541511"], {"accept": ["Fintech"],
+                                                                                     "action": "verify"})
+
+
+@pytest.mark.parametrize("d, expect, verdict", [
+    (D("Fintech", TECH, "model", "high", "label"), {"accept": ["Fintech"], "action": "verify"}, "acceptable"),
+    (D("Fintech", TECH, "model", "high", "label"), {"accept": ["Healthtech"], "action": "verify"}, "unsafe"),
+    (D(TECH, TECH, "umbrella", "medium", "group"), {"accept": ["Fintech"], "action": "verify"}, "wrong"),
+    (D("Healthtech", TECH, "disputed", "medium", "general"), {"accept": ["Healthtech"], "action": "verify",
+                                                               "copy": "general"}, "acceptable"),
+    (D("Fintech", TECH, "disputed", "high", "general", "disqualify"), {"accept": [], "action": "disqualify"},
+     "acceptable"),
+    (D("AI & deep tech", TECH, "model", "high", "label"), {"accept": [], "action": "disqualify"}, "unsafe"),
+    (D("Fintech", TECH, "disputed", "medium", "general", "hold"), {"accept": [], "action": "disqualify"}, "wrong"),
+])
+def test_score(d, expect, verdict):
+    assert labels.score(d, expect) == verdict

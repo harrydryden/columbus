@@ -177,3 +177,48 @@ def test_labels_set_corrects_a_company_and_withdraws_its_card_and_show_tells_the
     assert '"label_source": "approver"' in capsys.readouterr().out
     assert cli.main(["labels", "set", "loopstudio.com"], context_factory=lambda *a, **k: ctx) == 2
     assert "labels set needs the label" in capsys.readouterr().err
+
+
+# -- `us-outbound labels audit` ----------------------------------------------------------------------------------------
+
+
+def audit_world(live=True):
+    from tests.test_verify import LabelSDK
+
+    ctx, t, sl = world()
+    sdk = LabelSDK({"acmecreative.com": {"label": "Fintech", "evidence": "advertising agency"},
+                    "brightfin.com": {"label": "Fintech", "evidence": "fintech"}})
+    ctx.clients.claude_sdk = sdk
+    fact(ctx, "acc-1", "keywords", ["advertising agency"])
+    fact(ctx, "acc-2", "description", "Brightfin builds fintech for shops.")
+    at(ctx, ctx.now, live=live, job=relabel.AUDIT_JOB)
+    return ctx, t, sl, sdk
+
+
+def test_a_dry_audit_counts_prices_and_shows_a_prompt_and_asks_nothing():
+    ctx, t, sl, sdk = audit_world(live=False)
+    out = relabel.audit(ctx)
+    assert (out["to_check"], out["open_accounts"], out["stale"]) == (2, 3, 0)  # acc-3 has nothing to check against
+    assert 0.005 < out["per_call_usd"] < 0.03 and out["most_usd"] == round(out["per_call_usd"] * 2, 2)
+    assert out["sample_prompt"].startswith("<company>\nName: ") and sdk.calls == []
+    assert out["stored"]["dry_run"] is True and len(items(ctx, "open")) == 3
+
+
+def test_a_live_audit_asks_decides_and_withdraws_the_cards_that_no_longer_fit(capsys):
+    from us_outbound.ops import cli
+
+    ctx, t, sl, sdk = audit_world()
+    out = relabel.audit(ctx)
+    assert out["asked"] == 2 and out["usd"] > 0 and out["unavailable"] == ""
+    a1 = ctx.store.get("accounts", account_id="acc-1")
+    # The rules say Advertising agencies (its own keyword); the model is sure it is Fintech: the model's label.
+    assert (a1["industry"], a1["label_source"]) == ("Fintech", "model")
+    assert out["disagreements"][0]["domain"] == "acmecreative.com"
+    assert out["cards_withdrawn"] == ["Acme Creative"] and {r["account_id"] for r in items(ctx, "open")} == {
+        "acc-2", "acc-3"}
+    assert out["decisions"] == {"model": 1, "rules+model": 1}
+    # Asked once: a second audit finds nothing left to check.
+    again = relabel.audit(ctx)
+    assert again["to_check"] == 0 and len(sdk.calls) == 2
+    assert cli.main(["labels", "audit"], context_factory=lambda *a, **k: ctx) == 0
+    assert "0 of 3 open companies have no fresh label check" in capsys.readouterr().out
