@@ -749,8 +749,8 @@ def bundled_definitions() -> dict[str, str]:
     check reads unless Harry has edited a line."""
     global _DEFINITIONS
     if _DEFINITIONS is None:
-        _DEFINITIONS = {r["industry"].strip().casefold(): r["definition"].strip() for r in _industries()
-                        if r["definition"].strip()}
+        _DEFINITIONS = {r["industry"].strip().casefold(): " ".join(r["definition"].split()) for r in _industries()
+                        if r["definition"].strip()}  # spaces folded, as validate.py folds a sheet cell
     return _DEFINITIONS
 
 
