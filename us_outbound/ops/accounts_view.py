@@ -50,7 +50,9 @@ QUOTE_CHARS = 160
 VALUE_CHARS = 100
 DOMAIN_WIDTH = 28
 # The CSV: the account's columns, the contact's, then both ids (the database's own column names).
-ACCOUNT_COLUMNS = ("domain", "clean_name", "legal_name", "industry", "industry_group", "employees", "us_employees",
+ACCOUNT_COLUMNS = ("domain", "clean_name", "legal_name", "industry", "industry_group",
+                   "label_source", "label_confidence", "label_checked_at",  # the label check (labels.py, 7 Oct 2026)
+                   "employees", "us_employees",
                    "size_band", "hq_city", "hq_state", "founded_year", "source", "tier", "tier_reason", "score",
                    "angle", "sender", "status", "first_seen", "last_scored")
 CONTACT_COLUMNS = ("first_name", "last_name", "title", "role", "email", "email_status", "email_source",
@@ -402,6 +404,28 @@ def _shown(rows: list[dict], cap: int, what: str) -> str:
     return f"{what}: {len(rows)}" + (f", the latest {cap}:" if len(rows) > cap else "")
 
 
+def _label_line(a: Mapping[str, Any], signals: Sequence[Mapping[str, Any]]) -> str:
+    """How the industry label check placed the company (labels.py; Harry, 7 Oct 2026): its label source and the
+    copy it earns, and the model's latest answer beside the rules' label."""
+    from us_outbound import labels
+
+    source = _text(a.get("label_source"))
+    if not source:
+        return "  Label check: not checked yet (the group's copy)"
+    confidence = _text(a.get("label_confidence"))
+    line = (f"  Label check: {source}" + (f" ({confidence})" if confidence else "")
+            + f" · {labels.copy_level(a)} copy · decided {_time(a.get('label_checked_at'))}")
+    v = labels.latest_verdict(signals)
+    if v:
+        line += (f" · the rules said {_text(v.get('rules')) or 'no label'}, the model {_text(v.get('model'))} "
+                 f"({_text(v.get('confidence'))}, {_text(v.get('entity'))})")
+        if v.get("what_they_do"):
+            line += f" · they do: {_text(v['what_they_do'])}"
+        if v.get("evidence"):
+            line += f" · “{_text(v['evidence'])}”"
+    return line
+
+
 def company(ctx: Context, given: str) -> tuple[bool, list[str]]:
     """`us-outbound accounts DOMAIN`: (found; the lines). Everything held on one company, emails included."""
     a, domain = find(ctx, given)
@@ -425,6 +449,7 @@ def company(ctx: Context, given: str) -> tuple[bool, list[str]]:
         f"  Legal name: {_text(a.get('legal_name')) or '-'}",
         f"  HQ: {', '.join(x for x in (_text(a.get('hq_city')), _text(a.get('hq_state'))) if x) or 'unknown'}",
         f"  Industry: {_text(a.get('industry')) or 'unknown'} (group {group or 'unknown'})",
+        _label_line(a, signals),
         f"  Employees: {employees} · size band {_text(a.get('size_band')) or 'unknown'} · "
         f"founded {_text(a.get('founded_year')) or 'unknown'}",
         f"  Source: {_text(a.get('source')) or 'unknown'} · first seen {_time(a.get('first_seen'))} · "
