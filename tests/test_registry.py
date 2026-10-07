@@ -758,3 +758,102 @@ def test_drift_reads_a_campaign_as_instantly_returns_it():
     assert reg.campaign_drift(returned, SETTINGS, "Hannah Spalding", caps)["first_email_text_only"] == [False, True]
     assert reg._fix_fields({"first_email_text_only": [False, True]}, SETTINGS, "Hannah Spalding") == {
         "first_email_text_only": False}
+
+
+# -- leads in flight (Harry, 7 Oct 2026: contacts that have started are not interrupted by changes) -------------------
+
+
+def in_flight_world(*, enrolled_days_ago: int = 3, stopped: bool = False, live: bool = True):
+    """Hannah's campaign with step 1's words changed in Instantly and its daily limit behind, and one lead in it."""
+    ctx, t, inst, sheets = setup(live=live)
+    c = inst.standard(C_HANNAH, [HANNAH], 20, status=1)
+    variant = c["sequences"][0]["steps"][0]["variants"][0]
+    variant["body"] = variant["body"].replace("Not relevant?", "To stop hearing from us,")  # the link is the same
+    inst.standard(C_HARRY, [HARRY, HARRY2], 60, status=1)
+    inst.standard(C_SAM, [SAM], 30, status=1)
+    ctx.store.insert("accounts", [{"account_id": "acc-1", "domain": "acme.com", "status": "enrolled",
+                                   "sender": "Hannah Spalding"}])
+    ctx.store.insert("contacts", [{"contact_id": "con-1", "account_id": "acc-1", "instantly_campaign": C_HANNAH,
+                                   "instantly_lead_id": "L1", "enrolled_at": NOW - timedelta(days=enrolled_days_ago)}])
+    if stopped:
+        ctx.store.insert("events", [{"event_id": "r1", "contact_id": "con-1", "account_id": "acc-1", "type": "replied",
+                                     "reply_class": "negative", "occurred_at": NOW - timedelta(days=1)}])
+    return ctx, t, inst
+
+
+def sequence_patches(t) -> list:
+    return [r for r in t.requests if r.method == "PATCH" and "/campaigns/" in r.url and "sequences" in (r.json or {})]
+
+
+def test_ensure_holds_in_flight_keys_while_leads_are_in_flight():
+    ctx, t, inst = in_flight_world()
+    out = reg.ensure_campaigns(ctx, fix=True)
+    assert set(out["drift"][C_HANNAH]) == {"steps.1", "daily_limit"}
+    assert out["fixed_fields"] == {C_HANNAH: ["daily_limit"]} and inst.by_name(C_HANNAH)["daily_limit"] == 30
+    assert out["held"] == {C_HANNAH: {"keys": ["steps.1"], "leads": 1}}
+    assert sequence_patches(t) == [] and ctx.store.tables["config_log"] == []  # the daily limit is not logged
+    assert reg.held_words(C_HANNAH, out["held"][C_HANNAH]) == (
+        "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight. Apply to them with "
+        "`us-outbound campaigns ensure --fix --in-flight --live`, or wait until `us-outbound cohorts in-flight` shows 0.")
+    out = reg.ensure_campaigns(ctx, fix=True, in_flight=True)
+    assert out["fixed_fields"] == {C_HANNAH: ["steps.1"]} and out["held"] == {} and len(sequence_patches(t)) == 1
+    [row] = ctx.store.tables["config_log"]
+    assert (row["kind"], row["campaign"], row["changed_keys"], row["leads_in_flight"], row["changed_by"]) == (
+        "campaign_change", C_HANNAH, ["steps.1"], 1, "test")
+    assert reg.ensure_campaigns(ctx)["drift"] == {}
+
+
+@pytest.mark.parametrize("why", ["stopped", "finished"])
+def test_with_no_lead_in_flight_the_drift_is_applied_and_still_logged(why):
+    ctx, t, inst = in_flight_world(stopped=why == "stopped", enrolled_days_ago=30 if why == "finished" else 3)
+    out = reg.ensure_campaigns(ctx, fix=True)
+    assert out["held"] == {} and out["fixed_fields"] == {C_HANNAH: ["daily_limit", "steps.1"]}
+    [row] = ctx.store.tables["config_log"]
+    assert (row["changed_keys"], row["leads_in_flight"]) == (["steps.1"], 0)
+
+
+def test_a_step_that_lost_the_unsubscribe_link_is_put_back_for_everyone():
+    ctx, t, inst = in_flight_world()
+    variant = inst.by_name(C_HANNAH)["sequences"][0]["steps"][0]["variants"][0]
+    variant["body"] = variant["body"].replace(UNSUBSCRIBE_TAG, "")  # the opt-out is never held
+    out = reg.ensure_campaigns(ctx, fix=True)
+    assert out["held"] == {} and "steps.1" in out["fixed_fields"][C_HANNAH] and len(sequence_patches(t)) == 1
+    assert ctx.store.tables["config_log"][0]["leads_in_flight"] == 1
+
+
+def test_safety_settings_are_never_held():
+    ctx, t, inst = in_flight_world()
+    inst.by_name(C_HANNAH).update(stop_on_reply=False, insert_unsubscribe_header=False, open_tracking=True)
+    out = reg.ensure_campaigns(ctx, fix=True)
+    assert {"stop_on_reply", "insert_unsubscribe_header", "open_tracking"} <= set(out["fixed_fields"][C_HANNAH])
+    assert inst.by_name(C_HANNAH)["stop_on_reply"] is True and out["held"][C_HANNAH]["keys"] == ["steps.1"]
+
+
+def test_a_dry_run_holds_the_same_and_logs_nothing():
+    ctx, t, inst = in_flight_world(live=False)
+    out = reg.ensure_campaigns(ctx, fix=True, in_flight=True)
+    assert out["fixed_fields"] == {C_HANNAH: ["daily_limit", "steps.1"]} and instantly_writes(t) == []
+    assert ctx.store.tables["config_log"] == []
+
+
+def test_mailbox_health_says_what_is_held_and_starts_the_campaign_anyway():
+    ctx, t, inst = in_flight_world()
+    go_live(ctx)
+    inst.by_name(C_HANNAH)["status"] = 0  # a draft after go-live: mailbox_health starts it
+    out = reg.mailbox_health(ctx)
+    assert out["campaigns"]["held"] == {C_HANNAH: {"keys": ["steps.1"], "leads": 1}}
+    assert out["campaign_start"]["started"] == [C_HANNAH]  # consistent for the leads in flight
+    [post] = posts(t)
+    assert "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight." in post["text"]
+    assert "Campaign drift, US Outbound – Hannah Spalding" not in post["text"]
+
+
+def test_a_sender_name_set_is_logged_with_the_leads_in_flight():
+    ctx, t, inst, sheets = setup(accounts=misnamed())
+    ctx.store.insert("contacts", [{"contact_id": "con-1", "account_id": "acc-1", "instantly_campaign": C_HANNAH,
+                                   "instantly_lead_id": "L1", "enrolled_at": NOW - timedelta(days=3)}])
+    reg.mailbox_health(ctx, fix_names=True)
+    rows = sorted(ctx.store.tables["config_log"], key=lambda r: r["campaign"])
+    assert [(r["kind"], r["campaign"], r["changed_keys"], r["leads_in_flight"]) for r in rows] == [
+        ("sender_name", C_HANNAH, [HANNAH], 1), ("sender_name", C_SAM, [SAM], 0)]
+    assert rows[0]["detail"] == {"from": ["Hannah", "at Spill"], "to": ["Hannah", "Spalding"]}

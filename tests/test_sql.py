@@ -50,7 +50,8 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
     "accounts": {"hq_country"},  # accounts.any_us_state (Harry, 6 Oct 2026)
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
                  "tier_at_enrol", "data_record", "subject_arm",
-                 "contact_slot"},  # enrol/second.py (Harry, 6 Oct 2026)
+                 "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
+                 "config_version", "code_sha", "copy_hash"},  # the cohort stamp (Harry, 7 Oct 2026)
     "suppression": {"expires_at"},
     "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }
@@ -72,6 +73,14 @@ BUILD_TABLES: dict[str, set[str]] = {
         "cell_id", "industry_group", "growth_band", "active_customers", "churned_customers", "strength", "computed_at",
         "run_id",
     },
+    "config_versions": {  # Harry, 7 Oct 2026: what a cohort was enrolled under (config_version.py)
+        "config_version", "first_seen", "code_sha", "campaign_fingerprint", "signature_hash", "step_days",
+        "settings_versions", "copy_hashes", "general", "run_id",
+    },
+    "config_log": {  # Harry, 7 Oct 2026: changes to what in-flight leads share (registry/mailboxes.py)
+        "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
+        "changed_by", "run_id",
+    },
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
@@ -84,7 +93,7 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned", "score_at_enrol", "contact_slot"}
+        "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight"}
 FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
 BOOLS = {"suppressed", "dry_run"}
 
@@ -97,6 +106,7 @@ INDEXES = {
 HOT_INDEXES = {
     ("accounts", ("status",)), ("events", ("type", "occurred_at")), ("signal_events", ("source", "fact")),
     ("hitl_items", ("kind", "status")), ("heartbeats", ("job", "started_at")),
+    ("config_log", ("changed_at",)),
 }
 
 # Enum columns: their comment lists exactly these values after "One of: ".
@@ -117,7 +127,8 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
         "alert",  # ops/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
     },
-    ("events", "source"): {"hubspot_meeting", "hubspot_deal"},  # crm/readback.py (Harry, 6 Oct 2026)
+    ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
+                           "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
@@ -132,6 +143,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("hitl_items", "status"): {"open", "sending", "handled", "escalated"},
     ("lookalike_cells", "size_band"): {"1-9", "10-49", "50-99", "100-249", "250+", "unknown"},
     ("lookalike_growth", "growth_band"): {"shrinking", "flat", "growing", "fast", "unknown"},
+    ("config_log", "kind"): {"campaign_change", "sender_name"},  # registry/mailboxes.py (Harry, 7 Oct 2026)
 }
 
 

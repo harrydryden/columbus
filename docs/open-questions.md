@@ -15,6 +15,12 @@ None of these blocks the pilot; each has a safe default. The go-live steps thems
 - **72. Page-only claims** to confirm for the US (HIPAA, booking by text, languages, and so on).
 - **74. The first copy test**: what it compares, before phase 3.
 - **77. The duplicate Nonprofits page** to archive on the site.
+- **78. Follow-ups on blackout dates** (7 Oct 2026): enrol skips a blackout date, but Instantly's schedule
+  knows weekdays only, so the later steps of leads already in flight still go out on one (Thanksgiving week,
+  23 to 27 Nov). Default: they go. To stop them, `us-outbound stop --live` for those days and
+  `us-outbound start --live` after; or a later change puts the dates into Instantly's schedule.
+  (The other gap found then, a HubSpot opt-out not stopping a lead already in flight, is fixed: see
+  docs/developing-while-live.md.)
 
 ## Archive
 

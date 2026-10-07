@@ -78,10 +78,17 @@ to bottom:
    five are met, raise `weekly_enrol_cap` with the ramp (docs/roadmap.md §3).
 4. **By tier, angle, industry group, sender and step:** last week's sends, replies and meetings, and for
    each the companies emailed so far and how many replied.
-5. **Signal value:** the signals whose companies replied more or less than the companies without them. For
+5. **Cohorts:** the last four enrolment weeks (a company counts in the UK week its first contact was
+   enrolled), each at the latest age its companies have reached after email 1 (7, 14, 21 or 28 days); the
+   latest two compared at the same age once each has 30 companies, with what changed between them ("a
+   coincidence to test, not a cause"); and **Settings changes**: what changed last week in the settings,
+   copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
+   table, `us-outbound cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
+   two versions, `us-outbound cohorts changes`.
+6. **Signal value:** the signals whose companies replied more or less than the companies without them. For
    the whole table, `us-outbound signals value`. To act on it, change a weight on the Signals tab, then
    `us-outbound sync`. Nothing re-weights itself.
-6. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
+7. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
    far each running test has got.
 
 **Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
@@ -156,6 +163,11 @@ docs/railway-setup.md, step h.
   should be the owner's full name from the Mailboxes tab ("Hannah Spalding"), not "Hannah at Spill".
   `us-outbound mailbox check` lists what it would change; `us-outbound mailbox check --fix --live`
   sets it in Instantly (the account's first and last name only).
+- **The mailbox check says "Campaign drift held":** a deploy changed the step template, delays or
+  text_only, and the campaign still has leads in flight, so their remaining emails are left as they
+  were. Either wait until `us-outbound cohorts in-flight` shows none for that campaign and run
+  `us-outbound campaigns ensure --fix --live`, or apply it to them too with
+  `us-outbound campaigns ensure --fix --in-flight --live` (docs/developing-while-live.md).
 - **A card says "Not sent":** the re-check at your ✅ found the person or company can no longer be
   emailed (an unsubscribe, a customer or open deal in HubSpot, a suppressed domain). Nothing was
   sent and the card is closed; there is nothing to do. A card that is only *held* (sending stopped,
@@ -271,6 +283,8 @@ commands instead.
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |
 | `copy preview --industry "Fintech" --html fintech.html`, `copy qa --live` | An email as a prospect will see it; QA for edited rows |
 | `readout` | The Monday readout for last week, printed and not posted |
+| `cohorts`, `cohorts changes`, `cohorts in-flight` | Each enrolment week at 7, 14, 21 and 28 days after email 1 (`--cut`, `--age`, `--weeks`); what changed between the last two config versions (or `cohorts changes A B`); each campaign's leads with a step still to send |
+| `campaigns ensure --fix --in-flight --live` | Applies campaign drift in the steps, delays or text_only to the leads already in flight too (held otherwise; docs/developing-while-live.md) |
 | `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
 | `test start ID --live`, `test read ID` | Start a test on the Tests tab; read it at its latest pre-registered look |
 

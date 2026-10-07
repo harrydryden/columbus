@@ -18,6 +18,10 @@ words, top to bottom:
     reason in enrol's run summary). Each says met or not met, with its numbers.
   * By tier, angle, industry group, sender and step: last week's activity, and for each the companies emailed so
     far and how many replied (v_readout_weekly; the step has activity only).
+  * Cohorts (learn/cohorts.py; Harry, 7 Oct 2026): the last four enrolment weeks in a line each, at the latest age
+    their companies have reached after email 1; the latest two compared where both have 30 companies; and what
+    changed last week in the settings, the copy, the campaign constants and the code (config versions, and the
+    campaign changes made under leads in flight). `us-outbound cohorts` has the full table.
   * The signal table's headline (v_signal_value, learn/signal_value.py).
   * Tests: each running test that reached a pre-registered look in the last week, with its read, or how far it
     has got (learn/looks.py).
@@ -39,7 +43,7 @@ from typing import Any
 
 from us_outbound import budget
 from us_outbound.context import UK, Context
-from us_outbound.learn import looks, signal_value
+from us_outbound.learn import cohorts, looks, signal_value
 from us_outbound.learn.kill_rules import COMPLAINT
 from us_outbound.logs import log
 from us_outbound.ops import notify
@@ -332,6 +336,8 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     if rows is not None:
         for cut, title in CUTS:
             lines += cut_lines(rows, cut, title, start)
+    section, by_cohort = cohorts.readout_lines(ctx, start, end)
+    lines += section
     table = signal_value.rows(ctx)
     lines += ["", "*Signal value* (companies with the signal at enrolment, against those without)",
               *signal_value.headline(table)]
@@ -344,6 +350,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "signals_readable": sum(signal_value.verdict(r) != signal_value.TOO_FEW for r in table or []
                                 if int(r.get("accounts_sent") or 0)),
         "tests_at_a_look": at_look,
+        **by_cohort,  # the counts by enrolment week, and how many settings changes last week
     }
     return lines, nums
 

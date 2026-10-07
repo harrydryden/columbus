@@ -553,3 +553,44 @@ def test_no_http_library_outside_the_http_client():
     for rel in mine:
         text = (root / rel).read_text()
         assert not re.search(r"^\s*(import|from)\s+(requests|httpx|urllib)", text, re.M), rel
+
+
+# -- leads in flight (Harry, 7 Oct 2026) ---------------------------------------------------------------------------
+
+
+def held_world() -> Harness:
+    """Live settings, every campaign standard and active but Sam's step 1 worded as before, and one lead in it."""
+    h = Harness(LIVE_SETTINGS)
+    for name, accounts, limit in ((C_HANNAH, [HANNAH], 30), (C_SAM, [SAM], 30), (C_HARRY, [HARRY, HARRY2], 60)):
+        h.instantly.standard(name, accounts, limit, status=2)
+    from tests.test_ramp import past_ramp
+
+    past_ramp(h.store, SETTINGS.mailboxes, datetime(2026, 10, 27, 12, 0, tzinfo=UTC))
+    variant = h.instantly.by_name(C_SAM)["sequences"][0]["steps"][0]["variants"][0]
+    variant["body"] = variant["body"].replace("Not relevant?", "To stop hearing from us,")
+    h.store.insert("contacts", [{"contact_id": "con-1", "account_id": "acc-1", "instantly_campaign": C_SAM,
+                                 "instantly_lead_id": "L1", "enrolled_at": datetime(2026, 10, 26, 15, tzinfo=UTC)}])
+    return h
+
+
+def test_start_goes_ahead_over_drift_held_for_leads_in_flight(capsys):
+    h = held_world()
+    assert h.run("start", "--live") == 0
+    assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
+    assert "Campaign drift held, US Outbound – Sam Jackson: steps.1 would change 1 lead in flight." in capsys.readouterr().out
+    h.instantly.by_name(C_SAM)["open_tracking"] = True  # drift that is not held still refuses
+    assert h.run("start", "--live") == 2
+    assert "US Outbound – Sam Jackson: open_tracking. Fix with" in capsys.readouterr().err
+
+
+def test_campaigns_ensure_fix_in_flight_applies_it_to_them_and_logs_it(capsys):
+    h = held_world()
+    assert h.run("campaigns", "ensure", "--fix", "--live") == 0
+    assert "Campaign drift held, US Outbound – Sam Jackson: steps.1" in capsys.readouterr().out
+    assert h.store.tables["config_log"] == []
+    assert h.run("campaigns", "ensure", "--fix", "--in-flight", "--live") == 0
+    [row] = h.store.tables["config_log"]
+    assert (row["campaign"], row["changed_keys"], row["leads_in_flight"], row["changed_by"]) == (
+        C_SAM, ["steps.1"], 1, "campaigns_ensure")
+    assert h.run("campaigns", "ensure", "--in-flight") == 2  # --in-flight goes with --fix
+    assert "--in-flight goes with ensure --fix" in capsys.readouterr().err

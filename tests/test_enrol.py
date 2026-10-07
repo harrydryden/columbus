@@ -770,3 +770,26 @@ def test_enrol_passes_over_an_unsendable_best_contact():
     # Without a Roles tab or an account, the first created, as before.
     assert enrol.pick_contact(cons, set(), set())[0]["contact_id"] == "k-om"
     assert enrol.pick_contact(cons, set(), set(), a, make_settings())[0]["contact_id"] == "k-om"
+
+
+# -- the cohort stamp (config_version.py; Harry, 7 Oct 2026) ---------------------------------------------------------
+
+
+def test_enrol_stamps_config_version_code_sha_and_copy_hash(monkeypatch):
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "a4c5c27f00ba7e1234567890")
+    ctx, _ = make()  # a dry run records the version too (a database write), and stamps no contact
+    out = enrol.run(ctx)
+    [version] = ctx.store.select("config_versions")
+    assert out["config_version"] == version["config_version"] and version["code_sha"] == "a4c5c27f00ba"
+    assert not any(c.get("config_version") for c in ctx.store.select("contacts"))
+    ctx, _ = make(live=True)
+    enrol.run(ctx)
+    [version] = ctx.store.select("config_versions")
+    cons = rows(ctx, "contacts", "contact_id")
+    for c in cons.values():
+        assert (c["config_version"], c["code_sha"]) == (version["config_version"], "a4c5c27f00ba")
+        assert c["copy_hash"] == version["copy_hashes"][c["copy_version"]]
+    assert (version["first_seen"], version["run_id"]) == (NOW, ctx.run_id)
+    ctx.now += timedelta(days=1)  # the next run, on the same settings and code: no second row
+    assert enrol.run(ctx)["config_version"] == version["config_version"]
+    assert len(ctx.store.select("config_versions")) == 1

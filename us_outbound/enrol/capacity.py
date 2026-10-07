@@ -73,7 +73,8 @@ from us_outbound.settings.model import Settings
 # so the forecast and the Instantly campaign cannot drift apart.
 STEP_DELAYS = (0,) + tuple(b - a for a, b in zip(STEP_DAYS, STEP_DAYS[1:]))
 # lead_stopped: the account-level stop ended this lead because someone else at the account replied, bounced,
-# unsubscribed or complained (replies/account_stop.py; written only once Instantly has stopped it).
+# unsubscribed or complained, or an address or domain at the account was suppressed while it was in flight
+# (replies/account_stop.py; written only once Instantly has stopped it).
 STOP_EVENTS = ("replied", "bounced", "unsubscribed", "lead_stopped")
 OUT_OF_OFFICE = "out_of_office"  # a replied event of this class holds its slots
 ACTIVE = "Active"
@@ -395,6 +396,26 @@ def stopped_contacts(store: Store) -> set[str]:
     for c in store.select("contacts"):
         if c.get("enrolled_at") and str(c.get("account_id")) in not_enrolled:
             out.add(str(c.get("contact_id")))
+    return out
+
+
+def in_flight(store: Store, settings: Settings, today: date) -> list[dict]:
+    """Contacts whose sequence is still running (Harry, 7 Oct 2026): enrolled, with a lead in a US Outbound campaign,
+    not stopped (stopped_contacts), and with a step due today or later (step_days from enrolled_at, US Eastern).
+
+    The campaign-drift hold reads it (registry/mailboxes.IN_FLIGHT_KEYS), as do `us-outbound cohorts in-flight` and
+    the stop of a lead whose address or domain was suppressed after it was enrolled (replies/account_stop.py).
+    """
+    stopped = stopped_contacts(store)
+    out: list[dict] = []
+    for c in store.select("contacts"):
+        start = _ts(c.get("enrolled_at"))
+        if (start is None or not c.get("instantly_lead_id") or not owner_of(str(c.get("instantly_campaign") or ""))
+                or str(c.get("contact_id")) in stopped):
+            continue
+        days = step_days(start.astimezone(ET).date(), settings)
+        if days and days[-1] >= today:
+            out.append(c)
     return out
 
 

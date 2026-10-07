@@ -31,7 +31,19 @@ colleague's emails stop, but they are not suppressed, not blocklisted and not op
 contact whose own event it was is never touched here: Instantly has stopped their lead already.
 
 With second_contact = no every account has one enrolled contact, so there is never a colleague's lead to stop
-and the sweep calls nothing; it still runs, for accounts given a second contact before the switch went off.
+and a reply, bounce or unsubscribe makes the sweep call nothing; it still runs, for accounts given a second contact
+before the switch went off.
+
+Suppressed while in flight (Harry, 7 Oct 2026): only enrol checked suppression, so a person who opted out in
+HubSpot after they were enrolled (suppression_load, nightly), or a company whose domain was suppressed since (a
+customer, a Suppress signal), still got the rest of their sequence. So the sweep also stops every contact in
+flight (enrol/capacity.in_flight: a step still to send) whose own address, email domain or company domain is now
+suppressed (enrol.suppressed_for, the check enrol makes), and with them everyone else at the account, as for a
+reply. Its lead_stopped rows carry source "suppression". A contact whose own row is marked suppressed is left to
+its own path: an Instantly unsubscribe or bounce, which Instantly has stopped already, and whose opt-out
+replies/optout.py retries from the lead's status until it is recorded (deleting the lead would end that). Safety:
+never held for a cohort, a config version or anything else, in any campaign.
+
 Dry-run: it counts what it would stop, calls nothing and writes nothing.
 """
 
@@ -44,10 +56,12 @@ from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
-from us_outbound.enrol import second
-from us_outbound.logs import log
+from us_outbound.enrol import capacity, enrol, second
+from us_outbound.logs import hash_email, log
 
 STOPPED = "lead_stopped"  # events.type (enrol/capacity.STOP_EVENTS reads it)
+SUPPRESSED = "suppressed"  # the cause of a stop for an address or domain suppressed while the lead was in flight
+SUPPRESSION_SOURCE = "suppression"  # events.source on the lead_stopped rows it makes
 ID_CHUNK = 1000
 LIST_LIMIT = 50
 
@@ -66,13 +80,42 @@ def _stop(ctx: Context, campaign: str, lead_id: str) -> str:
     return "deleted"
 
 
+def _lower(v: Any) -> str:
+    return str(v or "").strip().lower()
+
+
+def suppressed_in_flight(ctx: Context) -> list[dict]:
+    """Contacts in flight, not marked suppressed themselves, whose address, email domain or company domain is
+    suppressed now (the module docstring)."""
+    flying = [c for c in capacity.in_flight(ctx.store, ctx.settings, ctx.now_et().date())
+              if c.get("account_id") and not c.get("suppressed")]
+    if not flying:
+        return []
+    ids = sorted({str(c["account_id"]) for c in flying})
+    domain_of = {str(a["account_id"]): _lower(a.get("domain")) for i in range(0, len(ids), ID_CHUNK)
+                 for a in ctx.store.select("accounts", {"account_id": ids[i : i + ID_CHUNK]})}
+
+    def sha(c: dict) -> str:
+        return _lower(c.get("email_sha256")) or (hash_email(str(c["email"])) if c.get("email") else "")
+
+    def domains(c: dict) -> set[str]:
+        email = _lower(c.get("email"))
+        return {d for d in (email.rpartition("@")[2] if "@" in email else "", domain_of.get(str(c["account_id"]))) if d}
+
+    found_domains, found_hashes = enrol.suppressed_for(ctx, {d for c in flying for d in domains(c)},
+                                                       {sha(c) for c in flying} - {""})
+    return [c for c in flying if sha(c) in found_hashes or domains(c) & found_domains]
+
+
 def to_stop(ctx: Context) -> list[tuple[dict, dict]]:
     """[(contact, the stop that ends their lead)]: other contacts at an account with a stop, whose lead is in a US
-    Outbound campaign, with no stop of their own and not stopped here before."""
+    Outbound campaign, with no stop of their own and not stopped here before; and contacts suppressed while in
+    flight, with everyone else at their account."""
     store = ctx.store
     events = store.select("events", {"type": list(second.STOP_TYPES)})
     stops = [e for e in events if second.is_stop(e, classified_only=True)]
-    if not stops:
+    suppressed = suppressed_in_flight(ctx)
+    if not stops and not suppressed:
         return []
     done = {str(e["event_id"]) for e in store.select("events", {"type": STOPPED})}
     # Whoever replied, bounced, unsubscribed or complained themselves (a reply not classified yet too): Instantly
@@ -89,6 +132,9 @@ def to_stop(ctx: Context) -> list[tuple[dict, dict]]:
         aid = str(e.get("account_id") or who.get("account_id") or "")
         if aid:
             first_stop.setdefault(aid, e)
+    for c in suppressed:  # their own lead is not in `own`, so it is stopped with their colleagues'
+        first_stop.setdefault(str(c["account_id"]), {"type": SUPPRESSED, "contact_id": c["contact_id"],
+                                                     "account_id": c["account_id"], "source": SUPPRESSION_SOURCE})
     out: list[tuple[dict, dict]] = []
     ids = sorted(first_stop)
     for i in range(0, len(ids), ID_CHUNK):
@@ -103,7 +149,8 @@ def to_stop(ctx: Context) -> list[tuple[dict, dict]]:
 
 
 def sweep(ctx: Context) -> dict:
-    """Stop the leads of everyone else at an account where someone replied, bounced, unsubscribed or complained."""
+    """Stop the leads of everyone else at an account where someone replied, bounced, unsubscribed or complained, and
+    of everyone at an account where a contact in flight was suppressed."""
     pending = to_stop(ctx)
     out: dict[str, Any] = {"to_stop": len(pending), "stopped": Counter(), "errors": []}
     if ctx.dry_run:
@@ -120,10 +167,11 @@ def sweep(ctx: Context) -> dict:
                 out["errors"].append(f"{cid}: {type(exc).__name__}: {str(exc)[:160]}")
             log("account_stop_failed", run_id=ctx.run_id, contact_id=cid, error=str(exc)[:200])
             continue
-        ctx.store.upsert("events", [{
-            "event_id": marker(cid), "contact_id": cid, "account_id": c.get("account_id"), "type": STOPPED,
-            "mailbox": c.get("mailbox"), "occurred_at": ctx.now,
-        }])
+        row = {"event_id": marker(cid), "contact_id": cid, "account_id": c.get("account_id"), "type": STOPPED,
+               "mailbox": c.get("mailbox"), "occurred_at": ctx.now}
+        if e.get("type") == SUPPRESSED:
+            row["source"] = SUPPRESSION_SOURCE
+        ctx.store.upsert("events", [row])
         out["stopped"][how] += 1
         log("account_stop", run_id=ctx.run_id, contact_id=cid, account_id=c.get("account_id"), how=how,
             because=e.get("type"), because_event=e.get("event_id"))

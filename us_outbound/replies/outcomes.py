@@ -49,8 +49,10 @@ or lead that belongs to no contact of ours is counted and dropped. Dry-run reads
 writes the database (SPEC 0.3), but nothing to Instantly or HubSpot.
 
 Then the account-level stop (replies/account_stop.py; Harry, 6 Oct 2026): at an account where someone
-replied, bounced, unsubscribed or complained, every other contact's lead is stopped too. It matters only
-for accounts with a second contact (enrol/second.py); with one contact per account it calls nothing.
+replied, bounced, unsubscribed or complained, every other contact's lead is stopped too. That matters only
+for accounts with a second contact (enrol/second.py); with one contact per account it calls nothing. And
+(Harry, 7 Oct 2026) a contact in flight whose address or domain has been suppressed since enrolment (a HubSpot
+opt-out from suppression_load, a customer domain) has their lead stopped, with everyone else's at the account.
 
 Directory, since() and mark_engaged() are shared with poll_replies.
 

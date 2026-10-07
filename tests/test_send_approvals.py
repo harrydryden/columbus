@@ -32,6 +32,7 @@ CONTRACT_KEYS = {
     "state", "outcome", "owner", "mailbox", "campaign", "lead", "copy_version", "angle", "test_id", "opener_arm",
     "opener_source", "industry", "industry_group", "role", "tier", "score", "send_day", "edited", "original", "reason",
     "subject_arm",  # email 1's subject arm (Harry, 5 Oct 2026)
+    "config_version", "code_sha", "copy_hash",  # what the card was rendered under (Harry, 7 Oct 2026)
 }
 
 
@@ -890,3 +891,31 @@ def test_dry_run_enrol_through_the_cli_previews_the_card_in_the_dev_channel():
     card = next(r for r in posts if r.url.endswith("chat.postMessage") and not r.json.get("thread_ts"))
     assert card.json["text"].startswith("[dry-run → #us-outbound] Send approval: Acme Creative · Jane Doe")
     assert re.search(r"\*\w+ today:\* card 1 of \d+", blocks_text(card.json))
+
+
+def test_an_approved_card_keeps_the_version_it_was_rendered_under():
+    """Harry, 7 Oct 2026: the card's ✅ stamps what the card shows, not the settings in force when it is approved."""
+    from tests.test_render import BODIES, COPY, copy_row
+
+    ctx, t, sl, out = proposed()
+    card = item_for(ctx, "acc-1")["payload"]
+    assert card["config_version"] == out["config_version"] and card["copy_hash"] == COPY[0].content_hash()
+    reworded = copy_row("agencies-v1", COPY[0].industry, bodies={**BODIES, 2: "A new email 2 for {{first_name}}."})
+    ctx.settings = dataclasses.replace(ctx.settings, copy=(reworded, *COPY[1:]))
+    assert reworded.content_hash() != card["copy_hash"]
+    sl.react("white_check_mark", HARRY_ID, ts=item_for(ctx, "acc-1")["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert (jane["copy_hash"], jane["config_version"], jane["code_sha"]) == (
+        card["copy_hash"], card["config_version"], card["code_sha"])
+
+
+def test_a_card_posted_before_the_stamp_leaves_the_contact_unstamped():
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    payload = {k: v for k, v in row["payload"].items() if k not in {"config_version", "code_sha", "copy_hash"}}
+    ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"payload": payload})
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert (jane["config_version"], jane["code_sha"], jane["copy_hash"]) == (None, None, None)

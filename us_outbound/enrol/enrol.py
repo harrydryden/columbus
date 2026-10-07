@@ -80,7 +80,7 @@ from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
-from us_outbound import budget, limits
+from us_outbound import budget, config_version, limits
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render
 from us_outbound.learn import holds
@@ -624,6 +624,11 @@ class Prepared:
     render_mailbox: str = ""
     slot: int = 1  # contacts.contact_slot (enrol/second.py)
     first: dict | None = None  # a second contact's first contact (second.first_summary), for the card
+    # What the lead was rendered under (config_version.py; Harry, 7 Oct 2026): the run's config version and code,
+    # and the Copy row's wording. A send approval's card carries them, so ✅ stamps what the card shows.
+    config_version: str = ""
+    code_sha: str = ""
+    copy_hash: str = ""
 
 
 @dataclass
@@ -698,7 +703,7 @@ def prepare(
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
         subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, slot=cand.slot,
-        first=cand.first,
+        first=cand.first, copy_hash=row.content_hash(),
     )
 
 
@@ -834,9 +839,11 @@ def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict
 def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, str], campaign: str, month: str) -> None:
     """Mark the accounts enrolled and give each contact its lead, month and enrolled_at (for the send forecast),
     its opener and subject arms (the readout's two splits), and what the account looked like then: its signals,
-    score and tier (signals_now); and where the contact's details came from and the lawful basis
-    (render.data_record), kept here since no email carries it. A second contact (enrol/second.py) leaves its
-    account as it is: enrolled already, with its sender, and never moved back from engaged by a late approval."""
+    score and tier (signals_now); where the contact's details came from and the lawful basis
+    (render.data_record), kept here since no email carries it; and what its emails were rendered under, its
+    config version, code and Copy wording (config_version.py; Harry, 7 Oct 2026), so the cohort report compares
+    like with like. A second contact (enrol/second.py) leaves its account as it is: enrolled already, with its
+    sender, and never moved back from engaged by a late approval."""
     accounts, contacts = [], []
     record = render.data_record(ctx.settings)
     signals = signals_now(ctx, [str(p.account["account_id"]) for i, p in enumerate(items) if i in ids])
@@ -866,6 +873,10 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
             "tier_at_enrol": p.account.get("tier") or None,
             "data_record": record,
             "contact_slot": p.slot,
+            # The cohort stamp (Harry, 7 Oct 2026): NULL for a card posted before it existed, read as unstamped.
+            "config_version": p.config_version or None,
+            "code_sha": p.code_sha or None,
+            "copy_hash": p.copy_hash or None,
         })
     if accounts:
         ctx.store.upsert("accounts", accounts)
@@ -896,6 +907,10 @@ def run(ctx: Context) -> dict:
         summary.update(status="skipped", reason=why)
         log("enrol_done", run_id=ctx.run_id, **summary)
         return summary
+    # What today's leads are rendered under (Harry, 7 Oct 2026): kept once per version, and stamped on each contact.
+    cv = config_version.current(ctx)
+    config_version.record(ctx, cv)
+    summary["config_version"] = cv.id
 
     # Send approvals still waiting (in either mode: auto_send may have been switched on since) are
     # not proposed again, and hold their sender's slots and their place in the week.
@@ -937,6 +952,8 @@ def run(ctx: Context) -> dict:
     # senders' slots; outside the industry focus, which shares out new accounts.
     n_first = len(prepared)
     prepared += _walk(ctx, iter(seconds), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
+    for p in prepared:
+        p.config_version, p.code_sha = cv.id, cv.code_sha
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:

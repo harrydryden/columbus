@@ -27,6 +27,10 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       signal-value table from v_signal_value, with meetings and the rates
                                       against the companies without each signal (learn/signal_value.py)
   readout                             the Monday readout for last week (learn/readout.py), printed only
+  cohorts [--cut CUT] [--age N]       each enrolment week's companies at 7, 14, 21 and 28 days after email 1,
+    [--weeks N] | changes [A B] |     with what changed between them (learn/cohorts.py; Harry, 7 Oct 2026);
+    in-flight                         changes: what differs between two config versions (default the last
+                                      two); in-flight: each campaign's leads with a step still to send
   test start|read <test_id>           start a test on the Tests tab (SPEC 12), or read it at its latest
                                       pre-registered look; read refuses before the first look, so nobody
                                       peeks (learn/looks.py; Harry, 6 Oct 2026)
@@ -35,7 +39,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   mailbox check [--fix]               is mailbox_health by hand, and --fix also sets each sender name to
                                       its owner's full name and runs campaigns ensure --fix
   campaigns show | ensure [--fix]     each owner's campaign as Instantly holds it (read-only); or create
-                                      the missing ones (paused) and put drift right
+    [--in-flight]                     the missing ones (paused) and put drift right. Drift in the steps,
+                                      delays or text_only is held while leads are in flight, unless
+                                      --in-flight (registry/mailboxes.IN_FLIGHT_KEYS; Harry, 7 Oct 2026)
   copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
                                       preview one, QA it (task model), draft one (writing model)
   settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
@@ -519,13 +525,16 @@ def cmd_stop(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def _start(ctx: Context) -> dict:
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, sending_list
+    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words, sending_list
 
     check = ensure_campaigns(ctx, create=False)
-    if check["drift"]:
+    # Drift held while leads are in flight does not refuse: the campaign is consistent for them (Harry, 7 Oct 2026).
+    held = check.get("held") or {}
+    drift = {n: sorted(set(d) - set((held.get(n) or {}).get("keys") or ())) for n, d in check["drift"].items()}
+    if any(drift.values()):
         raise Refused(
             "campaign settings have drifted: "
-            + "; ".join(f"{n}: {', '.join(sorted(d))}" for n, d in check["drift"].items())
+            + "; ".join(f"{n}: {', '.join(keys)}" for n, keys in drift.items() if keys)
             + ". Fix with `us-outbound campaigns ensure --fix --live` first."
         )
     inst = ctx.clients.instantly
@@ -539,8 +548,11 @@ def _start(ctx: Context) -> dict:
         if found[name].get("status") != 1:
             inst.activate_campaign(name)
         started.append(name)
-    return {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
-            "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
+    out = {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
+           "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
+    if held:
+        out["drift_held"] = [held_words(n, h) for n, h in held.items()]
+    return out
 
 
 def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
@@ -1117,8 +1129,10 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns
+    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words
 
+    if args.in_flight and not (args.action == "ensure" and args.fix):
+        raise Refused("--in-flight goes with ensure --fix")
     if args.action == "show":
         # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
         # Instantly kept of the settings and step templates it was given (PHASE0-CONFIRM items).
@@ -1130,8 +1144,32 @@ def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
             print(json.dumps({"campaign": name, "instantly": body}, sort_keys=True, default=str))
         return 0
     ctx = factory("campaigns_ensure", args.live, operator=True)
-    _print(run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix)))
+    summary = run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix, in_flight=args.in_flight))
+    _print(summary)
+    for name, held in (summary.get("held") or {}).items():
+        print(held_words(name, held))
     _dry_note(ctx, "no campaign was created or changed.")
+    return 0
+
+
+def cmd_cohorts(args: argparse.Namespace, factory: Factory) -> int:
+    """The cohort report (learn/cohorts.py; Harry, 7 Oct 2026): performance by enrolment week at fixed ages, what
+    changed between versions, or the leads in flight per campaign. Read-only."""
+    from us_outbound.learn import cohorts
+
+    ctx = factory("cohorts", False)
+    if args.action == "changes":
+        if len(args.versions) not in (0, 2):
+            raise Refused("cohorts changes takes two config versions, or none for the last two")
+        lines = cohorts.changes_lines(ctx, *args.versions)
+    elif args.action == "in-flight":
+        lines = cohorts.in_flight_lines(ctx)
+    else:
+        if args.versions:
+            raise Refused("config versions go with `cohorts changes`")
+        lines = cohorts.lines(ctx, cut=args.cut, age=args.age, weeks=args.weeks)
+    for line in lines:
+        print(line)
     return 0
 
 
@@ -1521,6 +1559,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="review: each signal's verdict from the events; value: the table, with meetings, against "
                          "the companies without it")
     command("readout", "the Monday readout for last week, printed here and posted nowhere (read-only)", cmd_readout)
+    # The choices are written out here, so --help does not import the report (learn/cohorts.py CUTS, AGES).
+    ch = command("cohorts", "each enrolment week's results at 7, 14, 21 and 28 days; what changed between versions "
+                 "(changes); the leads in flight (in-flight). Read-only", cmd_cohorts)
+    ch.add_argument("action", nargs="?", choices=["changes", "in-flight"],
+                    help="changes: what differs between two config versions (default: the last two); in-flight: "
+                         "each campaign's leads with a step still to send")
+    ch.add_argument("versions", nargs="*", metavar="VERSION", help="changes: two config versions, older first")
+    ch.add_argument("--cut", default="all",
+                    choices=["all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm",
+                             "opener_arm", "config_version"],
+                    help="split each week by this (default all)")
+    ch.add_argument("--age", type=int, choices=[7, 14, 21, 28], help="only this age, in days after email 1")
+    ch.add_argument("--weeks", type=int, default=8, help="how many enrolment weeks, the latest first (default 8)")
     ts = command("test", "start a test on the Tests tab, or read it at a pre-registered look", cmd_test,
                  takes_live=True)
     ts.add_argument("action", choices=["start", "read"],
@@ -1556,6 +1607,9 @@ def build_parser() -> argparse.ArgumentParser:
                  cmd_campaigns, takes_live=True)
     cp.add_argument("action", choices=["ensure", "show"])
     cp.add_argument("--fix", action="store_true", help="put drifted settings and sending lists right")
+    cp.add_argument("--in-flight", action="store_true",
+                    help="ensure --fix: also apply drift in the steps, delays or text_only to campaigns with leads in "
+                         "flight (held otherwise; it reaches every lead's remaining emails, and is logged)")
 
     co = command("copy", "check, preview, QA (task model) or draft (writing model) copy", cmd_copy, takes_live=True)
     co.add_argument("action", choices=["check", "preview", "qa", "draft"])

@@ -51,7 +51,9 @@ us-outbound mailbox add <address> --owner "Name" [--domain D] [--daily-cap N] [-
 us-outbound mailbox pause|retire <address> [--live]
 us-outbound mailbox check [--fix] [--live]         mailbox_health by hand; --fix also sets each sender name to its owner's full name and runs campaigns ensure --fix
 us-outbound campaigns show                         each owner's campaign as Instantly holds it (read-only)
-us-outbound campaigns ensure [--fix] [--live]      the sender campaigns (created paused) and drift
+us-outbound campaigns ensure [--fix] [--in-flight] [--live]   the sender campaigns (created paused) and drift; drift in the steps, delays or text_only waits while leads are in flight unless --in-flight
+us-outbound cohorts [--cut CUT] [--age N] [--weeks N]   each enrolment week at 7, 14, 21 and 28 days after email 1, and what changed between weeks (read-only)
+us-outbound cohorts changes [A B] | in-flight      what changed between two config versions (default the last two) | each campaign's leads in flight
 us-outbound copy check|preview|qa|draft [...]      the copy desk: check every row, preview one, QA it, draft one
 us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (--tab, --set, --take note) into the sheet; create it
 us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
@@ -112,7 +114,7 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | 0 Foundations | Built and running on Railway: clients, guard, settings sync (02:00, and 11:30 on weekdays), DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the scheduler |
 | 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders at every account (`apollo_people`), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts` while Clay verification is not built. Not built: public signals, `verify_in_clay` |
 | 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment with send approvals in Slack (`auto_send` = no), the sending ramp, `golive`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback` |
-| 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); the Monday readout, the signal table, tests read at pre-registered looks, UTM tags and demo bookings read back (6 Oct 2026; docs/pipeline.md "How the system learns") |
+| 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); the Monday readout, the signal table, tests read at pre-registered looks, UTM tags and demo bookings read back (6 Oct 2026; docs/pipeline.md "How the system learns"); cohorts by enrolment week with the config version each contact was enrolled under (7 Oct 2026; docs/developing-while-live.md) |
 
 ## Deviations from the SPEC 13 layout
 
@@ -135,8 +137,11 @@ One worker with its own scheduler replaces Cloud Run Jobs and Cloud Scheduler (S
 See [docs/railway-setup.md](docs/railway-setup.md#where-this-differs-from-spec-harry-30-sep-2026).
 
 Tables beyond SPEC 6: `heartbeats`, `credit_ledger`, `hitl_items`, `domain_aliases`,
-`partners`, `lookalike_cells`, `lookalike_growth`. `suppression` gains `expires_at` (only Suppress-signal domains expire) and
-`contacts` gains `last_step_at` (for retention). `settings` also holds one `_order` row per
+`partners`, `lookalike_cells`, `lookalike_growth`, `config_versions` and `config_log` (Harry, 7 Oct 2026: what
+each cohort was enrolled under, and each change to what the leads in flight share; `config_version.py`).
+`suppression` gains `expires_at` (only Suppress-signal domains expire) and
+`contacts` gains `last_step_at` (for retention), and `config_version`, `code_sha` and `copy_hash` (what the
+contact's emails were rendered under; NULL, "unstamped", before 8 Oct 2026). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
 `dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, the two
 Clay function ids, the credits-per-account estimates, `stop_rule_bounce_rate` and
@@ -179,6 +184,12 @@ fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, i
 enrollment until it is cleared (`learn/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
 in a mailbox's first sending week, 20 in its second, then its cap) sets the forecast, each
 campaign's daily limit and each Instantly account's own limit.
+
+Developing while live (Harry, 7 Oct 2026; [docs/developing-while-live.md](docs/developing-while-live.md)):
+`campaigns ensure --fix` holds drift in a campaign's steps, delays or text_only while it has leads in flight
+(they are shared by every lead in it), and `--in-flight` applies it to them too, as a `config_log` row with
+the count. `mailbox_health` and `mailbox check --fix` never apply it. A lead whose address or domain is
+suppressed while it is in flight (a HubSpot opt-out from `suppression_load`) is stopped by `sync_outcomes`.
 
 The sender name (Harry, 5 Oct 2026): each Instantly account's first and last name, which make the
 From name prospects see, are its owner's full name from the Mailboxes tab ("Hannah Spalding", not
