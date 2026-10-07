@@ -114,6 +114,62 @@ def test_harry_signs_his_own_drafts_with_grab_a_time_with_me(world):
     assert "my colleague" not in p["draft"].lower()
 
 
+# -- "Interested" in Instantly (Harry, 7 Oct 2026) -------------------------------------------------------------------
+
+
+def interest_posts(world) -> list[dict]:
+    return [r.json for r in world.transport.requests if r.url.endswith("/leads/update-interest-status")]
+
+
+def test_a_positive_reply_marks_the_lead_interested_in_its_own_campaign_once(world):
+    world.reply("E1")
+    out = run(world)
+    assert interest_posts(world) == [{"lead_email": JANE, "campaign_id": "cmp-hannah", "interest_value": 1}]
+    [call] = [c for c in world.ctx.guard.writes("instantly") if c.action == "lead.interest"]
+    assert (call.target, call.sent) == ("US Outbound – Hannah Spalding", True)  # through the guard, live
+    assert only_item(world)["payload"]["instantly_interest"] == "interested" and out["marked_interested"] == 1
+    assert not world.lead_patches  # nothing else about the lead changes: no pause, no status
+    # A later positive reply from the same company marks nothing again.
+    world.reply("E2", text="Also, Thursday works.", at=NOW - timedelta(minutes=5))
+    run(world)
+    assert len(interest_posts(world)) == 1
+    assert {i["item_id"]: i["payload"]["instantly_interest"] for i in world.items()} == {
+        "reply:E1": "interested", "reply:E2": "marked for an earlier reply"}
+
+
+def test_a_colleague_s_positive_reply_marks_the_contact_s_lead(world):
+    world.reply("E1", "sam.lee@acmecreative.com", text="I look after this for Jane. Happy to chat.")
+    run(world)
+    assert [p["lead_email"] for p in interest_posts(world)] == [JANE]
+
+
+@pytest.mark.parametrize("cls, extra", [("referral", {"referral_name": "Ann Lee"}), ("objection", {}), ("not_now", {})])
+def test_only_a_positive_reply_is_marked(world, cls, extra):
+    world.sdk.answer = classification(cls, **extra)
+    world.reply("E1", text="Some reply.")
+    run(world)
+    assert interest_posts(world) == [] and "instantly_interest" not in only_item(world)["payload"]
+
+
+def test_a_meeting_already_booked_is_never_marked_back_to_interested(world):
+    world.ctx.store.insert("events", [{"event_id": "hs-m1", "contact_id": "k-jane", "account_id": "acc-acme",
+                                       "type": "meeting_booked", "occurred_at": NOW - timedelta(hours=1)}])
+    world.reply("E1")
+    run(world)
+    assert interest_posts(world) == [] and only_item(world)["payload"]["instantly_interest"] == "a meeting is booked already"
+
+
+def test_a_failed_interest_call_is_logged_and_the_reply_is_handled_all_the_same(world):
+    world.transport.route("POST", "/leads/update-interest-status", {"error": "not found"}, status=404)
+    world.reply("E1")
+    out = run(world)
+    item = only_item(world)
+    assert item["status"] == "open" and item["payload"]["draft"] and world.slack_posts  # the alert still goes
+    assert item["payload"]["instantly_interest"] == "not set: ApiError"
+    assert out["interest_error"].startswith("ApiError: ") and out["marked_interested"] == 0
+    assert out["classified"] == {"positive": 1} and world.events("replied")[0]["reply_class"] == "positive"
+
+
 # -- every other class a person answers -------------------------------------------------------------------
 
 

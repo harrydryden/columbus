@@ -267,7 +267,7 @@ class Guard:
             need_us_campaign()
             if "accounts" in op.detail:
                 need_registry_accounts()
-        elif a in {"lead.add", "lead.delete", "lead.update", "lead.stop"}:
+        elif a in {"lead.add", "lead.delete", "lead.update", "lead.stop", "lead.interest"}:
             need_us_campaign()
         elif a == "email.reply":
             need_registry_accounts()
