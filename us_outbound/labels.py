@@ -32,8 +32,11 @@ the evidence must be a verbatim quote of the material (or it is dropped and the 
 "what they do" passes the opener's own checks (openers.validate_focus). Neither reaches an email; the card shows
 both, escaped.
 
-A verdict is kept for good, as a label_verdict fact (source label_check), and asked again only when labels_hash
-changes: the prompt version, the label list, a definition or keywords. Each call is about $0.01 on Sonnet 5.5 (effort
+A verdict is kept for good, as a label_verdict fact (source label_check), and asked again when labels_hash changes
+(the prompt version, the label list, a definition or keywords), or once when a verdict short of high was asked before
+the company's home page was read (second_look): the page is new material. The first audit (7 Oct 2026) held half the
+queue on Apollo's facts alone, so read_pages and `labels audit` read the home page of a company the model was unsure
+of first (sources/pages.home_pass). Each call is about $0.01 on Sonnet 5.5 (effort
 low, at most MAX_TOKENS; the system block is cached), within the monthly Claude cap, and written to credit_ledger
 (job label_check). A verdict is a paid read that reaches no prospect, like an Apollo search page, so verify_accounts
 asks in every mode; the command line (`us-outbound labels audit`) asks only with --live.
@@ -229,8 +232,7 @@ class Material:
         events = list(events)
         fact = {f: (e.get("value") if (e := _newest(events, APOLLO_SOURCE, f)) else None) for f in MATERIAL_FACTS}
         home = ""
-        page = next((e for e in sorted(events, key=lambda e: _when(e.get("observed_at")), reverse=True)
-                     if e.get("fact") == HOME_FACT and isinstance(e.get("value"), Mapping)), None)
+        page = _home_page(events)
         if page is not None:
             v = page["value"]
             home = _clean(" · ".join(str(v.get(k) or "") for k in ("title", "meta_description", "text") if v.get(k)))
@@ -329,6 +331,43 @@ def latest_verdict(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_verdict fact's value, or None."""
     e = _newest(events, JOB, VERDICT_FACT)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
+
+
+def _asked_at(events: Iterable[Mapping[str, Any]]) -> datetime | None:
+    """When the model was last asked about the company: its newest label_verdict fact written by a call (a decision
+    re-made from a stored verdict is written with asked false and carries the same answer)."""
+    rows = [e for e in events if e.get("source") == JOB and e.get("fact") == VERDICT_FACT
+            and isinstance(e.get("value"), Mapping) and e["value"].get("asked")]
+    return max((_when(e.get("observed_at")) for e in rows), default=None)
+
+
+def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    """The newest home_page fact that says something (an empty one records a read that found nothing)."""
+    rows = [e for e in events if e.get("fact") == HOME_FACT and isinstance(e.get("value"), Mapping) and e["value"]]
+    return max(rows, key=lambda e: _when(e.get("observed_at"))) if rows else None
+
+
+def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
+    """A verdict short of high, asked before the home page was read: the page is new material, so the model is asked
+    once more (Checker.fresh). Once asked with the page, the verdict stands, whatever its confidence."""
+    events = list(events)
+    stored = latest_verdict(events)
+    page = _home_page(events)
+    if not stored or stored.get("confidence") == HIGH or page is None:
+        return False
+    asked = _asked_at(events)
+    return asked is None or _when(page.get("observed_at")) > asked
+
+
+def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
+    """Whether the company's home page should be read for the check (sources/pages.home_pass): the model was asked
+    and was not sure, and the page has not been read (an empty home_page fact is a read that found nothing, so it is
+    not read again). A company never asked waits for its first verdict: a new one gets its page in the careers read."""
+    events = list(events)
+    stored = latest_verdict(events)
+    if not stored or stored.get("confidence") == HIGH:
+        return False
+    return not any(e.get("fact") == HOME_FACT for e in events)
 
 
 def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
@@ -548,9 +587,10 @@ class Checker:
         self.unavailable = ""
         self.answers: dict[str, tuple[Verdict | None, str, bool]] = {}  # account_id -> this run's verdict()
 
-    def fresh(self, stored: Mapping[str, Any] | None) -> bool:
-        """Whether a stored verdict was asked under today's label list and prompt."""
-        return bool(stored) and str((stored or {}).get("labels_hash") or "") == self.hash
+    def fresh(self, stored: Mapping[str, Any] | None, events: Iterable[Mapping[str, Any]] = ()) -> bool:
+        """Whether a stored verdict was asked under today's label list and prompt, and is not due a second look now
+        that the home page has been read (second_look; events: the company's facts)."""
+        return bool(stored) and str((stored or {}).get("labels_hash") or "") == self.hash and not second_look(events)
 
     def estimate_usd(self, material: Material | None = None) -> float:
         """The most one call could cost (the client's estimate: characters, and the full MAX_TOKENS)."""
@@ -573,7 +613,7 @@ class Checker:
     def _verdict(self, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]]) -> tuple[Verdict | None, str, bool]:
         stored = latest_verdict(events)
         old = Verdict.from_value(stored) if stored else None
-        if self.fresh(stored):
+        if self.fresh(stored, events):
             return old, "", False
         material = Material.of(account, events)
         if material.empty:

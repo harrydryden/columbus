@@ -183,8 +183,13 @@ An account also needs at least one candidate contact: a person matching the Role
   - a public body is disqualified; a society or membership body, a company no label fits, or one whose industry is
     switched off is disqualified when the model is sure and held for the weekly hand-check ("industry uncertain: …")
     when it is not; an Overrides `industry` row or an approver's correction stands, and nothing is asked.
-  - The verdict is kept (a `label_verdict` fact) and asked again only when the label list, a definition, keywords or
-    the prompt change (`labels_hash`). Each run asks at most 150 (12 minutes), Focus groups first, then queue order;
+  - The verdict is kept (a `label_verdict` fact) and asked again when the label list, a definition, keywords or
+    the prompt change (`labels_hash`), or once when the model was not sure and the company's home page has been read
+    since (`labels.second_look`). The first audit (7 Oct 2026) held 204 of 409 companies, the model unsure on Apollo's
+    facts alone, so `read_pages` first reads the home page (robots.txt and the home page only) of each queue company
+    the model was unsure of whose page it has not read, at most 150 in 8 minutes; `labels audit --live` makes the same
+    pass before it asks. A page that says nothing or refuses is recorded empty and not read again for the check.
+    Each run asks at most 150 (12 minutes), Focus groups first, then queue order;
     accounts already verified with no fresh verdict are checked in the same share, so the queue converges in about
     three weekdays with no command run. A card rendered before its company's label was decided, which no longer fits
     it, is withdrawn by the next `poll_approvals`, and the next enrol proposes the company with the right copy.

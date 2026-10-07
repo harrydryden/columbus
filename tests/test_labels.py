@@ -358,6 +358,54 @@ def test_a_fresh_verdict_is_used_as_it_is_and_a_stale_one_asked_again():
     assert ch.verdict(acct("a2"), stale)[2] is True and len(ctx.clients.claude_task.client.calls) == 1  # once a run
 
 
+def stored_verdict(ch, confidence, *, at, asked=True, aid="a1"):
+    v = verdict("Fintech", confidence, labels_hash=ch.hash)
+    d = labels.decide(ind("Fintech"), v, DEFAULT)
+    return {"event_id": f"v-{at.isoformat()}", "account_id": aid, "source": "label_check", "fact": "label_verdict",
+            "value": labels.verdict_value(ind("Fintech"), v, d, asked=asked), "observed_at": at}
+
+
+def home(at, value=None, aid="a1"):
+    value = {"title": "Brightline", "text": "Payroll software for restaurants and bars."} if value is None else value
+    return {"event_id": f"h-{at.isoformat()}", "account_id": aid, "source": "careers_pages", "fact": "home_page",
+            "value": value, "observed_at": at}
+
+
+def test_a_verdict_short_of_high_is_asked_again_once_the_home_page_is_read():
+    """Harry, 7 Oct 2026: the first audit held half the queue, the model unsure on Apollo's facts alone (37signals
+    low). The home page is new material: an unsure verdict asked before it was read is asked once more with it."""
+    ctx, ch = checker()
+    t0, t1, t2 = NOW - timedelta(days=2), NOW - timedelta(days=1), NOW - timedelta(hours=1)
+    unsure = [*EVENTS, stored_verdict(ch, "medium", at=t0)]
+    assert labels.wants_home_page(unsure) and not labels.second_look(unsure) and ch.fresh(unsure[-1]["value"], unsure)
+    read = [*unsure, home(t1)]
+    assert labels.second_look(read) and not labels.wants_home_page(read)
+    assert not ch.fresh(read[-2]["value"], read)
+    v, why, asked = ch.verdict(acct(), read)
+    assert asked is True and "Home page: Brightline · Payroll software" in \
+        ctx.clients.claude_task.client.calls[0]["messages"][0]["content"]
+    # Once asked with the page, the verdict stands, however sure: no loop.
+    again = [*read, stored_verdict(ch, "low", at=t2)]
+    assert not labels.second_look(again) and ch.fresh(again[-1]["value"], again)
+    # A decision re-made from the stored verdict (asked false) is not an ask: the page is still new to the model.
+    redone = [*read, stored_verdict(ch, "medium", at=t2, asked=False)]
+    assert labels.second_look(redone)
+    # A sure verdict needs no page; a page read before the verdict was asked is not new; nor is a page saying nothing.
+    sure = [*EVENTS, stored_verdict(ch, "high", at=t0)]
+    assert not labels.wants_home_page(sure) and not labels.second_look([*sure, home(t1)])
+    assert not labels.second_look([*EVENTS, home(t0 - timedelta(days=1)), stored_verdict(ch, "medium", at=t0)])
+    empty = [*unsure, home(t1, {})]
+    assert not labels.second_look(empty) and not labels.wants_home_page(empty)  # read once, found nothing
+    # Never asked: no page wanted yet (a new company's page comes with its careers read).
+    assert not labels.wants_home_page(EVENTS)
+
+
+def test_an_empty_home_page_read_never_hides_one_that_said_something():
+    good, empty = home(NOW - timedelta(days=2)), home(NOW - timedelta(days=1), {})
+    got = labels.Material.of(acct(), [*EVENTS, good, empty]).home
+    assert got == "Brightline · Payroll software for restaurants and bars."
+
+
 def test_beyond_the_runs_share_a_stale_verdict_stands_and_none_is_none():
     ctx, ch = checker(budget=labels.Budget(calls=1))
     assert ch.verdict(acct(), EVENTS)[2] is True

@@ -382,7 +382,8 @@ def needs_verdict(run: LabelRun, account: Mapping[str, Any], events: Sequence[Ma
     something to check against."""
     if labels.override_for(account, run.checker.settings)[0]:
         return False
-    return not run.checker.fresh(labels.latest_verdict(events)) and not labels.Material.of(account, events).empty
+    stored = labels.latest_verdict(events)
+    return not run.checker.fresh(stored, events) and not labels.Material.of(account, events).empty
 
 
 def carded(ctx: Context) -> set[str]:

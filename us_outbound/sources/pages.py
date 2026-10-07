@@ -7,11 +7,15 @@ Wellbeing app or perk named, Progressive benefits and Modern mental-health vendo
 Their Signals rows list careers_pages and job_posts beside clay_careers, for when Clay returns.
 
 Each weekday at 03:45 UK, after apollo_signals (03:30) and before verify_accounts (04:30), whose
-rescore scores the new facts, for queue accounts (new, queued or verified, not Excluded or Held)
-with a domain: the Focus tab's groups first, then accounts never read, then queue order. An
-account is read again after REFRESH_DAYS, or after RETRY_DAYS when the read failed (error).
-At most MAX_ACCOUNTS_PER_RUN accounts and RUN_SECONDS a run, ACCOUNT_SECONDS an account, so a
-run ends well inside its 40-minute timeout; an account not reached waits for the next run.
+rescore scores the new facts, first a home-page pass (home_pass) for the label check: each queue account the model
+was not sure of whose home page has not been read (labels.wants_home_page; Harry, 7 Oct 2026: the first audit held
+half the queue on Apollo's facts alone), robots.txt and the home page only, so verify_accounts asks the model once
+more with the page (labels.second_look); `labels audit --live` makes the same pass first. Then, for queue accounts
+(new, queued or verified, not Excluded or Held) with a domain: the Focus tab's groups first, then
+accounts never read, then queue order. An account is read again after REFRESH_DAYS, or after
+RETRY_DAYS when the read failed (error). At most MAX_ACCOUNTS_PER_RUN accounts and RUN_SECONDS a run
+(the home-page pass included), ACCOUNT_SECONDS an account, so a run ends well inside its 40-minute
+timeout; an account not reached waits for the next run.
 
 One account, cheapest and most structured first:
   1. Its own site (careers_pages): robots.txt for each host, then the home page, then up to
@@ -62,6 +66,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import labels
 from us_outbound.clean.pages import (
     ALLOW_ALL,
     Page,
@@ -108,6 +113,9 @@ MAX_HTML = 1_500_000  # characters of a page read
 PAGES_KEPT = 10  # pages listed in the page_read fact
 HOME_FACT = "home_page"  # the home page's title, meta description and first text, for the label check (labels.py)
 HOME_TEXT_CHARS = 600
+HOME_PASS_ACCOUNTS = 150  # the nightly home-page pass for the label check, before the careers reads ...
+HOME_PASS_SECONDS = 8 * 60  # ... inside the run's RUN_SECONDS
+HOME_SECONDS = 20  # one account's home-page read: robots.txt, the home page, and www. once when there is no answer
 REFRESH_DAYS = 180  # SPEC 7: re-read after 180 days
 RETRY_DAYS = 14  # a read that failed with an error is tried again sooner
 COMMON_PATHS = ("/careers", "/jobs", "/benefits")
@@ -231,11 +239,16 @@ def due(last: tuple[datetime, str] | None, now: datetime) -> bool:
     return now - when >= timedelta(days=RETRY_DAYS if outcome == ERROR else REFRESH_DAYS)
 
 
+def _queue(ctx: Context) -> list[dict]:
+    """Queue accounts with a domain: new, queued or verified, not Excluded or Held."""
+    return [a for a in ctx.store.select("accounts", {"status": list(OPEN_STATUSES)})
+            if a.get("domain") and a.get("tier") not in OUT_OF_QUEUE_TIERS]
+
+
 def candidates(ctx: Context) -> tuple[list[dict], dict[str, set[str]]]:
     """(queue accounts with a domain that are due a read, in reading order; the good reads each has)."""
     s = ctx.settings
-    rows = [a for a in ctx.store.select("accounts", {"status": list(OPEN_STATUSES)})
-            if a.get("domain") and a.get("tier") not in OUT_OF_QUEUE_TIERS]
+    rows = _queue(ctx)
     reads, good = history(ctx, [a["account_id"] for a in rows])
     todo = [a for a in rows if due(reads.get(a["account_id"]), ctx.now)]
     todo.sort(key=lambda a: (focus.group_rank(s.industry_group_of(a), s), a["account_id"] in reads,
@@ -508,6 +521,18 @@ class Reader:
         if not self.not_started:
             self.read_feeds()
 
+    def read_home(self) -> str:
+        """The home page only, for the label check (home_pass): READ when it says what the company is (self.home);
+        NO_PAGES when it says nothing or is not there; BLOCKED or ERROR; "skipped" when no time was left."""
+        home = self.fetch(f"https://{self.domain}/")
+        if home.status == ERROR and home.code is None and home.note not in ("robots.txt", "time budget"):
+            home = self.fetch(f"https://www.{self.domain}/")  # no answer at all: some sites answer only on www
+        if home.status == "ok":
+            self.home, self.home_url = home_summary(parse_html(home.html, home.url)), home.url
+        if self.home:
+            return READ
+        return home.status if home.status in (BLOCKED, ERROR, "skipped") else NO_PAGES
+
 
 # -- facts ---------------------------------------------------------------------------------------
 
@@ -563,6 +588,60 @@ def facts(r: Reader, now: datetime, run_id: str, good: set[str]) -> list[dict]:
         "notes": r.notes + ([f"kept the earlier good read of {', '.join(kept)}"] if kept else []),
     })
     return rows
+
+
+# -- the label check's home-page pass (Harry, 7 Oct 2026) ------------------------------------------------------------
+
+
+def unsure(ctx: Context, accounts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The accounts whose home page the label check wants (labels.wants_home_page), in the order given."""
+    ids = [str(a["account_id"]) for a in accounts]
+    events: dict[str, list[dict]] = defaultdict(list)
+    for chunk in _chunks(ids):
+        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": [labels.JOB, SOURCE],
+                                                    "fact": [labels.VERDICT_FACT, HOME_FACT]}):
+            events[str(e["account_id"])].append(e)
+    return [a for a in accounts if a.get("domain") and labels.wants_home_page(events[str(a["account_id"])])]
+
+
+def home_pass(ctx: Context, accounts: Sequence[Mapping[str, Any]], *, seconds: float,
+              limit: int | None = None) -> dict[str, int]:
+    """Read the home page of each account (unsure() chose them), within seconds and limit: one home_page fact each,
+    written as it is read so a stopped pass keeps its work. A page that says nothing, refuses or does not answer gets
+    an empty one with the outcome as its quote, so it is not read again for the check (the careers read still reads
+    it in its turn). Public GETs, so in both modes, as run() makes them. Returns the counts."""
+    todo = list(accounts)[:limit] if limit is not None else list(accounts)
+    counts: Counter[str] = Counter()
+    if not todo:
+        return {"accounts": 0, "said_what_they_do": 0, "said_nothing": 0, BLOCKED: 0, ERROR: 0, "not_reached": 0}
+    vocab = vocabulary(ctx.settings)
+    stop = _clock() + seconds
+    for n, account in enumerate(todo):
+        if _clock() >= stop:
+            counts["not_reached"] += len(todo) - n
+            break
+        r = Reader(ctx, account, vocab, min(stop, _clock() + HOME_SECONDS))
+        try:
+            outcome = r.read_home()
+        except GuardViolation:
+            raise
+        except Exception as exc:  # one odd site never stops the pass
+            outcome = ERROR
+            log("home_page_failed", account_id=account["account_id"], error=type(exc).__name__)
+        if outcome == "skipped":
+            if _clock() >= stop:  # the pass's time is up: this one and the rest wait for the next pass
+                counts["not_reached"] += len(todo) - n
+                break
+            outcome = ERROR  # its own HOME_SECONDS ran out: no answer in time
+        quote = (r.home.get("title") or r.home.get("meta_description") or "")[:300] if r.home else outcome
+        ctx.store.insert("signal_events", [{
+            "event_id": new_id(), "account_id": account["account_id"], "source": SOURCE, "fact": HOME_FACT,
+            "value": r.home, "quote": quote, "source_url": r.home_url, "observed_at": ctx.now}])
+        counts[outcome] += 1
+    out = {"accounts": len(todo), "said_what_they_do": counts[READ], "said_nothing": counts[NO_PAGES],
+           BLOCKED: counts[BLOCKED], ERROR: counts[ERROR], "not_reached": counts["not_reached"]}
+    log("home_pass_done", run_id=ctx.run_id, **out)
+    return out
 
 
 # -- coverage (Harry, 2 Oct 2026: decide on numbers) ------------------------------------------------
@@ -702,14 +781,17 @@ def post_lines(ctx: Context) -> list[str]:
 def run(ctx: Context) -> dict:
     """The read_pages job (JOB CONTRACT: run(ctx) -> summary)."""
     summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run}
+    start = _clock()
+    stop = start + RUN_SECONDS
     todo, good = candidates(ctx)
+    due_ids = {a["account_id"] for a in todo}  # a careers read reads the home page too
+    summary["home_pages"] = home_pass(ctx, unsure(ctx, [a for a in _queue(ctx) if a["account_id"] not in due_ids]),
+                                      seconds=HOME_PASS_SECONDS, limit=HOME_PASS_ACCOUNTS)
     if not todo:
         summary.update(status="ok", candidates=0, stopped_by="no queue account is due a read")
         log("read_pages_done", run_id=ctx.run_id, **summary)
         return summary
     vocab = vocabulary(ctx.settings)
-    start = _clock()
-    stop = start + RUN_SECONDS
     read, requests, rows_written = 0, 0, 0
     errors: list[str] = []
     stopped = "every account due a read was read"

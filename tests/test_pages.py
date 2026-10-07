@@ -663,3 +663,67 @@ def test_a_long_home_page_is_cut_to_its_first_600_characters():
     long = "<html><body>" + "".join(f"<p>{'word ' * 30}{i}</p>" for i in range(20)) + "</body></html>"
     summary = pages.home_summary(text.parse_html(long, "https://x.com/"))
     assert set(summary) == {"text"} and len(summary["text"]) == pages.HOME_TEXT_CHARS
+
+
+# -- the label check's home-page pass (Harry, 7 Oct 2026) ----------------------------------------------------------
+
+
+def _verdict(aid, confidence, when=NOW - timedelta(days=1)) -> dict:
+    from us_outbound import labels
+
+    return {"event_id": f"v-{aid}", "account_id": aid, "source": labels.JOB, "fact": labels.VERDICT_FACT,
+            "value": {"model": "Advertising agencies", "confidence": confidence, "entity": "company",
+                      "labels_hash": "h", "asked": True}, "quote": "", "source_url": "", "observed_at": when}
+
+
+def test_the_nightly_run_reads_only_the_home_page_of_a_company_the_model_was_unsure_of(world):
+    """The first audit held half the queue on Apollo's facts alone: the companies read before the home page was kept
+    get it read now (robots.txt and the home page, nothing else), so verify_accounts asks the model once more."""
+    from us_outbound import labels
+
+    ctx, web = world
+    site(web, domain="unsure.com")
+    site(web, domain="sure.com")
+    web.page("https://refuses.com/robots.txt", "User-agent: *\nAllow: /\n", ctype="text/plain")
+    web.page("https://refuses.com/", "no", status=403)
+    rows = [account("unsure", domain="unsure.com"), account("sure", domain="sure.com"),
+            account("refuses", domain="refuses.com")]
+    ctx.store.insert("accounts", rows)
+    ctx.store.insert("signal_events", [
+        *(_read_fact(a["account_id"], "read", when=NOW - timedelta(days=30)) for a in rows),  # not due a careers read
+        _verdict("unsure", "medium"), _verdict("sure", "high"), _verdict("refuses", "low")])
+    out = pages.run(ctx)
+    assert out["home_pages"] == {"accounts": 2, "said_what_they_do": 1, "said_nothing": 0, "blocked": 1, "error": 0,
+                                 "not_reached": 0}
+    assert out["candidates"] == 0  # no careers read is due
+    assert web.urls() == ["https://unsure.com/robots.txt", "https://unsure.com/", "https://refuses.com/robots.txt",
+                          "https://refuses.com/"]
+    [page] = events(ctx, "unsure", fact="home_page")
+    assert page["value"]["title"] == "Acme" and page["source_url"] == "https://unsure.com/"
+    assert len(events(ctx, "unsure", fact="page_read")) == 1 and events(ctx, "unsure", fact="read_status") == []
+    assert labels.second_look(events(ctx, "unsure"))
+    # A refusal is recorded empty, with what happened, and not tried again for the check.
+    [refused] = events(ctx, "refuses", fact="home_page")
+    assert (refused["value"], refused["quote"]) == ({}, "blocked") and not labels.second_look(events(ctx, "refuses"))
+    before = len(web.requests)
+    again = pages.run(dataclasses.replace(ctx, run_id="run-2"))
+    assert again["home_pages"]["accounts"] == 0 and len(web.requests) == before
+
+
+def test_the_home_pass_stops_at_its_time_budget(world):
+    ctx, web = world
+    site(web, domain="unsure.com")
+    out = pages.home_pass(ctx, [account("unsure", domain="unsure.com")], seconds=0)
+    assert out["not_reached"] == 1 and web.requests == [] and events(ctx, "unsure", fact="home_page") == []
+
+
+def test_a_site_that_uses_up_its_own_time_is_no_answer_and_the_pass_goes_on(world, monkeypatch):
+    ctx, web = world
+    site(web, domain="slow.com")
+    site(web, domain="next.com")
+    ticks = iter([0.0, 0.0, 0.0] + [pages.HOME_SECONDS + 1.0] * 4 + [30.0] * 50)  # slow.com's 20 s run out mid-read
+    monkeypatch.setattr(pages, "_clock", lambda: next(ticks))
+    out = pages.home_pass(ctx, [account("slow", domain="slow.com"), account("next", domain="next.com")], seconds=600)
+    assert (out[pages.ERROR], out["said_what_they_do"], out["not_reached"]) == (1, 1, 0)
+    [slow] = events(ctx, "slow", fact="home_page")
+    assert (slow["value"], slow["quote"]) == ({}, "error")

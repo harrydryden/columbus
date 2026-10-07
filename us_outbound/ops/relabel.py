@@ -30,8 +30,10 @@ their emails were approved as they were.
 
 `us-outbound labels audit [--limit N] [--live]` (audit, below; Harry, 7 Oct 2026) is this with the model asked first
 about each open company with no fresh verdict, as verify_accounts asks about about 150 a run: it brings the whole
-queue under the label check at once. Dry-run: how many it would ask, what that costs at most, a sample prompt, and
-what the stored verdicts alone would change, asking nothing.
+queue under the label check at once. Live, it first reads the home page of each company the model was not sure of
+and whose page has not been read (sources/pages.home_pass: public pages, no paid service), so those are asked once
+more with what the company says it does (labels.second_look). Dry-run: how many pages it would read, how many it
+would ask, what that costs at most, a sample prompt, and what the stored verdicts alone would change, asking nothing.
 """
 
 from __future__ import annotations
@@ -48,12 +50,14 @@ from us_outbound.enrol import approvals
 from us_outbound.logs import log
 from us_outbound.settings.model import Industry
 from us_outbound.sources import apollo_universe as universe
+from us_outbound.sources import pages
 
 DISQUALIFIED = labels.DISQUALIFIED
 EXCLUDED = labels.EXCLUDED
 CHUNK = 1000
 AUDIT_JOB = "labels_audit"
 AUDIT_SECONDS = 45 * 60  # well inside the hour after which a "running" heartbeat reads as dead
+AUDIT_HOME_SECONDS = 15 * 60  # the home pages read first: about 2 s a company when its site answers
 PROGRESS_EVERY = 25  # the audit logs how far it has got
 MOVES = frozenset({"industry", "industry_group", "status", "tier"})  # what counts as a change here
 PUBLIC_BODY = "a public body, never prospected"
@@ -66,11 +70,13 @@ def _chunks(ids: list[str]) -> Iterable[list[str]]:
 
 
 def label_events(ctx: Context, ids: list[str]) -> dict[str, list[dict]]:
-    """account_id -> its Apollo organization facts and its label check facts."""
+    """account_id -> its Apollo organization facts, its label check facts and its home page (the model reads it)."""
     out: dict[str, list[dict]] = {}
     for chunk in _chunks(ids):
-        for e in ctx.store.select("signal_events", {"account_id": chunk, "source": [universe.SOURCE, labels.JOB]}):
-            out.setdefault(str(e["account_id"]), []).append(e)
+        for e in ctx.store.select("signal_events", {"account_id": chunk,
+                                                    "source": [universe.SOURCE, labels.JOB, pages.SOURCE]}):
+            if e.get("source") != pages.SOURCE or e.get("fact") == labels.HOME_FACT:
+                out.setdefault(str(e["account_id"]), []).append(e)
     return out
 
 
@@ -249,6 +255,11 @@ def audit(ctx: Context, limit: int | None = None) -> dict:
                 if a.get("tier") not in universe.OUT_OF_QUEUE_TIERS]
     events = label_events(ctx, [str(a["account_id"]) for a in accounts])
     order = verify.check_order(accounts, s, verify.carded(ctx))  # cards waiting first, then Focus, then queue
+    unsure = pages.unsure(ctx, order)  # asked, not sure, and the home page not read: read it first (live)
+    home: dict[str, int] = {}
+    if ctx.live and unsure:
+        home = pages.home_pass(ctx, unsure, seconds=AUDIT_HOME_SECONDS)
+        events.update(label_events(ctx, [str(a["account_id"]) for a in unsure]))
     run_ = verify.LabelRun(labels.Checker(ctx, spend=ctx.live, budget=labels.Budget(calls=len(order) or 1,
                                                                                     seconds=AUDIT_SECONDS)))
     ch = run_.checker
@@ -259,7 +270,7 @@ def audit(ctx: Context, limit: int | None = None) -> dict:
         "dry_run": ctx.dry_run, "open_accounts": len(accounts), "to_check": len(todo),
         "stale": sum(1 for a in todo if labels.latest_verdict(events.get(str(a["account_id"]), []))),
         "model": ch.model, "labels_hash": ch.hash, "per_call_usd": round(per_call, 4),
-        "most_usd": round(per_call * len(todo), 2),
+        "most_usd": round(per_call * len(todo), 2), "home_pages_to_read": len(unsure), "home_pages": home,
     }
     if ctx.dry_run:
         first = next(iter(todo), None)
