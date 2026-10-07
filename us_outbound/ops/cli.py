@@ -45,9 +45,10 @@ What Harry uses (`us-outbound --help` lists these, in this order):
     [--weeks N] | changes [A B] |     with what changed between them (learn/cohorts.py; Harry, 7 Oct 2026);
     in-flight                         changes: what differs between two config versions (default the last
                                       two); in-flight: each campaign's leads with a step still to send
-  test start|read <test_id>           start a test on the Tests tab (SPEC 12), or read it at its latest
-                                      pre-registered look; read refuses before the first look, so nobody
-                                      peeks (learn/looks.py; Harry, 6 Oct 2026)
+  test start|read <test_id>           start a test on the Tests tab (SPEC 12; kind ab, variant or holdout:
+                                      a variant changes one part of one email, enrol/variants.py, Harry,
+                                      7 Oct 2026), or read it at its latest pre-registered look; read refuses
+                                      before the first look, so nobody peeks (learn/looks.py; 6 Oct 2026)
   killrules show|clear <item>         the kill-rule holds in force, and lifting one (learn/kill_rules.py)
   mailbox add|pause|retire <address>  the registry commands of SPEC 9 (add takes --owner); mailbox check
   mailbox check [--fix]               is mailbox_health by hand, and --fix also sets each sender name to
