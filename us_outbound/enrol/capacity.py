@@ -48,6 +48,10 @@ straight after `start` when the campaign has none yet; that one still takes lead
 resumes it (resume_if_completed, after each add). In a live run an owner whose campaign takes no
 leads (draft or paused), is missing, or cannot be read (the safe direction) has no capacity today, so
 enrol proposes no card and adds no lead for them, and the limiter line says why. A dry run counts them as usual, so previews still work, and only says so.
+A campaign the blackout job paused (registry/blackout.py; Harry, 7 Oct 2026) takes no leads either, and the line says
+"paused for the blackout until <day>" rather than asking for `start`: the job starts it again after the blackout. Enrol
+does not run on a blackout date anyway (enrol.gate), and the steps that fall due on one go on the next send day, as
+step_days has always assumed.
 """
 
 from __future__ import annotations
@@ -66,6 +70,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS, STEP_DAYS
 from us_outbound.context import ET, ConfigError, Context
 from us_outbound.learn import holds
+from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
 
@@ -129,9 +134,11 @@ def _status(campaign: Mapping[str, Any]) -> int | None:
         return None
 
 
-def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
+def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]],
+                     blackout_words: Mapping[str, str] | None = None) -> str:
     """Why the owner's "US Outbound – {owner}" campaign, among those Instantly listed, takes no new leads; ""
-    when it is active."""
+    when it is active. blackout_words: campaign -> "paused for the blackout until …" for the campaigns the blackout
+    job paused (registry/blackout.words), which wait for it rather than for `start`."""
     name = US_CAMPAIGN_PREFIX + owner
     mine = [c for c in found if str(c.get("name") or "") == name]
     if not mine:
@@ -140,6 +147,8 @@ def campaign_problem(owner: str, found: Iterable[Mapping[str, Any]]) -> str:
     if len(mine) > 1:
         return f"more than one Instantly campaign is named {name}: fix it by hand in Instantly"
     status = _status(mine[0])
+    if status not in TAKES_LEADS and name in (blackout_words or {}):
+        return f"{owner}'s campaign is {blackout_words[name]}"  # the blackout job starts it again then
     if status not in TAKES_LEADS:
         what = CAMPAIGN_STATUS.get(status, f"status {mine[0].get('status')}") if status is not None else "status unknown"
         return f"{owner}'s campaign is not active in Instantly ({what}): run `us-outbound start --live`"
@@ -177,7 +186,8 @@ def campaigns_not_sending(ctx: Context, owners: Iterable[str]) -> dict[str, str]
         found = ctx.clients.instantly.list_campaigns()
     except (ApiError, ConfigError, LookupError) as exc:
         return {o: unreadable(exc) for o in owners}
-    return {o: why for o in owners if (why := campaign_problem(o, found))}
+    paused = blackout.words(ctx.store, ctx.settings, ctx.now)
+    return {o: why for o in owners if (why := campaign_problem(o, found, paused))}
 
 
 def instantly_report(store: Store) -> Mapping[str, Any]:

@@ -23,7 +23,9 @@ missing key, an API error) FAILs with the reason.
                     With live_sending = yes, every owner with an Active mailbox must have it active
                     (status 1; enrol gives an owner whose campaign is not active no capacity): FAIL,
                     "run start --live". With live_sending = no an active campaign WARNs, as
-                    live_sending does not stop Instantly: only `stop --live` pauses the campaigns
+                    live_sending does not stop Instantly: only `stop --live` pauses the campaigns.
+                    A campaign the blackout job paused PASSes, "paused for the blackout until <day>"
+                    (registry/blackout.py; Harry, 7 Oct 2026)
   Apollo budget     credits left this month for finding emails
   Queue             verified accounts with a sendable contact, against today's number, counting the
                     send approvals still waiting as enrol does (their accounts and their senders' slots)
@@ -37,7 +39,7 @@ missing key, an API error) FAILs with the reason.
   Enrollment        not stopped by an operator, the stop rule, or a positive reply waiting
   Jobs              the jobs a live send needs are built and scheduled: enrol, sync_outcomes (the
                     kill rules' data), poll_replies (replies and opt-outs), poll_approvals,
-                    kill_rules, mailbox_health
+                    kill_rules, mailbox_health, blackout (the campaigns paused over the blackout dates)
   clay_verification skip PASSes (accounts verified on Apollo data and HubSpot); required WARNs while
                     verify_in_clay is not built, as no new account is verified then
   HubSpot ids       hubspot_pipeline_id, hubspot_deal_stage_id and hubspot_owner_id are set; WARN
@@ -65,13 +67,13 @@ from us_outbound.enrol import enrol, second
 from us_outbound.enrol.capacity import CAMPAIGN_COMPLETED, TAKES_LEADS
 from us_outbound.learn import holds
 from us_outbound.logs import redact
-from us_outbound.registry import ramp
+from us_outbound.registry import blackout, ramp
 from us_outbound.settings.model import GENERAL_COPY, ROLE_LINE_COLUMNS
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 RANK = {PASS: 0, WARN: 1, FAIL: 2}
 DETAIL_LIMIT = 30
-NEEDED_JOBS = ("enrol", "sync_outcomes", "poll_replies", "poll_approvals", "kill_rules", "mailbox_health")
+NEEDED_JOBS = ("enrol", "sync_outcomes", "poll_replies", "poll_approvals", "kill_rules", "mailbox_health", "blackout")
 CAMPAIGN_ACTIVE = 1  # Instantly's campaign status for active (clients/instantly.CAMPAIGN_STATUS)
 SYNC = ", then `us-outbound sync`"  # how a sheet edit comes into force
 
@@ -271,9 +273,12 @@ def check_campaigns(ctx: Context) -> Check:
     no_mailbox = {reg.campaign_name(o) for o in settings.owners() if not reg.sending_list(settings, o)}
     waiting = [n for n in out["pending"] if n in no_mailbox]
     missing = [n for n in out["pending"] if n not in no_mailbox]
-    # An owner with an Active mailbox whose campaign exists but is not active gets no capacity in a live enrol.
+    # An owner with an Active mailbox whose campaign exists but is not active gets no capacity in a live enrol;
+    # one the blackout job paused waits for that job, not for `start` (registry/blackout.py; Harry, 7 Oct 2026).
     names = [reg.campaign_name(o) for o in settings.owners()]
-    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] not in TAKES_LEADS]
+    over = blackout.words(ctx.store, ctx.settings, ctx.now)
+    paused_over = {n: over[n] for n in names if n in over and raw.get(n) not in TAKES_LEADS}
+    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] not in TAKES_LEADS and n not in paused_over]
     done = {n for n in names if raw.get(n) == CAMPAIGN_COMPLETED}
     active = sorted(n for n, v in raw.items() if v == CAMPAIGN_ACTIVE)
     # Drift held while leads are in flight (registry/mailboxes.IN_FLIGHT_KEYS; Harry, 7 Oct 2026) is a WARN: the
@@ -288,6 +293,7 @@ def check_campaigns(ctx: Context) -> Check:
     detail += [f"{name}: matches ({status_of.get(name, '?')})"
                + ("; not sending: `us-outbound start --live` activates it" if name in idle else "")
                + ("; no lead left to email, and the next lead added resumes it" if name in done else "")
+               + (f"; {paused_over[name]}, when the blackout job starts it again" if name in paused_over else "")
                for name in out["ok"]]
     detail += [f"{name}: not an owner in the registry (left alone)" for name in out.get("unknown") or ()]
     fails, warns = [], []
@@ -319,6 +325,10 @@ def check_campaigns(ctx: Context) -> Check:
         return Check(FAIL, "Campaigns", "; ".join(fails + warns), detail)
     if warns:
         return Check(WARN, "Campaigns", f"{len(out['ok'])} exist and match; {'; '.join(warns)}", detail)
+    if live and paused_over:
+        until = sorted(set(paused_over.values()))[0]
+        return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; {len(paused_over)} {until}",
+                     detail)
     if live:
         return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist, match and are active", detail)
     return Check(PASS, "Campaigns", f"all {len(out['ok'])} exist and match; `us-outbound start --live` activates them",

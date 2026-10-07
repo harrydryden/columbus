@@ -172,7 +172,10 @@ Jobs beyond SPEC 9: `heartbeat_check` (hourly: a missed heartbeat alerts in Slac
 errors a job caught and a key a service rejected, `ops/job_errors.py`; it then pings the outside
 watchdog, Healthchecks.io, which emails Harry when the worker, the database or Slack is down,
 `ops/watchdog.py`; Harry, 7 Oct 2026),
-`suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (the 1st of each month, from
+`blackout` (hourly at :40: every US Outbound campaign paused over the General `blackout_dates`, in US Eastern dates,
+and exactly the ones it paused started again after them, as Instantly's schedule knows weekdays only; a stop, a kill
+rule or an empty sending list keeps one paused; each pause and restart is a `config_log` row; `registry/blackout.py`,
+Harry, 7 Oct 2026), `suppression_load` (daily: HubSpot opt-outs and bounces), `lookalikes` (the 1st of each month, from
 5 Oct 2026: Spill's HubSpot customers as lookalike cells, their growth from Apollo in aggregate, the
 lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oct 2026;
 `us-outbound lookalikes show` lists the cells, `lookalikes fit` the fits) and `hand_check_post` (Mondays

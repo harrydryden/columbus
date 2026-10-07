@@ -332,7 +332,7 @@ Instantly decides the moment each email goes. The jobs decide how many new leads
 | The campaign's daily limit | Set to the sum of the owner's Active caps. The morning mailbox check puts the daily limit and the sending list right itself; other drift is reported for `us-outbound campaigns ensure --fix --live` |
 | Sends per inbox per day | `GET /accounts/analytics/daily`, filtered to the registry inboxes, read each morning for the last 7 days. If yesterday's sends fall short of what the forecast had due, Instantly is behind, and the shortfall comes off today's room |
 | Why a campaign isn't sending | `GET /campaigns/{id}/sending-status`, read each morning. "Daily limit reached" (the campaign's, or every inbox's) marks the sender as full |
-| The send window | Mon–Fri 09:00–16:00 ET. No sends at weekends or on blackout dates |
+| The send window | Mon–Fri 09:00–16:00 ET. No sends at weekends or on blackout dates: enrol skips them, and the hourly `blackout` job pauses the campaigns over them, so no follow-up goes out on one either (7 Oct 2026) |
 | Step timing | Days 0, 7, 14 and 21. Instantly counts delays in calendar days and moves a step due at the weekend to Monday. A week apart, every step falls on the same weekday as the first, so none does |
 | Warmup | Instantly. Warmup emails are separate from the campaign limit, and warmup stays on (SPEC 13) |
 

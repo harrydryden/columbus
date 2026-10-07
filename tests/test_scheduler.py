@@ -478,6 +478,7 @@ SPEC9_CRONS = {
     "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
     "monday_readout": "30 8 * * 1",  # Harry, 6 Oct 2026: after the hand-check, before the daily post
+    "blackout": "40 * * * *",  # Harry, 7 Oct 2026: hourly, the campaigns paused over the blackout dates
     # Build additions.
     "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
     # The 1st of each month (Harry, 5 Oct 2026), after settings_sync (02:00) and before source_universe (03:00).
@@ -490,7 +491,8 @@ SPEC9_CRONS = {
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
-        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post"}
+        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post",
+        "blackout"}
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
@@ -514,7 +516,7 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
-                       "sync_outcomes", "mailbox_health", "kill_rules", "daily_post", "monday_readout",
+                       "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "monday_readout",
                        "heartbeat_check",
                        "suppression_load", "lookalikes", "lookalike_leads", "hand_check_post"]
     assert set(enabled) <= set(hb.EXPECTED)

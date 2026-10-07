@@ -69,6 +69,7 @@ EXPECTED: dict[str, int] = {
     "sync_outcomes": 45,  # every 15 min (SPEC 9 had 01:00 daily)
     "mailbox_health": 26 * _H,  # 07:00 daily
     "kill_rules": 150,  # hourly
+    "blackout": 150,  # hourly (Harry, 7 Oct 2026; registry/blackout.py)
     "heartbeat_check": 150,  # hourly; the outside watchdog watches this one (ops/watchdog.py: a late ping emails Harry)
     "daily_post": 26 * _H,  # 09:00 daily
     "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)

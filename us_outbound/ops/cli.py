@@ -14,7 +14,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       The same as `settings sync`
   start | stop                        resume or pause every US Outbound campaign, and enrollment. start
                                       --live syncs the sheet first, so live_sending just set counts.
-                                      stop --live is the brake: live_sending = no does not stop Instantly
+                                      stop --live is the brake: live_sending = no does not stop Instantly.
+                                      Over a blackout start leaves the campaigns paused, and the blackout
+                                      job starts them after it (registry/blackout.py; 7 Oct 2026)
   approvals list | send | contact |   send approvals without Slack (enrol/approvals.py; Harry, 2 Oct 2026:
     company [ID]                      while auto_send = no every email waits for approval), in the Slack
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
@@ -146,6 +148,7 @@ JOBS: dict[str, str] = {
     "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
     "kill_rules": "us_outbound.learn.kill_rules:run",
+    "blackout": "us_outbound.registry.blackout:run",  # Harry, 7 Oct 2026: campaigns paused over the blackout dates
     "daily_post": "us_outbound.learn.daily_post:run",
     "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
     # Build additions (README "Deviations").
@@ -490,10 +493,13 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     try:
         campaigns = ctx.clients.instantly.list_campaigns()
         from us_outbound.clients.instantly import CAMPAIGN_STATUS
+        from us_outbound.registry import blackout
 
+        over = blackout.words(ctx.store, ctx.settings, ctx.now)  # "paused for the blackout until …" (7 Oct 2026)
         print("Campaigns:")
         for c in campaigns:
-            print(f"  {c.get('name')}: {CAMPAIGN_STATUS.get(c.get('status'), c.get('status'))}")
+            state = CAMPAIGN_STATUS.get(c.get("status"), c.get("status"))
+            print(f"  {c.get('name')}: {over[c.get('name')] if state == 'paused' and c.get('name') in over else state}")
         if not campaigns:
             print("  none yet")
     except Exception as exc:  # status still prints what it can
@@ -525,6 +531,7 @@ def cmd_stop(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def _start(ctx: Context) -> dict:
+    from us_outbound.registry import blackout
     from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words, sending_list
 
     check = ensure_campaigns(ctx, create=False)
@@ -539,17 +546,27 @@ def _start(ctx: Context) -> dict:
         )
     inst = ctx.clients.instantly
     found = {c["name"]: c for c in inst.list_campaigns()}
-    started, skipped = [], []
+    # Over a blackout the campaigns stay paused, recorded as the blackout's, and the blackout job starts them after
+    # it (registry/blackout.py; Harry, 7 Oct 2026): enrollment still resumes.
+    over = blackout.hold(ctx.settings, ctx.now)
+    started, skipped, waiting = [], [], []
     for owner in ctx.settings.owners():
         name = campaign_name(owner)
         if name not in found or not sending_list(ctx.settings, owner):
             skipped.append(name)
+            continue
+        if found[name].get("status") != 1 and over is not None:
+            blackout.defer(ctx, name, found[name].get("status"), over)
+            waiting.append(name)
             continue
         if found[name].get("status") != 1:
             inst.activate_campaign(name)
         started.append(name)
     out = {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
            "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
+    if waiting:
+        out["paused_for_blackout"] = waiting
+        out["blackout"] = f"{over.words()}: the blackout job starts them then" if over else ""
     if held:
         out["drift_held"] = [held_words(n, h) for n, h in held.items()]
     return out

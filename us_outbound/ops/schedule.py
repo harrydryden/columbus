@@ -81,6 +81,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
     # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
     ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    # Harry, 7 Oct 2026 (docs/open-questions.md item 78): pause the campaigns over the blackout dates and start them
+    # again after, as Instantly's schedule knows weekdays only (registry/blackout.py). Hourly, deciding in US Eastern
+    # dates: the pause lands from 16:00 ET on the last send day before a blackout and the start from midnight ET after
+    # it, so many runs fall before 09:00 ET either way, whatever the UK and US clocks do. Instantly writes: --live.
+    ScheduledJob("blackout", "40 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("daily_post", "0 9 * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     # Harry, 6 Oct 2026 ("push ahead with building"): Mondays at 08:30, after the hand-check (08:00) and before the
     # daily post (09:00; SPEC 9 had both at 09:00). It only reads and posts: the alert channel needs --live, and in
