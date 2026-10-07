@@ -45,6 +45,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.apollo import VISITOR_CREDIT, credit_stats, credits_left, enriched_in, organizations_in
+from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation, Op
 from us_outbound.clients.hubspot import ASSOCIATION_TYPE_IDS
 from us_outbound.clients.http import ApiError
@@ -585,6 +586,7 @@ def enrich_not_found(r: Run) -> Result:
         return Result(DIFFERS, f"HTTP {exc.status} for a domain Apollo does not know: apollo_enrich counts that as a "
                                "failed call, not \"not found\"")
     if enriched_in(body):
+        _paid(r, "enrich_not_found")
         return Result(NOT_CHECKED, f"Apollo knows {UNKNOWN_DOMAIN} (1 credit): change UNKNOWN_DOMAIN")
     return Result(CONFIRMED, f"200 with no organization (keys {', '.join(sorted(map(str, body)))[:120] or 'none'}), "
                              "which enriched_in reads as not found")
@@ -711,7 +713,12 @@ def job_boards(r: Run) -> Result:
 
 
 def _paid(r: Run, key: str) -> None:
+    """A paid answer: counted for APO-CREDIT-COST, and in credit_ledger as the jobs count theirs (budget.py), so the
+    month's Apollo budget sees it."""
     r.record.setdefault("apollo_paid", []).append(key)
+    r.ctx.store.insert("credit_ledger", [{
+        "entry_id": new_id(), "system": "apollo", "job": JOB, "run_id": r.ctx.run_id, "account_id": None,
+        "credits": 1.0, "usd": None, "occurred_at": r.ctx.now, "note": f"phase0 check: {key}"}])
 
 
 def search_row(r: Run) -> Result:

@@ -280,8 +280,12 @@ def test_no_apollo_credit_is_spent_without_the_flag(w, capsys):
     assert paid == []
     assert result(capsys.readouterr().out, "APO-ENRICH-ONE") == (phase0.NOT_CHECKED, "needs --apollo-credits (1 Apollo "
                                                                                      "credit)")
+    w.transport.route("POST", "/mixed_companies/search", body={"organizations": [
+        {"id": "o9", "primary_domain": "acme.io", "state": "Georgia", "country": "United States"}]})
     assert w.run("phase0", "check", "--live", "--apollo-credits") == 0
-    assert [r.url for r in w.transport.requests if "/mixed_companies/search" in r.url]  # the two paid searches
+    assert len([r for r in w.transport.requests if "/mixed_companies/search" in r.url]) == 2  # the two paid searches
+    ledger = [e for e in w.store.select("credit_ledger") if e["job"] == phase0.JOB]
+    assert [(e["system"], e["credits"]) for e in ledger] == [("apollo", 1.0), ("apollo", 1.0)]  # counted as jobs count
 
 
 # -- the seed mode: only that seed lead, through the guard, live only ---------------------------------------------
