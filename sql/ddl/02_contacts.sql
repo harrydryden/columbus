@@ -34,6 +34,9 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   data_record jsonb,
   subject_arm text,
   contact_slot integer,
+  config_version text,
+  code_sha text,
+  copy_hash text,
   PRIMARY KEY (contact_id)
 );
 -- For databases created before enrolled_at, opener_arm, opener_source and the enrolment snapshot existed.
@@ -51,6 +54,12 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS data_record jsonb;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS subject_arm text;
 -- Which of the account's contacts this is (Harry, 6 Oct 2026): 1 the first, 2 the second contact (enrol/second.py).
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS contact_slot integer;
+-- What the contact was enrolled under (Harry, 7 Oct 2026: "a cohort system in place for contacts that have started
+-- not being interrupted by changes"): the config version (config_versions), the code and the Copy row's wording.
+-- Stamped by enrol._record_enrolled, from what the lead was rendered under; NULL before 8 Oct 2026.
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS config_version text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS code_sha text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS copy_hash text;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
@@ -74,3 +83,6 @@ COMMENT ON COLUMN us_outbound.contacts.suppressed IS 'Never emailed: an opt-out 
 COMMENT ON COLUMN us_outbound.contacts.suppressed_reason IS 'Why it is suppressed, e.g. declined in Slack by U01ABCDEF at a send approval (2 Oct 2026).';
 COMMENT ON COLUMN us_outbound.contacts.contact_slot IS 'Which of the account''s contacts this is, set at enrollment (build addition; Harry, 6 Oct 2026): 1 the first; 2 the second contact, a person of another role at an account of second_contact_min_employees or more staff, enrolled second_contact_delay_days after the first contact''s email 1 from the same sender (enrol/second.py). NULL: enrolled before 6 Oct 2026, read as 1.';
 COMMENT ON COLUMN us_outbound.contacts.enrolled_at IS 'When the lead was added to its sender''s campaign (build addition). The send forecast dates each lead''s later steps from it, and the weekly target counts it.';
+COMMENT ON COLUMN us_outbound.contacts.config_version IS 'The config version the contact''s emails were rendered and sent under (config_versions; config_version.py; Harry, 7 Oct 2026): a 12-character hash of the content settings, the sendable Copy rows, the signature template, the campaign constants and the code. Set when the lead was rendered (enrol.prepare, or the send approval''s card), not when it was approved. NULL: enrolled before 8 Oct 2026, unstamped.';
+COMMENT ON COLUMN us_outbound.contacts.code_sha IS 'The code the contact was rendered under: the first 12 characters of RAILWAY_GIT_COMMIT_SHA, or dev outside a Railway deploy (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';
+COMMENT ON COLUMN us_outbound.contacts.copy_hash IS 'The Copy row''s content hash when the contact was rendered (CopyRow.content_hash), so two wordings under one copy_version are told apart (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';
