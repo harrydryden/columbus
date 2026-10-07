@@ -139,7 +139,9 @@ above this.
   hold clearing, unless the card expires first.
 - **The daily post says a campaign is not active:** that sender gets no new cards until
   `us-outbound start --live` activates it. The 07:00 mailbox check activates a newly created
-  campaign by itself once sending has gone live.
+  campaign by itself once sending has gone live. A campaign Instantly shows as *completed* is fine:
+  Instantly marks an active campaign completed whenever it has no lead left to email (straight after
+  `start`, if it has none yet), and the next lead added resumes it.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten:** `us-outbound erase --email ADDRESS --live`, then do the manual

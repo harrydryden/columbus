@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 from us_outbound.clients.instantly import CAMPAIGN_STATUS, LEAD_BOUNCED, LEAD_UNSUBSCRIBED
 from us_outbound.context import UK, Context
-from us_outbound.enrol import copy_desk, render
+from us_outbound.enrol import capacity, copy_desk, render
 from us_outbound.logs import hash_email
 from us_outbound.ops.erase import _contacts_by_email
 from us_outbound.registry.mailboxes import campaign_name
@@ -143,6 +143,8 @@ def send(ctx: Context, address: str, owner: str, *, industry: str = "", role: st
         return out
     created = [c for c in added.get("created_leads") or () if c.get("id")]
     out["added"] = bool(created)
+    if created and capacity.resume_if_completed(ctx, name):
+        out["campaign_status"] = "active"  # it was completed (no lead left); the add resumed it
     if not created:
         counts = {k: v for k, v in added.items() if k in ("in_blocklist", "skipped_count", "duplicated_leads",
                                                           "invalid_email_count") and v}

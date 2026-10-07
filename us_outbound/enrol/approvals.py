@@ -1104,6 +1104,14 @@ def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: 
     outcome = APPROVED_EDITED if edited else APPROVED
     campaign = _text(p.get("campaign"))
     enrol._record_enrolled(ctx, [_prepared(ctx, item)], {0: lead_id}, campaign, ctx.now_et().date().strftime("%Y-%m"))
+    resume = ""
+    try:
+        if capacity.resume_if_completed(ctx, campaign):
+            log("campaign_resumed", campaign=campaign, item_id=item.id)
+    except (ApiError, LookupError, ConfigError) as exc:
+        log("campaign_resume_failed", campaign=campaign, item_id=item.id, error=str(exc)[:200])
+        resume = (f" ⚠️ {_esc(campaign)} is completed in Instantly and could not be resumed, so it won't send until "
+                  "someone runs `us-outbound start --live`.")
     at = _uk_time(ctx)
     p["added"] = {"lead_id": lead_id, "at": ctx.now.isoformat(), "by": by, "campaign": campaign}
     first = _esc((p.get("contact") or {}).get("first_name") or "they")
@@ -1111,7 +1119,7 @@ def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: 
     _close(ctx, item, outcome, by, slack, via=via,
            status=f"✅ Approved{' (edited)' if edited else ''} {_who(by)} at {at} UK · added to {_esc(campaign)}",
            note=f"Added to {_esc(campaign)} at {at} UK{' (edited)' if edited else ''}, approved {_who(by)}. Email 1 goes "
-                f"out in the next send window, and the follow-ups on days {days} unless {first} replies.")
+                f"out in the next send window, and the follow-ups on days {days} unless {first} replies.{resume}")
     return {"added": True, "outcome": outcome, "campaign": campaign, "at": f"{at} UK"}
 
 

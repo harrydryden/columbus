@@ -60,6 +60,7 @@ from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import enrol, second
+from us_outbound.enrol.capacity import CAMPAIGN_COMPLETED, TAKES_LEADS
 from us_outbound.learn import holds
 from us_outbound.logs import redact
 from us_outbound.registry import ramp
@@ -258,7 +259,8 @@ def check_campaigns(ctx: Context) -> Check:
     missing = [n for n in out["pending"] if n not in no_mailbox]
     # An owner with an Active mailbox whose campaign exists but is not active gets no capacity in a live enrol.
     names = [reg.campaign_name(o) for o in settings.owners()]
-    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] != CAMPAIGN_ACTIVE]
+    idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] not in TAKES_LEADS]
+    done = {n for n in names if raw.get(n) == CAMPAIGN_COMPLETED}
     active = sorted(n for n, v in raw.items() if v == CAMPAIGN_ACTIVE)
     detail = [f"{name}: {', '.join(f'{k} {v[1]!r}, expected {v[0]!r}' for k, v in sorted(d.items()))}"
               for name, d in out["drift"].items()]
@@ -266,6 +268,7 @@ def check_campaigns(ctx: Context) -> Check:
     detail += [f"{name}: waits for a warm mailbox (created by mailbox_health once one is Active)" for name in waiting]
     detail += [f"{name}: matches ({status_of.get(name, '?')})"
                + ("; not sending: `us-outbound start --live` activates it" if name in idle else "")
+               + ("; no lead left to email, and the next lead added resumes it" if name in done else "")
                for name in out["ok"]]
     detail += [f"{name}: not an owner in the registry (left alone)" for name in out.get("unknown") or ()]
     fails, warns = [], []
