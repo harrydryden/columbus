@@ -51,7 +51,8 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
                  "tier_at_enrol", "data_record", "subject_arm",
                  "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
-                 "config_version", "code_sha", "copy_hash"},  # the cohort stamp (Harry, 7 Oct 2026)
+                 "config_version", "code_sha", "copy_hash",  # the cohort stamp (Harry, 7 Oct 2026)
+                 "lead_deleted_at"},  # the retention job's Instantly deletion (SPEC 13; ops/retention.py)
     "suppression": {"expires_at"},
     "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }

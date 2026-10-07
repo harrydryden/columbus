@@ -154,6 +154,7 @@ JOBS: dict[str, str] = {
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
+    "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 
