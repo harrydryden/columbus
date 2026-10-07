@@ -222,3 +222,46 @@ def test_a_live_audit_asks_decides_and_withdraws_the_cards_that_no_longer_fit(ca
     assert again["to_check"] == 0 and len(sdk.calls) == 2
     assert cli.main(["labels", "audit"], context_factory=lambda *a, **k: ctx) == 0
     assert "0 of 3 open companies have no fresh label check" in capsys.readouterr().out
+
+
+# -- `approvals redo` (Harry, 7 Oct 2026: "bulk reject all of those contacts from today and send them round again") --
+
+
+def test_redo_all_withdraws_each_card_and_posts_it_again_in_its_place():
+    from us_outbound.enrol import approvals
+
+    ctx, t, sl, _ = proposed()
+    old = {r["item_id"] for r in items(ctx, "open")}
+    at(ctx, ctx.now, job="approvals_redo")
+    out = approvals.redo(ctx, "all")
+    assert out["cards"] == 3 and len(out["posted_again"]) == 3 and out["back_to_queue"] == out["not_emailed"] == []
+    for r in items(ctx):
+        if r["item_id"] in old:
+            assert (r["status"], r["payload"]["outcome"]) == ("handled", "expired")
+            assert r["payload"]["reason"] == f"withdrawn: {approvals.REDO_WHY}"
+    new = [r for r in items(ctx, "open")]
+    assert len(new) == 3 and {r["payload"]["replaces"] for r in new} == old
+    assert {r["account_id"] for r in new} == {"acc-1", "acc-2", "acc-3"}
+    assert instantly_posts(t) == []
+
+
+def test_redo_does_not_post_again_a_company_that_may_not_be_emailed():
+    from us_outbound.enrol import approvals
+
+    ctx, t, sl, _ = proposed()
+    ctx.store.update("accounts", {"account_id": "acc-3"}, {"domain": "braintreema.gov"})
+    at(ctx, ctx.now, job="approvals_redo")
+    out = approvals.redo(ctx, "all")
+    assert out["not_emailed"] == ["Loop Studio"] and len(out["posted_again"]) == 2
+    assert "acc-3" not in {r["account_id"] for r in items(ctx, "open")}
+
+
+def test_a_dry_redo_changes_nothing():
+    from us_outbound.enrol import approvals
+
+    ctx, t, sl, _ = proposed()
+    at(ctx, ctx.now, live=False, job="approvals_redo")
+    before = (len(sl.posts), len(sl.updates))
+    out = approvals.redo(ctx, "all")
+    assert out["dry_run"] and len(out["would"]) == 3 and len(items(ctx, "open")) == 3
+    assert (len(sl.posts), len(sl.updates)) == before

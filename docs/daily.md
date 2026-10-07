@@ -229,6 +229,10 @@ docs/railway-setup.md, step h.
   counts the corrections. `us-outbound relabel` shows what the rules and the stored checks change for
   the companies in the queue; `--live` applies it and withdraws the open cards it changes. Government
   domains (.gov, .mil) are never prospected.
+- **Start the waiting cards again:** `us-outbound approvals redo all --live` (or one card: `approvals redo
+  ID --live`) withdraws each waiting card and posts it again for the same person and sender, with the
+  company's label and emails as they are now (after a `labels audit --live`, say). A company that may no
+  longer be emailed is not posted again; one that cannot be made ready now goes back to the queue.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten, or Apollo sends a deletion notice:** within 30 days,

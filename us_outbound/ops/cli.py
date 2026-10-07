@@ -1119,6 +1119,15 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
     if not args.item_id:
         raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
     action = args.action
+    if action == "redo":  # Harry, 7 Oct 2026: today's cards withdrawn and posted again under the checked labels
+        ctx = factory("approvals_redo", args.live, operator=True)  # it reaches no prospect: --live alone
+        try:
+            summary = run_job(ctx, lambda c: approvals.redo(c, args.item_id))
+        except (LookupError, ValueError) as exc:
+            raise Refused(str(exc)) from exc
+        _print(summary)
+        _dry_note(ctx, "no card was withdrawn or posted.")
+        return 0
     if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
         if not args.label:
             raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
@@ -1706,10 +1715,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
                  cmd_approvals, takes_live=True)
-    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject", "industry"],
+    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject", "industry", "redo"],
                     help="send = ✅ (approve); contact = 👤 not this person; company = 🚫 not this company "
-                         "(reject --contact / --company); industry = the company's label is another")
-    ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters)")
+                         "(reject --contact / --company); industry = the company's label is another; redo = withdraw "
+                         "the card and post it again under the company's label and emails as they are now")
+    ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters); redo: or all")
     ap.add_argument("label", nargs="?", help="industry: the Industries label, like \"Fintech\"")
     ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
     ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")

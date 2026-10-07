@@ -43,6 +43,7 @@ us-outbound start | stop [--live]                  resume (syncing first) / paus
 us-outbound approvals list                         emails waiting for a ✅ (auto_send = no): company, contact, sender, subject
 us-outbound approvals send <id> [--live]           ✅: add its lead to Instantly (= approvals approve)
 us-outbound approvals contact|company <id> [--live]   👤 not this person / 🚫 not this company (= approvals reject --contact|--company)
+us-outbound approvals redo <id>|all [--live]       withdraw waiting cards and post them again under the labels and emails as they are now
 us-outbound replies list                           reply items waiting for a human: class, account, role, excerpt, draft
 us-outbound replies send <id> [--text "..."] [--live]   send the draft (or that text) (= replies approve [--edit])
 us-outbound replies skip <id> [--live]             handled, nothing sent
