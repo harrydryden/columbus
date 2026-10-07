@@ -630,6 +630,23 @@ def test_retention_sql_runs_on_postgres(store):
     assert events == ["e-empty", "e-old"]
     assert sorted(i["item_id"] for i in items) == ["i-old", "i-ooo"] and items[0]["payload"]["reply_excerpt"]
 
+    store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
+                                       {"key": "x.com|J", "payload": {"email": "j@x.com"}},
+                                       {"key": "y.com|K", "payload": {"email": "jane_doe@acme.com"}}])
+    ctx = SimpleNamespace(store=store)
+    assert retention._raw_contact_keys(ctx, ["jane.doe@acme.com", "nobody@z.com"]) == ["acme.com|Jane Doe"]
+    assert retention._raw_contact_keys(ctx, []) == []
+
+
+def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
+    """The universe rule's SQL (Postgres) and its Python (the tests' MemoryStore) agree on every case."""
+    from tests.test_retention import UNIVERSE_NOW, universe_rows
+    from us_outbound.ops import retention
+
+    universe_rows(store)
+    before = retention.months_before(UNIVERSE_NOW, retention.UNIVERSE_MONTHS)
+    assert retention.stale_accounts(SimpleNamespace(store=store), before) == ["a-stale", "a-stale-too"]
+
 
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
     """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in

@@ -1,7 +1,10 @@
 -- accounts: one row per company, keyed by root domain (SPEC 6).
 -- SPEC 2: "The company is the unit: it has one score, one tier and one contact in v1."
 -- Retention (SPEC 6): "Universe rows not refreshed in 12 months: deleted." That is the
--- retention job's work, not DDL; it uses last_scored (else first_seen).
+-- retention job's work (ops/retention.py), not DDL. Refreshed means a source saw the company
+-- again (a signal_events fact from a source, not one the system derives); last_scored moves on
+-- every nightly rescore, so it is no sign. Only rows nothing else holds go (no contact, event or
+-- hitl_items row, never enrolled, no person's decision on it).
 CREATE TABLE IF NOT EXISTS us_outbound.accounts (
   account_id text NOT NULL,
   domain text,
@@ -34,7 +37,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.accounts (
 );
 CREATE INDEX IF NOT EXISTS accounts_domain_idx ON us_outbound.accounts (domain);
 CREATE INDEX IF NOT EXISTS accounts_status_idx ON us_outbound.accounts (status);
-COMMENT ON TABLE us_outbound.accounts IS 'One row per company (root domain) (SPEC 6). The company is the unit: one score, one tier and one contact in v1 (SPEC 2). Universe rows not refreshed in 12 months are deleted by the retention job.';
+COMMENT ON TABLE us_outbound.accounts IS 'One row per company (root domain) (SPEC 6). The company is the unit: one score, one tier and one contact in v1 (SPEC 2). Universe rows not refreshed in 12 months are deleted by the retention job (ops/retention.py), with their signal_events, when no contact, event or hitl_items row holds them.';
 COMMENT ON COLUMN us_outbound.accounts.account_id IS 'uuid. Also HubSpot us_outbound_account_id (SPEC 11).';
 COMMENT ON COLUMN us_outbound.accounts.domain IS 'Root domain, lower case, without www (SPEC 13). One account per root domain.';
 COMMENT ON COLUMN us_outbound.accounts.clean_name IS 'Cleaned company name (SPEC 13).';

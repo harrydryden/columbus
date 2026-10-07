@@ -49,6 +49,40 @@ Copies outside the database are not ours to purge here: the Slack cards (#us-out
 escalation emails in Harry's inbox, the HubSpot note of a positive or referral reply (a warm lead's record in the
 CRM), and Instantly's own thread, which leaves Instantly with its lead (PHASE0-CONFIRM, ops/erase.py).
 
+Contacts who never replied, 12 months after their last step (SPEC 6). A contact we emailed (enrolled) whose last
+step, dated as above, is more than CONTACT_MONTHS behind is deleted, with the personal data kept beside it: its row,
+the payloads of its hitl_items (a send approval's card holds its name, email and emails; the rows keep their kind,
+status, dates and ids, as erase leaves them) and the raw_clay_contacts rows that hold its address. Kept, and never
+deleted here:
+  * a contact who replied: a replied event of any class but out_of_office (an away message) and unsubscribe (a
+    reply that only asked to stop is an opt-out, not a conversation); a reply not classified yet counts as one;
+  * every contact at a company with a booking or a deal (meeting_booked, demo_held, deal_created): HubSpot holds
+    that relationship, and so do we;
+  * a contact whose Instantly lead is not deleted yet (rule 1 goes first), or whose opt-out by reply is not
+    recorded yet.
+A contact revealed but never emailed has no last step, so this rule never reaches it (docs/open-questions.md 79).
+Its events stay: after the reply text is purged they carry ids, classes, steps, our mailbox and dates, no personal
+data. Its suppression hash stays, so a person who opted out or bounced is still never emailed again; one who did
+neither may be found and proposed again, as SPEC 6's 12 months is also recontact_person_months. What the reports
+show afterwards: the readout views count the company from its events (v_account_outcomes) with the contact's
+enrolment snapshot blank, so the signal table judges it by the account's matches now; the cohort report reads
+contacts, so a company left with no contact leaves its enrolment week, which then reads as replying more than it
+did. Both only for companies whose last step is a year old, far beyond the readout's last week, the cohorts' last
+eight weeks and any test's read date.
+
+Universe rows not refreshed in 12 months (SPEC 6). A company row is refreshed when a source sees the company again:
+source_universe's monthly pass from page 1 writes Apollo's facts for every company it finds again, as do
+apollo_enrich, apollo_people, apollo_signals, the page reader, site visits and the HubSpot checks. last_scored is no
+sign of it (every nightly rescore moves it), and neither are the facts the system derives from what it already holds
+(DERIVED_SOURCES: scoring's matches, the lookalike fit, verify's doubts, the opener's focus phrase). So an account is
+deleted, with its signal_events, when it was first seen more than UNIVERSE_MONTHS ago and no source has observed it
+since, and only when nothing else holds it: no contact, no event and no hitl_items row names it, it was never
+enrolled (status enrolled, engaged, demo_requested or demo_booked) or disqualified, it did not come from the Named
+accounts tab, and no person's decision is kept on it (an approver's 🚫 at a send approval, declined_in_slack; Harry
+naming it, named). Domain aliases, partners, suppression and the credit ledger stay. A company found again later
+comes in by the front door as a new account. These are companies, not people, so the rule leans to keeping.
+At most CONTACTS_PER_RUN contacts and ACCOUNTS_PER_RUN accounts a run, oldest first.
+
 Suppression is never touched: it is kept indefinitely, as hashes (SPEC 6).
 
 Dry-run (the default; live needs --live and live_sending = yes, as for every job): it reads Instantly's lead
@@ -58,6 +92,7 @@ cannot be undone, so unlike other jobs (SPEC 0.3) its database writes wait for l
 
 from __future__ import annotations
 
+import calendar
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
@@ -68,17 +103,27 @@ from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED, STEP_DAYS
 from us_outbound.context import ET, ConfigError, Context
 from us_outbound.enrol import capacity
-from us_outbound.logs import log
+from us_outbound.enrol.openers import FOCUS_SOURCE
+from us_outbound.logs import log, normalise_email
 from us_outbound.replies import optout
 from us_outbound.replies.items import REPLY_KINDS
 from us_outbound.replies.poll import OOO_KIND
+from us_outbound.scoring.score import SCORING_SOURCE
+from us_outbound.scoring.tiers import DECLINED_IN_SLACK
+from us_outbound.sources import named
+from us_outbound.sources.lookalikes import SOURCE as LOOKALIKE_SOURCE
+from us_outbound.verify import DOUBT_SOURCE
 
 JOB = "retention"
 LEAD_DAYS = 31  # SPEC 13: leads stay in Instantly this long after their last step
 REPLY_TEXT_DAYS = 90  # SPEC 6: reply text is purged after this
+CONTACT_MONTHS = 12  # SPEC 6: contacts who never replied are deleted this long after their last step
+UNIVERSE_MONTHS = 12  # SPEC 6: universe rows not refreshed this long are deleted
 # Two Instantly requests a lead (delete_lead checks the lead's campaign first). The pilot adds about 650 leads a
 # month, some 30 a send day, so a backlog of a few hundred clears within days, well inside the run's timeout.
 LEADS_PER_RUN = 200
+CONTACTS_PER_RUN = 500  # database rows only
+ACCOUNTS_PER_RUN = 2000
 ID_CHUNK = 1000
 LIST_LIMIT = 50  # errors kept in the summary
 OUT_OF_OFFICE = "out_of_office"
@@ -92,10 +137,35 @@ REPLY_ITEM_KINDS = (*REPLY_KINDS, OOO_KIND)  # the hitl_items that quote a reply
 REPLY_TEXT_KEYS = ("reply_excerpt", "summary", "referral", "draft", "draft_original", "draft_rejected", "draft_problems",
                    "sent_text")
 PURGED = "reply_text_purged_at"  # set on a card's payload once its text is gone
+# Not a reply, for SPEC 6's "never replied": an away message, and a reply that only asked to stop (an opt-out).
+NOT_A_REPLY = frozenset({OUT_OF_OFFICE, "unsubscribe"})
+WARM_EVENTS = ("meeting_booked", "demo_held", "deal_created")  # a company with one keeps its people
+# Account statuses whose rows are never deleted as universe rows: our history with the company, or a decision.
+KEPT_STATUSES = ("enrolled", "engaged", "demo_requested", "demo_booked", "disqualified")
+# Facts the system derives from what it already holds: they are no sign a source saw the company again.
+DERIVED_SOURCES = (SCORING_SOURCE, LOOKALIKE_SOURCE, DOUBT_SOURCE, FOCUS_SOURCE)
+# A person's decision kept on the account: an approver's 🚫 at a send approval, or Harry naming it.
+DECISION_FACTS = (DECLINED_IN_SLACK, named.FACT)
 EVENTS_TEXT_SQL = "SELECT event_id FROM {schema}.events WHERE reply_text IS NOT NULL AND occurred_at < %(before)s"
 ITEMS_TEXT_SQL = (
     "SELECT item_id, payload FROM {schema}.hitl_items WHERE kind = ANY(%(kinds)s) AND created_at < %(before)s"
     " AND payload IS NOT NULL AND payload ->> 'reply_text_purged_at' IS NULL"
+)
+RAW_CONTACTS_SQL = (
+    'SELECT DISTINCT r."key" FROM {schema}.raw_clay_contacts AS r'
+    " JOIN unnest(%(emails)s::text[]) AS e(email) ON strpos(lower(r.payload::text), e.email) > 0"
+)
+STALE_ACCOUNTS_SQL = (
+    "SELECT a.account_id FROM {schema}.accounts AS a"
+    " WHERE a.first_seen < %(before)s"
+    " AND COALESCE(a.status, '') <> ALL(%(kept)s) AND COALESCE(a.source, '') <> %(named)s"
+    " AND NOT EXISTS (SELECT 1 FROM {schema}.signal_events AS s WHERE s.account_id = a.account_id"
+    " AND ((s.observed_at >= %(before)s AND COALESCE(s.source, '') <> ALL(%(derived)s))"
+    " OR s.fact = ANY(%(decisions)s)))"
+    " AND NOT EXISTS (SELECT 1 FROM {schema}.contacts AS c WHERE c.account_id = a.account_id)"
+    " AND NOT EXISTS (SELECT 1 FROM {schema}.events AS e WHERE e.account_id = a.account_id)"
+    " AND NOT EXISTS (SELECT 1 FROM {schema}.hitl_items AS h WHERE h.account_id = a.account_id)"
+    " ORDER BY a.first_seen, a.account_id"
 )
 
 # Why a due lead waits (the summary's leads.held).
@@ -105,6 +175,7 @@ UNREADABLE = "its campaign's leads could not be read"
 STEPS_LEFT = "Instantly lists it as active or paused, with steps not recorded as sent"
 OPT_OUT_PENDING = "an opt-out not recorded yet"
 BOUNCE_PENDING = "a bounce not recorded yet"
+LEAD_LEFT = "its Instantly lead is not deleted yet"  # a due contact waits for rule 1
 
 
 # -- small helpers -------------------------------------------------------------------------------------------------
@@ -142,6 +213,12 @@ def _select_in(ctx: Context, table: str, column: str, values: Iterable[Any], whe
                ) -> list[dict]:
     ids = sorted({str(v) for v in values if v})
     return [r for chunk in _chunks(ids) for r in ctx.store.select(table, {**(where or {}), column: list(chunk)})]
+
+
+def months_before(d: date, months: int) -> date:
+    """The same day `months` calendar months before d (the month's last day when it has no such day)."""
+    year, month = divmod(d.year * 12 + d.month - 1 - months, 12)
+    return d.replace(year=year, month=month + 1, day=min(d.day, calendar.monthrange(year, month + 1)[1]))
 
 
 def _ends_emails(event: Mapping[str, Any]) -> bool:
@@ -353,6 +430,120 @@ def purge_reply_text(ctx: Context) -> dict:
     return out
 
 
+# -- 3. Contacts who never replied, 12 months after their last step (SPEC 6) ------------------------------------------
+
+
+def due_contacts(ctx: Context, ends: Ends, today: date) -> tuple[list[dict], Counter[str]]:
+    """(the contacts due for deletion, oldest last step first; those due but held back, by reason)."""
+    store, before = ctx.store, months_before(today, CONTACT_MONTHS)
+    replied = {str(e.get("contact_id")) for e in store.select("events", {"type": "replied"})
+               if e.get("contact_id") and e.get("reply_class") not in NOT_A_REPLY}
+    warm = store.select("events", {"type": list(WARM_EVENTS)})
+    warm_accounts = {str(e["account_id"]) for e in warm if e.get("account_id")}
+    replied |= {str(e["contact_id"]) for e in warm if e.get("contact_id")}
+    pending = _recorded(ctx)[2]
+    held: Counter[str] = Counter()
+    due: list[tuple[date, str, dict]] = []
+    for c in store.select("contacts"):
+        cid = str(c["contact_id"])
+        if not (c.get("enrolled_at") or c.get("enrolment_month") or c.get("last_step_at")):
+            continue  # never emailed: no last step to date it from
+        if cid in replied or str(c.get("account_id")) in warm_accounts:
+            continue
+        end = ends.last_step(c)
+        if end is None:
+            held[UNDATED] += 1
+            continue
+        if end >= before:
+            continue
+        if c.get("instantly_lead_id"):
+            held[LEAD_LEFT] += 1
+        elif cid in pending:
+            held[OPT_OUT_PENDING] += 1
+        else:
+            due.append((end, cid, c))
+    return [c for _, _, c in sorted(due, key=lambda x: (x[0], x[1]))], held
+
+
+def _raw_contact_keys(ctx: Context, emails: Sequence[str]) -> list[str]:
+    """raw_clay_contacts keys whose record holds one of these addresses (lower case), as erase finds them."""
+    if not emails:
+        return []
+    store = ctx.store
+    try:
+        rows = store.query(RAW_CONTACTS_SQL.format(schema=store.schema), {"emails": list(emails)})
+    except NotImplementedError:  # MemoryStore without a handler: scan the table
+        rows = [r for r in store.select("raw_clay_contacts")
+                if any(e in str(r.get("payload") or "").lower() for e in emails)]
+    return sorted({str(r["key"]) for r in rows if r.get("key") is not None})
+
+
+def delete_contacts(ctx: Context, ends: Ends, today: date) -> dict:
+    """Delete each contact who never replied, CONTACT_MONTHS after its last step, with its personal data beside it."""
+    due, held = due_contacts(ctx, ends, today)
+    take = due[:CONTACTS_PER_RUN]
+    out: dict[str, Any] = {"due": len(due), "deleted": 0, "held": dict(held),
+                           "left_for_next_run": len(due) - len(take)}
+    if ctx.dry_run or not take:
+        return out
+    store = ctx.store
+    ids = [str(c["contact_id"]) for c in take]
+    emails = sorted({normalise_email(str(c["email"])) for c in take if "@" in str(c.get("email") or "")})
+    keys = _raw_contact_keys(ctx, emails)
+    items = deleted = raw = 0
+    for chunk in _chunks(ids):
+        items += store.update("hitl_items", {"contact_id": list(chunk)}, {"payload": None})
+        deleted += store.delete("contacts", {"contact_id": list(chunk)})
+    for chunk in _chunks(keys):
+        raw += store.delete("raw_clay_contacts", {"key": list(chunk)})
+    out.update(deleted=deleted, hitl_items_cleared=items, raw_clay_contacts_deleted=raw)
+    log("retention_contacts_deleted", run_id=ctx.run_id, contacts=deleted, hitl_items=items, raw_clay_contacts=raw)
+    return out
+
+
+# -- 4. Universe rows not refreshed in 12 months (SPEC 6) -----------------------------------------------------------
+
+
+def stale_accounts(ctx: Context, before: datetime) -> list[str]:
+    """Accounts first seen before `before` that no source has observed since, and that nothing else holds (the module
+    docstring), oldest first."""
+    store = ctx.store
+    params = {"before": before, "kept": list(KEPT_STATUSES), "named": named.SOURCE,
+              "derived": list(DERIVED_SOURCES), "decisions": list(DECISION_FACTS)}
+    try:
+        return [str(r["account_id"]) for r in store.query(STALE_ACCOUNTS_SQL.format(schema=store.schema), params)]
+    except NotImplementedError:  # MemoryStore without a handler: the same in Python
+        pass
+    held: set[str] = set()
+    for e in store.select("signal_events"):
+        seen = _ts(e.get("observed_at"))
+        if (seen is not None and seen >= before and (e.get("source") or "") not in DERIVED_SOURCES) \
+                or e.get("fact") in DECISION_FACTS:
+            held.add(str(e.get("account_id")))
+    for table in ("contacts", "events", "hitl_items"):
+        held |= {str(r["account_id"]) for r in store.select(table) if r.get("account_id")}
+    found = [(t, str(a["account_id"])) for a in store.select("accounts")
+             if (t := _ts(a.get("first_seen"))) is not None and t < before
+             and (a.get("status") or "") not in KEPT_STATUSES and (a.get("source") or "") != named.SOURCE
+             and str(a["account_id"]) not in held]
+    return [aid for _, aid in sorted(found)]
+
+
+def delete_accounts(ctx: Context) -> dict:
+    """Delete the universe rows no source has refreshed in UNIVERSE_MONTHS, with their facts (SPEC 6)."""
+    ids = stale_accounts(ctx, months_before(ctx.now, UNIVERSE_MONTHS))
+    take = ids[:ACCOUNTS_PER_RUN]
+    out = {"due": len(ids), "deleted": 0, "left_for_next_run": len(ids) - len(take)}
+    if ctx.dry_run or not take:
+        return out
+    facts = 0
+    for chunk in _chunks(take):
+        facts += ctx.store.delete("signal_events", {"account_id": list(chunk)})
+        out["deleted"] += ctx.store.delete("accounts", {"account_id": list(chunk)})
+    log("retention_accounts_deleted", run_id=ctx.run_id, accounts=out["deleted"], facts=facts)
+    return out
+
+
 # -- the job ---------------------------------------------------------------------------------------------------------
 
 
@@ -364,6 +555,8 @@ def run(ctx: Context) -> dict:
     out: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run}
     out["leads"] = delete_leads(ctx, ends, today, errors)
     out["reply_text"] = purge_reply_text(ctx)
+    out["contacts"] = delete_contacts(ctx, ends, today)
+    out["accounts"] = delete_accounts(ctx)
     out["errors"] = errors
     log("retention_done", run_id=ctx.run_id, **out)
     return out

@@ -1,6 +1,8 @@
 -- contacts: one row per person (SPEC 6), plus last_step_at and enrolled_at (added by the build).
 -- Retention (SPEC 6): "Contacts who never replied: deleted 12 months after their last
--- step." The retention job does this from last_step_at; erase --email deletes on request.
+-- step." The retention job (ops/retention.py, daily) does this, dating the last step from
+-- enrolled_at as the send forecast does, from a stop, and from last_step_at; erase --email
+-- deletes on request.
 CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   contact_id text NOT NULL,
   account_id text,
@@ -65,7 +67,7 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS copy_hash text;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS lead_deleted_at timestamptz;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
-COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job.';
+COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job (ops/retention.py), with their hitl_items payloads and raw_clay_contacts rows; their events and suppression hash stay.';
 COMMENT ON COLUMN us_outbound.contacts.role IS 'Role name from the Roles tab, e.g. People leader, Founder or executive, Operations.';
 COMMENT ON COLUMN us_outbound.contacts.email_sha256 IS 'sha256 of the lower-cased, trimmed email (logs.hash_email). One contact per email hash (SPEC 13).';
 COMMENT ON COLUMN us_outbound.contacts.email_status IS 'Verification status as the source gave it: Apollo (verified) or Clay (valid, catch_all_valid, invalid, not_found; SPEC 8).';
@@ -75,7 +77,7 @@ COMMENT ON COLUMN us_outbound.contacts.enrolment_month IS 'YYYY-MM of first enro
 COMMENT ON COLUMN us_outbound.contacts.mailbox IS 'The sender''s address that sent step 1.';
 COMMENT ON COLUMN us_outbound.contacts.instantly_campaign IS 'The sender''s campaign, named ''US Outbound – '' plus the owner name (SPEC 9).';
 COMMENT ON COLUMN us_outbound.contacts.instantly_lead_id IS 'The lead''s id in its sender''s campaign. Cleared when the retention job deletes the lead, 31 days after its last step (lead_deleted_at; SPEC 13).';
-COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent (build addition, for retention).';
+COMMENT ON COLUMN us_outbound.contacts.last_step_at IS 'When the last sequence step was sent, from sync_outcomes (build addition, for retention: a send later than the forecast''s last step moves the 31-day and 12-month clocks; ops/retention.py).';
 COMMENT ON COLUMN us_outbound.contacts.opener_arm IS 'Email 1''s opener arm at enrollment (build addition; enrol/openers.py). One of: opener, holdout, none. holdout: the opener_holdout_share of accounts held out with no opener, by account hash, so replies compare opener against none.';
 COMMENT ON COLUMN us_outbound.contacts.subject_arm IS 'Email 1''s subject arm at enrollment (build addition; render.subject_arm; Harry, 5 Oct 2026). One of: personal, copy. personal: the email1_subject_share of accounts, by a hash of the account id independent of the opener holdout''s, whose email 1 had the General email1_subject instead of the Copy row''s s1_subject, so replies compare the two. Emails 2 to 4 keep the Copy row''s subjects.';
 COMMENT ON COLUMN us_outbound.contacts.opener_source IS 'The opener line used, or for a holdout the one it would have had: the signal and Signals-tab column (e.g. New People leader / opener_self), focus, or the generic line''s General key (e.g. opener_generic_ops) (build addition).';

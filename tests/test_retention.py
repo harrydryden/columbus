@@ -380,3 +380,164 @@ def test_reply_text_dry_run_counts_and_changes_nothing():
     before = {t: [dict(r) for r in w.ctx.store.select(t)] for t in ("events", "hitl_items")}
     assert w.run()["reply_text"] == {"events_due": 2, "events_cleared": 0, "items_due": 3, "items_cleared": 0}
     assert {t: w.ctx.store.select(t) for t in before} == before
+
+
+# -- 3. Contacts who never replied, 12 months after their last step (SPEC 6) ---------------------------------------------
+
+LATER = datetime(2027, 11, 20, 17, tzinfo=UTC)  # 12 months back is 20 Nov 2026
+
+
+def contact_world(live: bool = True) -> tuple[World, dict]:
+    """Contacts enrolled in Oct and Nov 2026, a year on: who goes, who stays."""
+    w = World(live=live, now=LATER)
+    c = {
+        "silent": w.contact(date(2026, 10, 6)),  # last step 27 Oct 2026
+        "recent": w.contact(date(2026, 11, 3)),  # last step 30 Nov 2026 (Thanksgiving week): not a year yet
+        "positive": w.contact(date(2026, 10, 6), sends=1),
+        "away": w.contact(date(2026, 10, 6)),
+        "stop": w.contact(date(2026, 10, 6), sends=1),
+        "unread": w.contact(date(2026, 10, 6), sends=1),
+        "booked": w.contact(date(2026, 10, 6), sends=1),
+        "bounced": w.contact(date(2026, 10, 6), sends=1),
+    }
+    w.event(c["positive"], "replied", date(2026, 10, 8), reply_class="positive")
+    w.event(c["away"], "replied", date(2026, 10, 8), reply_class="out_of_office")
+    w.event(c["stop"], "replied", date(2026, 10, 8), reply_class="unsubscribe", event_id="em-stop")
+    w.event(c["stop"], "unsubscribed", date(2026, 10, 8), event_id=optout.reply_marker("em-stop"))
+    w.event(c["unread"], "replied", date(2026, 10, 8), reply_class=None)  # not classified: counts as a reply
+    w.ctx.store.insert("events", [{"event_id": "deal-1", "type": "deal_created", "account_id": c["booked"]["account_id"],
+                                   "occurred_at": datetime(2026, 10, 20, tzinfo=UTC)}])
+    w.event(c["bounced"], "bounced", date(2026, 10, 6), event_id=f"bounced:{c['bounced']['instantly_lead_id']}")
+    st = w.ctx.store
+    # Never emailed: revealed by pick_contacts, no last step.
+    st.insert("contacts", [{"contact_id": "k-revealed", "account_id": "a1", "email": "rev@co1.com",
+                            "created_at": datetime(2026, 9, 1, tzinfo=UTC)}])
+    st.insert("hitl_items", [
+        {"item_id": "card-silent", "kind": "send_approval", "status": "handled", "contact_id": "k1", "account_id": "a1",
+         "slack_ts": "1.1", "payload": {"lead": {"email": "p1@co1.com", "first_name": "Pat"}, "outcome": "approved"},
+         "created_at": datetime(2026, 10, 5, tzinfo=UTC)},
+        {"item_id": "card-positive", "kind": "send_approval", "status": "handled", "contact_id": "k3",
+         "payload": {"lead": {"email": "p3@co3.com"}}, "created_at": datetime(2026, 10, 5, tzinfo=UTC)},
+    ])
+    st.insert("raw_clay_contacts", [{"key": "co1.com|Pat Doe", "payload": {"email": "P1@co1.com"}},
+                                    {"key": "co3.com|Lee Roe", "payload": {"email": "p3@co3.com"}}])
+    from us_outbound import suppression
+    suppression.add(st, email="p8@co8.com", reason="bounce", source="instantly", now=LATER)
+    return w, c
+
+
+def test_contacts_who_never_replied_go_12_months_after_their_last_step():
+    w, c = contact_world()
+    out = w.run()
+    # Rule 1 deletes the leads first, so the contacts go in the same run.
+    assert out["leads"]["deleted"] == 8 and out["leads"]["held"] == {}
+    gone = {"silent", "away", "stop", "bounced"}
+    assert out["contacts"] == {"due": 4, "deleted": 4, "held": {}, "left_for_next_run": 0, "hitl_items_cleared": 1,
+                               "raw_clay_contacts_deleted": 1}
+    kept = {r["contact_id"] for r in w.ctx.store.select("contacts")}
+    assert kept == {c[k]["contact_id"] for k in set(c) - gone} | {"k-revealed"}
+    items = {i["item_id"]: i for i in w.ctx.store.select("hitl_items")}
+    assert items["card-silent"]["payload"] is None and items["card-silent"]["slack_ts"] == "1.1"  # the row stays
+    assert items["card-positive"]["payload"] == {"lead": {"email": "p3@co3.com"}}
+    assert [r["key"] for r in w.ctx.store.select("raw_clay_contacts")] == ["co3.com|Lee Roe"]
+    # Their events stay (ids, steps, dates), and so does the bounce's suppression hash (SPEC 6).
+    assert {e["event_id"] for e in w.ctx.store.select("events", {"contact_id": c["silent"]["contact_id"]})} == {
+        "s1-1", "s1-2", "s1-3", "s1-4"}
+    assert len(w.ctx.store.select("suppression")) == 1
+    assert w.run()["contacts"]["due"] == 0
+
+
+def test_a_contact_waits_for_its_lead_and_dry_run_deletes_nothing():
+    w, c = contact_world(live=False)
+    out = w.run()
+    assert out["contacts"]["due"] == 0 and out["contacts"]["held"] == {retention.LEAD_LEFT: 4}
+    assert len(w.ctx.store.select("contacts")) == 9 and w.deleted() == []
+    for k in ("silent", "away", "stop", "bounced"):  # as rule 1 leaves them, live
+        w.ctx.store.update("contacts", {"contact_id": c[k]["contact_id"]}, {"instantly_lead_id": None})
+    out = w.run()["contacts"]
+    assert out == {"due": 4, "deleted": 0, "held": {}, "left_for_next_run": 0}
+    assert len(w.ctx.store.select("contacts")) == 9 and w.ctx.store.get("hitl_items", item_id="card-silent")["payload"]
+
+
+def test_a_contact_with_an_opt_out_still_to_record_waits():
+    w = World(now=LATER)
+    k = w.contact(date(2026, 10, 6), instantly_lead_id=None)
+    w.event(k, "replied", date(2026, 10, 8), reply_class="unsubscribe", event_id="em-1")
+    assert w.run()["contacts"]["held"] == {retention.OPT_OUT_PENDING: 1}
+
+
+def test_a_deleted_contact_s_company_keeps_counting_in_the_readout_but_leaves_its_cohort():
+    """docs: the readout views count the company from its events; the cohort report reads contacts."""
+    from us_outbound.learn import cohorts
+
+    w = World(now=LATER)
+    k = w.contact(date(2026, 10, 6))
+    assert [co.account_id for co in cohorts.companies(w.ctx)] == [k["account_id"]]
+    w.run()
+    assert w.ctx.store.select("contacts") == [] and cohorts.companies(w.ctx) == []
+    assert {e["type"] for e in w.ctx.store.select("events", {"account_id": k["account_id"]})} == {"sent"}
+
+
+# -- 4. Universe rows not refreshed in 12 months (SPEC 6) ----------------------------------------------------------------
+
+UNIVERSE_NOW = datetime(2027, 11, 20, 12, tzinfo=UTC)
+OLD, FRESH = datetime(2026, 10, 1, tzinfo=UTC), datetime(2027, 9, 1, tzinfo=UTC)
+# Account id -> why it stays; "" for the one that goes.
+UNIVERSE = {
+    "a-stale": "", "a-stale-too": "", "a-refreshed": "Apollo saw it again in September", "a-new": "first seen recently",
+    "a-contact": "a contact", "a-event": "an event", "a-item": "a hitl item", "a-enrolled": "enrolled",
+    "a-disqualified": "disqualified", "a-named-source": "from the Named accounts tab",
+    "a-named": "named by Harry", "a-declined": "dropped with a 🚫", "a-undated": "no first_seen",
+}
+
+
+def universe_rows(store, first_seen=OLD) -> None:
+    """The UNIVERSE accounts, each first seen at OLD with an Apollo fact from then and a fresh derived fact."""
+    rows, facts = [], []
+    for i, aid in enumerate(UNIVERSE):
+        rows.append({"account_id": aid, "domain": f"{aid}.com", "status": "verified", "source": "apollo",
+                     "first_seen": None if aid == "a-undated" else (FRESH if aid == "a-new" else first_seen),
+                     "last_scored": UNIVERSE_NOW})
+        facts += [{"event_id": f"f{i}-org", "account_id": aid, "source": "apollo_org", "fact": "employees", "value": 40,
+                   "observed_at": OLD},
+                  {"event_id": f"f{i}-match", "account_id": aid, "source": "scoring", "fact": "signal_matched",
+                   "value": {"signal": "x"}, "observed_at": UNIVERSE_NOW},
+                  {"event_id": f"f{i}-fit", "account_id": aid, "source": "lookalike", "fact": "lookalike_fit",
+                   "value": 50, "observed_at": FRESH},
+                  {"event_id": f"f{i}-doubt", "account_id": aid, "source": "verify_accounts", "fact": "doubt",
+                   "value": "size", "observed_at": FRESH}]
+    rows = [{**r, **{"a-enrolled": {"status": "enrolled"}, "a-disqualified": {"status": "disqualified"},
+                     "a-named-source": {"source": "named"}}.get(r["account_id"], {})} for r in rows]
+    facts += [{"event_id": "f-fresh", "account_id": "a-refreshed", "source": "apollo_org", "fact": "employees",
+               "value": 41, "observed_at": FRESH},
+              {"event_id": "f-named", "account_id": "a-named", "source": "named", "fact": "named", "value": False,
+               "observed_at": OLD},
+              {"event_id": "f-declined", "account_id": "a-declined", "source": "send_approval",
+               "fact": "declined_in_slack", "value": True, "observed_at": OLD}]
+    store.insert("accounts", rows)
+    store.insert("signal_events", facts)
+    store.insert("contacts", [{"contact_id": "k-a", "account_id": "a-contact"}])
+    store.insert("events", [{"event_id": "e-a", "account_id": "a-event", "type": "site_visit", "occurred_at": OLD}])
+    store.insert("hitl_items", [{"item_id": "i-a", "kind": "hand_check", "account_id": "a-item", "created_at": OLD}])
+
+
+def test_universe_rows_not_refreshed_in_12_months_go_with_their_facts():
+    w = World(now=UNIVERSE_NOW)
+    universe_rows(w.ctx.store)
+    assert retention.stale_accounts(w.ctx, retention.months_before(UNIVERSE_NOW, 12)) == ["a-stale", "a-stale-too"]
+    out = w.run()["accounts"]
+    assert out == {"due": 2, "deleted": 2, "left_for_next_run": 0}
+    kept = {a["account_id"] for a in w.ctx.store.select("accounts")}
+    assert kept == {aid for aid, why in UNIVERSE.items() if why}
+    assert {e["account_id"] for e in w.ctx.store.select("signal_events")} == kept
+
+
+def test_universe_rows_dry_run_and_the_cap(monkeypatch):
+    w = World(live=False, now=UNIVERSE_NOW)
+    universe_rows(w.ctx.store)
+    assert w.run()["accounts"] == {"due": 2, "deleted": 0, "left_for_next_run": 0}
+    assert len(w.ctx.store.select("accounts")) == len(UNIVERSE)
+    monkeypatch.setattr(retention, "ACCOUNTS_PER_RUN", 1)
+    w.ctx.guard.configure(live=True)
+    assert w.run()["accounts"] == {"due": 2, "deleted": 1, "left_for_next_run": 1}
+    assert w.ctx.store.get("accounts", account_id="a-stale") is None
