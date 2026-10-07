@@ -7,7 +7,10 @@ starts, what it compares and when it may be read:
     account one by hash (SPEC 9) and records it (contacts.test_id, copy_version). holdout reads a split enrol
     records on every contact anyway: the opener holdout (contacts.opener_arm, opener or holdout) or email 1's
     subject (contacts.subject_arm, personal or copy), for the accounts enrolled from start_date on. A holdout
-    assigns nothing, so it may run beside the copy test (settings/validate.py).
+    assigns nothing, so it may run beside the copy test (settings/validate.py). variant (Harry, 7 Oct 2026;
+    enrol/variants.py) changes one part of one email for every account: enrol records each account's arm
+    (contacts.test_id and test_arm, a for version_a and b for version_b), read for the accounts enrolled from
+    start_date on. ab and variant are the copy tests: one runs at a time.
   * looks: interim looks, each a whole number N (both arms have N accounts with step 1 delivered whose 28-day
     reply window has closed) or a date. read_date is always the last look.
 A count look is reached when the slower arm's Nth account's window closes; a date look on its date (UK).
@@ -19,6 +22,11 @@ says what it would have said on time. Before the first look it refuses (exit 2) 
 has got (accounts emailed, windows closed): never a reply, so nobody peeks. Reply rate decides (SPEC 12: the test
 detects a 2x difference); positive and meeting rates are for information, with the same two-proportion test as
 `signals review` (signal_review.p_value). Harry writes the result on the Tests tab.
+
+An email an approver edited on its send card (approved_edited; enrol/approvals.py) counts in the arm it was given,
+as assigned (Harry, 7 Oct 2026): leaving edits out would bias the comparison whenever approvers edit one arm's emails
+more than the other's (a warm intro they dislike, say), while counting them only dilutes it. Each arm's read says how
+many of its emails were edited (edited), so a large or lopsided number is seen.
 
 The Monday readout (learn/readout.py) lists each running test: a look reached in the last week, with its read,
 or how far it has got and its next look. The outcomes are counted as v_account_outcomes counts them, here in
@@ -35,11 +43,12 @@ from typing import Any
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import signal_review
-from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, Test
+from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, VARIANT_ARMS, VARIANT_TEST, Test
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
 POSITIVE = frozenset({"positive", "referral"})
 NOT_HUMAN = "out_of_office"
+EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals.py)
 
 
 class NotYet(Exception):
@@ -54,6 +63,7 @@ class Outcome:
     step1_at: datetime
     replies: tuple[tuple[datetime, str], ...] = ()  # (when, class) of each reply at the account
     meetings: tuple[datetime, ...] = ()
+    edited: bool = False  # its step-1 contact's emails were edited on the send card before they went
 
     @property
     def closes_at(self) -> datetime:
@@ -113,23 +123,36 @@ def arm_names(test: Test) -> tuple[str, str]:
     return test.version_a, test.version_b
 
 
+def _since_start(test: Test, contacts: list[dict]) -> list[dict]:
+    start = _midnight(test.start_date) if test.start_date else None
+    return [c for c in contacts if (t := _ts(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
+
+
 def _members(ctx: Context, test: Test) -> dict[str, str]:
     """account_id -> arm, from the account's first contact in the test."""
     a, b = arm_names(test)
     if test.kind == AB_TEST:
         contacts = ctx.store.select("contacts", {"test_id": test.test_id})
-        column = "copy_version"
+
+        def arm_of(c: dict) -> str:
+            return str(c.get("copy_version") or "")
+    elif test.kind == VARIANT_TEST:  # the arm enrol gave it: a is version_a, b version_b (enrol/variants.py)
+        contacts = _since_start(test, ctx.store.select("contacts", {"test_id": test.test_id}))
+        names = dict(zip(VARIANT_ARMS, (a, b)))
+
+        def arm_of(c: dict) -> str:
+            return names.get(str(c.get("test_arm") or ""), "")
     else:
         column = HOLDOUT_ARMS.get(a.casefold(), "")
-        contacts = ctx.store.select("contacts", {column: [a, b]}) if column else []
-        start = _midnight(test.start_date) if test.start_date else None
-        contacts = [c for c in contacts
-                    if (t := _ts(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
+        contacts = _since_start(test, ctx.store.select("contacts", {column: [a, b]}) if column else [])
+
+        def arm_of(c: dict) -> str:
+            return str(c.get(column) or "")
     never = datetime.max.replace(tzinfo=UTC)
     contacts.sort(key=lambda c: (_ts(c.get("enrolled_at")) or never, str(c.get("contact_id"))))
     out: dict[str, str] = {}
     for c in contacts:
-        arm = str(c.get(column) or "")
+        arm = arm_of(c)
         if c.get("account_id") and arm in (a, b):
             out.setdefault(str(c["account_id"]), arm)
     return out
@@ -144,7 +167,7 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
     if not members:
         return out
     events = ctx.store.select("events", {"account_id": sorted(members),
-                                         "type": ["sent", "bounced", "replied", "meeting_booked"]})
+                                         "type": ["sent", "bounced", "replied", "meeting_booked", "send_approval"]})
     by_account: dict[str, list[dict]] = {}
     for e in events:
         by_account.setdefault(str(e["account_id"]), []).append(e)
@@ -163,7 +186,9 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
         replies = tuple((t, str(e.get("reply_class") or "").strip().lower()) for e in evs
                         if e.get("type") == "replied" and (t := _ts(e.get("occurred_at"))))
         meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := _ts(e.get("occurred_at"))))
-        out[arm].emailed.append(Outcome(account_id, _ts(step1["occurred_at"]), replies, meetings))
+        edited = any(e.get("type") == "send_approval" and e.get("approval") == EDITED
+                     and e.get("contact_id") == step1.get("contact_id") for e in evs)
+        out[arm].emailed.append(Outcome(account_id, _ts(step1["occurred_at"]), replies, meetings, edited))
     for a in out.values():
         a.emailed.sort(key=lambda o: (o.step1_at, o.account_id))
     return out
@@ -239,7 +264,8 @@ def read(ctx: Context, test_id: str) -> dict:
     for name, arm in by_arm.items():
         group = covered(arm, look)
         s = {"accounts": arm.accounts, "delivered": len(group), "replied": sum(o.replied() for o in group),
-             "positive": sum(o.positive() for o in group), "meetings": sum(o.met(look.reached_at) for o in group)}
+             "positive": sum(o.positive() for o in group), "meetings": sum(o.met(look.reached_at) for o in group),
+             "edited": sum(o.edited for o in group)}  # counted in their arm, as assigned (module docstring)
         versions[name] = {**s, "reply_rate": _rate(s["replied"], s["delivered"]),
                           "positive_rate": _rate(s["positive"], s["delivered"]),
                           "meeting_rate": _rate(s["meetings"], s["delivered"])}
@@ -267,6 +293,15 @@ def summary_line(result: Mapping[str, Any]) -> str:
                           for name, v in result["versions"].items())
     p = result.get("reply_p_value")
     return arms_text + (f" · p = {p:.2f}" if p is not None else "")
+
+
+def edited_line(result: Mapping[str, Any]) -> str:
+    """How many emails each arm had edited on the send card, or "" when none was: they count in their arm."""
+    versions = result["versions"].items()
+    if not any(v.get("edited") for _, v in versions):
+        return ""
+    each = ", ".join(f"{name} {v.get('edited', 0)} of {v['delivered']}" for name, v in versions)
+    return f"Edited by an approver before sending, and counted in the arm they were given: {each}."
 
 
 def readout_lines(ctx: Context, since: datetime) -> tuple[list[str], list[str]]:

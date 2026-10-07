@@ -67,7 +67,7 @@ us-outbound run <job> [--live]                     one job (what the scheduler s
 us-outbound unenrol --month YYYY-MM [--live]     * remove that month's leads from their campaigns
 us-outbound rescore [--live]                     * the score job
 us-outbound dry-run <job>                        * one job, dry-run
-us-outbound test start|read <test_id> [--live]   * the copy test
+us-outbound test start|read <test_id> [--live]   * a test on the Tests tab: ab, variant (one change to one email) or holdout
 us-outbound db apply [--live]                    * the DDL in sql/ against DATABASE_URL (prints it unless --live)
 us-outbound hubspot setup|ids [--live]           * the six properties; ids for the General tab
 us-outbound suppression load [--live]            * HubSpot opt-outs and bounces, hashed

@@ -12,7 +12,7 @@ everything it was enrolled under, so the Monday readout and `us-outbound cohorts
 
 | | What | How it behaves |
 | :- | :- | :- |
-| Fixed per contact | Every email's subject and body: the Copy row, the signature, the opener, the price line, the links, email 1's subject arm, UTM tags; the sender | Rendered once at enrolment (or when a send-approval card is posted) into the lead's custom variables. Nothing rewrites a lead's variables afterwards (the only lead write is its status). A card waiting in Slack keeps what it shows |
+| Fixed per contact | Every email's subject and body: the Copy row, the signature, the opener, the price line, the links, email 1's subject arm, a copy test's arm, UTM tags; the sender | Rendered once at enrolment (or when a send-approval card is posted) into the lead's custom variables. Nothing rewrites a lead's variables afterwards (the only lead write is its status). A card waiting in Slack keeps what it shows |
 | Shared by every lead in a campaign | The step template (the unsubscribe line and its link), the step delays (`STEP_DAYS`), `text_only` and `first_email_text_only` (from `email_format`) | Drift in these is **held** while the campaign has leads in flight: `campaigns ensure --fix` leaves it, and says so. `--in-flight` applies it to them too |
 | Changes for everyone, by design | The daily limit and the sending list (the ramp and the sheet), the send window, the From name, the other campaign settings (always put back to their pinned values), the pause over the blackout dates (the `blackout` job) | Put right as before; every change other than the daily limit and sending list is logged in `config_log` with the leads it reached, the blackout's pause and restart included |
 | Always applies to everyone | Unsubscribes, bounces, complaints, kill rules, `stop`, the account-level stop, suppression (a HubSpot opt-out loaded after enrolment, or a company that has become a Spill customer, read nightly, stops the lead in flight), erasure, a booking read back, a step that has lost the unsubscribe link | Never held for a cohort or a version |
@@ -32,6 +32,12 @@ campaign's last one finishes.
    again about 150 companies a run, so the queue is re-checked over about three weekdays (`us-outbound labels
    audit --live` does it at once). Run `us-outbound labels eval --live` before shipping a change to the prompt,
    the decision rule, a definition or keywords, and put its score in the commit message.
+   **A copy test changes what new contacts get; contacts in flight keep theirs** (Harry, 7 Oct 2026). Starting,
+   stopping or changing an `ab` or `variant` test on the Tests tab (`enrol/variants.py`) reaches only contacts
+   enrolled after the next sync; each records its arm (`contacts.test_id`, `test_arm`), a card waiting in Slack
+   keeps the arm it shows, and the running test is part of the config version (`copy_test`), so `us-outbound
+   cohorts changes` shows the day it started or stopped. A variant changes each lead's own rendered emails (its
+   custom variables), never the campaign's step template, so it is not a campaign constant.
 2. **Campaign constants are shared by every lead in flight:** `STEP_DAYS`, the step template
    (`UNSUBSCRIBE_*` in `clients/instantly.py`), `CAMPAIGN_SETTINGS`, `email_format`.
    `tests/test_cohorts.py::test_campaign_constants_are_pinned` fails when you change one. To ship it: bump the
@@ -65,6 +71,7 @@ send approval's ✅). The version is a 12-character hash of: the versions in for
 Industries, Roles and Overrides tabs; each sendable Copy row's content hash; the General keys that shape what is
 sent (`config_version.CONTENT_KEYS`: the subject and opener keys, `price_from`, the links, `email_format`,
 `send_window`, `utm_links`, the second-contact keys, `control_share`, `weekly_enrol_cap`, `label_check`); the
+running copy test (`copy_test`: an `ab` or `variant` test's id, arms and, for a variant, its change and texts); the
 signature template;
 the campaign constants; the label check's `labels_hash` (its prompt version, label list and definitions); and
 the code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev" elsewhere). An edit to `live_sending`, the Claude cap, a draft Copy row or a mailbox's status starts no new

@@ -139,9 +139,10 @@ HubSpot. A meeting and a deal for one booking count once.
 
 **Tests are read only at a look you set in advance.** On the Tests tab, before `us-outbound test start ID
 --live`:
-- `kind`: `ab` (the default) for a copy test between two Copy rows, or `holdout` to read a split the
-  system already makes: `opener` against `holdout` (the opener holdout), or `personal` against `copy`
-  (email 1's subject). A holdout test can run beside the copy test.
+- `kind`: `ab` (the default) for a copy test between two Copy rows; `variant` for one change to one email
+  for every company (see **Copy tests** below); or `holdout` to read a split the system already makes:
+  `opener` against `holdout` (the opener holdout), or `personal` against `copy` (email 1's subject). One
+  copy test (`ab` or `variant`) runs at a time; a holdout test can run beside it.
 - `looks`: the interim looks, separated by semicolons. A number, like `200`, is "both versions have 200
   companies whose 28-day reply window has closed"; a date is that day. `read_date` is always the last look.
 
@@ -156,6 +157,84 @@ number), so website visits and bookings can be traced to the emails. The words o
 and the Trustpilot and unsubscribe links never get tags. It is off by default: tagged links can read as
 marketing to inbox filters, so send a seed with it on and check where it lands before leaving it on. The
 first time, `us-outbound settings load --tab General --live` adds the key to the sheet.
+
+## Copy tests
+
+Harry, 7 Oct 2026: "A/B functionality to allow the system to try different versions of email copy". A
+`variant` test on the Tests tab changes one part of one email for every company enrolled from its
+`start_date`, whatever its tier, industry or Copy row, and splits them half and half: version_a's companies
+get `text_a`, version_b's get `text_b`. Its own columns:
+
+| Column | What it is |
+| :- | :- |
+| `email` | Which email of the four it changes: 1 to 4 (blank is 1) |
+| `change` | `first_line`: a line of its own straight after "Hi {first name}," and before the opener line. `last_line`: a line of its own just before "Best wishes,". `replace`: the exact words in `find`, as written on the Copy tab, become the arm's text. `subject`: the email's subject |
+| `text_a`, `text_b` | Each version's text. A blank one leaves that version's email as the Copy row has it |
+| `find` | For `replace` only: the words to replace |
+
+The sync checks the texts against the copy rules (no "!", American spelling, no demo or call ask in email
+1, no link in a line of its own, a subject under 60 characters, and so on) and refuses a row that breaks
+one, saying why. A text may use `{{first_name}}`, `{{company}}` and the other variables, but not
+`{{opener}}` or `{{legal_overlay}}`.
+
+- **Who gets which.** A company's version comes from a hash of the company, so it never changes: a card
+  posted again, an industry correction or a second contact at the company get the same one. It is
+  independent of the opener holdout and the personal-subject split, so those comparisons still hold.
+- **Where the change cannot be made** (a `replace` whose words are not in that company's Copy row; a
+  `subject` test on email 1 for a company with the personal subject; or a change that would break a copy
+  rule in that email, such as a line made too long by a long company name), the company is left out of the
+  test whichever version it hashed to, and gets the Copy row's email as it is. Its card says "Test:
+  warm-intro · not in the test (why)", and the enrol summary counts the reasons. `us-outbound test start`
+  says how many Copy rows the change fits. The warm intro fits every email 1.
+- **The card** shows the version's email, and its facts line ends "Test: warm-intro · warm intro". You
+  can edit it as any card: it keeps its version, and the read counts it there and says how many of each
+  version's emails were edited.
+- **Contacts already in flight keep their emails.** A test reaches only companies enrolled after it
+  starts; when it stops (set `status` to `read` or `stopped`, then `us-outbound sync`), new companies get
+  the Copy row as it is. Once a version has `accounts_per_version` companies, the rest get the Copy row as
+  it is too. `us-outbound cohorts changes` shows the day a test started or stopped.
+
+**Your first test: the warm intro.** First add five header cells to the Tests tab, after `looks` (its last
+column now): `email`, `change`, `text_a`, `text_b`, `find`. Then this row:
+
+| Column | Value |
+| :- | :- |
+| `test_id` | `warm-intro` |
+| `kind` | `variant` |
+| `hypothesis` | A warm first line in email 1 ("I hope you're really well. Great to be connected.") gets a higher reply rate than none |
+| `version_a` | `warm intro` |
+| `version_b` | `no intro` |
+| `accounts_per_version` | `400` |
+| `status` | `planned` (`test start` sets `running`) |
+| `start_date` | blank (`test start` sets today) |
+| `looks` | `200; 400` |
+| `read_date` | `2027-03-29` |
+| `decision_rule` | reply rate, human replies within 28 days of step 1 ÷ accounts with step 1 delivered; detects a 2× difference; keep the warm intro if its reply rate is higher at p < 0.10 at the last look |
+| `result` | blank |
+| `email` | `1` |
+| `change` | `first_line` |
+| `text_a` | `I hope you're really well. Great to be connected.` |
+| `text_b` | blank |
+| `find` | blank |
+
+Then `us-outbound sync` (it refuses the row if anything is wrong, and says what), `us-outbound test start
+warm-intro` to see what it would do, and `us-outbound test start warm-intro --live`. Read it with
+`us-outbound test read warm-intro`; before its first look it shows only how far each version has got.
+
+Why these numbers. SPEC 12 asks a test to detect a 2× difference in reply rate. At the working assumption
+of a 3 to 5% reply rate, 4% against 8% needs about 435 companies a version to be found four times in five
+at p < 0.10. 400 a version finds it about three times in four (two times in three at 3% against 6%, 85% of
+the time at 5% against 10%). So a read of "no difference" means "not twice as many", not "no effect": a
+one-line change may move replies by less than that, which this test cannot see. The test takes every new
+company, so it fills at the full enrolment rate: about 6 a day with Hannah's and Sam's mailboxes, 11 with
+all four, rising with the ramp; call it 10 a day. Started on Monday 12 October, it has 200 a version by
+about 11 December and 400 a version by about 23 February (the blackouts take 16 send days). Each
+company's 28-day reply window then has to close:
+- look 1, `200`: about 8 January. An interim look: act on it only for a large difference or harm.
+- look 2, `400`: every company in the test has had its 28 days: about 23 March at 10 a day, mid-February at
+  15 a day. This is the full read; the read date, if later, reads the same companies.
+- `read_date`, 2027-03-29: the backstop. If volume runs slower (6 a day), the read on that date covers the
+  companies whose windows have closed by then.
 
 ## Expected volume in the pilot
 
@@ -381,7 +460,7 @@ commands instead.
 | `cohorts`, `cohorts changes`, `cohorts in-flight` | Each enrolment week at 7, 14, 21 and 28 days after email 1 (`--cut`, `--age`, `--weeks`); what changed between the last two config versions (or `cohorts changes A B`); each campaign's leads with a step still to send |
 | `campaigns ensure --fix --in-flight --live` | Applies campaign drift in the steps, delays or text_only to the leads already in flight too (held otherwise; docs/developing-while-live.md) |
 | `signals value`, `signals review` | The signal table (with meetings, against the companies without each signal), or each signal's verdict, with the tiers and email 1's subject |
-| `test start ID --live`, `test read ID` | Start a test on the Tests tab; read it at its latest pre-registered look |
+| `test start ID --live`, `test read ID` | Start a test on the Tests tab (an `ab`, `variant` or `holdout` test; see **Copy tests**); read it at its latest pre-registered look |
 
 Also `handcheck show|approve`, `erase --email` (and for an Apollo deletion notice), `run retention` and `schedule`.
 `us-outbound --help` lists every command.

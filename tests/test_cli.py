@@ -508,7 +508,7 @@ def test_test_read_reports_reply_rate_per_version_at_the_read_date(capsys):
     out = capsys.readouterr().out
     result = cli.read_test(h.last, "t1")
     assert result["versions"]["eap-v1"] == {"accounts": 2, "delivered": 1, "replied": 1, "positive": 1, "meetings": 0,
-                                            "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
+                                            "edited": 0, "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
     assert result["versions"]["general-v1"]["delivered"] == 2 and result["versions"]["general-v1"]["reply_rate"] == 0.0
     assert result["look"]["final"] and "Read at look 1 (the read date)" in out and "Harry writes the result" in out
     assert h.store.tables["heartbeats"] == []  # a read writes nothing
