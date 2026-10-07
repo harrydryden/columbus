@@ -119,8 +119,8 @@ def _traces(ctx: Context, items: Iterable[Mapping[str, Any]]) -> list[str]:
     ids = sorted({f"{kind} {h[key]}" for h in hubspot if isinstance(h, Mapping)
                   for kind, key in (("note", "note_id"), ("task", "task_id")) if h.get(key)})
     if ids:
-        steps.append(f"HubSpot: GDPR delete removes the contact, not what the reply desk added to the company: delete "
-                     f"{', '.join(ids)} by hand.")
+        steps.append(f"HubSpot: GDPR delete removes the contact, not what the reply desk wrote on the company: take "
+                     f"them out of {', '.join(ids)} by hand (delete it if it is only about them).")
     return steps
 
 

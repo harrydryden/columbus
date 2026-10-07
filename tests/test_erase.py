@@ -117,7 +117,7 @@ def test_erase_reaches_where_else_the_address_is_written_and_names_what_it_canno
     assert any(x.startswith("Slack: 1 card in #us-outbound showed them (posted Mon 05 Oct 2026 12:00 UK)") for x in steps)
     assert any(x.startswith("Inbox: their reply was escalated to harry@spill.chat (Tue 06 Oct 2026 12:00 UK)")
                for x in steps)
-    assert any("delete note n9, task t9 by hand" in x for x in steps)
+    assert any("take them out of note n9, task t9 by hand" in x for x in steps)
     assert "jane" not in repr(report).lower()
 
 

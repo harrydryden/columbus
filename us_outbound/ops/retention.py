@@ -31,7 +31,8 @@ It is never deleted while:
     next lead read suppresses the address first.
 A lead stopped by the account-level stop was deleted from its campaign then (until Instantly's lead pause is
 confirmed, clients/instantly.LEAD_PAUSE_CONFIRMED), so 31 days after its lead_stopped row Instantly answers 404,
-which counts as deleted already; once the pause is confirmed, the paused lead is deleted then like any other.
+which counts as deleted already; once the pause is confirmed, a paused lead is deleted 31 days after its
+lead_stopped row like any other.
 PHASE0-CONFIRM: that GET /leads/{id} answers 404 for a deleted lead (delete_lead reads it first, as erase and the
 account-level stop rely on too).
 Each deletion is the guarded Instantly.delete_lead, scoped to the lead's own "US Outbound –" campaign (it checks the
