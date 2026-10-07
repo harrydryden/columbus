@@ -116,6 +116,9 @@ OVERRIDABLE = ("clean_name", "legal_name", "hq_city", "hq_state", "industry", "i
 # Columns Clay confirms (docs/pipeline.md, "Which value wins"): Apollo no longer changes them once it has.
 CLAY_OWNED = frozenset({"clean_name", "legal_name", "hq_city", "hq_state", "employees", "size_band",
                         "founded_year", "industry", "industry_group"})
+# Columns the label check owns once it has decided (accounts.label_source set; labels.py, Harry, 7 Oct 2026): a
+# company found again keeps its checked label, never the raw rules' one.
+LABEL_OWNED = frozenset({"industry", "industry_group"})
 
 
 def _prefixes(codes: Iterable[str]) -> list[str]:
@@ -642,6 +645,8 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     elif account.get("status") in OPEN_STATUSES:
         if account.get("clay_checked_at"):
             cols = {k: v for k, v in cols.items() if k not in CLAY_OWNED}
+        if account.get("label_source"):
+            cols = {k: v for k, v in cols.items() if k not in LABEL_OWNED}
         if employees is None:
             cols = _keep_size(cols, account, s.overrides_for(got.domain or domain))
         clean, legal = clean_company_name(str(org.get("name") or ""))

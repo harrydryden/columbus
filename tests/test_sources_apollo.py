@@ -255,6 +255,24 @@ def test_an_account_found_again_keeps_its_source_and_status_and_overrides_win():
     assert [e["value"] for e in hq] == ["NY"]  # the fact is what Apollo said; scoring applies the override
 
 
+def test_an_open_account_whose_label_was_checked_keeps_it_when_found_again_and_a_new_one_gets_the_rules():
+    """Harry, 7 Oct 2026: once the label check has decided (accounts.label_source), the monthly refresh never puts the
+    raw rules' label back; an account not checked yet takes the rules' label, and verify_accounts checks it."""
+    ctx, _, _ = make([org(1, domain="checked.co"), org(2, domain="unchecked.co"), org(3)])
+    ctx.store.insert("accounts", [
+        {"account_id": "c1", "domain": "checked.co", "source": "apollo", "status": "verified", "industry": "Edtech",
+         "industry_group": "Technology & Startups", "label_source": "model"},
+        {"account_id": "u1", "domain": "unchecked.co", "source": "apollo", "status": "queued", "industry": "Edtech",
+         "industry_group": "Technology & Startups"},
+    ])
+    out = uni.run(ctx)
+    assert out["created"] == 1 and out["updated"] == 2
+    by = accounts_by_domain(ctx)
+    assert (by["checked.co"]["industry"], by["checked.co"]["label_source"]) == ("Edtech", "model")
+    assert by["unchecked.co"]["industry"] == "Fintech" and not by["unchecked.co"].get("label_source")
+    assert by["company3.com"]["industry"] == "Fintech" and not by["company3.com"].get("label_source")
+
+
 @pytest.mark.banded
 def test_a_row_with_no_count_never_blanks_a_size_the_account_already_has():
     """A13: apollo_enrich (or an earlier row) gave an exact count; a later search row has none. The count and its

@@ -1371,7 +1371,7 @@ def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Setting
     if account is None or is_second(item.payload):
         return None
     decided, created = parse_ts(account.get("label_checked_at")), parse_ts(item.row.get("created_at"))
-    if decided is None or created is None or decided <= created:
+    if decided is None or created is None or decided < created:
         return None
     p, company = item.payload, item.company
     status = _text(account.get("status"))

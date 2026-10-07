@@ -646,7 +646,7 @@ Sources write facts only. One resolver sets the account's columns from the facts
 | domain | It is the key. If Clay's `domain_confirmed` is a different root domain that is not a known alias, the account goes to the hand-check |
 | hq_state, hq_city | Override → Clay → Apollo. A state disagreement goes to the hand-check |
 | employees, size_band | Override → Clay → Apollo (organisation enrich's exact count over the searched band). A band disagreement goes to the hand-check |
-| industry label | Override → Clay's label, if it is on the Industries tab → the label whose NAICS or keywords matched |
+| industry label | Override → an approver's correction (`label_source` approver) → the label check's decision once made (`label_source` set: a source finding the company again never puts the raw rules' label back) → Clay's label, if it is on the Industries tab → the label whose NAICS or keywords matched |
 | industry_group | Always from the label via the Industries tab, never a vendor's own category |
 | naics | Apollo |
 | founded_year | Override → Clay → Apollo |

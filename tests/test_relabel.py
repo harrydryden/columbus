@@ -17,6 +17,7 @@ from tests.test_render import AGENCIES, TECH
 from tests.test_send_approvals import at, blocks_text, item_for, items, proposed  # noqa: F401
 from tests.test_send_approvals import default_openers  # noqa: F401  (the autouse fixture)
 from us_outbound.clean.domains import is_public_body
+from us_outbound import labels
 from us_outbound.enrol import enrol
 from us_outbound.ops import relabel
 from us_outbound.settings.model import Industry, Override
@@ -102,3 +103,49 @@ def test_an_overrides_row_keeps_its_industry():
 ])
 def test_public_bodies(domain, public):
     assert is_public_body(domain) is public
+
+
+
+# -- with the label check (labels.py; Harry, 7 Oct 2026) ------------------------------------------------------------
+
+
+def verdict_fact(ctx, aid: str, model: str, confidence: str = "high", entity: str = "company") -> None:
+    v = labels.Verdict(model, confidence, entity, labels_hash="h-old")
+    d = labels.decide(None, v, ctx.settings)
+    ctx.store.insert("signal_events", [{
+        "event_id": f"{aid}-verdict", "account_id": aid, "source": labels.JOB, "fact": labels.VERDICT_FACT,
+        "value": labels.verdict_value(None, v, d, asked=True), "quote": "", "source_url": "", "observed_at": ctx.now}])
+
+
+def test_a_stored_verdict_is_honoured_when_the_rules_change_and_no_model_is_asked():
+    ctx, t, sl = world()
+    verdict_fact(ctx, "acc-1", "Advertising agencies")  # the model said so when it was checked
+    out = relabel.run(ctx)
+    a = ctx.store.get("accounts", account_id="acc-1")
+    # The rules alone now give the agencies' own label; with the model sure of Advertising agencies, it stays.
+    assert out["changed"] == 0 and (a["industry"], a.get("label_source")) == ("Advertising agencies", None)
+    assert len(items(ctx, "open")) == 3
+    assert ctx.store.select("credit_ledger", {"job": labels.JOB}) == []
+
+
+def test_an_approvers_label_never_moves():
+    ctx, t, sl = world()
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"label_source": "approver"})
+    assert relabel.run(ctx)["changed"] == 0
+    assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Advertising agencies"
+
+
+def test_a_relabelled_company_gets_the_rules_source_and_its_check_time():
+    ctx, t, sl = world()
+    relabel.run(ctx)
+    a = ctx.store.get("accounts", account_id="acc-1")
+    assert (a["industry"], a["label_source"], a["label_checked_at"]) == (AGENCIES, "rules", ctx.now)
+    assert labels.copy_level(a) == "group"
+
+
+def test_a_stored_verdict_that_rules_a_company_out_disqualifies_it():
+    ctx, t, sl = world()
+    verdict_fact(ctx, "acc-2", "none", entity="association")
+    out = relabel.run(ctx)
+    a = ctx.store.get("accounts", account_id="acc-2")
+    assert (a["status"], a["tier"]) == ("disqualified", "Excluded") and "Brightfin" in out["cards_withdrawn"]
