@@ -58,6 +58,7 @@ us-outbound copy check|preview|qa|draft [...]      the copy desk: check every ro
 us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (--tab, --set, --take note) into the sheet; create it
 us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
 us-outbound clay check-email --first NAME --last NAME --domain spill.chat [--live]   one Work Email lookup for your own name, to confirm Clay's email fallback (exits 1 until it can go on)
+us-outbound phase0 check [--seed ADDRESS] [--apollo-credits] [--live]   the live checks of the API details still to confirm (docs/phase0-confirm.md)
 us-outbound erase --email <address> [--live]       an erasure request
 us-outbound relabel [--all] [--live]               the queued companies under the industry labels the rules give now; withdraws open cards it changes
 us-outbound schedule                               the job table, UK times and next runs (also scheduler --list)

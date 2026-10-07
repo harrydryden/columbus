@@ -250,7 +250,8 @@ class Sheets(HttpClient):
         Headers and rows are written in the create call itself, so no second call has to
         reach a sheet the guard does not know yet. Returns the new spreadsheet id; None in dry-run.
         """
-        # PHASE0-CONFIRM: spreadsheets.create honours sheets[].data (GridData) on create.
+        # That spreadsheets.create honours sheets[].data (GridData) is unconfirmed, and moot while the sheet
+        # exists: bootstrap refuses while a sheet id is set (SHT-CREATE).
         extra = sorted(set(tabs) - set(columns))
         if extra:
             raise ValueError(f"tabs {extra} have no columns")

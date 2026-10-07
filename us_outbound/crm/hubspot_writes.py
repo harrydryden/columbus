@@ -15,8 +15,8 @@ record_reply() is SPEC 11 "HubSpot writes" for one positive or referral reply it
      none → created with the clean name, the domain and the four company properties;
   2. the contact by email, or created; associated with the company; the two contact properties set;
   3. the reply as a note, and a task for Harry due today;
-  4. lifecyclestage = lead, hs_lead_status = CONNECTED (contacts; PHASE0-CONFIRM whether companies have
-     hs_lead_status, so it is not set there) and hubspot_owner_id = Harry, each only where it is empty;
+  4. lifecyclestage = lead, hs_lead_status = CONNECTED (contacts only: companies have hs_lead_status, but with
+     no CONNECTED among its options, confirmed 7 Oct 2026) and hubspot_owner_id = Harry, each only where it is empty;
   5. a deal (ensure_deal) when the reply asks for a demo; hubspot_readback does the same for bookings.
 Only the six properties, the identity fields of a new record (name and domain; email, first and
 last name and job title) and the three empty-only fields are ever sent; the guard refuses anything

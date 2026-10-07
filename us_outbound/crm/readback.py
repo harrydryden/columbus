@@ -1,8 +1,9 @@
 """hubspot_readback, every 15 minutes (SPEC 9; SPEC 11 "HubSpot writes" step 5; SPEC 12 meetings booked).
 
   1. Meetings. Harry's meetings created or changed in the last LOOKBACK_DAYS that were booked through
-     his meetings link (the emails' link and the website's booking page both book into it;
-     PHASE0-CONFIRM that such a meeting has hs_meeting_source MEETINGS_PUBLIC) are matched to US
+     his meetings link (the emails' link and the website's booking page both book into it; such a
+     meeting has hs_meeting_source MEETINGS_PUBLIC: confirmed 7 Oct 2026, every meeting booked through a
+     meetings page since 7 Sep is, and none is MEETINGS_EMBEDDED) are matched to US
      Outbound accounts: by the meeting's companies (accounts.hubspot_company_id), its contacts
      (contacts.hubspot_contact_id, else the email's hash), or the email's domain for an account
      already enrolled (the company is the unit, SPEC 2). A meeting made before the account's first
@@ -13,7 +14,7 @@
   2. Deals. For each enrolled account with a HubSpot company, its deals in Spill 3.0, each recorded once
      as deal_created. A deal at "Demo created" or later counts as a booking (meeting_booked, if the
      account has none yet, and demo_booked); at "Demo held" or later, as demo_held (if none yet). A
-     Closed lost deal counts for neither. The stage labels are docs/phase0-facts.md's (PHASE0-CONFIRM).
+     Closed lost deal counts for neither. The stage labels are docs/phase0-facts.md's (confirmed 7 Oct 2026).
   3. An account at demo_requested or demo_booked whose company has never had a deal gets one
      (one that could not be made when the reply came, e.g. before the pipeline ids were set).
   4. Bookings (Harry, 6 Oct 2026: demo bookings read back, so the readout and the signal table count them).
@@ -55,7 +56,7 @@ from us_outbound.replies.items import ts
 
 JOB = "hubspot_readback"
 LOOKBACK_DAYS = 3  # each run re-reads three days of changes, so a missed run or two loses nothing
-BOOKING_SOURCES = frozenset({"MEETINGS_PUBLIC"})  # PHASE0-CONFIRM: booked through a HubSpot meetings link
+BOOKING_SOURCES = frozenset({"MEETINGS_PUBLIC"})  # booked through a HubSpot meetings link (confirmed 7 Oct 2026)
 HELD_OUTCOMES = frozenset({"COMPLETED"})
 MEETING_EVENT = "hs-meeting:"
 REQUESTED_LABEL, BOOKED_LABEL, HELD_LABEL, LOST_LABEL = (  # Spill 3.0's stages (docs/phase0-facts.md)

@@ -24,8 +24,8 @@ honors opt-outs the same day. Each run:
                   carries). replies/optout.py records it everywhere SPEC 11 asks; it is a go-live
                   blocker (docs/gtm-review/README.md B1b). The workspace's own blocklist and
                   unsubscribe list are not read whole: they hold the European campaigns' people too
-                  (SPEC 1.2). PHASE0-CONFIRM: that a click (and the List-Unsubscribe header) marks the
-                  lead itself, so the lead's status is enough.
+                  (SPEC 1.2). A click marks the lead itself, so the lead's status is enough: confirmed
+                  live 6 Oct 2026 (the seed test). PHASE0-CONFIRM: that the List-Unsubscribe header does too.
 
 Event ids are the idempotency keys (SPEC 6): the Instantly email id for sent and replied rows,
 "bounced:{lead id}" and "unsubscribed:lead:{lead id}" for lead statuses, so a re-run adds nothing.

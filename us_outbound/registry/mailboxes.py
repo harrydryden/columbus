@@ -40,7 +40,8 @@ from the account's first_name and last_name. It is the owner's full name from th
 mailbox whose name differs; `mailbox check --fix --live` sets it (fix_names), and nothing else on
 the account. PHASE0-CONFIRM: see Instantly.set_sender_name.
 
-"Warm" (PHASE0-CONFIRM: what Instantly reports for our four mailboxes): warmup is on,
+"Warm" (what Instantly reports for our mailboxes: read live since 2 Oct 2026, when the first two were promoted):
+warmup is on,
 the account is active, and either Instantly's warmup score or health score is at least
 WARM_SCORE, or warmup (or the registry row) is at least WARM_DAYS old.
 
@@ -98,7 +99,7 @@ from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
 TAB = "Mailboxes"
 ACTIVE, WARMING, PAUSED, RETIRED = "Active", "Warming", "Paused", "Retired"
 WARM_DAYS = 21  # SPEC 9: promoted to Active after 21 days
-WARM_SCORE = 90  # PHASE0-CONFIRM: Instantly's warmup/health score (0-100) that counts as warm
+WARM_SCORE = 90  # Instantly's warmup/health score (0-100, read live since 2 Oct 2026) that counts as warm
 RETIRE_WAIT_DAYS = 30  # SPEC 9, 13: removed 30 days after retire, never within 30 days of last use
 DEFAULT_CAP = 30  # SPEC 13
 MAX_CAP = 30
@@ -233,7 +234,7 @@ def campaign_drift(
     steps = ((campaign.get("sequences") or [{}])[0] or {}).get("steps") or []
     for i, step in enumerate(campaign_steps(text_only(settings))):
         variant = ((steps[i].get("variants") or [{}])[0] or {}) if i < len(steps) else {}
-        # PHASE0-CONFIRM: Instantly may hand bodies back as HTML; tags are ignored here.
+        # Instantly hands bodies back as HTML (read back 3 Oct 2026); tags are ignored here.
         want = {**{k: _plain(v) for k, v in step.items()}, "links": _hrefs(step["body"])}
         got = {"subject": _plain(variant.get("subject")), "body": _plain(variant.get("body")),
                "links": _hrefs(variant.get("body"))}

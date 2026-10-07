@@ -17,7 +17,7 @@ those enriched more than REFRESH_DAYS ago; within each, the Focus tab's groups, 
      settles it: a record (found) or none (not found), so a company Apollo files under another domain
      is not lost. The run carries on with single calls when Apollo refuses a bulk call, or its answer
      carries a record that matches no domain asked or says it found more than it carries: a single
-     call costs the same credits, only more requests (PHASE0-CONFIRM: the bulk answer's shape).
+     call costs the same credits, only more requests (the bulk answer's shape: confirmed live 5 Oct 2026).
   2. Facts, as source_universe writes them (apollo_universe.org_facts, source apollo_org):
      days_since_funding (as of today; scoring ages it), funding_stage, funding_amount_usd, employees
      (estimated_num_employees) and headcount_growth_12m; description, technologies and keywords only

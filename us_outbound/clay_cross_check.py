@@ -52,7 +52,8 @@ from us_outbound.settings.model import SIZE_BANDS, Settings
 
 SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (learn/holds.py)
 FACT = "hq_and_size"
-# PHASE0-CONFIRM: what one lookup costs (a data provider, or Claygent reading the company's pages). Reserved for
+# What one lookup costs (a data provider, or Claygent reading the company's pages) is unconfirmed, and moot until
+# the "US Outbound – Accounts" function is built and clay_cross_check is yes (CLAY-CROSS-COST). Reserved for
 # each account before the batch, and settled at what Clay reports, or kept when it reports nothing.
 RESERVE = 3.0
 LEDGER_NOTE = "HQ state and size cross-check (Clay)"

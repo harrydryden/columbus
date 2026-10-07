@@ -14,7 +14,8 @@ Writes return their dry_result in dry-run and send nothing. create_campaign neve
 activates: new campaigns stay in Instantly's Draft state until `start` (SPEC 13).
 
 Endpoint shapes come from Instantly's published v2 OpenAPI document (api.instantly.ai
-/openapi/api_v2.json, mirrored Aug 2026). Anything it leaves open is marked PHASE0-CONFIRM.
+/openapi/api_v2.json, mirrored Aug 2026). Anything it leaves open is marked PHASE0-CONFIRM, and docs/phase0-confirm.md
+lists each with its status.
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ from us_outbound.logs import log
 from us_outbound.settings.model import SendWindow
 
 CAMPAIGN_SEARCH = US_CAMPAIGN_PREFIX.strip()  # "US Outbound –": the guard requires this search prefix
-# PHASE0-CONFIRM: that Instantly's name search matches the en dash in "US Outbound –".
+# Confirmed live 3 Oct 2026: the name search matches the en dash (ensure_campaigns found both campaigns it had
+# created, "ok" rather than missing).
 
 PAGE = 100  # list page size (leads/list documents a maximum of 100)
 LEADS_PER_ADD = 1000  # POST /leads/add accepts up to 1000 leads
@@ -57,7 +59,7 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
 # Instantly's GET /campaigns/{id} (read 2 Oct 2026) leaves out a setting that is at its default, so a
 # setting we want false and that is missing is false. is_evergreen is never returned, so it cannot be
-# checked (PHASE0-CONFIRM above).
+# checked (confirmed live 2 Oct 2026 by `campaigns show`; what it does is still to confirm, above).
 NOT_RETURNED = frozenset({"is_evergreen"})
 # The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
 # of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly
@@ -66,8 +68,10 @@ NOT_RETURNED = frozenset({"is_evergreen"})
 # honors; insert_unsubscribe_header also gives mail clients their one-click unsubscribe button.
 # Harry, 5 Oct 2026: Instantly's editor ("Insert unsubscribe link") writes the link as this placeholder
 # address, which Instantly swaps for the lead's own unsubscribe URL at send time. A {{unsubscribe}} tag in
-# the href went out as href="" (the seed sends of 5 Oct). PHASE0-CONFIRM: the placeholder is swapped in an
-# anchor with our own text and style, and in a text-only email's written-out link, by a seed send of each.
+# the href went out as href="" (the seed sends of 5 Oct). Confirmed live 6 Oct 2026 in an anchor with our own text
+# and style, by Harry's seed test: the seed lead read back unsubscribed (-2) and he set optout_tested = yes. In a
+# text-only email's written-out link it is unconfirmed (PHASE0-CONFIRM: a seed send in text format before
+# email_format is set to text).
 UNSUBSCRIBE_TAG = "https://UNSUBSCRIBE_INSTANTLY.ai"
 # Harry, 5 Oct 2026: plainer words in small grey type, so the line reads as part of a personal email
 # rather than a bulk-mail footer; the link and the List-Unsubscribe header are unchanged.
@@ -150,8 +154,9 @@ CAMPAIGN_STATUS = {
 # A lead's `status` (the v2 Lead schema: 1 active, 2 paused, 3 completed, -1 bounced, -2 unsubscribed,
 # -3 skipped). sync_outcomes reads bounced and unsubscribed from it:
 # a click on the unsubscribe link (UNSUBSCRIBE_TAG) stops the lead and marks it unsubscribed (Harry, 1 Oct 2026:
-# the opt-out is Instantly's own link). PHASE0-CONFIRM: the codes, read from a lead in a paused
-# campaign, and that an unsubscribe click (and the List-Unsubscribe header) sets -2 on the lead.
+# the opt-out is Instantly's own link). Confirmed live 6 Oct 2026: a click on the seed email's link set the seed lead
+# to -2 (sync_outcomes read it within the hour, and `seed check` passed before Harry set optout_tested = yes).
+# PHASE0-CONFIRM: 2 (`phase0 check --seed`), 3, -1 and -3, and that the List-Unsubscribe header sets -2 too.
 LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
 # PHASE0-CONFIRM: that PATCH /leads/{id} takes status 2 (paused) and 1 (active), and that a lead set
 # back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused:
@@ -249,8 +254,9 @@ def text_to_html(text: str) -> str:
 def instantly_schedule(window: SendWindow | None = None, name: str = "US Outbound") -> dict:
     """campaign_schedule for a settings SendWindow (settings days: 0 = Monday).
 
-    PHASE0-CONFIRM: Instantly's days keys run 0 = Sunday .. 6 = Saturday (JS getDay); the
-    OpenAPI example is ambiguous. Phase 0 checks the created campaign shows Mon–Fri.
+    Instantly's days keys run 0 = Sunday .. 6 = Saturday (JS getDay); the OpenAPI example is ambiguous.
+    Confirmed live 5 Oct 2026: the seed emails went out on Monday 5 Oct, and Monday is key "1" here (a
+    0 = Monday reading would have left Monday off).
     """
     w = window or DEFAULT_WINDOW
     days = {str(d): False for d in range(7)}
@@ -476,7 +482,8 @@ class Instantly(HttpClient):
                 "health_score_label": agg.get("health_score_label"),
                 "warmup_started_at": acct.get("timestamp_warmup_start"),
                 "daily_limit": acct.get("daily_limit"),
-                # The sender name (set_sender_name). PHASE0-CONFIRM: the account GET returns these two fields.
+                # The sender name (set_sender_name). Confirmed live 6 Oct 2026: the account GET returns both
+                # (mailbox_health found no name drift on any mailbox; missing fields would read as drift).
                 "first_name": acct.get("first_name"),
                 "last_name": acct.get("last_name"),
             }
@@ -501,8 +508,8 @@ class Instantly(HttpClient):
 
         GET /accounts/analytics/daily, filtered to these emails (without the filter it covers the
         whole workspace, so the filter is always sent). Rows for any other account are dropped.
-        PHASE0-CONFIRM: that `emails` is sent as a repeated query parameter, and the row fields
-        (date, email_account, sent).
+        Confirmed live 6 Oct 2026: `emails` as a repeated query parameter, and the row fields date,
+        email_account and sent (mailbox_health's sent_by_day showed the 5 Oct seed sends on the two mailboxes).
         """
         accs = self._registry("account.analytics_daily", emails)
         out: dict[str, dict[str, dict]] = {e: {} for e in accs}

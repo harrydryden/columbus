@@ -55,6 +55,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
     [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
                                       only says what it would send. With --live it exits 1 unless the
                                       fallback can go on
+  phase0 check [--seed ADDRESS]       the live checks of the API details still to confirm (ops/phase0.py,
+    [--apollo-credits] [--live]       docs/phase0-confirm.md): read-only probes, and with --seed writes on
+                                      that seed lead of ours alone; without --live it only says what it calls
   erase --email <address>             an erasure request (SPEC 6)
   schedule                            the job table and next runs (UK time)
   run <job> [--live]                  one job, what the scheduler starts
@@ -1180,7 +1183,7 @@ def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("--in-flight goes with ensure --fix")
     if args.action == "show":
         # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
-        # Instantly kept of the settings and step templates it was given (PHASE0-CONFIRM items).
+        # Instantly kept of the settings and step templates it was given (docs/phase0-confirm.md).
         _only_reads(args)
         ctx = factory("campaigns_show", False)
         for owner in ctx.settings.owners():
@@ -1475,6 +1478,21 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
+    """`phase0 check`: the API details to confirm that a live read, or a write on Harry's own seed lead, settles
+    (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
+    from us_outbound.ops import phase0
+
+    ctx = factory(phase0.JOB, args.live, operator=True)
+    try:
+        report = run_job(ctx, lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits))
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    for line in phase0.lines(report):
+        print(line)
+    return 0
+
+
 def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
     """The kill-rule holds in force (learn/kill_rules.py), and lifting one once Harry has checked it."""
     from us_outbound.learn import kill_rules
@@ -1633,6 +1651,15 @@ def build_parser() -> argparse.ArgumentParser:
     sd.add_argument("--subject", choices=["personal", "copy"], default="copy",
                     help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
                          "s1_subject, the default)")
+
+    p0 = command("phase0", "the live checks of the API details still to confirm: read-only, or your own seed lead",
+                 cmd_phase0, takes_live=True)
+    p0.add_argument("action", choices=["check"])
+    p0.add_argument("--seed", action="append", metavar="ADDRESS",
+                    help="also the writes on this seed lead of ours (pause and resume, interest status, a forward to "
+                         "escalation_email); repeat it for a second seed lead")
+    p0.add_argument("--apollo-credits", action="store_true",
+                    help="also the probes that cost an Apollo credit each (3 at most)")
 
     kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
     kr.add_argument("action", choices=["show", "clear"])

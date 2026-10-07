@@ -45,7 +45,7 @@ missing key, an API error) FAILs with the reason.
   HubSpot ids       hubspot_pipeline_id, hubspot_deal_stage_id and hubspot_owner_id are set; WARN
                     without them, as a positive reply then creates no HubSpot deal (crm/hubspot_writes.py)
   Opt-out tested    optout_tested = yes: the seed-inbox test of Instantly's unsubscribe link
-                    (blocker B1; PHASE0-CONFIRM in clients/instantly.py)
+                    (blocker B1; it passed on 6 Oct 2026)
 
 What Harry reads is plain: no SPEC numbers in a line. Every FAIL that asks him to change the sheet
 ends ", then `us-outbound sync`", since jobs read the synced copy of the sheet. The GO footer says

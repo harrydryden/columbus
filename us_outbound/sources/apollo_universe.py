@@ -91,8 +91,9 @@ OPEN_STATUSES = ("new", "queued", "verified")  # waiting to be enrolled
 OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_RESULTS = MAX_PAGE * MAX_PER_PAGE  # Apollo shows at most 50,000 companies per search
-# PHASE0-CONFIRM: organization_naics_codes takes 2 to 5 digits (Apollo's docs), so a 6-digit code is
-# sent as its 5-digit prefix and Python checks the full code. Set to 6 if Apollo takes six digits.
+# organization_naics_codes takes 2 to 5 digits (Apollo's docs), so a 6-digit code is sent as its 5-digit
+# prefix and Python checks the full code. Confirmed live 2 Oct 2026: the active industries' searches by
+# 5-digit prefixes found the 432 accounts. Whether six digits work is untried (it would only narrow a search).
 NAICS_DIGITS = 5
 NAICS = "naics"  # a search by NAICS codes; otherwise it is a label's keyword search
 MAX_PAGES_PER_RUN = 200  # well inside the 60-minute timeout
@@ -709,8 +710,8 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
     BACKFILL_BATCH accounts it runs one search per band, filtered to their organization ids; a
     company a band's search returns is in that band. A page with results costs 1 credit, so about 4
     per 100 accounts. Accounts no band search returns keep no band and are tried next run.
-    PHASE0-CONFIRM: organization_ids with organization_num_employees_ranges on mixed_companies/search
-    (apollo_jobs.screen pairs organization_ids with another filter the same way).
+    Confirmed live 5 Oct 2026: organization_ids with organization_num_employees_ranges on
+    mixed_companies/search (8 band searches placed 138 accounts in a band).
     """
     todo = [a for a in ctx.store.select("accounts", {"status": list(OPEN_STATUSES)})
             if not a.get("size_band") and a.get("apollo_org_id") and a.get("employees") is None]
@@ -746,8 +747,9 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
 def split_reason(orgs: Sequence[Mapping[str, Any]], total: int | None) -> str:
     """Why a search is read again by size band, or "": over Apollo's 50,000 (SPEC 7), or no employee counts.
 
-    PHASE0-CONFIRM: search rows carry estimated_num_employees. If none on a page does, the size band
-    comes from the search's own size filter instead, so accounts can still pass the 10-to-249 check.
+    Confirmed live 2 Oct 2026: search rows carry no estimated_num_employees (none of 432). With none on a
+    page, the size band comes from the search's own size filter instead, so accounts can still pass the
+    size check.
     """
     if total is not None and total > MAX_RESULTS:
         return "over 50,000 companies"
