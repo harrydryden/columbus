@@ -11,7 +11,8 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      found is tried again after RETRY_DAYS.
   2. Budget (SPEC 1.6): before the batch, today's share of the month's Apollo budget (budget.py)
      and Apollo's own balance against apollo_floor; before each reveal, what is left of both.
-     The batch stops when either runs out.
+     The batch stops when either runs out. And no reveal at all while a kill rule pauses the apollo
+     email source (apollo_paused, below).
   3. Search (0 credits): Apollo People API Search at the organization, for the titles of every
      Roles-tab row contacted at the account's size, for people in the United States with an
      email Apollo has verified. The People leaders it finds are written as apollo_people facts,
@@ -41,6 +42,15 @@ score these facts.
 Dry-run and live are the same: the job writes only to the database and its Apollo calls are
 reads, which the guard allows in dry-run, so reveals spend credits in both, within the budget
 (as verify_in_clay spends Clay's). The scheduler runs it without --live.
+
+A kill rule pausing the apollo email source (learn/holds.paused_sources: Apollo's addresses bounced;
+learn/kill_rules.py) stops the run before any search, reveal or credit, and the run's summary and so its
+heartbeat say why (apollo_paused; Harry, 7 Oct 2026), as the clay source's pause stops Clay's lookups
+(clay_room). Clay alone is not used meanwhile, even with clay_email_fallback = yes and the clay source not
+paused: Clay is the fallback for Apollo's misses and catch-alls (Harry, 2 Oct 2026: Clay narrowed to that),
+looked up only after an Apollo reveal, and making it the main source while Harry checks why Apollo's addresses
+bounced would spend Clay's credits at a rate nobody chose. Contacts already found stay ready, and enrol still
+takes those whose source is not paused. `us-outbound killrules clear ITEM_ID --live` lifts the pause.
 
 The Clay email waterfall (SPEC 9: "misses and catch-alls go to the Clay Contacts function";
 Harry, 2 Oct 2026: Clay narrowed to this), behind General clay_email_fallback (default no, as
@@ -730,6 +740,17 @@ def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run,
     log("pick_contacts_account", account_id=aid, outcome=out.outcome, reason=out.reason, row=value.get("row"))
 
 
+def apollo_paused(ctx: Context) -> str | None:
+    """Why no Apollo reveal may be made now: a kill rule pauses the apollo email source; None when none does (the
+    module docstring: Clay alone is not used meanwhile)."""
+    paused = holds.paused_sources(ctx.store)
+    if EMAIL_SOURCE not in paused:
+        return None
+    return (f"a kill rule pauses the apollo email source ({paused[EMAIL_SOURCE] or 'bounces'}): no Apollo reveals, "
+            "and Clay alone is not used, as it is the fallback for Apollo's misses; `us-outbound killrules clear "
+            "ITEM_ID --live` lifts it once checked")
+
+
 def clay_room(ctx: Context) -> tuple[str | None, float]:
     """(why the Clay waterfall is not used this run, or None; what today may spend of the month's Clay budget)."""
     s = ctx.settings
@@ -775,10 +796,15 @@ def run(ctx: Context) -> dict:
 
     month = budget.monthly(store, s, "apollo", ctx.now)
     batch = _Run(left=month.left_today, balance=None, floor=s.general.apollo_floor)
+    held = apollo_paused(ctx)  # a kill rule holds Apollo's addresses back (Harry, 7 Oct 2026)
+    if held:
+        summary["apollo_paused"] = held  # in the heartbeat whatever else the run says
     why = None
     if not want or not (due or (due2 and want > ready2)):
         enough = not want or (not due and due2)
         why = "enough accounts are ready for the next two send days" if enough else "no account is waiting for a contact"
+    elif held:
+        why = held
     elif month.budget <= 0:
         why = "no monthly Apollo budget (apollo_monthly_credits is 0)"
     why = why or batch.why_not_reveal()

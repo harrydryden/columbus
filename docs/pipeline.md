@@ -186,6 +186,9 @@ An account also needs at least one candidate contact: a person matching the Role
   `email_source` = clay; `catch_all_valid` waits for change 8. Work Email gets its own input names
   (Full Name, Company Domain, Social Profile URL, Company Name). After three failed lookups the run
   stops asking Clay, and without the Clay key it does not start.
+- While a kill rule pauses the apollo email source (its addresses bounced), the run reveals nothing and
+  spends no credit, and says so in its heartbeat (7 Oct 2026). Clay alone is not used meanwhile: it is the
+  fallback for Apollo's misses, not a source of its own. `us-outbound killrules clear ID --live` lifts it.
 
 | Rank | 10–49 staff | 50–249 staff |
 | :- | :- | :- |

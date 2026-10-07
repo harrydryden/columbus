@@ -287,8 +287,13 @@ verification and contact choice write only the database; enrol, replies and post
    (01:30) reads Spill's customers from HubSpot as the monthly `lookalikes` job does and suppresses their
    domains (`suppression.load_customers`), so `sync_outcomes`' sweep stops a new customer's leads in flight by
    the next morning, and enrol never adds one; the lookalike cells are still rebuilt monthly.
-5. **`pick_contacts` should skip email sources a kill rule has paused** (`holds.paused_sources`). Done for
-   Clay (2 Oct): no Clay lookup while the clay source is paused. Apollo's reveals still go ahead.
+5. **`pick_contacts` skips email sources a kill rule has paused** (`holds.paused_sources`): *built*. Clay
+   (2 Oct): no Clay lookup while the clay source is paused. Apollo (7 Oct): no reveal and no credit while the
+   apollo source is paused, and the run's summary and heartbeat say why (`pick.apollo_paused`). Clay alone is
+   not used meanwhile, even with `clay_email_fallback` = yes: it is the fallback for Apollo's misses and
+   catch-alls, and making it the main source while Harry checks why Apollo's addresses bounced would spend
+   Clay's credits at a rate nobody chose. Contacts already found are still enrolled unless their own source is
+   paused; `us-outbound killrules clear ID --live` lifts the pause.
 
 ### Weeks 2–4, to scale
 1. **Clay, narrowed to what only it does** (Harry, 2 Oct 2026; *built 6 Oct*, "push ahead with
