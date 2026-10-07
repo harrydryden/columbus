@@ -25,7 +25,8 @@ else is a claim nobody has checked, so the QA step fails it. Harry owns this lis
 - There is a library of practical, evidence-based self-guided resources for anyone not ready to talk yet,
   covering topics from burnout prevention to grief, financial stress and sleep (the website's wording).
 - Spill works instead of, or alongside, a traditional EAP.
-- Setup takes hours, and there is no minimum team size.
+- Setup takes minutes, and there is no minimum team size (Harry, 7 Oct 2026: minutes, not hours, is the accurate
+  claim). Say minutes wherever setup or going live comes up; never hours.
 - A demo is short: about 20 minutes (SPEC 10's "20-minute walkthrough").
 - Spill is HIPAA compliant.
 - For law firms (SPEC 5's legal overlay): "The bar's Lawyer Assistance Program covers attorneys. Who covers
