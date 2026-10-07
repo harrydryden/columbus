@@ -50,6 +50,7 @@ from us_outbound.clients.guard import GuardViolation, Op
 from us_outbound.clients.hubspot import ASSOCIATION_TYPE_IDS
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
+    INTEREST_INTERESTED,
     INTEREST_MEETING_BOOKED,
     LEAD_ACTIVE,
     LEAD_PAUSED,
@@ -377,7 +378,8 @@ def _interest(lead: Mapping[str, Any]) -> Any:
 
 
 def seed_interest(r: Run, address: str) -> Result:
-    """stop_lead: POST /leads/update-interest-status takes INTEREST_MEETING_BOOKED and the lead reads it back."""
+    """mark_interested and stop_lead: POST /leads/update-interest-status takes INTEREST_INTERESTED (1, set on a
+    positive reply; Harry, 7 Oct 2026) and then INTEREST_MEETING_BOOKED (2), and the lead reads each back."""
     found = r.seed_lead(address)
     if found is None:
         return Result(NOT_CHECKED, f"no seed lead for {_id(address)}")
@@ -388,30 +390,36 @@ def seed_interest(r: Run, address: str) -> Result:
     inst, lead_id = r.ctx.clients.instantly, str(lead.get("id") or "")
     before = r.get_lead(name, lead_id)
     was, status_was = _interest(before), _int(before.get("status"))
+    now, read = before, {}
     try:
-        inst.stop_lead(name, address)
-    except ApiError as exc:
-        return Result(DIFFERS, f"Instantly refused update-interest-status: HTTP {exc.status} {clip(str(exc.body), 160)}")
-    seen = None
-    try:
-        for i in range(INTEREST_POLLS):
-            now = r.get_lead(name, lead_id)
-            seen = _interest(now)
-            if _int(seen) == INTEREST_MEETING_BOOKED:
-                break
-            if i < INTEREST_POLLS - 1:
-                SLEEP(INTEREST_WAIT)
+        for value, call in ((INTEREST_INTERESTED, inst.mark_interested), (INTEREST_MEETING_BOOKED, inst.stop_lead)):
+            try:
+                call(name, address)
+            except ApiError as exc:
+                return Result(DIFFERS, f"Instantly refused update-interest-status with {value}: HTTP {exc.status} "
+                                       f"{clip(str(exc.body), 160)}")
+            seen = None
+            for i in range(INTEREST_POLLS):
+                now = r.get_lead(name, lead_id)
+                seen = _interest(now)
+                if _int(seen) == value:
+                    break
+                if i < INTEREST_POLLS - 1:
+                    SLEEP(INTEREST_WAIT)
+            read[value] = seen
     finally:
         restored = _restore_interest(r, name, lead, address, was)
     keys = "" if INTEREST_FIELD in now else f" (the lead has no {INTEREST_FIELD}; its keys: {', '.join(sorted(now))[:300]})"
     changed = (f" Its status went from {status_was} to {_int(now.get('status'))}." if _int(now.get("status")) != status_was
                else "")
     back = "" if restored else f" It did not read back as {was!r} again yet: check the seed lead in Instantly."
-    if _int(seen) != INTEREST_MEETING_BOOKED:
-        return Result(DIFFERS, f"Instantly took the call, but the lead read {INTEREST_FIELD} {seen!r} after "
-                               f"{INTEREST_POLLS * INTEREST_WAIT:.0f} s, not {INTEREST_MEETING_BOOKED}.{keys}{changed}{back}")
-    return Result(CONFIRMED, f"update-interest-status took interest_value {INTEREST_MEETING_BOOKED} and the lead read "
-                             f"it back (\"Meeting booked\"); set back to {was!r}.{changed}{back}")
+    wrong = [f"{v} read {read.get(v)!r}" for v in (INTEREST_INTERESTED, INTEREST_MEETING_BOOKED) if _int(read.get(v)) != v]
+    if wrong:
+        return Result(DIFFERS, f"Instantly took the calls, but after {INTEREST_POLLS * INTEREST_WAIT:.0f} s each the lead's "
+                               f"{INTEREST_FIELD}: {'; '.join(wrong)}.{keys}{changed}{back}")
+    return Result(CONFIRMED, f"update-interest-status took interest_value {INTEREST_INTERESTED} (\"Interested\") and "
+                             f"{INTEREST_MEETING_BOOKED} (\"Meeting booked\") and the lead read each back; set back to "
+                             f"{was!r}.{changed}{back}")
 
 
 def _restore_interest(r: Run, name: str, lead: Mapping[str, Any], address: str, was: Any) -> bool:

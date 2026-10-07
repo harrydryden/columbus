@@ -243,8 +243,19 @@ Each line of its output is one of these ids. Read-only unless the kind says othe
 | `CLAY-CHECK` | pointer | nothing here: `us-outbound clay check-email` makes the one lookup | Clay credits only if Work Email finds an address |
 | `SEED-RESUME` | reads the seed lead (`--seed`) | GET https://api.instantly.ai/api/v2/leads/{id} (the seed lead; when an earlier run paused it) | none |
 | `SEED-PAUSE` | writes on the seed lead (`--seed`) | PATCH https://api.instantly.ai/api/v2/leads/{id} {status: 2}, GET it, PATCH {status: 1}, GET it (the seed lead, if it is still in its sequence) | none |
-| `SEED-INTEREST` | writes on the seed lead (`--seed`) | POST https://api.instantly.ai/api/v2/leads/update-interest-status (2, then back), GET the lead (the seed lead, if it has finished) | none |
+| `SEED-INTEREST` | writes on the seed lead (`--seed`) | POST https://api.instantly.ai/api/v2/leads/update-interest-status (1, then 2, then back), GET the lead (the seed lead, if it has finished) | none |
 | `SEED-FORWARD` | writes on the seed lead (`--seed`) | POST https://api.instantly.ai/api/v2/emails/forward (the seed lead's email 1, to escalation_email only) | none |
+
+## Added after the inventory (7 Oct 2026, the sending and retention builds)
+
+| Id | Where | What | Status | How it is settled |
+| :- | :- | :- | :- | :- |
+| `SEED-INTEREST` | `clients/instantly.py` `INTEREST_INTERESTED` | 1 is "Interested" (set when a reply is classified positive, `replies/poll.py`) | Seed probe | SEED-INTEREST now sets 1, then 2, and reads each back before setting the lead back. |
+| `W-BLACKOUT-PAUSE` | `registry/blackout.py` | Instantly accepts a pause of a campaign it shows as completed (status 3) | Watch | The first blackout pause (from Fri 20 Nov, 16:00 ET): the job's run summary lists every campaign as paused, none under errors. |
+| `W-BLACKOUT-RESUME` | `registry/blackout.py` | A campaign activated again after the blackout sends the steps that fell due during it | Watch | Mon 30 Nov: `sent` events for steps whose forecast day fell on 23–27 Nov. If none come, open question 78's fallback is to stop and start by hand. |
+| `W-DELETED-404` | `ops/retention.py`, `clients/instantly.delete_lead` | GET /leads/{id} answers 404 for a deleted lead | Watch | The first retention deletion (about a month after the first sequences end): a 404 counts as already gone; anything else fails that night's run loudly. |
+| `W-FINISHED-STATUS` | `ops/retention.py` | Instantly does not keep a finished lead "active" | Watch | `us-outbound status` lists retention's held leads; leads held as "active with fewer than 4 sends" after their last step say it does. |
+| `M-ERASE-THREAD` | `ops/erase.py` | Instantly's own thread stays in Instantly after an erase | Moot | A manual step erase prints; nothing to probe. |
 
 ## Found on the way (already handled)
 

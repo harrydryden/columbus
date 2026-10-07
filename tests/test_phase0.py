@@ -361,7 +361,7 @@ def test_seed_interest_on_a_finished_seed_lead_marks_it_and_sets_it_back(w, caps
     status, detail = seed_result(out, "SEED-INTEREST")
     assert status == phase0.CONFIRMED and "set back to None" in detail
     posts = [r.json["interest_value"] for r in w.writes() if "update-interest-status" in r.url]
-    assert posts == [2, None] and done["lt_interest_status"] is None
+    assert posts == [1, 2, None] and done["lt_interest_status"] is None  # Interested, Meeting booked, back
     assert seed_result(out, "SEED-PAUSE")[0] == phase0.NOT_CHECKED  # unsubscribed: never set active again
     assert not [r for r in w.writes() if r.method == "PATCH"]
 

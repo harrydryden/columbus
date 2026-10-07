@@ -987,3 +987,10 @@ def test_dry_run_still_writes_the_database(dry_world):
     """SPEC 0.3: dry-run computes, logs and writes to the database."""
     assert dry_world.guard.writes("db", sent=True)
     assert dry_world.pg.calls and dry_world.pg.unauthorized == []
+
+
+def test_an_address_used_as_a_key_is_hashed_in_the_logs_too():
+    """SPEC 1.7: logs carry hashed emails only, keys included (mailbox_health logs its ramp and limits by mailbox)."""
+    out = redact({"ramp": {"hannah@meetspill.org": 10}, "limit_set": {"sam@meetspill.org": {"to": 20}}, 3: "x"})
+    text = repr(out)
+    assert "meetspill.org" not in text and "email:" in text and out[3] == "x"
