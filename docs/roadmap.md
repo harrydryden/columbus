@@ -279,7 +279,10 @@ verification and contact choice write only the database; enrol, replies and post
    - JavaScript rendering, for careers pages built in the browser;
    - Clay's Claygent, through an "US Outbound – Accounts" function (Clay credits).
 4. **Interest status back to Instantly** (positive, meeting booked). Also stop the remaining steps
-   for an enrolled account that turns out to be a customer.
+   for an enrolled account that turns out to be a customer: *built 7 Oct*. The nightly `suppression_load`
+   (01:30) reads Spill's customers from HubSpot as the monthly `lookalikes` job does and suppresses their
+   domains (`suppression.load_customers`), so `sync_outcomes`' sweep stops a new customer's leads in flight by
+   the next morning, and enrol never adds one; the lookalike cells are still rebuilt monthly.
 5. **`pick_contacts` should skip email sources a kill rule has paused** (`holds.paused_sources`). Done for
    Clay (2 Oct): no Clay lookup while the clay source is paused. Apollo's reveals still go ahead.
 
