@@ -358,6 +358,54 @@ def test_a_fresh_verdict_is_used_as_it_is_and_a_stale_one_asked_again():
     assert ch.verdict(acct("a2"), stale)[2] is True and len(ctx.clients.claude_task.client.calls) == 1  # once a run
 
 
+def stored_verdict(ch, confidence, *, at, asked=True, aid="a1"):
+    v = verdict("Fintech", confidence, labels_hash=ch.hash)
+    d = labels.decide(ind("Fintech"), v, DEFAULT)
+    return {"event_id": f"v-{at.isoformat()}", "account_id": aid, "source": "label_check", "fact": "label_verdict",
+            "value": labels.verdict_value(ind("Fintech"), v, d, asked=asked), "observed_at": at}
+
+
+def home(at, value=None, aid="a1"):
+    value = {"title": "Brightline", "text": "Payroll software for restaurants and bars."} if value is None else value
+    return {"event_id": f"h-{at.isoformat()}", "account_id": aid, "source": "careers_pages", "fact": "home_page",
+            "value": value, "observed_at": at}
+
+
+def test_a_verdict_short_of_high_is_asked_again_once_the_home_page_is_read():
+    """Harry, 7 Oct 2026: the first audit held half the queue, the model unsure on Apollo's facts alone (37signals
+    low). The home page is new material: an unsure verdict asked before it was read is asked once more with it."""
+    ctx, ch = checker()
+    t0, t1, t2 = NOW - timedelta(days=2), NOW - timedelta(days=1), NOW - timedelta(hours=1)
+    unsure = [*EVENTS, stored_verdict(ch, "medium", at=t0)]
+    assert labels.wants_home_page(unsure) and not labels.second_look(unsure) and ch.fresh(unsure[-1]["value"], unsure)
+    read = [*unsure, home(t1)]
+    assert labels.second_look(read) and not labels.wants_home_page(read)
+    assert not ch.fresh(read[-2]["value"], read)
+    v, why, asked = ch.verdict(acct(), read)
+    assert asked is True and "Home page: Brightline · Payroll software" in \
+        ctx.clients.claude_task.client.calls[0]["messages"][0]["content"]
+    # Once asked with the page, the verdict stands, however sure: no loop.
+    again = [*read, stored_verdict(ch, "low", at=t2)]
+    assert not labels.second_look(again) and ch.fresh(again[-1]["value"], again)
+    # A decision re-made from the stored verdict (asked false) is not an ask: the page is still new to the model.
+    redone = [*read, stored_verdict(ch, "medium", at=t2, asked=False)]
+    assert labels.second_look(redone)
+    # A sure verdict needs no page; a page read before the verdict was asked is not new; nor is a page saying nothing.
+    sure = [*EVENTS, stored_verdict(ch, "high", at=t0)]
+    assert not labels.wants_home_page(sure) and not labels.second_look([*sure, home(t1)])
+    assert not labels.second_look([*EVENTS, home(t0 - timedelta(days=1)), stored_verdict(ch, "medium", at=t0)])
+    empty = [*unsure, home(t1, {})]
+    assert not labels.second_look(empty) and not labels.wants_home_page(empty)  # read once, found nothing
+    # Never asked: no page wanted yet (a new company's page comes with its careers read).
+    assert not labels.wants_home_page(EVENTS)
+
+
+def test_an_empty_home_page_read_never_hides_one_that_said_something():
+    good, empty = home(NOW - timedelta(days=2)), home(NOW - timedelta(days=1), {})
+    got = labels.Material.of(acct(), [*EVENTS, good, empty]).home
+    assert got == "Brightline · Payroll software for restaurants and bars."
+
+
 def test_beyond_the_runs_share_a_stale_verdict_stands_and_none_is_none():
     ctx, ch = checker(budget=labels.Budget(calls=1))
     assert ch.verdict(acct(), EVENTS)[2] is True
@@ -429,8 +477,11 @@ def test_the_gold_set_has_the_first_cards_thirteen_companies_with_made_up_names(
     assert sum(r["went_out_as"] != r["rules"] for r in GOLD) == 5
     # ... but Apollo's keyword artefacts keep five under adtech on the rules alone: the model's work.
     assert sum(r["rules"] == "Adtech & martech" for r in GOLD) == 5
-    assert {"Crestline Games", "Harbor Creative", "Meadow Health"} <= {r["name"] for r in GOLD if r["expect"]["accept"]
-                                                                       and r["rules"] in r["expect"]["accept"]}
+    assert {"Crestline Games", "Harbor Creative"} <= {r["name"] for r in GOLD if r["expect"]["accept"]
+                                                      and r["rules"] in r["expect"]["accept"]}
+    # Apollo's "healthtech" keyword puts a virtual-care provider under Healthtech; the definitions say Digital health.
+    [meadow] = [r for r in GOLD if r["name"] == "Meadow Health"]
+    assert (meadow["rules"], meadow["expect"]["accept"]) == ("Healthtech", ["Digital health"])
 
 
 @pytest.mark.parametrize("row", GOLD, ids=[r["domain"] for r in GOLD])
@@ -449,9 +500,7 @@ def test_the_gold_set(row):
     assert d.action == want["action"]
     if want["accept"]:
         assert d.label in want["accept"]
-    if "copy" in want:
-        assert d.copy == want["copy"]
-    assert not (d.copy == "label" and d.label not in want["accept"])  # never a label's own pitch to the wrong company
+    assert labels.score(d, want) == "acceptable"  # the expected copy too, and never a label's own pitch wrongly
 
 
 # -- `us-outbound labels eval` ----------------------------------------------------------------------------------------
@@ -520,6 +569,12 @@ def test_the_eval_reads_the_approvers_corrections_too():
      "acceptable"),
     (D("AI & deep tech", TECH, "model", "high", "label"), {"accept": [], "action": "disqualify"}, "unsafe"),
     (D("Fintech", TECH, "disputed", "medium", "general", "hold"), {"accept": [], "action": "disqualify"}, "wrong"),
+    # An umbrella's own copy is its group's copy: the group copy expected, and never a specific pitch.
+    (D(TECH, TECH, "model", "high", "label"), {"accept": [TECH, "Fintech"], "action": "verify", "copy": "group"},
+     "acceptable"),
+    (D(TECH, TECH, "model", "high", "label"), {"accept": ["Healthtech"], "action": "verify"}, "wrong"),
+    (D("Fintech", TECH, "model", "high", "label"), {"accept": ["Fintech"], "action": "verify", "copy": "group"},
+     "wrong"),
 ])
 def test_score(d, expect, verdict):
     assert labels.score(d, expect) == verdict

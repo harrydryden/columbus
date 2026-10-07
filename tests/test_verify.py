@@ -496,6 +496,29 @@ def test_a_doubt_whether_it_is_an_employer_goes_to_the_hand_check_and_approving_
     assert acc(ctx)["label_source"] == "disputed"  # approved: General copy, as the doubt stays a doubt
 
 
+def test_a_company_held_on_thin_facts_is_asked_again_once_its_home_page_is_read_and_verified():
+    """Harry, 7 Oct 2026: the first audit held half the queue, the model unsure on Apollo's facts alone. read_pages
+    reads the home page of each (sources/pages.home_pass); the next verify_accounts asks once more with it."""
+    thin = {"a1": apollo_facts("a1", naics=(), keywords=("design",), industry="design services", description="")}
+    ctx, sdk = labelled([account(industry="")], {"a1co.com": {"label": "Technology & Startups", "confidence": "low"}},
+                        facts=thin)
+    out = verify.run(ctx)
+    assert out["labels"]["held"] == 1 and status(ctx) == "new" and len(verify.open_doubts(ctx)) == 1
+    ctx.store.insert("signal_events", [{
+        "event_id": "home-a1", "account_id": "a1", "source": "careers_pages", "fact": "home_page",
+        "value": {"title": "Brightline", "text": "Brightline builds scheduling software for clinics."}, "quote": "",
+        "source_url": "https://a1co.com/", "observed_at": NOW + timedelta(hours=1)}])
+    sdk.answers["a1co.com"] = {"label": "Technology & Startups", "confidence": "high",
+                               "evidence": "Brightline builds scheduling software for clinics"}
+    ctx.now = NOW + timedelta(days=1)
+    again = verify.run(ctx)
+    assert len(sdk.calls) == 2 and "Home page: Brightline" in sdk.calls[-1]["messages"][0]["content"]
+    assert again["verified"] == 1 and status(ctx) == "verified" and verify.open_doubts(ctx) == []
+    assert (acc(ctx)["industry"], acc(ctx)["label_source"]) == ("Technology & Startups", "model")
+    verify.run(ctx)
+    assert len(sdk.calls) == 2  # asked with its page: the verdict stands
+
+
 def test_with_the_model_unavailable_a_new_account_waits_and_the_next_run_asks_again():
     ctx, sdk = labelled([account()], {}, fail=True)
     out = verify.run(ctx)

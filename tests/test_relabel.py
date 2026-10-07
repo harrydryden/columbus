@@ -8,7 +8,7 @@ Advertising agencies), Slack on the transport, every call through the real clien
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -243,6 +243,47 @@ def test_a_live_audit_asks_decides_and_withdraws_the_cards_that_no_longer_fit(ca
     assert again["to_check"] == 0 and len(sdk.calls) == 2
     assert cli.main(["labels", "audit"], context_factory=lambda *a, **k: ctx) == 0
     assert "0 of 3 open companies have no fresh label check" in capsys.readouterr().out
+
+
+def test_a_live_audit_reads_the_home_page_of_a_company_the_model_was_unsure_of_and_asks_again(monkeypatch, capsys):
+    """Harry, 7 Oct 2026: the first audit held 204 of 409 companies, the model unsure on Apollo's facts alone. The next
+    reads the home page of each it was unsure of (sources/pages.home_pass) and asks about it once more with the page."""
+    from us_outbound.ops import cli
+    from us_outbound.sources import pages
+
+    ctx, t, sl, sdk = audit_world()
+    fact(ctx, "acc-3", "apollo_industry", "design services")  # no rules label
+    sdk.answers["loopstudio.com"] = {"label": TECH, "confidence": "low"}
+    first = relabel.audit(ctx)
+    assert first["decisions"]["held"] == 1 and first["home_pages"] == {}  # never asked before: no page wanted yet
+    a3 = ctx.store.get("accounts", account_id="acc-3")
+    assert a3["status"] == "queued" and a3["label_source"] == "disputed"
+
+    read: list[str] = []
+
+    def read_home(self):
+        read.append(self.domain)
+        self.home = {"title": "Loop Studio", "text": "Loop makes design software."}
+        self.home_url = "https://loopstudio.com/"
+        return pages.READ
+
+    monkeypatch.setattr(pages.Reader, "read_home", read_home)
+    sdk.answers["loopstudio.com"] = {"label": TECH, "confidence": "high", "evidence": "Loop makes design software"}
+    calls = len(sdk.calls)
+    at(ctx, ctx.now + timedelta(days=1), live=True, job=relabel.AUDIT_JOB)
+    second = relabel.audit(ctx)
+    assert read == ["loopstudio.com"] and second["home_pages"]["said_what_they_do"] == 1
+    assert second["asked"] == 1 and len(sdk.calls) == calls + 1
+    assert "Home page: Loop Studio · Loop makes design software." in sdk.calls[-1]["messages"][0]["content"]
+    a3 = ctx.store.get("accounts", account_id="acc-3")
+    assert (a3["industry"], a3["label_source"]) == (TECH, "model")
+    cli._audit_report(second, True)
+    assert "Read the home page of 1 companies the model was unsure of: 1 say what they do, 0 say nothing, 0 refused, " \
+           "0 did not answer. Those with a page are asked again." in capsys.readouterr().out
+    # Asked with its page: the verdict stands, and the page is not read again.
+    at(ctx, ctx.now + timedelta(days=1), live=True, job=relabel.AUDIT_JOB)
+    third = relabel.audit(ctx)
+    assert third["to_check"] == 0 and third["home_pages"] == {} and read == ["loopstudio.com"]
 
 
 # -- `approvals redo` (Harry, 7 Oct 2026: "bulk reject all of those contacts from today and send them round again") --

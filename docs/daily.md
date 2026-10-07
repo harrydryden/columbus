@@ -450,7 +450,7 @@ commands instead.
 | `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
 | `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`, `industry ID "Fintech"`) | Send cards without Slack |
 | `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as `industry: Fintech` on a card does), or show its label and its check history |
-| `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
+| `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` first reads the home page of each company the model was unsure of (public pages, no paid service) and asks about those again with it, then asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
 | `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies approvers corrected). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |

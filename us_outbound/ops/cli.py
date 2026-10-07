@@ -1205,7 +1205,16 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
 
 def _audit_report(out: dict, live: bool) -> None:
     print(f"{out['to_check']} of {out['open_accounts']} open companies have no fresh label check"
-          f" ({out['stale']} with one under an older label list or prompt).")
+          f" ({out['stale']} with an earlier one: an older label list or prompt, or a home page read since).")
+    hp = out.get("home_pages") or {}
+    if hp.get("accounts"):
+        late = f", {hp['not_reached']} not reached in time" if hp.get("not_reached") else ""
+        print(f"Read the home page of {hp['accounts']} companies the model was unsure of: {hp['said_what_they_do']} "
+              f"say what they do, {hp['said_nothing']} say nothing, {hp['blocked']} refused, {hp['error']} did not "
+              f"answer{late}. Those with a page are asked again.")
+    elif not live and out.get("home_pages_to_read"):
+        print(f"A live audit first reads the home page of {out['home_pages_to_read']} companies the model was unsure "
+              "of, then asks about those with a page again.")
     if not live:
         print(f"A live audit asks {out['model']} about each: at most ${out['per_call_usd']:.4f} a company, "
               f"${out['most_usd']:.2f} in all (the Claude cap applies).")
