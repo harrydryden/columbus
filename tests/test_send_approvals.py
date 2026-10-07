@@ -285,6 +285,9 @@ def test_the_card_shows_what_harry_asked_for():
     assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
     assert "*Before:* no email to Acme Creative from us before" in text
     assert "*Harry today:* card 1 of 15" in text
+    # The label check (labels.py; Harry, 7 Oct 2026): not checked yet, so the group's copy, and the card says so.
+    assert ("*Industry:* ⚠️ Advertising agencies (Marketing &amp; Creative Agencies) · not checked by the model · "
+            "the group's copy") in text and "*They do:*" not in text
     assert "✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread." in text
     assert "us-outbound" not in text  # no command line hint on a card
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
@@ -991,3 +994,68 @@ def test_approving_at_the_command_line_withdraws_an_overtaken_card_instead_of_se
     out = approvals.approve(ctx, row["item_id"][:8])
     assert out["added"] is False and out["withdrawn"] == "its industry was Advertising agencies and is now Fintech"
     assert instantly_posts(t) == [] and item_for(ctx, "acc-1")["status"] == "handled"
+
+
+# -- the card's Industry line (labels.py; Harry, 7 Oct 2026) --------------------------------------------------------
+
+
+def lc(source, rules, model, confidence="high", evidence="", what=""):
+    return {"rules": rules, "model": model, "confidence": confidence, "evidence": evidence, "what_they_do": what,
+            "decision": {"source": source}}
+
+
+@pytest.mark.parametrize("payload, line", [
+    ({"industry": "Fintech", "label_source": "rules+model", "copy_industry": "Fintech",
+      "label_check": lc("rules+model", "Fintech", "Fintech")},
+     "*Industry:* Fintech (Technology &amp; Startups) · rules and model agree · Fintech copy"),
+    ({"industry": "Technology & Startups", "label_source": "model", "copy_industry": "Technology & Startups",
+      "label_check": lc("model", "Games studios", "Technology & Startups")},
+     "*Industry:* Technology &amp; Startups · the rules said Games studios; the model says Technology &amp; Startups "
+     "(high) · Technology &amp; Startups copy"),
+    ({"industry": "Technology & Startups", "label_source": "umbrella", "copy_industry": "Technology & Startups",
+      "label_check": lc("umbrella", "Adtech & martech", "Fintech", "medium")},
+     "*Industry:* Technology &amp; Startups · the rules said Adtech &amp; martech, the model Fintech (medium): "
+     "Technology &amp; Startups copy"),
+    ({"industry": "Games studios", "label_source": "disputed", "copy_industry": "General",
+      "label_check": lc("disputed", "Games studios", "Logistics", "medium")},
+     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · the rules say Games studios, the model says Logistics "
+     "(medium) · General copy"),
+    ({"industry": "Games studios", "copy_industry": "Technology & Startups"},  # a card posted before the check
+     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · not checked by the model · the group's copy"),
+    ({"industry": "Fintech", "label_source": "override", "copy_industry": "Fintech"},
+     "*Industry:* Fintech (Technology &amp; Startups) · set on the Overrides tab · Fintech copy"),
+])
+def test_the_industry_line(payload, line):
+    p = {"industry_group": "Technology & Startups", **payload}
+    assert approvals.industry_lines(p)[0] == line
+
+
+def test_they_do_and_the_quote_are_escaped_and_left_out_when_empty():
+    p = {"industry": "Fintech", "industry_group": "Technology & Startups", "label_source": "rules+model",
+         "copy_industry": "Fintech", "label_check": lc("rules+model", "Fintech", "Fintech", evidence=(
+             "Brightline <makes> payroll & tax software"), what="payroll software for restaurants")}
+    assert approvals.industry_lines(p)[1] == (
+        "*They do:* payroll software for restaurants · “Brightline &lt;makes&gt; payroll &amp; tax software”")
+    p["label_check"] = lc("rules+model", "Fintech", "Fintech")
+    assert len(approvals.industry_lines(p)) == 1
+
+
+def test_a_checked_account_s_card_carries_its_verdict_and_stays_under_slacks_limit():
+    from us_outbound import labels
+
+    ctx, t, sl = world()
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    v = labels.Verdict("Advertising agencies", "high", "company", "x" * 160, "advertising for consumer brands")
+    d = labels.decide(ctx.settings.industry("Advertising agencies"), v, ctx.settings)
+    labels.apply(ctx, acme, d, v, rules=ctx.settings.industry("Advertising agencies"), asked=True)
+    enrol.run(ctx)
+    p = item_for(ctx, "acc-1")["payload"]
+    assert (p["label_source"], p["copy_level"], p["copy_industry"]) == (
+        "rules+model", "label", "Marketing & Creative Agencies")
+    assert p["label_check"]["model"] == "Advertising agencies" and p["label_check"]["evidence"] == "x" * 160
+    card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
+    text = blocks_text(card)
+    assert ("*Industry:* Advertising agencies (Marketing &amp; Creative Agencies) · rules and model agree · "
+            "the group's copy") in text
+    assert f"*They do:* advertising for consumer brands · “{'x' * 160}”" in text
+    assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))

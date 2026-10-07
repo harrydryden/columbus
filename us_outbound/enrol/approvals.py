@@ -15,7 +15,9 @@ the whole four-email sequence: the card shows email 1 in full and its first thre
 emails 2 to 4, so the exact text of every message is seen before anything is sent; once approved,
 Instantly sends email 1 in the next send window and the follow-ups on days 7, 14 and 21 by itself.
 The bot seeds ✅ and ❌ on the card (Slack.react), so approving is one click; its own reactions never
-count. Waiting items hold their sender's slots today and their place in the week (limits.today), and
+count. Under the people, the card's Industry line (Harry, 7 Oct 2026; labels.py) gives the label, whether the rules
+and the task model agreed, and which copy the emails are ("rules and model agree · Fintech copy", "⚠️ … · General
+copy", "not checked by the model"); its They do line gives what the model read the company does, with its quote. Waiting items hold their sender's slots today and their place in the week (limits.today), and
 an account with one waiting is not proposed again. With auto_send = no the weekly hand-check is not
 a gate (every email is approved anyway): hand_check_post records only the accounts verify_accounts
 held for doubtful facts, and golive's Hand-check line passes. A second contact at an account (General
@@ -434,6 +436,10 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
         "decided": {}, "added": {}, "edits": [],
         # A second contact at the account (enrol/second.py; Harry, 6 Oct 2026): 2, and who the first was.
         "contact_slot": p.slot, "first_contact": dict(p.first or {}),
+        # The label check (labels.py; Harry, 7 Oct 2026): its latest verdict, where the label came from, the copy level
+        # it earns and the Copy row's own industry, for the card's Industry line and for unfit_cards.
+        "label_check": dict(p.label_check), "label_source": _text(a.get("label_source")),
+        "copy_level": p.copy_level or labels.copy_level(a), "copy_industry": row.industry if row else "",
     }
 
 
@@ -525,6 +531,51 @@ def _before_line(p: Mapping[str, Any]) -> str:
     return line
 
 
+def _copy_words(p: Mapping[str, Any]) -> str:
+    """Which copy the card's emails are: "Fintech copy", "the group's copy" or "General copy"."""
+    row = _text(p.get("copy_industry"))
+    if not row:
+        return "copy not recorded"
+    if row.casefold() == GENERAL_COPY.casefold():
+        return "General copy"
+    if row.casefold() == _text(p.get("industry_group")).casefold() and row.casefold() != _text(p.get("industry")).casefold():
+        return "the group's copy"
+    return f"{row} copy"
+
+
+def industry_lines(p: Mapping[str, Any]) -> list[str]:
+    """The card's Industry line, and its "They do" line (labels.py; Harry, 7 Oct 2026): the label, whether the rules
+    and the model agreed, and which copy the emails are; then what the model says the company does, with its quote.
+    Every value is escaped; a card posted before the check, or under label_check = skip, says it was not checked."""
+    industry, group = _text(p.get("industry")), _text(p.get("industry_group"))
+    where = f"{industry} ({group})" if group and group.casefold() != industry.casefold() else (industry or group or "no label")
+    lc = p.get("label_check") or {}
+    source = _text(p.get("label_source")) or _text((lc.get("decision") or {}).get("source"))
+    rules, model, conf = _text(lc.get("rules")) or "no label", _text(lc.get("model")), _text(lc.get("confidence"))
+    copy = _esc(_copy_words(p))
+    if source == labels.OVERRIDE:
+        line = f"*Industry:* {_esc(where)} · set on the Overrides tab · {copy}"
+    elif source == labels.APPROVER:
+        line = f"*Industry:* {_esc(where)} · set by an approver · {copy}"
+    elif not lc or source in ("", labels.RULES):
+        line = f"*Industry:* ⚠️ {_esc(where)} · not checked by the model · {copy}"
+    elif source == labels.AGREED:
+        line = f"*Industry:* {_esc(where)} · rules and model agree · {copy}"
+    elif source == labels.MODEL:
+        line = (f"*Industry:* {_esc(where)} · the rules said {_esc(rules)}; the model says {_esc(model)} ({_esc(conf)}) "
+                f"· {copy}")
+    elif source == labels.UMBRELLA:
+        line = f"*Industry:* {_esc(where)} · the rules said {_esc(rules)}, the model {_esc(model)} ({_esc(conf)}): {copy}"
+    else:  # disputed: the rules' label, General copy
+        line = (f"*Industry:* ⚠️ {_esc(where)} · the rules say {_esc(rules)}, the model says {_esc(model)} "
+                f"({_esc(conf)}) · {copy}")
+    out = [line]
+    phrase, quote = _text(lc.get("what_they_do")), _text(lc.get("evidence"))
+    if phrase or quote:
+        out.append("*They do:* " + " · ".join(x for x in (_esc(phrase), f"“{_esc(quote)}”" if quote else "") if x))
+    return out
+
+
 def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
     """The card: (plain-text fallback, Block Kit blocks). status, once decided, replaces the footer."""
     c = p.get("contact") or {}
@@ -563,6 +614,7 @@ def card(p: Mapping[str, Any], status: str = "") -> tuple[str, list[dict]]:
         blocks.append(_section(status))
     kind = "Send approval · second contact" if is_second(p) else "Send approval"
     blocks += [_section(f"{kind} · {head}"), _context(" · ".join(_esc(f) for f in facts if f)), _section(people)]
+    blocks.append(_section("\n".join(industry_lines(p))))  # the label check (labels.py; Harry, 7 Oct 2026)
     blocks += [_section(q) for q in _quoted(first.get("text") or "")]
     blocks.append(_section(counts))
     if status:

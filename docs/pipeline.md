@@ -380,6 +380,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **The Copy tab holds one row per industry** (Harry, 30 Sep 2026). Each row is a four-email sequence: `s1_subject`, `s1_body` … `s4_body`, plus one line per contacted role (`people_leader_line`, `founder_line`, `operations_line`), and `status`, `approved_by`, `qa`, `qa_notes`, `sources` and `note`.
 - **Which row a lead gets:** the most specific approved row that has passed QA. That is its own industry label for its contact's role, then the label, then the label's group for the role, then the group, then `General`. So an industry can go live as soon as its own row is approved, and a General row covers the rest if Harry approves one.
+- **How specific it may be** (the label check, Harry, 7 Oct 2026; `labels.copy_level`): a label's own rows only when its label is confirmed (the rules and the model agree, the model is sure, an Overrides row or an approver's correction); the group's rows when the two disagreed within the group, under `label_check` = `skip`, or before the company is checked; General's when they disagreed across groups. So a doubtful label never carries a label's pitch, and **an approved, QA-passed row for each active group's own label and for General must stay on the Copy tab**: the safety net lands on them. Each card's *Industry* line says which (`rules and model agree · Fintech copy`, `⚠️ … · General copy`), and its *They do* line what the model read.
 - **How it is personal:**
   - Industry-specific copy throughout.
   - The role line in email 1.

@@ -59,6 +59,7 @@ ACCOUNT = {
     "size_band": "50-99",
     "industry": "Advertising agencies",
     "industry_group": "Marketing & Creative Agencies",
+    "label_source": "rules+model",  # its label confirmed by the label check (labels.py), so its own copy
     "source": "apollo",
     "status": "verified",
     "first_seen": NOW - timedelta(days=10),
