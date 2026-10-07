@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   code_sha text,
   copy_hash text,
   lead_deleted_at timestamptz,
+  test_arm text,
   PRIMARY KEY (contact_id)
 );
 -- For databases created before enrolled_at, opener_arm, opener_source and the enrolment snapshot existed.
@@ -65,6 +66,9 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS code_sha text;
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS copy_hash text;
 -- When the retention job deleted the contact's Instantly lead, 31 days after its last step (SPEC 13; ops/retention.py).
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS lead_deleted_at timestamptz;
+-- The running copy test's arm the contact was given, beside test_id (Harry, 7 Oct 2026: A/B tests of email copy,
+-- enrol/variants.py): a or b. learn/looks.py reads a variant test's arms from it.
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS test_arm text;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job (ops/retention.py), with their hitl_items payloads and raw_clay_contacts rows; their events and suppression hash stay.';
@@ -93,3 +97,4 @@ COMMENT ON COLUMN us_outbound.contacts.config_version IS 'The config version the
 COMMENT ON COLUMN us_outbound.contacts.code_sha IS 'The code the contact was rendered under: the first 12 characters of RAILWAY_GIT_COMMIT_SHA, or dev outside a Railway deploy (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';
 COMMENT ON COLUMN us_outbound.contacts.lead_deleted_at IS 'When the retention job deleted the contact''s Instantly lead, more than 31 days after its last step (SPEC 13; ops/retention.py), or found it gone already (Instantly answered 404). instantly_lead_id is cleared then, so the deletion is made once and nothing calls Instantly for a lead that no longer exists; enrolled_at, enrolment_month and instantly_campaign stay. NULL: the lead is still in Instantly, or the contact never had one.';
 COMMENT ON COLUMN us_outbound.contacts.copy_hash IS 'The Copy row''s content hash when the contact was rendered (CopyRow.content_hash), so two wordings under one copy_version are told apart (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';
+COMMENT ON COLUMN us_outbound.contacts.test_arm IS 'The arm of the running copy test (test_id) the contact was given at enrollment (build addition; Harry, 7 Oct 2026). One of: a, b. a is the test''s version_a and b its version_b: for an ab test the Copy row the contact got, for a variant test (enrol/variants.py) the arm''s change to one email (b is often the email as the Copy row has it). Set only when the arm was applied: an account where a variant''s change could not be made under both arms is in no test. A second contact has its account''s arm. NULL: in no test, or enrolled in an ab test before 8 Oct 2026 (its arm is then its copy_version).';

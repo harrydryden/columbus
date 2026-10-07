@@ -725,7 +725,8 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     or variant: Harry, 7 Oct 2026) runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns
     nothing, so it may run beside it, and its versions are the arms enrol records, not Copy rows. A variant's row is
     checked as settings_sync checks it (its texts against the copy rules; enrol/variants.py), and refused when it
-    breaks one."""
+    breaks one; the result says which sendable Copy rows the change can be made in (variants.coverage), and a
+    change that fits none of them is refused."""
     from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
     from us_outbound.settings.validate import parse_looks, validate_tab
 
@@ -746,11 +747,20 @@ def _test_start(ctx: Context, test_id: str) -> dict:
               and r.get("test_id", "").strip() != test_id and kind(r) in COPY_TEST_KINDS]
     if others and kind(row) in COPY_TEST_KINDS:
         raise Refused(f"only one copy test (ab or variant) runs at a time (SPEC 9); {', '.join(others)} is running")
+    copy_rows: dict[str, Any] = {}
     if kind(row) == VARIANT_TEST:
-        _, errors = validate_tab("Tests", [row])
+        from us_outbound.enrol import enrol, variants
+
+        checked, errors = validate_tab("Tests", [row])
         if errors:
             raise Refused("the Tests tab's row does not pass the checks settings_sync makes: "
                           + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
+        fits, not_ = variants.coverage(checked[0], enrol.sendable_copy(ctx.settings).values(), ctx.settings)
+        if not_ and not fits:
+            raise Refused("the change cannot be made in any sendable Copy row, so the test would have no accounts: "
+                          + "; ".join(f"{v}: {why}" for v, why in list(not_.items())[:4]))
+        copy_rows = {"change_fits": len(fits), "sendable": len(fits) + len(not_),
+                     "not_in_the_test": dict(list(not_.items())[:10])}
     if row.get("status", "").strip().lower() == "running":
         return {"test_id": test_id, "status": "running", "changed": False}
     read_date = row.get("read_date", "").strip()
@@ -777,7 +787,8 @@ def _test_start(ctx: Context, test_id: str) -> dict:
         if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
             raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
     return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
-            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live}
+            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live,
+            **({"copy_rows": copy_rows} if copy_rows else {})}
 
 
 def read_test(ctx: Context, test_id: str) -> dict:

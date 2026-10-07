@@ -53,7 +53,8 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
                  "tier_at_enrol", "data_record", "subject_arm",
                  "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
                  "config_version", "code_sha", "copy_hash",  # the cohort stamp (Harry, 7 Oct 2026)
-                 "lead_deleted_at"},  # the retention job's Instantly deletion (SPEC 13; ops/retention.py)
+                 "lead_deleted_at",  # the retention job's Instantly deletion (SPEC 13; ops/retention.py)
+                 "test_arm"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
     "suppression": {"expires_at"},
     "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }
@@ -126,6 +127,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("contacts", "email_source"): {"apollo", "clay"},
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
+    ("contacts", "test_arm"): {"a", "b"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)

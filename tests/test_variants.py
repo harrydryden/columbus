@@ -7,15 +7,38 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import json
+from collections import Counter
+from datetime import date
 
 import pytest
 
 from tests.test_cli import Harness, _approved, _tests_tab
+from tests.test_enrol import default_openers, instantly_posts, make  # noqa: F401  (default_openers: autouse)
 from tests.test_registry import SETTINGS
+from tests.test_render import (
+    BODIES,
+    EAP_OPENER,
+    FIRST_TEST,
+    GENERAL_OPENER,
+    HANNAH,
+    SUBJECTS,
+    account,
+    contact,
+    copy_row,
+    make_settings,
+    values_for,
+)
+from us_outbound.enrol import enrol, openers, queue, render, variants
 from us_outbound.settings.defaults import COLUMNS, default_tabs
+from us_outbound.settings.model import CopyStep
+from us_outbound.settings.model import Test as CopyTest  # aliased so pytest does not collect it
 from us_outbound.settings.validate import validate_all, validate_tab
 
 WARM = "I hope you're really well. Great to be connected."
+WARM_TEST = CopyTest("warm-intro", "A warm intro gets more replies", "warm intro", "no intro", 400, "running",
+                     start_date=date(2026, 10, 12), read_date=date(2027, 3, 29), decision_rule="reply rate",
+                     kind="variant", email=1, change="first_line", text_a=WARM)
 
 
 def variant_row(**kw) -> dict[str, str]:
@@ -165,3 +188,217 @@ def test_test_start_refuses_a_variant_beside_the_running_ab_test_and_not_beside_
     h3 = Harness(dataclasses.replace(SETTINGS, copy=_approved()),
                  sheet_tabs={"Tests": [variant_row(status="running", start_date="2026-10-20"), _tests_tab()]})
     assert h3.run("test", "start", "t1", "--live") == 2
+
+
+def test_test_start_says_which_copy_rows_the_change_fits_and_refuses_one_it_fits_none(capsys):
+    h = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [variant_row()]})
+    assert h.run("test", "start", "warm-intro") == 0
+    out = capsys.readouterr().out
+    result, _ = json.JSONDecoder().raw_decode(out[out.index('{\n  "dry_run"'):])
+    assert result["copy_rows"] == {"change_fits": 2, "sendable": 2, "not_in_the_test": {}}
+    absent = variant_row(change="replace", find="Words no email has.", text_a="Other words.")
+    h2 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [absent]})
+    assert h2.run("test", "start", "warm-intro", "--live") == 2
+    assert "cannot be made in any sendable Copy row" in capsys.readouterr().err
+
+
+# -- the arms ------------------------------------------------------------------------------------------------------------
+
+
+def test_the_arm_is_the_account_s_own_hash_about_half_and_half():
+    ids = [f"acct-{i}" for i in range(4000)]
+    arms = [variants.arm_for(WARM_TEST, i) for i in ids]
+    assert arms == [variants.arm_for(WARM_TEST, i) for i in ids]  # deterministic
+    assert arms == [queue.test_version(i, "warm-intro") for i in ids]  # SPEC 9's hash, as an ab test splits
+    assert 0.47 < arms.count("a") / len(ids) < 0.53
+    other = dataclasses.replace(WARM_TEST, test_id="another-test")
+    assert sum(variants.arm_for(other, i) != a for i, a in zip(ids, arms)) > 1800  # each test splits afresh
+
+
+def test_the_arm_is_independent_of_the_opener_holdout_and_the_subject_split():
+    """Each split hashes the account id with its own salt, so the designs are factorial: within each opener arm and
+    each subject arm, about half the accounts are in each variant arm."""
+    s = make_settings(email1_subject_share=0.5)
+    ids = [f"acct-{i}" for i in range(4000)]
+    by_holdout: dict[bool, Counter] = {True: Counter(), False: Counter()}
+    by_subject: dict[str, Counter] = {render.PERSONAL_SUBJECT: Counter(), render.COPY_SUBJECT: Counter()}
+    for i in ids:
+        arm = variants.arm_for(WARM_TEST, i)
+        by_holdout[openers.in_holdout(i, 0.3)][arm] += 1
+        by_subject[render.subject_arm(i, s)][arm] += 1
+    for counts in (*by_holdout.values(), *by_subject.values()):
+        assert 0.45 < counts["a"] / sum(counts.values()) < 0.55, counts
+
+
+# -- the change, rendered -------------------------------------------------------------------------------------------------
+
+
+def rendered(test, *, arm="a", settings=None, row=None, **kw):
+    s = settings or make_settings()
+    row = row or s.copy[0]
+    st = variants.apply(row.step(test.email), test.change, test.text(arm), test.find)
+    return render.render_sequence(row, values_for(settings=s, row=row, **kw), mailbox=HANNAH, settings=s,
+                                  written={test.email: st})
+
+
+def test_first_line_lands_after_the_greeting_and_before_the_opener_in_html_and_text():
+    one = rendered(WARM_TEST)[0]
+    assert one.ok, one.violations
+    assert one.html.startswith(f"<p>Hi Jane,</p><p>{WARM}</p><p>{EAP_OPENER}</p><p>In most agencies")
+    assert one.text.startswith(f"Hi Jane,\n\n{WARM}\n\n{EAP_OPENER}\n\nIn most agencies")
+    held_out = rendered(WARM_TEST, opener="")[0]  # the opener holdout: the line goes, the intro stays
+    assert held_out.text.startswith(f"Hi Jane,\n\n{WARM}\n\nIn most agencies")
+    assert rendered(WARM_TEST, arm="b")[0].text.startswith(f"Hi Jane,\n\n{EAP_OPENER}\n\n")  # no intro
+
+
+def test_last_line_lands_just_before_the_sign_off():
+    last = dataclasses.replace(WARM_TEST, email=3, change="last_line", text_a="Either way, I hope the week goes well.")
+    three = rendered(last)[2]
+    assert three.ok, three.violations
+    assert "</p><p>Either way, I hope the week goes well.</p><p>Best wishes,<br>Hannah</p>" in three.html
+    assert "\n\nEither way, I hope the week goes well.\n\nBest wishes,\nHannah" in three.text
+
+
+def test_replace_changes_the_exact_text_and_subject_changes_the_subject():
+    swap = dataclasses.replace(WARM_TEST, change="replace", find="the strain stays hidden until someone good leaves",
+                               text_a="the strain shows up late, as sick days or a resignation")
+    one = rendered(swap)[0]
+    assert one.ok and "the strain shows up late, as sick days or a resignation." in one.text
+    assert "stays hidden" not in one.html and "stays hidden" in rendered(swap, arm="b")[0].html
+    subject = dataclasses.replace(WARM_TEST, email=2, change="subject", text_a="Spill for {{company}}, in brief")
+    two = rendered(subject)[1]
+    assert two.ok and two.subject == "Spill for Acme Creative, in brief"
+    assert rendered(subject, arm="b")[1].subject == "How Spill works for agencies"
+
+
+def test_apply_says_when_the_change_cannot_be_made():
+    st = CopyStep(SUBJECTS[1], BODIES[1])
+    assert variants.apply(st, "replace", "x", "no such words") is None
+    assert variants.apply(st, "first_line", "", "") is st  # a blank text: the Copy row's email
+    assert variants.apply(CopyStep("s", "Hello,\n\nBody.\n\nBest wishes,\n{{sender_first_name}}"), "first_line",
+                          WARM) is None
+    assert variants.apply(CopyStep("s", "Hi {{first_name}},\n\nBody.\n\nThanks"), "last_line", WARM) is None
+
+
+# -- enrol ------------------------------------------------------------------------------------------------------------------
+
+
+def agencies(n: int, **kw) -> tuple[list[dict], list[dict]]:
+    """n agency accounts, every fourth in Control, each with one contact."""
+    accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}",
+                     **({"tier": "Control", "score": 5, "angle": "General"} if i % 4 == 0 else {}), **kw)
+             for i in range(n)]
+    cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(n)]
+    return accts, cons
+
+
+def test_every_account_gets_its_arm_control_included_and_email_1_carries_it():
+    accts, cons = agencies(12)
+    s = make_settings(live_sending=True, tests=(WARM_TEST,))
+    ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
+    out = enrol.run(ctx)
+    leads = {lead["email"]: lead for r in instantly_posts(t) for lead in r.json["leads"]}
+    seen = Counter()
+    for i in range(12):
+        con = ctx.store.get("contacts", contact_id=f"c-{i}")
+        arm = variants.arm_for(WARM_TEST, f"ag-{i}")
+        assert (con["test_id"], con["test_arm"], con["copy_version"]) == ("warm-intro", arm, "agencies-v1")
+        opener = GENERAL_OPENER if i % 4 == 0 else EAP_OPENER  # Control accounts are in the test too
+        body = leads[f"p{i}@ag{i}.com"]["custom_variables"]["s1_body"]
+        assert body.startswith(f"<p>Hi Jane,</p><p>{WARM}</p><p>{opener}</p>" if arm == "a"
+                               else f"<p>Hi Jane,</p><p>{opener}</p>")
+        assert con["copy_hash"] == s.copy[0].content_hash()  # the Copy row's wording, as before
+        seen[arm] += 1
+    assert set(seen) == {"a", "b"}
+    assert out["copy_test"] == {"test_id": "warm-intro", "kind": "variant",
+                                "arms": {"warm intro": seen["a"], "no intro": seen["b"]}, "not_in_test": {}}
+
+
+def test_an_ab_test_records_its_arm_too():
+    accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(6)]
+    cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(6)]
+    rows = make_settings().copy + (copy_row("agencies-v2", "Marketing & Creative Agencies"),)
+    ctx, _ = make(live=True, settings=make_settings(live_sending=True, tests=(FIRST_TEST,), copy=rows),
+                  accounts=accts, contacts=cons)
+    enrol.run(ctx)
+    for i in range(6):
+        con = ctx.store.get("contacts", contact_id=f"c-{i}")
+        arm = queue.test_version(f"ag-{i}", FIRST_TEST.test_id)
+        assert con["test_arm"] == arm and con["copy_version"] == FIRST_TEST.arm_name(arm)
+
+
+def test_an_account_whose_copy_row_lacks_find_is_not_in_the_test_and_its_email_is_unchanged():
+    swap = dataclasses.replace(WARM_TEST, change="replace", find="the strain stays hidden",
+                               text_a="the strain shows up late")
+    general = copy_row("general-v1", "General", bodies={**BODIES, 1: BODIES[1].replace("stays hidden", "hides")})
+    s = make_settings(live_sending=True, tests=(swap,), copy=(make_settings().copy[0], general))
+    ctx, t = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    brightfin = ctx.store.get("contacts", contact_id="con-2")  # Fintech: the General row
+    assert brightfin["copy_version"] == "general-v1" and brightfin["test_id"] is None and brightfin["test_arm"] is None
+    assert ctx.store.get("contacts", contact_id="con-1")["test_id"] == "warm-intro"
+    why = "its email 1 (general-v1) does not have the text the test replaces"
+    assert out["copy_test"]["not_in_test"] == {why: 1}
+    [lead] = [x for r in instantly_posts(t) for x in r.json["leads"] if x["email"] == "omar@brightfin.com"]
+    assert "the strain hides" in lead["custom_variables"]["s1_body"]
+
+
+def test_a_change_that_breaks_a_rule_for_one_contact_leaves_that_account_out_under_both_arms():
+    """A last line that brings email 1 to 118 words with a two-word company name: a five-word name takes it over
+    the 120-word limit, so that account is not in the test, whichever arm it hashes to (and it is still sent)."""
+    words = "people here can talk to someone the same day".split()
+    filler = " ".join((words * 6)[:44])
+    long_line = dataclasses.replace(WARM_TEST, change="last_line", text_a=f"At {{{{company}}}}, {filler}.")
+    accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com",
+                     clean_name="Agency Two" if i % 2 else "North Shore Creative Group Partners") for i in range(8)]
+    cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(8)]
+    s = make_settings(live_sending=True, tests=(long_line,))
+    ctx, _ = make(live=True, settings=s, accounts=accts, contacts=cons)
+    out = enrol.run(ctx)
+    for i in range(8):
+        con = ctx.store.get("contacts", contact_id=f"c-{i}")
+        assert con["instantly_lead_id"]  # sent either way
+        assert con["test_id"] == ("warm-intro" if i % 2 else None)
+    [(why, n)] = out["copy_test"]["not_in_test"].items()
+    assert n == 4 and why.startswith("warm intro would break a copy rule in its email 1: email 1 has 121 words")
+
+
+def test_a_subject_test_on_email_1_leaves_out_the_personal_subject_arm():
+    subject = dataclasses.replace(WARM_TEST, change="subject", text_a="A note for the {{company}} team")
+    s = make_settings(tests=(subject,), email1_subject_share=1.0)  # every account has the personal subject
+    ctx, _ = make(settings=s)
+    cand = enrol.Candidate(account(), contact())
+    p = enrol.prepare(ctx, cand, Counter({"Hannah Spalding": 5}), Counter(), enrol.sendable_copy(s))
+    assert p.subject_arm == "personal" and p.test_id == "" and p.test_arm == ""
+    assert "personal subject" in p.test_note
+
+
+def test_before_its_start_date_and_once_an_arm_is_full_no_account_is_added():
+    later = dataclasses.replace(WARM_TEST, start_date=date(2026, 11, 2))
+    s = make_settings(tests=(later,))
+    ctx, _ = make(settings=s)
+    free, rows = Counter({"Hannah Spalding": 5}), enrol.sendable_copy(s)
+    p = enrol.prepare(ctx, enrol.Candidate(account(), contact()), free, Counter(), rows)
+    assert (p.test_id, p.test_arm, p.test_note, p.written) == ("", "", "", {})
+    s = make_settings(tests=(dataclasses.replace(WARM_TEST, accounts_per_version=3),))
+    ctx, _ = make(settings=s)
+    arm = variants.arm_for(WARM_TEST, "acc-1")
+    p = enrol.prepare(ctx, enrol.Candidate(account(), contact()), free, Counter({arm: 3}), rows)
+    assert p.test_id == "" and p.test_note == f"{WARM_TEST.arm_name(arm)} has its 3 accounts"
+
+
+def test_a_second_contact_gets_its_account_s_arm_and_is_not_a_new_account():
+    s = make_settings(tests=(WARM_TEST,), copy=make_settings().copy + (copy_row("agencies-ops-v1",
+                      "Marketing & Creative Agencies", role="Operations"),))
+    ctx, _ = make(settings=s)
+    free, rows = Counter({"Hannah Spalding": 5}), enrol.sendable_copy(s)
+    arm = variants.arm_for(WARM_TEST, "acc-1")
+    ops = contact(contact_id="con-9", role="Operations", first_name="Lee")
+    first = {"contact_id": "con-1", "copy_version": "agencies-v1", "test_id": "warm-intro"}
+    p = enrol.prepare(ctx, enrol.Candidate(account(sender="Hannah Spalding"), ops, 2, first), free,
+                      Counter({"a": 400, "b": 400}), rows)  # the arms are full: a second contact still follows
+    assert (p.test_id, p.test_arm, p.copy_version) == ("warm-intro", arm, "agencies-ops-v1")
+    assert (WARM in p.rendered[0].text) == (arm == "a")
+    before = dict(first, test_id="")  # the first contact was enrolled before the test: the account is not in it
+    p = enrol.prepare(ctx, enrol.Candidate(account(sender="Hannah Spalding"), ops, 2, before), free, Counter(), rows)
+    assert (p.test_id, p.test_arm, p.test_note) == ("", "", "") and WARM not in p.rendered[0].text
