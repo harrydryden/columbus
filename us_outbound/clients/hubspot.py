@@ -50,9 +50,10 @@ CONTACT_PROPS = (
     "us_outbound_reply_class",
 )
 DEAL_PROPS = ("dealname", "pipeline", "dealstage", "hubspot_owner_id", "hs_is_closed", "closedate")
-# Meetings (hubspot_readback, SPEC 9, 11). PHASE0-CONFIRM: a meeting booked through Harry's meetings
-# link (the emails' link, and the website's booking page, which embeds it) has hs_meeting_source
-# MEETINGS_PUBLIC, and hs_meeting_outcome becomes COMPLETED once it is held.
+# Meetings (hubspot_readback, SPEC 9, 11). A meeting booked through Harry's meetings link (the emails'
+# link, and the website's booking page, which embeds it) has hs_meeting_source MEETINGS_PUBLIC, and
+# hs_meeting_outcome becomes COMPLETED once it is held: confirmed 7 Oct 2026 (his "Spill walkthrough"
+# bookings are MEETINGS_PUBLIC, the portal has no MEETINGS_EMBEDDED, and COMPLETED is an outcome).
 MEETING_PROPS = (
     "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_outcome", "hs_meeting_source", "hubspot_owner_id",
     "hs_createdate", "hs_lastmodifieddate",
@@ -168,7 +169,8 @@ class HubSpot(HttpClient):
         """Up to `limit` contacts on this email domain who opted out of all email or hard-bounced.
 
         One search page: the caller only needs to know whether there is one (SPEC 9 hard exclusions).
-        PHASE0-CONFIRM: hs_email_domain, HubSpot's "Email domain" contact property, is searchable with EQ.
+        hs_email_domain, HubSpot's "Email domain" contact property, is searchable with EQ: confirmed live
+        2 Oct 2026 (verify_accounts excluded the accounts whose domain had an opted-out contact).
         """
         root = domain.strip().lower().removeprefix("www.")
         on_domain = {"propertyName": "hs_email_domain", "operator": "EQ", "value": root}

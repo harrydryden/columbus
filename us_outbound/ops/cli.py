@@ -52,7 +52,7 @@ What Harry uses (`us-outbound --help` lists these, in this order):
     [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
                                       only says what it would send. With --live it exits 1 unless the
                                       fallback can go on
-  phase0 check [--seed ADDRESS]       the live checks of the PHASE0-CONFIRM items (ops/phase0.py,
+  phase0 check [--seed ADDRESS]       the live checks of the API details still to confirm (ops/phase0.py,
     [--apollo-credits] [--live]       docs/phase0-confirm.md): read-only probes, and with --seed writes on
                                       that seed lead of ours alone; without --live it only says what it calls
   erase --email <address>             an erasure request (SPEC 6)
@@ -1138,7 +1138,7 @@ def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("--in-flight goes with ensure --fix")
     if args.action == "show":
         # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
-        # Instantly kept of the settings and step templates it was given (PHASE0-CONFIRM items).
+        # Instantly kept of the settings and step templates it was given (docs/phase0-confirm.md).
         _only_reads(args)
         ctx = factory("campaigns_show", False)
         for owner in ctx.settings.owners():
@@ -1434,7 +1434,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
-    """`phase0 check`: the PHASE0-CONFIRM items a live read, or a write on Harry's own seed lead, settles
+    """`phase0 check`: the API details to confirm that a live read, or a write on Harry's own seed lead, settles
     (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
     from us_outbound.ops import phase0
 
@@ -1607,7 +1607,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
                          "s1_subject, the default)")
 
-    p0 = command("phase0", "the live checks of the PHASE0-CONFIRM items: read-only, or Harry's own seed lead",
+    p0 = command("phase0", "the live checks of the API details still to confirm: read-only, or your own seed lead",
                  cmd_phase0, takes_live=True)
     p0.add_argument("action", choices=["check"])
     p0.add_argument("--seed", action="append", metavar="ADDRESS",

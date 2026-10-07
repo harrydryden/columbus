@@ -47,8 +47,8 @@ within HORIZON_DAYS (a second page of leaders, past 100 rows, is one more). A ru
 and stops starting accounts after MAX_ACCOUNTS_PER_RUN accounts, MAX_REQUESTS_PER_RUN requests or RUN_SECONDS, so its
 facts are in before verify_accounts' rescore. A 429 is resent by the transport after Retry-After (clients/http.py); one
 that persists stops the run, and the rest wait for the next. PHASE0-CONFIRM: Apollo's rate limits for People API
-Search on Spill's plan (per minute, hour and day), and that REST honours person_days_in_current_title_range as the MCP
-tool does.
+Search on Spill's plan (per minute, hour and day; `phase0 check`, APO-RATE-LIMITS); on 6 and 7 Oct 2026 a run's 301
+requests in 9 minutes met none. REST honours person_days_in_current_title_range as the MCP tool does (below).
 
 Dry-run: the searches are reads, which the guard allows in dry-run, and the facts are database writes, which dry-run
 makes too (SPEC 0.3), as the other sources do. Nothing is written outside the database in any mode.
@@ -278,8 +278,8 @@ def newest_in_title(ctx: Context, r: _Run, account: Mapping[str, Any], titles: S
     today = ctx.today_uk()
 
     def within(days: int) -> list[tuple[int | None, Mapping[str, Any]]]:
-        # PHASE0-CONFIRM: REST honours person_days_in_current_title_range as the MCP tool does (on 5 Oct 2026 it
-        # split one company's People leaders into none at most 400 days and both at least 400).
+        # REST honours person_days_in_current_title_range as the MCP tool does: confirmed live 6 Oct 2026, when 3 of
+        # 18 accounts' leaders read as new in title (an ignored filter would make every leader new).
         rows = search_rows(ctx, r, {**base, "person_days_in_current_title_range": {"max": days}})
         return pick.people_leaders(account, rows, ctx.settings, today)
 
@@ -302,8 +302,8 @@ def search_account(ctx: Context, r: _Run, account: Mapping[str, Any]) -> Found:
     titles = leader_titles(ctx.settings, account)
     rows = search_rows(ctx, r, pick.search_filters(account, titles, verified_only=False))
     leaders = pick.people_leaders(account, rows, ctx.settings, ctx.today_uk())
-    # PHASE0-CONFIRM over REST: an organization-only search answers {"total_entries": 812, "people": [one row]}
-    # (Apollo's MCP tool, 5 Oct 2026), the people Apollo holds there, wherever they are based.
+    # An organization-only search answers {"total_entries": 812, "people": [one row]}, the people Apollo holds
+    # there, wherever they are based: confirmed live over REST on 6 Oct 2026 (a count for each of 134 accounts).
     total = total_entries(r.search(ctx, pick.organization_filter(account), per_page=1))
     found = Found(leaders, total)
     if leaders:

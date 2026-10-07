@@ -4,7 +4,7 @@ Before any prospect is emailed, one email goes the real way to an inbox of ours:
 campaign, through its step template with Instantly's unsubscribe link, with a Copy row rendered as
 enrol renders it. Harry reads it (the body reads as formatted text, the links work, the List-Unsubscribe
 header is there), clicks the unsubscribe link, and `seed check` reads the lead back as sync_outcomes does:
-status -2 (instantly.LEAD_UNSUBSCRIBED) is the pass, and settles the PHASE0-CONFIRM in clients/instantly.py.
+status -2 (instantly.LEAD_UNSUBSCRIBED) is the pass. It passed on 6 Oct 2026 (confirmed live in clients/instantly.py).
 
   us-outbound seed send ADDRESS --owner NAME [--industry I] [--role R] [--subject personal|copy] [--live]
       adds ADDRESS as one lead to the owner's campaign, with the four emails of the Copy row for that

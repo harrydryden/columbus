@@ -791,74 +791,74 @@ PROBES: tuple[Probe, ...] = (
           if_differs="LEAD_UNSUBSCRIBED in clients/instantly.py, and sync_outcomes' opt-out read"),
     Probe("INST-REPLY-CAMPAIGN", "a reply carries its campaign's id (Instantly.reply)", f"GET {INSTANTLY}/emails "
           "(email_type received, each registry mailbox, 14 days)", reply_campaign, gate=True,
-          if_confirmed="clients/instantly.py reply(): drop the PHASE0-CONFIRM on campaign_id (reply_to_uuid stays Watch)",
+          if_confirmed="clients/instantly.py reply(): drop the marker on campaign_id (reply_to_uuid stays Watch)",
           if_differs="clients/instantly.py reply(): find the campaign from the lead instead of the email's campaign_id"),
     Probe("INST-AUTO-REPLY", "received emails carry is_auto_reply", f"GET {INSTANTLY}/emails (email_type received)",
           auto_reply_field, gate=True,
-          if_confirmed="replies/outcomes.py is_auto_reply: drop the PHASE0-CONFIRM",
+          if_confirmed="replies/outcomes.py is_auto_reply: drop the marker",
           if_differs="replies/outcomes.py is_auto_reply: read the flag Instantly does give (poll_replies classifies "
                      "away messages meanwhile)"),
     Probe("HS-DEALS-ASSOC", "the deal search takes associations.company", "POST https://api.hubapi.com/crm/v3/objects/"
           "deals/search (one company's deals, then all deals, limit 1)", deals_by_company, gate=True,
-          if_confirmed="clients/hubspot.py open_deals_for_company and deals_for_company: drop the PHASE0-CONFIRMs",
+          if_confirmed="clients/hubspot.py open_deals_for_company and deals_for_company: drop the markers",
           if_differs="clients/hubspot.py: read a company's deals through its associations (get_record) instead"),
     Probe("INST-EMAILS-UNTIL", "GET /emails applies max_timestamp_created", f"GET {INSTANTLY}/emails (email_type sent, "
           "one mailbox, twice: without and with max_timestamp_created)", emails_until,
-          if_confirmed="clients/instantly.py list_emails: drop the PHASE0-CONFIRM on until=",
+          if_confirmed="clients/instantly.py list_emails: drop the marker on until=",
           if_differs="clients/instantly.py list_emails: until= has no effect, so sync_outcomes' catch-up reads up to now "
                      "(safe: events are idempotent); say so in the docstring"),
     Probe("INST-EMAIL-FIELDS", "sent emails carry timestamp_email and ue_type 1", f"GET {INSTANTLY}/emails "
           "(email_type sent)", email_fields,
-          if_confirmed="replies/outcomes.py email_time and the ue_type codes: drop the PHASE0-CONFIRMs",
+          if_confirmed="replies/outcomes.py email_time and the ue_type codes: drop the markers",
           if_differs="replies/outcomes.py UE_CAMPAIGN / email_time: take the values the line shows"),
     Probe("INST-FROM-NAME", "Instantly sends under the account's first and last name", f"GET {INSTANTLY}/emails "
           "(email_type sent; from_address_json)", from_name,
           if_confirmed="clients/instantly.py set_sender_name, registry/mailboxes.py and replies/poll.py _sender_name: "
-                       "drop the From-name and from_address_json PHASE0-CONFIRMs (the PATCH stays Watch)",
+                       "drop the From-name and from_address_json markers (the PATCH stays Watch)",
           if_differs="set the name in Instantly by hand, then `mailbox check`; the build looks at what makes the From name"),
     Probe("HS-ASSOC-IDS", "the association type ids are HubSpot-defined", "GET https://api.hubapi.com/crm/v4/associations/"
           "{from}/{to}/labels (8 pairs)", association_ids,
-          if_confirmed="clients/hubspot.py ASSOCIATION_TYPE_IDS: drop the PHASE0-CONFIRM",
+          if_confirmed="clients/hubspot.py ASSOCIATION_TYPE_IDS: drop the marker",
           if_differs="clients/hubspot.py ASSOCIATION_TYPE_IDS: use the ids the line names"),
     Probe("SLK-SCOPES", "the installed Slack app has reactions:read and im:write", "GET https://slack.com/api/auth.test "
           "(its X-OAuth-Scopes header)", slack_scopes,
-          if_confirmed="clients/slack.py reactions() and dm(): drop the scope PHASE0-CONFIRMs (the Messages tab stays Watch)",
+          if_confirmed="clients/slack.py reactions() and dm(): drop the scope markers (the Messages tab stays Watch)",
           if_differs="reinstall the Slack app from deploy/slack-app-manifest.yaml"),
     Probe("APO-USAGE", "credit usage: lead_credit and inbound_website_visitor_credit", "POST https://api.apollo.io/api/v1/"
           "usage_stats/credit_usage_stats (0 credits)", apollo_usage,
-          if_confirmed="clients/apollo.py credit_stats: drop the PHASE0-CONFIRM on inbound_website_visitor_credit",
+          if_confirmed="clients/apollo.py credit_stats: drop the marker on inbound_website_visitor_credit",
           if_differs="clients/apollo.py credits_left / VISITOR_CREDIT: the credit type the line names"),
     Probe("APO-RATE-LIMITS", "the plan's People API Search rate limits", "POST https://api.apollo.io/api/v1/mixed_people/"
           "api_search (per_page 1, 0 credits; its rate-limit headers)", apollo_rate_limits,
-          if_confirmed="sources/apollo_people.py docstring: write the limits in, drop the PHASE0-CONFIRM",
+          if_confirmed="sources/apollo_people.py docstring: write the limits in, drop the marker",
           if_differs="sources/apollo_people.py PACE_SECONDS: slow it to the per-minute limit"),
     Probe("APO-ENRICH-NOTFOUND", "organizations/enrich for a company Apollo does not know", "GET https://api.apollo.io/"
           f"api/v1/organizations/enrich?domain={UNKNOWN_DOMAIN} (0 credits: none found)", enrich_not_found,
-          if_confirmed="sources/apollo_enrich.py (404) and clients/apollo.py enriched_in: drop the PHASE0-CONFIRMs",
+          if_confirmed="sources/apollo_enrich.py (404) and clients/apollo.py enriched_in: drop the markers",
           if_differs="sources/apollo_enrich.py single_enrich: read the status the line shows as not found"),
     Probe("APO-BULK-FIELDS", "the bulk enrich answer's keys", "POST https://api.apollo.io/api/v1/organizations/bulk_enrich "
           f"({UNKNOWN_DOMAIN} alone, 0 credits)", bulk_fields,
-          if_confirmed="sources/apollo_enrich.py bulk_enrich docstring: drop the PHASE0-CONFIRM",
+          if_confirmed="sources/apollo_enrich.py bulk_enrich docstring: drop the marker",
           if_differs="clients/apollo.py enriched_in: read the key the line shows"),
     Probe("APO-ROW-NAICS", "organization search rows carry naics_codes", "the database: apollo_org naics facts of accounts "
           "found by search and never enriched", row_naics, kind=STORED,
-          if_confirmed="sources/apollo_universe.py org_naics: drop the PHASE0-CONFIRM",
+          if_confirmed="sources/apollo_universe.py org_naics: drop the marker",
           if_differs="sources/apollo_universe.py org_naics: say rows carry none (labels then come from keywords)"),
     Probe("APO-ROW-DESCRIPTION", "organization search rows carry short_description", "the database: apollo_org "
           "description facts of accounts found by search and never enriched", row_description, kind=STORED,
-          if_confirmed="sources/apollo_universe.py org_description: drop the PHASE0-CONFIRM",
+          if_confirmed="sources/apollo_universe.py org_description: drop the marker",
           if_differs="sources/apollo_universe.py org_description: rows carry none; opener_focus waits for enrich"),
     Probe("APO-GROWTH-FRACTION", "headcount_growth_12m is a fraction", "the database: stored headcount_growth_12m facts",
           growth_fraction, kind=STORED,
-          if_confirmed="sources/apollo_universe.py and sources/lookalikes.py growth_band_of: drop the PHASE0-CONFIRMs",
+          if_confirmed="sources/apollo_universe.py and sources/lookalikes.py growth_band_of: drop the markers",
           if_differs="sources/apollo_universe.py org_facts: divide the growth by 100 when it is stored"),
     Probe("APO-FUNDING-AMOUNT", "enrich's funding round date, stage and text amount", "the database: stored funding facts",
           funding_amount, kind=STORED,
-          if_confirmed="sources/apollo_universe.py funding_usd and org_funding: drop the PHASE0-CONFIRMs",
+          if_confirmed="sources/apollo_universe.py funding_usd and org_funding: drop the markers",
           if_differs="sources/apollo_universe.py funding_usd: read the amount as enrich gives it"),
     Probe("APO-POSTINGS-KEY", "job postings come under organization_job_postings", "the database: stored apollo_jobs facts",
           postings_key, kind=STORED,
-          if_confirmed="clients/apollo.py postings_in: drop the PHASE0-CONFIRM",
+          if_confirmed="clients/apollo.py postings_in: drop the marker",
           if_differs="clients/apollo.py postings_in: the list's key"),
     Probe("JOB-BOARDS", "the job boards' feed shapes", "the database: stored job_posts posting_text facts by feed",
           job_boards, kind=STORED,
@@ -867,22 +867,22 @@ PROBES: tuple[Probe, ...] = (
     Probe("APO-SEARCH-ROW", "organization_locations \"<state>, US\", and the fields rows carry",
           "POST https://api.apollo.io/api/v1/mixed_companies/search (one HQ state, per_page 10: 1 credit)", search_row,
           kind=CREDITS, credits=1,
-          if_confirmed="sources/apollo_universe.py location(): drop the PHASE0-CONFIRM",
+          if_confirmed="sources/apollo_universe.py location(): drop the marker",
           if_differs="sources/apollo_universe.py location(): the form the rows show"),
     Probe("APO-LOOKALIKE", "the lookalike search's body key and US-only locations",
           "POST https://api.apollo.io/api/v1/mixed_companies/search (lookalike_organization_ids, 5 seeds, per_page 10: "
           "1 credit)", lookalike_page, kind=CREDITS, credits=1,
           if_confirmed="clients/apollo.py search_lookalike_organizations and sources/lookalike_leads.py: drop the "
-                       "PHASE0-CONFIRMs on the key and the locations",
+                       "markers on the key and the locations",
           if_differs="sources/lookalike_leads.py: filter the rows the line names after the search"),
     Probe("APO-ENRICH-ONE", "a single enrich answers {\"organization\": ...}", "GET https://api.apollo.io/api/v1/"
           "organizations/enrich?domain=spill.chat (1 credit)", enrich_one, kind=CREDITS, credits=1,
-          if_confirmed="clients/apollo.py enriched_in: drop the PHASE0-CONFIRM on the single answer",
+          if_confirmed="clients/apollo.py enriched_in: drop the marker on the single answer",
           if_differs="clients/apollo.py enriched_in: the key the line shows"),
     Probe("APO-CREDIT-COST", "a paid answer costs 1 lead credit", "POST https://api.apollo.io/api/v1/usage_stats/"
           "credit_usage_stats again after the paid probes (0 credits)", credit_cost, kind=CREDITS,
           if_confirmed="sources/apollo_enrich.py and clients/apollo.py search_lookalike_organizations: drop the cost "
-                       "PHASE0-CONFIRMs",
+                       "markers",
           if_differs="budget.py's per-call credits: the numbers the line shows"),
     Probe("CLAY-CHECK", "Clay's Routines API, Work Email's inputs, outputs and cost", "nothing here: `us-outbound clay "
           "check-email` makes the one lookup", clay_pointer, kind=POINTER),
@@ -899,12 +899,12 @@ SEED_PROBES: tuple[Probe, ...] = (
           if_differs="keep LEAD_PAUSE_CONFIRMED = False; the build looks for another way to pause a lead"),
     Probe("SEED-INTEREST", "update-interest-status takes 2 (Meeting booked)", f"POST {INSTANTLY}/leads/update-interest-"
           "status (2, then back), GET the lead (the seed lead, if it has finished)", seed_interest, kind=SEED, gate=True,
-          if_confirmed="clients/instantly.py INTEREST_MEETING_BOOKED and stop_lead: drop the PHASE0-CONFIRM on the "
+          if_confirmed="clients/instantly.py INTEREST_MEETING_BOOKED and stop_lead: drop the marker on the "
                        "endpoint and value (\"no further steps\" stays Watch)",
           if_differs="clients/instantly.py stop_lead: use delete_lead, the stop that is certain"),
     Probe("SEED-FORWARD", "POST /emails/forward works on our plan", f"POST {INSTANTLY}/emails/forward (the seed lead's "
           "email 1, to escalation_email only)", seed_forward, kind=SEED, gate=True,
-          if_confirmed="clients/instantly.py forward and replies/desk.py: drop the PHASE0-CONFIRMs",
+          if_confirmed="clients/instantly.py forward and replies/desk.py: drop the markers",
           if_differs="replies/desk.py: escalate by HubSpot task and Slack DM only (it falls back to them now)"),
 )
 

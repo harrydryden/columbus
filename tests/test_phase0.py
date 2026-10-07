@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +22,7 @@ C_HANNAH = "US Outbound – Hannah Spalding"
 HANNAH = "hannah@meetspill.org"
 SEED = "harry+seed1@spill.chat"
 SEED2 = "harry+seed2@spill.chat"
+DOC = Path(__file__).resolve().parents[1] / "docs" / "phase0-confirm.md"
 
 
 def at(day: int, hour: int = 15) -> str:
@@ -136,6 +138,12 @@ def test_dry_run_says_what_each_probe_would_call_and_calls_nothing(w, capsys):
     assert w.transport.requests == []  # not even a read
     [beat] = w.beats(phase0.JOB)
     assert beat["status"] == "ok" and beat["dry_run"] is True
+
+
+def test_every_probe_id_is_in_the_inventory():
+    text = DOC.read_text()
+    for p in phase0.PROBES + phase0.SEED_PROBES:
+        assert f"`{p.id}`" in text, p.id
 
 
 # -- read-only probes: both outcomes ------------------------------------------------------------------------------

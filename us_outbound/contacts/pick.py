@@ -123,8 +123,9 @@ CLAY_LOOKUPS_PER_RUN = 25  # each lookup polls Clay until it finishes, inside th
 CLAY_MAX_ERRORS = 3  # failed lookups before the run stops asking Clay
 CLAY_LEDGER_NOTE = "email waterfall (Clay)"
 
-# PHASE0-CONFIRM: api_search reads "United States" in person_locations as the whole country, and
-# honours contact_email_status (both as the Apollo MCP tool documents them). Per-state strings,
+# api_search reads "United States" in person_locations as the whole country, and honours
+# contact_email_status: confirmed live 2 Oct 2026 (CA and WA people came back, and every reveal was
+# verified). Per-state strings,
 # which could leave out CA and WA in the search itself, are untested, so CA and WA are left out
 # after the search (when it gives a state) and after the reveal (always).
 US_LOCATION = "United States"
@@ -260,8 +261,8 @@ def search_filters(account: Mapping[str, Any], titles: Sequence[str], *, verifie
 def search(ctx: Context, account: Mapping[str, Any], titles: Sequence[str]) -> list[dict]:
     """People at the account who might be contacted (0 credits), each once, up to SEARCH_PAGES pages.
 
-    PHASE0-CONFIRM: api_search returns its rows under "people", each with the person "id"
-    bulk_match takes, their title, and (when given) state, country and employment_history.
+    api_search returns its rows under "people", each with the person "id" bulk_match takes, their
+    title, and (when given) state, country and employment_history: confirmed live 2 Oct 2026.
     """
     people: list[dict] = []
     seen: set[str] = set()

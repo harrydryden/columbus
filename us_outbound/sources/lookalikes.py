@@ -147,9 +147,9 @@ GROWTH_PAGES = 3  # pages read for one band and chunk; more means the domain fil
 GROWTH_REFRESH_DAYS = 90  # an account's band is searched again after this
 GROWTH_FACT_DAYS = 180  # how long a band (or a 12-month growth figure) counts for the fit
 # Apollo credits a run may spend: at most 4 per 100 domains (a paid page per band), so up to 1,500 customer domains
-# at the worst case, and the rest for queue accounts. PHASE0-CONFIRM: how many customer domains HubSpot has; with
-# more than 1,500 the customers' growth is never searched at this cap, and each run's summary says so
-# (growth.customers.kept).
+# at the worst case, and the rest for queue accounts. Confirmed live 5 Oct 2026: HubSpot has 1,161 customer domains
+# (588 active customers, 582 churned), under 1,500. With more than 1,500 the customers' growth is never searched at
+# this cap, and each run's summary says so (growth.customers.kept).
 LOOKALIKE_GROWTH_CREDITS = 60
 GROWTH_MAX_ERRORS = 5  # Apollo errors before the growth searches stop
 # A guard until the filter is confirmed (PHASE0-CONFIRM above): if the first band searched (30% or more a year)

@@ -68,7 +68,7 @@ BANNED: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 # -- EAPs: never disparage theirs, never in our name ------------------------------------
-# PHASE0-CONFIRM: both phrase lists are a first cut for Harry to review.
+# Both phrase lists are a first cut for Harry to review (a rule of ours, not an API detail: COPY-PHRASES).
 
 _EAP = r"(?:EAPs?|employee assistance programs?)"
 DISPARAGING: tuple[re.Pattern[str], ...] = tuple(
@@ -163,7 +163,7 @@ BRITISH: tuple[tuple[re.Pattern[str], Callable[[str], str]], ...] = (
 )
 
 # -- statistics -----------------------------------------------------------------------------
-# PHASE0-CONFIRM: what counts as a statistic beyond percentages is a first cut for Harry.
+# What counts as a statistic beyond percentages is a first cut for Harry (not an API detail: COPY-PHRASES).
 
 _PERCENT = _rx(r"(?<![\w.])(\d+(?:[.,]\d+)?)\s?(?:%|percent\b|per\s+cent\b)")
 # The one allowed statistic, as a claim: "30% of employees use Spill", "30% utilization".
