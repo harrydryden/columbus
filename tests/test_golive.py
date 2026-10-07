@@ -311,3 +311,23 @@ def test_hubspot_ids_warn_until_they_are_pasted(monkeypatch, capsys):
     cli.main(["golive"], context_factory=f)
     assert lines_of(capsys.readouterr().out)["HubSpot ids"].startswith(
         "WARN  HubSpot ids: hubspot_deal_stage_id blank: a positive reply creates no HubSpot deal")
+
+
+def test_drift_held_while_leads_are_in_flight_warns_rather_than_fails(monkeypatch, capsys):
+    """Harry, 7 Oct 2026: the steps of a campaign with leads in flight are not rewritten under them, so a code change
+    to the step template is held (registry/mailboxes.IN_FLIGHT_KEYS): consistent for those leads, so a WARN."""
+    f = ready_world(monkeypatch)
+    hannah = f.instantly.by_name("US Outbound – Hannah Spalding")
+    variant = hannah["sequences"][0]["steps"][0]["variants"][0]
+    variant["body"] = variant["body"].replace("Not relevant?", "To stop hearing from us,")
+    f.ctx.store.update("contacts", {"contact_id": "con-0"}, {
+        "instantly_campaign": "US Outbound – Hannah Spalding", "instantly_lead_id": "L0", "enrolled_at": NOW - timedelta(days=2)})
+    f.ctx.store.update("accounts", {"account_id": "acc-0"}, {"status": "enrolled", "sender": "Hannah Spalding"})
+    before = len(f.ctx.guard.writes())
+    assert cli.main(["golive"], context_factory=f) == 0
+    out = capsys.readouterr().out
+    assert lines_of(out)["Campaigns"] == (
+        "WARN  Campaigns: 2 exist and match; 1 with drift held while leads are in flight: `us-outbound campaigns ensure "
+        "--fix --in-flight --live` applies it to them, or it waits until `us-outbound cohorts in-flight` shows 0")
+    assert "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight." in out
+    assert len(f.ctx.guard.writes()) == before  # read-only still

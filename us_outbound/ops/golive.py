@@ -262,8 +262,13 @@ def check_campaigns(ctx: Context) -> Check:
     idle = [n for n in names if n not in no_mailbox and n in raw and raw[n] not in TAKES_LEADS]
     done = {n for n in names if raw.get(n) == CAMPAIGN_COMPLETED}
     active = sorted(n for n, v in raw.items() if v == CAMPAIGN_ACTIVE)
+    # Drift held while leads are in flight (registry/mailboxes.IN_FLIGHT_KEYS; Harry, 7 Oct 2026) is a WARN: the
+    # campaign is consistent for the leads in it, and new leads are rendered under the same constants.
+    held = out.get("held") or {}
+    drifted = {n: d for n, d in out["drift"].items() if set(d) - set((held.get(n) or {}).get("keys") or ())}
     detail = [f"{name}: {', '.join(f'{k} {v[1]!r}, expected {v[0]!r}' for k, v in sorted(d.items()))}"
               for name, d in out["drift"].items()]
+    detail += [reg.held_words(name, h) for name, h in held.items()]
     detail += [f"{name}: missing" for name in missing]
     detail += [f"{name}: waits for a warm mailbox (created by mailbox_health once one is Active)" for name in waiting]
     detail += [f"{name}: matches ({status_of.get(name, '?')})"
@@ -272,15 +277,15 @@ def check_campaigns(ctx: Context) -> Check:
                for name in out["ok"]]
     detail += [f"{name}: not an owner in the registry (left alone)" for name in out.get("unknown") or ()]
     fails, warns = [], []
-    if out["drift"] or missing:
-        fix = "`us-outbound campaigns ensure --fix --live`" if out["drift"] else "`us-outbound campaigns ensure --live`"
+    if drifted or missing:
+        fix = "`us-outbound campaigns ensure --fix --live`" if drifted else "`us-outbound campaigns ensure --live`"
         what = []
-        if out["drift"]:
-            what.append(f"{len(out['drift'])} drifted")
+        if drifted:
+            what.append(f"{len(drifted)} drifted")
         if missing:
             what.append(f"{len(missing)} missing")
         fails.append(f"{' and '.join(what)}; run {fix}, then `us-outbound start --live` to send")
-    elif not out["ok"]:
+    elif not out["ok"] and not held:
         fails.append("no campaign yet: every owner waits for a warm mailbox")
     if live and idle:
         whose = "its owner" if len(idle) == 1 else "their owners"
@@ -293,6 +298,9 @@ def check_campaigns(ctx: Context) -> Check:
         warns.append(f"{len(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a warm mailbox")
     if out.get("unknown"):
         warns.append("unknown US Outbound campaigns exist")
+    if held:
+        warns.append(f"{len(held)} with drift held while leads are in flight: `us-outbound campaigns ensure --fix "
+                     "--in-flight --live` applies it to them, or it waits until `us-outbound cohorts in-flight` shows 0")
     if fails:
         return Check(FAIL, "Campaigns", "; ".join(fails + warns), detail)
     if warns:

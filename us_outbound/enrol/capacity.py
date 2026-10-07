@@ -392,6 +392,26 @@ def stopped_contacts(store: Store) -> set[str]:
     return out
 
 
+def in_flight(store: Store, settings: Settings, today: date) -> list[dict]:
+    """Contacts whose sequence is still running (Harry, 7 Oct 2026): enrolled, with a lead in a US Outbound campaign,
+    not stopped (stopped_contacts), and with a step due today or later (step_days from enrolled_at, US Eastern).
+
+    The campaign-drift hold reads it (registry/mailboxes.IN_FLIGHT_KEYS), as do `us-outbound cohorts in-flight` and
+    the stop of a lead whose address or domain was suppressed after it was enrolled (replies/account_stop.py).
+    """
+    stopped = stopped_contacts(store)
+    out: list[dict] = []
+    for c in store.select("contacts"):
+        start = _ts(c.get("enrolled_at"))
+        if (start is None or not c.get("instantly_lead_id") or not owner_of(str(c.get("instantly_campaign") or ""))
+                or str(c.get("contact_id")) in stopped):
+            continue
+        days = step_days(start.astimezone(ET).date(), settings)
+        if days and days[-1] >= today:
+            out.append(c)
+    return out
+
+
 def sending_capacity(store: Store, settings: Settings, today: date) -> dict[str, SenderCapacity]:
     """Today's new leads per sender, from the enrolled leads, the stop events, the ramp and what Instantly reported."""
     settings = holds.with_holds(store, settings)
