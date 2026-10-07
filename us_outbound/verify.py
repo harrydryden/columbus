@@ -59,8 +59,8 @@ General's) and whether it goes on:
   * otherwise the account goes on to HubSpot with the label the rule gives.
 The run also checks accounts already verified that have no fresh verdict, so the queue converges with no command
 run; their decisions are written the same way (a held one goes back to queued and to the hand-check). Both kinds
-share the run's share of calls (labels.MAX_LABEL_CALLS_PER_RUN, LABEL_SECONDS), Focus groups first, then queue
-order; the rest wait for the next run. A send-approval card rendered before its account's label was decided, which
+share the run's share of calls (labels.MAX_LABEL_CALLS_PER_RUN, LABEL_SECONDS): accounts with a send-approval card waiting first,
+then Focus groups, then queue order; the rest wait for the next run. A send-approval card rendered before its account's label was decided, which
 no longer fits it (another label, a less specific copy level, held or disqualified), is withdrawn by the next
 poll_approvals (enrol/approvals.withdraw_unfit: this job runs dry and edits no card in Slack), so the next enrol
 proposes the company again with the right copy. A verdict is a paid read that reaches no prospect, like an Apollo
@@ -385,12 +385,26 @@ def needs_verdict(run: LabelRun, account: Mapping[str, Any], events: Sequence[Ma
     return not run.checker.fresh(labels.latest_verdict(events)) and not labels.Material.of(account, events).empty
 
 
+def carded(ctx: Context) -> set[str]:
+    """The accounts with a send-approval card waiting in Slack: the next to be emailed, so checked first."""
+    from us_outbound.enrol import approvals
+
+    return {i.account_id for i in approvals.items(ctx.store, (approvals.OPEN,))}
+
+
+def check_order(accounts: Iterable[Mapping[str, Any]], settings: Settings,
+                first: Collection[str] = ()) -> list[Mapping[str, Any]]:
+    """The label check's order: accounts with a card waiting first, then Focus groups, then queue order."""
+    return sorted(accounts, key=lambda a: (str(a.get("account_id")) not in first,
+                                           focus.group_rank(settings.industry_group_of(a), settings),
+                                           queue.order_key(a, settings)))
+
+
 def ask_first(run: LabelRun, accounts: Iterable[Mapping[str, Any]], events: Mapping[str, Sequence[Mapping[str, Any]]],
-              settings: Settings) -> None:
-    """Ask about the run's candidates (new and verified alike) in Focus-group, then queue, order, within the run's
-    share; the Checker keeps each answer for the decisions after (labels.Checker.verdict)."""
-    order = sorted(accounts, key=lambda a: (focus.group_rank(settings.industry_group_of(a), settings),
-                                            queue.order_key(a, settings)))
+              settings: Settings, first: Collection[str] = ()) -> None:
+    """Ask about the run's candidates (new and verified alike) in check_order, within the run's share; the Checker
+    keeps each answer for the decisions after (labels.Checker.verdict)."""
+    order = check_order(accounts, settings, first)
     for a in order:
         if run.checker.unavailable or run.checker.budget.why_not():
             return
@@ -466,8 +480,8 @@ def run(ctx: Context) -> dict:
 
     recorded, cleared = doubt_history(ctx, [a["account_id"] for a in [*todo, *verified_open]])
     summary["clay_cross_check"] = clay_pre_pass(ctx, todo, facts, suppressed, partners, cleared)
-    # The label check (labels.py): the model is asked first about the candidates, new and verified alike, in
-    # Focus-group then queue order, so the run's share of calls goes where it matters most.
+    # The label check (labels.py): the model is asked first about the candidates, new and verified alike: those with
+    # a card waiting in Slack first, then Focus groups, then queue order, so the run's share goes where it matters.
     lab = LabelRun(labels.Checker(ctx))
 
     def cheap_ok(a: Mapping[str, Any]) -> bool:
@@ -479,7 +493,8 @@ def run(ctx: Context) -> dict:
         return needs_verdict(lab, a, events.get(a["account_id"], []))
 
     unchecked = [a for a in verified_open if cheap_ok(a) and (asks(a) or not a.get("label_source"))]
-    ask_first(lab, [*(a for a in todo if required and cheap_ok(a) and asks(a)), *filter(asks, unchecked)], events, s)
+    ask_first(lab, [*(a for a in todo if required and cheap_ok(a) and asks(a)), *filter(asks, unchecked)], events, s,
+              carded(ctx) if unchecked else ())
     doubt_rows: list[dict] = converge(ctx, lab, unchecked, events, cleared)
     for a in todo:
         acct = with_overrides(a, s)

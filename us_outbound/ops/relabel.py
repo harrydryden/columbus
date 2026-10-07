@@ -40,7 +40,7 @@ from typing import Any
 from us_outbound import labels
 from us_outbound.clean.domains import is_public_body
 from us_outbound.context import Context
-from us_outbound.enrol import approvals, focus, queue
+from us_outbound.enrol import approvals
 from us_outbound.logs import log
 from us_outbound.settings.model import Industry
 from us_outbound.sources import apollo_universe as universe
@@ -215,8 +215,8 @@ def show(ctx: Context, domain: str) -> dict:
 
 
 def audit(ctx: Context, limit: int | None = None) -> dict:
-    """The label check for the whole queue now: each open company with no fresh verdict asked (live), Focus groups
-    first then queue order, up to limit; its decision written as verify_accounts writes it (verify.converge: a held
+    """The label check for the whole queue now: each open company with no fresh verdict asked (live), those with a
+    card waiting first, then Focus groups, then queue order, up to limit; its decision written as verify_accounts writes it (verify.converge: a held
     one back to queued and to the hand-check, one ruled out disqualified); then relabel for the rest, and every open
     card that no longer fits withdrawn. Dry-run asks nothing: the count, the cost at most, a sample prompt, and what
     the stored verdicts alone would change."""
@@ -226,7 +226,7 @@ def audit(ctx: Context, limit: int | None = None) -> dict:
     accounts = [a for a in ctx.store.select("accounts", {"status": list(universe.OPEN_STATUSES)})
                 if a.get("tier") not in universe.OUT_OF_QUEUE_TIERS]
     events = label_events(ctx, [str(a["account_id"]) for a in accounts])
-    order = sorted(accounts, key=lambda a: (focus.group_rank(s.industry_group_of(a), s), queue.order_key(a, s)))
+    order = verify.check_order(accounts, s, verify.carded(ctx))  # cards waiting first, then Focus, then queue
     run_ = verify.LabelRun(labels.Checker(ctx, spend=ctx.live, budget=labels.Budget(calls=len(order) or 1,
                                                                                     seconds=AUDIT_SECONDS)))
     ch = run_.checker

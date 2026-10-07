@@ -602,3 +602,17 @@ def test_a_card_rendered_before_its_label_was_decided_is_withdrawn_when_it_no_lo
     verify.run(ctx)
     [(item, why, back)] = approvals.unfit_cards(ctx)
     assert (item.id, why, back) == ("card-1", "its industry was Adtech & martech and is now Fintech", True)
+
+
+def test_an_account_with_a_card_waiting_is_checked_first(monkeypatch):
+    from us_outbound.enrol import approvals
+
+    monkeypatch.setattr(labels, "MAX_LABEL_CALLS_PER_RUN", 1)
+    ctx, sdk = labelled([account("t1", status="verified", score=90, tier="Priority"),
+                         account("t2", status="verified", score=10, tier="Standard")],
+                        {"t1co.com": {"label": "Fintech", "evidence": "Payments software"},
+                         "t2co.com": {"label": "Fintech", "evidence": "Payments software"}})
+    ctx.store.insert("hitl_items", [{"item_id": "card-2", "kind": approvals.KIND, "account_id": "t2", "status": "open",
+                                     "created_at": NOW - timedelta(hours=16), "payload": {}}])
+    verify.run(ctx)
+    assert sdk.domains() == ["t2co.com"]  # its card is the next email out, though t1 is first in the queue
