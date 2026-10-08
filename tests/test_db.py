@@ -731,3 +731,16 @@ def test_bad_columns_are_refused_before_connecting():
         s.insert("accounts", [{"account_id": "a", "Tier": "x"}])
     with pytest.raises(ValueError, match="bad column"):
         s.upsert("accounts", [{"account_id": "a"}, {"account_id": "b", "tier x": "y"}])
+
+
+def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
+    """8 Oct 2026: read_pages failed on a home page whose text held a NUL (Postgres stores none, in text or jsonb:
+    "unsupported Unicode escape sequence \\u0000"). The store drops it from every value it writes."""
+    store.insert("signal_events", [{"event_id": "n1", "account_id": "a\x001", "source": "careers_pages",
+                                    "fact": "home_page", "quote": "Acme\x00 Co",
+                                    "value": {"title": "Acme\x00", "text": ["a\x00b", {"c": "d\x00"}]}}])
+    [row] = store.select("signal_events", {"event_id": "n1"})
+    assert (row["account_id"], row["quote"]) == ("a1", "Acme Co")
+    assert row["value"] == {"title": "Acme", "text": ["ab", {"c": "d"}]}
+    store.upsert("accounts", [{"account_id": "n2", "clean_name": "Nul\x00 Inc"}])
+    assert store.get("accounts", account_id="n2")["clean_name"] == "Nul Inc"
