@@ -162,8 +162,8 @@ first time, `us-outbound settings load --tab General --live` adds the key to the
 
 Harry, 7 Oct 2026: "A/B functionality to allow the system to try different versions of email copy". A
 `variant` test on the Tests tab changes one part of one email for every company enrolled from its
-`start_date`, whatever its tier, industry or Copy row, and splits them half and half: version_a's companies
-get `text_a`, version_b's get `text_b`. Its own columns:
+`start_date`, whatever its tier, industry or Copy row, and splits them half and half (or as `share_a`
+says; below): version_a's companies get `text_a`, version_b's get `text_b`. Its own columns:
 
 | Column | What it is |
 | :- | :- |
@@ -235,6 +235,23 @@ company's 28-day reply window then has to close:
   15 a day. This is the full read; the read date, if later, reads the same companies.
 - `read_date`, 2027-03-29: the backstop. If volume runs slower (6 a day), the read on that date covers the
   companies whose windows have closed by then.
+
+**An uneven split: `share_a`** (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email
+1s"). A `share_a` column after `find` sets the share of companies that get version_a: `70%` (or `0.7`)
+gives version_a seven companies in ten and version_b three. Blank is half and half. It works for `ab` and
+`variant` tests, from 10% to 90%; a holdout test reads a split the system already makes, so it takes none.
+The first time, add the `share_a` header cell after `find` (or `us-outbound settings load --tab Tests
+--live`, which keeps your values).
+- `accounts_per_version` and the count looks are counted in the smaller version, and the larger takes
+  its share more: at 70/30, `290` is 290 companies with no intro and 677 with the warm intro, and a look
+  at `145` is 145 and 338. `test start` says the split, and the read compares the two versions' reply
+  rates whatever their sizes.
+- The cost is time. The smaller version decides when a look is reached, and an uneven split needs more
+  companies for the same power: 1.2 times as many at 70/30, 1.6 at 80/20, 2.8 at 90/10. For the warm
+  intro at 70/30, `290` in the smaller version (967 in all) finds the same 2× difference as 400 a
+  version did half and half (800 in all), about 17 send days later: look 2 in mid-April at 10 a day.
+- Change the split by starting a new test, not by editing a running one: companies already in the test
+  keep their version, so a mid-test change mixes two splits in one read.
 
 ## Expected volume in the pilot
 

@@ -99,7 +99,8 @@ TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
     "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
     "Tests": frozenset({"kind", "looks",  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
-                        *VARIANT_COLUMNS}),  # a variant test's (Harry, 7 Oct 2026): blank on any other kind
+                        *VARIANT_COLUMNS,  # a variant test's (Harry, 7 Oct 2026): blank on any other kind
+                        "share_a"}),  # an uneven split (Harry, 8 Oct 2026): blank is 50%
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -1082,6 +1083,9 @@ def _overrides(rows: list[_Row]) -> list[tuple[Override, int]]:
     return out
 
 
+SHARE_A_MIN = 0.1  # a test's share_a runs from 10% to 90% (Harry, 8 Oct 2026: 70% with the warm intro)
+
+
 def parse_share(text: str) -> float:
     """"60%" or "0.6" -> 0.6. A bare number above 1 is refused: write it with a % sign."""
     t = text.strip()
@@ -1192,7 +1196,8 @@ def _variant(r: _Row, kind: str) -> tuple[int, str, str, str, str]:
 
 def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
     """The Tests tab. kind (ab, the default, holdout or variant) and looks (Harry, 6 Oct 2026) are optional columns,
-    and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026)."""
+    and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026), and share_a, the share
+    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank)."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
@@ -1229,6 +1234,13 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
             elif n is not None and look > n:
                 r.fail("looks", f"{look} is more than accounts_per_version ({n})")
         email, change, text_a, text_b, find = _variant(r, kind or AB_TEST)
+        share_a = r.parse("share_a", parse_share, required=False, default=0.5)
+        if share_a is not None and share_a != 0.5:
+            if kind == HOLDOUT_TEST:
+                r.fail("share_a", "applies to ab and variant tests: a holdout reads a split enrol already makes")
+            elif not SHARE_A_MIN <= share_a <= 1 - SHARE_A_MIN:
+                r.fail("share_a", f"must be between {SHARE_A_MIN:.0%} and {1 - SHARE_A_MIN:.0%}: the smaller arm "
+                                  "decides when the test can be read")
         # SPEC 9: one copy test at a time, since it decides each account's copy; a variant test decides part of it,
         # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it runs beside either.
         if is_running and kind in COPY_TEST_KINDS:
@@ -1239,7 +1251,7 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
                 running = r.number
         if r.ok:
             out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks,
-                             email, change, text_a, text_b, find), r.number))
+                             email, change, text_a, text_b, find, share_a if share_a is not None else 0.5), r.number))
     return out
 
 

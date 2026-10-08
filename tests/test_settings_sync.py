@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 import us_outbound.scoring
+import us_outbound.sources.pages  # noqa: F401  sync imports it late; load it before fake_score stubs scoring.score
 from tests.fakes import TEST_SHEET_ID, make_context
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard

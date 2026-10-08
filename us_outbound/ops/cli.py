@@ -729,7 +729,7 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     breaks one; the result says which sendable Copy rows the change can be made in (variants.coverage), and a
     change that fits none of them is refused."""
     from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
-    from us_outbound.settings.validate import parse_looks, validate_tab
+    from us_outbound.settings.validate import parse_looks, parse_share, validate_tab
 
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
@@ -774,6 +774,14 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
     if read_date <= start:
         raise Refused(f"read_date {read_date} must be after the start date {start}")
+    split: dict[str, str] = {}
+    if (row.get("share_a") or "").strip():  # version_a's share of the accounts (Harry, 8 Oct 2026)
+        try:
+            share = parse_share(row["share_a"])
+        except ValueError as exc:
+            raise Refused(f"share_a on the Tests tab: {exc}") from exc
+        split = {"split": f"{row.get('version_a', '').strip()} {share:.0%}, {row.get('version_b', '').strip()} "
+                          f"{1 - share:.0%}"}
     if kind(row) == AB_TEST:
         missing = [
             v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
@@ -788,7 +796,7 @@ def _test_start(ctx: Context, test_id: str) -> dict:
         if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
             raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
     return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
-            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live,
+            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live, **split,
             **({"copy_rows": copy_rows} if copy_rows else {})}
 
 

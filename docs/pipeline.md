@@ -542,7 +542,9 @@ and every email again as it is rendered; where the change cannot be made, or wou
 company's email under either arm, the company is left out of the test and gets the Copy row's email. Enrol
 records `contacts.test_id` and `test_arm`; the card names the arm; `learn/looks.py` reads the arms, counting an
 email an approver edited in the arm it was given; and the running copy test is in the config version
-(`copy_test`). One copy test, `ab` or `variant`, runs at a time.
+(`copy_test`). One copy test, `ab` or `variant`, runs at a time. `share_a` (Harry, 8 Oct 2026; blank is 50%)
+makes either kind uneven: version_a takes accounts whose hash falls in that share, `accounts_per_version` and the
+count looks count the smaller arm, and the larger arm's are scaled to its share (`Test.cap`, `Test.scaled`).
 
 **How a demo is booked, and read back.** The signature's "Book a call here" opens Harry's HubSpot meetings
 link (General `booking_link`); the emails' call to action opens spill.chat/us/book-demo (`booking_page`),

@@ -525,7 +525,12 @@ class Test:
 
     A variant test (Harry, 7 Oct 2026; enrol/variants.py) also says which email it changes (1 to 4), how
     (VARIANT_CHANGES), and what each arm's email carries: text_a for version_a's accounts, text_b for version_b's,
-    "" for the Copy row's email as it is. find is the exact text a replace changes."""
+    "" for the Copy row's email as it is. find is the exact text a replace changes.
+
+    share_a (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email 1s") is the share of an ab or variant
+    test's accounts that version_a takes, 0.5 (half and half) when the column is blank. accounts_per_version and the
+    count looks are then counted in the smaller arm, and the larger arm takes proportionally more (scaled): at 70/30,
+    400 accounts per version is 400 in the smaller arm and 933 in the larger."""
 
     test_id: str
     hypothesis: str
@@ -544,6 +549,7 @@ class Test:
     text_a: str = ""
     text_b: str = ""
     find: str = ""
+    share_a: float = 0.5
 
     def arm_name(self, arm: str) -> str:
         """The name of arm "a" or "b": version_a or version_b ("warm intro", "no intro")."""
@@ -552,6 +558,21 @@ class Test:
     def text(self, arm: str) -> str:
         """A variant test's text for arm "a" or "b"; "" leaves that arm's email as the Copy row has it."""
         return self.text_a if arm == "a" else self.text_b
+
+    def share(self, arm: str) -> float:
+        """The share of the test's accounts that arm "a" or "b" takes."""
+        return self.share_a if arm == "a" else 1 - self.share_a
+
+    def scaled(self, n: int, arm: str) -> int:
+        """n, counted in the smaller arm, as arm "a" or "b"'s count: n itself when the arms are even, and the larger
+        arm's proportionally more when they are not (70/30: 200 in the smaller arm is 467 in the larger)."""
+        if self.share_a == 0.5:
+            return n
+        return round(n * self.share(arm) / min(self.share_a, 1 - self.share_a))
+
+    def cap(self, arm: str) -> int:
+        """How many accounts arm "a" or "b" takes (accounts_per_version, scaled); 0 for no cap."""
+        return self.scaled(self.accounts_per_version, arm) if self.accounts_per_version > 0 else 0
 
 
 @dataclass(frozen=True)

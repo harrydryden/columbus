@@ -523,8 +523,9 @@ def choose_copy(
 
     The account gets the most specific sendable row for its industry and its contact's role
     (copy_targets). A running ab test takes accounts that would get its version_a, other than
-    Control, and sends half of them (by account hash) version_b instead, while each arm
-    has fewer than accounts_per_version. (A variant test changes the row's emails instead: variants.choose.)
+    Control, and sends some of them (by account hash; share_a stay on version_a) version_b instead, while
+    each arm has fewer than its cap (accounts_per_version, scaled to its share: Test.cap). (A variant test
+    changes the row's emails instead: variants.choose.)
     """
     row, note = pick_copy(account, role, settings, rows)
     if row is None:
@@ -536,9 +537,9 @@ def choose_copy(
         return None, "", "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
     if t and t.kind == AB_TEST and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
-        arm = queue.test_version(str(account["account_id"]), t.test_id)
+        arm = queue.test_version(str(account["account_id"]), t.test_id, t.share_a)
         chosen = rows.get(t.arm_name(arm))
-        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(arm, 0) < t.accounts_per_version):
+        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(arm, 0) < t.cap(arm)):
             return chosen, t.test_id, arm, "", note
     return row, "", "", "", note
 

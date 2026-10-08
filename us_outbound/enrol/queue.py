@@ -94,9 +94,13 @@ def control_count(n: int, settings: Settings, control_available: int) -> int:
 # -- test versions (SPEC 9, 12) ----------------------------------------------------------------
 
 
-def test_version(account_id: str, test_id: str) -> str:
-    """"a" or "b", from sha256(account_id + test_id) % 2; 0 is version_a."""
-    return "a" if int(hashlib.sha256((account_id + test_id).encode()).hexdigest(), 16) % 2 == 0 else "b"
+def test_version(account_id: str, test_id: str, share_a: float = 0.5) -> str:
+    """"a" or "b", from sha256(account_id + test_id): % 2 when the arms are even (0 is version_a), else version_a
+    for the accounts whose hash falls in its share (Test.share_a; Harry, 8 Oct 2026), in steps of 0.01%."""
+    h = int(hashlib.sha256((account_id + test_id).encode()).hexdigest(), 16)
+    if share_a == 0.5:
+        return "a" if h % 2 == 0 else "b"
+    return "a" if h % 10000 < round(share_a * 10000) else "b"
 
 
 test_version.__test__ = False  # not a pytest test, despite the name

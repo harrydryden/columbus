@@ -13,7 +13,9 @@ starts, what it compares and when it may be read:
     start_date on. ab and variant are the copy tests: one runs at a time.
   * looks: interim looks, each a whole number N (both arms have N accounts with step 1 delivered whose 28-day
     reply window has closed) or a date. read_date is always the last look.
-A count look is reached when the slower arm's Nth account's window closes; a date look on its date (UK).
+A count look is reached when the slower arm's Nth account's window closes; a date look on its date (UK). A test whose
+arms are uneven (share_a; Harry, 8 Oct 2026) counts N in its smaller arm and N scaled in the larger (Test.scaled: at
+70/30, a look at 200 is 200 accounts in the smaller arm and 467 in the larger), so each arm is read in its share.
 
 `us-outbound test read ID` reads the test at its latest look reached, and only over what that look covers: for
 a count look, each arm's first N accounts (by step 1); for a date look, the accounts whose window had closed by
@@ -96,10 +98,21 @@ class Look:
     day: date | None = None
     final: bool = False
     reached_at: datetime | None = None
+    per_arm: tuple[tuple[str, int], ...] = ()  # (arm, its count) for a count look: count, scaled to the arm's share
+
+    def needs(self, arm: str) -> int:
+        """How many accounts a count look reads in this arm (its count unless the arms are uneven)."""
+        return dict(self.per_arm).get(arm, self.count or 0)
 
     @property
     def label(self) -> str:
-        what = f"{self.count} accounts per arm with closed reply windows" if self.count else f"{self.day:%a %d %b %Y}"
+        counts = dict(self.per_arm)
+        if self.count and len(set(counts.values())) > 1:
+            what = " and ".join(f"{arm} {n}" for arm, n in counts.items()) + " accounts with closed reply windows"
+        elif self.count:
+            what = f"{self.count} accounts per arm with closed reply windows"
+        else:
+            what = f"{self.day:%a %d %b %Y}"
         return f"look {self.number}{' (the read date)' if self.final else ''}: {what}"
 
 
@@ -203,9 +216,12 @@ def looks(test: Test, by_arm: Mapping[str, Arm]) -> list[Look]:
         if isinstance(p, date):
             out.append(Look(i, day=p, final=final, reached_at=_midnight(p)))
             continue
-        lists = [a.emailed for a in by_arm.values()]
-        reached = max(lst[p - 1].closes_at for lst in lists) if lists and all(len(lst) >= p for lst in lists) else None
-        out.append(Look(i, count=p, final=final, reached_at=reached))
+        per_arm = tuple((name, test.scaled(p, arm)) for name, arm in zip(arm_names(test), VARIANT_ARMS))
+        need = dict(per_arm)
+        lists = [(a.emailed, need.get(name, p)) for name, a in by_arm.items()]
+        reached = (max(lst[n - 1].closes_at for lst, n in lists)
+                   if lists and all(len(lst) >= n for lst, n in lists) else None)
+        out.append(Look(i, count=p, final=final, reached_at=reached, per_arm=per_arm))
     return out
 
 
@@ -223,9 +239,10 @@ def upcoming(all_looks: Iterable[Look], now: datetime) -> Look | None:
 
 
 def covered(arm: Arm, look: Look) -> list[Outcome]:
-    """What a look reads in one arm: the first N accounts for a count look, those closed by the date for a date look."""
+    """What a look reads in one arm: the first N accounts for a count look (N scaled to the arm's share when the arms
+    are uneven), those closed by the date for a date look."""
     if look.count:
-        return arm.emailed[: look.count]
+        return arm.emailed[: look.needs(arm.name)]
     return [o for o in arm.emailed if o.closes_at <= look.reached_at]
 
 

@@ -141,6 +141,8 @@ def copy_test(settings: Settings) -> dict[str, Any] | None:
                            "start_date": _iso(t.start_date) if t.start_date else ""}
     if t.kind == VARIANT_TEST:
         out.update(email=t.email, change=t.change, text_a=t.text_a, text_b=t.text_b, find=t.find)
+    if t.share_a != 0.5:  # only an uneven split adds a key, so a half-and-half test keeps its config id
+        out["share_a"] = t.share_a
     return out
 
 
