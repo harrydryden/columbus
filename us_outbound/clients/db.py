@@ -14,7 +14,7 @@ import json
 import re
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from itertools import groupby
 from typing import Any
 
@@ -221,6 +221,18 @@ def _dumps(obj: Any) -> str:
     return json.dumps(obj, default=str)  # a datetime inside a payload is stored as its text
 
 
+def _no_nul(v: Any) -> Any:
+    """v without NUL characters, which Postgres stores in no text or jsonb value (8 Oct 2026: a home page holding
+    one failed read_pages). Dropped at the one place every write passes, so no source can fail a job with one."""
+    if isinstance(v, str):
+        return v.replace("\x00", "") if "\x00" in v else v
+    if isinstance(v, Mapping):
+        return {_no_nul(k): _no_nul(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_no_nul(x) for x in v]
+    return v
+
+
 class PostgresStore(Store):
     """Schema us_outbound in the Postgres database at dsn.
 
@@ -256,8 +268,8 @@ class PostgresStore(Store):
 
     def _value(self, table: str, col: str, v: Any) -> Any:
         if v is not None and col in JSON_COLUMNS.get(table, ()):
-            return Jsonb(v, dumps=_dumps)
-        return v
+            return Jsonb(_no_nul(v), dumps=_dumps)
+        return v.replace("\x00", "") if isinstance(v, str) and "\x00" in v else v
 
     def _where(self, table: str, where: Where | None) -> tuple[Composable, list]:
         """MemoryStore's where semantics: equality, IN a list (an empty list matches nothing), IS NULL."""
