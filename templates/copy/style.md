@@ -71,7 +71,7 @@ action; write no other. A second body link fails the sheet check, and the email 
 3. **Day 14: a new angle for the role (50 to 90 words).** One different reason, chosen for the role:
    - People leader: confidentiality and uptake, manager training, working alongside an EAP, easy
      anonymized reporting.
-   - Founder or executive: keeping key people, a lean team with little or no HR, setup in hours, no lock-in.
+   - Founder or executive: keeping key people, a lean team with little or no HR, setup in minutes, no lock-in.
    - Operations: absence and cover, out-of-hours sessions around shifts, simple admin, a predictable cost.
    A short question is fine. One demo link as the call to action.
 4. **Day 21: the close (40 to 80 words).** A polite last note: no guilt, leave the door open, one sentence
