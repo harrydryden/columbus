@@ -67,10 +67,10 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, labels, limits
+from us_outbound import budget, fmt, labels, limits
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, focus, second
 from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
@@ -79,7 +79,7 @@ from us_outbound.ops import notify, retention
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
-from us_outbound.timeparse import utc
+from us_outbound.timeparse import uk_midnight, utc
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -95,10 +95,6 @@ KIND_LABELS = {"reply": "replies", "reply_approval": "reply approvals", HAND_CHE
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
 
 
-def _midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, tzinfo=UK)
-
-
 def period(ctx: Context) -> tuple[datetime, datetime, str]:
     """[start, end) and its label: the last send day before today (UK), through yesterday."""
     today = ctx.today_uk()
@@ -108,7 +104,7 @@ def period(ctx: Context) -> tuple[datetime, datetime, str]:
             break
         day -= timedelta(days=1)
     label = f"Yesterday, {day:%a %d %b}" if day == today - timedelta(days=1) else f"Since {day:%a %d %b}"
-    return _midnight(day), _midnight(today), label
+    return uk_midnight(day), uk_midnight(today), label
 
 
 def mailbox_last_100(ctx: Context) -> dict[str, tuple[int, int]]:
@@ -134,10 +130,6 @@ def _names(ctx: Context, ids: set[str]) -> dict[str, str]:
         for a in ctx.store.select("accounts", {"account_id": ids_[i : i + 1000]}):
             out[str(a["account_id"])] = str(a.get("clean_name") or a.get("domain") or a["account_id"])
     return out
-
-
-def _counts(c: Counter, label: str = "") -> str:
-    return ", ".join(f"{label}{k} {v}" for k, v in sorted(c.items(), key=lambda kv: (-kv[1], str(kv[0]))))
 
 
 # -- what waits for Harry -----------------------------------------------------------------------------
@@ -174,7 +166,7 @@ def _oldest(ctx: Context, items: Sequence[Mapping[str, Any]]) -> str:
     oldest = min((t for i in items if (t := utc(i.get("created_at"))) is not None), default=None)
     if oldest is None:
         return ""
-    waited = daily_report._age(ctx.now - oldest)
+    waited = fmt.hours(ctx.now - oldest)
     return f"waited {waited}" if len(items) == 1 else f"the oldest has waited {waited}"
 
 
@@ -183,13 +175,13 @@ def needs_you(ctx: Context, w: ForYou) -> str:
     parts = []
     if w.send_approvals:
         age = _oldest(ctx, w.send_approvals)
-        parts.append(f"{daily_report._n(len(w.send_approvals), 'send approval')} ({age + '; ' if age else ''}"
+        parts.append(f"{fmt.plural(len(w.send_approvals), 'send approval')} ({age + '; ' if age else ''}"
                      "a card lapses at the end of the next send day)")
     if w.replies:
         age = _oldest(ctx, w.replies)
-        parts.append(daily_report._n(len(w.replies), "reply", "replies") + (f" ({age})" if age else ""))
+        parts.append(fmt.plural(len(w.replies), "reply", "replies") + (f" ({age})" if age else ""))
     if w.holds:
-        parts.append(f"{daily_report._n(len(w.holds), 'kill-rule hold')} (`us-outbound killrules show`)")
+        parts.append(f"{fmt.plural(len(w.holds), 'kill-rule hold')} (`us-outbound killrules show`)")
     if w.hand_checks:
         parts.append("this week's hand-check (`us-outbound handcheck show`)")
     return "*Needs you:* " + (" · ".join(parts) if parts else "nothing")
@@ -256,9 +248,9 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     }
     lines = [f"*Daily post, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else "")]
     lines += ["", f"*Sent and outcomes* · {label} (UK)"]
-    step_text = _counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), "step ")
+    step_text = fmt.counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), label="step ")
     lines.append(f"  Sent: {len(sent)}" + (f" ({step_text})" if step_text else ""))
-    lines.append(f"  Replies: {len(replies)}" + (f" ({_counts(classes)})" if replies else ""))
+    lines.append(f"  Replies: {len(replies)}" + (f" ({fmt.counts(classes)})" if replies else ""))
     lines.append(f"  Positive or referral: {len(warm)}"
                  + (" · " + "; ".join(f"{who(e)} ({e.get('reply_class')}, {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT])
                     if warm else ""))
@@ -387,7 +379,7 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     if waiting:
         oldest = min((utc(i.get("created_at")) for i in waiting if utc(i.get("created_at"))), default=None)
         age = f"; the oldest has waited {int((ctx.now - oldest).total_seconds() // 3600)} hours" if oldest else ""
-        lines.append(f"Waiting for approval: {len(waiting)} ({_counts(by_kind)}){age}.")
+        lines.append(f"Waiting for approval: {len(waiting)} ({fmt.counts(by_kind)}){age}.")
     else:
         lines.append("Waiting for approval: nothing.")
     nums.update(waiting=len(waiting), waiting_by_kind=dict(by_kind))
@@ -419,10 +411,6 @@ def _span(day: Day) -> str:
     return f"{first:%a %-d} to {last:%a %-d %b}" if first.month == last.month else f"{first:%a %-d %b} to {last:%a %-d %b}"
 
 
-def _plural(n: int, one: str, many: str | None = None) -> str:
-    return f"{n:,} {one if n == 1 else (many or one + 's')}"
-
-
 def _short_names(owners: Sequence[str]) -> dict[str, str]:
     """Each sender by first name, with the surname's initial where two share one ("Hannah S", "Hannah M")."""
     first = Counter(o.split()[0] for o in owners if o.split())
@@ -434,13 +422,13 @@ def _needs(ctx: Context, w: ForYou) -> list[str]:
     out = []
     if w.send_approvals:
         age = _oldest(ctx, w.send_approvals)
-        out.append(f"• Approve {_plural(len(w.send_approvals), 'email')} in Slack ({age + '; ' if age else ''}a card "
+        out.append(f"• Approve {fmt.plural(len(w.send_approvals), 'email')} in Slack ({age + '; ' if age else ''}a card "
                    "lapses at the end of the next send day)")
     if w.replies:
         age = _oldest(ctx, w.replies)
-        out.append(f"• Answer {_plural(len(w.replies), 'reply', 'replies')}" + (f" ({age})" if age else ""))
+        out.append(f"• Answer {fmt.plural(len(w.replies), 'reply', 'replies')}" + (f" ({age})" if age else ""))
     if w.holds:
-        out.append(f"• {_plural(len(w.holds), 'kill-rule hold')} in force: `us-outbound killrules show`")
+        out.append(f"• {fmt.plural(len(w.holds), 'kill-rule hold')} in force: `us-outbound killrules show`")
     if w.hand_checks:
         out.append("• This week's hand-check: `us-outbound handcheck show`")
     return out or ["Nothing needs you today."]
@@ -451,25 +439,25 @@ def _yesterday(day: Day) -> list[str]:
     if n.get("sent") or n.get("replies"):
         steps = ", ".join(f"step {k} {v}" for k, v in sorted(n.get("by_step", {}).items()))
         parts = [f"Sent {n.get('sent', 0)}" + (f" ({steps})" if steps else ""),
-                 f"{_plural(n.get('replies', 0), 'reply', 'replies')} ({n.get('positive', 0)} positive)"]
+                 f"{fmt.plural(n.get('replies', 0), 'reply', 'replies')} ({n.get('positive', 0)} positive)"]
     else:
         parts = ["Nothing sent"]
-    parts += [_plural(n[k], word) for k, word in (("bounced", "bounce"), ("unsubscribed", "unsubscribe"))
+    parts += [fmt.plural(n[k], word) for k, word in (("bounced", "bounce"), ("unsubscribed", "unsubscribe"))
               if n.get(k)]
     if n.get("demos_booked"):
-        parts.append(f"{_plural(n['demos_booked'], 'demo')} booked")
+        parts.append(f"{fmt.plural(n['demos_booked'], 'demo')} booked")
     cards = [(n.get("approved", 0), "approved"), (n.get("contact_declined", 0) + n.get("company_dropped", 0), "declined"),
              (n.get("approvals_expired", 0), "lapsed unapproved")]
     if any(k for k, _ in cards):
         parts.append("cards " + ", ".join(f"{k} {word}" for k, word in cards if k))
     out = [" · ".join(parts)]
-    found = f"Found {_plural(n.get('found_companies', 0), 'company', 'companies')}"
+    found = f"Found {fmt.plural(n.get('found_companies', 0), 'company', 'companies')}"
     sources = n.get("found_by_source") or {}
     if len(sources) == 1:
         found += f" (all {next(iter(sources)).replace('_', ' ')})"
     elif sources:
         found += " (" + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(sources.items(), key=lambda kv: -kv[1])) + ")"
-    found += f" and {_plural(n.get('found_contacts', 0), 'contact')}"
+    found += f" and {fmt.plural(n.get('found_contacts', 0), 'contact')}"
     if n.get("verified_in_period"):
         found += f" · {n['verified_in_period']} verified"
     out.append(found)
@@ -485,10 +473,10 @@ def _today(ctx: Context, day: Day) -> list[str]:
     if day.why:
         out = ["*Today: no new contacts*", f"Enrolment waits: {day.why}."]
     else:
-        out = [f"*Today: up to {_plural(lim.number, 'new contact')}*"]
+        out = [f"*Today: up to {fmt.plural(lim.number, 'new contact')}*"]
         limit = limits.LABELS.get(str(t.get("binding")), str(t.get("binding")))
         if t.get("binding") == "sending_capacity" and day.ramping:
-            limit += f" ({_plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
+            limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
         out.append(f"Limit: {limit}")
     names = _short_names(list(lim.senders))
     senders = []
@@ -502,7 +490,7 @@ def _today(ctx: Context, day: Day) -> list[str]:
     if senders:
         out.append("Senders: " + " · ".join(senders))
     week = (f"This week: {t.get('enrolled_this_week', 0)} of {t.get('weekly_enrol_cap', 0)}, "
-            f"{_plural(int(t.get('send_days_left_in_week') or 0), 'send day')} left")
+            f"{fmt.plural(int(t.get('send_days_left_in_week') or 0), 'send day')} left")
     q = focus.today(ctx, int(t.get("send_days_left_in_week") or 0))
     if q.active:
         week += " · " + " · ".join(f"{k} {q.done[k]}/{q.targets[k]}" for k in q.targets)

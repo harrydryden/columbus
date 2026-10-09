@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from us_outbound import budget, labels, limits
+from us_outbound import budget, fmt, labels, limits
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
@@ -91,9 +91,7 @@ def _worst(statuses: list[str]) -> str:
 
 
 def _when(v: Any) -> str:
-    if not isinstance(v, datetime):
-        return "never"
-    return v.astimezone(UK).strftime("%a %d %b %H:%M UK")
+    return fmt.uk_time(v, missing="never")
 
 
 # -- the checks ---------------------------------------------------------------------------------

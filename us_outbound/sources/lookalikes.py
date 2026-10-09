@@ -90,7 +90,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, parse
+from us_outbound import budget, fmt, parse
 from us_outbound.clean.domains import is_personal_domain, root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
@@ -1105,8 +1105,7 @@ def _share(us: float, total: float) -> str:
 
 
 def _when(v: Any) -> str:
-    t = utc_strict_or_none(v)
-    return t.astimezone(UK).strftime("%a %d %b %Y %H:%M UK") if t else "-"
+    return fmt.uk_time(v, fmt.WHEN_YEAR)
 
 
 def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = False) -> list[str]:

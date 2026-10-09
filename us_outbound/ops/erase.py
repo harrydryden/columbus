@@ -28,12 +28,13 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
-from us_outbound.context import UK, Context
+from us_outbound.context import Context
 from us_outbound.logs import hash_email, log, normalise_email
 from us_outbound.ops.retention import REPLY_TEXT_KEYS
 from us_outbound.suppression import add as suppress
-from us_outbound.timeparse import utc_strict
+from us_outbound.timeparse import utc_or_epoch
 
 ERASURE_REASON, ERASURE_SOURCE = "erasure", "erase"
 CONTACTS_SQL = (
@@ -97,20 +98,21 @@ def _scrubbed(payload: Mapping[str, Any], email: str) -> dict | None:
     return None if email in _text(p) else p
 
 
-def _uk(v: Any) -> str:
-    return utc_strict(v).astimezone(UK).strftime("%a %d %b %Y %H:%M UK") if v else "?"
+def _uk_times(values: Iterable[Any]) -> list[str]:
+    """In time order, in UK time ("?" for a missing one). Sorting the text put Fri 09 Oct before Mon 05 Oct."""
+    return [fmt.uk_time(v, fmt.WHEN_YEAR, missing="?") for v in sorted(values, key=utc_or_epoch)]
 
 
 def _traces(ctx: Context, items: Iterable[Mapping[str, Any]]) -> list[str]:
     """Manual steps for what the jobs cannot reach, from the items about them, read before their payloads go."""
     items = list(items)
     steps = []
-    cards = sorted(_uk(i.get("created_at")) for i in items if i.get("slack_ts"))
+    cards = _uk_times(i.get("created_at") for i in items if i.get("slack_ts"))
     if cards:
         steps.append(f"Slack: {len(cards)} card{'s' if len(cards) != 1 else ''} in #us-outbound showed them (posted "
                      f"{', '.join(cards)}): delete each, its thread included, and any daily post quoting their reply. "
                      "The jobs never delete a Slack message.")
-    escalated = sorted(_uk(i.get("escalated_at")) for i in items if i.get("escalated_at"))
+    escalated = _uk_times(i.get("escalated_at") for i in items if i.get("escalated_at"))
     if escalated:
         steps.append(f"Inbox: their reply was escalated to {ctx.settings.general.escalation_email} "
                      f"({', '.join(escalated)}): delete that email.")

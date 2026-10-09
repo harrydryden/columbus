@@ -32,7 +32,7 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
-from us_outbound import parse
+from us_outbound import fmt, parse
 from us_outbound.accounts import any_us_state, us_country
 from us_outbound.scoring.angle import evidence_display
 from us_outbound.settings.conditions import find_terms
@@ -182,10 +182,6 @@ def partner_category(account: Mapping[str, Any], facts: Mapping[str, Any]) -> st
 # -- hard exclusions ---------------------------------------------------------------
 
 
-def _pct(share: float) -> str:
-    return f"{share:.0%}"
-
-
 def hard_exclusion(
     account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settings, today: date | None = None
 ) -> str | None:
@@ -214,14 +210,14 @@ def hard_exclusion(
 
     ca_wa = as_number(facts.get("ca_wa_share"))
     if ca_wa is not None and ca_wa > STATE_SHARE_LIMIT:
-        return f"{_pct(ca_wa)} of US staff are in CA or WA (over 20%)"
+        return f"{fmt.share(ca_wa, places=0)} of US staff are in CA or WA (over 20%)"
     # SPEC 9: "in CA or WA (or in FL, until it is switched on)": while FL is off it joins
     # the same restricted share.
     fl = as_number(facts.get("fl_share"))
     if fl is not None and "FL" not in active:
         combined = round((ca_wa or 0.0) + fl, 9)
         if combined > STATE_SHARE_LIMIT:
-            return f"{_pct(combined)} of US staff are in CA, WA or FL, which is not active (over 20%)"
+            return f"{fmt.share(combined, places=0)} of US staff are in CA, WA or FL, which is not active (over 20%)"
 
     us_people = as_number(facts.get("us_headcount"))
     if us_people is None:

@@ -125,5 +125,5 @@ def test_no_iso_date_for_what_cannot_be_read(v):
 def test_uk_midnight_in_summer_and_winter():
     assert uk_midnight(date(2026, 10, 9)) == datetime(2026, 10, 8, 23, tzinfo=UTC)
     assert uk_midnight(date(2026, 12, 9)) == datetime(2026, 12, 9, tzinfo=UTC)
-    assert uk_midnight(date(2026, 10, 9)).tzinfo is UTC
+    assert uk_midnight(date(2026, 10, 9)).date() == date(2026, 10, 9)  # in UK time, so .date() is the day
     assert uk_day(uk_midnight(date(2026, 10, 25))) == date(2026, 10, 25)  # the day the clocks go back

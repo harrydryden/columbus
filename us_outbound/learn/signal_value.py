@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.context import Context
 from us_outbound.learn import signal_review
 
@@ -64,10 +65,6 @@ def verdict(row: Mapping[str, Any]) -> str:
     return MORE if with_rate > without else LESS
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.1%}" if n else "-"
-
-
 def line(row: Mapping[str, Any]) -> str:
     """One signal in plain words, its verdict last. Too few to read: counts only, no rate."""
     v = verdict(row)
@@ -87,8 +84,8 @@ def line(row: Mapping[str, Any]) -> str:
     tail = f"{v} (p = {p:.2f})" if p is not None else v
     if row.get("below_control"):
         tail += "; replies below the Control tier after 200"
-    return (f"{head}: {enrolled} enrolled with it, {d} emailed, {counts} ({_pct(replied, d)} replied, against "
-            f"{_pct(without, wd)} of {wd} without): {tail}")
+    return (f"{head}: {enrolled} enrolled with it, {d} emailed, {counts} ({fmt.pct(replied, d)} replied, against "
+            f"{fmt.pct(without, wd)} of {wd} without): {tail}")
 
 
 def table_lines(table: Sequence[Mapping[str, Any]] | None) -> list[str]:

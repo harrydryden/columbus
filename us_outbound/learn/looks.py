@@ -42,11 +42,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import signal_review
 from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, VARIANT_ARMS, VARIANT_TEST, Test
-from us_outbound.timeparse import utc
+from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
 POSITIVE = frozenset({"positive", "referral"})
@@ -117,16 +118,12 @@ class Look:
         return f"look {self.number}{' (the read date)' if self.final else ''}: {what}"
 
 
-def _midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, tzinfo=UK)
-
-
 def arm_names(test: Test) -> tuple[str, str]:
     return test.version_a, test.version_b
 
 
 def _since_start(test: Test, contacts: list[dict]) -> list[dict]:
-    start = _midnight(test.start_date) if test.start_date else None
+    start = uk_midnight(test.start_date) if test.start_date else None
     return [c for c in contacts if (t := utc(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
 
 
@@ -203,7 +200,7 @@ def looks(test: Test, by_arm: Mapping[str, Arm]) -> list[Look]:
     for i, p in enumerate(points, start=1):
         final = i == len(points) and test.read_date is not None
         if isinstance(p, date):
-            out.append(Look(i, day=p, final=final, reached_at=_midnight(p)))
+            out.append(Look(i, day=p, final=final, reached_at=uk_midnight(p)))
             continue
         per_arm = tuple((name, test.scaled(p, arm)) for name, arm in zip(arm_names(test), VARIANT_ARMS))
         need = dict(per_arm)
@@ -289,13 +286,9 @@ def read(ctx: Context, test_id: str) -> dict:
     }
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.1%}" if n else "-"
-
-
 def summary_line(result: Mapping[str, Any]) -> str:
     """One line of a read: each arm's reply rate, and the test's p."""
-    arms_text = "; ".join(f"{name} {v['replied']} of {v['delivered']} replied ({_pct(v['replied'], v['delivered'])})"
+    arms_text = "; ".join(f"{name} {v['replied']} of {v['delivered']} replied ({fmt.pct(v['replied'], v['delivered'])})"
                           for name, v in result["versions"].items())
     p = result.get("reply_p_value")
     return arms_text + (f" · p = {p:.2f}" if p is not None else "")

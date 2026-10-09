@@ -127,9 +127,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.context import UK, Context
+from us_outbound.context import Context
 from us_outbound.logs import log, redact
 from us_outbound.ops import bootstrap
 from us_outbound.ops.heartbeat import (
@@ -141,7 +142,6 @@ from us_outbound.ops.heartbeat import (
     run_job,
     scheduled_jobs,
 )
-from us_outbound.timeparse import utc_strict
 
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
@@ -232,7 +232,7 @@ def _synced(ctx: Context) -> str:
     from us_outbound.settings import sync
 
     when = sync.last_read(ctx.store, ctx.settings)
-    return _fmt_time(when) if when else "never"
+    return fmt.uk_time(when) if when else "never"
 
 
 def _live_sending_note(ctx: Context) -> str:
@@ -376,9 +376,6 @@ def cmd_rescore(args: argparse.Namespace, factory: Factory) -> int:
     return _job("score", args.live, factory)
 
 
-def _fmt_time(v: Any) -> str:
-    return utc_strict(v).astimezone(UK).strftime("%a %d %b %H:%M UK") if v else "-"
-
 
 def _status_heartbeats(store: Any, now: datetime) -> None:
     """Only the jobs that need a look (the latest run failed, or the heartbeat is missed), then how many are ok."""
@@ -398,7 +395,7 @@ def _status_heartbeats(store: Any, now: datetime) -> None:
             ok += 1
             continue
         mode = "dry-run" if run.get("dry_run") else "live"
-        print(f"  {job:<18} {run.get('status')} {_fmt_time(run.get('started_at'))} ({mode})"
+        print(f"  {job:<18} {run.get('status')} {fmt.uk_time(run.get('started_at'))} ({mode})"
               f"{'  MISSED its heartbeat' if missed else ''}")
         if run.get("status") == "error" and run.get("error"):
             print(f"  {'':<18} error: {str(run['error'])[:160]}")
@@ -490,7 +487,7 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
         print(f"Waiting for you: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     paused = enrolment_paused(ctx.store)
     if paused:
-        print(f"Enrollment: STOPPED since {_fmt_time(paused.get('started_at'))} (run `us-outbound start --live` to resume)")
+        print(f"Enrollment: STOPPED since {fmt.uk_time(paused.get('started_at'))} (run `us-outbound start --live` to resume)")
     else:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
@@ -1638,7 +1635,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
             print("No seed lead in any US Outbound campaign yet: `us-outbound seed send ADDRESS --owner NAME --live`.")
             return 1
         for r in rows:
-            sent = f", last emailed {_fmt_time(r['last_contact'])}" if r["last_contact"] else ", not emailed yet"
+            sent = f", last emailed {fmt.uk_time(r['last_contact'])}" if r["last_contact"] else ", not emailed yet"
             print(f"{r['address']} in {r['campaign']} ({r['campaign_status']}): {r['status_text']}{sent}")
         if any(r["unsubscribed"] for r in rows):
             print("PASS: Instantly shows the seed lead as unsubscribed (status -2), which is what sync_outcomes reads. "
@@ -1705,7 +1702,7 @@ def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
             print("No kill-rule hold is in force.")
         for r in rows:
             until = f" until {r['until']}" if r.get("until") else ""
-            print(f"{r['item_id']}  {r['rule']}: {r['action']} {r['target']}{until} ({_fmt_time(r.get('created_at'))}"
+            print(f"{r['item_id']}  {r['rule']}: {r['action']} {r['target']}{until} ({fmt.uk_time(r.get('created_at'))}"
                   f"{', dry-run' if r.get('dry_run') else ''})")
             print(f"    {r['reason']}")
         return 0

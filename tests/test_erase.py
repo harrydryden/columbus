@@ -125,3 +125,16 @@ def test_erase_without_traces_lists_only_clay_and_instantly():
     ctx, t, inst, lead = setup(live=True)
     report = erase(ctx, JANE)
     assert [x.split(":")[0] for x in report["manual_steps"]] == ["Clay", "Instantly"]
+
+
+def test_the_slack_cards_are_listed_in_time_order():
+    """The manual steps list the cards by when they were posted, not by their text, which put Fri before Mon."""
+    from datetime import UTC, datetime
+
+    ctx, *_ = setup(live=False)
+    ctx.store.update("hitl_items", {"item_id": "h1"}, {"slack_ts": "1.1",
+                                                       "created_at": datetime(2026, 10, 9, 11, tzinfo=UTC)})
+    ctx.store.insert("hitl_items", [{"item_id": "h2", "contact_id": "k2", "slack_ts": "1.2", "status": "handled",
+                                     "created_at": datetime(2026, 10, 5, 11, tzinfo=UTC), "payload": {}}])
+    steps = erase(ctx, JANE)["manual_steps"]
+    assert any("(posted Mon 05 Oct 2026 12:00 UK, Fri 09 Oct 2026 12:00 UK)" in x for x in steps), steps

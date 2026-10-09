@@ -64,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import suppression
+from us_outbound import fmt, suppression
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
@@ -103,10 +103,6 @@ def _lower(v: Any) -> str:
 
 def _domain(address: str) -> str:
     return address.rsplit("@", 1)[-1].lower() if "@" in address else ""
-
-
-def _pct(x: float) -> str:
-    return f"{x:.1%}"
 
 
 # -- what fired --------------------------------------------------------------------------------
@@ -279,7 +275,7 @@ def mailbox_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) 
         n, b, rate = _rate(sends)
         if _over(n, b, rate):
             out.append(Firing("mailbox_bounce_rate", "mailbox", a, PAUSE_MAILBOX,
-                              f"{a}: {b} of its last {n} sends bounced ({_pct(rate)}; the limit is {BOUNCE_RATE:.0%})",
+                              f"{a}: {b} of its last {n} sends bounced ({fmt.share(rate)}; the limit is {BOUNCE_RATE:.0%})",
                               [a], None, {"sends": n, "bounced": b, "rate": round(rate, 4), "window_days": WINDOW_DAYS}))
     return out, vitals_error
 
@@ -297,7 +293,7 @@ def domain_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired, a
         if boxes and _over(n, b, rate, min_sends=MIN_SENDS):
             out.append(Firing("domain_bounce_rate", "domain", domain, PAUSE_MAILBOX,
                               f"{domain}: {b} of its {n} sends in the last {WINDOW_DAYS} days bounced "
-                              f"({_pct(rate)}; the limit is {BOUNCE_RATE:.0%})",
+                              f"({fmt.share(rate)}; the limit is {BOUNCE_RATE:.0%})",
                               boxes, None, {"sends": n, "bounced": b, "rate": round(rate, 4), "window_days": WINDOW_DAYS}))
     return out
 
@@ -327,7 +323,7 @@ def source_rules(ctx: Context, ev: _Events, fired: _Fired) -> list[Firing]:
         if _over(n, b, rate, min_sends=MIN_SENDS):
             out.append(Firing("source_bounce_rate", "source", src, PAUSE_SOURCE,
                               f"emails found by {src}: {b} of {n} sends in the last {WINDOW_DAYS} days bounced "
-                              f"({_pct(rate)}; the limit is {BOUNCE_RATE:.0%})",
+                              f"({fmt.share(rate)}; the limit is {BOUNCE_RATE:.0%})",
                               numbers={"sends": n, "bounced": b, "rate": round(rate, 4), "window_days": WINDOW_DAYS}))
     return out
 
@@ -372,7 +368,7 @@ def group_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) ->
         if delivered >= GROUP_MIN_DELIVERED and rate < GROUP_REPLY_FLOOR:
             out.append(Firing("group_reply_rate", "industry_group", group, STOP_GROUP,
                               f"{group}: {humans} human replies from {delivered} accounts delivered "
-                              f"({_pct(rate)}; the floor is {GROUP_REPLY_FLOOR:.1%})",
+                              f"({fmt.share(rate)}; the floor is {GROUP_REPLY_FLOOR:.1%})",
                               numbers={"delivered": delivered, "replied": humans, "rate": round(rate, 4)}))
     return out
 
@@ -415,14 +411,14 @@ def stop_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) -> 
         if len(bounced) / n > g.stop_rule_bounce_rate:
             out.append(Firing("stop_rule_bounce_rate", "enrolment", "stop_rule", PAUSE_ENROLMENT,
                               f"{len(bounced)} of the {n} accounts sent step 1 in the last {STOP_WINDOW_DAYS} days bounced "
-                              f"({_pct(len(bounced) / n)}; the limit, stop_rule_bounce_rate, is "
-                              f"{_pct(g.stop_rule_bounce_rate)})",
+                              f"({fmt.share(len(bounced) / n)}; the limit, stop_rule_bounce_rate, is "
+                              f"{fmt.share(g.stop_rule_bounce_rate)})",
                               numbers={"accounts": n, "bounced": len(bounced)}))
         elif len(complained) / n > g.stop_rule_complaint_rate:
             out.append(Firing("stop_rule_complaint_rate", "enrolment", "stop_rule", PAUSE_ENROLMENT,
                               f"{len(complained)} of the {n} accounts sent step 1 in the last {STOP_WINDOW_DAYS} days "
-                              f"made a spam complaint ({_pct(len(complained) / n)}; the limit, stop_rule_complaint_rate, "
-                              f"is {_pct(g.stop_rule_complaint_rate)})",
+                              f"made a spam complaint ({fmt.share(len(complained) / n)}; the limit, stop_rule_complaint_rate, "
+                              f"is {fmt.share(g.stop_rule_complaint_rate)})",
                               numbers={"accounts": n, "complained": len(complained)}))
     return out[:1]  # one stop is enough; the next fires only after Harry clears it
 

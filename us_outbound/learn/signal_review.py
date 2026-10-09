@@ -28,6 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from us_outbound import fmt
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import Context
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
@@ -173,10 +174,6 @@ def review(ctx: Context) -> Review:
     return out
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.1%}" if n else "-"
-
-
 # What a subject verdict means: "raise" is the personal subject replying more.
 SUBJECT_VERDICTS = {
     "raise": "the personal subject replies more: keep it, or raise email1_subject_share",
@@ -190,8 +187,8 @@ def subject_line(v: Verdict) -> str:
     """Email 1's subject split in one line: personal (General email1_subject) against the Copy row's."""
     p = f" · p = {v.p:.2f}" if v.p is not None else ""
     return (f"Email 1 subject (General email1_subject_share): personal {v.with_n} companies, "
-            f"{_pct(v.with_replied, v.with_n)} replied vs the Copy row's {v.without_n}, "
-            f"{_pct(v.without_replied, v.without_n)}{p}: {SUBJECT_VERDICTS[v.verdict]}.")
+            f"{fmt.pct(v.with_replied, v.with_n)} replied vs the Copy row's {v.without_n}, "
+            f"{fmt.pct(v.without_replied, v.without_n)}{p}: {SUBJECT_VERDICTS[v.verdict]}.")
 
 
 def lines(r: Review) -> list[str]:
@@ -203,9 +200,9 @@ def lines(r: Review) -> list[str]:
     positive = sum(c.positive for c in r.companies)
     first = f", the first on {r.first_send:%a %d %b}" if r.first_send else ""
     out = [f"Signal review: {n} companies emailed{first}; {r.closed} of their {REPLY_WINDOW_DAYS}-day reply windows "
-           f"have closed. Replied: {replied} ({_pct(replied, n)}), positive: {positive} ({_pct(positive, n)}).",
+           f"have closed. Replied: {replied} ({fmt.pct(replied, n)}), positive: {positive} ({fmt.pct(positive, n)}).",
            "By tier at enrolment (scoring works if Priority replies most and Control least):"]
-    out += [f"  {t}: {e} emailed, {_pct(k, e)} replied" for t, (e, k) in r.tiers.items()]
+    out += [f"  {t}: {e} emailed, {fmt.pct(k, e)} replied" for t, (e, k) in r.tiers.items()]
     if r.subject is not None:
         out.append(subject_line(r.subject))
     order = {"raise": 0, "lower": 1, "keep": 2, "too few": 3}
@@ -215,7 +212,7 @@ def lines(r: Review) -> list[str]:
     for v in judged:
         p = f"p = {v.p:.2f}" if v.p is not None else ""
         out.append(f"  {v.verdict.upper():5}  {v.signal} (weight {v.weight}): {v.with_n} companies, "
-                   f"{_pct(v.with_replied, v.with_n)} vs {_pct(v.without_replied, v.without_n)} without · {p}")
+                   f"{fmt.pct(v.with_replied, v.with_n)} vs {fmt.pct(v.without_replied, v.without_n)} without · {p}")
     few = [v for v in r.verdicts if v.verdict == "too few"]
     if few:
         names = ", ".join(f"{v.signal} ({v.with_n})" for v in sorted(few, key=lambda v: (-v.with_n, v.signal)))

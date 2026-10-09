@@ -109,7 +109,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound import parse
+from us_outbound import fmt, parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED, STEP_DAYS
@@ -556,10 +556,6 @@ def delete_accounts(ctx: Context) -> dict:
 # -- what it did: the daily post and status --------------------------------------------------------------------------
 
 
-def _n(count: int, one: str, many: str | None = None) -> str:
-    return f"{count:,} {one if count == 1 else (many or one + 's')}"
-
-
 def _done(detail: Mapping[str, Any]) -> dict[str, int]:
     """What one run's summary says it deleted or cleared (live), or found due (dry-run)."""
     def get(section: str, key: str) -> int:
@@ -579,15 +575,15 @@ def describe(counts: Mapping[str, int]) -> str:
     and 2 contacts who never replied (12 months)"; "" when every count is 0."""
     parts = []
     if counts.get("leads"):
-        parts.append(f"{_n(counts['leads'], 'Instantly lead')} ({LEAD_DAYS} days after their last step)")
-    texts = [_n(counts[k], one, many) for k, one, many in (("replies", "reply", "replies"),
+        parts.append(f"{fmt.plural(counts['leads'], 'Instantly lead')} ({LEAD_DAYS} days after their last step)")
+    texts = [fmt.plural(counts[k], one, many) for k, one, many in (("replies", "reply", "replies"),
                                                            ("reply_cards", "reply card", None)) if counts.get(k)]
     if texts:
         parts.append(f"the reply text of {' and '.join(texts)} ({REPLY_TEXT_DAYS} days)")
     if counts.get("contacts"):
-        parts.append(f"{_n(counts['contacts'], 'contact')} who never replied ({CONTACT_MONTHS} months)")
+        parts.append(f"{fmt.plural(counts['contacts'], 'contact')} who never replied ({CONTACT_MONTHS} months)")
     if counts.get("companies"):
-        companies = _n(counts["companies"], "company", "companies")
+        companies = fmt.plural(counts["companies"], "company", "companies")
         parts.append(f"{companies} no source has refreshed ({UNIVERSE_MONTHS} months)")
     return ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1] if parts else ""
 
@@ -623,8 +619,7 @@ def status_line(store: Any) -> str:
     detail = (last or {}).get("detail")
     if not isinstance(detail, Mapping):
         return "Retention (00:40 UK daily): not run yet"
-    when = utc(last.get("started_at"))
-    stamp = when.astimezone(UK).strftime("%a %d %b %H:%M UK") if when else "?"
+    stamp = fmt.uk_time(last.get("started_at"), missing="?")
     text = describe(_done(detail))
     dry = bool(detail.get("dry_run"))
     line = f"Retention: last run {stamp} ({'dry-run' if dry else 'live'}): "

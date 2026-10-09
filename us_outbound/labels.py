@@ -50,10 +50,12 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.context import ConfigError, Context
@@ -942,8 +944,7 @@ def last_verify(ctx: Context) -> dict:
     return dict(newest["detail"].get("labels") or {})
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.0%}" if n else "n/a"
+_pct = partial(fmt.pct, places=0, empty="n/a")
 
 
 def _moves(pairs: Sequence[tuple[str, str]], n: int = 5) -> str:

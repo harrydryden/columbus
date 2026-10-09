@@ -72,8 +72,8 @@ def iso_date(v: Any) -> date | None:
 
 
 def uk_midnight(d: date) -> datetime:
-    """The start of a UK day, in UTC."""
-    return datetime(d.year, d.month, d.day, tzinfo=UK).astimezone(UTC)
+    """The start of a UK day, in UK time, so its .date() is that day."""
+    return datetime(d.year, d.month, d.day, tzinfo=UK)
 
 
 def _day(v: Any, zone: tzinfo) -> date | None:

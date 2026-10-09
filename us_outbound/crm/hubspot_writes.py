@@ -32,9 +32,10 @@ import html
 from collections.abc import Mapping
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.guard import HUBSPOT_PROPERTY_GROUP, HUBSPOT_SIX_PROPS, US_CAMPAIGN_PREFIX, WARM_REPLY_CLASSES
 from us_outbound.clients.hubspot import COMPANY_PROPS, CONTACT_PROPS, DEAL_PROPS
-from us_outbound.context import UK, Context
+from us_outbound.context import Context
 from us_outbound.logs import clip, log
 from us_outbound.replies.items import ReplyItem, save_payload
 from us_outbound.settings.model import TIERS
@@ -347,7 +348,7 @@ def note_html(ctx: Context, item: Any, account: Mapping[str, Any], contact: Mapp
     """The reply as a HubSpot note (hs_note_body is HTML): who, when, to which mailbox, and the text."""
     reply = ctx.store.get("events", event_id=item.email_id) if item.email_id else None
     text = str((reply or {}).get("reply_text") or item.excerpt or "").strip()
-    when = item.received_at.astimezone(UK).strftime("%d %b %Y %H:%M UK") if item.received_at else "recently"
+    when = fmt.uk_time(item.received_at, "%d %b %Y %H:%M UK", missing="recently")
     who = _person(contact) + (f", {contact['title']}" if contact.get("title") else "")
     lines = [
         f"<p><strong>US Outbound: {html.escape(item.reply_class.replace('_', ' '))} reply</strong> from "

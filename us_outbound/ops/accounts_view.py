@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import IO, Any
 
+from us_outbound import fmt
 from us_outbound.clean.domains import canonical_domain, root_domain
 from us_outbound.context import UK, Context
 from us_outbound.enrol import enrol, queue
@@ -74,8 +75,7 @@ def _text(v: Any) -> str:
 
 def _time(v: Any) -> str:
     """A stored time as Harry reads it: "05 Oct 2026 11:00 UK"; "-" when there is none."""
-    d = utc(v)
-    return d.astimezone(UK).strftime("%d %b %Y %H:%M UK") if d else ("-" if not _text(v) else _text(v))
+    return fmt.uk_time(v, "%d %b %Y %H:%M UK")
 
 
 def _counts(counter: Counter[str], order: Sequence[str], blank: str) -> str:

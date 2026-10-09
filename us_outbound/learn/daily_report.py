@@ -79,7 +79,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from us_outbound import verify
+from us_outbound import fmt, verify
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import WARM_REPLY_CLASSES
 from us_outbound.contacts import pick
@@ -139,31 +139,6 @@ def _lower(v: Any) -> str:
     return str(v or "").strip().lower()
 
 
-def _counts(c: Counter, limit: int | None = None) -> str:
-    """"a 3, b 1": most first, then by name; the first `limit` only."""
-    items = sorted(((k, v) for k, v in c.items() if v), key=lambda kv: (-kv[1], str(kv[0])))
-    return ", ".join(f"{k} {v}" for k, v in items[:limit])
-
-
-def _ordered(c: Counter, order: Sequence[str]) -> str:
-    """"Priority 2, Control 5": in the given order, then any others; zeros left out."""
-    keys = [k for k in order if c.get(k)] + sorted(k for k in c if k not in order and c[k])
-    return ", ".join(f"{k} {c[k]}" for k in keys)
-
-
-def _n(n: int, one: str, many: str | None = None) -> str:
-    return f"{n} {one if n == 1 else (many or one + 's')}"
-
-
-def _pct(n: int, d: int) -> str:
-    return f"{n / d:.1%}" if d else "0%"
-
-
-def _age(delta: timedelta) -> str:
-    hours = int(delta.total_seconds() // 3600)
-    return "under an hour" if hours < 1 else _n(hours, "hour")
-
-
 def reason(text: Any) -> str:
     """A no-contact reason without its per-account detail, so that like reasons count together."""
     r = " ".join(str(text or "").split()) or "no reason recorded"
@@ -203,10 +178,10 @@ class Rows:
 
 def headline(short: str, nums: Mapping[str, Any]) -> str:
     """"Yesterday: 18 sent · 2 replies (1 positive) · 0 unsubscribes · ... · 140 ready to send"."""
-    return (f"{short}: {nums.get('sent', 0)} sent · {_n(nums.get('replies', 0), 'reply', 'replies')} "
-            f"({nums.get('positive', 0)} positive) · {_n(nums.get('unsubscribed', 0), 'unsubscribe')} · "
-            f"{_n(nums.get('found_companies', 0), 'company', 'companies')}, "
-            f"{_n(nums.get('found_contacts', 0), 'contact')} found · {nums.get('ready_to_send', 0)} ready to send")
+    return (f"{short}: {nums.get('sent', 0)} sent · {fmt.plural(nums.get('replies', 0), 'reply', 'replies')} "
+            f"({nums.get('positive', 0)} positive) · {fmt.plural(nums.get('unsubscribed', 0), 'unsubscribe')} · "
+            f"{fmt.plural(nums.get('found_companies', 0), 'company', 'companies')}, "
+            f"{fmt.plural(nums.get('found_contacts', 0), 'contact')} found · {nums.get('ready_to_send', 0)} ready to send")
 
 
 # -- Approvals -------------------------------------------------------------------------------------
@@ -231,8 +206,8 @@ def approvals(ctx: Context, rows: Rows, start: datetime, end: datetime) -> tuple
     if waiting:
         states = Counter(str(_payload(i).get("state") or "waiting") for i in waiting)
         oldest = min((t for i in waiting if (t := utc(i.get("created_at"))) is not None), default=None)
-        age = f"; the oldest has waited {_age(ctx.now - oldest)}" if oldest else ""
-        lines.append(f"  Waiting now: {len(waiting)} ({_counts(states)}){age}{also}.")
+        age = f"; the oldest has waited {fmt.hours(ctx.now - oldest)}" if oldest else ""
+        lines.append(f"  Waiting now: {len(waiting)} ({fmt.counts(states)}){age}{also}.")
     else:
         lines.append(f"  Waiting now: none{also}.")
     nums = {"auto_send": auto, "approved": approved, "approved_edited": got[EDITED],
@@ -281,7 +256,7 @@ def found(ctx: Context, rows: Rows, start: datetime, end: datetime, label: str) 
     lines = [f"*Found* · {label}"]
     line = f"  Companies: {len(new)} new"
     if new:
-        line += f" ({_counts(by_source)}); tiers now: {_ordered(by_tier, (*TIERS, NOT_SCORED))}"
+        line += f" ({fmt.counts(by_source)}); tiers now: {fmt.counts(by_tier, order=(*TIERS, NOT_SCORED))}"
     lines.append(line)
     verified = verified_in(ctx.store, start, end)
     if ctx.settings.general.clay_verification == CLAY_REQUIRED:
@@ -295,11 +270,12 @@ def found(ctx: Context, rows: Rows, start: datetime, end: datetime, label: str) 
     by_role = Counter(str(c.get("role") or "no role") for c in people)
     line = f"  Contacts: {len(people)} new"
     if people:
-        line += f" ({_counts(by_email)}; {_counts(by_role)})"
+        line += f" ({fmt.counts(by_email)}; {fmt.counts(by_role)})"
     lines.append(line)
     nobody = no_contact_in(ctx.store, start, end)
     if nobody:
-        lines.append(f"  No suitable contact: {_n(len(nobody), 'account')} ({_counts(Counter(nobody.values()), TOP)})")
+        reasons = fmt.counts(Counter(nobody.values()), limit=TOP)
+        lines.append(f"  No suitable contact: {fmt.plural(len(nobody), 'account')} ({reasons})")
     nums = {"found_companies": len(new), "found_by_source": dict(by_source), "found_by_tier": dict(by_tier),
             "verified_in_period": verified, "found_contacts": len(people), "found_contacts_by_source": dict(by_email),
             "no_contact_found": len(nobody)}
@@ -350,7 +326,7 @@ def _groups(ready: Sequence[Candidate], settings: Settings) -> str:
             names.append(focus.OTHER)
         return "Focus: " + ", ".join(f"{g} {got.get(g, 0)}" for g in names)
     got = Counter(settings.industry_group_of(c.account) or "no group" for c in ready)
-    top = _counts(got, TOP)
+    top = fmt.counts(got, limit=TOP)
     rest = sum(got.values()) - sum(n for _, n in got.most_common(TOP))
     return "By group: " + top + (f", others {rest}" if rest > 0 else "")
 
@@ -384,7 +360,7 @@ def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set
         notes.append("clay_verification is required, so they wait for Clay")
     lines.append(f"  Waiting for verification: {len(unverified)}" + (f" ({'; '.join(notes)})" if notes else ""))
     seq = sequence_states(ctx, rows.contacts)
-    lines.append(f"  In sequence: {_n(seq[IN_SEQUENCE], 'account')} with follow-ups to come · finished {seq[FINISHED]}"
+    lines.append(f"  In sequence: {fmt.plural(seq[IN_SEQUENCE], 'account')} with follow-ups to come · finished {seq[FINISHED]}"
                  f" · stopped {seq[STOPPED]} (reply, bounce or unsubscribe)")
     nums = {"ready_to_send": len(ready), "ready_by_tier": dict(tiers_), "awaiting_approval": len(awaiting),
             "supply_days": supply, "supply_pace": pace, "waiting_for_contact": len(need), "no_suitable_contact": stuck,
@@ -509,8 +485,8 @@ def _arms(m: _Emailed, rows: Rows, key: str, a: str, b: str, label: str, early: 
         back[v] += cid in m.replied
         warm[v] += cid in m.warm
     if arm[a] >= MIN_PER_ARM and arm[b] >= MIN_PER_ARM:
-        return [f"  Replies, {label}: {back[a]} of {arm[a]} ({_pct(back[a], arm[a])}) "
-                f"vs {back[b]} of {arm[b]} ({_pct(back[b], arm[b])}); "
+        return [f"  Replies, {label}: {back[a]} of {arm[a]} ({fmt.pct(back[a], arm[a])}) "
+                f"vs {back[b]} of {arm[b]} ({fmt.pct(back[b], arm[b])}); "
                 f"positive {warm[a]} vs {warm[b]}. Counts, not conclusions."]
     early.append(f"{label}, {arm[a]} and {arm[b]} of {MIN_PER_ARM} emailed each")
     return []
@@ -543,7 +519,7 @@ def _bounces(m: _Emailed, rows: Rows, early: list[str]) -> list[str]:
     if not big:
         early.append(f"bounces by source, {max(sent[src] for src in kill_rules.SOURCES)} of {MIN_PER_ARM} emailed")
         return []
-    parts = [f"{src} {bounced[src]} of {sent[src]} ({_pct(bounced[src], sent[src])})" for src in big]
+    parts = [f"{src} {bounced[src]} of {sent[src]} ({fmt.pct(bounced[src], sent[src])})" for src in big]
     parts += [f"{src} {sent[src]} emailed, too few" for src in kill_rules.SOURCES if 0 < sent[src] < MIN_PER_ARM]
     return [f"  Bounces by email source: {', '.join(parts)}; the kill rule pauses a source over "
             f"{kill_rules.BOUNCE_RATE:.0%}."]
@@ -558,11 +534,11 @@ def _gaps(rows: Rows) -> list[str]:
     nobody = Counter(reason(r) for aid, r in rows.no_contact.items() if aid in ids)
     parts = []
     if no_band_v or no_band_w:
-        parts.append(f"no size band at {no_band_v} of {len(verified)} verified accounts ({_pct(no_band_v, len(verified))})"
+        parts.append(f"no size band at {no_band_v} of {len(verified)} verified accounts ({fmt.pct(no_band_v, len(verified))})"
                      f" and {no_band_w} of {len(waiting)} waiting for verification")
     if nobody:
         top, n = min(nobody.items(), key=lambda kv: (-kv[1], kv[0]))
-        parts.append(f"nobody suitable at {_n(sum(nobody.values()), 'verified account')}, mostly {top} ({n})")
+        parts.append(f"nobody suitable at {fmt.plural(sum(nobody.values()), 'verified account')}, mostly {top} ({n})")
     if not parts:
         return []
     return ["  Data gaps: " + "; ".join(parts) + "." + SOURCES_POINTER]
