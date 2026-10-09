@@ -83,7 +83,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from us_outbound import labels
+from us_outbound import labels, parse
 from us_outbound.accounts import any_us_state, us_country
 from us_outbound.clean.domains import is_personal_domain, is_public_body
 from us_outbound.clean.people import size_band, state_code
@@ -130,13 +130,6 @@ def _lower(v: Any) -> str:
     return str(v or "").strip().lower()
 
 
-def _truthy(v: Any) -> bool:
-    """A HubSpot fact's value read as tiers.py reads it."""
-    if isinstance(v, str):
-        return v.strip().lower() in {"true", "yes", "1"}
-    return v is True or (isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0)
-
-
 def with_overrides(account: Mapping[str, Any], settings: Settings) -> dict:
     """The account with its domain's Overrides rows applied (SPEC 5), as score_account does."""
     domain = _lower(account.get("domain"))
@@ -179,7 +172,7 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
     if not ind.active:
         return "industry switched off"
     for fact, reason in tiers.HUBSPOT_EXCLUSIONS:
-        if _truthy(facts.get(fact)):
+        if parse.truthy(facts.get(fact)):
             return f"HubSpot: {reason}"
     return None
 

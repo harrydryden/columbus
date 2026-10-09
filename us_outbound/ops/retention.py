@@ -109,6 +109,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from us_outbound import parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED, STEP_DAYS
@@ -194,13 +195,6 @@ LEAD_LEFT = "its Instantly lead is not deleted yet"  # a due contact waits for r
 
 
 # -- small helpers -------------------------------------------------------------------------------------------------
-
-
-def _int(v: Any) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> Iterator[Sequence[str]]:
@@ -309,7 +303,7 @@ def _lead_hold(contact: Mapping[str, Any], lead: Mapping[str, Any] | None, stopp
         return OPT_OUT_PENDING
     if lead is None:
         return ""
-    status = _int(lead.get("status"))
+    status = parse.integer(lead.get("status"))
     if status == LEAD_UNSUBSCRIBED and optout.lead_marker(lead_id) not in done:
         return OPT_OUT_PENDING
     if status == LEAD_BOUNCED and f"bounced:{lead_id}" not in bounced:

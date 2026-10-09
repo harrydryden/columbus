@@ -74,6 +74,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import parse
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.enrol import copy_rules
@@ -271,19 +272,10 @@ def number_word(n: int) -> str:
 
 def growth_words(value: Any) -> str | None:
     """12-month headcount growth (a fraction, 0.34) as words ("grown by about a third"); None below GROWTH_MIN."""
-    g = _number(value)
+    g = parse.number(value)
     if g is None or g < GROWTH_MIN or g > GROWTH_MAX:
         return None
     return next((words for upper, words in GROWTH_WORDS if g < upper), "more than doubled")
-
-
-def _number(v: Any) -> float | None:
-    if isinstance(v, bool) or v in (None, ""):
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _american(text: str) -> str:
@@ -388,7 +380,7 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
     def value(fact: str) -> Any:
         return facts[fact].get("value") if fact in facts else None
 
-    n = _number(value("open_roles"))
+    n = parse.number(value("open_roles"))
     if n is not None and n.is_integer() and OPEN_ROLES_MIN <= n <= OPEN_ROLES_MAX:
         out["open_roles"] = number_word(int(n))
     titles = value("posting_titles")

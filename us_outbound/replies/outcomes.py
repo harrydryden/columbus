@@ -76,7 +76,7 @@ from us_outbound.context import Context
 from us_outbound.logs import hash_email, log
 from us_outbound.replies import optout
 from us_outbound.settings.validate import is_spill_domain
-from us_outbound import suppression
+from us_outbound import parse, suppression
 from us_outbound.timeparse import utc
 
 JOB = "sync_outcomes"
@@ -104,13 +104,6 @@ SYSTEM_SENDERS = frozenset({"mailer-daemon", "postmaster", "noreply", "no-reply"
 
 def _lower(v: Any) -> str:
     return str(v or "").strip().lower()
-
-
-def _int(v: Any) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> Iterator[Sequence[str]]:
@@ -156,7 +149,7 @@ def from_address(email: Mapping[str, Any]) -> str:
 def is_auto_reply(email: Mapping[str, Any]) -> bool:
     """Instantly's own auto-reply flag. PHASE0-CONFIRM: the is_auto_reply field and its values."""
     v = email.get("is_auto_reply")
-    return v is True or _int(v) == 1
+    return v is True or parse.integer(v) == 1
 
 
 # PHASE0-CONFIRM: Instantly's ue_type codes. Only the codes that mark an email as one of ours are
@@ -165,7 +158,7 @@ UE_CAMPAIGN, UE_RECEIVED, UE_MANUAL = 1, 2, 3  # a campaign step, a received ema
 
 
 def _ue_type(email: Mapping[str, Any]) -> int | None:
-    return _int(email.get("ue_type"))
+    return parse.integer(email.get("ue_type"))
 
 
 def is_campaign_send(email: Mapping[str, Any], eaccount: str) -> bool:
@@ -354,7 +347,7 @@ def _send_order(e: Mapping[str, Any]) -> tuple[datetime, str]:
 
 def step_before(sends: Sequence[Mapping[str, Any]], at: datetime | None) -> int | None:
     """The step of the contact's last send at or before `at`: the email a reply answers."""
-    steps = [_int(e.get("step")) for e in sends if at is None or (utc(e.get("occurred_at")) or at) <= at]
+    steps = [parse.integer(e.get("step")) for e in sends if at is None or (utc(e.get("occurred_at")) or at) <= at]
     steps = [s for s in steps if s is not None]
     return max(steps) if steps else None
 
@@ -403,7 +396,7 @@ def _record_sent(ctx: Context, d: Directory, emails: Iterable[Mapping[str, Any]]
     for contact_id, evs in by_contact.items():
         evs.sort(key=_send_order)
         for i, ev in enumerate(evs, start=1):
-            if ev["event_id"] not in known or _int(ev.get("step")) != i:
+            if ev["event_id"] not in known or parse.integer(ev.get("step")) != i:
                 rows.append({**ev, "step": i})
         c = d.by_id.get(contact_id, {})
         update: dict[str, Any] = {}
@@ -459,8 +452,8 @@ def _record_bounce(ctx: Context, contact: dict, lead: Mapping[str, Any], known: 
     at = utc(last.get("occurred_at")) or utc(lead.get("timestamp_last_contact")) or ctx.now
     ctx.store.upsert("events", [{
         "event_id": event_id, "contact_id": contact["contact_id"], "account_id": contact.get("account_id"),
-        "type": BOUNCED, "step": _int(last.get("step")), "mailbox": last.get("mailbox") or contact.get("mailbox"),
-        "occurred_at": at,
+        "type": BOUNCED, "step": parse.integer(last.get("step")),
+        "mailbox": last.get("mailbox") or contact.get("mailbox"), "occurred_at": at,
     }])
     address = _lower(lead.get("email")) or _lower(contact.get("email"))
     if address:
@@ -479,7 +472,7 @@ def _lead_outcomes(ctx: Context, d: Directory, campaigns: Iterable[str], out: di
     done = optout.done_markers(ctx.store)
     for name in campaigns:
         for lead in inst.list_leads(name):
-            status = _int(lead.get("status"))
+            status = parse.integer(lead.get("status"))
             if status not in (LEAD_BOUNCED, LEAD_UNSUBSCRIBED):
                 continue
             contact = d.lead_contact(lead)

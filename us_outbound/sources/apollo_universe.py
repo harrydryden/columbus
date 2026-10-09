@@ -66,7 +66,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
 
-from us_outbound import accounts, budget
+from us_outbound import accounts, budget, parse
 from us_outbound.clean.domains import is_personal_domain, record_alias, root_domain
 from us_outbound.clean.names import clean_company_name
 from us_outbound.clean.people import USPS_STATES, size_band, state_code
@@ -308,20 +308,6 @@ def _pages(body: Mapping[str, Any], page: int, found: int) -> int | None:
 # -- one company ----------------------------------------------------------------------------------
 
 
-def _int(v: Any) -> int | None:
-    try:
-        return None if v in (None, "") or isinstance(v, bool) else int(float(v))
-    except (TypeError, ValueError):
-        return None
-
-
-def _float(v: Any) -> float | None:
-    try:
-        return None if v in (None, "") or isinstance(v, bool) else float(v)
-    except (TypeError, ValueError):
-        return None
-
-
 def _texts(v: Any) -> list[str]:
     return [x.strip() for x in v if isinstance(x, str) and x.strip()] if isinstance(v, (list, tuple)) else []
 
@@ -375,7 +361,7 @@ def funding_usd(event: Mapping[str, Any]) -> int | None:
     if str(event.get("currency") or "$").strip().upper() not in USD:
         return None
     v = event.get("amount")
-    n = _int(v)
+    n = parse.integer(v)
     if n is None and isinstance(v, str):
         m = AMOUNT.fullmatch(v.strip())
         if m:
@@ -471,13 +457,13 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
         out.append({"event_id": new_id(), "account_id": account_id, "source": SOURCE, "fact": fact, "value": value,
                     "quote": _quote(quote), "source_url": url, "observed_at": now})
 
-    employees = _int(org.get("estimated_num_employees"))
+    employees = parse.integer(org.get("estimated_num_employees"))
     add("employees", employees, f"Apollo: about {employees} employees")
     codes = org_naics(org)
     add("naics", codes, "Apollo NAICS: " + ", ".join(codes))
     city = str(org.get("city") or "").strip()
     add("hq_state", state, f"Apollo: HQ in {city + ', ' if city else ''}{state}")
-    growth = _float(org.get("organization_headcount_twelve_month_growth"))  # PHASE0-CONFIRM: a fraction (0.12)
+    growth = parse.number(org.get("organization_headcount_twelve_month_growth"))  # PHASE0-CONFIRM: a fraction (0.12)
     add("headcount_growth_12m", growth, f"Apollo: headcount {growth:+.0%} over 12 months" if growth is not None else "")
     funding = org_funding(org, today)
     when = funding.get("funding_date", "")
@@ -485,7 +471,7 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
     add("funding_stage", funding.get("funding_stage"), f"Apollo: latest round {funding.get('funding_stage')} ({when})")
     amount = funding.get("funding_amount_usd")
     add("funding_amount_usd", amount, f"Apollo: latest round ${amount:,}" if amount else "")
-    founded = _int(org.get("founded_year"))
+    founded = parse.integer(org.get("founded_year"))
     add("founded_year", founded, f"Apollo: founded {founded}")
     techs = org_technologies(org)
     add("technologies", techs, "Apollo technologies: " + ", ".join(techs))
@@ -537,7 +523,7 @@ def _keep_size(cols: Mapping[str, Any], account: Mapping[str, Any], overrides: M
 def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: str) -> dict:
     """The accounts columns Apollo gives (SPEC 6). No label leaves the industry blank: a site visitor held for
     the weekly hand-check (sources/site_visits.py) until an Overrides row gives one."""
-    employees = _int(org.get("estimated_num_employees"))
+    employees = parse.integer(org.get("estimated_num_employees"))
     codes = org_naics(org)
     return {
         "apollo_org_id": str(org.get("organization_id") or org.get("id") or "") or None,
@@ -549,7 +535,7 @@ def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: st
         "naics": ", ".join(codes) or None,
         "employees": employees,
         "size_band": size_band(employees) if employees is not None else (band or None),
-        "founded_year": _int(org.get("founded_year")),
+        "founded_year": parse.integer(org.get("founded_year")),
     }
 
 
@@ -594,7 +580,7 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     if not in_us(org) or state not in run.states:
         run.skipped["HQ outside the active states"] += 1
         return
-    employees = _int(org.get("estimated_num_employees"))
+    employees = parse.integer(org.get("estimated_num_employees"))
     if employees is not None and not s.size_in_range(employees):
         run.skipped[f"outside {s.size_range_text()} employees"] += 1
         return
@@ -742,7 +728,7 @@ def split_reason(orgs: Sequence[Mapping[str, Any]], total: int | None) -> str:
     """
     if total is not None and total > MAX_RESULTS:
         return "over 50,000 companies"
-    if orgs and all(_int(o.get("estimated_num_employees")) is None for o in orgs):
+    if orgs and all(parse.integer(o.get("estimated_num_employees")) is None for o in orgs):
         return "no employee counts"
     return ""
 

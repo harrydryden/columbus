@@ -74,7 +74,7 @@ from collections.abc import Collection, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound import config_version
+from us_outbound import config_version, parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
@@ -500,13 +500,6 @@ def last_use(ctx: Context, address: str) -> datetime | None:
     return max(times) if times else None
 
 
-def _as_int(v: Any) -> int:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _lower_limit(row: Mapping[str, Any]) -> bool:
     try:
         cap = row.get("cap_today", row.get("daily_cap"))  # the ramp's cap when it is lower than the sheet's
@@ -757,7 +750,7 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
             continue
         out["instantly_daily_limits"][m.address.lower()] = w["daily_limit"]
         cap = ramp[m.address.lower()].cap if m.address.lower() in ramp else int(m.daily_cap or 0)
-        if m.status != RETIRED and _as_int(w["daily_limit"]) != cap:
+        if m.status != RETIRED and (parse.integer(w["daily_limit"]) or 0) != cap:
             out["limit_set"][m.address.lower()] = {"from": w["daily_limit"], "to": cap}
     # The sender name (Harry, 5 Oct 2026): Instantly's first_name and last_name, which make the From name
     # prospects see, against the owner's full name. Reported every day; set only with fix_names.
@@ -774,7 +767,8 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
     out["sent_by_day"] = {}
     if present:
         sends = inst.daily_sends(present, start_date=(today - timedelta(days=7)).isoformat(), end_date=today.isoformat())
-        out["sent_by_day"] = {a: {d: _as_int(r.get("sent")) for d, r in days.items()} for a, days in sends.items()}
+        out["sent_by_day"] = {a: {d: parse.integer(r.get("sent")) or 0 for d, r in days.items()}
+                              for a, days in sends.items()}
     out["campaign_status"] = {}
     for owner in settings.owners():
         try:
