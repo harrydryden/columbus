@@ -35,6 +35,7 @@ from typing import Any
 
 from us_outbound.clients.db import new_id
 from us_outbound.context import UK, Context
+from us_outbound.facts import history, latest_by_fact, newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
@@ -42,7 +43,7 @@ from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import AGED_FACTS, Settings, Signal
 from us_outbound.settings.overrides import effective
 from us_outbound.settings.overrides import parse_value as parse_override
-from us_outbound.timeparse import EPOCH, uk_day, utc
+from us_outbound.timeparse import uk_day, utc
 
 TEXT_FACTS = frozenset({"benefit", "mental_health_provision", "culture_statement", "posting_text", "page_text"})
 UNREAD_STATUSES = frozenset({"blocked", "error"})
@@ -100,10 +101,6 @@ def age_days(event: Mapping[str, Any], today: date) -> int | None:
     return None if d is None else (today - d).days
 
 
-def _newest_first(events: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return sorted(events, key=lambda e: utc(e.get("observed_at"), date_tz=UK) or EPOCH, reverse=True)
-
-
 def fresh_facts(events: Iterable[Mapping[str, Any]], signal: Signal, today: date) -> list[Mapping[str, Any]]:
     """Events from the signal's sources observed within its counts_for_days (UK date)."""
     out = []
@@ -121,25 +118,14 @@ def fresh_facts(events: Iterable[Mapping[str, Any]], signal: Signal, today: date
 
 def unread_sources(events: Iterable[Mapping[str, Any]]) -> frozenset[str]:
     """Sources whose latest read_status is blocked or error (SPEC 8: not read)."""
-    latest: dict[str, tuple[datetime, Any]] = {}
-    for e in events:
-        if e.get("fact") != "read_status":
-            continue
-        t = utc(e.get("observed_at"), date_tz=UK) or EPOCH
-        src = e.get("source")
-        if src not in latest or t >= latest[src][0]:
-            latest[src] = (t, e.get("value"))
-    return frozenset(s for s, (_, v) in latest.items() if str(v or "").strip().lower() in UNREAD_STATUSES)
+    latest = newest_by(events, lambda e: e.get("source"), "read_status")
+    return frozenset(s for s, e in latest.items() if str(e.get("value") or "").strip().lower() in UNREAD_STATUSES)
 
 
 def latest_facts(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """The latest value of each field fact, whatever its source or age (for hard exclusions)."""
-    out: dict[str, Any] = {}
-    for e in reversed(_newest_first(events)):
-        if e.get("source") == SCORING_SOURCE or e.get("fact") in TEXT_FACTS or not e.get("fact"):
-            continue
-        out[e["fact"]] = e.get("value")
-    return out
+    rows = (e for e in events if e.get("source") != SCORING_SOURCE)
+    return {f: e.get("value") for f, e in latest_by_fact(rows, skip_facts=TEXT_FACTS).items()}
 
 
 def days_to_fiscal_year_start(fiscal_year_end_month: int, today: date) -> int:
@@ -153,13 +139,13 @@ def days_to_fiscal_year_start(fiscal_year_end_month: int, today: date) -> int:
 
 def calendar_facts(events: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any]:
     """The virtual calendar facts, computed from the UK date (SPEC 7: calendar, daily)."""
-    facts: dict[str, Any] = {"month": today.month}
-    fye = [e for e in events if e.get("source") == "irs_bmf" and e.get("fact") == "fiscal_year_end_month"]
+    out: dict[str, Any] = {"month": today.month}
+    fye = newest(events, "fiscal_year_end_month", "irs_bmf")
     if fye:
-        month = tiers.as_number(_newest_first(fye)[0].get("value"))
+        month = tiers.as_number(fye.get("value"))
         if month is not None and 1 <= month <= 12:
-            facts["days_to_fiscal_year_start"] = days_to_fiscal_year_start(int(month), today)
-    return facts
+            out["days_to_fiscal_year_start"] = days_to_fiscal_year_start(int(month), today)
+    return out
 
 
 def fact_text(event: Mapping[str, Any]) -> str:
@@ -231,10 +217,7 @@ def _match_condition(
 ) -> Match | None:
     cond = signal.condition
     assert cond is not None
-    latest: dict[str, Mapping[str, Any]] = {}
-    for e in reversed(_newest_first(events)):
-        if e.get("fact") and e.get("fact") not in TEXT_FACTS:
-            latest[e["fact"]] = e
+    latest = latest_by_fact(events, skip_facts=TEXT_FACTS)
     values: dict[str, Any] = {f: aged_value(f, e, today) for f, e in latest.items()}
     virtual: dict[str, Any] = {}
     if {"calendar", "irs_bmf"} & set(signal.sources):
@@ -278,7 +261,7 @@ def _match_condition(
 def _match_terms(signal: Signal, events: list[Mapping[str, Any]]) -> Match | None:
     remaining = list(signal.terms)
     evidence: list[Evidence] = []
-    for e in _newest_first(events):
+    for e in history(events):
         if e.get("fact") not in TEXT_FACTS:
             continue
         for tm in find_terms(fact_text(e), tuple(remaining), signal.context):

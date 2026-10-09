@@ -55,7 +55,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from us_outbound import fmt
+from us_outbound import facts, fmt
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.context import ConfigError, Context
@@ -194,11 +194,6 @@ def _clean(text: Any) -> str:
     return " ".join(str(text or "").replace("<", " ").replace(">", " ").split())
 
 
-def _newest(events: Iterable[Mapping[str, Any]], source: str, fact: str) -> Mapping[str, Any] | None:
-    rows = [e for e in events if e.get("source") == source and e.get("fact") == fact]
-    return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
-
-
 @dataclass(frozen=True)
 class Material:
     """What the model reads about one company: its Apollo facts and, when read, its home page."""
@@ -214,7 +209,7 @@ class Material:
     @classmethod
     def of(cls, account: Mapping[str, Any], events: Iterable[Mapping[str, Any]]) -> Material:
         events = list(events)
-        fact = {f: (e.get("value") if (e := _newest(events, APOLLO_SOURCE, f)) else None) for f in MATERIAL_FACTS}
+        fact = {f: facts.value(events, f, APOLLO_SOURCE) for f in MATERIAL_FACTS}
         home = ""
         page = _home_page(events)
         if page is not None:
@@ -313,7 +308,7 @@ def check_answer(answer: Mapping[str, Any], material: Material, names: Iterable[
 
 def latest_verdict(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_verdict fact's value, or None."""
-    e = _newest(events, JOB, VERDICT_FACT)
+    e = facts.newest(events, VERDICT_FACT, JOB)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
 
 
@@ -327,8 +322,7 @@ def _asked_at(events: Iterable[Mapping[str, Any]]) -> datetime | None:
 
 def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """The newest home_page fact that says something (an empty one records a read that found nothing)."""
-    rows = [e for e in events if e.get("fact") == HOME_FACT and isinstance(e.get("value"), Mapping) and e["value"]]
-    return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
+    return facts.newest(events, HOME_FACT, where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"]))
 
 
 def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -356,7 +350,7 @@ def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
 
 def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_corrected fact's value, or None."""
-    e = _newest(events, JOB, CORRECTED_FACT)
+    e = facts.newest(events, CORRECTED_FACT, JOB)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
 
 
@@ -366,7 +360,7 @@ def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
 def rules_input(events: Iterable[Mapping[str, Any]]) -> RulesInput:
     """The newest Apollo NAICS codes, keywords and industry: what the rules read."""
     events = list(events)
-    return RulesInput.from_facts(*((_newest(events, APOLLO_SOURCE, f) or {}).get("value")
+    return RulesInput.from_facts(*(facts.value(events, f, APOLLO_SOURCE)
                                    for f in ("naics", "keywords", "apollo_industry")))
 
 
@@ -770,13 +764,13 @@ def corrected_rows(ctx: Context) -> list[dict]:
         a = ctx.store.get("accounts", account_id=e["account_id"])
         if a is None or not v.get("to"):
             continue
-        facts = {f: (x.get("value") if (x := _newest(ctx.store.select("signal_events", {
-            "account_id": a["account_id"], "source": APOLLO_SOURCE, "fact": f}), APOLLO_SOURCE, f)) else None)
-            for f in MATERIAL_FACTS}
+        apollo = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": APOLLO_SOURCE,
+                                                    "fact": list(MATERIAL_FACTS)})
+        fact = {f: facts.value(apollo, f) for f in MATERIAL_FACTS}
         rows.append({"name": a.get("clean_name") or a.get("domain"), "domain": a.get("domain"),
-                     "went_out_as": v.get("from"), "apollo_industry": facts["apollo_industry"] or "",
-                     "naics": naics_codes(facts["naics"]), "keywords": texts(facts["keywords"]),
-                     "description": facts["description"] or "",
+                     "went_out_as": v.get("from"), "apollo_industry": fact["apollo_industry"] or "",
+                     "naics": naics_codes(fact["naics"]), "keywords": texts(fact["keywords"]),
+                     "description": fact["description"] or "",
                      "expect": {"accept": [v["to"]], "action": VERIFY}, "why": f"corrected by {v.get('by')}"})
     return rows
 
@@ -897,19 +891,16 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
     t = Tally()
     decisions: dict[str, int] = {}
     groups: dict[str, int] = {}
-    latest: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
-    for e in _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
-                      "observed_at", start, end):
-        v = e.get("value") or {}
+    rows = _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
+                    "observed_at", start, end)
+    for e in rows:
         if e.get("fact") == CORRECTED_FACT:
+            v = e.get("value") or {}
             t.corrections.append((str(v.get("from") or "no label"), str(v.get("to") or "")))
-            continue
-        if not v.get("asked"):
-            continue
-        aid, at = str(e.get("account_id") or e.get("event_id")), utc_or_epoch(e.get("observed_at"))
-        if aid not in latest or at >= latest[aid][0]:
-            latest[aid] = (at, v)
-    for aid, (_, v) in latest.items():
+    latest = facts.newest_by(rows, lambda e: str(e.get("account_id") or e.get("event_id")), VERDICT_FACT,
+                             where=lambda e: bool((e.get("value") or {}).get("asked")))
+    for aid, e in latest.items():
+        v = e["value"]
         t.checked += 1
         d = v.get("decision") or {}
         key = {HOLD: "held", DISQUALIFY: "disqualified"}.get(str(d.get("action")), str(d.get("source") or ""))
@@ -956,12 +947,9 @@ def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> 
     labelled = {aid: label for aid, label in no_rules.items() if label and label != NONE}
     if not labelled:
         return [], 0
-    newest: dict[str, Mapping[str, Any]] = {}
-    for e in ctx.store.select("signal_events", {"account_id": sorted(labelled), "source": APOLLO_SOURCE,
-                                                "fact": "naics"}):
-        aid = str(e.get("account_id"))
-        if aid not in newest or utc_or_epoch(e.get("observed_at")) >= utc_or_epoch(newest[aid].get("observed_at")):
-            newest[aid] = e
+    newest = facts.newest_by(ctx.store.select("signal_events", {"account_id": sorted(labelled),
+                                                                "source": APOLLO_SOURCE, "fact": "naics"}),
+                             lambda e: str(e.get("account_id")))
     pairs: dict[tuple[str, str], int] = {}
     uncoded = 0
     for aid, label in labelled.items():

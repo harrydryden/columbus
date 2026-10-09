@@ -15,7 +15,7 @@ SETTINGS, _ = validate_all(default_tabs())
 
 
 def test_one_reading_of_tags_and_codes_whatever_their_shape():
-    assert texts(["saas", " fintech ", "", 3]) == ["saas", "fintech"]
+    assert texts(["saas", " fintech ", "", None]) == ["saas", "fintech"]
     assert texts("saas, fintech") == ["saas", "fintech"]  # one copy read this as nothing, another as one tag
     assert texts(None) == [] and texts("  ") == []
     assert naics_codes(["541613", "5418"]) == ["541613", "5418"]

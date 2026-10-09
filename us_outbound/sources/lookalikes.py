@@ -98,12 +98,13 @@ from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
+from us_outbound.facts import newest_by
 from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.defaults import US_STATES
 from us_outbound.settings.model import SIZE_BANDS, Settings, Signal, band_bounds
 from us_outbound.sources import apollo_credits as credits
-from us_outbound.timeparse import utc_strict_or_none
+from us_outbound.timeparse import utc_or_epoch, utc_strict_or_none
 
 SOURCE = "lookalike"
 JOB = "lookalikes"  # credit_ledger's job for the growth searches
@@ -542,15 +543,9 @@ def group_cells(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], dict
 
 
 def _latest(events: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], tuple[datetime, Any]]:
-    """(account_id, fact) -> (observed_at, value) of the newest event."""
-    out: dict[tuple[str, str], tuple[datetime, Any]] = {}
-    floor = datetime(1970, 1, 1, tzinfo=UTC)
-    for e in events:
-        key = (str(e.get("account_id")), str(e.get("fact")))
-        t = utc_strict_or_none(e.get("observed_at")) or floor
-        if key not in out or t >= out[key][0]:
-            out[key] = (t, e.get("value"))
-    return out
+    """(account_id, fact) -> (observed_at, value) of the newest event (the epoch for one with no time)."""
+    newest = newest_by(events, lambda e: (str(e.get("account_id")), str(e.get("fact"))))
+    return {k: (utc_or_epoch(e.get("observed_at")), e.get("value")) for k, e in newest.items()}
 
 
 def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:

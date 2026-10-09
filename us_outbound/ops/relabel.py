@@ -43,7 +43,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-from us_outbound import labels
+from us_outbound import facts, labels
 from us_outbound.clean.domains import is_public_body
 from us_outbound.context import Context
 from us_outbound.enrol import approvals
@@ -221,7 +221,7 @@ def show(ctx: Context, domain: str) -> dict:
     a = _account(ctx, domain)
     events = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": labels.JOB})
     history = []
-    for e in sorted(events, key=lambda e: str(e.get("observed_at") or ""), reverse=True):
+    for e in facts.history(events):
         v = e.get("value") or {}
         if e.get("fact") == labels.CORRECTED_FACT:
             history.append({"at": str(e.get("observed_at")), "corrected": f"{v.get('from') or 'no label'} → {v.get('to')}",

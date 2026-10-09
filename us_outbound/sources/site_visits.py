@@ -90,12 +90,13 @@ from us_outbound.clients.db import Range, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity
+from us_outbound.facts import newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as universe
-from us_outbound.timeparse import utc
+from us_outbound.timeparse import utc, utc_strict
 
 JOB = "site_visits"
 SOURCE = "site_visits"  # signal_events.source (SPEC 7)
@@ -464,14 +465,10 @@ def refresh_days(settings: Settings) -> int:
 
 
 def latest_facts(ctx: Context) -> dict[tuple[str, str], tuple[datetime, Any]]:
-    """(account_id, fact) -> (observed_at, value) of the newest site_visits fact."""
-    out: dict[tuple[str, str], tuple[datetime, Any]] = {}
-    for e in ctx.store.select("signal_events", {"source": SOURCE, "fact": [US_FACT, INTENT_FACT]}):
-        t = utc(e.get("observed_at"))
-        key = (str(e.get("account_id")), str(e.get("fact")))
-        if t is not None and (key not in out or t >= out[key][0]):
-            out[key] = (t, e.get("value"))
-    return out
+    """(account_id, fact) -> (observed_at, value) of the newest site_visits fact with a time."""
+    latest = newest_by(ctx.store.select("signal_events", {"source": SOURCE, "fact": [US_FACT, INTENT_FACT]}),
+                       lambda e: (str(e.get("account_id")), str(e.get("fact"))), dated=True)
+    return {k: (utc_strict(e.get("observed_at")), e.get("value")) for k, e in latest.items()}
 
 
 def _positive(v: Any) -> bool:

@@ -96,10 +96,11 @@ from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol import enrol, queue, second
+from us_outbound.facts import newest_by
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
-from us_outbound.timeparse import iso_date, utc
+from us_outbound.timeparse import iso_date, utc, utc_strict
 
 JOB = "pick_contacts"
 SOURCE = "pick_contacts"  # signal_events.source of this job's facts
@@ -204,14 +205,15 @@ class History:
 
 def history(store: Store, now: datetime) -> History:
     h = History()
-    for e in store.select("signal_events", {"source": SOURCE}):
-        t, aid, value = utc(e.get("observed_at")), str(e.get("account_id") or ""), e.get("value")
-        if t is None or not aid or not isinstance(value, Mapping):
-            continue
-        if e.get("fact") == OUTCOME_FACT and (aid not in h.outcomes or t >= h.outcomes[aid][0]):
-            h.outcomes[aid] = (t, dict(value))
-        elif e.get("fact") == REVEAL_FACT and now - t < timedelta(days=REVEAL_AGAIN_DAYS) and value.get("apollo_person_id"):
-            h.revealed[aid].add(str(value["apollo_person_id"]))
+    rows = [e for e in store.select("signal_events", {"source": SOURCE})
+            if e.get("account_id") and isinstance(e.get("value"), Mapping) and utc(e.get("observed_at"))]
+    for aid, e in newest_by(rows, lambda e: str(e["account_id"]), OUTCOME_FACT).items():
+        h.outcomes[aid] = (utc_strict(e["observed_at"]), dict(e["value"]))
+    for e in rows:
+        value = e["value"]
+        if (e.get("fact") == REVEAL_FACT and now - utc_strict(e["observed_at"]) < timedelta(days=REVEAL_AGAIN_DAYS)
+                and value.get("apollo_person_id")):
+            h.revealed[str(e["account_id"])].add(str(value["apollo_person_id"]))
     return h
 
 

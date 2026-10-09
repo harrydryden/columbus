@@ -25,7 +25,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from us_outbound import labels
+from us_outbound import facts, labels
 from us_outbound.context import Context
 from us_outbound.industry.material import naics_codes, texts
 from us_outbound.logs import log
@@ -136,8 +136,7 @@ def _known(evs: Sequence[Mapping[str, Any]], settings: Settings) -> tuple[str, s
 
 
 def _value(evs: Sequence[Mapping[str, Any]], fact: str) -> Any:
-    e = labels._newest(evs, universe.SOURCE, fact)
-    return e.get("value") if e else None
+    return facts.value(evs, fact, universe.SOURCE)
 
 
 def load(ctx: Context) -> list[Known]:

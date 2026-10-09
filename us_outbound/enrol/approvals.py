@@ -140,7 +140,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from us_outbound import budget, labels
+from us_outbound import budget, facts, labels
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients import instantly as instantly_client
@@ -382,15 +382,10 @@ def editable(body: str, values: Mapping[str, str]) -> str:
 def recipient_source(ctx: Context, account_id: str, contact: Mapping[str, Any]) -> dict:
     """Where the contact came from: the account's latest contact_pick fact for them (contacts/pick.py)."""
     cid = _text(contact.get("contact_id"))
-    latest: tuple[Any, dict] | None = None
-    for e in ctx.store.select("signal_events", {"account_id": account_id, "source": PICK_SOURCE, "fact": PICK_FACT}):
-        v = e.get("value")
-        if not isinstance(v, Mapping) or _text(v.get("contact_id")) != cid:
-            continue
-        t = utc(e.get("observed_at"))
-        if latest is None or (t is not None and (latest[0] is None or t >= latest[0])):
-            latest = (t, dict(v))
-    value = latest[1] if latest else {}
+    e = facts.newest(ctx.store.select("signal_events", {"account_id": account_id, "source": PICK_SOURCE,
+                                                        "fact": PICK_FACT}),
+                     where=lambda e: isinstance(e.get("value"), Mapping) and _text(e["value"].get("contact_id")) == cid)
+    value = dict(e["value"]) if e else {}
     person = _text(value.get("apollo_person_id"))
     return {"email_source": _text(value.get("email_source")) or _text(contact.get("email_source")),
             "apollo_person_id": person, "url": APOLLO_PERSON_URL.format(person) if person else ""}

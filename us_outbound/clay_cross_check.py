@@ -36,7 +36,6 @@ pick_contacts' email lookups do.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from datetime import datetime
 from typing import Any
 
 from us_outbound import budget, ledger, verify
@@ -45,11 +44,11 @@ from us_outbound.clients.clay import RUN_ITEMS_MAX, ClayError, parse_cross_check
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
+from us_outbound.facts import load, newest
 from us_outbound.learn import holds
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.settings.model import SIZE_BANDS, Settings
-from us_outbound.timeparse import utc_or_epoch
 
 SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (learn/holds.py)
 FACT = "hq_and_size"
@@ -62,7 +61,6 @@ OFF = "clay_cross_check is no"
 NO_FUNCTION = ("clay_accounts_function_id is blank: build the \"US Outbound – Accounts\" function in Clay "
                "(docs/pipeline.md) and paste its id on the General tab")
 SIZE_FIELDS = frozenset({"employees", "size_band"})
-ID_CHUNK = 1000
 ERROR_LIMIT = 20
 
 
@@ -108,14 +106,9 @@ def overridden(settings: Settings, account: Mapping[str, Any]) -> set[str]:
 
 def answers(store: Store, account_ids: Iterable[str]) -> dict[str, dict]:
     """account_id -> Clay's latest answer (the FACT value)."""
-    ids = sorted({str(i) for i in account_ids})
-    latest: dict[str, tuple[datetime, dict]] = {}
-    for i in range(0, len(ids), ID_CHUNK):
-        for e in store.select("signal_events", {"source": SOURCE, "fact": FACT, "account_id": ids[i : i + ID_CHUNK]}):
-            aid, value, t = str(e.get("account_id")), e.get("value"), utc_or_epoch(e.get("observed_at"))
-            if isinstance(value, Mapping) and (aid not in latest or t >= latest[aid][0]):
-                latest[aid] = (t, dict(value))
-    return {aid: v for aid, (_, v) in latest.items()}
+    rows = load(store, sorted({str(i) for i in account_ids}), SOURCE, FACT)
+    latest = {aid: newest(evs, where=lambda e: isinstance(e.get("value"), Mapping)) for aid, evs in rows.items()}
+    return {aid: dict(e["value"]) for aid, e in latest.items() if e is not None}
 
 
 # -- 1 and 2: ask and fill (the pre-pass) ---------------------------------------------------------------------

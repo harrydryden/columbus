@@ -84,13 +84,14 @@ from us_outbound.clients.http import ApiError, Response, TransportError
 from us_outbound.clients.public import ROBOTS_AGENT, absolute_location, split_url
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus, queue
+from us_outbound.facts import load, newest
 from us_outbound.logs import log
 from us_outbound.scoring.score import match_signal
 from us_outbound.settings.conditions import ContextRules
 from us_outbound.settings.model import Settings, Signal
 from us_outbound.sources import job_posts
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
-from us_outbound.timeparse import utc
+from us_outbound.timeparse import utc, utc_strict
 
 JOB = "read_pages"
 SOURCE = "careers_pages"
@@ -209,15 +210,12 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, tuple[d
     """(account_id -> (when last read, its outcome); account_id -> the sources it has a good read of)."""
     reads: dict[str, tuple[datetime, str]] = {}
     good: dict[str, set[str]] = defaultdict(set)
-    for chunk in _chunks(list(account_ids)):
-        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": list(READER_SOURCES)}):
-            t, aid = utc(e.get("observed_at")), str(e.get("account_id"))
-            if t is None:
-                continue
-            if e.get("fact") == SUMMARY_FACT and (aid not in reads or t > reads[aid][0]):
-                value = e.get("value") if isinstance(e.get("value"), Mapping) else {}
-                reads[aid] = (t, str(value.get("outcome") or ""))
-            elif e.get("fact") == "read_status" and e.get("value") == READ:
+    for aid, rows in load(ctx.store, account_ids, READER_SOURCES).items():
+        if (e := newest(rows, SUMMARY_FACT, dated=True)) is not None:
+            value = e.get("value") if isinstance(e.get("value"), Mapping) else {}
+            reads[aid] = (utc_strict(e.get("observed_at")), str(value.get("outcome") or ""))
+        for e in rows:
+            if e.get("fact") == "read_status" and e.get("value") == READ and utc(e.get("observed_at")) is not None:
                 good[aid].add(str(e.get("source")))
     return reads, good
 
@@ -671,22 +669,21 @@ def coverage(store: Any, settings: Settings, today: date, *, run_id: str | None 
     The signal counts match each page signal against the reader's own facts only, so they say
     what this job adds, whatever Clay or another source may have.
     """
+    def counted(e: Mapping[str, Any]) -> bool:
+        v = e.get("value")
+        return isinstance(v, Mapping) and (run_id is None or v.get("run_id") == run_id)
+
     events: dict[str, list[dict]] = defaultdict(list)
     for e in store.select("signal_events", {"source": list(READER_SOURCES)}):
         events[str(e.get("account_id"))].append(e)
     summaries: dict[str, tuple[datetime, dict]] = {}
     texted: set[str] = set()  # accounts with benefits text from any of the reads counted
     for aid, evs in events.items():
-        for e in evs:
-            value, t = e.get("value"), utc(e.get("observed_at"))
-            if e.get("fact") != SUMMARY_FACT or not isinstance(value, Mapping) or t is None:
-                continue
-            if run_id is not None and value.get("run_id") != run_id:
-                continue
-            if value.get("snippets") or value.get("posting_snippets"):
-                texted.add(aid)
-            if aid not in summaries or t > summaries[aid][0]:
-                summaries[aid] = (t, dict(value))
+        reads = [e for e in evs if e.get("fact") == SUMMARY_FACT and utc(e.get("observed_at")) and counted(e)]
+        if any(e["value"].get("snippets") or e["value"].get("posting_snippets") for e in reads):
+            texted.add(aid)
+        if (e := newest(reads)) is not None:
+            summaries[aid] = (utc_strict(e.get("observed_at")), dict(e["value"]))
     sigs = reader_signals(settings)
     cov = Coverage(signals={s.signal: 0 for s in sigs})
     for aid, (t, v) in summaries.items():
@@ -704,12 +701,9 @@ def coverage(store: Any, settings: Settings, today: date, *, run_id: str | None 
 
 def latest_run(store: Any) -> str | None:
     """The run_id of the newest page_read fact."""
-    best: tuple[datetime, str] | None = None
-    for e in store.select("signal_events", {"source": SOURCE, "fact": SUMMARY_FACT}):
-        t, v = utc(e.get("observed_at")), e.get("value")
-        if t is not None and isinstance(v, Mapping) and v.get("run_id") and (best is None or t > best[0]):
-            best = (t, str(v["run_id"]))
-    return best[1] if best else None
+    e = newest(store.select("signal_events", {"source": SOURCE, "fact": SUMMARY_FACT}), dated=True,
+               where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"].get("run_id")))
+    return str(e["value"]["run_id"]) if e else None
 
 
 def decision(cov: Coverage) -> str:

@@ -3,7 +3,7 @@
 Apollo describes a company three ways: NAICS codes (which Apollo infers), keyword tags (free text) and an industry
 (LinkedIn's list, the one HubSpot and Clay also use). They come in a search row or an enrichment record (from_org)
 or as the stored apollo_org facts (from_facts). Three private parsers used to read "saas, fintech" three ways and
-NAICS codes four ways; RulesInput is the one best_label reads.
+NAICS codes four ways; RulesInput is the one best_label reads, and its tags are read as facts.texts reads any list.
 
 entity() is the check before any label is tried (the industry investigation of 9 Oct 2026: 17 of 115 companies the
 model was sure of were trade associations or chambers of commerce, and the Marketing & Creative Agencies row's
@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from us_outbound.facts import texts  # a list fact, as a list or comma-separated text
 from us_outbound.settings.model import Settings
 
 ASSOCIATION, PUBLIC_BODY = "association", "public_body"  # as labels.ENTITIES names them
@@ -44,12 +45,6 @@ def naics_codes(value: Any) -> list[str]:
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return re.findall(r"\d{2,6}", str(value))
-
-
-def texts(value: Any) -> list[str]:
-    """The texts in a list, or in comma-separated text, with spaces folded and blanks left out."""
-    items = value if isinstance(value, (list, tuple)) else str(value).split(",") if isinstance(value, str) else ()
-    return [t for t in (text(v) for v in items if isinstance(v, str)) if t]
 
 
 def text(value: Any) -> str:

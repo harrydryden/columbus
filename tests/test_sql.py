@@ -16,7 +16,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
-from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS
+from us_outbound.clients.db import COLUMNS, JSON_COLUMNS, TABLE_KEYS, TIMESTAMP_COLUMNS
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.ops import ddl
 from us_outbound.settings.model import SIZE_BANDS, TABS, TIERS
@@ -352,6 +352,15 @@ def test_json_columns_are_jsonb_and_only_they(tables):
     for t in tables.values():
         jsonb = {c for c in t.columns if t.type(c) == "JSONB"}
         assert jsonb == set(JSON_COLUMNS.get(t.name, ())), t.name
+
+
+def test_memory_store_columns_match_the_ddl(tables):
+    """MemoryStore refuses a column not in COLUMNS and stores a TIMESTAMP_COLUMNS value as Postgres does (clients/db.py;
+    9 Oct 2026). No column is a date or a timestamp without a zone, which it would have to convert as well."""
+    assert {name: set(t.columns) for name, t in tables.items()} == {name: set(c) for name, c in COLUMNS.items()}
+    stamps = {name: {c for c in t.columns if t.type(c) == "TIMESTAMPTZ"} for name, t in tables.items()}
+    assert {name: c for name, c in stamps.items() if c} == {name: set(c) for name, c in TIMESTAMP_COLUMNS.items()}
+    assert not [f"{t.name}.{c}" for t in tables.values() for c in t.columns if t.type(c) in {"DATE", "TIMESTAMP"}]
 
 
 def test_column_types(tables):
