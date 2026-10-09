@@ -25,7 +25,8 @@ from psycopg.rows import dict_row
 from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
 from us_outbound import budget
-from us_outbound.ops import ddl, erase, heartbeat
+from us_outbound.base import heartbeats
+from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
 SCHEMA = "us_outbound"
@@ -668,7 +669,7 @@ def test_close_and_reconnect(store):
 
 
 def test_erase_and_heartbeat_sql_run_on_postgres(store):
-    """ops/erase.py and ops/heartbeat.py query the database directly; their SQL must run on it."""
+    """ops/erase.py and base/heartbeats.py query the database directly; their SQL must run on it."""
     store.insert("contacts", [{"contact_id": "k1", "email": "Jane.Doe@Acme.com "}, {"contact_id": "k2", "email": "j@x.com"}])
     store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
                                        {"key": "x.com|J", "payload": {"email": "j@x.com"}}])
@@ -684,7 +685,7 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
-    runs = heartbeat.latest_runs(store)
+    runs = heartbeats.latest_runs(store)
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
@@ -733,7 +734,8 @@ def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
     """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
     events (Harry, 7 Oct 2026)."""
-    from us_outbound.ops import job_errors, notify
+    from us_outbound.base import notify
+    from us_outbound.ops import job_errors
 
     now = datetime.now(UTC)
     store.insert("heartbeats", [

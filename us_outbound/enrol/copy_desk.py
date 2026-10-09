@@ -36,7 +36,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from us_outbound.enrol import copy_rules, render
+from us_outbound.copy import copy_rules
+from us_outbound.enrol import render
 from us_outbound.settings.model import (
     COPY_STEPS,
     GENERAL_COPY,

@@ -77,7 +77,7 @@ from typing import Any
 from us_outbound import facts, parse
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
-from us_outbound.enrol import copy_rules
+from us_outbound.copy import copy_rules
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring.score import Evidence, Match, fresh_facts, score_account

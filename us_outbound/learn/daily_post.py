@@ -53,10 +53,10 @@ Each section has a bold title (Slack mrkdwn) after a blank line, and no table. I
 message, as before, well under Slack's 40,000-character limit on text (about 5,000 in the tests):
 account lists stop at LIST_LIMIT, and the funnel sections are aggregates that name no company or person.
 It posts to the alert channel (the dev channel in dry-run), or to the log with no Slack token
-(ops/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
+(base/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
 
 Before it, the asks (Harry, 7 Oct 2026), each in its own message with the approvers mentioned and each
-line once (ops/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
+line once (base/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
 apollo_floor, the monthly Apollo and Clay budgets, Claude's spend against its cap, Apollo's website-visitor
 credits), and on Mondays the mailboxes to add three weeks ahead (learn/capacity_ahead.py). The credit
 budget lines end with the one-line spend summary (spend.summary_line).
@@ -71,12 +71,13 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, fmt, labels, limits
+from us_outbound.base import holds, notify
 from us_outbound.clients.db import Range
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, focus, second, today
-from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
+from us_outbound.learn import capacity_ahead, daily_report, kill_rules, spend
 from us_outbound.logs import clip, log
-from us_outbound.ops import notify, retention
+from us_outbound.ops import retention
 from us_outbound.registry import ramp
 from us_outbound.replies import kinds
 from us_outbound.replies.items import is_reply

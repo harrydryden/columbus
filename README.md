@@ -130,6 +130,10 @@ Files added beyond the SPEC 13 tree:
 - `suppression.py` (the one hashed suppression list)
 - `ops/bootstrap.py` (the production context), `ops/ddl.py` (applies `sql/`), `__main__.py`
 - `ops/schedule.py` (the job table) and `ops/scheduler.py` (the always-on worker that runs it)
+- `base/` (9 Oct 2026): the alert poster (`notify.py`), the heartbeats read back with the operator stop
+  (`heartbeats.py`) and the kill-rule holds (`holds.py`), one layer below enrolment, learning and operations
+- `copy/` (9 Oct 2026): the copy rules, the Copy tab's markup, its variables and the variant-text check, moved
+  out of `enrol/` so settings_sync checks copy without importing enrolment
 - `deploy/slack-app-manifest.yaml` (the Slack app)
 - `replies/outcomes.py` (sync_outcomes), `replies/optout.py` (one opt-out path for links and replies),
   `replies/draft.py` (reply drafts); `replies/poll.py` holds the hitl_items contract with the reply desk
@@ -169,7 +173,7 @@ and emails 2 to 4 in the thread. An approver's ✅ (seeded by the bot, so it is 
 lead; ❌ offers ✏️ edit (a thread reply, re-rendered and checked against the copy rules, then
 approved again), 👤 another contact, or 🚫 drop the company. A card not approved by the end of its
 next send day expires. With `auto_send` = `yes`, `enrol` adds leads straight away after the weekly
-hand-check, as before. `us_outbound/enrol/approvals.py` has the hitl_items and events contract the
+hand-check, as before. `us_outbound/enrol/approvals/` has the hitl_items and events contract the
 daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
 
 Jobs beyond SPEC 9: `retention` (daily 00:40, live: SPEC 6's retention rules and SPEC 13's 31 days, which SPEC 9
@@ -199,7 +203,7 @@ lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oc
 facts). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
 fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
-enrollment until it is cleared (`learn/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
+enrollment until it is cleared (`base/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
 in a mailbox's first sending week, 20 in its second, then its cap) sets the forecast, each
 campaign's daily limit and each Instantly account's own limit.
 

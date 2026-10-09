@@ -30,7 +30,7 @@ missing key, an API error) FAILs with the reason.
   Queue             verified accounts with a sendable contact, against today's number, counting the
                     send approvals still waiting as enrol does (their accounts and their senders' slots)
   auto_send         the General switch (Harry, 2 Oct 2026): no PASSes, as every email then waits for
-                    an approver's ✅ in Slack (enrol/approvals.py; the Slack line checks the token);
+                    an approver's ✅ in Slack (enrol/approvals/; the Slack line checks the token);
                     yes WARNs, as emails are then added to Instantly without approval
   Second contact    the General switch (Harry, 6 Oct 2026; enrol/second.py), for information: off, or on
                     with its size threshold and delay; either PASSes
@@ -60,12 +60,12 @@ from datetime import datetime
 from typing import Any
 
 from us_outbound import budget, fmt, labels
+from us_outbound.base import holds
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import enrol, second
 from us_outbound.enrol.capacity import CAMPAIGN_COMPLETED, TAKES_LEADS
-from us_outbound.learn import holds
 from us_outbound.logs import redact
 from us_outbound.registry import blackout, ramp
 from us_outbound.settings.model import GENERAL_COPY, ROLE_LINE_COLUMNS

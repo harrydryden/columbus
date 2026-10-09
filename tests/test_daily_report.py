@@ -85,7 +85,7 @@ def funnel(now=TUE_9, auto_send=None, approvals=True):
          "detail": {"verified": 9}},  # Friday's run, not yesterday's
     ])
     if approvals:
-        # As enrol/approvals.py writes them: posted today, approvable through the next send day, for a sender.
+        # As enrol/approvals/ writes them: posted today, approvable through the next send day, for a sender.
         card = {"owner": "Hannah Spalding", "send_day": now.date().isoformat(),
                 "expires_on": (now + timedelta(days=1)).date().isoformat()}
         ctx.store.insert("hitl_items", [

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from us_outbound.enrol import copy_rules
-from us_outbound.enrol.copy_rules import content_violations, email_violations, links, source_violations
+from us_outbound.copy import copy_rules
+from us_outbound.copy.copy_rules import content_violations, email_violations, links, source_violations
 
 PRIVACY = "https://www.spill.chat/us/privacy"
 DEMO = "https://www.spill.chat/us/book-demo"

@@ -495,7 +495,7 @@ def test_redo_and_reprepare_give_the_same_arm():
 
 
 def edited(ctx, i: int) -> None:
-    """Account i's step-1 contact's card was edited before it was approved (enrol/approvals.py)."""
+    """Account i's step-1 contact's card was edited before it was approved (enrol/approvals/)."""
     ctx.store.insert("events", [{"event_id": f"send-approval:e{i}", "type": "send_approval",
                                  "approval": "approved_edited", "account_id": f"a{i}", "contact_id": f"k{i}",
                                  "step": 1, "occurred_at": T0 - timedelta(hours=1)}])

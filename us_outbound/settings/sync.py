@@ -45,6 +45,7 @@ from us_outbound.settings.validate import (
     is_legacy_copy,
     is_legacy_roles,
     natural_key,
+    page_signals_notice,
     validate_all,
 )
 from us_outbound.timeparse import utc_strict
@@ -356,9 +357,7 @@ def run(ctx: Context) -> dict:
         summary["roles_notice"] = ("the Roles tab is still in SPEC 5's layout, so contacts follow the old order; "
                                    "run `us-outbound settings load --tab Roles --live` for Harry's 1 Oct order")
     if settings is not None:
-        from us_outbound.sources.pages import sheet_notice
-
-        notice = sheet_notice(settings)
+        notice = page_signals_notice(settings)
         if notice:
             summary["signals_notice"] = notice
     log("settings_sync", **summary)

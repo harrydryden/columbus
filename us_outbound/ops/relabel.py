@@ -45,6 +45,7 @@ from typing import Any
 
 from us_outbound import facts, labels
 from us_outbound.clean.domains import is_public_body
+from us_outbound.clients.guard import CLI_APPROVER
 from us_outbound.context import Context
 from us_outbound.enrol import approvals
 from us_outbound.logs import log
@@ -210,7 +211,7 @@ def set_label(ctx: Context, domain: str, text: str) -> dict:
                  "label_source": labels.APPROVER, "label_checked_at": ctx.now}
         out["cards_to_withdraw"] = [item.company for item, _, _ in approvals.unfit_cards(ctx, {a["account_id"]: after})]
         return out
-    got = labels.correct(ctx, a, ind, by=approvals.CLI_APPROVER, via="cli", who="at the command line (labels set)")
+    got = labels.correct(ctx, a, ind, by=CLI_APPROVER, via="cli", who="at the command line (labels set)")
     found = approvals.unfit_cards(ctx, {a["account_id"]: ctx.store.get("accounts", account_id=a["account_id"])})
     return {**out, "sheet": got["sheet"], "cards_withdrawn": approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx),
                                                                                        found)}

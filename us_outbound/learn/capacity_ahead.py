@@ -25,12 +25,12 @@ from datetime import timedelta
 from typing import Any
 
 from us_outbound import fmt
+from us_outbound.base import notify
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.enrol import capacity
 from us_outbound.learn import daily_report
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.registry import ramp
 from us_outbound.registry.mailboxes import MAX_CAP
 

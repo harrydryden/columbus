@@ -43,7 +43,7 @@ Dry-run and live are the same: the job writes only to the database and its Apoll
 reads, which the guard allows in dry-run, so reveals spend credits in both, within the budget
 (as verify_in_clay spends Clay's). The scheduler runs it without --live.
 
-A kill rule pausing the apollo email source (learn/holds.paused_sources: Apollo's addresses bounced;
+A kill rule pausing the apollo email source (base/holds.paused_sources: Apollo's addresses bounced;
 learn/kill_rules.py) stops the run before any search, reveal or credit, and the run's summary and so its
 heartbeat say why (apollo_paused; Harry, 7 Oct 2026), as the clay source's pause stops Clay's lookups
 (clay_room). Clay alone is not used meanwhile, even with clay_email_fallback = yes and the clay source not
@@ -62,7 +62,7 @@ otherwise the workspace's Work Email function as it is (its own inputs: Full Nam
 Social Profile URL, Company Name; clients/clay.WORK_EMAIL_INPUTS; it charges only when it finds an
 email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN a run, each within today's share
 of clay_monthly_credits (budget.py; credit_ledger, reserved before the call and settled after it),
-none while a kill rule pauses the clay source (learn/holds.paused_sources) or the Clay API key is
+none while a kill rule pauses the clay source (base/holds.paused_sources) or the Clay API key is
 not set, and none for the rest of the run once CLAY_MAX_ERRORS lookups have failed (a wrong key or
 a function without "API & CLI" would otherwise spend every lookup's reserve). Only a "valid"
 result is used: catch_all_valid waits for pipeline change 8 (whether a catch-all is sendable with
@@ -82,6 +82,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, ledger
+from us_outbound.base import holds
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
 from us_outbound.clients.apollo import credits_left, people_in, while_full_page
@@ -97,7 +98,6 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol import enrol, queue, second
 from us_outbound.facts import newest_by
-from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
 from us_outbound.timeparse import iso_date, utc, utc_strict

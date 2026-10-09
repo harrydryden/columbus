@@ -8,7 +8,7 @@ import pytest
 
 from tests.fakes import make_context
 from tests.test_labels import DEFAULT
-from us_outbound.ops import notify
+from us_outbound.base import notify
 
 
 def test_the_period_is_the_uk_day_week_or_month_and_always_last():

@@ -13,8 +13,8 @@ import pytest
 from tests.test_verify import account, make, status
 from tests.test_sources_apollo import settings_with
 from us_outbound import clay_cross_check as cc, verify
+from us_outbound.base import holds
 from us_outbound.clients.clay import ClayError, parse_cross_check_output
-from us_outbound.learn import holds
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import General, Override
 from us_outbound.settings.validate import validate_all

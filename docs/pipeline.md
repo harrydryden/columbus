@@ -435,7 +435,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **QA stamps the exact wording:** `qa` carries a check code over the row's subjects, bodies and role lines. Edit the copy and the code no longer matches, so the row stops being sent until it passes QA again (`us-outbound copy qa --version <v> --live`, about a cent a row).
 
-**The copy rules** (`enrol/copy_rules.py`; SPEC 10, plus Harry's changes):
+**The copy rules** (`copy/copy_rules.py`; SPEC 10, plus Harry's changes):
 - SPEC 10's word rules: counselor and counseling, never therapy or therapist; never licensed; never unlimited; American spelling; no statistic but "30% of employees use Spill"; never disparage their EAP; "EAP" never in Spill's name; demos only with Harry.
 - The shape of each email:
   - It opens "Hi {{first_name}}," and ends with a sign-off and `{{sender_first_name}}`.

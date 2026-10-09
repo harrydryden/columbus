@@ -20,7 +20,7 @@ to wait for a full inbox, including on the Mondays that collect steps due at the
 
 Leads that have stopped (a reply, bounce or unsubscribe, the account-level stop that ends a
 second contact's lead with the first's, or an account no longer enrolled)
-hold nothing. A send approval still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026)
+hold nothing. A send approval still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026)
 holds one of today's slots for its sender until it is approved or expires (limits.today), so
 the next enrol run never proposes more than the senders can send.
 
@@ -29,7 +29,7 @@ Each mailbox's sends a day are the lowest of:
     week, 20 in its second, then its cap;
   * the Mailboxes tab's daily_cap;
   * Instantly's own daily limit on the account, when mailbox_health last saw one.
-A mailbox a kill rule holds (learn/holds.py) has no capacity, even before the sheet syncs.
+A mailbox a kill rule holds (base/holds.py) has no capacity, even before the sheet syncs.
 
 What Instantly reports back, from the latest mailbox_health run (registry/mailboxes.py):
   * each mailbox's own daily limit (the lower of it and the sheet's cap is used);
@@ -63,13 +63,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound.base import holds
 from us_outbound.budget import is_send_day
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS, STEP_DAYS
 from us_outbound.context import ET, ConfigError, Context
-from us_outbound.learn import holds
 from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
@@ -271,7 +271,7 @@ class SenderCapacity:
     sent_last_day: int | None = None  # campaign emails this sender's inboxes sent that day
     instantly_says: str = ""  # why Instantly says the campaign is not sending, when it says so
     at_limit: bool = False  # Instantly says the campaign or all its inboxes hit their daily limit
-    # Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026): each holds one of
+    # Send approvals still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026): each holds one of
     # today's slots, so free is what is left after them (limits.today takes them off).
     pending: int = 0
     held_from: int | None = None  # free before the waiting send approvals took their slots

@@ -10,10 +10,10 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from tests.test_cli import LIVE_SETTINGS, SETTINGS, Harness
 from tests.test_registry import FakeInstantly, StubSheets, slack_routes
+from us_outbound.base import heartbeats
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
-from us_outbound.ops import heartbeat as hb
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import General, Settings
 from us_outbound.settings.sync import load_current
@@ -105,17 +105,17 @@ def test_sync_says_when_the_sheet_is_unusable(capsys):
 def test_start_live_syncs_first_so_live_sending_just_set_on_the_sheet_counts(capsys):
     w = SheetWorld()
     assert w.run("sync") == 0 and w.run("stop", "--live") == 0  # live_sending no in force; enrollment stopped
-    assert hb.enrolment_paused(w.store) is not None
+    assert heartbeats.enrolment_paused(w.store) is not None
     capsys.readouterr()
     live_sheet(w.sheet)  # Harry's edits on the sheet, not synced yet
     assert w.run("start", "--live") == 0
     lines = report(capsys.readouterr().out)
-    assert w.calls[-2:] == [("settings_sync", True, False), (hb.OPERATOR_START, True, False)]
+    assert w.calls[-2:] == [("settings_sync", True, False), (heartbeats.OPERATOR_START, True, False)]
     assert lines[0] == "Settings synced from the sheet just now: 4 rows changed."  # two keys: one closed, one opened each
     assert not any("Dry-run" in line or "Running dry" in line for line in lines)
-    [start] = [b for b in w.store.select("heartbeats") if b["job"] == hb.OPERATOR_START]
+    [start] = [b for b in w.store.select("heartbeats") if b["job"] == heartbeats.OPERATOR_START]
     assert start["dry_run"] is False and start["status"] == "ok"
-    assert hb.enrolment_paused(w.store) is None  # resumed
+    assert heartbeats.enrolment_paused(w.store) is None  # resumed
 
 
 def test_start_live_with_the_sheet_still_at_no_runs_dry_and_says_how_to_go_live(capsys):
@@ -133,7 +133,7 @@ def test_start_without_live_does_not_sync(capsys):
     assert w.run("sync") == 0
     capsys.readouterr()
     assert w.run("start") == 0
-    assert w.calls[-1] == (hb.OPERATOR_START, False, False) and len(w.calls) == 2
+    assert w.calls[-1] == (heartbeats.OPERATOR_START, False, False) and len(w.calls) == 2
     lines = report(capsys.readouterr().out)
     assert lines[-1] == "Dry-run: campaigns were not activated and enrollment stays stopped. Nothing was sent. Needs --live."
 
@@ -152,7 +152,7 @@ def test_start_goes_on_when_the_sync_fails(capsys, monkeypatch):
     lines = report(capsys.readouterr().out)
     assert lines[0] == ("Could not sync the settings first (RuntimeError: the Sheets API is down); "
                         "going on with the settings in force.")
-    [start] = [b for b in w.store.select("heartbeats") if b["job"] == hb.OPERATOR_START]
+    [start] = [b for b in w.store.select("heartbeats") if b["job"] == heartbeats.OPERATOR_START]
     assert start["dry_run"] is False  # live_sending was already yes in force
 
 

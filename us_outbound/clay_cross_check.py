@@ -11,7 +11,7 @@ clay_cross_check = yes (default no), Clay is asked first, so Harry sees only wha
      is a signal_events fact (source clay, fact FACT, Clay's source note as the quote), and an account with
      one is not asked again. A Clay error is not stored, so that account is asked again next run; the job
      summary reports it and the doubt stands for the hand-check. Not while a kill rule pauses the clay source
-     (learn/holds.paused_sources), and only within today's share of clay_monthly_credits (budget.py): RESERVE
+     (base/holds.paused_sources), and only within today's share of clay_monthly_credits (budget.py): RESERVE
      is written to credit_ledger for each account before the call and settled after it at what Clay reports.
   2. Fill: a missing HQ state, or a missing size (no count and no band), is filled in on the account from
      Clay's answer before the checks, so the account can verify the same day; never a field an Overrides row
@@ -39,18 +39,18 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from us_outbound import budget, ledger, verify
+from us_outbound.base import holds
 from us_outbound.clean.people import size_band, state_code
 from us_outbound.clients.clay import RUN_ITEMS_MAX, ClayError, parse_cross_check_output
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.facts import load, newest
-from us_outbound.learn import holds
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.settings.model import SIZE_BANDS, Settings
 
-SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (learn/holds.py)
+SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (base/holds.py)
 FACT = "hq_and_size"
 # What one lookup costs (a data provider, or Claygent reading the company's pages) is unconfirmed, and moot until
 # the "US Outbound – Accounts" function is built and clay_cross_check is yes (CLAY-CROSS-COST). Reserved for

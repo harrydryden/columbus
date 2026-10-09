@@ -131,10 +131,10 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("contacts", "test_arm"): {"a", "b"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
-        "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
+        "escalated", "send_approval",  # enrol/approvals/ (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
-        "alert",  # ops/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
+        "alert",  # base/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
                            "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
@@ -142,7 +142,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
     },
-    # A reply's approval, then a send approval's outcome (enrol/approvals.py).
+    # A reply's approval, then a send approval's outcome (enrol/approvals/).
     ("events", "approval"): {"approved", "edited", "skipped", "approved_edited", "contact_rejected", "company_rejected",
                              "expired", "blocked"},
     ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB

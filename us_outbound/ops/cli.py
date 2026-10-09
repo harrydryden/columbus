@@ -18,7 +18,7 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       stop --live is the brake: live_sending = no does not stop Instantly.
                                       Over a blackout start leaves the campaigns paused, and the blackout
                                       job starts them after it (registry/blackout.py; 7 Oct 2026)
-  approvals list | send | contact |   send approvals without Slack (enrol/approvals.py; Harry, 2 Oct 2026:
+  approvals list | send | contact |   send approvals without Slack (enrol/approvals/; Harry, 2 Oct 2026:
     company [ID]                      while auto_send = no every email waits for approval), in the Slack
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
                                       person, company = 🚫 not this company. approve, reject --contact and
@@ -128,21 +128,15 @@ from pathlib import Path
 from typing import Any
 
 from us_outbound import fmt
+from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP, enrolment_paused, latest_runs
+from us_outbound.base.holds import held_mailboxes
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.logs import log, redact
 from us_outbound.learn import copy_tests
 from us_outbound.ops import bootstrap, campaigns
-from us_outbound.ops.heartbeat import (
-    OPERATOR_START,
-    OPERATOR_STOP,
-    enrolment_paused,
-    latest_runs,
-    overdue_minutes,
-    run_job,
-    scheduled_jobs,
-)
+from us_outbound.ops.heartbeat import overdue_minutes, run_job, scheduled_jobs
 
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
@@ -512,7 +506,6 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
         print(f"Retention: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     print("Mailboxes:")
     try:
-        from us_outbound.learn.holds import held_mailboxes
         from us_outbound.registry.ramp import ramps
 
         on_ramp, held = ramps(ctx.store, s, ctx.now_et().date()), held_mailboxes(ctx.store)
@@ -972,7 +965,7 @@ def _print_send_approvals(items: list[dict]) -> None:
 
 
 def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
-    """Send approvals at the command line (enrol/approvals.py): the same close path as Slack, approved_by "cli"."""
+    """Send approvals at the command line (enrol/approvals/): the same close path as Slack, approved_by "cli"."""
     from us_outbound.enrol import approvals
 
     if args.action == "list":

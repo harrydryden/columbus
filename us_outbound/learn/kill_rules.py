@@ -40,13 +40,13 @@ last time it fired for the same mailbox, domain, source or group, so old bounces
 At least 2 bounces (MIN_BOUNCES) before a rate rule fires: on the ramp's 10 a day a single
 bounce would be 10%, and would pause a healthy mailbox (a block bounce still pauses at once).
 
-Each firing is a hitl_items row (kind kill_rule; learn/holds.py says what it holds). A mailbox
+Each firing is a hitl_items row (kind kill_rule; base/holds.py says what it holds). A mailbox
 is paused through the registry pause path (registry/mailboxes.mailbox_pause: Paused on the
 Mailboxes tab and off its campaign's sending list); if the sheet cannot be written it still
 comes off the sending list, and the hold keeps it out of every job either way. A rule does not
 fire again while its item is open. Every bounced contact goes on suppression (reason bounce).
 All firings of a run go in one Slack message to the alert channel, mentioning the approvers;
-with no Slack token the message goes to the log (ops/notify.py). Dry-run computes, records the
+with no Slack token the message goes to the log (base/notify.py). Dry-run computes, records the
 items and posts to the dev channel, but changes neither the sheet nor Instantly.
 
 Not here: a human-in-the-loop item left for 24 hours (the reply desk escalates it; enrol already
@@ -65,14 +65,13 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound import fmt, suppression
+from us_outbound.base import holds, notify
+from us_outbound.base.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.learn import holds
-from us_outbound.learn.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.replies import kinds
 from us_outbound.settings.model import Settings
 from us_outbound.timeparse import utc

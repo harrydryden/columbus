@@ -7,7 +7,7 @@ NAME, since that is what the guard checks; request bodies carry the resolved id.
 Slack answers errors with HTTP 200 and ok: false, which raises ApiError here.
 
 Approvals (SPEC 11, poll_approvals) read thread replies and the reactions on one message.
-Both callers (the reply desk and enrol/approvals.py) read a thread with replies() and then the
+Both callers (the reply desk and enrol/approvals/) read a thread with replies() and then the
 reactions on a message in it, so replies() keeps the reactions conversations.replies already
 returned with each message (the parent too), and reactions() answers from them when Slack listed
 every user of every reaction (count == len(users)), instead of one reactions.get per open item: at
@@ -15,7 +15,7 @@ a hundred or so open cards those calls alone passed Slack's per-minute limit and
 timeout. A message read without a reactions list, or read more than REACTIONS_FRESH seconds ago,
 is asked for with reactions.get as before; the bot's own react() forgets that message's reactions.
 The bot adds reactions of its own (react) only on the two US Outbound channels: it seeds ✅ and
-❌ on a send approval's card (enrol/approvals.py; Harry, 2 Oct 2026) and on a reply alert
+❌ on a send approval's card (enrol/approvals/; Harry, 2 Oct 2026) and on a reply alert
 (replies/poll.py) so deciding is one click, and bot_user_id tells the approvals pass which
 reactions are its own. In dry-run a reaction lands only on the dev channel.
 Direct messages (dm) go only to the approvers in approver_slack_ids (the guard checks), for

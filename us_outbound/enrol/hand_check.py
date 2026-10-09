@@ -30,7 +30,7 @@ A week with nothing to check records no item: run it again once accounts are que
 Doubts found after the week's item is recorded wait for the next week's hand-check.
 
 With the General key auto_send = no (the default; Harry, 2 Oct 2026) every email is approved in
-Slack before it is sent (enrol/approvals.py), so there is no random sample and enrol does not wait
+Slack before it is sent (enrol/approvals/), so there is no random sample and enrol does not wait
 for the hand-check. The accounts held for doubtful Apollo facts are not covered by that (they are
 not verified, so no email of theirs is proposed), so a week with any of them still records and posts
 an item holding only those (per_group 0); a week without any skips, saying why. If auto_send is then
@@ -60,10 +60,10 @@ from datetime import timedelta
 from typing import Any
 
 from us_outbound import accounts, labels, verify
+from us_outbound.base import notify
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import Settings
 

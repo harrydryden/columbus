@@ -49,6 +49,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterable
 
+from us_outbound.copy.copy_markup import word_count
 
 MAX_LINE = 300  # SPEC 10: no line over 300 characters
 ALLOWED_STATISTIC = "30"  # SPEC 10: the 30% utilization figure is the only statistic allowed
@@ -408,8 +409,6 @@ def email_violations(
         out.append(f'body has the bare address "{bare}"; write it as [anchor text](link)')
     lines = [line for line in words.split("\n") if line.strip()]
     counted = " ".join(lines[1:-2]) if len(lines) > 3 else " ".join(lines)
-    from us_outbound.enrol.copy_markup import word_count
-
     n = word_count(counted) - sum(word_count(u) for u in uncounted if u and u in counted)
     lo, hi = STEP_WORDS.get(step, (0, 10**6))
     if not lo <= n <= hi:

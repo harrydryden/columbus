@@ -1,7 +1,7 @@
 """Credit and spend alerts (Harry, 7 Oct 2026): ask for a purchase or a raise before a balance or a budget runs out.
 
 The daily post (learn/daily_post.py, 09:00 UK) runs this first, so the asks reach the alert channel just before
-the post, in one message with the approvers mentioned (ops/notify.post_once keeps what was sent in events, so a
+the post, in one message with the approvers mentioned (base/notify.post_once keeps what was sent in events, so a
 rerun or a restart never repeats a line):
   * Apollo's own balance (credit_usage: lead credits) against General apollo_floor. Below the floor every source
     and pick_contacts' email reveals stop spending (sources/apollo_credits.floor_reason), and a source's skip for
@@ -33,12 +33,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound import budget
+from us_outbound.base import notify
 from us_outbound.clients.apollo import VISITOR_CREDIT, credit_stats, credits_left
 from us_outbound.clients.claude import cap_reached_at, month_spend_usd
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.settings.model import Settings
 from us_outbound.settings.validate import CLAUDE_CAP_USD
 from us_outbound.timeparse import utc

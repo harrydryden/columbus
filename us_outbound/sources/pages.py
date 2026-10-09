@@ -89,6 +89,7 @@ from us_outbound.logs import log
 from us_outbound.scoring.score import match_signal
 from us_outbound.settings.conditions import ContextRules
 from us_outbound.settings.model import Settings, Signal
+from us_outbound.settings.validate import page_signals_notice
 from us_outbound.sources import job_posts
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
 from us_outbound.timeparse import utc, utc_strict
@@ -97,7 +98,6 @@ JOB = "read_pages"
 SOURCE = "careers_pages"
 FEED_SOURCE = job_posts.SOURCE
 READER_SOURCES = (SOURCE, FEED_SOURCE)
-CLAY_SOURCE = "clay_careers"
 READ, NO_PAGES, BLOCKED, ERROR = "read", "no_pages_found", "blocked", "error"
 OUTCOMES = (READ, NO_PAGES, BLOCKED, ERROR)
 UNREAD = frozenset({BLOCKED, ERROR})  # scoring/score.UNREAD_STATUSES
@@ -187,16 +187,6 @@ def vocabulary(settings: Settings) -> Vocabulary:
                 context[term] = context.get(term, ()) + words
     terms = tuple(dict.fromkeys(t for s in sigs for t in s.terms))
     return Vocabulary(terms, context, tuple((s.terms, s.context) for s in sigs))
-
-
-def sheet_notice(settings: Settings) -> str | None:
-    """Why the page signals can't fire on this job's facts yet: a sheet loaded before 2 Oct 2026."""
-    stale = [s.signal for s in settings.active_signals() if CLAY_SOURCE in s.sources and SOURCE not in s.sources]
-    if not stale:
-        return None
-    return (f"the Signals tab's {', '.join(stale)} do not read {SOURCE}, so what the page reader finds on company "
-            "sites adds nothing to them; run `us-outbound settings load --tab Signals --live` (its source column "
-            f"adds {SOURCE})")
 
 
 # -- which accounts ------------------------------------------------------------------------------
@@ -733,7 +723,7 @@ def report(ctx: Context) -> list[str]:
     lines.append(decision(total))
     waiting, _ = candidates(ctx)
     lines.append(f"Waiting to be read: {len(waiting)} queue accounts (at most {MAX_ACCOUNTS_PER_RUN} a run).")
-    notice = sheet_notice(ctx.settings)
+    notice = page_signals_notice(ctx.settings)
     if notice:
         lines.append(f"Note: {notice}.")
     return lines
@@ -754,7 +744,7 @@ def post_lines(ctx: Context) -> list[str]:
              f"  So far {total.accounts} accounts: feed {total.share(total.with_feed):.0%}, "
              f"benefits text {total.share(total.with_text):.0%}; signals matched: {sigs}.",
              f"  {decision(total)}"]
-    notice = sheet_notice(ctx.settings)
+    notice = page_signals_notice(ctx.settings)
     if notice:
         lines.append(f"  Note: {notice}.")
     return lines
@@ -812,7 +802,7 @@ def run(ctx: Context) -> dict:
         status="ok", stopped_by=stopped, candidates=len(todo), attempted=read, left_for_next_run=len(todo) - read,
         requests=requests, facts=rows_written, seconds=round(_clock() - start, 1),
         run=this_run.as_dict(), cumulative=total.as_dict(), decision=decision(total),
-        sheet_notice=sheet_notice(ctx.settings), errors=errors[:LIST_LIMIT],
+        sheet_notice=page_signals_notice(ctx.settings), errors=errors[:LIST_LIMIT],
     )
     log("read_pages_done", run_id=ctx.run_id, **summary)
     return summary

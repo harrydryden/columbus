@@ -38,10 +38,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from us_outbound.base import notify
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import SECRET_NAMES, UK, Context
 from us_outbound.logs import clip, log, redact
-from us_outbound.ops import notify
 from us_outbound.ops.bootstrap import GOOGLE_KEY_VAR
 from us_outbound.ops.heartbeat import DAILY, EXPECTED
 from us_outbound.ops.watchdog import JOB as SELF  # heartbeat_check: its own detail holds what it found
