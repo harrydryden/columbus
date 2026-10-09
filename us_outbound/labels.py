@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -852,6 +853,8 @@ TARGET_RIGHT = 0.95  # cards with the right industry; SPEC 14's 90% bar is the h
 MIN_CARDS = 30  # a rate on fewer cards is "too few to read" in the readout
 ASK_CORRECTIONS, ASK_SHARE, ASK_MIN_CARDS = 3, 0.10, 10  # corrections in a day that ask for a look at the tab
 ASK_AGREEMENT, ASK_MIN_CHECKS = 0.70, 20  # rules-model agreement under which the tab's codes need a look
+ASK_NO_RULES = 0.30  # the share of checked companies the rules gave no label over which the tab's codes need adding
+GAP_CODES = 3  # NAICS codes named in that ask
 VERIFY_JOB = "verify_accounts"
 
 
@@ -859,9 +862,11 @@ VERIFY_JOB = "verify_accounts"
 class Tally:
     """The label check's numbers over a period: the model's checks, their decisions, and the cards decided."""
 
-    checked: int = 0
+    checked: int = 0  # companies the model was asked about, each once (its latest check in the period)
     decisions: dict[str, int] = field(default_factory=dict)  # source, or held / disqualified
+    labelled: int = 0  # checked companies the rules gave a label: what agreement is measured over
     disagreed_groups: dict[str, int] = field(default_factory=dict)  # the rules' group, where the model differed
+    no_rules: dict[str, str] = field(default_factory=dict)  # account_id -> the model's label, where the rules had none
     corrections: list[tuple[str, str]] = field(default_factory=list)  # (from, to)
     approvals: int = 0  # cards decided by a person, corrections aside
 
@@ -874,7 +879,10 @@ class Tally:
         return self.approvals + len(self.corrections)
 
     def share_agreed(self) -> float | None:
-        return self.agreed / self.checked if self.checked else None
+        """Of the companies the rules labelled, the share the model gave the same label. A company the rules gave no
+        label cannot agree; it is counted in no_rules instead (9 Oct 2026: the ask read 31% "agreement" that was
+        mostly companies with no rules label)."""
+        return self.agreed / self.labelled if self.labelled else None
 
     def share_right(self) -> float | None:
         return 1 - len(self.corrections) / self.cards if self.cards else None
@@ -885,10 +893,13 @@ def _between(rows: Iterable[Mapping[str, Any]], key: str, start: datetime | None
 
 
 def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
-    """The checks asked, the corrections approvers made and the cards decided in [start, end) (start None: ever)."""
+    """The companies checked, the corrections approvers made and the cards decided in [start, end) (start None:
+    ever). A company asked more than once in the period (an audit, then a second look) counts once, by its latest
+    check."""
     t = Tally()
     decisions: dict[str, int] = {}
     groups: dict[str, int] = {}
+    latest: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
     for e in _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
                       "observed_at", start, end):
         v = e.get("value") or {}
@@ -897,13 +908,21 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
             continue
         if not v.get("asked"):
             continue
+        aid, at = str(e.get("account_id") or e.get("event_id")), _when(e.get("observed_at"))
+        if aid not in latest or at >= latest[aid][0]:
+            latest[aid] = (at, v)
+    for aid, (_, v) in latest.items():
         t.checked += 1
         d = v.get("decision") or {}
         key = {HOLD: "held", DISQUALIFY: "disqualified"}.get(str(d.get("action")), str(d.get("source") or ""))
         decisions[key] = decisions.get(key, 0) + 1
-        if v.get("rules") != v.get("model"):
-            g = str(v.get("rules_group") or "no rules label")
-            groups[g] = groups.get(g, 0) + 1
+        if not v.get("rules"):
+            t.no_rules[aid] = str(v.get("model") or NONE)
+        else:
+            t.labelled += 1
+            if v.get("rules") != v.get("model"):
+                g = str(v.get("rules_group") or v.get("rules"))
+                groups[g] = groups.get(g, 0) + 1
     t.decisions, t.disagreed_groups = decisions, groups
     t.approvals = sum(1 for e in _between(ctx.store.select("events", {"type": "send_approval"}), "occurred_at", start,
                                           end) if e.get("approval") in DECIDED)
@@ -931,15 +950,40 @@ def _moves(pairs: Sequence[tuple[str, str]], n: int = 5) -> str:
     return "; ".join(m + (f" ({k})" if k > 1 else "") for m, k in ranked)
 
 
+def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> tuple[list[tuple[str, str, int]], int]:
+    """([(Apollo NAICS code, the model's label, companies)] most common first, the companies with no NAICS code) over
+    the companies the rules gave no label and the model did: the codes to add to that label's naics_prefixes."""
+    labelled = {aid: label for aid, label in no_rules.items() if label and label != NONE}
+    if not labelled:
+        return [], 0
+    newest: dict[str, Mapping[str, Any]] = {}
+    for e in ctx.store.select("signal_events", {"account_id": sorted(labelled), "source": APOLLO_SOURCE,
+                                                "fact": "naics"}):
+        aid = str(e.get("account_id"))
+        if aid not in newest or _when(e.get("observed_at")) >= _when(newest[aid].get("observed_at")):
+            newest[aid] = e
+    pairs: dict[tuple[str, str], int] = {}
+    uncoded = 0
+    for aid, label in labelled.items():
+        codes = _texts((newest.get(aid) or {}).get("value"))
+        if not codes:
+            uncoded += 1
+        for code in dict.fromkeys(codes):
+            pairs[(code, label)] = pairs.get((code, label), 0) + 1
+    ranked = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+    return [(code, label, k) for (code, label), k in ranked], uncoded
+
+
 def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     """The daily post's Labels block: the checks and their decisions in the period, the latest verify run's unchecked
     companies (and why, when the model could not be asked), and the cards' industry corrections."""
     t, run = tally(ctx, start, end), last_verify(ctx)
     d = t.decisions
     unchecked = int(run.get("unchecked") or 0)
-    lines = [f"  Checked: {t.checked} (rules and model agreed on {t.agreed}, {_pct(t.agreed, t.checked)}; model "
-             f"overruled {d.get(MODEL, 0)}; group copy {d.get(UMBRELLA, 0)}; General copy {d.get(DISPUTED, 0)}; held "
-             f"{d.get('held', 0)}; disqualified {d.get('disqualified', 0)}; waiting unchecked {unchecked})."]
+    lines = [f"  Checked: {t.checked} (rules and model agreed on {t.agreed} of the {t.labelled} the rules labelled, "
+             f"{_pct(t.agreed, t.labelled)}; no rules label {len(t.no_rules)}; model overruled {d.get(MODEL, 0)}; "
+             f"group copy {d.get(UMBRELLA, 0)}; General copy {d.get(DISPUTED, 0)}; held {d.get('held', 0)}; "
+             f"disqualified {d.get('disqualified', 0)}; waiting unchecked {unchecked})."]
     if run.get("unavailable_reason"):
         lines.append(f"  The label check could not ask the model at the last verify run: {run['unavailable_reason']}.")
     if t.cards:
@@ -966,11 +1010,25 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
                     f"{t.cards} cards). Check the Industries tab's definitions and keywords for {_moves(t.corrections)}; "
                     "`us-outbound labels audit --live` checks the queue again."))
     share = t.share_agreed()
-    if t.checked >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
-        worst = max(t.disagreed_groups.items(), key=lambda kv: kv[1])[0] if t.disagreed_groups else "the groups"
+    if t.labelled >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
+        worst, k = max(t.disagreed_groups.items(), key=lambda kv: kv[1]) if t.disagreed_groups else ("the groups", 0)
         out.append((f"labels_agreement:{day}",
-                    f"labels: the rules and the model agreed on only {share:.0%} of {t.checked} companies; the "
-                    f"Industries tab's NAICS codes or keywords for {worst} need a look."))
+                    f"labels: where the rules gave a label, the model agreed on only {share:.0%} of {t.labelled} "
+                    f"companies; most differences were in {worst} ({k}). Check that group's naics_prefixes and "
+                    "apollo_keywords on the Industries tab."))
+    gaps = len(t.no_rules)
+    if gaps >= ASK_MIN_CHECKS and gaps >= ASK_NO_RULES * t.checked:
+        said = Counter(label for label in t.no_rules.values() if label != NONE).most_common(GAP_CODES)
+        codes, uncoded = gap_codes(ctx, t.no_rules)
+        text = (f"labels: the rules gave no label to {gaps} of {t.checked} companies checked ({gaps / t.checked:.0%})"
+                + (f"; the model most often said {', '.join(f'{x} ({k})' for x, k in said)}" if said else "") + ".")
+        if codes:
+            text += (" Their commonest NAICS codes: " + ", ".join(f"{c} → {x} ({k})" for c, x, k in codes)
+                     + ". Add each to that label's naics_prefixes on the Industries tab, then `us-outbound sync` and "
+                     "`us-outbound relabel --live`.")
+        if uncoded:
+            text += f" {uncoded} have no NAICS code from Apollo, so only apollo_keywords can label them."
+        out.append((f"labels_no_rules:{day}", text))
     waiting = int(run.get("unchecked") or 0)
     if run.get("unavailable_reason") and waiting:
         out.append((f"labels_unavailable:{day}",
@@ -997,7 +1055,9 @@ def readout_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     for name, t in (("Last week", week), ("So far", ever)):
         d = t.decisions
         lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on "
-                     f"{_pct(t.agreed, t.checked)}; held {d.get('held', 0)}, disqualified {d.get('disqualified', 0)}.")
+                     f"{_pct(t.agreed, t.labelled)}" + (f" of the {t.labelled} the rules labelled ({len(t.no_rules)} "
+                     "had no rules label)" if t.no_rules else "") + f"; held {d.get('held', 0)}, disqualified "
+                     f"{d.get('disqualified', 0)}.")
         if t.corrections:
             lines.append(f"  Corrections: {_moves(t.corrections, 10)}")
     return lines

@@ -244,8 +244,10 @@ def test_heartbeat_check_runs_on_the_defaults_when_the_settings_are_unusable_and
         factory("daily_post", True)
     assert factory("heartbeat_check", False).dry_run  # without --live it stays dry
     assert cli.main(["run", "heartbeat_check", "--live"], context_factory=factory) == 0
-    [post] = posts(t)
-    assert post["channel"] == "C_ALERT"  # live on the defaults: not the dev channel
+    # The real clock: in the 09:00 UK hour the missed-heartbeat reminder posts too (heartbeat.REMINDER_HOUR_UK).
+    sent = posts(t)
+    assert sent and {p["channel"] for p in sent} == {"C_ALERT"}  # live on the defaults: not the dev channel
+    [post] = [p for p in sent if "Errors the jobs met:" in p["text"]]
     assert "The settings are unusable (General): every job refuses to run until the sheet is fixed" in post["text"]
     assert pings(t) == [PING + "/fail"]
     [row] = [r for r in store.select("heartbeats") if r["job"] == "heartbeat_check"]
