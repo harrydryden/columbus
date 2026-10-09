@@ -1,5 +1,9 @@
-"""The decisions that close or hold a send approval (9 Oct 2026, split from enrol/approvals.py): _close and _hold,
-❌ (reject), 👤 (drop_contact), 🚫 (drop_company), expiry and withdrawal.
+"""How a send approval moves (9 Oct 2026, split from enrol/approvals.py): the one transition() a payload state
+changes through, with its table of allowed moves, and the decisions that close or hold an item.
+
+Each payload state has one hitl_items status (STATUS): waiting, rejected and editing are open, sending is sending,
+done is handled. transition() writes the new state with its status: a move that changes the status is a
+compare-and-set (False when another run moved the item first), one that keeps it a plain write.
 """
 
 from __future__ import annotations
@@ -12,17 +16,22 @@ from us_outbound.context import Context
 from us_outbound.enrol import enrol
 from us_outbound.enrol.approvals.cards import choices_text
 from us_outbound.enrol.approvals.model import (
+    ADDING,
     COMPANY_REJECTED,
     CONTACT_REJECTED,
     DONE,
+    EDITING,
     EVENT_PREFIX,
     EVENT_TYPE,
     EXPIRED,
     HANDLED,
     KIND,
+    OPEN,
     REJECTED,
     SEED_CHOICES,
+    SENDING,
     SYSTEM,
+    WAITING,
     Item,
     _cas,
     _day,
@@ -35,6 +44,38 @@ from us_outbound.enrol.approvals.thread import _seed, _thread, _update_card
 from us_outbound.logs import log
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
 from us_outbound.timeparse import iso_date
+
+# Each payload state's hitl_items status.
+STATUS: dict[str, str] = {WAITING: OPEN, REJECTED: OPEN, EDITING: OPEN, ADDING: SENDING, DONE: HANDLED}
+# The moves transition() makes: from a payload state, the states it may go to.
+#   waiting   -> rejected (❌), editing (✏️), waiting (an edit reply, which needs a fresh ✅), sending (✅), done
+#   rejected  -> editing (✏️), waiting (an edit reply), sending (✅, or "send"), done (👤, 🚫, expiry, withdrawal)
+#   editing   -> waiting (an accepted edit), sending, done
+#   sending   -> waiting (Instantly refused the add, its plan was full, or the add was cut off), done (added, or
+#                refused for good)
+#   done      -> nothing: a handled item is never moved again
+# One move is not made here: a guard refusal during the add puts back whatever state the item had (add.send).
+MOVES: dict[str, frozenset[str]] = {
+    WAITING: frozenset({WAITING, REJECTED, EDITING, ADDING, DONE}),
+    REJECTED: frozenset({WAITING, EDITING, ADDING, DONE}),
+    EDITING: frozenset({WAITING, ADDING, DONE}),
+    ADDING: frozenset({WAITING, DONE}),
+    DONE: frozenset(),
+}
+
+
+def transition(ctx: Context, item: Item, state: str, **values: Any) -> bool:
+    """Move the item to payload state `state`, its status with it (STATUS), writing the payload and these columns
+    while the item is in the status it was read in. A move off the MOVES table is logged and still made, so a live
+    run never stops on one."""
+    if state not in MOVES.get(item.state, frozenset()):
+        log("send_approval_unexpected_move", item_id=item.id, state=item.state, to=state)
+    item.payload["state"] = state
+    status = STATUS[state]
+    if status == item.status:
+        _save(ctx, item, **values)
+        return True
+    return _cas(ctx, item, status, **values)
 
 
 # -- the decisions that close or hold an item -----------------------------------------------------------------------
@@ -51,10 +92,10 @@ def _event(ctx: Context, item: Item, outcome: str, by: str) -> None:
 def _close(ctx: Context, item: Item, outcome: str, by: str, slack: Any, *, status: str, note: str,
            reason: str = "", via: str = "") -> bool:
     """Handled, with its outcome, the events row, the card and a thread note. False if another run closed it."""
-    item.payload.update(state=DONE, outcome=outcome, reason=reason)
+    item.payload.update(outcome=outcome, reason=reason)
     item.payload["decided"] = {"by": by, "at": ctx.now.isoformat(), "via": via, "outcome": outcome}
     item.payload.pop("sending", None)
-    if not _cas(ctx, item, HANDLED, handled_at=ctx.now, handled_by=by):
+    if not transition(ctx, item, DONE, handled_at=ctx.now, handled_by=by):
         return False
     _event(ctx, item, outcome, by)
     _update_card(ctx, slack, item, status)
@@ -85,11 +126,11 @@ def reject(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> None:
     """❌: not sent; the thread offers the three choices, their reactions seeded."""
     p = item.payload
     p.pop("held", None)  # ❌ stops an approval a hold kept
-    p.update(state=REJECTED, approve_ts="", rejected={"by": by, "at": ctx.now.isoformat(), "via": via})
+    p.update(approve_ts="", rejected={"by": by, "at": ctx.now.isoformat(), "via": via})
     note = _thread(slack, item, choices_text(p, by))
     _seed(slack, item.channel, note, SEED_CHOICES)
     p["choices_ts"] = note
-    _save(ctx, item)
+    transition(ctx, item, REJECTED)
     _update_card(ctx, slack, item, f"❌ Not sent ({_who(by)}): ✏️ edit, 👤 another contact or 🚫 drop the company, in the thread")
 
 

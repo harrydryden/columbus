@@ -14,6 +14,7 @@ from us_outbound.enrol import render
 from us_outbound.enrol.approvals.cards import edit_help, version_message
 from us_outbound.enrol.approvals.model import EDITING, SEED_APPROVE, WAITING, Item, _esc, _save, _step, _text, _who
 from us_outbound.enrol.approvals.thread import _seed, _thread, _update_card, parse_edit
+from us_outbound.enrol.approvals.transitions import transition
 from us_outbound.settings.model import GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
 
 
@@ -71,9 +72,8 @@ def render_edit(ctx: Context, p: Mapping[str, Any], step: int, subject: str | No
 def start_edit(ctx: Context, item: Item, *, by: str, slack: Any) -> None:
     """✏️: how to edit, with email 1 as it stands, ready to copy."""
     item.payload.pop("held", None)  # an edited version needs its own ✅
-    item.payload["state"] = EDITING
     item.payload["edit_ts"] = _thread(slack, item, edit_help(ctx, item.payload, by))
-    _save(ctx, item)
+    transition(ctx, item, EDITING)
 
 
 def apply_edit(ctx: Context, item: Item, text: str, *, by: str, slack: Any) -> bool:
@@ -103,11 +103,11 @@ def apply_edit(ctx: Context, item: Item, text: str, *, by: str, slack: Any) -> b
                                                            "source": source}]
     edits.append({"step": step, "by": by, "at": ctx.now.isoformat(), "accepted": True})
     p.pop("held", None)  # an approval of the earlier version does not carry over
-    p.update(lead=lead, steps=sorted(steps, key=lambda s: s.get("step") or 0), edited=True, state=WAITING, edits=edits)
+    p.update(lead=lead, steps=sorted(steps, key=lambda s: s.get("step") or 0), edited=True, edits=edits)
     text_, blocks = version_message(p, step, by)
     note = _thread(slack, item, text_, blocks)
     _seed(slack, item.channel, note, SEED_APPROVE)
     p["approve_ts"] = note
-    _save(ctx, item)
+    transition(ctx, item, WAITING)
     _update_card(ctx, slack, item, f"✏️ Edited ({_who(by)}): approve the new version in the thread")
     return True

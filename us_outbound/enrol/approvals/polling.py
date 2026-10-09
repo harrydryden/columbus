@@ -36,7 +36,6 @@ from us_outbound.enrol.approvals.model import (
     SYSTEM,
     WAITING,
     Item,
-    _cas,
     _esc,
     _key,
     _save,
@@ -46,7 +45,7 @@ from us_outbound.enrol.approvals.model import (
 )
 from us_outbound.enrol.approvals.relabel import set_industry, unfit_cards, withdraw_unfit
 from us_outbound.enrol.approvals.thread import Command, _seed, _thread, parse_command, post_card, post_followups
-from us_outbound.enrol.approvals.transitions import _hold, drop_company, drop_contact, expire, reject
+from us_outbound.enrol.approvals.transitions import _hold, drop_company, drop_contact, expire, reject, transition
 from us_outbound.logs import log
 from us_outbound.replies.desk import APPROVE_REACTIONS
 from us_outbound.timeparse import utc
@@ -257,8 +256,8 @@ def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
                 "nothing was sent. ✅ this message or reply \"send\" to add it.")
     note = _thread(slack, item, text)
     _seed(slack, item.channel, note, SEED_APPROVE[:1])
-    p.update(state=WAITING, approve_ts=note, unsure=p.pop("sending", None))
-    _cas(ctx, item, OPEN)
+    p.update(approve_ts=note, unsure=p.pop("sending", None))
+    transition(ctx, item, WAITING)
     log("send_approval_unsure", item_id=item.id, looked_up=found is not None)
 
 

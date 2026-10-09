@@ -25,7 +25,6 @@ from us_outbound.enrol.approvals.model import (
     HOLD_PLAN,
     OPEN,
     SEED_APPROVE,
-    SENDING,
     WAITING,
     Item,
     _cas,
@@ -39,7 +38,7 @@ from us_outbound.enrol.approvals.model import (
 from us_outbound.enrol.approvals.checks import recheck
 from us_outbound.enrol.approvals.relabel import label_unfit
 from us_outbound.enrol.approvals.thread import _seed, _thread
-from us_outbound.enrol.approvals.transitions import _close, _hold, withdraw
+from us_outbound.enrol.approvals.transitions import _close, _hold, transition, withdraw
 from us_outbound.logs import log
 
 
@@ -102,13 +101,13 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         return result
     campaign = _text(p.get("campaign"))
     previous = item.state
-    p.update(state=ADDING, sending={"at": ctx.now.isoformat(), "by": by, "via": via})
-    if not _cas(ctx, item, SENDING):
+    p["sending"] = {"at": ctx.now.isoformat(), "by": by, "via": via}
+    if not transition(ctx, item, ADDING):
         result.update(added=False, why=["another run is handling this item"])
         return result
     try:
         added = ctx.clients.instantly.add_leads(campaign, [p.get("lead") or {}])
-    except GuardViolation:
+    except GuardViolation:  # put back as it was: the one state change not made by transition() (MOVES)
         p.update(state=previous)
         p.pop("sending", None)
         _cas(ctx, item, OPEN)
@@ -121,8 +120,8 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
                                     f"Instantly for {_esc(item.email)} before you approve it again: ✅ this message, or "
                                     "reply \"send\".")
         _seed(slack, item.channel, note, SEED_APPROVE[:1])
-        p.update(state=WAITING, approve_ts=note, failed={**p.pop("sending", {}), "error": why})
-        _cas(ctx, item, OPEN)
+        p.update(approve_ts=note, failed={**p.pop("sending", {}), "error": why})
+        transition(ctx, item, WAITING)
         log("send_approval_add_failed", item_id=item.id, error=why)
         result.update(added=False, why=[why])
         return result
@@ -153,10 +152,8 @@ def _plan_full(ctx: Context, item: Item, *, by: str, via: str, slack: Any, alert
     """Instantly's plan has no room (enrol/plan.py): the add did not happen, so the item goes back to waiting, held
     as a stop or a blackout holds it: the card stays open and the ✅ stays valid, each poll_approvals run tries
     again until there is room or the card expires, and the contact is kept (never enrol.mark_not_added)."""
-    p = item.payload
-    p.update(state=WAITING)
-    p.pop("sending", None)
-    _cas(ctx, item, OPEN)
+    item.payload.pop("sending", None)
+    transition(ctx, item, WAITING)
     _hold(ctx, item, {HOLD_PLAN: plan.HOLD}, by=by, via=via, slack=slack)
     return {"added": False, "held": [plan.HOLD], "plan_full": True, "alert": alert}
 

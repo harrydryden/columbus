@@ -718,6 +718,25 @@ def test_an_item_whose_payload_was_erased_is_closed():
     assert (row["status"], row["handled_by"]) == ("handled", "system") and instantly_posts(t) == []
 
 
+def test_a_payload_state_moves_with_its_status_by_the_moves_table(capsys):
+    """approvals.transition (9 Oct 2026): each payload state has its status; a move that changes the status is a
+    compare-and-set, so a run that read the item before another moved it changes nothing; a move off MOVES is
+    logged."""
+    ctx, t, sl, _ = proposed()
+    item, stale = approvals.Item(item_for(ctx, "acc-1")), approvals.Item(item_for(ctx, "acc-1"))
+    assert approvals.transition(ctx, item, approvals.REJECTED)
+    assert (item_for(ctx, "acc-1")["status"], item_for(ctx, "acc-1")["payload"]["state"]) == ("open", "rejected")
+    assert approvals.transition(ctx, item, approvals.ADDING)
+    assert (item_for(ctx, "acc-1")["status"], item_for(ctx, "acc-1")["payload"]["state"]) == ("sending", "sending")
+    assert not approvals.transition(ctx, stale, approvals.ADDING)  # another run moved it first
+    assert approvals.MOVES[approvals.DONE] == frozenset() and set(approvals.STATUS) == set(approvals.MOVES)
+    capsys.readouterr()
+    assert approvals.transition(ctx, item, approvals.DONE, handled_at=ctx.now, handled_by="system")
+    assert "send_approval_unexpected_move" not in capsys.readouterr().out
+    approvals.transition(ctx, item, approvals.WAITING)  # a handled item is never moved again
+    assert "send_approval_unexpected_move" in capsys.readouterr().out
+
+
 def test_a_dry_poll_works_out_decisions_and_changes_nothing():
     ctx, t, sl, _ = proposed()
     row = item_for(ctx, "acc-1")

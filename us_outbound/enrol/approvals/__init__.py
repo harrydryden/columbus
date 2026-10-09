@@ -136,8 +136,9 @@ above is still `approvals.NAME`:
   payload.py      build_payload: what enrol's prepared account becomes; editable, recipient_source, history
   cards.py        the card and its thread's messages as Block Kit, from the payload alone
   thread.py       posting the card and notes in its thread, seeding reactions, propose; parse_command, parse_edit
-  transitions.py  the decisions that close or hold an item (_close, _hold, reject, drop_contact, drop_company,
-                  expire, withdraw)
+  transitions.py  transition(), the one way a payload state changes, with its table of moves (MOVES); the
+                  decisions that close or hold an item (_close, _hold, reject, drop_contact, drop_company, expire,
+                  withdraw)
   edit.py         ✏️: start_edit, render_edit, apply_edit
   checks.py       what a ✅ finds before the add: eligibility, recheck and its holds and blocks
   add.py          ✅: send, and what Instantly's answer leads to (_added, _refused, _plan_full)
@@ -267,11 +268,14 @@ from us_outbound.enrol.approvals.thread import (
     slack_or_none,
 )
 from us_outbound.enrol.approvals.transitions import (
+    MOVES,
+    STATUS,
     drop_company,
     drop_contact,
     expire,
     _hold,
     reject,
+    transition,
     withdraw,
 )
 
@@ -280,14 +284,14 @@ __all__ = [
     "COMPANY_REACTIONS", "COMPANY_REJECTED", "CONTACT_REACTIONS", "CONTACT_REJECTED", "Command", "DONE", "EDITING",
     "EDIT_REACTIONS", "EVENT_PREFIX", "EVENT_TYPE", "EXPIRED", "FOLLOW_UP_DAYS", "HANDLED", "HOLD_BLACKOUT",
     "HOLD_CAMPAIGN", "HOLD_HUBSPOT", "HOLD_INSTANTLY", "HOLD_LIVE", "HOLD_OPTOUT", "HOLD_PLAN", "HOLD_REPLIES",
-    "HOLD_STOP", "HOLD_STOP_RULE", "Item", "KIND", "LIST_LIMIT", "NO_SLACK", "OPEN", "OUTCOMES", "PICK_FACT",
+    "HOLD_STOP", "HOLD_STOP_RULE", "Item", "KIND", "LIST_LIMIT", "MOVES", "NO_SLACK", "OPEN", "OUTCOMES", "PICK_FACT",
     "PICK_SOURCE", "PREVIEW_CARDS", "REDO_WHY", "REJECTED", "REJECT_REACTIONS", "Recheck", "SECTION_CHARS",
-    "SEED_APPROVE", "SEED_CHOICES", "SENDING", "STUCK_AFTER", "SYSTEM", "TABLE", "WAITING", "Waiting",
+    "SEED_APPROVE", "SEED_CHOICES", "SENDING", "STATUS", "STUCK_AFTER", "SYSTEM", "TABLE", "WAITING", "Waiting",
     "apply_edit", "approve", "build_payload", "card", "card_copy_level", "choices_text", "drop_company", "drop_contact",
     "edit_help", "editable", "eligibility", "expire", "expires_on", "find_item", "followups", "history", "_hold",
     "industry_item", "industry_lines", "instantly_send_day", "is_expired", "is_second", "items", "label_unfit",
     "list_items", "opener_label", "parse_command", "parse_edit", "poll", "post_card", "post_followups", "_prepared",
     "propose", "recheck", "recipient_source", "redo", "reject", "reject_item", "render_edit", "reprepare", "repropose",
-    "send", "set_industry", "slack_for", "slack_or_none", "start_edit", "_templated", "test_label",
+    "send", "set_industry", "slack_for", "slack_or_none", "start_edit", "_templated", "test_label", "transition",
     "unfit_cards", "version_message", "waiting", "withdraw", "withdraw_unfit",
 ]

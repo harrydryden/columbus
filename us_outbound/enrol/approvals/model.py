@@ -2,8 +2,8 @@
 
 The names of the data contract (statuses, payload states, outcomes, the events row), the reactions and holds the
 other modules read, small text helpers, and Item: one send_approval row, with its payload as a working copy that
-_save writes back and _cas moves from one status to another. find_item and list_items are the command line's view
-of the items.
+_save writes back and _cas moves from one status to another (transitions.transition moves an item's payload state
+with them). find_item and list_items are the command line's view of the items.
 """
 
 from __future__ import annotations
