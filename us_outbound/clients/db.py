@@ -4,7 +4,13 @@ Jobs talk to a Store. PostgresStore is the real one; MemoryStore backs the tests
 local dry-runs. Both take and return plain dicts of Python values: JSON columns (jsonb)
 take and return Python objects, and timestamps come back as aware UTC datetimes, so no
 job ever handles JSON text or a naive time. The tables are created by ops/ddl.py from
-sql/ddl; TABLE_KEYS and JSON_COLUMNS here are what that DDL must match (tests/test_sql.py).
+sql/ddl; TABLE_KEYS, JSON_COLUMNS, TIMESTAMP_COLUMNS and COLUMNS here are what that DDL
+must match (tests/test_sql.py).
+
+MemoryStore stores a timestamp as Postgres does (9 Oct 2026): ISO text, a naive datetime
+(UTC) and a date (UTC midnight) become an aware UTC datetime, and text that is no time
+raises, as Postgres refuses it. It refuses a column the table does not have, in a row or
+a where. So a test cannot pass on a value or a filter that production would never see.
 """
 
 from __future__ import annotations
@@ -15,6 +21,7 @@ import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC
 from itertools import groupby
 from typing import Any
 
@@ -68,6 +75,81 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general",  # 7 Oct 2026
                                   "copy_test"}),  # the running copy test (config_version.copy_test; 7 Oct 2026)
     "config_log": frozenset({"changed_keys", "detail"}),
+}
+
+# Columns stored as timestamptz (sql/ddl has no date column).
+TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
+    "accounts": frozenset({"label_checked_at", "clay_checked_at", "first_seen", "last_scored"}),
+    "contacts": frozenset({"created_at", "last_step_at", "enrolled_at", "lead_deleted_at"}),
+    "signal_events": frozenset({"observed_at"}),
+    "events": frozenset({"occurred_at"}),
+    "suppression": frozenset({"added_at", "expires_at"}),
+    "settings": frozenset({"effective_from", "effective_to", "synced_at"}),
+    "heartbeats": frozenset({"started_at", "finished_at"}),
+    "credit_ledger": frozenset({"occurred_at"}),
+    "hitl_items": frozenset({"created_at", "reposted_at", "escalated_at", "handled_at"}),
+    "domain_aliases": frozenset({"added_at"}),
+    "partners": frozenset({"added_at"}),
+    "raw_irs_bmf": frozenset({"loaded_at"}),
+    "raw_job_posts": frozenset({"loaded_at"}),
+    "raw_clay_accounts": frozenset({"loaded_at"}),
+    "raw_clay_contacts": frozenset({"loaded_at"}),
+    "raw_site_visits": frozenset({"loaded_at"}),
+    "raw_layoffs": frozenset({"loaded_at"}),
+    "lookalike_cells": frozenset({"computed_at"}),
+    "lookalike_growth": frozenset({"computed_at"}),
+    "config_versions": frozenset({"first_seen"}),
+    "config_log": frozenset({"changed_at"}),
+}
+
+# Every table's columns: MemoryStore refuses any other, in a row or a where, as Postgres does.
+RAW_COLUMNS = frozenset({"loaded_at", "run_id", "key", "payload"})
+COLUMNS: dict[str, frozenset[str]] = {
+    "accounts": frozenset({
+        "account_id", "domain", "clean_name", "legal_name", "apollo_org_id", "hq_city", "hq_state", "hq_country",
+        "industry", "industry_group", "label_source", "label_confidence", "label_checked_at", "naics", "employees",
+        "us_employees", "size_band", "founded_year", "source", "score", "tier", "tier_reason", "angle", "sender",
+        "status", "clay_checked_at", "clay_credits_used", "hubspot_company_id", "first_seen", "last_scored"}),
+    "contacts": frozenset({
+        "contact_id", "account_id", "role", "title", "first_name", "last_name", "email", "email_sha256", "email_status",
+        "email_source", "person_state", "enrolment_month", "angle", "copy_version", "test_id", "mailbox",
+        "instantly_campaign", "instantly_lead_id", "hubspot_contact_id", "suppressed", "suppressed_reason",
+        "created_at", "last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol",
+        "score_at_enrol", "tier_at_enrol", "data_record", "subject_arm", "contact_slot", "config_version", "code_sha",
+        "copy_hash", "lead_deleted_at", "test_arm"}),
+    "signal_events": frozenset({
+        "event_id", "account_id", "source", "fact", "value", "quote", "source_url", "observed_at"}),
+    "events": frozenset({
+        "event_id", "contact_id", "account_id", "type", "step", "mailbox", "reply_class", "reply_text",
+        "language_terms", "competitor_named", "approval", "approved_by", "occurred_at", "source"}),
+    "suppression": frozenset({"email_sha256", "domain", "reason", "source", "added_at", "expires_at"}),
+    "settings": frozenset({"tab", "key", "values", "effective_from", "effective_to", "synced_at"}),
+    "heartbeats": frozenset({"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"}),
+    "credit_ledger": frozenset({
+        "entry_id", "system", "job", "run_id", "account_id", "credits", "usd", "occurred_at", "note"}),
+    "hitl_items": frozenset({
+        "item_id", "kind", "account_id", "contact_id", "event_id", "slack_channel", "slack_ts", "payload", "status",
+        "created_at", "reposted_at", "escalated_at", "handled_at", "handled_by"}),
+    "domain_aliases": frozenset({"alias", "root_domain", "source", "added_at"}),
+    "partners": frozenset({"domain", "name", "reason", "naics", "added_at"}),
+    "raw_irs_bmf": RAW_COLUMNS,
+    "raw_job_posts": RAW_COLUMNS,
+    "raw_clay_accounts": RAW_COLUMNS,
+    "raw_clay_contacts": RAW_COLUMNS,
+    "raw_site_visits": RAW_COLUMNS,
+    "raw_layoffs": RAW_COLUMNS,
+    "lookalike_cells": frozenset({
+        "cell_id", "industry_label", "industry_group", "size_band", "active_customers", "churned_customers",
+        "us_active", "us_churned", "strength", "computed_at", "run_id"}),
+    "lookalike_growth": frozenset({
+        "cell_id", "industry_group", "growth_band", "active_customers", "churned_customers", "strength", "computed_at",
+        "run_id"}),
+    "config_versions": frozenset({
+        "config_version", "first_seen", "code_sha", "campaign_fingerprint", "signature_hash", "step_days",
+        "settings_versions", "copy_hashes", "general", "labels_hash", "run_id", "copy_test"}),
+    "config_log": frozenset({
+        "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
+        "changed_by", "run_id"}),
 }
 
 Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL
@@ -150,6 +232,28 @@ def _matches(row: dict, where: Where | None) -> bool:
     return True
 
 
+def _timestamp(v: Any) -> Any:
+    """A timestamptz value as Postgres stores and returns it: None, or an aware UTC datetime. Text that is no time
+    raises (timeparse.utc_strict), blank text included, as Postgres refuses '' for a timestamptz."""
+    from us_outbound.timeparse import utc_strict  # timeparse imports context, which imports this module
+
+    return None if v is None else utc_strict(v).astimezone(UTC)
+
+
+def _known(table: str, cols: Iterable[str]) -> None:
+    """Refuse a column the table does not have, as Postgres does (an unknown table is the guard's to refuse)."""
+    have = COLUMNS.get(table)
+    if have is not None and (unknown := sorted(set(cols) - have)):
+        raise ValueError(f"{table} has no column {', '.join(map(repr, unknown))} (sql/ddl)")
+
+
+def _stored(table: str, row: Mapping[str, Any]) -> dict:
+    """A copy of row as Postgres would store it: its columns checked, its timestamptz columns converted."""
+    _known(table, row)
+    times = TIMESTAMP_COLUMNS.get(table, frozenset())
+    return {c: _timestamp(v) if c in times else v for c, v in copy.deepcopy(dict(row)).items()}
+
+
 class MemoryStore(Store):
     """Dict-of-lists store with the database's write rules enforced by the same guard."""
 
@@ -158,14 +262,27 @@ class MemoryStore(Store):
         self.tables: dict[str, list[dict]] = {t: [] for t in TABLE_KEYS}
         self.query_handlers: dict[str, Callable[..., list[dict]]] = {}
 
+    def _where(self, table: str, where: Where | None) -> Where:
+        """where with its columns checked against the table and a timestamptz column's values stored as Postgres
+        compares them."""
+        _known(table, where or {})
+        times = TIMESTAMP_COLUMNS.get(table, frozenset())
+        out: Where = {}
+        for col, want in (where or {}).items():
+            if col in times and not callable(want):
+                many = isinstance(want, (list, tuple, set, frozenset))
+                want = [_timestamp(v) for v in want] if many else _timestamp(want)
+            out[col] = want
+        return out
+
     def insert(self, table, rows):
-        rows = [copy.deepcopy(dict(r)) for r in rows]
+        rows = [_stored(table, r) for r in rows]
         self._authorize("insert", table, write=True)
         self.tables[table].extend(rows)
         return len(rows)
 
     def upsert(self, table, rows):
-        rows = [copy.deepcopy(dict(r)) for r in rows]
+        rows = [_stored(table, r) for r in rows]
         self._authorize("upsert", table, write=True)
         key = TABLE_KEYS[table]
         if key is None:
@@ -183,10 +300,12 @@ class MemoryStore(Store):
 
     def select(self, table, where=None):
         self._authorize("select", table, write=False)
+        where = self._where(table, where)
         return [copy.deepcopy(r) for r in self.tables[table] if _matches(r, where)]
 
     def update(self, table, where, values):
         self._authorize("update", table, write=True)
+        where, values = self._where(table, where), _stored(table, values)
         n = 0
         for r in self.tables[table]:
             if _matches(r, where):
@@ -196,6 +315,7 @@ class MemoryStore(Store):
 
     def delete(self, table, where):
         self._authorize("delete", table, write=True)
+        where = self._where(table, where)
         keep = [r for r in self.tables[table] if not _matches(r, where)]
         n = len(self.tables[table]) - len(keep)
         self.tables[table] = keep
