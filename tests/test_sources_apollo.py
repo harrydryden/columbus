@@ -374,6 +374,21 @@ def test_a_saved_apollo_account_without_an_organization_id_stores_no_apollo_org_
     assert facts and all(e["source_url"] == "" for e in facts)  # no Apollo page named after the account id
 
 
+def test_a_page_apollo_did_not_answer_keeps_its_credit_and_is_read_again():
+    """Defect 9 (9 Oct 2026): a search page is reserved before it is asked for. One that fails with a 5xx may have
+    been charged, so it keeps its credit; its reservation is no page read, so the next run asks for it again."""
+    ctx, t, _ = make([org(1)])
+    t.route("POST", "/mixed_companies/search", status=503, body={"error": "unavailable"})
+    out = uni.run(ctx)
+    assert out["created"] == 0 and out["errors"]
+    failed = ledger(ctx)
+    assert failed and all(r["credits"] == 1.0 and json.loads(r["note"])["failed"] == 503 for r in failed)
+    assert out["credits"] == len(failed) and uni.cursors(ctx) == {}
+    t.routes.pop()  # Apollo answers again
+    again = uni.run(dataclasses.replace(ctx, run_id="next"))
+    assert again["created"] == 1
+
+
 def test_a_page_with_results_costs_one_credit_and_an_empty_page_none():
     ctx, _, _ = make([org(1)])
     uni.run(ctx)

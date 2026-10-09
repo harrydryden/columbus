@@ -12,9 +12,10 @@ spend from the whole budget after the sources have run, so they keep at least th
 allowance even when every source spends its full share.
 Every paid request goes into credit_ledger as it is made, with the job, run and a note, in dry-run
 too: the read happened, so its credits were spent (SPEC 1.6; docs/pipeline.md "Budgets and targets").
-A request whose cost is known only from its answer (apollo_enrich: 1 credit per company found) is
-reserved before it is made, at the most it can cost, and settled after it (reserve, settle), so a
-request cut off still counts, as pick_contacts does for its reveals.
+The rows are written by us_outbound/ledger.py, as every paid call's are (9 Oct 2026): a request whose cost is
+known only from its answer (a search page, 1 credit with results; apollo_enrich, 1 credit per company found) is
+reserved before it is made, at the most it can cost, and settled after it (ledger.charge), so a request cut off
+still counts, as pick_contacts does for its reveals.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from dataclasses import dataclass
 
 from us_outbound import budget
 from us_outbound.clients.apollo import credits_left
-from us_outbound.clients.db import new_id
 from us_outbound.context import Context
 from us_outbound.logs import log
 
@@ -74,24 +74,3 @@ def room(ctx: Context, job: str, share: float) -> Room:
     left, whole, part = budget.room_today(ctx.store, ctx.settings, SYSTEM, ctx.now, jobs=(job,), share=share)
     return Room(left, whole, part)
 
-
-def _entry(ctx: Context, job: str, credits: float, note: str, account_id: str | None) -> dict:
-    return {"entry_id": new_id(), "system": SYSTEM, "job": job, "run_id": ctx.run_id, "account_id": account_id,
-            "credits": float(credits), "usd": 0.0, "occurred_at": ctx.now, "note": note}
-
-
-def record(ctx: Context, job: str, credits: float, *, note: str, account_id: str | None = None) -> None:
-    """One Apollo request in credit_ledger (a 0-credit row too: it carries the job's place in a search)."""
-    ctx.store.insert("credit_ledger", [_entry(ctx, job, credits, note, account_id)])
-
-
-def reserve(ctx: Context, job: str, credits: float, *, note: str, account_id: str | None = None) -> dict:
-    """A paid request's credit_ledger row, written before it is made at the most it can cost; settle() it after."""
-    entry = _entry(ctx, job, credits, note, account_id)
-    ctx.store.insert("credit_ledger", [entry])
-    return entry
-
-
-def settle(ctx: Context, entry: dict, credits: float, *, note: str) -> None:
-    """The reserved row at what the request cost."""
-    ctx.store.upsert("credit_ledger", [{**entry, "credits": float(credits), "note": note}])

@@ -90,7 +90,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, ledger
 from us_outbound.clean.domains import is_personal_domain, root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
@@ -734,20 +734,20 @@ def _search_band(ctx: Context, chunk: Sequence[str], band: str, g: _Growth, who:
         if not g.allows():
             g.stopped = g.stopped or "the run's Apollo credits are used"
             return None
-        try:
-            body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
-        except ApiError as exc:
-            if exc.status in (401, 403):
-                raise  # the key is wrong: every search would fail
-            g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
-            if len(g.errors) >= GROWTH_MAX_ERRORS:
-                g.stopped = f"{GROWTH_MAX_ERRORS} Apollo errors"
-            return None
-        orgs, total = organizations_in(body), total_entries(body)
-        spent = 1.0 if orgs else 0.0
-        # The note carries counts only: never a customer's domain.
-        credits.record(ctx, JOB, spent, note=json.dumps({"growth": band, "for": who, "page": page, "asked": len(chunk),
-                                                         "results": len(orgs), "total": total}))
+        what = {"growth": band, "for": who, "page": page, "asked": len(chunk)}  # counts only: never a customer's domain
+        with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+            try:
+                body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
+            except ApiError as exc:
+                g.spent += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+                if exc.status in (401, 403):
+                    raise  # the key is wrong: every search would fail
+                g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
+                if len(g.errors) >= GROWTH_MAX_ERRORS:
+                    g.stopped = f"{GROWTH_MAX_ERRORS} Apollo errors"
+                return None
+            orgs, total = organizations_in(body), total_entries(body)
+            spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps({**what, "results": len(orgs), "total": total}))
         g.spent += spent
         g.pages += 1
         for org in orgs:

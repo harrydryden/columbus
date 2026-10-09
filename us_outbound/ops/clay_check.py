@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, ledger
 from us_outbound.clean.domains import root_domain
 from us_outbound.clients.clay import (
     DEFAULT_BASE_URL,
@@ -36,7 +36,6 @@ from us_outbound.clients.clay import (
     routine_id,
     work_email_inputs,
 )
-from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.contacts.pick import CLAY_RESERVE
 from us_outbound.context import Context
@@ -191,9 +190,7 @@ def check_email(ctx: Context, first: str, last: str, domain: str) -> dict:
     if month.remaining < CLAY_RESERVE:
         raise ValueError(f"the month's Clay budget is used ({month.describe()})")
     clay = ctx.clients.clay  # a missing key stops here, before anything is reserved
-    entry = {"entry_id": new_id(), "system": "clay", "job": ctx.job, "run_id": ctx.run_id, "account_id": None,
-             "credits": CLAY_RESERVE, "usd": None, "occurred_at": ctx.now, "note": f"{LEDGER_NOTE}, reserved"}
-    ctx.store.insert("credit_ledger", [entry])
+    paid = ledger.Charge(ctx, ledger.reserve(ctx, "clay", ctx.job, CLAY_RESERVE, note=f"{LEDGER_NOTE}, reserved"))
     error: Exception | None = None
     output: Any = None
     try:
@@ -213,9 +210,8 @@ def check_email(ctx: Context, first: str, last: str, domain: str) -> dict:
     )
     if error is not None:
         # A run Clay never started cost nothing; one that started may have been charged, so counts its reserve.
-        counted = CLAY_RESERVE if report["endpoint_answered"] else 0.0
-        ctx.store.upsert("credit_ledger", [{**entry, "credits": counted, "note": f"{LEDGER_NOTE} failed"
-                                            + ("; counted in case Clay charged it" if counted else "; no run started")}])
+        counted = paid.settle(CLAY_RESERVE if report["endpoint_answered"] else 0.0, note=f"{LEDGER_NOTE} failed" + (
+            "; counted in case Clay charged it" if report["endpoint_answered"] else "; no run started"))
         report.update(verdict=FAILED, why=failure(error, report["endpoint_answered"]), credits_counted=counted,
                       error=str(error)[:300])
         log("clay_check_email", run_id=ctx.run_id, verdict=FAILED, endpoint_answered=report["endpoint_answered"],
@@ -226,7 +222,7 @@ def check_email(ctx: Context, first: str, last: str, domain: str) -> dict:
     parsed = found.get("parsed") or {}
     reported = parsed.get("credits_used")
     credits = reported if reported is not None else (CLAY_RESERVE if email else 0.0)
-    ctx.store.upsert("credit_ledger", [{**entry, "credits": credits, "note": LEDGER_NOTE}])
+    paid.settle(credits, note=LEDGER_NOTE)
     report.update(
         output_keys={str(k): shape(v) for k, v in output.items()},
         credits_reported=_credits_reported(output, row),

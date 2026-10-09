@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.db import Store
+from us_outbound.clients.db import Range, Store
 from us_outbound.context import UK
 from us_outbound.settings.model import Settings
 
@@ -162,13 +162,13 @@ def _n(x: float) -> str:
 
 
 def spent_in(store: Store, system: str, start: datetime, end: datetime, jobs: Collection[str] | None = None) -> float:
-    """Credits credit_ledger records for system in [start, end); only those jobs' rows when jobs is given."""
-    return sum(
-        float(r.get("credits") or 0)
-        for r in store.select("credit_ledger", {"system": system})
-        if (t := _ts(r.get("occurred_at"))) is not None and start <= t < end
-        and (jobs is None or r.get("job") in jobs)
-    )
+    """Credits credit_ledger records for system in [start, end); only those jobs' rows when jobs is given.
+
+    The database reads only the period's rows (Range; 9 Oct 2026: it read every row the system ever had)."""
+    where: dict[str, Any] = {"system": system, "occurred_at": Range(start, end)}
+    if jobs is not None:
+        where["job"] = list(jobs)
+    return sum(float(r.get("credits") or 0) for r in store.select("credit_ledger", where))
 
 
 def monthly(store: Store, settings: Settings, system: str, now: datetime) -> Budget:

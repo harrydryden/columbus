@@ -29,7 +29,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from us_outbound.clients.db import Store, new_id
+from us_outbound import ledger
+from us_outbound.clients.db import Range, Store
 from us_outbound.clients.guard import Guard, Op
 from us_outbound.logs import log
 
@@ -143,12 +144,11 @@ def month_spend_usd(store: Store, now: datetime) -> float:
     """USD recorded for Claude in credit_ledger in now's UTC calendar month: what the cap counts, and what the
     daily post and its spend alerts show (learn/spend.py), without a key or a model."""
     now = _as_utc(now) or datetime.now(UTC)
-    total = 0.0
-    for row in store.select("credit_ledger", {"system": "claude"}):
-        at = _as_utc(row.get("occurred_at"))
-        if at and (at.year, at.month) == (now.year, now.month):
-            total += float(row.get("usd") or 0.0)
-    return total
+    start = datetime(now.year, now.month, 1, tzinfo=UTC)
+    end = datetime(now.year + now.month // 12, now.month % 12 + 1, 1, tzinfo=UTC)
+    # Only the month's rows (9 Oct 2026: every Claude row ever was read before each call).
+    rows = store.select("credit_ledger", {"system": "claude", "occurred_at": Range(start, end)})
+    return sum(float(row.get("usd") or 0.0) for row in rows)
 
 
 def cap_reached_at(monthly_cap_usd: float) -> float:
@@ -254,25 +254,10 @@ class Claude:
         # Billed whatever the outcome, so record it before checking the answer.
         usage = getattr(response, "usage", None)
         cost = usage_cost_usd(price, usage)
-        self.store.insert(
-            "credit_ledger",
-            [
-                {
-                    "entry_id": new_id(),
-                    "system": "claude",
-                    "job": purpose,
-                    "run_id": None,
-                    "account_id": None,
-                    "credits": 0.0,
-                    "usd": cost,
-                    "occurred_at": now,
-                    "note": f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}"
-                            + (f" cache_read={getattr(usage, 'cache_read_input_tokens', 0) or 0}"
-                               f" cache_write={getattr(usage, 'cache_creation_input_tokens', 0) or 0}"
-                               if cache_system else ""),
-                }
-            ],
-        )
+        note = (f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}"
+                + (f" cache_read={getattr(usage, 'cache_read_input_tokens', 0) or 0}"
+                   f" cache_write={getattr(usage, 'cache_creation_input_tokens', 0) or 0}" if cache_system else ""))
+        self.store.insert(ledger.TABLE, [ledger.entry("claude", purpose, 0.0, run_id=None, now=now, note=note, usd=cost)])
         stop = getattr(response, "stop_reason", None)
         log("claude_call", model=self.model, purpose=purpose, stop_reason=stop, usd=round(cost, 6),
             input_tokens=getattr(usage, "input_tokens", None), output_tokens=getattr(usage, "output_tokens", None),

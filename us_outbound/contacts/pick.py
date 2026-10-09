@@ -81,7 +81,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, ledger
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
 from us_outbound.clients.apollo import credits_left
@@ -495,22 +495,18 @@ def reveal(ctx: Context, account: Mapping[str, Any], cand: Candidate, batch: _Ru
     reveal that fails or is cut off still counts against the budget. A match with an email
     counts at least REVEAL_CREDITS, whatever Apollo reports.
     """
-    entry = {"entry_id": new_id(), "system": "apollo", "job": JOB, "run_id": ctx.run_id,
-             "account_id": account["account_id"], "credits": REVEAL_CREDITS, "usd": None, "occurred_at": ctx.now,
-             "note": f"{LEDGER_NOTE}, reserved"}
-    ctx.store.insert("credit_ledger", [entry])
-    try:
-        body = ctx.clients.apollo.bulk_match([{"id": cand.id}])
-    except ApiError as exc:
-        ctx.store.upsert("credit_ledger", [{**entry, "note": f"{LEDGER_NOTE} failed (HTTP {exc.status}); "
-                                                             "counted in case Apollo charged it"}])
-        batch.spend(REVEAL_CREDITS)
-        raise
-    match = next((m for m in body.get("matches") or () if m), None)
-    credits = float(body.get("credits_consumed") or 0)
-    if match and match.get("email"):
-        credits = max(credits, REVEAL_CREDITS)
-    ctx.store.upsert("credit_ledger", [{**entry, "credits": credits, "note": LEDGER_NOTE}])
+    with ledger.charge(ctx, "apollo", JOB, REVEAL_CREDITS, note=f"{LEDGER_NOTE}, reserved",
+                       account_id=account["account_id"]) as paid:
+        try:
+            body = ctx.clients.apollo.bulk_match([{"id": cand.id}])
+        except ApiError as exc:
+            batch.spend(paid.keep(note=f"{LEDGER_NOTE} failed (HTTP {exc.status}); counted in case Apollo charged it"))
+            raise
+        match = next((m for m in body.get("matches") or () if m), None)
+        credits = float(body.get("credits_consumed") or 0)
+        if match and match.get("email"):
+            credits = max(credits, REVEAL_CREDITS)
+        paid.settle(credits, note=LEDGER_NOTE)
     batch.spend(credits)
     return match, credits
 
@@ -599,26 +595,23 @@ def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match
     function = g.clay_contacts_function_id or WORK_EMAIL_FUNCTION_ID
     if not g.clay_contacts_function_id:
         inputs = as_work_email(inputs, account)
-    entry = {"entry_id": new_id(), "system": "clay", "job": JOB, "run_id": ctx.run_id,
-             "account_id": account["account_id"], "credits": CLAY_RESERVE, "usd": None, "occurred_at": ctx.now,
-             "note": f"{CLAY_LEDGER_NOTE}, reserved"}
-    ctx.store.insert("credit_ledger", [entry])
-    try:
-        out = ctx.clients.clay.run_function(function, inputs)
-        got = parse_contacts_output(out) if g.clay_contacts_function_id else parse_work_email_output(out)
-    except (ApiError, ClayError) as exc:
-        ctx.store.upsert("credit_ledger", [{**entry, "note": f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"}])
-        batch.clay_spend(CLAY_RESERVE)
-        why = f"Clay lookup failed ({type(exc).__name__})"
-        batch.clay_errors += 1
-        log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
-        if batch.clay_errors >= CLAY_MAX_ERRORS:
-            batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
-        return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
-    credits = got["credits_used"]
-    if credits is None:
-        credits = CLAY_RESERVE if got["email"] else 0.0
-    ctx.store.upsert("credit_ledger", [{**entry, "credits": credits, "note": CLAY_LEDGER_NOTE}])
+    with ledger.charge(ctx, "clay", JOB, CLAY_RESERVE, note=f"{CLAY_LEDGER_NOTE}, reserved",
+                       account_id=account["account_id"]) as paid:
+        try:
+            out = ctx.clients.clay.run_function(function, inputs)
+            got = parse_contacts_output(out) if g.clay_contacts_function_id else parse_work_email_output(out)
+        except (ApiError, ClayError) as exc:
+            batch.clay_spend(paid.keep(note=f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"))
+            why = f"Clay lookup failed ({type(exc).__name__})"
+            batch.clay_errors += 1
+            log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
+            if batch.clay_errors >= CLAY_MAX_ERRORS:
+                batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
+            return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
+        credits = got["credits_used"]
+        if credits is None:
+            credits = CLAY_RESERVE if got["email"] else 0.0
+        paid.settle(credits, note=CLAY_LEDGER_NOTE)
     batch.clay_spend(credits)
     value.update(status=got["status"], credits=credits, provider=got.get("provider"))
     if got["status"] not in CLAY_ACCEPTED or not got["email"]:

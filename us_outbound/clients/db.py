@@ -15,6 +15,8 @@ import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from itertools import groupby
 from typing import Any
 
@@ -70,8 +72,41 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "config_log": frozenset({"changed_keys", "detail"}),
 }
 
-Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL
+Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL; Range: lo <= col < hi
 COLUMN_RE = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+@dataclass(frozen=True)
+class Range:
+    """A where value: lo <= column < hi, either end None for no bound; a NULL column never matches.
+
+    9 Oct 2026: the ledger's readers (budget.spent_in, clients/claude.month_spend_usd) read every row a system
+    ever had to sum one month; now the database leaves the other months out. Timestamps compare as instants: a
+    naive one is taken as UTC, and MemoryStore reads an ISO text value as the time it names.
+    """
+
+    lo: Any = None
+    hi: Any = None
+
+    def holds(self, have: Any) -> bool:
+        lo, hi = self.lo, self.hi
+        if isinstance(lo, datetime) or isinstance(hi, datetime):
+            have, lo, hi = _instant(have), _instant(lo), _instant(hi)
+        if have is None:
+            return False
+        return (lo is None or have >= lo) and (hi is None or have < hi)
+
+
+def _instant(v: Any) -> datetime | None:
+    """v as an aware datetime (naive: UTC; ISO text: parsed), else None."""
+    if isinstance(v, str):
+        try:
+            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=UTC)
+    return None
 
 
 def new_id() -> str:
@@ -139,7 +174,10 @@ class Store(ABC):
 def _matches(row: dict, where: Where | None) -> bool:
     for col, want in (where or {}).items():
         have = row.get(col)
-        if callable(want):
+        if isinstance(want, Range):
+            if not want.holds(have):
+                return False
+        elif callable(want):
             if not want(have):
                 return False
         elif isinstance(want, (list, tuple, set, frozenset)):
@@ -277,6 +315,12 @@ class PostgresStore(Store):
         params: list = []
         for col, want in (where or {}).items():
             ident = Identifier(_column(col))
+            if isinstance(want, Range):
+                bounds = [(op, v) for op, v in ((">=", want.lo), ("<", want.hi)) if v is not None]
+                parts.append(SQL(" AND ").join(SQL("{} " + op + " %s").format(ident) for op, _ in bounds)
+                             if bounds else SQL("{} IS NOT NULL").format(ident))
+                params.extend(self._value(table, col, v) for _, v in bounds)
+                continue
             if callable(want):
                 raise ValueError("PostgresStore does not take callable filters; use query()")
             if want is None:

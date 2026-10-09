@@ -281,6 +281,8 @@ Credit budgets are monthly, a calendar month in UK time, because that's how Apol
 
 **Today's share.** Each weekday may spend what was left of the month that morning ÷ the weekdays left, today included. The budget then lasts the whole month instead of going in the first week. A quiet day leaves more for the rest of the month. Unspent credits don't carry over.
 
+**How a call is counted.** Every paid call goes into `credit_ledger` one way (`us_outbound/ledger.py`, 9 Oct 2026). A call whose cost is known only from its answer (a search page, an enrichment, a reveal, a Clay lookup) is reserved before it is made, at the most it can cost, then settled at what it cost. A call that fails or gives no answer keeps its reservation, as it may have been charged, except an Apollo search or enrichment Apollo refused outright (an HTTP 4xx), which counts 0. So the budgets never under-count.
+
 **How the month is going** shows the same figures for each budget:
 - used and left;
 - the month's pace to date (the budget spread evenly over its weekdays, through today);

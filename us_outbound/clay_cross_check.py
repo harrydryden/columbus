@@ -39,7 +39,7 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from us_outbound import budget, verify
+from us_outbound import budget, ledger, verify
 from us_outbound.clean.people import size_band, state_code
 from us_outbound.clients.clay import RUN_ITEMS_MAX, ClayError, parse_cross_check_output
 from us_outbound.clients.db import Store, new_id
@@ -173,10 +173,8 @@ def wanted(ctx: Context, todo: Sequence[Mapping[str, Any]], facts: Mapping[str, 
 def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]], report: dict) -> dict[str, dict]:
     """Clay's answers for these accounts, each stored as a fact; credit_ledger first, errors into the report."""
     fid = ctx.settings.general.clay_accounts_function_id.strip()
-    entries = {a["account_id"]: {"entry_id": new_id(), "system": "clay", "job": ctx.job, "run_id": ctx.run_id,
-                                 "account_id": a["account_id"], "credits": RESERVE, "usd": None,
-                                 "occurred_at": ctx.now, "note": f"{LEDGER_NOTE}, reserved"} for a, _ in batch}
-    ctx.store.insert("credit_ledger", list(entries.values()))
+    entries = ledger.reserve_each(ctx, "clay", ctx.job, RESERVE, [a["account_id"] for a, _ in batch],
+                                  note=f"{LEDGER_NOTE}, reserved")
     report["asked"] = len(batch)
     inputs = {a["account_id"]: {"domain": a.get("domain"), "company_name": a.get("clean_name") or None}
               for a, _ in batch}
@@ -186,7 +184,7 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
         report["errors"].append(f"the Clay run failed ({type(exc).__name__}): {str(exc)[:200]}")
         results = {}
     got: dict[str, dict] = {}
-    settled: list[dict] = []
+    settled: list[tuple[dict, float, str]] = []
     rows: list[dict] = []
     for a, reasons in batch:
         aid = a["account_id"]
@@ -202,7 +200,7 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
             except ClayError as exc:
                 error = str(exc)
         if answer is None:
-            settled.append({**entries[aid], "note": f"{LEDGER_NOTE} failed; counted in case Clay charged it"})
+            settled.append((entries[aid], RESERVE, f"{LEDGER_NOTE} failed; counted in case Clay charged it"))
             report["failed"] += 1
             report["credits"] += RESERVE
             if results and len(report["errors"]) < ERROR_LIMIT:
@@ -210,8 +208,8 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
             continue
         reported = answer["credits_used"]
         credits = RESERVE if reported is None else reported
-        settled.append({**entries[aid], "credits": credits,
-                        "note": LEDGER_NOTE if reported is not None else f"{LEDGER_NOTE}; no credits reported, the reserve kept"})
+        settled.append((entries[aid], credits,
+                        LEDGER_NOTE if reported is not None else f"{LEDGER_NOTE}; no credits reported, the reserve kept"))
         report["credits"] += credits
         report["answered"] += 1
         value = {"hq_state": answer["hq_state"], "hq_state_given": answer["hq_state_given"],
@@ -221,7 +219,7 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
         rows.append({"event_id": new_id(), "account_id": aid, "source": SOURCE, "fact": FACT, "value": value,
                      "quote": answer["source"], "source_url": "", "observed_at": ctx.now})
         got[aid] = value
-    ctx.store.upsert("credit_ledger", settled)
+    ledger.settle_each(ctx, settled)
     if rows:
         ctx.store.insert("signal_events", rows)
     return got
