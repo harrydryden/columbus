@@ -141,6 +141,7 @@ from us_outbound.ops.heartbeat import (
     run_job,
     scheduled_jobs,
 )
+from us_outbound.timeparse import utc_strict
 
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
@@ -376,11 +377,7 @@ def cmd_rescore(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def _fmt_time(v: Any) -> str:
-    if not v:
-        return "-"
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    d = d if d.tzinfo else d.replace(tzinfo=UTC)
-    return d.astimezone(UK).strftime("%a %d %b %H:%M UK")
+    return utc_strict(v).astimezone(UK).strftime("%a %d %b %H:%M UK") if v else "-"
 
 
 def _status_heartbeats(store: Any, now: datetime) -> None:

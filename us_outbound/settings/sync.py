@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from us_outbound.clients.db import Store
@@ -46,6 +46,7 @@ from us_outbound.settings.validate import (
     natural_key,
     validate_all,
 )
+from us_outbound.timeparse import utc_strict
 
 TABLE = "settings"
 SLACK_ERROR_LINES = 20
@@ -61,11 +62,6 @@ ORDER_TAB = "_order"  # key = a tab name, values = {"keys": [its keys in sheet o
 Rows = list[dict[str, str]]
 InForce = dict[str, dict[str, dict]]  # tab -> key -> settings row in force
 Stale = dict[str, list[dict]]  # tab -> older rows still in force for a key (see _in_force)
-
-
-def _ts(v: Any) -> datetime:
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
 
 
 def _raw(row: Mapping[str, Any]) -> dict[str, str]:
@@ -85,7 +81,7 @@ def _in_force(store: Store) -> tuple[InForce, Stale]:
         if tab not in out or key is None:
             continue
         old = out[tab].get(key)
-        if old is not None and _ts(r["effective_from"]) < _ts(old["effective_from"]):
+        if old is not None and utc_strict(r["effective_from"]) < utc_strict(old["effective_from"]):
             stale[tab].append(r)
             continue
         if old is not None:
@@ -115,8 +111,8 @@ def _has_version(tab: str, in_force: InForce) -> bool:
 
 def _stamp(settings: Settings, in_force: InForce) -> Settings:
     tabs = {tab: in_force[tab] for tab in TABS}
-    versions = {tab: max(_ts(r["effective_from"]) for r in rows.values()) for tab, rows in tabs.items() if rows}
-    synced = [_ts(r["synced_at"]) for rows in tabs.values() for r in rows.values() if r.get("synced_at")]
+    versions = {tab: max(utc_strict(r["effective_from"]) for r in rows.values()) for tab, rows in tabs.items() if rows}
+    synced = [utc_strict(r["synced_at"]) for rows in tabs.values() for r in rows.values() if r.get("synced_at")]
     return dataclasses.replace(settings, versions=versions, synced_at=max(synced) if synced else None)
 
 
@@ -134,7 +130,7 @@ def last_read(store: Store, settings: Settings) -> datetime | None:
         log("settings_last_read_unknown", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         run = None
     if run and run.get("started_at"):
-        times.append(_ts(run["started_at"]))
+        times.append(utc_strict(run["started_at"]))
     return max(times) if times else None
 
 
@@ -201,7 +197,7 @@ def _diff(tab: str, rows: list[Mapping[str, Any]], in_force: dict[str, dict], no
         opened.append(
             {"tab": tab, "key": key, "values": values, "effective_from": now, "effective_to": None, "synced_at": now}
         )
-        if old is not None and _ts(old["effective_from"]) != now:  # same instant: the upsert replaces it
+        if old is not None and utc_strict(old["effective_from"]) != now:  # same instant: the upsert replaces it
             closing.setdefault(old["effective_from"], []).append(key)
     for key, old in in_force.items():
         if key not in new:
@@ -219,7 +215,7 @@ def _diff_order(tab: str, keys: list[str], in_force: InForce, stale: Stale, now:
     old = in_force[ORDER_TAB].get(tab)
     if (old is None and not keys) or (old is not None and _order(in_force, tab) == keys):
         return [], closing
-    if old is not None and _ts(old["effective_from"]) != now:
+    if old is not None and utc_strict(old["effective_from"]) != now:
         closing.setdefault(old["effective_from"], []).append(tab)
     row = {"tab": ORDER_TAB, "key": tab, "values": {"keys": keys}, "effective_from": now, "effective_to": None, "synced_at": now}
     return [row], closing

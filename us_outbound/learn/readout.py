@@ -41,7 +41,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, labels
@@ -50,6 +50,7 @@ from us_outbound.learn import cohorts, looks, signal_value
 from us_outbound.learn.kill_rules import COMPLAINT
 from us_outbound.logs import log
 from us_outbound.ops import notify
+from us_outbound.timeparse import iso_date, utc
 
 JOB = "monday_readout"
 MIN_COMPANIES = signal_value.MIN_TO_READ  # 30: a rate on fewer companies is "too few to read"
@@ -64,29 +65,6 @@ CUTS = (("tier", "By tier"), ("angle", "By angle"), ("industry_group", "By indus
 CUT_LIMIT = 8  # values listed per cut, the busiest first
 REPLY_ITEM, OOO_ITEM, OPT_OUT = "reply:", "out_of_office:", "unsubscribed:"  # poll_replies' and optout's ids
 POSITIVE = frozenset({"positive", "referral"})
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
-def _day(v: Any) -> date | None:
-    if isinstance(v, datetime):
-        return v.date()
-    if isinstance(v, date):
-        return v
-    try:
-        return date.fromisoformat(str(v)[:10])
-    except ValueError:
-        return None
 
 
 def _n(n: int, one: str, many: str | None = None) -> str:
@@ -119,11 +97,11 @@ class _Events:
                                                     COMPLAINT]})
         self.by_type: dict[str, list[dict]] = defaultdict(list)
         for e in rows:
-            if _ts(e.get("occurred_at")) is not None:
+            if utc(e.get("occurred_at")) is not None:
                 self.by_type[str(e.get("type"))].append(e)
 
     def between(self, type_: str, start: datetime, end: datetime) -> list[dict]:
-        return [e for e in self.by_type[type_] if start <= _ts(e["occurred_at"]) < end]
+        return [e for e in self.by_type[type_] if start <= utc(e["occurred_at"]) < end]
 
 
 def week_numbers(ev: _Events, start: datetime, end: datetime) -> dict[str, int]:
@@ -194,7 +172,7 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime) -> 
     items = {str(i.get("item_id")) for i in ctx.store.select("hitl_items", {"kind": ["reply", "out_of_office"]})}
     opted = {str(e.get("event_id")) for e in ev.by_type["unsubscribed"]}
     late = ctx.now - UNCLASSIFIED_AFTER
-    unclassified = [e for e in replies if not e.get("reply_class") and _ts(e["occurred_at"]) < late]
+    unclassified = [e for e in replies if not e.get("reply_class") and utc(e["occurred_at"]) < late]
     unrouted = [e for e in replies if e.get("reply_class")
                 and not {f"{REPLY_ITEM}{e['event_id']}", f"{OOO_ITEM}{e['event_id']}"} & items
                 and f"{OPT_OUT}{e['event_id']}" not in opted]
@@ -209,11 +187,11 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime) -> 
                              f"{'; '.join(why)} (`us-outbound replies list`)"))
 
     week = [h for h in ctx.store.select("heartbeats", {"status": "error"})
-            if (t := _ts(h.get("started_at"))) is not None and start <= t < end]
+            if (t := utc(h.get("started_at"))) is not None and start <= t < end]
     refusals = [h for h in week if isinstance(h.get("detail"), Mapping) and h["detail"].get("violation")]
     blocked = 0
     for h in ctx.store.select("heartbeats", {"job": "enrol"}):
-        t, d = _ts(h.get("started_at")), h.get("detail")
+        t, d = utc(h.get("started_at")), h.get("detail")
         if t is not None and start <= t < end and isinstance(d, Mapping) and isinstance(d.get("skipped"), Mapping):
             blocked += int(d["skipped"].get("copy blocked") or 0)
     held = (f"; {_n(blocked, 'email')} held back by the copy rules, each with its reason in enrol's run summary"
@@ -257,7 +235,7 @@ def in_week(rows: Iterable[Mapping[str, Any]], start: datetime, cut: str) -> dic
     """cut_value -> last week's activity columns."""
     out: dict[str, Counter] = defaultdict(Counter)
     for r in rows:
-        if r.get("cut") == cut and _day(r.get("week_start")) == start.date():
+        if r.get("cut") == cut and iso_date(r.get("week_start")) == start.date():
             out[str(r.get("cut_value"))].update({k: int(r.get(k) or 0) for k in ACTIVITY})
     return out
 

@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.guard import GuardViolation
@@ -45,6 +45,7 @@ from us_outbound.ops.bootstrap import GOOGLE_KEY_VAR
 from us_outbound.ops.heartbeat import DAILY, EXPECTED
 from us_outbound.ops.watchdog import JOB as SELF  # heartbeat_check: its own detail holds what it found
 from us_outbound.settings.validate import CLAUDE_CAP_USD
+from us_outbound.timeparse import utc
 
 LOOKBACK = timedelta(hours=26)  # a daily job's latest run is always this recent
 QUOTE = 160  # characters of the first error quoted
@@ -97,18 +98,6 @@ class Finding:
     at: datetime | None = None
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
 def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
     """job -> its latest finished run that started in the last LOOKBACK, with its detail (one query)."""
     wanted = set(jobs)
@@ -118,10 +107,10 @@ def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
     except NotImplementedError:  # MemoryStore: the same in Python
         rows = []
         for r in ctx.store.select("heartbeats", {"job": sorted(wanted)}):
-            started = _ts(r.get("started_at"))
+            started = utc(r.get("started_at"))
             if r.get("status") != "running" and started is not None and started >= since:
                 rows.append(r)
-        rows.sort(key=lambda r: (_ts(r.get("started_at")), str(r.get("run_id"))), reverse=True)
+        rows.sort(key=lambda r: (utc(r.get("started_at")), str(r.get("run_id"))), reverse=True)
     out: dict[str, dict] = {}
     for r in rows:
         job = str(r.get("job") or "")
@@ -142,7 +131,7 @@ def _walk(detail: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
 
 def findings(job: str, run: Mapping[str, Any]) -> list[Finding]:
     """What one run's heartbeat records as gone wrong (the module docstring's kinds)."""
-    at = _ts(run.get("started_at"))
+    at = utc(run.get("started_at"))
     detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
     if run.get("status") == "error":
         if "unusable" in detail:

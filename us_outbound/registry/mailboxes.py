@@ -71,7 +71,7 @@ import dataclasses
 import re
 from collections import Counter
 from collections.abc import Collection, Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import config_version
@@ -86,7 +86,7 @@ from us_outbound.clients.instantly import (
     settings_drift,
     unsubscribe_line,
 )
-from us_outbound.context import UK, Context, boundaries_for
+from us_outbound.context import Context, boundaries_for
 from us_outbound.enrol import capacity
 from us_outbound.learn import holds
 from us_outbound.logs import log
@@ -95,6 +95,7 @@ from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Mailbox, Settings
 from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
+from us_outbound.timeparse import uk_day, utc_strict_or_none
 
 TAB = "Mailboxes"
 ACTIVE, WARMING, PAUSED, RETIRED = "Active", "Warming", "Paused", "Retired"
@@ -151,26 +152,6 @@ def _name_text(v: Any) -> str:
     return " ".join(str(v or "").split())
 
 
-def _date(v: Any) -> date | None:
-    if v is None or v == "":
-        return None
-    if isinstance(v, datetime):
-        return (v if v.tzinfo else v.replace(tzinfo=UTC)).astimezone(UK).date()
-    if isinstance(v, date):
-        return v
-    try:
-        return _date(datetime.fromisoformat(str(v).replace("Z", "+00:00")))
-    except ValueError:
-        return None
-
-
-def _ts(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
-
-
 def warmup_to_status(warmup: Mapping[str, Any], *, today: date | None = None, added_on: date | None = None) -> str:
     """ "Active" if Instantly shows the mailbox warm, otherwise "Warming" (see the module docstring)."""
     if not warmup.get("found", True) or not warmup.get("warmup_enabled"):
@@ -181,7 +162,7 @@ def warmup_to_status(warmup: Mapping[str, Any], *, today: date | None = None, ad
         if isinstance(score, (int, float)) and not isinstance(score, bool) and score >= WARM_SCORE:
             return ACTIVE
     if today is not None:
-        for start in (_date(warmup.get("warmup_started_at")), added_on):
+        for start in (uk_day(warmup.get("warmup_started_at")), added_on):
             if start is not None and (today - start).days >= WARM_DAYS:
                 return ACTIVE
     return WARMING
@@ -512,8 +493,9 @@ def mailbox_retire(ctx: Context, address: str) -> dict:
 def last_use(ctx: Context, address: str) -> datetime | None:
     """When the mailbox last sent: its latest campaign send or reply sent from the desk, or its contacts' last step."""
     a = address.lower()
-    times = [_ts(e.get("occurred_at")) for e in ctx.store.select("events", {"mailbox": a, "type": ["sent", "reply_sent"]})]
-    times += [_ts(c.get("last_step_at")) for c in ctx.store.select("contacts", {"mailbox": a})]
+    sends = ctx.store.select("events", {"mailbox": a, "type": ["sent", "reply_sent"]})
+    times = [utc_strict_or_none(e.get("occurred_at")) for e in sends]
+    times += [utc_strict_or_none(c.get("last_step_at")) for c in ctx.store.select("contacts", {"mailbox": a})]
     times = [t for t in times if t is not None]
     return max(times) if times else None
 
@@ -544,11 +526,12 @@ def went_live(store: Any) -> datetime | None:
     """
     rows = store.select("heartbeats", {"job": [OPERATOR_STOP, OPERATOR_START]})
     starts = [t for r in rows if r.get("job") == OPERATOR_START and r.get("status") == "ok" and r.get("dry_run") is False
-              and (t := _ts(r.get("started_at"))) is not None]
+              and (t := utc_strict_or_none(r.get("started_at"))) is not None]
     if not starts:
         return None
     last = max(starts)
-    stops = [t for r in rows if r.get("job") == OPERATOR_STOP and (t := _ts(r.get("started_at"))) is not None]
+    stops = [t for r in rows
+             if r.get("job") == OPERATOR_STOP and (t := utc_strict_or_none(r.get("started_at"))) is not None]
     return last if not stops or last > max(stops) else None
 
 
@@ -560,7 +543,7 @@ def _kill_rule_pauses(store: Any, since: datetime) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for r in store.select("hitl_items", {"kind": holds.KIND}):
         p = r.get("payload") if isinstance(r.get("payload"), Mapping) else {}
-        created = _ts(r.get("created_at"))
+        created = utc_strict_or_none(r.get("created_at"))
         if p.get("campaign_restarted") or created is None or created <= since:
             continue
         for name in p.get("campaigns_paused") or ():

@@ -14,26 +14,17 @@ other: being named lifts its score, it never skips a check.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from us_outbound import accounts
 from us_outbound.clients.db import new_id
 from us_outbound.context import Context
 from us_outbound.logs import log
+from us_outbound.timeparse import utc_or_epoch
 
 SOURCE = "named"
 FACT = "named"
-
-
-def _ts(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime.min.replace(tzinfo=UTC)
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def _latest(events: list[Mapping[str, Any]]) -> dict[str, bool]:
@@ -42,7 +33,7 @@ def _latest(events: list[Mapping[str, Any]]) -> dict[str, bool]:
     for e in events:
         if e.get("fact") != FACT or not e.get("account_id"):
             continue
-        t = _ts(e.get("observed_at"))
+        t = utc_or_epoch(e.get("observed_at"))
         if e["account_id"] not in out or t >= out[e["account_id"]][0]:
             out[e["account_id"]] = (t, bool(e.get("value")))
     return {a: v for a, (_, v) in out.items()}

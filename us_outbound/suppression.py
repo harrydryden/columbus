@@ -31,23 +31,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
-from typing import Any
 
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.logs import hash_email, log, normalise_email, redact
+from us_outbound.timeparse import utc_strict_or_none
 
 TABLE = "suppression"
 HUBSPOT_REASON, HUBSPOT_SOURCE = "hubspot_opt_out_or_bounce", "hubspot"
 CHUNK = 5000  # hashes per IN (...) lookup
-
-
-def _ts(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
 
 
 def clean_domain(text: str | None) -> str | None:
@@ -67,13 +60,13 @@ def _parents(domain: str) -> list[str]:
 
 
 def _active(row: dict, now: datetime) -> bool:
-    expires = _ts(row.get("expires_at"))
+    expires = utc_strict_or_none(row.get("expires_at"))
     return expires is None or expires > now
 
 
 def _covers(old: dict, expires_at: datetime | None) -> bool:
     """An existing entry already suppresses at least as long as the new one would."""
-    old_exp = _ts(old.get("expires_at"))
+    old_exp = utc_strict_or_none(old.get("expires_at"))
     return old_exp is None or (expires_at is not None and old_exp >= expires_at)
 
 
@@ -120,7 +113,7 @@ def add_emails(store: Store, emails: Iterable[str], *, reason: str, source: str,
     known: set[str] = set()
     for chunk in _chunks(hashes):
         for r in store.select(TABLE, {"email_sha256": chunk, "domain": None}):
-            if _ts(r.get("expires_at")) is None:
+            if utc_strict_or_none(r.get("expires_at")) is None:
                 known.add(r["email_sha256"])
     rows = [
         {"email_sha256": h, "domain": None, "reason": reason, "source": source, "added_at": now, "expires_at": None}

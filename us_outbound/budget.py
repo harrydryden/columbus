@@ -26,28 +26,17 @@ from __future__ import annotations
 import math
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.db import Store
 from us_outbound.context import UK
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 MONTHLY_KEYS = {"apollo": "apollo_monthly_credits", "clay": "clay_monthly_credits"}
 AHEAD = 1.10  # spend more than 10% above the month's pace is "ahead of budget"
 PACE_WORDS = {"ahead": "ahead of pace", "on": "on pace", "behind": "behind pace"}
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
 
 
 def _uk_midnight(d: date) -> datetime:
@@ -166,7 +155,7 @@ def spent_in(store: Store, system: str, start: datetime, end: datetime, jobs: Co
     return sum(
         float(r.get("credits") or 0)
         for r in store.select("credit_ledger", {"system": system})
-        if (t := _ts(r.get("occurred_at"))) is not None and start <= t < end
+        if (t := utc(r.get("occurred_at"))) is not None and start <= t < end
         and (jobs is None or r.get("job") in jobs)
     )
 
@@ -226,7 +215,7 @@ def week_bounds(now: datetime) -> tuple[datetime, datetime]:
 
 
 def in_week(v: Any, now: datetime) -> bool:
-    t = _ts(v)
+    t = utc(v)
     if t is None:
         return False
     start, end = week_bounds(now)

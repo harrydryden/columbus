@@ -74,6 +74,7 @@ from us_outbound.learn.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_
 from us_outbound.logs import log
 from us_outbound.ops import notify
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 JOB = "kill_rules"
 ACTIVE = "Active"
@@ -94,18 +95,6 @@ VITALS_FAIL_WARMUP = frozenset({"banned", "permanent_suspension"})  # instantly.
 SOURCES = ("apollo", "clay")  # contacts.email_source
 BOUNCE_REASON = "bounce"
 LIST_LIMIT = 100
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
 
 
 def _lower(v: Any) -> str:
@@ -157,7 +146,7 @@ class _Events:
         rows = store.select("events", {"type": ["sent", "bounced", "replied", "meeting_booked", COMPLAINT, SEED_SPAM]})
         by_type: dict[str, list[dict]] = defaultdict(list)
         for e in rows:
-            if _ts(e.get("occurred_at")) is not None:
+            if utc(e.get("occurred_at")) is not None:
                 by_type[str(e.get("type"))].append(e)
         self.bounces = by_type["bounced"]
         self.replies = by_type["replied"]
@@ -167,10 +156,10 @@ class _Events:
         bounce_at: dict[str, list[tuple[Any, datetime]]] = defaultdict(list)
         for b in self.bounces:
             if b.get("contact_id"):
-                bounce_at[str(b["contact_id"])].append((b.get("step"), _ts(b["occurred_at"])))
+                bounce_at[str(b["contact_id"])].append((b.get("step"), utc(b["occurred_at"])))
         self.sends: list[_Send] = []
         for e in by_type["sent"]:
-            at = _ts(e["occurred_at"])
+            at = utc(e["occurred_at"])
             s = _Send(str(e.get("event_id")), _lower(e.get("mailbox")), str(e.get("contact_id") or ""),
                       str(e.get("account_id") or ""), e.get("step"), at)
             s.bounced = any((step is None or step == s.step) and t >= at for step, t in bounce_at.get(s.contact_id, ()))
@@ -210,7 +199,7 @@ class _Fired:
 
     def since(self, *keys: tuple[str, str]) -> datetime | None:
         """When any of these (scope, target) last fired; events at or before it are already counted."""
-        times = [_ts(i.get("created_at")) for k in keys for i in self._match(*k)]
+        times = [utc(i.get("created_at")) for k in keys for i in self._match(*k)]
         times = [t for t in times if t is not None]
         return max(times) if times else None
 
@@ -266,10 +255,10 @@ def mailbox_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) 
         if fired.open("mailbox", a) or fired.open("domain", _domain(a)):
             continue
         since = fired.since(("mailbox", a), ("domain", _domain(a)))
-        blocks = [b for b in ev.bounces if ev.bounce_mailbox(b) == a and _after(_ts(b["occurred_at"]), since, start)
+        blocks = [b for b in ev.bounces if ev.bounce_mailbox(b) == a and _after(utc(b["occurred_at"]), since, start)
                   and BLOCK_CODE.search(f"{b.get('reply_class') or ''} {b.get('reply_text') or ''}")]
-        complaints = [c for c in ev.complaints if ev.bounce_mailbox(c) == a and _after(_ts(c["occurred_at"]), since, start)]
-        seeds = [s for s in ev.seed_spam if _lower(s.get("mailbox")) == a and _after(_ts(s["occurred_at"]), since, start)]
+        complaints = [c for c in ev.complaints if ev.bounce_mailbox(c) == a and _after(utc(c["occurred_at"]), since, start)]
+        seeds = [s for s in ev.seed_spam if _lower(s.get("mailbox")) == a and _after(utc(s["occurred_at"]), since, start)]
         why = ""
         rule = ""
         if blocks:
@@ -365,7 +354,7 @@ def group_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) ->
     replied = defaultdict(list)
     for r in ev.replies:
         if _lower(r.get("reply_class")) != "out_of_office":
-            replied[ev.account(r)].append(_ts(r["occurred_at"]))
+            replied[ev.account(r)].append(utc(r["occurred_at"]))
     by_group: dict[str, list[tuple[str, _Send]]] = defaultdict(list)
     for aid, s in step1.items():
         group = settings.industry_group_of(accounts.get(aid, {}))
@@ -400,7 +389,7 @@ def stop_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) -> 
     if g.stop_rule_accounts > 0 and g.stop_rule_meetings > 0 and not fired.ever("stop_rule_meetings"):
         first: dict[str, datetime] = {}
         for c in ctx.store.select("contacts"):
-            t = _ts(c.get("enrolled_at"))
+            t = utc(c.get("enrolled_at"))
             aid = str(c.get("account_id") or "")
             if t is not None and aid and (aid not in first or t < first[aid]):
                 first[aid] = t
@@ -633,7 +622,7 @@ def run(ctx: Context) -> dict:
 
 def show(ctx: Context) -> list[dict]:
     """The kill-rule holds in force, oldest first."""
-    rows = sorted(holds.in_force(ctx.store), key=lambda r: _ts(r.get("created_at")) or datetime.min.replace(tzinfo=UTC))
+    rows = sorted(holds.in_force(ctx.store), key=lambda r: utc(r.get("created_at")) or datetime.min.replace(tzinfo=UTC))
     out = []
     for r in rows:
         p = r.get("payload") if isinstance(r.get("payload"), Mapping) else {}

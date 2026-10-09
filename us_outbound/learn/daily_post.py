@@ -60,7 +60,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, labels, limits
@@ -72,6 +72,7 @@ from us_outbound.ops import notify, retention
 from us_outbound.registry import ramp
 from us_outbound.replies.items import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
+from us_outbound.timeparse import utc
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
@@ -85,18 +86,6 @@ HAND_CHECK = "hand_check"  # hitl_items.kind of the weekly hand-check (enrol/han
 KIND_LABELS = {"reply": "replies", "reply_approval": "reply approvals", HAND_CHECK: "hand-checks",
                "manual_merge": "manual merges", daily_report.KIND: "send approvals"}
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
 
 
 def _midnight(d: date) -> datetime:
@@ -175,7 +164,7 @@ def for_you(ctx: Context, open_items: Sequence[Mapping[str, Any]] | None = None)
 
 
 def _oldest(ctx: Context, items: Sequence[Mapping[str, Any]]) -> str:
-    oldest = min((t for i in items if (t := _ts(i.get("created_at"))) is not None), default=None)
+    oldest = min((t for i in items if (t := utc(i.get("created_at"))) is not None), default=None)
     if oldest is None:
         return ""
     waited = daily_report._age(ctx.now - oldest)
@@ -204,7 +193,7 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     start, end, label = period(ctx)
     types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit"]
     rows = [e for e in ctx.store.select("events", {"type": types})
-            if (t := _ts(e.get("occurred_at"))) is not None and start <= t < end]
+            if (t := utc(e.get("occurred_at"))) is not None and start <= t < end]
     by_type: dict[str, list[dict]] = {}
     for e in rows:
         by_type.setdefault(str(e.get("type")), []).append(e)
@@ -332,7 +321,7 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     # Kill rules (SPEC 11: "any kill rule that fired").
     lines += ["", "*Kill rules and items waiting*"]
     fired = [i for i in ctx.store.select("hitl_items", {"kind": holds.KIND})
-             if (t := _ts(i.get("created_at"))) is not None and start <= t < ctx.now]
+             if (t := utc(i.get("created_at"))) is not None and start <= t < ctx.now]
     in_force = waiting_on.holds  # holds.in_force, from the open items already read
     if fired:
         lines.append("Kill rules fired: " + "; ".join(str((i.get("payload") or {}).get("reason")) for i in fired[:LIST_LIMIT]))
@@ -346,7 +335,7 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     waiting = [i for i in data.open_items if i.get("kind") != holds.KIND]
     by_kind = Counter(KIND_LABELS.get(str(i.get("kind")), str(i.get("kind"))) for i in waiting)
     if waiting:
-        oldest = min((_ts(i.get("created_at")) for i in waiting if _ts(i.get("created_at"))), default=None)
+        oldest = min((utc(i.get("created_at")) for i in waiting if utc(i.get("created_at"))), default=None)
         age = f"; the oldest has waited {int((ctx.now - oldest).total_seconds() // 3600)} hours" if oldest else ""
         lines.append(f"Waiting for approval: {len(waiting)} ({_counts(by_kind)}){age}.")
     else:

@@ -106,13 +106,13 @@ from __future__ import annotations
 import calendar
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED, STEP_DAYS
-from us_outbound.context import ET, UK, ConfigError, Context
+from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.openers import FOCUS_SOURCE
 from us_outbound.logs import log, normalise_email, redact
@@ -123,6 +123,7 @@ from us_outbound.scoring.score import SCORING_SOURCE
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
 from us_outbound.sources import named
 from us_outbound.sources.lookalikes import SOURCE as LOOKALIKE_SOURCE
+from us_outbound.timeparse import et_day, utc
 from us_outbound.verify import DOUBT_SOURCE
 
 JOB = "retention"
@@ -195,22 +196,6 @@ LEAD_LEFT = "its Instantly lead is not deleted yet"  # a due contact waits for r
 # -- small helpers -------------------------------------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str) and v:
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    return None
-
-
-def _et_day(v: Any) -> date | None:
-    t = _ts(v)
-    return t.astimezone(ET).date() if t is not None else None
-
-
 def _int(v: Any) -> int | None:
     try:
         return int(v)
@@ -257,7 +242,7 @@ class Ends:
         self.company: dict[str, list[date]] = {}
         self.talk: dict[str, date] = {}  # contact id -> the last email in its conversation
         for e in events:
-            day = _et_day(e.get("occurred_at"))
+            day = et_day(e.get("occurred_at"))
             if day is None:
                 continue
             if e.get("type") in CONVERSATION and e.get("contact_id"):
@@ -273,7 +258,7 @@ class Ends:
 
     def stop(self, contact: Mapping[str, Any]) -> date | None:
         """The first day a stop ended the contact's emails, on or after the day it was enrolled; None if none did."""
-        enrolled = _et_day(contact.get("enrolled_at"))
+        enrolled = et_day(contact.get("enrolled_at"))
         days = [*self.own.get(str(contact.get("contact_id")), ()),
                 *self.company.get(str(contact.get("account_id")), ())]
         days = [d for d in days if enrolled is None or d >= enrolled]
@@ -282,10 +267,10 @@ class Ends:
     def last_step(self, contact: Mapping[str, Any]) -> date | None:
         """The US Eastern day of the contact's last step (the module docstring); None when nothing dates it."""
         stop = self.stop(contact)
-        start = _et_day(contact.get("enrolled_at"))
+        start = et_day(contact.get("enrolled_at"))
         steps = capacity.step_days(start, self.settings) if start is not None else []
         end = min(steps[-1], stop) if steps and stop is not None else (steps[-1] if steps else stop)
-        later = [d for d in (end, _et_day(contact.get("last_step_at")), self.talk.get(str(contact.get("contact_id"))))
+        later = [d for d in (end, et_day(contact.get("last_step_at")), self.talk.get(str(contact.get("contact_id"))))
                  if d is not None]
         return max(later) if later else None
 
@@ -430,10 +415,10 @@ def _old_reply_texts(ctx: Context, before: datetime) -> tuple[list[str], list[di
                                                                          "kinds": list(REPLY_ITEM_KINDS)})
     except NotImplementedError:  # MemoryStore without a handler: the same in Python
         events = [str(e["event_id"]) for e in store.select("events")
-                  if e.get("reply_text") is not None and (t := _ts(e.get("occurred_at"))) is not None and t < before]
+                  if e.get("reply_text") is not None and (t := utc(e.get("occurred_at"))) is not None and t < before]
         items = [i for i in store.select("hitl_items", {"kind": list(REPLY_ITEM_KINDS)})
                  if isinstance(i.get("payload"), Mapping) and PURGED not in i["payload"]
-                 and (t := _ts(i.get("created_at"))) is not None and t < before]
+                 and (t := utc(i.get("created_at"))) is not None and t < before]
     return sorted(events), [i for i in items if isinstance(i.get("payload"), Mapping)]
 
 
@@ -546,14 +531,14 @@ def stale_accounts(ctx: Context, before: datetime) -> list[str]:
         pass
     held: set[str] = set()
     for e in store.select("signal_events"):
-        seen = _ts(e.get("observed_at"))
+        seen = utc(e.get("observed_at"))
         if (seen is not None and seen >= before and (e.get("source") or "") not in DERIVED_SOURCES) \
                 or e.get("fact") in DECISION_FACTS:
             held.add(str(e.get("account_id")))
     for table in ("contacts", "events", "hitl_items"):
         held |= {str(r["account_id"]) for r in store.select(table) if r.get("account_id")}
     found = [(t, str(a["account_id"])) for a in store.select("accounts")
-             if (t := _ts(a.get("first_seen"))) is not None and t < before
+             if (t := utc(a.get("first_seen"))) is not None and t < before
              and (a.get("status") or "") not in KEPT_STATUSES and (a.get("source") or "") != named.SOURCE
              and str(a["account_id"]) not in held]
     return [aid for _, aid in sorted(found)]
@@ -616,8 +601,8 @@ def describe(counts: Mapping[str, int]) -> str:
 def _runs(store: Any, since: datetime) -> list[dict]:
     """This job's runs that finished ok since then, oldest first."""
     rows = [r for r in store.select("heartbeats", {"job": JOB, "status": "ok"}) if isinstance(r.get("detail"), Mapping)
-            and (t := _ts(r.get("started_at"))) is not None and t >= since]
-    return sorted(rows, key=lambda r: _ts(r["started_at"]))
+            and (t := utc(r.get("started_at"))) is not None and t >= since]
+    return sorted(rows, key=lambda r: utc(r["started_at"]))
 
 
 def post_line(ctx: Context) -> tuple[str, dict[str, Any]]:
@@ -644,7 +629,7 @@ def status_line(store: Any) -> str:
     detail = (last or {}).get("detail")
     if not isinstance(detail, Mapping):
         return "Retention (00:40 UK daily): not run yet"
-    when = _ts(last.get("started_at"))
+    when = utc(last.get("started_at"))
     stamp = when.astimezone(UK).strftime("%a %d %b %H:%M UK") if when else "?"
     text = describe(_done(detail))
     dry = bool(detail.get("dry_run"))

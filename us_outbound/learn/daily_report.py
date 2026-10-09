@@ -92,6 +92,7 @@ from us_outbound.learn import kill_rules
 from us_outbound.limits import Limits
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import CLAY_REQUIRED, TIERS, Settings
+from us_outbound.timeparse import utc
 
 # The send-approval contract (hitl_items.kind and events.type).
 KIND = "send_approval"
@@ -123,20 +124,8 @@ _TOP_REVEALS = re.compile(r"^no sendable email among the top \d+ \(.*\)$")
 # -- small helpers ---------------------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
 def _in(v: Any, start: datetime, end: datetime) -> bool:
-    t = _ts(v)
+    t = utc(v)
     return t is not None and start <= t < end
 
 
@@ -240,7 +229,7 @@ def approvals(ctx: Context, rows: Rows, start: datetime, end: datetime) -> tuple
     also = f" · sending {sending}" if sending else ""
     if waiting:
         states = Counter(str(_payload(i).get("state") or "waiting") for i in waiting)
-        oldest = min((t for i in waiting if (t := _ts(i.get("created_at"))) is not None), default=None)
+        oldest = min((t for i in waiting if (t := utc(i.get("created_at"))) is not None), default=None)
         age = f"; the oldest has waited {_age(ctx.now - oldest)}" if oldest else ""
         lines.append(f"  Waiting now: {len(waiting)} ({_counts(states)}){age}{also}.")
     else:
@@ -275,7 +264,7 @@ def no_contact_in(store: Store, start: datetime, end: datetime) -> dict[str, str
     """account_id -> the reason, for accounts whose latest contact_pick fact in the period found nobody."""
     latest: dict[str, tuple[datetime, Mapping]] = {}
     for e in store.select("signal_events", {"source": pick.SOURCE, "fact": pick.OUTCOME_FACT}):
-        t, value, aid = _ts(e.get("observed_at")), e.get("value"), str(e.get("account_id") or "")
+        t, value, aid = utc(e.get("observed_at")), e.get("value"), str(e.get("account_id") or "")
         if t is None or not aid or not isinstance(value, Mapping) or not start <= t < end:
             continue
         if aid not in latest or t >= latest[aid][0]:
@@ -332,7 +321,7 @@ def sequence_states(ctx: Context, contacts: Iterable[Mapping[str, Any]]) -> Coun
     rank = {IN_SEQUENCE: 0, FINISHED: 1, STOPPED: 2}
     state: dict[str, str] = {}
     for c in contacts:
-        start = _ts(c.get("enrolled_at"))
+        start = utc(c.get("enrolled_at"))
         if start is None:
             continue
         if str(c.get("contact_id")) in stopped:
@@ -422,7 +411,7 @@ class _Emailed:
         warm: set[str] = set()
         for r in ev.replies:
             cid = str(r.get("contact_id") or "") or by_account.get(str(r.get("account_id") or ""), "")
-            t = _ts(r.get("occurred_at"))
+            t = utc(r.get("occurred_at"))
             if cid not in step1 or t is None or t < step1[cid].at or _lower(r.get("reply_class")) == NOT_HUMAN:
                 continue
             replied.add(cid)
@@ -435,7 +424,7 @@ def _approval_index(items: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str],
     """("contact" or "account", id) -> the payload of its latest send_approval item."""
     out: dict[tuple[str, str], Mapping[str, Any]] = {}
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
-    for i in sorted(items, key=lambda i: _ts(i.get("created_at")) or epoch):
+    for i in sorted(items, key=lambda i: utc(i.get("created_at")) or epoch):
         p = _payload(i)
         if i.get("contact_id"):
             out[("contact", str(i["contact_id"]))] = p
@@ -460,7 +449,7 @@ def _segment(e: Mapping[str, Any], key: str, index: Mapping[tuple[str, str], Map
 def _declines(ctx: Context, rows: Rows, since: datetime, early: list[str]) -> list[str]:
     """Where ❌ concentrates, and the copy rows edited most before approval."""
     events = [e for e in rows.decisions
-              if (t := _ts(e.get("occurred_at"))) is not None and t >= since and e.get("approval") in DECIDED]
+              if (t := utc(e.get("occurred_at"))) is not None and t >= since and e.get("approval") in DECIDED]
     if not events:
         return []
     # A decision closes its item, so the handled items carry the payloads (read once, only here).

@@ -88,6 +88,7 @@ from us_outbound.settings.model import (
     Settings,
     Signal,
 )
+from us_outbound.timeparse import utc_or_epoch
 
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
 PLAIN_COLUMN = "opener"
@@ -324,26 +325,11 @@ PAGE_WORDS = {"careers_pages": CAREERS_PAGE, "clay_careers": CAREERS_PAGE, "job_
 
 # -- facts ---------------------------------------------------------------------------------------------
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-def _ts(v: Any) -> datetime:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return _EPOCH
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return _EPOCH
-
 
 def _latest(events: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
     """The newest event of each fact."""
     out: dict[str, Mapping[str, Any]] = {}
-    for e in sorted(events, key=lambda e: _ts(e.get("observed_at"))):
+    for e in sorted(events, key=lambda e: utc_or_epoch(e.get("observed_at"))):
         if e.get("fact"):
             out[str(e["fact"])] = e
     return out
@@ -364,7 +350,7 @@ def contact_person_id(contact: Mapping[str, Any], events: Iterable[Mapping[str, 
     if contact.get("apollo_person_id"):
         return str(contact["apollo_person_id"])
     cid = str(contact.get("contact_id") or "")
-    for e in sorted(events, key=lambda e: _ts(e.get("observed_at")), reverse=True):
+    for e in sorted(events, key=lambda e: utc_or_epoch(e.get("observed_at")), reverse=True):
         v = e.get("value")
         if (e.get("source") == SOURCE and e.get("fact") == OUTCOME_FACT and isinstance(v, Mapping)
                 and cid and str(v.get("contact_id") or "") == cid and v.get("apollo_person_id")):
@@ -735,8 +721,9 @@ def focus_prompt(company: str, keywords: Sequence[str], about: str) -> str:
 def stored_focus(events: Iterable[Mapping[str, Any]], now: datetime) -> dict[str, Any] | None:
     """The account's latest opener_focus fact within FOCUS_REFRESH_DAYS, or None."""
     rows = [e for e in events if e.get("source") == FOCUS_SOURCE and e.get("fact") == FOCUS_FACT
-            and isinstance(e.get("value"), Mapping) and now - _ts(e.get("observed_at")) < timedelta(days=FOCUS_REFRESH_DAYS)]
-    return dict(max(rows, key=lambda e: _ts(e.get("observed_at")))["value"]) if rows else None
+            and isinstance(e.get("value"), Mapping)
+            and now - utc_or_epoch(e.get("observed_at")) < timedelta(days=FOCUS_REFRESH_DAYS)]
+    return dict(max(rows, key=lambda e: utc_or_epoch(e.get("observed_at")))["value"]) if rows else None
 
 
 def focus_phrase(ctx: Any, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], *,

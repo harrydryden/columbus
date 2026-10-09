@@ -63,7 +63,7 @@ import re
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
 from us_outbound import accounts, budget
@@ -81,6 +81,7 @@ from us_outbound.scoring.score import parse_override
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_credits as credits
+from us_outbound.timeparse import iso_date, utc
 
 JOB = "source_universe"
 SOURCE = "apollo_org"
@@ -254,22 +255,12 @@ class Cursor:
         return self.split or (self.pages is not None and self.page >= min(self.pages, MAX_PAGE))
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def cursors(ctx: Context) -> dict[str, Cursor]:
     """Each search's place this month (UK), from this job's credit_ledger notes."""
     start, end = budget.month_bounds(ctx.now)
     out: dict[str, Cursor] = {}
     for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        t = _ts(r.get("occurred_at"))
+        t = utc(r.get("occurred_at"))
         if t is None or not start <= t < end:
             continue
         try:
@@ -375,13 +366,6 @@ def in_us(org: Mapping[str, Any]) -> bool:
     return not country or country in US_COUNTRIES
 
 
-def _date(v: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(v)[:10]) if v else None
-    except ValueError:
-        return None
-
-
 def funding_usd(event: Mapping[str, Any]) -> int | None:
     """A funding event's amount in dollars: a number, or text like "8M", "$1.5B" or "750K"; None otherwise.
 
@@ -405,11 +389,11 @@ def org_funding(org: Mapping[str, Any], today: date) -> dict[str, Any]:
     The amount is the latest round's own (an event on its date), never an earlier round's.
     PHASE0-CONFIRM: latest_funding_round_date, latest_funding_stage and funding_events[].amount.
     """
-    events = sorted((e for e in org.get("funding_events") or () if isinstance(e, Mapping) and _date(e.get("date"))),
-                    key=lambda e: _date(e.get("date")), reverse=True)
-    when = _date(org.get("latest_funding_round_date")) or (_date(events[0].get("date")) if events else None)
+    events = sorted((e for e in org.get("funding_events") or () if isinstance(e, Mapping) and iso_date(e.get("date"))),
+                    key=lambda e: iso_date(e.get("date")), reverse=True)
+    when = iso_date(org.get("latest_funding_round_date")) or (iso_date(events[0].get("date")) if events else None)
     stage = str(org.get("latest_funding_stage") or (events[0].get("type") if events else "") or "").strip()
-    amount = next((a for e in events if _date(e.get("date")) == when and (a := funding_usd(e))), None)
+    amount = next((a for e in events if iso_date(e.get("date")) == when and (a := funding_usd(e))), None)
     out: dict[str, Any] = {}
     if when is not None and when <= today:
         out["days_since_funding"] = (today - when).days

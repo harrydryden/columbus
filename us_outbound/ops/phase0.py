@@ -63,7 +63,8 @@ from us_outbound.context import ConfigError, Context
 from us_outbound.logs import clip, hash_email, log, redact
 from us_outbound.ops import seed as seed_ops
 from us_outbound.registry.mailboxes import campaign_name
-from us_outbound.replies.outcomes import UE_CAMPAIGN, email_time, from_address, to_time
+from us_outbound.replies.outcomes import UE_CAMPAIGN, email_time, from_address
+from us_outbound.timeparse import utc
 
 JOB = "phase0_check"
 CONFIRMED, DIFFERS, NOT_CHECKED = "CONFIRMED", "DIFFERS", "COULD NOT CHECK"
@@ -181,7 +182,7 @@ class Run:
 
 
 def _created(e: Mapping[str, Any]) -> datetime | None:
-    return to_time(e.get("timestamp_created")) or email_time(e)
+    return utc(e.get("timestamp_created")) or email_time(e)
 
 
 def emails_until(r: Run) -> Result:
@@ -212,7 +213,7 @@ def email_fields(r: Run) -> Result:
     sent = [e for e in r.emails("sent") if not from_address(e) or from_address(e) == _lower(e.get("eaccount"))]
     if not sent:
         return Result(NOT_CHECKED, f"no campaign email sent in the last {LOOKBACK.days} days")
-    stamped = sum(1 for e in sent if to_time(e.get("timestamp_email")))
+    stamped = sum(1 for e in sent if utc(e.get("timestamp_email")))
     codes = Counter(_int(e.get("ue_type")) for e in sent)
     seen = ", ".join(f"{k} ×{v}" for k, v in sorted(codes.items(), key=lambda kv: str(kv[0])))
     if stamped < len(sent) or set(codes) != {UE_CAMPAIGN}:
@@ -358,9 +359,9 @@ def seed_resume(r: Run, address: str) -> Result:
     if not earlier:
         return Result(NOT_CHECKED, "no earlier pause of this seed lead: this run's SEED-PAUSE starts it, and a run on or "
                                    "after its next step's day reads the answer")
-    at = to_time(earlier.get("paused_at"))
-    last = to_time(lead.get("timestamp_last_contact"))
-    before = to_time(earlier.get("last_contact"))
+    at = utc(earlier.get("paused_at"))
+    last = utc(lead.get("timestamp_last_contact"))
+    before = utc(earlier.get("last_contact"))
     due = max(at, before + timedelta(days=STEP_GAP)) if before else at + timedelta(days=STEP_GAP)
     if last and last > at:
         return Result(CONFIRMED, f"paused and set active on {at:%d %b}; Instantly emailed it again on {last:%d %b}")

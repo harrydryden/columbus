@@ -67,7 +67,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from us_outbound.clean.domains import root_domain
@@ -77,6 +77,7 @@ from us_outbound.logs import hash_email, log
 from us_outbound.replies import optout
 from us_outbound.settings.validate import is_spill_domain
 from us_outbound import suppression
+from us_outbound.timeparse import utc
 
 JOB = "sync_outcomes"
 # The event types enrol/capacity.py reads (STOP_EVENTS, and "sent" for the forecast). SPEC 6.
@@ -105,20 +106,6 @@ def _lower(v: Any) -> str:
     return str(v or "").strip().lower()
 
 
-def to_time(v: Any) -> datetime | None:
-    """An aware datetime (naive ones are taken as UTC) from a datetime, a date or ISO text; else None."""
-    if isinstance(v, str) and v:
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return None
-
-
 def _int(v: Any) -> int | None:
     try:
         return int(v)
@@ -142,7 +129,7 @@ def select_in(ctx: Context, table: str, column: str, values: Iterable[str], wher
 
 def email_time(email: Mapping[str, Any]) -> datetime | None:
     """When the email was sent or received. PHASE0-CONFIRM: timestamp_email, else timestamp_created."""
-    return to_time(email.get("timestamp_email")) or to_time(email.get("timestamp_created"))
+    return utc(email.get("timestamp_email")) or utc(email.get("timestamp_created"))
 
 
 def _addresses(value: Any) -> list[str]:
@@ -235,7 +222,7 @@ class Directory:
         aliases = {_lower(a.get("alias")): _lower(a.get("root_domain")) for a in ctx.store.select("domain_aliases")}
         self.by_domain: dict[str, dict] = {}
         # The account's latest enrolled contact speaks for it (one contact per account in v1).
-        for c in sorted(contacts, key=lambda c: (to_time(c.get("enrolled_at")) or datetime.min.replace(tzinfo=UTC))):
+        for c in sorted(contacts, key=lambda c: (utc(c.get("enrolled_at")) or datetime.min.replace(tzinfo=UTC))):
             a = self.accounts.get(str(c.get("account_id")))
             domain = root_domain(a.get("domain")) if a else None
             if domain:
@@ -245,7 +232,7 @@ class Directory:
                 self.by_domain[alias] = self.by_domain[root]
 
     def earliest_enrolled(self) -> datetime | None:
-        times = [t for c in self.by_id.values() if (t := to_time(c.get("enrolled_at")))]
+        times = [t for c in self.by_id.values() if (t := utc(c.get("enrolled_at")))]
         return min(times) if times else None
 
     def account_of(self, contact: Mapping[str, Any]) -> dict:
@@ -320,14 +307,14 @@ def since(ctx: Context, job: str, *, live_only: bool = False, recheck: timedelta
     """
     if last is _UNREAD:
         last = last_run(ctx, job, live_only=live_only)
-    began = to_time((last or {}).get("started_at"))
+    began = utc((last or {}).get("started_at"))
     if began is not None:
         start = began - overlap
     elif earliest is not None:
         start = earliest - overlap
     else:
         start = ctx.now - recheck
-    resume = to_time(detail_of(last).get("resume_from"))
+    resume = utc(detail_of(last).get("resume_from"))
     if resume is not None:
         start = min(start, resume - overlap)
     return max(ctx.now - MAX_LOOKBACK, min(start, ctx.now - recheck))
@@ -362,12 +349,12 @@ def sent_events(ctx: Context, contact_ids: Iterable[str]) -> dict[str, list[dict
 
 
 def _send_order(e: Mapping[str, Any]) -> tuple[datetime, str]:
-    return (to_time(e.get("occurred_at")) or datetime.min.replace(tzinfo=UTC), str(e.get("event_id")))
+    return (utc(e.get("occurred_at")) or datetime.min.replace(tzinfo=UTC), str(e.get("event_id")))
 
 
 def step_before(sends: Sequence[Mapping[str, Any]], at: datetime | None) -> int | None:
     """The step of the contact's last send at or before `at`: the email a reply answers."""
-    steps = [_int(e.get("step")) for e in sends if at is None or (to_time(e.get("occurred_at")) or at) <= at]
+    steps = [_int(e.get("step")) for e in sends if at is None or (utc(e.get("occurred_at")) or at) <= at]
     steps = [s for s in steps if s is not None]
     return max(steps) if steps else None
 
@@ -420,8 +407,8 @@ def _record_sent(ctx: Context, d: Directory, emails: Iterable[Mapping[str, Any]]
                 rows.append({**ev, "step": i})
         c = d.by_id.get(contact_id, {})
         update: dict[str, Any] = {}
-        last = to_time(evs[-1].get("occurred_at"))
-        if last and (not to_time(c.get("last_step_at")) or last > to_time(c.get("last_step_at"))):
+        last = utc(evs[-1].get("occurred_at"))
+        if last and (not utc(c.get("last_step_at")) or last > utc(c.get("last_step_at"))):
             update["last_step_at"] = last
         if not c.get("mailbox") and evs[0].get("mailbox"):
             update["mailbox"] = evs[0]["mailbox"]  # the address that sent step 1 (SPEC 6)
@@ -456,7 +443,7 @@ def _record_replies(ctx: Context, d: Directory, emails: Iterable[Mapping[str, An
     if rows:
         sends = sent_events(ctx, {r["contact_id"] for r in rows.values()})
         for r in rows.values():
-            r["step"] = step_before(sends.get(str(r["contact_id"]), []), to_time(r["occurred_at"]))
+            r["step"] = step_before(sends.get(str(r["contact_id"]), []), utc(r["occurred_at"]))
         ctx.store.upsert("events", list(rows.values()))  # only these columns: a class already set stays
         mark_engaged(ctx, (r["account_id"] for r in rows.values()))
     return len(rows), auto
@@ -469,7 +456,7 @@ def _record_bounce(ctx: Context, contact: dict, lead: Mapping[str, Any], known: 
         return False
     sends = sent_events(ctx, [contact["contact_id"]]).get(str(contact["contact_id"]), [])
     last = sends[-1] if sends else {}
-    at = to_time(last.get("occurred_at")) or to_time(lead.get("timestamp_last_contact")) or ctx.now
+    at = utc(last.get("occurred_at")) or utc(lead.get("timestamp_last_contact")) or ctx.now
     ctx.store.upsert("events", [{
         "event_id": event_id, "contact_id": contact["contact_id"], "account_id": contact.get("account_id"),
         "type": BOUNCED, "step": _int(last.get("step")), "mailbox": last.get("mailbox") or contact.get("mailbox"),
@@ -509,7 +496,7 @@ def _lead_outcomes(ctx: Context, d: Directory, campaigns: Iterable[str], out: di
             result = optout.opt_out(
                 ctx, marker=optout.lead_marker(str(lead.get("id"))), addresses=[address], contact=contact,
                 account_id=contact.get("account_id"), mailbox=contact.get("mailbox"),
-                occurred_at=to_time(lead.get("timestamp_updated")) or ctx.now, source=INSTANTLY_SOURCE, done=done,
+                occurred_at=utc(lead.get("timestamp_updated")) or ctx.now, source=INSTANTLY_SOURCE, done=done,
             )
             out["unsubscribed"][result] += 1
 
@@ -530,12 +517,12 @@ def window(ctx: Context, earliest: datetime | None) -> Window:
     last = last_run(ctx, JOB)
     prev = detail_of(last)
     now = ctx.now
-    rechecked = to_time(prev.get("recheck_at"))
+    rechecked = utc(prev.get("recheck_at"))
     recheck_due = rechecked is None or now - rechecked >= RECHECK_EVERY
     start = since(ctx, JOB, earliest=earliest, recheck=RECHECK if recheck_due else timedelta(0),
                   overlap=SYNC_OVERLAP, last=last)
     end = start + CATCH_UP if now - start > CATCH_UP else None
-    leads_at = to_time(prev.get("leads_read_at"))
+    leads_at = utc(prev.get("leads_read_at"))
     # The first run after a switch between dry-run and live reads them: a live run opts out what a dry run could not.
     mode_changed = last is not None and bool(last.get("dry_run")) != ctx.dry_run
     read_leads = leads_at is None or now - leads_at >= LEADS_EVERY or mode_changed

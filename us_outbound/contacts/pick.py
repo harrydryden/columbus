@@ -78,7 +78,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import budget
@@ -99,6 +99,7 @@ from us_outbound.enrol import enrol, queue, second
 from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
+from us_outbound.timeparse import iso_date, utc
 
 JOB = "pick_contacts"
 SOURCE = "pick_contacts"  # signal_events.source of this job's facts
@@ -141,17 +142,6 @@ CLAY_LEDGER_NOTE = "email waterfall (Clay)"
 US_LOCATION = "United States"
 SEARCH_EMAIL_STATUSES = ("verified",)
 US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    return None
 
 
 def _lower(v: Any) -> str:
@@ -215,7 +205,7 @@ class History:
 def history(store: Store, now: datetime) -> History:
     h = History()
     for e in store.select("signal_events", {"source": SOURCE}):
-        t, aid, value = _ts(e.get("observed_at")), str(e.get("account_id") or ""), e.get("value")
+        t, aid, value = utc(e.get("observed_at")), str(e.get("account_id") or ""), e.get("value")
         if t is None or not aid or not isinstance(value, Mapping):
             continue
         if e.get("fact") == OUTCOME_FACT and (aid not in h.outcomes or t >= h.outcomes[aid][0]):
@@ -293,9 +283,8 @@ def days_in_role(person: Mapping[str, Any], today: date) -> int | None:
     """Days since the person started their current job, when Apollo gives it (employment_history)."""
     for job in person.get("employment_history") or ():
         if isinstance(job, Mapping) and job.get("current") and job.get("start_date"):
-            try:
-                start = date.fromisoformat(str(job["start_date"])[:10])
-            except ValueError:
+            start = iso_date(job["start_date"])
+            if start is None:
                 continue
             return max(0, (today - start).days)
     return None

@@ -73,6 +73,7 @@ from us_outbound.learn import holds
 from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 # Days after the step before, from the campaign's own step days (0, 7, 14, 21 -> 0, 7, 7, 7),
 # so the forecast and the Instantly campaign cannot drift apart.
@@ -113,18 +114,6 @@ def step_days(start: date, settings: Settings) -> list[date]:
 def owner_of(campaign: str) -> str:
     """"US Outbound – Hannah Spalding" -> "Hannah Spalding"; "" for any other name."""
     return campaign[len(US_CAMPAIGN_PREFIX):] if campaign.startswith(US_CAMPAIGN_PREFIX) else ""
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
 
 
 def _status(campaign: Mapping[str, Any]) -> int | None:
@@ -196,7 +185,7 @@ def instantly_report(store: Store) -> Mapping[str, Any]:
             if isinstance(r.get("detail"), Mapping) and not r["detail"].get("skipped")]
     if not runs:
         return {}
-    return max(runs, key=lambda r: _ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))["detail"]
+    return max(runs, key=lambda r: utc(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))["detail"]
 
 
 def instantly_limits(store: Store, report: Mapping[str, Any] | None = None) -> dict[str, int]:
@@ -258,7 +247,7 @@ def committed_steps(
     out: Counter[tuple[str, date]] = Counter()
     for c in contacts:
         owner = owner_of(str(c.get("instantly_campaign") or ""))
-        start = _ts(c.get("enrolled_at"))
+        start = utc(c.get("enrolled_at"))
         if not owner or start is None or str(c.get("contact_id")) in stopped:
             continue
         for day in step_days(start.astimezone(ET).date(), settings):
@@ -419,7 +408,7 @@ def in_flight(store: Store, settings: Settings, today: date) -> list[dict]:
     stopped = stopped_contacts(store)
     out: list[dict] = []
     for c in store.select("contacts"):
-        start = _ts(c.get("enrolled_at"))
+        start = utc(c.get("enrolled_at"))
         if (start is None or not c.get("instantly_lead_id") or not owner_of(str(c.get("instantly_campaign") or ""))
                 or str(c.get("contact_id")) in stopped):
             continue
