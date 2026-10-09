@@ -219,7 +219,7 @@ def test_with_a_slack_token_the_real_client_is_used():
 
 def test_stop_and_unenrol_run_on_the_general_defaults_when_the_settings_are_unusable(capsys):
     """`stop --live` must pause the campaigns even when no valid settings are in force."""
-    from us_outbound.ops.heartbeat import OPERATOR_STOP, enrolment_paused
+    from us_outbound.base.heartbeats import OPERATOR_STOP, enrolment_paused
     from us_outbound.settings.model import General
 
     assert {OPERATOR_STOP, "unenrol"} <= bootstrap.DEFAULTS_OK and "enrol" not in bootstrap.DEFAULTS_OK

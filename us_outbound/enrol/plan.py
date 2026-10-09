@@ -21,10 +21,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from us_outbound.base import notify
 from us_outbound.clients import instantly
 from us_outbound.context import Context
 from us_outbound.logs import log
-from us_outbound.ops import notify
 
 SKIP = "Instantly plan limit"  # the skip reason (enrol) and the hold (a send approval)
 KEPT = "Instantly's plan has no room for new leads: the contact is kept and is added when there is room"

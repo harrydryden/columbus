@@ -60,10 +60,10 @@ from datetime import timedelta
 from typing import Any
 
 from us_outbound import accounts, labels, verify
+from us_outbound.base import notify
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import Settings
 

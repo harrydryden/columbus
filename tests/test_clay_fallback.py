@@ -15,11 +15,11 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_pick_contacts import ORG, TEAM, FakeApollo, account, everyone_verified, facts, match
+from us_outbound.base import holds
 from us_outbound.clients.clay import WORK_EMAIL_FUNCTION_ID, ClayError, parse_work_email_output
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.contacts import pick
 from us_outbound.context import boundaries_for
-from us_outbound.learn import holds
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.validate import validate_all
 

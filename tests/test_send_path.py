@@ -13,8 +13,8 @@ from datetime import timedelta
 from tests.test_enrol import NOW
 from tests.test_render import account, contact
 from us_outbound import suppression
+from us_outbound.base import holds
 from us_outbound.enrol import approvals, enrol
-from us_outbound.learn import holds
 from us_outbound.logs import hash_email
 
 # -- A4: one eligibility check -----------------------------------------------------------------------------

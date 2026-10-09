@@ -60,12 +60,12 @@ from datetime import datetime
 from typing import Any
 
 from us_outbound import budget, fmt, labels
+from us_outbound.base import holds
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import enrol, second
 from us_outbound.enrol.capacity import CAMPAIGN_COMPLETED, TAKES_LEADS
-from us_outbound.learn import holds
 from us_outbound.logs import redact
 from us_outbound.registry import blackout, ramp
 from us_outbound.settings.model import GENERAL_COPY, ROLE_LINE_COLUMNS

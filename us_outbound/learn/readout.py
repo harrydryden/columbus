@@ -1,6 +1,6 @@
 """monday_readout, Mondays 08:30 UK (SPEC 9, 12 "Monday readout"; Harry, 6 Oct 2026: "push ahead with building").
 
-One message to the alert channel (#us-outbound; the dev channel in dry-run, ops/notify.py), after the weekly
+One message to the alert channel (#us-outbound; the dev channel in dry-run, base/notify.py), after the weekly
 hand-check (08:00) and before the daily post (09:00), about the week before (Monday to Sunday, UK time). In plain
 words, top to bottom:
   * Last week: emails sent, replies (human: every class but out-of-office) and positive replies (positive or
@@ -45,11 +45,11 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, fmt, labels
+from us_outbound.base import notify
 from us_outbound.context import UK, Context
 from us_outbound.learn import cohorts, looks, signal_value
 from us_outbound.learn.kill_rules import COMPLAINT
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.replies import kinds
 from us_outbound.timeparse import iso_date, utc
 

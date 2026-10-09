@@ -11,6 +11,7 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2, SAM, SETTINGS, FakeInstantly, StubSheets, slack_routes
+from us_outbound.base import heartbeats
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
@@ -320,12 +321,12 @@ def test_stop_pauses_every_us_campaign_and_enrolment():
     harry = h.instantly.add_campaign(C_HARRY, status=0)
     eu = h.instantly.add_campaign("EU Outbound – Anna", status=1)
     assert h.run("stop") == 0  # dry-run: enrolment stops, campaigns do not
-    assert hb.enrolment_paused(h.store) is not None
+    assert heartbeats.enrolment_paused(h.store) is not None
     assert hannah["status"] == 1
     assert h.run("stop", "--live") == 0  # operator command: --live alone
     assert hannah["status"] == 2 and harry["status"] == 0 and eu["status"] == 1
     assert not [r for r in h.transport.requests if f"/{eu['id']}" in r.url]
-    assert [b["status"] for b in h.beats(hb.OPERATOR_STOP)] == ["ok", "ok"]
+    assert [b["status"] for b in h.beats(heartbeats.OPERATOR_STOP)] == ["ok", "ok"]
 
 
 def test_campaigns_show_prints_each_owner_campaign_as_instantly_holds_it(capsys):
@@ -348,7 +349,7 @@ def test_start_needs_live_sending_and_checks_drift():
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())
-    assert hb.enrolment_paused(h.store) is not None
+    assert heartbeats.enrolment_paused(h.store) is not None
 
     live = Harness(LIVE_SETTINGS)
     live.store, live.instantly, live.transport = h.store, h.instantly, h.transport
@@ -359,7 +360,7 @@ def test_start_needs_live_sending_and_checks_drift():
     h.instantly.by_name(C_SAM)["open_tracking"] = False
     assert live.run("start", "--live") == 0
     assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
-    assert hb.enrolment_paused(h.store) is None
+    assert heartbeats.enrolment_paused(h.store) is None
 
 
 # -- operator commands ----------------------------------------------------------------------------------
@@ -574,7 +575,7 @@ def test_no_http_library_outside_the_http_client():
     from pathlib import Path
 
     root = Path(cli.__file__).resolve().parents[1]
-    mine = ["ops/cli.py", "ops/heartbeat.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
+    mine = ["ops/cli.py", "ops/heartbeat.py", "base/heartbeats.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
             "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
     for rel in mine:
         text = (root / rel).read_text()

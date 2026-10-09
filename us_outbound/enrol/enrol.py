@@ -23,7 +23,7 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
      pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
-     hold back an industry group or an email source (learn/holds.py). This is one check (eligible),
+     hold back an industry group or an email source (base/holds.py). This is one check (eligible),
      and a send approval's ✅ runs it again for the card's contact (enrol/approvals.recheck).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
@@ -77,6 +77,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from us_outbound.base import holds
+from us_outbound.base.heartbeats import enrolment_paused
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
@@ -85,7 +87,6 @@ from us_outbound.context import UK, Context
 from us_outbound import budget, config_version, labels
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render, variants
-from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
@@ -134,8 +135,6 @@ def iso_week(d: date) -> str:
 
 def operator_pause(ctx: Context) -> str | None:
     """Why enrollment is paused by the stop command (SPEC 13); the stop rule's pause is holds.enrolment_stop."""
-    from us_outbound.ops.heartbeat import enrolment_paused
-
     stop = enrolment_paused(ctx.store)
     if stop is None:
         return None
@@ -295,7 +294,7 @@ class Gates:
     hashes: Collection[str]  # suppressed email hashes
     partners: Collection[str]
     pulled: frozenset[str] = frozenset()  # accounts pulled at this week's hand-check
-    stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (learn/holds.py)
+    stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (base/holds.py)
     sources: Collection[str] = frozenset()  # email sources a kill rule paused
 
 

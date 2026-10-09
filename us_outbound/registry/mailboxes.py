@@ -61,7 +61,7 @@ of its Active mailboxes' caps today, each the lower of the ramp (10 a day in a m
 first sending week, 20 in its second) and its daily_cap, and mailbox_health sets each
 Instantly account's own daily limit to the same number. So as the ramp moves, the daily drift
 check finds the campaign's limit behind and mailbox_health sets it (as `campaigns ensure --fix
---live` does). A mailbox a kill rule holds (learn/holds.py) counts as Paused here before the
+--live` does). A mailbox a kill rule holds (base/holds.py) counts as Paused here before the
 sheet catches up.
 """
 
@@ -75,6 +75,8 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import config_version, parse
+from us_outbound.base import holds
+from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
@@ -88,9 +90,7 @@ from us_outbound.clients.instantly import (
 )
 from us_outbound.context import Context, boundaries_for
 from us_outbound.enrol import capacity
-from us_outbound.learn import holds
 from us_outbound.logs import log
-from us_outbound.ops.heartbeat import OPERATOR_START, OPERATOR_STOP
 from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Mailbox, Settings
@@ -514,7 +514,7 @@ def _lower_limit(row: Mapping[str, Any]) -> bool:
 def went_live(store: Any) -> datetime | None:
     """When sending went live and still is: the latest live `start` that finished ok, if no `stop` came after it.
 
-    The same rule as ops/heartbeat.enrolment_paused: a stop counts in any mode and whatever its
+    The same rule as base/heartbeats.enrolment_paused: a stop counts in any mode and whatever its
     outcome (the safe direction); a start only when it ran live and finished ok.
     """
     rows = store.select("heartbeats", {"job": [OPERATOR_STOP, OPERATOR_START]})

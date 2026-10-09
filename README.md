@@ -130,6 +130,8 @@ Files added beyond the SPEC 13 tree:
 - `suppression.py` (the one hashed suppression list)
 - `ops/bootstrap.py` (the production context), `ops/ddl.py` (applies `sql/`), `__main__.py`
 - `ops/schedule.py` (the job table) and `ops/scheduler.py` (the always-on worker that runs it)
+- `base/` (9 Oct 2026): the alert poster (`notify.py`), the heartbeats read back with the operator stop
+  (`heartbeats.py`) and the kill-rule holds (`holds.py`), one layer below enrolment, learning and operations
 - `deploy/slack-app-manifest.yaml` (the Slack app)
 - `replies/outcomes.py` (sync_outcomes), `replies/optout.py` (one opt-out path for links and replies),
   `replies/draft.py` (reply drafts); `replies/poll.py` holds the hitl_items contract with the reply desk
@@ -199,7 +201,7 @@ lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oc
 facts). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
 fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
-enrollment until it is cleared (`learn/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
+enrollment until it is cleared (`base/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day
 in a mailbox's first sending week, 20 in its second, then its cap) sets the forecast, each
 campaign's daily limit and each Instantly account's own limit.
 

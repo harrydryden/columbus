@@ -29,7 +29,7 @@ Each mailbox's sends a day are the lowest of:
     week, 20 in its second, then its cap;
   * the Mailboxes tab's daily_cap;
   * Instantly's own daily limit on the account, when mailbox_health last saw one.
-A mailbox a kill rule holds (learn/holds.py) has no capacity, even before the sheet syncs.
+A mailbox a kill rule holds (base/holds.py) has no capacity, even before the sheet syncs.
 
 What Instantly reports back, from the latest mailbox_health run (registry/mailboxes.py):
   * each mailbox's own daily limit (the lower of it and the sheet's cap is used);
@@ -63,13 +63,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound.base import holds
 from us_outbound.budget import is_send_day
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS, STEP_DAYS
 from us_outbound.context import ET, ConfigError, Context
-from us_outbound.learn import holds
 from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
