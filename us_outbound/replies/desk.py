@@ -8,11 +8,11 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      approver counts (decision D11, approved by Harry, 1 Oct 2026): a Slack id on approver_slack_ids,
      or the owner of the mailbox the prospect wrote to (Mailboxes slack_id), for that mailbox only.
      Anyone else is ignored.
-       ✅ on the draft, or "send"   send the draft;
+       ✅ on the draft, or "send"   send the draft ("approve" too, as on a send-approval card);
        "send: <text>"              send that text instead (SPEC 11);
        "edit: <text>"              the text replaces the draft, which is posted again in the thread;
                                    ✅ on that message, or "send", then sends it;
-       ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11).
+       ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11; "no", "reject" or "don't send" too).
      Thread replies count in order, then the reactions on the current draft message; ❌ beats ✅.
      A ✅ on a draft that was edited since, or whose send failed, no longer counts. The bot seeds ✅
      and ❌ on each alert (replies/poll.py) and on a changed draft, so deciding is one click; its own
@@ -107,8 +107,10 @@ EXCERPT_CHARS = 200  # SPEC 1.7: at most 200 characters of any email body leave 
 # -- Slack text -----------------------------------------------------------------------------------
 
 _SLACK_LINK = re.compile(r"<([^<>|]+)(?:\|([^<>]*))?>")
-_SEND = re.compile(r"^send[\s.!]*$", re.I)
-_SKIP = re.compile(r"^skip[\s.!]*$", re.I)
+# The words a send-approval card takes (enrol/approvals._COMMANDS; 9 Oct 2026: "approve" in a reply thread was
+# dropped without a word).
+_SEND = re.compile(r"^(?:send|approve)[\s.!]*$", re.I)
+_SKIP = re.compile(r"^(?:skip|no|reject|don'?t send)[\s.!]*$", re.I)
 _SEND_TEXT = re.compile(r"^send\s*:\s*(.*)$", re.I | re.S)
 _EDIT = re.compile(r"^edit\s*:\s*(.*)$", re.I | re.S)
 

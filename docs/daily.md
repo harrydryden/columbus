@@ -81,8 +81,8 @@ one click decides.
 
 | On a send card (12:00) | On a reply card | What it does |
 | :- | :- | :- |
-| ✅ or `send` | ✅ or `send` | Sends it. A send card's lead goes to Instantly within 5 minutes |
-| ❌ or `skip` | ❌ or `skip` | A send card offers the three choices below. A reply card is closed, and nothing is sent |
+| ✅ or `send` (or `approve`) | ✅ or `send` (or `approve`) | Sends it. A send card's lead goes to Instantly within 5 minutes |
+| ❌ or `skip` (or `no`, `reject`, `don't send`) | ❌ or `skip` (or `no`, `reject`, `don't send`) | A send card offers the three choices below. A reply card is closed, and nothing is sent |
 | ✏️ (or `edit`), then a thread reply with the new email 1. Put "Subject: …" first, or "Email 2:" to change a follow-up | `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
 | — | `send: …` | Sends that text instead of the draft |
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |

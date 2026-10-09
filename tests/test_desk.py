@@ -537,6 +537,9 @@ def test_cli_refuses_an_unknown_or_ambiguous_id(settings, capsys):
     ("send", "send", ""), ("Send.", "send", ""), ("<@U_HARRY> send", "send", ""), ("SKIP!", "skip", ""),
     ("send: Hi Jane", "send_text", "Hi Jane"), ("Edit:  New text\nline two", "edit", "New text\nline two"),
     ("sending it now", None, None), ("send:", None, None), ("looks good", None, None),
+    # The card's words too (9 Oct 2026: "approve" in a reply thread was dropped without a word).
+    ("Approve", "send", ""), ("no", "skip", ""), ("reject.", "skip", ""), ("Don't send", "skip", ""),
+    ("approved by me", None, None), ("no thanks", None, None),
 ])
 def test_parse_command(text, kind, body):
     cmd = desk.parse_command(text)
