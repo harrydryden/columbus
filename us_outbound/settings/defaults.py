@@ -15,56 +15,11 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from us_outbound.settings import spec
 from us_outbound.settings.model import TABS, General
 
-COLUMNS: dict[str, list[str]] = {
-    "General": ["key", "value", "note"],
-    "Signals": [
-        "signal", "source", "looks_for", "context_rule", "weight", "max_weight", "action",
-        "suggests_angle", "opener",
-        # Tokenized openers by copy role (Harry, 2 Oct 2026; enrol/openers.py); optional columns.
-        "opener_people", "opener_founder", "opener_ops", "opener_self",
-        "counts_for_days", "active", "note",
-    ],
-    "Angles": ["angle", "order", "argument", "default_opener", "landing_page_override", "active", "note"],
-    "Industries": [
-        "industry", "industry_group", "active", "naics_prefixes", "exclude_naics", "apollo_keywords",
-        "landing_page_url", "proof_point", "priority",
-        # The industry's spill.chat page, as material for its emails (Harry, 30 Sep 2026); optional columns.
-        "page_blurb", "page_intro", "page_ticks", "page_challenges", "page_stats", "page_benefits",
-        "page_features", "page_faqs", "page_customers",
-        # What a company under the label is and is not, for the model's label check (labels.py; Harry, 7 Oct 2026);
-        # optional: a blank cell takes the build's line from data/industries.csv.
-        "definition", "note",
-    ],
-    "States": ["state", "active", "note"],
-    # One row per group of titles, with its order at each size (Harry, 1 Oct 2026).
-    "Roles": ["role", "copy_role", "titles", "order_10_49", "order_50_249", "industry_groups", "note"],
-    # One row per industry (and optionally role), the four emails across (Harry, 30 Sep 2026).
-    "Copy": [
-        "copy_version", "industry", "role", "status", "approved_by", "qa", "qa_notes",
-        "s1_subject", "s1_body", "s2_subject", "s2_body", "s3_subject", "s3_body", "s4_subject", "s4_body",
-        "people_leader_line", "founder_line", "operations_line", "sources", "note",
-    ],
-    "Mailboxes": [
-        "address", "instantly_account_id", "domain", "provider", "owner_name", "owner_role", "signature",
-        "status", "daily_cap", "added_on", "retire_after",
-        # Optional (decision D11, Harry, 1 Oct 2026): the owner's Slack user id, so they can approve
-        # replies to their own mailbox. A sheet without the column reads it as blank.
-        "slack_id",
-    ],
-    "Overrides": ["domain", "field", "value", "note"],
-    # kind and looks (Harry, 6 Oct 2026: tests read only at pre-registered looks) are optional columns, and so are
-    # a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026; enrol/variants.py) and share_a
-    # (Harry, 8 Oct 2026: version_a's share of the accounts), at the end as they were added to the sheet.
-    "Tests": [
-        "test_id", "kind", "hypothesis", "version_a", "version_b", "accounts_per_version", "start_date", "looks",
-        "read_date", "decision_rule", "status", "result", "email", "change", "text_a", "text_b", "find", "share_a",
-    ],
-    # Added 30 Sep 2026 (Harry); a sheet without them reads as if they were empty.
-    "Focus": ["industry_group", "share", "note"],
-    "Named accounts": ["domain", "name", "note"],
-}
+# Each tab's columns in the sheet's order, from the one declaration per column (settings/spec.py, 9 Oct 2026).
+COLUMNS: dict[str, list[str]] = {tab: spec.columns(tab) for tab in TABS}
 assert tuple(COLUMNS) == TABS
 
 # USPS codes: the 50 states and DC.

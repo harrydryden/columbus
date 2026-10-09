@@ -27,6 +27,7 @@ from us_outbound.enrol import copy_markup, variants
 from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, US_STATES, bundled_definitions
+from us_outbound.settings import spec
 from us_outbound.settings.model import (
     AB_TEST,
     ACTIONS,
@@ -89,19 +90,9 @@ HEADER_ROW = 1
 FIRST_DATA_ROW = 2
 # The Tests tab's columns for a variant test (Harry, 7 Oct 2026; enrol/variants.py).
 VARIANT_COLUMNS = ("email", "change", "text_a", "text_b", "find")
-OPTIONAL_COLUMNS = frozenset({"note"})  # every other COLUMNS header must be present
-# Columns added after the sheet was first made (Harry, 30 Sep 2026): a tab without them reads them as blank.
-TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
-    # definition (Harry, 7 Oct 2026): the label check's line; a blank cell takes the build's (labels.py).
-    "Industries": frozenset({*(f"page_{f}" for f in PAGE_FIELDS), "definition"}),
-    "Copy": frozenset({"qa_notes", "sources"}),
-    "Roles": frozenset({"copy_role", "industry_groups"}),
-    "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
-    "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
-    "Tests": frozenset({"kind", "looks",  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
-                        *VARIANT_COLUMNS,  # a variant test's (Harry, 7 Oct 2026): blank on any other kind
-                        "share_a"}),  # an uneven split (Harry, 8 Oct 2026): blank is 50%
-}
+# Columns a sheet may lack, read as blank: note everywhere, and those added after the sheet was first made (settings/
+# spec.py says which and when).
+TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {tab: spec.optional(tab) for tab in TABS}
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
 # The Roles tab's layout before 1 Oct 2026 (SPEC 5): still read, as the same order, until
@@ -127,20 +118,7 @@ OPENER_COLUMN_TOKENS: dict[str, tuple[str, ...]] = {
     **{col: OPENER_TOKENS for col in (*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN)},
 }
 # The sheet row whose key names each tab's rows; settings_sync versions rows by it.
-KEY_COLUMNS: dict[str, tuple[str, ...]] = {
-    "General": ("key",),
-    "Signals": ("signal",),
-    "Angles": ("angle",),
-    "Industries": ("industry",),
-    "States": ("state",),
-    "Roles": ("role",),
-    "Copy": ("copy_version",),
-    "Mailboxes": ("address",),
-    "Overrides": ("domain", "field"),
-    "Tests": ("test_id",),
-    "Focus": ("industry_group",),
-    "Named accounts": ("domain",),
-}
+KEY_COLUMNS: dict[str, tuple[str, ...]] = {tab: spec.keys(tab) for tab in TABS}  # settings/spec.py
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
@@ -455,7 +433,7 @@ def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[Ro
         return []  # the old one-row-per-step layout: no copy until the new tab is loaded (sync says so)
     if tab == "Roles" and is_legacy_roles(present):
         return [_Row(tab, i + FIRST_DATA_ROW, r, errors) for i, r in enumerate(rows)]  # read by _legacy_role_order
-    optional = OPTIONAL_COLUMNS | TAB_OPTIONAL_COLUMNS.get(tab, frozenset())
+    optional = TAB_OPTIONAL_COLUMNS[tab]
     missing = [c for c in COLUMNS[tab] if c not in present and c not in optional]
     if missing:
         noun = "columns are" if len(missing) > 1 else "column is"
@@ -823,7 +801,8 @@ def _angles(rows: list[_Row]) -> list[tuple[Angle, int]]:
         if name == CONTROL_ANGLE and active is False:
             r.fail("active", f"{CONTROL_ANGLE} must stay active: Control-tier accounts always get it")
         if r.ok:
-            out.append((Angle(name, order, argument, opener, active, landing), r.number))
+            out.append((Angle(angle=name, order=order, argument=argument, default_opener=opener, active=active,
+                              landing_page_override=landing), r.number))
     if rows and CONTROL_ANGLE.casefold() not in names:
         rows[0].errors.append(
             RowError("Angles", HEADER_ROW, "angle", f"the {CONTROL_ANGLE} angle is missing; Control-tier accounts always get it")
@@ -876,8 +855,9 @@ def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
         definition = " ".join(r.text("definition").split()) or bundled_definitions().get((label or "").casefold(), "")
         if r.ok:
             out.append((
-                Industry(label, group, active, naics, exclude, keywords, landing, r.text("proof_point"), priority, page,
-                         definition),
+                Industry(industry=label, industry_group=group, active=active, naics_prefixes=naics,
+                         exclude_naics=exclude, apollo_keywords=keywords, landing_page_url=landing,
+                         proof_point=r.text("proof_point"), priority=priority, page=page, definition=definition),
                 r.number,
             ))
     return out
@@ -970,7 +950,8 @@ def _roles(rows: list[_Row]) -> list[tuple[Role, int]]:
             r.fail("copy_role", f"a row that is contacted gets the copy of one of {', '.join(ROLE_LINE_COLUMNS)}; "
                                 "set copy_role to one of them")
         if r.ok:
-            out.append((Role(role, titles, order, copy_role, groups), r.number))
+            out.append((Role(role=role, titles=titles, order=order, copy_role=copy_role, industry_groups=groups),
+                         r.number))
     if rows and not legacy:
         contacted = {rng for role, _ in out for rng in role.order}
         for col, rng in ROLE_ORDER_COLUMNS.items():
@@ -1024,8 +1005,9 @@ def _copy(rows: list[_Row]) -> list[tuple[CopyRow, int]]:
                 if v not in ("company",):
                     r.fail(col, f"a role line may use only {{{{company}}}}, not {{{{{v}}}}}")
         if r.ok:
-            out.append((CopyRow(version, industry, status, tuple(steps), role, lines, approved_by, qa,
-                                r.text("qa_notes"), r.text("sources")), r.number))
+            out.append((CopyRow(copy_version=version, industry=industry, status=status, steps=tuple(steps), role=role,
+                                role_lines=lines, approved_by=approved_by, qa=qa, qa_notes=r.text("qa_notes"),
+                                sources=r.text("sources")), r.number))
     return out
 
 
@@ -1103,7 +1085,7 @@ def _overrides(rows: list[_Row]) -> list[tuple[Override, int]]:
         if domain and field:
             _unique(r, "field", (domain, field), seen, f"{domain} {field}")
         if r.ok:
-            out.append((Override(domain, field, r.text("value"), r.text("note")), r.number))
+            out.append((Override(domain=domain, field=field, value=r.text("value"), note=r.text("note")), r.number))
     return out
 
 
@@ -1130,7 +1112,7 @@ def _focus(rows: list[_Row]) -> list[tuple[Focus, int]]:
         _unique(r, "industry_group", group.casefold() if group else None, seen, f"industry group {group!r}")
         share = r.parse("share", parse_share)
         if r.ok:
-            out.append((Focus(group, share, r.text("note")), r.number))
+            out.append((Focus(industry_group=group, share=share, note=r.text("note")), r.number))
     total = sum(f.share for f, _ in out)
     if out and total > 1 + 1e-9:
         last = next(r for r in reversed(rows) if r.number == out[-1][1])
@@ -1152,7 +1134,7 @@ def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
             r.fail("domain", "spill.chat is Spill")
         _unique(r, "domain", domain, seen, domain or "")
         if r.ok:
-            out.append((NamedAccount(domain, r.text("name"), r.text("note")), r.number))
+            out.append((NamedAccount(domain=domain, name=r.text("name"), note=r.text("note")), r.number))
     return out
 
 
@@ -1227,7 +1209,7 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
     running: int | None = None
     for r in rows:
         test_id = r.parse("test_id", str)
-        _unique(r, "test_id", test_id, seen, f"test {test_id!r}")
+        _unique(r, "test_id", test_id.casefold() if test_id else None, seen, f"test {test_id!r}")  # as load keys it
         kind = r.parse("kind", one_of(TEST_KINDS), required=False, default=AB_TEST)
         hypothesis = r.parse("hypothesis", str)
         a = r.parse("version_a", str)
@@ -1274,8 +1256,11 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
             else:
                 running = r.number
         if r.ok:
-            out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks,
-                             email, change, text_a, text_b, find, share_a if share_a is not None else 0.5), r.number))
+            out.append((Test(test_id=test_id, hypothesis=hypothesis, version_a=a, version_b=b, accounts_per_version=n,
+                             status=status, start_date=start, read_date=read, decision_rule=rule,
+                             result=r.text("result"), kind=kind, looks=looks, email=email, change=change,
+                             text_a=text_a, text_b=text_b, find=find,
+                             share_a=share_a if share_a is not None else 0.5), r.number))
     return out
 
 

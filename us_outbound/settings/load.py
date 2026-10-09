@@ -62,6 +62,8 @@ from dataclasses import dataclass, field
 from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
+from us_outbound.settings import spec
+from us_outbound.settings.model import TABS
 from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, is_legacy_copy, is_legacy_roles, validate_all
 
 LOADABLE = ("General", "Industries", "Copy", "Roles", "Signals", "Focus", "Tests")
@@ -83,8 +85,7 @@ SHEET_WINS = frozenset({"Signals", "Tests"})
 # Columns that name code, not a judgment, so the build always wins there even on a SHEET_WINS tab: a
 # Signals row's source keys are the source modules that produce its facts (careers_pages, 2 Oct 2026).
 BUILD_OWNS: dict[str, tuple[str, ...]] = {"Signals": ("source",)}
-KEY = {"General": "key", "Industries": "industry", "Copy": "copy_version", "Roles": "role", "Signals": "signal",
-       "Focus": "industry_group", "Tests": "test_id"}
+KEY = {tab: keys[0] for tab in TABS if len(keys := spec.keys(tab)) == 1}  # a one-column key (settings/spec.py)
 DEFAULT_TABS = ("General", "Industries", "Copy", "Roles")  # what a load with no --tab brings in
 # Rows the build replaced under another name: a load keeps them on the sheet but switches them off,
 # so the old and new rows don't both score (Recent funding was split by age; review Appendix A). key ->

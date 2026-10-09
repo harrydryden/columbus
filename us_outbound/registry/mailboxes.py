@@ -404,7 +404,7 @@ def _row(m: Mailbox) -> dict[str, str]:
         "provider": m.provider, "owner_name": m.owner_name, "owner_role": m.owner_role, "signature": m.signature,
         "status": m.status, "daily_cap": str(m.daily_cap),
         "added_on": m.added_on.isoformat() if m.added_on else "",
-        "retire_after": m.retire_after.isoformat() if m.retire_after else "",
+        "retire_after": m.retire_after.isoformat() if m.retire_after else "", "slack_id": m.slack_id,
     }
 
 

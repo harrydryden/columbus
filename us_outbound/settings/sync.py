@@ -35,6 +35,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.logs import log
 from us_outbound.settings.defaults import COLUMNS, default_tabs
+from us_outbound.settings import spec
 from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
 from us_outbound.settings.validate import (
     HEADER_ROW,
@@ -51,13 +52,7 @@ TABLE = "settings"
 SLACK_ERROR_LINES = 20
 # Tabs whose rows name rows on another tab. If one of these has to keep its previous
 # version, the version of the tab it names that is now on the sheet may not fit it.
-DEPENDS_ON: dict[str, tuple[str, ...]] = {
-    "Signals": ("Angles",), "Copy": ("Industries", "Roles"), "Tests": ("Copy",), "Focus": ("Industries",),
-    "Roles": ("Industries",),  # industry_groups (Harry, 1 Oct 2026)
-    # apollo_enrich_groups names Industries groups, and an Overrides industry a label (9 Oct 2026: a renamed group
-    # left General invalid with no version to fall back on, so every job refused to run).
-    "General": ("Industries",), "Overrides": ("Industries",),
-}
+DEPENDS_ON: dict[str, tuple[str, ...]] = spec.depends_on()  # from the refs in settings/spec.py
 
 ORDER_TAB = "_order"  # key = a tab name, values = {"keys": [its keys in sheet order]}; views ignore it
 
