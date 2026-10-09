@@ -1,5 +1,6 @@
-"""Every reader of "the newest fact" (signal_events), pinned: the newest row wins whatever order the rows come in,
-and each reader keeps its own rule for a row with no observed_at (9 Oct 2026; facts.py).
+"""Every reader of "the newest fact" (signal_events), pinned: the newest row wins whatever order the rows come in, a
+tie goes to the higher event_id, and each reader keeps its own rule for a row with no observed_at (9 Oct 2026; all of
+them read through facts.py).
 
 Each reader is driven through a small adapter: it is given (tag, observed_at) pairs, writes them as the rows that
 reader reads (the tag is the event_id and is carried in the value), and returns the tag of the row the reader chose
@@ -312,22 +313,11 @@ def test_a_row_with_no_time_is_chosen_only_where_the_reader_allows(ctx, name):
     assert adapter(ctx, [("undated", None)]) == ("undated" if undated_ok else None)
 
 
-# The readers that read through facts.py, where a tie (one observed_at) has one answer: the higher event_id. Before,
-# it was whichever row came first or last, and Postgres returns rows in no set order.
-MOVED = [
-    "labels.latest_verdict", "labels.latest_correction", "labels.Material.of", "labels._rules_material",
-    "labels._home_page", "labels.corrected_rows", "score.latest_facts", "score.calendar_facts",
-    "score._match_condition", "score._match_terms", "openers.contact_person_id", "openers.stored_focus",
-    # the last-wins readers
-    "openers.tokens", "openers.newest_leader", "openers.focus_material", "labels.tally", "labels.gap_codes",
-    "score.unread_sources", "verify.doubt_history", "clay_cross_check.answers", "lookalikes._latest",
-    "named._latest", "approvals.recipient_source", "relabel.show",
-]
-
-
-@pytest.mark.parametrize("name", MOVED)
+@pytest.mark.parametrize("name", READERS)
 @pytest.mark.parametrize("reverse", [False, True])
 def test_a_tie_goes_to_the_higher_event_id(ctx, name, reverse):
+    """Every reader reads through facts.py, so a tie (one observed_at) has one answer. Before 9 Oct 2026 it was the
+    first or the last row as they came, and Postgres returns rows in no set order."""
     specs = [("e1", T), ("e2", T)]
     assert READERS[name][0](ctx, specs[::-1] if reverse else specs) == "e2"
 

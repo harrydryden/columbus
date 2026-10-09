@@ -88,11 +88,12 @@ from us_outbound.enrol import capacity, focus, queue
 from us_outbound.enrol.enrol import Candidate
 from us_outbound.enrol.openers import HOLDOUT, OPENER
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
+from us_outbound.facts import newest_by
 from us_outbound.learn import kill_rules
 from us_outbound.limits import Limits
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import CLAY_REQUIRED, TIERS, Settings
-from us_outbound.timeparse import utc
+from us_outbound.timeparse import utc, utc_strict
 
 # The send-approval contract (hitl_items.kind and events.type).
 KIND = "send_approval"
@@ -263,14 +264,14 @@ def verified_in(store: Store, start: datetime, end: datetime) -> int | None:
 
 def no_contact_in(store: Store, start: datetime, end: datetime) -> dict[str, str]:
     """account_id -> the reason, for accounts whose latest contact_pick fact in the period found nobody."""
-    latest: dict[str, tuple[datetime, Mapping]] = {}
-    for e in store.select("signal_events", {"source": pick.SOURCE, "fact": pick.OUTCOME_FACT}):
-        t, value, aid = utc(e.get("observed_at")), e.get("value"), str(e.get("account_id") or "")
-        if t is None or not aid or not isinstance(value, Mapping) or not start <= t < end:
-            continue
-        if aid not in latest or t >= latest[aid][0]:
-            latest[aid] = (t, value)
-    return {aid: reason(v.get("reason")) for aid, (_, v) in latest.items() if v.get("outcome") == pick.NO_CONTACT}
+    def counted(e: Mapping[str, Any]) -> bool:
+        t = utc_strict(e.get("observed_at"))
+        return bool(e.get("account_id")) and isinstance(e.get("value"), Mapping) and start <= t < end
+
+    latest = newest_by(store.select("signal_events", {"source": pick.SOURCE, "fact": pick.OUTCOME_FACT}),
+                       lambda e: str(e["account_id"]), where=counted, dated=True)
+    return {aid: reason(e["value"].get("reason")) for aid, e in latest.items()
+            if e["value"].get("outcome") == pick.NO_CONTACT}
 
 
 def found(ctx: Context, rows: Rows, start: datetime, end: datetime, label: str) -> tuple[list[str], dict[str, Any]]:

@@ -69,6 +69,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.contacts import pick
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
+from us_outbound.facts import load, newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
@@ -92,22 +93,12 @@ RUN_SECONDS = 9 * 60  # starts no account after this, so its facts are in before
 PACE_SECONDS = 1.5  # between requests: at most 40 a minute
 MAX_ERRORS = 5  # Apollo errors before the run stops
 RATE_LIMITED = 429
-ID_CHUNK = 1000
 QUOTE_LIMIT = 300  # SPEC 6
 DONE = "every account due a People search is searched"
 NEW_SIGNAL, OLD_SIGNAL = "First People hire (likely)", "First People hire"
 
 _clock = time.monotonic  # tests replace it
 _sleep = time.sleep  # tests replace it
-
-
-def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> list[Sequence[str]]:
-    return [items[i : i + n] for i in range(0, len(items), n)]
-
-
-def _newer(e: Mapping[str, Any], than: Mapping[str, Any] | None) -> bool:
-    t = utc(e.get("observed_at"))
-    return t is not None and (than is None or t > (utc(than.get("observed_at")) or t))
 
 
 # -- which accounts ---------------------------------------------------------------------------------
@@ -124,17 +115,11 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, dict[st
     """(account_id -> fact -> its newest apollo_people event, the marker among them;
     account_id -> its newest apollo_org employees value)."""
     stored: dict[str, dict[str, dict]] = defaultdict(dict)
-    employees: dict[str, dict] = {}
-    for chunk in _chunks(list(account_ids)):
-        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": SOURCE}):
-            aid, fact = str(e.get("account_id")), str(e.get("fact") or "")
-            if _newer(e, stored[aid].get(fact)):
-                stored[aid][fact] = e
-        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": ORG_SOURCE, "fact": "employees"}):
-            aid = str(e.get("account_id"))
-            if _newer(e, employees.get(aid)):
-                employees[aid] = e
-    return stored, {aid: e.get("value") for aid, e in employees.items()}
+    for aid, rows in load(ctx.store, account_ids, SOURCE).items():
+        stored[aid] = newest_by(rows, lambda e: str(e.get("fact") or ""), dated=True)
+    employees = {aid: e.get("value") for aid, rows in load(ctx.store, account_ids, ORG_SOURCE, "employees").items()
+                 if (e := newest(rows, dated=True)) is not None}
+    return stored, employees
 
 
 def leader_titles(settings: Settings, account: Mapping[str, Any]) -> list[str]:

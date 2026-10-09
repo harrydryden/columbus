@@ -58,13 +58,14 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
+from us_outbound.facts import newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
 from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
-from us_outbound.timeparse import utc
+from us_outbound.timeparse import utc, utc_strict
 
 JOB = "apollo_enrich"
 SOURCE = uni.SOURCE  # apollo_org: the funding signals read it
@@ -297,19 +298,17 @@ class Tally:
 
 def tally(store: Any, today: date, *, run_id: str | None = None) -> Tally:
     """What the enrich found: for one run (its org_enrich facts), or for every account enriched so far."""
-    latest: dict[str, dict] = {}
-    for e in store.select("signal_events", {"source": SOURCE, "fact": MARKER}):
-        v, t = e.get("value"), utc(e.get("observed_at"))
-        if not isinstance(v, Mapping) or t is None or (run_id is not None and v.get("run_id") != run_id):
-            continue
-        aid = str(e.get("account_id"))
-        if aid not in latest or t > latest[aid]["observed_at"]:
-            latest[aid] = {**e, "observed_at": t}
+    def counted(e: Mapping[str, Any]) -> bool:
+        v = e.get("value")
+        return isinstance(v, Mapping) and (run_id is None or v.get("run_id") == run_id)
+
+    latest = newest_by(store.select("signal_events", {"source": SOURCE, "fact": MARKER}),
+                       lambda e: str(e.get("account_id")), where=counted, dated=True)
     out = Tally()
     for e in latest.values():
-        v = e["value"]
+        v, t = e["value"], utc_strict(e.get("observed_at"))
         out.accounts += 1
-        out.run_at = e["observed_at"] if out.run_at is None or e["observed_at"] > out.run_at else out.run_at
+        out.run_at = t if out.run_at is None or t > out.run_at else out.run_at
         if v.get("outcome") != FOUND:
             out.not_found += 1
             continue
@@ -325,12 +324,9 @@ def tally(store: Any, today: date, *, run_id: str | None = None) -> Tally:
 
 def latest_run(store: Any) -> str | None:
     """The run_id of the newest org_enrich fact."""
-    best: tuple[datetime, str] | None = None
-    for e in store.select("signal_events", {"source": SOURCE, "fact": MARKER}):
-        t, v = utc(e.get("observed_at")), e.get("value")
-        if t is not None and isinstance(v, Mapping) and v.get("run_id") and (best is None or t > best[0]):
-            best = (t, str(v["run_id"]))
-    return best[1] if best else None
+    e = newest(store.select("signal_events", {"source": SOURCE, "fact": MARKER}), dated=True,
+               where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"].get("run_id")))
+    return str(e["value"]["run_id"]) if e else None
 
 
 def post_lines(ctx: Context) -> list[str]:
