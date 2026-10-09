@@ -65,6 +65,7 @@ from us_outbound.settings.model import (
     Mailbox,
     Settings,
 )
+from us_outbound.settings.overrides import effective
 
 STEPS = COPY_STEPS
 VARIABLES = (
@@ -196,8 +197,7 @@ def variables(
     legal_overlay: str = "",
 ) -> dict[str, str]:
     """The variables for one lead and one Copy row. Overrides for the account's domain win (SPEC 5, 13)."""
-    domain = str(account.get("domain") or "").strip().lower()
-    acct = {**account, **(settings.overrides_for(domain) if domain else {})}
+    acct = effective(account, settings)
     legal = settings.industry_group_of(acct).casefold() == LEGAL_GROUP.casefold()
     return {
         "first_name": str(contact.get("first_name") or "").strip(),

@@ -93,7 +93,8 @@ from us_outbound.context import Context
 from us_outbound.enrol import enrol, focus, queue
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
-from us_outbound.scoring.score import latest_facts, parse_override
+from us_outbound.scoring.score import latest_facts
+from us_outbound.settings.overrides import effective
 from us_outbound.settings.model import CLAY_REQUIRED, SIZE_BANDS, General, Settings
 from us_outbound.timeparse import utc_or_epoch
 
@@ -131,10 +132,8 @@ def _lower(v: Any) -> str:
 
 
 def with_overrides(account: Mapping[str, Any], settings: Settings) -> dict:
-    """The account with its domain's Overrides rows applied (SPEC 5), as score_account does."""
-    domain = _lower(account.get("domain"))
-    ov = {k: parse_override(v) for k, v in settings.overrides_for(domain).items()} if domain else {}
-    return {**account, **ov}
+    """The account with its domain's Overrides rows applied (SPEC 5; settings/overrides.py)."""
+    return effective(account, settings)
 
 
 def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settings,
@@ -444,8 +443,9 @@ def run(ctx: Context) -> dict:
     todo = sorted(waiting, key=lambda a: (focus.group_rank(s.industry_group_of(a), s), queue.order_key(a, s)))
     todo = todo[:MAX_ACCOUNTS_PER_RUN]
     required = s.general.label_check == labels.REQUIRED
+    # Verified accounts the label check looks at again; with label_check = skip, only those an Overrides row moves.
     verified_open = [a for a in ctx.store.select("accounts", {"status": VERIFIED})
-                     if a.get("tier") not in OUT_OF_QUEUE_TIERS] if required else []
+                     if a.get("tier") not in OUT_OF_QUEUE_TIERS and (required or labels.override_moves(a, s))]
     events = _events(ctx, [a["account_id"] for a in [*todo, *verified_open]])
     facts = {aid: latest_facts(evs) for aid, evs in events.items()}
     suppressed, _ = enrol.suppressed(ctx)
@@ -477,7 +477,8 @@ def run(ctx: Context) -> dict:
     def asks(a: Mapping[str, Any]) -> bool:
         return needs_verdict(lab, a, events.get(a["account_id"], []))
 
-    unchecked = [a for a in verified_open if cheap_ok(a) and (asks(a) or not a.get("label_source"))]
+    unchecked = [a for a in verified_open
+                 if cheap_ok(a) and (asks(a) or not a.get("label_source") or labels.override_moves(a, s))]
     ask_first(lab, [*(a for a in todo if required and cheap_ok(a) and asks(a)), *filter(asks, unchecked)], events, s,
               carded(ctx) if unchecked else ())
     doubt_rows: list[dict] = converge(ctx, lab, unchecked, events, cleared)

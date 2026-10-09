@@ -40,6 +40,8 @@ from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import AGED_FACTS, Settings, Signal
+from us_outbound.settings.overrides import effective
+from us_outbound.settings.overrides import parse_value as parse_override
 from us_outbound.timeparse import EPOCH, uk_day, utc
 
 TEXT_FACTS = frozenset({"benefit", "mental_health_provision", "culture_statement", "posting_text", "page_text"})
@@ -178,22 +180,6 @@ def fact_text(event: Mapping[str, Any]) -> str:
     if isinstance(v, Mapping) and isinstance(v.get("type"), str) and v["type"].strip():
         parts.append(v["type"].replace("_", " "))  # Clay's provision type, e.g. "carrier_eap" -> "carrier eap"
     return "\n".join(parts)
-
-
-def parse_override(text: str) -> Any:
-    """An Overrides-tab value as a fact value: true/false/yes/no, a number, or the text."""
-    t = str(text).strip()
-    low = t.lower()
-    if low in {"true", "yes"}:
-        return True
-    if low in {"false", "no"}:
-        return False
-    if t.isdigit() and not (t.startswith("0") and len(t) > 1):
-        return int(t)
-    try:
-        return float(t)
-    except ValueError:
-        return t
 
 
 def _quote(text: Any) -> str:
@@ -365,7 +351,7 @@ def score_account(
 ) -> ScoreResult:
     domain = str(account.get("domain") or "").strip().lower()
     overrides = {k: parse_override(v) for k, v in settings.overrides_for(domain).items()} if domain else {}
-    acct = {**account, **overrides}
+    acct = effective(account, settings)
     facts = {**latest_facts(events), **overrides}
 
     matches = [m for s in settings.active_signals()

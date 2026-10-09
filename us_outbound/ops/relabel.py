@@ -91,8 +91,10 @@ def decide(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], ctx:
                             account.get("label_source") or labels.RULES, account.get("label_confidence") or "",
                             labels.copy_level(account), labels.DISQUALIFY, PUBLIC_BODY)
         return d, None, None
-    if labels.override_for(account, s)[0]:
-        return None  # an Overrides row's industry, or an approver's, stands
+    label, source = labels.override_for(account, s)
+    if label:  # an Overrides row's industry, or an approver's, stands: applied when the columns lag it
+        d = labels.decide(None, None, s, override=label, override_source=source)
+        return (d, None, None) if source == labels.OVERRIDE and MOVES & set(labels.columns(account, d)) else None
     if not labels.rules_input(events):
         return None  # nothing on file to decide on
     rules = labels.rules_label(account, events, s)

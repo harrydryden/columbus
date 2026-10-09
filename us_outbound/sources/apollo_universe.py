@@ -78,9 +78,9 @@ from us_outbound.enrol import focus
 from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity, texts
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
-from us_outbound.scoring.score import parse_override
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
+from us_outbound.settings.overrides import effective
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.timeparse import iso_date, utc
 
@@ -478,22 +478,8 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
 
 
 def with_overrides(row: Mapping[str, Any], domain: str, settings: Settings) -> dict:
-    """The account columns with the domain's Overrides rows applied (SPEC 5)."""
-    ov = settings.overrides_for(domain)
-    out = dict(row)
-    for f in OVERRIDABLE:
-        if f in ov:
-            out[f] = parse_override(ov[f])
-    if "naics" in ov:
-        out["naics"] = str(out["naics"])
-    if "hq_state" in ov:
-        out["hq_state"] = state_code(str(out["hq_state"])) or str(out["hq_state"]).strip().upper()
-    if "industry" in ov and "industry_group" not in ov:
-        ind = settings.industry(str(out["industry"]))
-        out["industry_group"] = ind.industry_group if ind else out.get("industry_group")
-    if "employees" in ov and "size_band" not in ov:
-        out["size_band"] = size_band(out["employees"])
-    return out
+    """The account columns with the domain's Overrides rows applied (SPEC 5; settings/overrides.py)."""
+    return effective(row, settings, domain=domain, fields=OVERRIDABLE)
 
 
 SIZE_COLUMNS = ("employees", "size_band")

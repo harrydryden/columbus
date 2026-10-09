@@ -339,3 +339,15 @@ def test_a_dry_redo_changes_nothing():
     out = approvals.redo(ctx, "all")
     assert out["dry_run"] and len(out["would"]) == 3 and len(items(ctx, "open")) == 3
     assert (len(sl.posts), len(sl.updates)) == before
+
+
+def test_an_overrides_row_the_columns_lag_is_applied():
+    """relabel puts an Overrides row's label in the columns when they lag it (9 Oct 2026, defect 5), as verify does."""
+    ctx, t, sl = world()
+    a = ctx.store.get("accounts", account_id="acc-2")
+    override = Override(a["domain"], "industry", "Edtech")
+    ctx.settings = dataclasses.replace(ctx.settings, overrides=(override,))
+    at(ctx, ctx.now, live=True, job="relabel")
+    relabel.run(ctx)
+    b = ctx.store.get("accounts", account_id="acc-2")
+    assert (b["industry"], b["label_source"]) == ("Edtech", "override")

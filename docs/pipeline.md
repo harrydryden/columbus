@@ -655,6 +655,12 @@ What the answer does, per account:
 Approving the hand-check clears "Clay says …" reasons like any other doubt; a missing fact still needs an
 Overrides row.
 
+An Overrides row is laid over an account in one place (`settings/overrides.py`, 9 Oct 2026): an `industry` row
+brings its label's group, an `employees` row its size band. An `industry` row, or an `industry_group` row alone (the
+group's own label), also reaches the account's columns: the next `verify_accounts` decides an account whose
+columns lag the row again, verified or not and asking the model nothing, so enrol's copy, the queue and the cards
+follow it.
+
 ## Which value wins
 
 Sources write facts only. One resolver sets the account's columns from the facts, before every scoring run, by this precedence. Without it, the last job to run would win, so the Apollo sweep would overwrite what Clay had just confirmed.

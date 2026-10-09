@@ -89,6 +89,7 @@ from us_outbound.settings.model import (
     Settings,
     Signal,
 )
+from us_outbound.settings.overrides import effective
 from us_outbound.timeparse import utc_or_epoch
 
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
@@ -364,8 +365,7 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
     """Every token that has a stored fact passing its check, as it reads in a sentence; the rest are absent."""
     from us_outbound.sources.apollo_jobs import is_people_title, people_titles
 
-    domain = str(account.get("domain") or "").strip().lower()
-    acct = {**account, **(settings.overrides_for(domain) if domain else {})}
+    acct = effective(account, settings)
     out: dict[str, str] = {}
     company = " ".join(str(acct.get("clean_name") or "").split())
     if company and len(company) <= 60:

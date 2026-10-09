@@ -630,13 +630,27 @@ class Checker:
 
 
 def override_for(account: Mapping[str, Any], settings: Settings) -> tuple[str | None, str]:
-    """(the label an Overrides row or an approver set, its label_source), or (None, "")."""
-    sheet = str(settings.overrides_for(str(account.get("domain") or "").strip().lower()).get("industry") or "").strip()
+    """(the label an Overrides row or an approver set, its label_source), or (None, ""). A row that gives only the
+    industry_group places the company under the group's own label (9 Oct 2026: it was ignored, and the check then
+    overwrote the group the universe had taken from it)."""
+    rows = settings.overrides_for(str(account.get("domain") or "").strip().lower())
+    sheet = str(rows.get("industry") or "").strip()
+    if not sheet and (group := str(rows.get("industry_group") or "").strip()):
+        umbrella = settings.umbrella(group)
+        sheet = umbrella.industry if umbrella else ""
     if sheet:
         return sheet, OVERRIDE
     if str(account.get("label_source") or "") == APPROVER and account.get("industry"):
         return str(account["industry"]), APPROVER
     return None, ""
+
+
+def override_moves(account: Mapping[str, Any], settings: Settings) -> bool:
+    """Whether an Overrides row would change the account's label columns: verify then decides it again, though it is
+    verified and its verdict fresh, so every reader of the columns (enrol's copy, the queue, Focus, the cards) sees
+    the row (9 Oct 2026: an industry row never reached an account already checked)."""
+    label, source = override_for(account, settings)
+    return source == OVERRIDE and bool(columns(account, decide(None, None, settings, override=label)))
 
 
 def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], *,
