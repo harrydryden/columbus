@@ -79,7 +79,7 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import accounts, budget, verify
@@ -94,6 +94,7 @@ from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as universe
+from us_outbound.timeparse import utc
 
 JOB = "site_visits"
 SOURCE = "site_visits"  # signal_events.source (SPEC 7)
@@ -139,16 +140,6 @@ def tracked_domain(settings: Settings) -> str:
 
 
 # -- small helpers -----------------------------------------------------------------------------------
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def _note(row: Mapping[str, Any]) -> dict:
@@ -259,7 +250,7 @@ def quiet_runs(ctx: Context) -> int:
     """Runs in a row, newest first, whose one-day list was empty (this job's credit_ledger notes)."""
     runs: dict[str, tuple[datetime, int]] = {}
     for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        note, t = _note(r), _ts(r.get("occurred_at"))
+        note, t = _note(r), utc(r.get("occurred_at"))
         if t is None or note.get("search") != US_TODAY or note.get("page") != 1:
             continue
         rid = str(r.get("run_id") or r.get("entry_id"))
@@ -314,7 +305,7 @@ def judged_recently(ctx: Context) -> set[str]:
     since = ctx.now - timedelta(days=LOOK_AGAIN_DAYS)
     out: set[str] = set()
     for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        t = _ts(r.get("occurred_at"))
+        t = utc(r.get("occurred_at"))
         note = _note(r)
         if t is not None and t >= since and isinstance(note.get("judged"), list):
             out |= {str(i) for i in note["judged"]}
@@ -464,7 +455,7 @@ def latest_facts(ctx: Context) -> dict[tuple[str, str], tuple[datetime, Any]]:
     """(account_id, fact) -> (observed_at, value) of the newest site_visits fact."""
     out: dict[tuple[str, str], tuple[datetime, Any]] = {}
     for e in ctx.store.select("signal_events", {"source": SOURCE, "fact": [US_FACT, INTENT_FACT]}):
-        t = _ts(e.get("observed_at"))
+        t = utc(e.get("observed_at"))
         key = (str(e.get("account_id")), str(e.get("fact")))
         if t is not None and (key not in out or t >= out[key][0]):
             out[key] = (t, e.get("value"))
@@ -556,7 +547,7 @@ def last_summary(store: Any) -> dict | None:
     """The newest site_visits run's summary (heartbeats.detail), ok or skipped."""
     best: tuple[datetime, dict] | None = None
     for r in store.select("heartbeats", {"job": JOB, "status": ["ok", "skipped"]}):
-        t, d = _ts(r.get("started_at")), r.get("detail")
+        t, d = utc(r.get("started_at")), r.get("detail")
         if t is not None and isinstance(d, Mapping) and (best is None or t > best[0]):
             best = (t, dict(d))
     return best[1] if best else None

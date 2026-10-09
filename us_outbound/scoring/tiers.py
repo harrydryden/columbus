@@ -32,6 +32,7 @@ from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
+from us_outbound import parse
 from us_outbound.accounts import any_us_state, us_country
 from us_outbound.scoring.angle import evidence_display
 from us_outbound.settings.conditions import find_terms
@@ -111,16 +112,6 @@ DECISION_EXCLUSIONS = ((DECLINED_IN_SLACK, "dropped by an approver at a send app
 
 
 # -- small parsers -------------------------------------------------------------
-
-
-def _truthy(v: Any) -> bool:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return v != 0
-    if isinstance(v, str):
-        return v.strip().lower() in {"true", "yes", "1"}
-    return False
 
 
 def as_number(v: Any) -> float | None:
@@ -207,7 +198,7 @@ def hard_exclusion(
         return f"{PARTNER_LABELS[category]}, a partner ({what})"
 
     for fact, reason in HUBSPOT_EXCLUSIONS + DECISION_EXCLUSIONS:
-        if _truthy(facts.get(fact)):
+        if parse.truthy(facts.get(fact)):
             return reason
 
     active = {s.upper() for s in settings.active_states()}

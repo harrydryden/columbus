@@ -60,7 +60,7 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.apollo import total_entries
@@ -74,6 +74,7 @@ from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
 from us_outbound.settings.model import AGED_FACTS, SIZE_BANDS, Settings
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.timeparse import utc
 
 JOB = "apollo_people"
 SOURCE = pick.PEOPLE_SOURCE  # apollo_people: the People signals read it (settings/model.py SOURCE_FIELDS)
@@ -100,23 +101,13 @@ _clock = time.monotonic  # tests replace it
 _sleep = time.sleep  # tests replace it
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> list[Sequence[str]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
 
 def _newer(e: Mapping[str, Any], than: Mapping[str, Any] | None) -> bool:
-    t = _ts(e.get("observed_at"))
-    return t is not None and (than is None or t > (_ts(than.get("observed_at")) or t))
+    t = utc(e.get("observed_at"))
+    return t is not None and (than is None or t > (utc(than.get("observed_at")) or t))
 
 
 # -- which accounts ---------------------------------------------------------------------------------
@@ -125,7 +116,7 @@ def _newer(e: Mapping[str, Any], than: Mapping[str, Any] | None) -> bool:
 def searched_recently(store: Store, account_id: str, now: datetime) -> bool:
     """This job searched the account less than REFRESH_DAYS ago (pick_contacts then leaves its facts alone)."""
     e = store.latest("signal_events", "observed_at", {"account_id": account_id, "source": SOURCE, "fact": MARKER})
-    t = _ts(e.get("observed_at")) if e else None
+    t = utc(e.get("observed_at")) if e else None
     return t is not None and now - t < timedelta(days=REFRESH_DAYS)
 
 
@@ -154,7 +145,7 @@ def leader_titles(settings: Settings, account: Mapping[str, Any]) -> list[str]:
 
 def searched_at(stored: Mapping[str, Mapping[str, Any]] | None) -> datetime | None:
     marker = (stored or {}).get(MARKER)
-    return _ts(marker.get("observed_at")) if marker else None
+    return utc(marker.get("observed_at")) if marker else None
 
 
 @dataclass
@@ -324,7 +315,7 @@ def unchanged(new: Mapping[str, Any], old: Mapping[str, Any] | None, today: date
 
     A day count is compared as of today (scoring ages it), and the newest leader by person and title.
     """
-    t = _ts(old.get("observed_at")) if old else None
+    t = utc(old.get("observed_at")) if old else None
     if old is None or t is None or now - t >= timedelta(days=REFRESH_DAYS):
         return False
     fact, value, before = new["fact"], new["value"], old.get("value")

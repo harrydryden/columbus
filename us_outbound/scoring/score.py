@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.db import new_id
@@ -40,6 +40,7 @@ from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import AGED_FACTS, Settings, Signal
+from us_outbound.timeparse import EPOCH, uk_day, utc
 
 TEXT_FACTS = frozenset({"benefit", "mental_health_provision", "culture_statement", "posting_text", "page_text"})
 UNREAD_STATUSES = frozenset({"blocked", "error"})
@@ -55,8 +56,6 @@ SHARE_TIERS = (tiers.PRIORITY, tiers.STANDARD, tiers.CONTROL)
 SHARE_MIN, SHARE_MAX = 0.05, 0.40  # each tier is 5-40% of the month's queue
 SHARE_MIN_ACCOUNTS = 20  # too few accounts to judge the mix below this
 ID_CHUNK = 1000
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -94,26 +93,13 @@ class ScoreResult:
 # -- time ----------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v)
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UK)
-    return None
-
-
 def age_days(event: Mapping[str, Any], today: date) -> int | None:
-    t = _ts(event.get("observed_at"))
-    return None if t is None else (today - t.astimezone(UK).date()).days
+    d = uk_day(event.get("observed_at"))
+    return None if d is None else (today - d).days
 
 
 def _newest_first(events: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return sorted(events, key=lambda e: _ts(e.get("observed_at")) or _EPOCH, reverse=True)
+    return sorted(events, key=lambda e: utc(e.get("observed_at"), date_tz=UK) or EPOCH, reverse=True)
 
 
 def fresh_facts(events: Iterable[Mapping[str, Any]], signal: Signal, today: date) -> list[Mapping[str, Any]]:
@@ -137,7 +123,7 @@ def unread_sources(events: Iterable[Mapping[str, Any]]) -> frozenset[str]:
     for e in events:
         if e.get("fact") != "read_status":
             continue
-        t = _ts(e.get("observed_at")) or _EPOCH
+        t = utc(e.get("observed_at"), date_tz=UK) or EPOCH
         src = e.get("source")
         if src not in latest or t >= latest[src][0]:
             latest[src] = (t, e.get("value"))
@@ -297,7 +283,7 @@ def _match_condition(
                     quote=quote,
                     url=str(e.get("source_url") or ""),
                     source=str(e.get("source") or ""),
-                    observed_at=_ts(e.get("observed_at")),
+                    observed_at=utc(e.get("observed_at"), date_tz=UK),
                 )
             )
     return Match(signal, _weight(signal, 1), evidence)
@@ -316,7 +302,7 @@ def _match_terms(signal: Signal, events: list[Mapping[str, Any]]) -> Match | Non
                     quote=_quote(e.get("quote")),
                     url=str(e.get("source_url") or ""),
                     source=str(e.get("source") or ""),
-                    observed_at=_ts(e.get("observed_at")),
+                    observed_at=utc(e.get("observed_at"), date_tz=UK),
                     term=tm.term,
                 )
             )
@@ -441,7 +427,7 @@ def _apply_suppression(ctx: Context, wanted: dict[str, tuple[str, int]]) -> int:
         expires = ctx.now + timedelta(days=days)
         old = existing.get(domain)
         if old is not None:
-            old_expiry = _ts(old.get("expires_at"))
+            old_expiry = utc(old.get("expires_at"), date_tz=UK)
             if old_expiry is None or old_expiry >= expires:
                 continue  # indefinite, or already suppressed for longer
         rows.append({
@@ -470,11 +456,8 @@ def _add_partners(ctx: Context, wanted: dict[str, dict]) -> int:
 
 
 def _in_month(v: Any, today: date) -> bool:
-    t = _ts(v)
-    if t is None:
-        return False
-    d = t.astimezone(UK).date()
-    return (d.year, d.month) == (today.year, today.month)
+    d = uk_day(v)
+    return d is not None and (d.year, d.month) == (today.year, today.month)
 
 
 def tier_share(accounts: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any] | None:

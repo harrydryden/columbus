@@ -48,7 +48,7 @@ import json
 from collections import Counter, defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clean.domains import root_domain
@@ -64,6 +64,7 @@ from us_outbound.scoring.score import aged_value
 from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
+from us_outbound.timeparse import utc
 
 JOB = "apollo_enrich"
 SOURCE = uni.SOURCE  # apollo_org: the funding signals read it
@@ -82,16 +83,6 @@ DONE, SPENT = "every account due an enrich is enriched", "today's Apollo credits
 ID_CHUNK = 1000
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def _chunks(items: Sequence[str], n: int) -> list[Sequence[str]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
@@ -107,7 +98,7 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, datetim
         for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": SOURCE}):
             aid = e["account_id"]
             stored[aid].add(str(e.get("fact")))
-            t = _ts(e.get("observed_at")) if e.get("fact") == MARKER else None
+            t = utc(e.get("observed_at")) if e.get("fact") == MARKER else None
             if t is not None and (aid not in last or t > last[aid]):
                 last[aid] = t
     return last, stored
@@ -308,7 +299,7 @@ def tally(store: Any, today: date, *, run_id: str | None = None) -> Tally:
     """What the enrich found: for one run (its org_enrich facts), or for every account enriched so far."""
     latest: dict[str, dict] = {}
     for e in store.select("signal_events", {"source": SOURCE, "fact": MARKER}):
-        v, t = e.get("value"), _ts(e.get("observed_at"))
+        v, t = e.get("value"), utc(e.get("observed_at"))
         if not isinstance(v, Mapping) or t is None or (run_id is not None and v.get("run_id") != run_id):
             continue
         aid = str(e.get("account_id"))
@@ -336,7 +327,7 @@ def latest_run(store: Any) -> str | None:
     """The run_id of the newest org_enrich fact."""
     best: tuple[datetime, str] | None = None
     for e in store.select("signal_events", {"source": SOURCE, "fact": MARKER}):
-        t, v = _ts(e.get("observed_at")), e.get("value")
+        t, v = utc(e.get("observed_at")), e.get("value")
         if t is not None and isinstance(v, Mapping) and v.get("run_id") and (best is None or t > best[0]):
             best = (t, str(v["run_id"]))
     return best[1] if best else None

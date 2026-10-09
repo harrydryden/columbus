@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from us_outbound import parse
 from us_outbound.clients.apollo import VISITOR_CREDIT, credit_stats, credits_left, enriched_in, organizations_in
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation, Op
@@ -63,7 +64,8 @@ from us_outbound.context import ConfigError, Context
 from us_outbound.logs import clip, hash_email, log, redact
 from us_outbound.ops import seed as seed_ops
 from us_outbound.registry.mailboxes import campaign_name
-from us_outbound.replies.outcomes import UE_CAMPAIGN, email_time, from_address, to_time
+from us_outbound.replies.outcomes import UE_CAMPAIGN, email_time, from_address
+from us_outbound.timeparse import utc
 
 JOB = "phase0_check"
 CONFIRMED, DIFFERS, NOT_CHECKED = "CONFIRMED", "DIFFERS", "COULD NOT CHECK"
@@ -105,13 +107,6 @@ class Probe:
 def _id(address: str) -> str:
     """An address as the logs show it: its hash, never the address (logs.hash_email)."""
     return "email:" + hash_email(address)[:16]
-
-
-def _int(v: Any) -> int | None:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _lower(v: Any) -> str:
@@ -181,7 +176,7 @@ class Run:
 
 
 def _created(e: Mapping[str, Any]) -> datetime | None:
-    return to_time(e.get("timestamp_created")) or email_time(e)
+    return utc(e.get("timestamp_created")) or email_time(e)
 
 
 def emails_until(r: Run) -> Result:
@@ -212,8 +207,8 @@ def email_fields(r: Run) -> Result:
     sent = [e for e in r.emails("sent") if not from_address(e) or from_address(e) == _lower(e.get("eaccount"))]
     if not sent:
         return Result(NOT_CHECKED, f"no campaign email sent in the last {LOOKBACK.days} days")
-    stamped = sum(1 for e in sent if to_time(e.get("timestamp_email")))
-    codes = Counter(_int(e.get("ue_type")) for e in sent)
+    stamped = sum(1 for e in sent if utc(e.get("timestamp_email")))
+    codes = Counter(parse.integer(e.get("ue_type")) for e in sent)
     seen = ", ".join(f"{k} ×{v}" for k, v in sorted(codes.items(), key=lambda kv: str(kv[0])))
     if stamped < len(sent) or set(codes) != {UE_CAMPAIGN}:
         return Result(DIFFERS, f"{len(sent)} sent emails: timestamp_email on {stamped}; ue_type {seen}")
@@ -281,7 +276,7 @@ def seed_unsubscribed(r: Run) -> Result:
     leads = r.seed_leads()
     if not leads:
         return Result(NOT_CHECKED, "no seed lead in the US Outbound campaigns")
-    done = [lead for _, lead in leads if _int(lead.get("status")) == LEAD_UNSUBSCRIBED]
+    done = [lead for _, lead in leads if parse.integer(lead.get("status")) == LEAD_UNSUBSCRIBED]
     if not done:
         return Result(NOT_CHECKED, f"{len(leads)} seed leads, none unsubscribed yet (statuses "
                                    + ", ".join(sorted({str(lead.get('status')) for _, lead in leads})) + ")")
@@ -315,7 +310,7 @@ def seed_pause(r: Run, address: str) -> Result:
     if earlier:
         return Result(CONFIRMED, f"paused and set active again on {str(earlier['paused_at'])[:16]} UTC by an earlier "
                                  "run, each read back (not repeated, so SEED-RESUME can watch its next step)")
-    status = _int(lead.get("status"))
+    status = parse.integer(lead.get("status"))
     if status != LEAD_ACTIVE:
         why = {LEAD_UNSUBSCRIBED: "unsubscribed", 3: "completed", LEAD_PAUSED: "paused"}.get(status, f"at status {status}")
         return Result(NOT_CHECKED, f"this seed lead is {why}: setting it active again would restart its emails. Use a "
@@ -325,14 +320,14 @@ def seed_pause(r: Run, address: str) -> Result:
     paused = active = None
     try:
         inst.set_lead_paused(name, lead_id, True)
-        paused = _int(r.get_lead(name, lead_id).get("status"))
+        paused = parse.integer(r.get_lead(name, lead_id).get("status"))
     except ApiError as exc:
         return Result(DIFFERS, f"Instantly refused PATCH /leads/{{id}} with status 2: HTTP {exc.status} "
                                f"{clip(str(exc.body), 160)}")
     finally:
         try:
             inst.set_lead_paused(name, lead_id, False)  # always set it going again, whatever the pause did
-            active = _int(r.get_lead(name, lead_id).get("status"))
+            active = parse.integer(r.get_lead(name, lead_id).get("status"))
         except ApiError as exc:
             log("phase0_seed_restore_failed", lead=_id(address), status=exc.status)
     left = "" if active == LEAD_ACTIVE else (f" The seed lead reads status {active} now: set it active in Instantly by "
@@ -358,13 +353,13 @@ def seed_resume(r: Run, address: str) -> Result:
     if not earlier:
         return Result(NOT_CHECKED, "no earlier pause of this seed lead: this run's SEED-PAUSE starts it, and a run on or "
                                    "after its next step's day reads the answer")
-    at = to_time(earlier.get("paused_at"))
-    last = to_time(lead.get("timestamp_last_contact"))
-    before = to_time(earlier.get("last_contact"))
+    at = utc(earlier.get("paused_at"))
+    last = utc(lead.get("timestamp_last_contact"))
+    before = utc(earlier.get("last_contact"))
     due = max(at, before + timedelta(days=STEP_GAP)) if before else at + timedelta(days=STEP_GAP)
     if last and last > at:
         return Result(CONFIRMED, f"paused and set active on {at:%d %b}; Instantly emailed it again on {last:%d %b}")
-    if _int(lead.get("status")) != LEAD_ACTIVE:
+    if parse.integer(lead.get("status")) != LEAD_ACTIVE:
         return Result(DIFFERS, f"set active on {at:%d %b}, it now reads status {lead.get('status')} and has not been "
                                "emailed since")
     if r.ctx.now > due + RESUME_GRACE:
@@ -384,12 +379,12 @@ def seed_interest(r: Run, address: str) -> Result:
     if found is None:
         return Result(NOT_CHECKED, f"no seed lead for {_id(address)}")
     name, lead = found
-    if _int(lead.get("status")) == LEAD_ACTIVE:
+    if parse.integer(lead.get("status")) == LEAD_ACTIVE:
         return Result(NOT_CHECKED, "this seed lead is still in its sequence, and \"Meeting booked\" may end it (the pause "
                                    "test watches it): give a seed lead that has finished, e.g. the unsubscribed one")
     inst, lead_id = r.ctx.clients.instantly, str(lead.get("id") or "")
     before = r.get_lead(name, lead_id)
-    was, status_was = _interest(before), _int(before.get("status"))
+    was, status_was = _interest(before), parse.integer(before.get("status"))
     now, read = before, {}
     try:
         for value, call in ((INTEREST_INTERESTED, inst.mark_interested), (INTEREST_MEETING_BOOKED, inst.stop_lead)):
@@ -402,7 +397,7 @@ def seed_interest(r: Run, address: str) -> Result:
             for i in range(INTEREST_POLLS):
                 now = r.get_lead(name, lead_id)
                 seen = _interest(now)
-                if _int(seen) == value:
+                if parse.integer(seen) == value:
                     break
                 if i < INTEREST_POLLS - 1:
                     SLEEP(INTEREST_WAIT)
@@ -410,10 +405,11 @@ def seed_interest(r: Run, address: str) -> Result:
     finally:
         restored = _restore_interest(r, name, lead, address, was)
     keys = "" if INTEREST_FIELD in now else f" (the lead has no {INTEREST_FIELD}; its keys: {', '.join(sorted(now))[:300]})"
-    changed = (f" Its status went from {status_was} to {_int(now.get('status'))}." if _int(now.get("status")) != status_was
-               else "")
+    status_now = parse.integer(now.get("status"))
+    changed = f" Its status went from {status_was} to {status_now}." if status_now != status_was else ""
     back = "" if restored else f" It did not read back as {was!r} again yet: check the seed lead in Instantly."
-    wrong = [f"{v} read {read.get(v)!r}" for v in (INTEREST_INTERESTED, INTEREST_MEETING_BOOKED) if _int(read.get(v)) != v]
+    wrong = [f"{v} read {read.get(v)!r}" for v in (INTEREST_INTERESTED, INTEREST_MEETING_BOOKED)
+             if parse.integer(read.get(v)) != v]
     if wrong:
         return Result(DIFFERS, f"Instantly took the calls, but after {INTEREST_POLLS * INTEREST_WAIT:.0f} s each the lead's "
                                f"{INTEREST_FIELD}: {'; '.join(wrong)}.{keys}{changed}{back}")
@@ -480,7 +476,8 @@ def association_ids(r: Run) -> Result:
     for (src, dst), want in ASSOCIATION_TYPE_IDS.items():
         body = hs.request("GET", f"/crm/v4/associations/{src}/{dst}/labels",
                           Op("association.labels", target=f"{src}/{dst}")) or {}
-        rows = {_int(x.get("typeId")): x for x in body.get("results") or () if x.get("category") == "HUBSPOT_DEFINED"}
+        rows = {parse.integer(x.get("typeId")): x for x in body.get("results") or ()
+                if x.get("category") == "HUBSPOT_DEFINED"}
         got = rows.get(want)
         if got is None:
             wrong.append(f"{src}→{dst}: {want} is not listed (HubSpot lists {sorted(k for k in rows if k)})")
@@ -576,7 +573,7 @@ def apollo_rate_limits(r: Run) -> Result:
     if not limits:
         return Result(NOT_CHECKED, "Apollo sent no rate-limit headers; the plan's limits are on Apollo's API page")
     shown = "; ".join(f"{k} {v}" for k, v in sorted(limits.items()))
-    minute = next((_int(v) for k, v in limits.items() if "minute" in k and "limit" in k), None)
+    minute = next((parse.integer(v) for k, v in limits.items() if "minute" in k and "limit" in k), None)
     pace = int(60 / PACE_SECONDS)
     if minute is not None and minute < pace:
         return Result(DIFFERS, f"{shown}: under apollo_people's {pace} a minute")
@@ -688,7 +685,8 @@ def postings_key(r: Run) -> Result:
     """Job postings: titles read from the page's list (postings_in), for accounts Apollo lists postings for."""
     from us_outbound.sources import apollo_jobs as jobs
 
-    roles = {str(e["account_id"]) for e in _facts(r, jobs.SOURCE, "open_roles") if (_int(e.get("value")) or 0) > 0}
+    roles = {str(e["account_id"]) for e in _facts(r, jobs.SOURCE, "open_roles")
+             if (parse.integer(e.get("value")) or 0) > 0}
     if not roles:
         return Result(NOT_CHECKED, "no account with open postings stored yet")
     titled = roles & {str(e["account_id"]) for e in _facts(r, jobs.SOURCE, "posting_titles") if e.get("value")}

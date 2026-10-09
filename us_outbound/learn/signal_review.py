@@ -27,13 +27,13 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
 
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import Context
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.learn import kill_rules
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
+from us_outbound.timeparse import utc
 
 MIN_COMPANIES = 30  # emailed companies on each side of a signal before a verdict
 P_VALUE = 0.10  # two-sided; a pilot's samples are small, so this is a lead to follow, not proof
@@ -85,10 +85,6 @@ class Review:
     subject: Verdict | None = None  # email 1's personal subject (with) against the Copy row's (without)
 
 
-def _ts(v: Any) -> datetime | None:
-    return kill_rules._ts(v)
-
-
 def emailed(ctx: Context) -> tuple[list[Company], int]:
     """Each company's first delivered step 1, whether a human replied within the window, and how many windows closed."""
     ev = kill_rules._Events(ctx.store, ctx.now)
@@ -100,7 +96,7 @@ def emailed(ctx: Context) -> tuple[list[Company], int]:
     window = timedelta(days=REPLY_WINDOW_DAYS)
     for r in ev.replies:
         c = out.get(ev.account(r))
-        t = _ts(r.get("occurred_at"))
+        t = utc(r.get("occurred_at"))
         if c is None or t is None or not c.step1_at <= t < c.step1_at + window:
             continue
         cls = str(r.get("reply_class") or "").strip().lower()

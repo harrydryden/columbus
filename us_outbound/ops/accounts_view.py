@@ -39,6 +39,7 @@ from us_outbound.context import UK, Context
 from us_outbound.enrol import enrol, queue
 from us_outbound.logs import clip, hash_email, redact
 from us_outbound.settings.model import TIERS, Settings
+from us_outbound.timeparse import utc
 
 # accounts.status in lifecycle order (sql/ddl/01_accounts.sql).
 STATUSES = ("new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified")
@@ -71,22 +72,9 @@ def _text(v: Any) -> str:
     return str(v if v is not None else "").strip()
 
 
-def _when(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return None
-
-
 def _time(v: Any) -> str:
     """A stored time as Harry reads it: "05 Oct 2026 11:00 UK"; "-" when there is none."""
-    d = _when(v)
+    d = utc(v)
     return d.astimezone(UK).strftime("%d %b %Y %H:%M UK") if d else ("-" if not _text(v) else _text(v))
 
 
@@ -318,7 +306,7 @@ def _signal(e: Mapping[str, Any]) -> str:
 
 
 def _newest(rows: Iterable[Mapping[str, Any]], column: str) -> list[dict]:
-    return sorted((dict(r) for r in rows), key=lambda r: _when(r.get(column)) or datetime.min.replace(tzinfo=UTC),
+    return sorted((dict(r) for r in rows), key=lambda r: utc(r.get(column)) or datetime.min.replace(tzinfo=UTC),
                   reverse=True)
 
 
@@ -347,7 +335,7 @@ def _ready_for(ctx: Context, account: Mapping[str, Any], contacts: Sequence[Mapp
 
 def _domain_suppression(ctx: Context, domain: str) -> str:
     rows = [r for r in ctx.store.select("suppression", {"domain": domain, "email_sha256": None})
-            if (_when(r.get("expires_at")) or ctx.now) >= ctx.now]
+            if (utc(r.get("expires_at")) or ctx.now) >= ctx.now]
     if not rows:
         return "no"
     r = rows[0]

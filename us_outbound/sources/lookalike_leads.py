@@ -88,6 +88,7 @@ from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
 from us_outbound.sources import lookalikes
+from us_outbound.timeparse import utc
 
 JOB = "lookalike_leads"
 SOURCE = "lookalike_lead"  # signal_events.source (settings/model.py SOURCE_KEYS)
@@ -438,23 +439,13 @@ def _lookalike(ctx: Context, leads: _Leads, seed_ids: Sequence[str], band: str, 
 # -- the job ---------------------------------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def done_this_month(ctx: Context) -> datetime | None:
     """When a run of this job last finished ok this month (UK), or None. A skipped run does not count."""
     start, end = budget.month_bounds(ctx.now)
     when = None
     for r in ctx.store.select("heartbeats", {"job": JOB, "status": "ok"}):
         detail = r.get("detail")
-        t = _ts(r.get("started_at"))
+        t = utc(r.get("started_at"))
         if (r.get("run_id") != ctx.run_id and t is not None and start <= t < end and isinstance(detail, Mapping)
                 and detail.get("status") == "ok"):
             when = max(when, t) if when else t
@@ -559,13 +550,13 @@ def run(ctx: Context) -> dict:
 def latest(store: Any) -> dict | None:
     """The newest heartbeat of this job that finished (ok or skipped)."""
     rows = [r for r in store.select("heartbeats", {"job": JOB}) if r.get("status") in ("ok", "skipped")]
-    return max(rows, key=lambda r: _ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC), default=None)
+    return max(rows, key=lambda r: utc(r.get("started_at")) or datetime.min.replace(tzinfo=UTC), default=None)
 
 
 def post_lines(ctx: Context) -> list[str]:
     """The daily post's lines on the last run, for POST_HOURS after it (a monthly job: nothing otherwise)."""
     row = latest(ctx.store)
-    started = _ts(row.get("started_at")) if row else None
+    started = utc(row.get("started_at")) if row else None
     if not row or started is None or ctx.now - started > timedelta(hours=POST_HOURS):
         return []
     detail = row.get("detail") if isinstance(row.get("detail"), Mapping) else {}

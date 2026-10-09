@@ -26,11 +26,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import WARM_REPLY_CLASSES
+from us_outbound.timeparse import utc
 
 TABLE = "hitl_items"
 # "reply" is the contract with poll_replies; "reply_approval" is the name sql/ddl/09 and enrol used first.
@@ -42,20 +43,6 @@ WAITING = (OPEN, ESCALATED, SENDING)  # not yet handled
 
 def _text(v: Any) -> str:
     return "" if v is None else str(v).strip()
-
-
-def ts(v: Any) -> datetime | None:
-    """An aware UTC datetime from a datetime, a date or ISO text; None when blank or unreadable."""
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.strip().replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return None
 
 
 @dataclass(frozen=True)
@@ -152,12 +139,12 @@ class ReplyItem:
 
     @property
     def received_at(self) -> datetime | None:
-        return ts(self.payload.get("received_at"))
+        return utc(self.payload.get("received_at"))
 
     @property
     def created_at(self) -> datetime | None:
         """When the item started waiting: its created_at, else the reply's received_at."""
-        return ts(self.row.get("created_at")) or self.received_at
+        return utc(self.row.get("created_at")) or self.received_at
 
     @property
     def slack_channel(self) -> str:

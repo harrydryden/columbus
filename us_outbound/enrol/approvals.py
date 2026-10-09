@@ -152,9 +152,9 @@ from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.registry import blackout
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
-from us_outbound.replies.items import ts as parse_ts
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK
 from us_outbound.settings.model import GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.timeparse import iso_date, utc
 
 KIND = "send_approval"  # hitl_items.kind
 TABLE = "hitl_items"
@@ -215,13 +215,6 @@ def _key(slack_ts: Any) -> tuple[int, int]:
         return 0, 0
 
 
-def _date(v: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(v)[:10])
-    except ValueError:
-        return None
-
-
 def _day(d: date | None) -> str:
     return f"{d:%a} {d.day} {d:%b}" if d else "its next send day"
 
@@ -245,7 +238,7 @@ def expires_on(send_day: date, settings: Settings) -> date:
 
 def is_expired(payload: Mapping[str, Any], today: date) -> bool:
     """Past the end of its expires_on day (UK). An item with none (its payload erased by `erase`) has expired."""
-    last = _date(payload.get("expires_on"))
+    last = iso_date(payload.get("expires_on"))
     return last is None or today > last
 
 
@@ -396,7 +389,7 @@ def recipient_source(ctx: Context, account_id: str, contact: Mapping[str, Any]) 
         v = e.get("value")
         if not isinstance(v, Mapping) or _text(v.get("contact_id")) != cid:
             continue
-        t = parse_ts(e.get("observed_at"))
+        t = utc(e.get("observed_at"))
         if latest is None or (t is not None and (latest[0] is None or t >= latest[0])):
             latest = (t, dict(v))
     value = latest[1] if latest else {}
@@ -408,7 +401,7 @@ def recipient_source(ctx: Context, account_id: str, contact: Mapping[str, Any]) 
 def history(ctx: Context, account_id: str) -> dict:
     """What the company has had from us before: emails sent, and earlier contacts declined here."""
     sent = [e for e in ctx.store.select("events", {"account_id": account_id, "type": "sent"})]
-    last = max((t for t in (parse_ts(e.get("occurred_at")) for e in sent) if t), default=None)
+    last = max((t for t in (utc(e.get("occurred_at")) for e in sent) if t), default=None)
     declined = []
     for row in ctx.store.select(TABLE, {"kind": KIND, "account_id": account_id, "status": HANDLED}):
         item = Item(row)
@@ -545,7 +538,7 @@ def _second_line(p: Mapping[str, Any]) -> str:
     name = " ".join(x for x in (_text(f.get("first_name")), _text(f.get("last_name"))) if x) or "the first contact"
     title, role = _text(f.get("title")), _text(f.get("role"))
     who = ", ".join(x for x in (_esc(name), _esc(title)) if x) + (f" ({_esc(role)})" if role and role != title else "")
-    sent = _date(f.get("email_1"))
+    sent = iso_date(f.get("email_1"))
     when = f", email 1 on {_day(sent)}" if sent else ""
     return (f"*Second contact* at {_esc(p.get('company') or 'this company')}: the first was {who}{when}. Same sender; "
             "both people's emails stop when either replies.")
@@ -556,7 +549,7 @@ def _before_line(p: Mapping[str, Any]) -> str:
     company = _esc(p.get("company") or "this company")
     n = int(b.get("sent") or 0)
     if n:
-        last = _date(b.get("last_sent"))
+        last = iso_date(b.get("last_sent"))
         line = f"{n} email{'s' if n != 1 else ''} to {company} from us before" + (f", the last on {_day(last)}" if last else "")
     else:
         line = f"no email to {company} from us before"
@@ -689,7 +682,7 @@ def choices_text(p: Mapping[str, Any], by: str) -> str:
             "✏️ *edit*: change the email (or a follow-up), then approve it again\n"
             f"👤 *contact*: not {name}; you'll get a card for the next person at {company}\n"
             f"🚫 *company*: {drop}\n"
-            f"If nothing is chosen, it expires at the end of {_day(_date(p.get('expires_on')))} (UK) and "
+            f"If nothing is chosen, it expires at the end of {_day(iso_date(p.get('expires_on')))} (UK) and "
             f"{company} goes back to the queue.")
 
 
@@ -1089,7 +1082,7 @@ def _hold(ctx: Context, item: Item, why: Mapping[str, str], *, by: str, via: str
     if new:
         _thread(slack, item, f"⏸ Approved {_who(by)}, but not added yet: {_esc('; '.join(why[k] for k in new))}. "
                              "It goes through by itself once that clears, until the card expires at the end of "
-                             f"{_day(_date(p.get('expires_on')))} (UK). ❌ still stops it.")
+                             f"{_day(iso_date(p.get('expires_on')))} (UK). ❌ still stops it.")
     log("send_approval_held", item_id=item.id, holds=list(why), noted=new)
 
 
@@ -1363,7 +1356,7 @@ def drop_company(ctx: Context, item: Item, *, by: str, via: str, slack: Any = No
 
 def expire(ctx: Context, item: Item, slack: Any) -> bool:
     """Not approved by the end of its next send day: closed by "system", and the account goes back to the queue."""
-    last = _date(item.payload.get("expires_on"))
+    last = iso_date(item.payload.get("expires_on"))
     reason = f"not approved by the end of {_day(last)} (UK)"
     held = (item.payload.get("held") or {}).get("reasons") or {}
     if held:  # approved, but a hold never cleared
@@ -1516,7 +1509,7 @@ def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Setting
     is left alone: its company is enrolled already."""
     if account is None or is_second(item.payload):
         return None
-    decided, created = parse_ts(account.get("label_checked_at")), parse_ts(item.row.get("created_at"))
+    decided, created = utc(account.get("label_checked_at")), utc(item.row.get("created_at"))
     if decided is None or created is None or decided < created:
         return None
     p, company = item.payload, item.company
@@ -1721,7 +1714,7 @@ def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
     never have reached Instantly. If the campaign cannot be read, a person is asked to check."""
     p = item.payload
     sending = dict(p.get("sending") or {})
-    started = parse_ts(sending.get("at"))
+    started = utc(sending.get("at"))
     if started is not None and ctx.now - started < STUCK_AFTER:
         return  # an add may still be going
     if ctx.dry_run:

@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from us_outbound import parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.settings.model import Settings
 
@@ -57,13 +58,6 @@ def daily_number(*, weekly_target: int, sending_capacity: int, ready_accounts: i
 # -- order and selection ----------------------------------------------------------------------
 
 
-def _number(v: Any) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def industry_priority(row: Mapping[str, Any], settings: Settings) -> int:
     ind = settings.industry(str(row.get("industry") or ""))
     return ind.priority if ind else DEFAULT_INDUSTRY_PRIORITY
@@ -73,7 +67,7 @@ def order_key(row: Mapping[str, Any], settings: Settings) -> tuple:
     """Tier, score (high first), size band (20 to 99 first), industry priority; then first_seen, id."""
     return (
         TIER_RANK.get(str(row.get("tier")), 9),
-        -_number(row.get("score")),
+        -(parse.number(row.get("score")) or 0.0),
         SIZE_BAND_RANK.get(str(row.get("size_band") or ""), 3),
         industry_priority(row, settings),
         str(row.get("first_seen") or ""),

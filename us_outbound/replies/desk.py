@@ -84,10 +84,10 @@ from us_outbound.replies.items import (
     is_reply,
     reply_items,
     save_payload,
-    ts,
 )
 from us_outbound.replies.outcomes import REPLY_SENT
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 JOB = "poll_approvals"
 SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals.py KIND: never re-posted or escalated here
@@ -515,7 +515,7 @@ class _Run:
 
 def _stuck(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
     """An item left at "sending" by a run that died: back to open for a person, never resent alone."""
-    started = ts((item.desk.get("sending") or {}).get("at"))
+    started = utc((item.desk.get("sending") or {}).get("at"))
     if started is not None and ctx.now - started < timedelta(minutes=10):
         return  # a send may still be going
     run.add("stuck", item.short_id)
@@ -666,7 +666,7 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
             continue
         reply = is_reply(row)
         item = ReplyItem(row)
-        started = item.created_at if reply else ts(row.get("created_at"))
+        started = item.created_at if reply else utc(row.get("created_at"))
         if started is None or started > cutoff:
             continue
         if ctx.dry_run:

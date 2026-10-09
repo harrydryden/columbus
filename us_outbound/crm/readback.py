@@ -52,7 +52,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.crm.hubspot_writes import DEAL_EVENT, advance_status, ensure_deal
 from us_outbound.logs import hash_email, log
-from us_outbound.replies.items import ts
+from us_outbound.timeparse import utc
 
 JOB = "hubspot_readback"
 LOOKBACK_DAYS = 3  # each run re-reads three days of changes, so a missed run or two loses nothing
@@ -87,7 +87,7 @@ def _event(ctx: Context, run: _Run, event_id: str, type_: str, account_id: str, 
     run.note({"event": type_, "account_id": account_id, "id": event_id, **({"source": source} if source else {})})
     if ctx.live:
         ctx.store.upsert("events", [{"event_id": event_id, "type": type_, "account_id": account_id,
-                                     "contact_id": contact_id or None, "occurred_at": ts(occurred_at) or ctx.now,
+                                     "contact_id": contact_id or None, "occurred_at": utc(occurred_at) or ctx.now,
                                      "source": source}])
     return True
 
@@ -102,7 +102,7 @@ def _status(ctx: Context, account_id: str, status: str) -> None:
 
 
 def _first_enrolled(ctx: Context, account_id: str) -> datetime | None:
-    times = [t for c in ctx.store.select("contacts", {"account_id": account_id}) if (t := ts(c.get("enrolled_at")))]
+    times = [t for c in ctx.store.select("contacts", {"account_id": account_id}) if (t := utc(c.get("enrolled_at")))]
     return min(times) if times else None
 
 
@@ -210,7 +210,7 @@ def meetings(ctx: Context, run: _Run) -> None:
             continue
         links = rec.get("associations") or {}
         company_ids = list(links.get("companies") or [])
-        created = ts(p.get("hs_createdate")) or ctx.now
+        created = utc(p.get("hs_createdate")) or ctx.now
         matched = _match(ctx, company_ids, links.get("contacts") or [])
         if not matched:
             run.counts["meetings_not_ours"] += 1
@@ -320,7 +320,7 @@ def bookings(ctx: Context, run: _Run) -> None:
         booked = booked_from is not None and pos >= booked_from
         if str(p.get("dealname") or "").startswith(US_CAMPAIGN_PREFIX) and not booked:
             continue  # ours, from a reply that asked for a demo: a booking once it reaches Demo created
-        created = ts(p.get("createdate")) or ctx.now
+        created = utc(p.get("createdate")) or ctx.now
         event_id = f"{DEAL_EVENT}{d['id']}:booked"
         if created < since or ctx.store.get("events", event_id=event_id) is not None:
             continue  # an older deal at our company is step 2's; a recorded one is done

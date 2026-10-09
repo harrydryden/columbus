@@ -41,6 +41,7 @@ from us_outbound.logs import log
 from us_outbound.ops import notify
 from us_outbound.settings.model import Settings
 from us_outbound.settings.validate import CLAUDE_CAP_USD
+from us_outbound.timeparse import utc
 
 PACE_DAYS = 14  # the Apollo pace: its average daily spend in credit_ledger over this many days
 FLOOR_WARN_DAYS = 21  # ask when apollo_floor is fewer days away than this
@@ -102,7 +103,7 @@ def _floor_skip(ctx: Context) -> str:
     for r in ctx.store.select("heartbeats", {"job": list(FLOOR_JOBS)}):
         detail = r.get("detail") if isinstance(r.get("detail"), Mapping) else {}
         reason = str(detail.get("reason") or "")
-        at = budget._ts(r.get("started_at"))
+        at = utc(r.get("started_at"))
         if "apollo_floor" in reason and at is not None and ctx.now - at <= LOOKBACK and (best is None or at > best[0]):
             best = (at, reason)
     return best[1] if best else ""

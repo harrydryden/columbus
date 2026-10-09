@@ -90,7 +90,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, parse
 from us_outbound.clean.domains import is_personal_domain, root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
@@ -102,6 +102,7 @@ from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.defaults import US_STATES
 from us_outbound.settings.model import SIZE_BANDS, Settings, Signal, band_bounds
 from us_outbound.sources import apollo_credits as credits
+from us_outbound.timeparse import utc_strict_or_none
 
 SOURCE = "lookalike"
 JOB = "lookalikes"  # credit_ledger's job for the growth searches
@@ -271,15 +272,6 @@ class Customer:
 # -- one company ------------------------------------------------------------------------------
 
 
-def _number(v: Any) -> float | None:
-    if v is None or isinstance(v, bool):
-        return None
-    try:
-        return float(str(v).replace(",", "").strip())
-    except ValueError:
-        return None
-
-
 def band_of(employees: float) -> str:
     n = int(round(employees))
     if n < 10:
@@ -300,10 +292,10 @@ def customer_band(props: Mapping[str, Any]) -> str:
     (05 §3.1). An enriched headcount that is the top of a range is read as that range
     (BUCKET_BANDS), and is unknown when the range spans two bands.
     """
-    covered = _number(props.get("employees_covered"))
+    covered = parse.number(props.get("employees_covered"), commas=True)
     if covered is not None and covered > 0:
         return band_of(covered)
-    n = _number(props.get("numberofemployees"))
+    n = parse.number(props.get("numberofemployees"), commas=True)
     if n is None or n <= 0:
         return UNKNOWN
     if n.is_integer() and int(n) in BUCKET_BANDS:
@@ -548,20 +540,13 @@ def group_cells(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], dict
 # -- keeping customers out ---------------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
-
-
 def _latest(events: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], tuple[datetime, Any]]:
     """(account_id, fact) -> (observed_at, value) of the newest event."""
     out: dict[tuple[str, str], tuple[datetime, Any]] = {}
     floor = datetime(1970, 1, 1, tzinfo=UTC)
     for e in events:
         key = (str(e.get("account_id")), str(e.get("fact")))
-        t = _ts(e.get("observed_at")) or floor
+        t = utc_strict_or_none(e.get("observed_at")) or floor
         if key not in out or t >= out[key][0]:
             out[key] = (t, e.get("value"))
     return out
@@ -584,7 +569,7 @@ def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
     rows, new = [], 0
     for domain in domains:
         old = existing.get(domain)
-        old_expiry = _ts(old.get("expires_at")) if old is not None else None
+        old_expiry = utc_strict_or_none(old.get("expires_at")) if old is not None else None
         if old is not None and (old_expiry is None or old_expiry >= expires):
             continue  # indefinite, or already suppressed for longer
         if old is None or (old_expiry is not None and old_expiry <= now):
@@ -620,7 +605,7 @@ def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
 
 def growth_band_of(growth: Any) -> str | None:
     """The band of a headcount_growth_12m figure, a fraction (0.12 is 12%; PHASE0-CONFIRM in apollo_universe)."""
-    g = _number(growth)
+    g = parse.number(growth, commas=True)
     if g is None:
         return None
     pct = round(g * 100, 6)
@@ -681,7 +666,7 @@ def growth_todo(ctx: Context, skip: Iterable[str] = ()) -> tuple[list[dict], lis
         from_figure = growth_band_of(figure[1]) if figure and _age(figure[0], today) < GROWTH_REFRESH_DAYS else None
         if from_figure:
             if not (fresh_band and band[1] == from_figure):
-                pct = float(_number(figure[1]) or 0.0)
+                pct = parse.number(figure[1], commas=True) or 0.0
                 facts.append(_band_fact(aid, from_figure, f"Apollo: headcount {pct:+.0%} over 12 months, so "
                                                           f"{GROWTH_WORDS[from_figure]}", ctx.now))
             continue
@@ -1120,7 +1105,7 @@ def _share(us: float, total: float) -> str:
 
 
 def _when(v: Any) -> str:
-    t = _ts(v)
+    t = utc_strict_or_none(v)
     return t.astimezone(UK).strftime("%a %d %b %Y %H:%M UK") if t else "-"
 
 
@@ -1130,7 +1115,7 @@ def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = F
     if not rows:
         return ["No lookalike cells yet. `us-outbound run lookalikes` reads Spill's customers from HubSpot "
                 "(read only) and fills them."]
-    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=lambda v: _ts(v), default=None)
+    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=utc_strict_or_none, default=None)
     shown = [r for r in rows if all_bands or r.get("size_band") in TARGET_BANDS]
     shown.sort(key=lambda r: (-float(r.get("strength") or 0), -int(r.get("active_customers") or 0),
                               str(r.get("industry_label") or "~"), BANDS.index(r["size_band"])
@@ -1193,7 +1178,7 @@ def growth_line(store: Any) -> str:
     n: Counter[str] = Counter()
     for r in rows:
         n[str(r.get("growth_band"))] += int(r.get("active_customers") or 0) + int(r.get("churned_customers") or 0)
-    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=lambda v: _ts(v), default=None)
+    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=utc_strict_or_none, default=None)
     known = sum(n[b] for b in GROWTH_BANDS)
     parts = ", ".join(f"{b} {n[b]}" for b in GROWTH_BANDS)
     return (f"Customers' 12-month headcount growth (Apollo, {_when(computed)}): {parts}; unknown {n[UNKNOWN]} "
@@ -1304,7 +1289,7 @@ def fit_report(ctx: Context, close: tuple[int, int] | None = None,
     fitted = len(accounts) - no_fit
     cells = [c.get("computed_at") for c in store.select(TABLE) if c.get("computed_at")]
     lines = [f"Lookalike fit of {len(accounts)} open accounts, worked out now from the cells of "
-             f"{_when(max(cells, key=lambda v: _ts(v), default=None))}.",
+             f"{_when(max(cells, key=utc_strict_or_none, default=None))}.",
              growth_line(store),
              f"  {'Fit':<8} {'Accounts':>8}"]
     lines += [f"  {f'{lo}-{hi}':<8} {fits[(lo, hi)]:>8}" for lo, hi in FIT_BANDS]

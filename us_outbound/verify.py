@@ -80,10 +80,10 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
-from us_outbound import labels
+from us_outbound import labels, parse
 from us_outbound.accounts import any_us_state, us_country
 from us_outbound.clean.domains import is_personal_domain, is_public_body
 from us_outbound.clean.people import size_band, state_code
@@ -95,6 +95,7 @@ from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import latest_facts, parse_override
 from us_outbound.settings.model import CLAY_REQUIRED, SIZE_BANDS, General, Settings
+from us_outbound.timeparse import utc_or_epoch
 
 JOB = "verify_accounts"
 VERIFIED = "verified"
@@ -127,13 +128,6 @@ OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 
 def _lower(v: Any) -> str:
     return str(v or "").strip().lower()
-
-
-def _truthy(v: Any) -> bool:
-    """A HubSpot fact's value read as tiers.py reads it."""
-    if isinstance(v, str):
-        return v.strip().lower() in {"true", "yes", "1"}
-    return v is True or (isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0)
 
 
 def with_overrides(account: Mapping[str, Any], settings: Settings) -> dict:
@@ -178,7 +172,7 @@ def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settin
     if not ind.active:
         return "industry switched off"
     for fact, reason in tiers.HUBSPOT_EXCLUSIONS:
-        if _truthy(facts.get(fact)):
+        if parse.truthy(facts.get(fact)):
             return f"HubSpot: {reason}"
     return None
 
@@ -256,16 +250,6 @@ def clay_pre_pass(ctx: Context, todo: Sequence[dict], facts: Mapping[str, Mappin
     return clay_cross_check.ask(ctx, todo, facts, suppressed, partners, cleared)
 
 
-def _when(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime(1970, 1, 1, tzinfo=UTC)
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def doubt_history(ctx: Context, account_ids: Iterable[str] | None = None) -> tuple[dict[str, dict], dict[str, set[str]]]:
     """(account_id -> its latest doubtful_facts value; account_id -> the doubts a hand-check cleared)."""
     where: dict[str, Any] = {"source": DOUBT_SOURCE}
@@ -283,7 +267,7 @@ def doubt_history(ctx: Context, account_ids: Iterable[str] | None = None) -> tup
         if not isinstance(value, Mapping):
             continue
         if e.get("fact") == DOUBT_FACT:
-            t = _when(e.get("observed_at"))
+            t = utc_or_epoch(e.get("observed_at"))
             if aid not in latest or t >= latest[aid][0]:
                 latest[aid] = (t, dict(value))
         elif e.get("fact") == CLEARED_FACT:

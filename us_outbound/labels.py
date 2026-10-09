@@ -50,7 +50,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,7 @@ from us_outbound.logs import log
 from us_outbound.settings.model import LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP, Industry, Settings
 from us_outbound.sources.apollo_universe import SOURCE as APOLLO_SOURCE
 from us_outbound.sources.apollo_universe import best_label
+from us_outbound.timeparse import utc_or_epoch
 
 JOB = "label_check"  # credit_ledger.job of each call and signal_events.source of each verdict
 VERDICT_FACT, CORRECTED_FACT = "label_verdict", "label_corrected"
@@ -195,19 +196,9 @@ def _clean(text: Any) -> str:
     return " ".join(str(text or "").replace("<", " ").replace(">", " ").split())
 
 
-def _when(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime(1970, 1, 1, tzinfo=UTC)
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def _newest(events: Iterable[Mapping[str, Any]], source: str, fact: str) -> Mapping[str, Any] | None:
     rows = [e for e in events if e.get("source") == source and e.get("fact") == fact]
-    return max(rows, key=lambda e: _when(e.get("observed_at"))) if rows else None
+    return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
 
 
 def _texts(value: Any) -> list[str]:
@@ -339,13 +330,13 @@ def _asked_at(events: Iterable[Mapping[str, Any]]) -> datetime | None:
     re-made from a stored verdict is written with asked false and carries the same answer)."""
     rows = [e for e in events if e.get("source") == JOB and e.get("fact") == VERDICT_FACT
             and isinstance(e.get("value"), Mapping) and e["value"].get("asked")]
-    return max((_when(e.get("observed_at")) for e in rows), default=None)
+    return max((utc_or_epoch(e.get("observed_at")) for e in rows), default=None)
 
 
 def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """The newest home_page fact that says something (an empty one records a read that found nothing)."""
     rows = [e for e in events if e.get("fact") == HOME_FACT and isinstance(e.get("value"), Mapping) and e["value"]]
-    return max(rows, key=lambda e: _when(e.get("observed_at"))) if rows else None
+    return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
 
 
 def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -357,7 +348,7 @@ def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
     if not stored or stored.get("confidence") == HIGH or page is None:
         return False
     asked = _asked_at(events)
-    return asked is None or _when(page.get("observed_at")) > asked
+    return asked is None or utc_or_epoch(page.get("observed_at")) > asked
 
 
 def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -652,7 +643,7 @@ class Checker:
     def usd(self) -> float:
         """What this run's calls cost (credit_ledger rows of its job written at the run's time)."""
         return round(sum(float(r.get("usd") or 0.0) for r in self.ctx.store.select("credit_ledger", {"job": self.purpose})
-                         if _when(r.get("occurred_at")) == _when(self.ctx.now)), 4)
+                         if utc_or_epoch(r.get("occurred_at")) == utc_or_epoch(self.ctx.now)), 4)
 
 
 def override_for(account: Mapping[str, Any], settings: Settings) -> tuple[str | None, str]:
@@ -899,7 +890,7 @@ class Tally:
 
 
 def _between(rows: Iterable[Mapping[str, Any]], key: str, start: datetime | None, end: datetime) -> list[Mapping]:
-    return [r for r in rows if (start is None or _when(r.get(key)) >= start) and _when(r.get(key)) < end]
+    return [r for r in rows if (start is None or utc_or_epoch(r.get(key)) >= start) and utc_or_epoch(r.get(key)) < end]
 
 
 def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
@@ -918,7 +909,7 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
             continue
         if not v.get("asked"):
             continue
-        aid, at = str(e.get("account_id") or e.get("event_id")), _when(e.get("observed_at"))
+        aid, at = str(e.get("account_id") or e.get("event_id")), utc_or_epoch(e.get("observed_at"))
         if aid not in latest or at >= latest[aid][0]:
             latest[aid] = (at, v)
     for aid, (_, v) in latest.items():
@@ -947,7 +938,7 @@ def last_verify(ctx: Context) -> dict:
     rows = [r for r in ctx.store.select("heartbeats", {"job": VERIFY_JOB}) if isinstance(r.get("detail"), Mapping)]
     if not rows:
         return {}
-    newest = max(rows, key=lambda r: _when(r.get("started_at")))
+    newest = max(rows, key=lambda r: utc_or_epoch(r.get("started_at")))
     return dict(newest["detail"].get("labels") or {})
 
 
@@ -973,7 +964,7 @@ def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> 
     for e in ctx.store.select("signal_events", {"account_id": sorted(labelled), "source": APOLLO_SOURCE,
                                                 "fact": "naics"}):
         aid = str(e.get("account_id"))
-        if aid not in newest or _when(e.get("observed_at")) >= _when(newest[aid].get("observed_at")):
+        if aid not in newest or utc_or_epoch(e.get("observed_at")) >= utc_or_epoch(newest[aid].get("observed_at")):
             newest[aid] = e
     pairs: dict[tuple[str, str], int] = {}
     uncoded = 0

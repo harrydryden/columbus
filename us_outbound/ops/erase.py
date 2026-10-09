@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
@@ -34,6 +33,7 @@ from us_outbound.context import UK, Context
 from us_outbound.logs import hash_email, log, normalise_email
 from us_outbound.ops.retention import REPLY_TEXT_KEYS
 from us_outbound.suppression import add as suppress
+from us_outbound.timeparse import utc_strict
 
 ERASURE_REASON, ERASURE_SOURCE = "erasure", "erase"
 CONTACTS_SQL = (
@@ -98,8 +98,7 @@ def _scrubbed(payload: Mapping[str, Any], email: str) -> dict | None:
 
 
 def _uk(v: Any) -> str:
-    t = v if isinstance(v, datetime) else datetime.fromisoformat(str(v)) if v else None
-    return (t if t.tzinfo else t.replace(tzinfo=UTC)).astimezone(UK).strftime("%a %d %b %Y %H:%M UK") if t else "?"
+    return utc_strict(v).astimezone(UK).strftime("%a %d %b %Y %H:%M UK") if v else "?"
 
 
 def _traces(ctx: Context, items: Iterable[Mapping[str, Any]]) -> list[str]:

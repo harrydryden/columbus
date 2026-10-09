@@ -46,6 +46,7 @@ from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import signal_review
 from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, VARIANT_ARMS, VARIANT_TEST, Test
+from us_outbound.timeparse import utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
 POSITIVE = frozenset({"positive", "referral"})
@@ -116,18 +117,6 @@ class Look:
         return f"look {self.number}{' (the read date)' if self.final else ''}: {what}"
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
 def _midnight(d: date) -> datetime:
     return datetime(d.year, d.month, d.day, tzinfo=UK)
 
@@ -138,7 +127,7 @@ def arm_names(test: Test) -> tuple[str, str]:
 
 def _since_start(test: Test, contacts: list[dict]) -> list[dict]:
     start = _midnight(test.start_date) if test.start_date else None
-    return [c for c in contacts if (t := _ts(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
+    return [c for c in contacts if (t := utc(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
 
 
 def _members(ctx: Context, test: Test) -> dict[str, str]:
@@ -162,7 +151,7 @@ def _members(ctx: Context, test: Test) -> dict[str, str]:
         def arm_of(c: dict) -> str:
             return str(c.get(column) or "")
     never = datetime.max.replace(tzinfo=UTC)
-    contacts.sort(key=lambda c: (_ts(c.get("enrolled_at")) or never, str(c.get("contact_id"))))
+    contacts.sort(key=lambda c: (utc(c.get("enrolled_at")) or never, str(c.get("contact_id"))))
     out: dict[str, str] = {}
     for c in contacts:
         arm = arm_of(c)
@@ -187,8 +176,8 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
     never = datetime.max.replace(tzinfo=UTC)
     for account_id, arm in members.items():
         evs = sorted(by_account.get(account_id, []),
-                     key=lambda e: (_ts(e.get("occurred_at")) or never, str(e.get("event_id"))))
-        step1 = next((e for e in evs if e.get("type") == "sent" and e.get("step") == 1 and _ts(e.get("occurred_at"))),
+                     key=lambda e: (utc(e.get("occurred_at")) or never, str(e.get("event_id"))))
+        step1 = next((e for e in evs if e.get("type") == "sent" and e.get("step") == 1 and utc(e.get("occurred_at"))),
                      None)
         if step1 is None:
             continue
@@ -197,11 +186,11 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
         if bounced:
             continue
         replies = tuple((t, str(e.get("reply_class") or "").strip().lower()) for e in evs
-                        if e.get("type") == "replied" and (t := _ts(e.get("occurred_at"))))
-        meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := _ts(e.get("occurred_at"))))
+                        if e.get("type") == "replied" and (t := utc(e.get("occurred_at"))))
+        meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := utc(e.get("occurred_at"))))
         edited = any(e.get("type") == "send_approval" and e.get("approval") == EDITED
                      and e.get("contact_id") == step1.get("contact_id") for e in evs)
-        out[arm].emailed.append(Outcome(account_id, _ts(step1["occurred_at"]), replies, meetings, edited))
+        out[arm].emailed.append(Outcome(account_id, utc(step1["occurred_at"]), replies, meetings, edited))
     for a in out.values():
         a.emailed.sort(key=lambda o: (o.step1_at, o.account_id))
     return out

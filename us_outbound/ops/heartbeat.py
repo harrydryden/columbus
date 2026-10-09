@@ -38,6 +38,7 @@ from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import clip, log, redact
 from us_outbound.ops import notify
+from us_outbound.timeparse import utc_strict_or_none
 
 TABLE = "heartbeats"
 RUNNING, OK, ERROR, SKIPPED = "running", "ok", "error", "skipped"
@@ -96,13 +97,6 @@ class Skip(Exception):
     """Raised by a job to record its run as skipped (e.g. a blackout date), not as an error."""
 
 
-def _ts(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
-
-
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(k): _json_safe(v) for k, v in value.items()}
@@ -117,7 +111,7 @@ def _json_safe(value: Any) -> Any:
 
 def _still_running(store: Store, job: str, run_id: str, now: datetime) -> dict | None:
     for r in store.select(TABLE, {"job": job, "status": RUNNING}):
-        started = _ts(r.get("started_at"))
+        started = utc_strict_or_none(r.get("started_at"))
         if r.get("run_id") != run_id and started and now - started < timedelta(minutes=OVERLAP_MINUTES):
             return r
     return None
@@ -183,11 +177,12 @@ def _latest_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[dict]:
         if not job:
             continue
         runs[job] = runs.get(job, 0) + 1
-        started = _ts(r.get("started_at"))
+        started = utc_strict_or_none(r.get("started_at"))
         old = latest.get(job)
-        if old is None or (started, str(r.get("run_id"))) > (_ts(old.get("started_at")), str(old.get("run_id"))):
+        if old is None or ((started, str(r.get("run_id")))
+                           > (utc_strict_or_none(old.get("started_at")), str(old.get("run_id")))):
             latest[job] = dict(r)
-        at = _ts(r.get("finished_at")) or started
+        at = utc_strict_or_none(r.get("finished_at")) or started
         if at and r.get("status") == OK and (job not in last_ok or at > last_ok[job]):
             last_ok[job] = at
         if at and _shows_alive(r) and (job not in last_alive or at > last_alive[job]):
@@ -225,10 +220,10 @@ def _weekday_minutes(start: datetime, end: datetime) -> float:
 
 def _last_healthy(run: Mapping[str, Any], now: datetime) -> datetime | None:
     """When the job last showed it is alive (last_alive_at), or when its only run started if still going."""
-    times = [t for t in (_ts(run.get("last_alive_at")), _ts(run.get("last_ok_at"))) if t is not None]
+    times = [t for t in (utc_strict_or_none(run.get(k)) for k in ("last_alive_at", "last_ok_at")) if t is not None]
     if times:
         return max(times)
-    started = _ts(run.get("started_at"))
+    started = utc_strict_or_none(run.get("started_at"))
     first = (run.get("runs") or 1) <= 1
     if first and run.get("status") == RUNNING and started and now - started < timedelta(minutes=OVERLAP_MINUTES):
         return started  # the job's first run, still going
@@ -317,7 +312,7 @@ def failed_jobs(runs: Mapping[str, Mapping[str, Any]], jobs: Iterable[str], now:
     out = []
     for j in jobs:
         run = runs.get(j) or {}
-        started = _ts(run.get("started_at"))
+        started = utc_strict_or_none(run.get("started_at"))
         if (EXPECTED.get(j, 0) >= DAILY and run.get("status") == ERROR and started is not None
                 and now - started <= timedelta(minutes=DAILY)):
             out.append(j)
@@ -361,9 +356,9 @@ def enrolment_paused(store: Store) -> dict | None:
     starts = [r for r in rows if r.get("job") == OPERATOR_START and r.get("status") == OK and r.get("dry_run") is False]
     if not stops:
         return None
-    last_stop = max(stops, key=lambda r: _ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))
+    last_stop = max(stops, key=lambda r: utc_strict_or_none(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))
     if starts:
-        last_start = max(_ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC) for r in starts)
-        if last_start > (_ts(last_stop.get("started_at")) or datetime.min.replace(tzinfo=UTC)):
+        last_start = max(utc_strict_or_none(r.get("started_at")) or datetime.min.replace(tzinfo=UTC) for r in starts)
+        if last_start > (utc_strict_or_none(last_stop.get("started_at")) or datetime.min.replace(tzinfo=UTC)):
             return None
     return last_stop

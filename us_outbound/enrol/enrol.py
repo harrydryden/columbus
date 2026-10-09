@@ -74,7 +74,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
@@ -90,6 +90,7 @@ from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.timeparse import utc
 
 
 JOB = "enrol"
@@ -112,19 +113,6 @@ OPTOUT_UNTESTED = ("optout_tested is no: the seed-inbox test of Instantly's unsu
 
 
 # -- small helpers ----------------------------------------------------------------------
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return None
 
 
 def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> Iterator[Sequence[str]]:
@@ -173,7 +161,7 @@ def _item_week(item: Mapping[str, Any]) -> str:
     payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
     if payload.get("iso_week"):
         return str(payload["iso_week"])
-    t = _ts(item.get("created_at"))
+    t = utc(item.get("created_at"))
     return iso_week(t.astimezone(UK).date()) if t else ""
 
 
@@ -259,7 +247,7 @@ def _in_force(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> tuple[set[str]
     domains: set[str] = set()
     hashes: set[str] = set()
     for r in rows:
-        expires = _ts(r.get("expires_at"))
+        expires = utc(r.get("expires_at"))
         if expires is not None and expires <= ctx.now:
             continue
         if r.get("domain") and not r.get("email_sha256"):

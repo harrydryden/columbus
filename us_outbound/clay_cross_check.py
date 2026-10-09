@@ -36,7 +36,7 @@ pick_contacts' email lookups do.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from us_outbound import budget, verify
@@ -49,6 +49,7 @@ from us_outbound.learn import holds
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.settings.model import SIZE_BANDS, Settings
+from us_outbound.timeparse import utc_or_epoch
 
 SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (learn/holds.py)
 FACT = "hq_and_size"
@@ -63,16 +64,6 @@ NO_FUNCTION = ("clay_accounts_function_id is blank: build the \"US Outbound – 
 SIZE_FIELDS = frozenset({"employees", "size_band"})
 ID_CHUNK = 1000
 ERROR_LIMIT = 20
-
-
-def _when(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime(1970, 1, 1, tzinfo=UTC)
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 # -- telling doubts apart ----------------------------------------------------------------------------------
@@ -121,7 +112,7 @@ def answers(store: Store, account_ids: Iterable[str]) -> dict[str, dict]:
     latest: dict[str, tuple[datetime, dict]] = {}
     for i in range(0, len(ids), ID_CHUNK):
         for e in store.select("signal_events", {"source": SOURCE, "fact": FACT, "account_id": ids[i : i + ID_CHUNK]}):
-            aid, value, t = str(e.get("account_id")), e.get("value"), _when(e.get("observed_at"))
+            aid, value, t = str(e.get("account_id")), e.get("value"), utc_or_epoch(e.get("observed_at"))
             if isinstance(value, Mapping) and (aid not in latest or t >= latest[aid][0]):
                 latest[aid] = (t, dict(value))
     return {aid: v for aid, (_, v) in latest.items()}

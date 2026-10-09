@@ -74,6 +74,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import parse
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.enrol import copy_rules
@@ -88,6 +89,7 @@ from us_outbound.settings.model import (
     Settings,
     Signal,
 )
+from us_outbound.timeparse import utc_or_epoch
 
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
 PLAIN_COLUMN = "opener"
@@ -270,19 +272,10 @@ def number_word(n: int) -> str:
 
 def growth_words(value: Any) -> str | None:
     """12-month headcount growth (a fraction, 0.34) as words ("grown by about a third"); None below GROWTH_MIN."""
-    g = _number(value)
+    g = parse.number(value)
     if g is None or g < GROWTH_MIN or g > GROWTH_MAX:
         return None
     return next((words for upper, words in GROWTH_WORDS if g < upper), "more than doubled")
-
-
-def _number(v: Any) -> float | None:
-    if isinstance(v, bool) or v in (None, ""):
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _american(text: str) -> str:
@@ -324,26 +317,11 @@ PAGE_WORDS = {"careers_pages": CAREERS_PAGE, "clay_careers": CAREERS_PAGE, "job_
 
 # -- facts ---------------------------------------------------------------------------------------------
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-def _ts(v: Any) -> datetime:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return _EPOCH
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return _EPOCH
-
 
 def _latest(events: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
     """The newest event of each fact."""
     out: dict[str, Mapping[str, Any]] = {}
-    for e in sorted(events, key=lambda e: _ts(e.get("observed_at"))):
+    for e in sorted(events, key=lambda e: utc_or_epoch(e.get("observed_at"))):
         if e.get("fact"):
             out[str(e["fact"])] = e
     return out
@@ -364,7 +342,7 @@ def contact_person_id(contact: Mapping[str, Any], events: Iterable[Mapping[str, 
     if contact.get("apollo_person_id"):
         return str(contact["apollo_person_id"])
     cid = str(contact.get("contact_id") or "")
-    for e in sorted(events, key=lambda e: _ts(e.get("observed_at")), reverse=True):
+    for e in sorted(events, key=lambda e: utc_or_epoch(e.get("observed_at")), reverse=True):
         v = e.get("value")
         if (e.get("source") == SOURCE and e.get("fact") == OUTCOME_FACT and isinstance(v, Mapping)
                 and cid and str(v.get("contact_id") or "") == cid and v.get("apollo_person_id")):
@@ -402,7 +380,7 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
     def value(fact: str) -> Any:
         return facts[fact].get("value") if fact in facts else None
 
-    n = _number(value("open_roles"))
+    n = parse.number(value("open_roles"))
     if n is not None and n.is_integer() and OPEN_ROLES_MIN <= n <= OPEN_ROLES_MAX:
         out["open_roles"] = number_word(int(n))
     titles = value("posting_titles")
@@ -735,8 +713,9 @@ def focus_prompt(company: str, keywords: Sequence[str], about: str) -> str:
 def stored_focus(events: Iterable[Mapping[str, Any]], now: datetime) -> dict[str, Any] | None:
     """The account's latest opener_focus fact within FOCUS_REFRESH_DAYS, or None."""
     rows = [e for e in events if e.get("source") == FOCUS_SOURCE and e.get("fact") == FOCUS_FACT
-            and isinstance(e.get("value"), Mapping) and now - _ts(e.get("observed_at")) < timedelta(days=FOCUS_REFRESH_DAYS)]
-    return dict(max(rows, key=lambda e: _ts(e.get("observed_at")))["value"]) if rows else None
+            and isinstance(e.get("value"), Mapping)
+            and now - utc_or_epoch(e.get("observed_at")) < timedelta(days=FOCUS_REFRESH_DAYS)]
+    return dict(max(rows, key=lambda e: utc_or_epoch(e.get("observed_at")))["value"]) if rows else None
 
 
 def focus_phrase(ctx: Any, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], *,

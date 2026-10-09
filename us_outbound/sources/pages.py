@@ -63,7 +63,7 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import labels
@@ -90,6 +90,7 @@ from us_outbound.settings.conditions import ContextRules
 from us_outbound.settings.model import Settings, Signal
 from us_outbound.sources import job_posts
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.timeparse import utc
 
 JOB = "read_pages"
 SOURCE = "careers_pages"
@@ -136,16 +137,6 @@ SKIP_EXTENSIONS = re.compile(r"\.(pdf|jpe?g|png|gif|svg|webp|zip|docx?|xlsx?|ppt
 HTML_TYPES = ("html", "text/plain", "xml")
 
 _clock = time.monotonic  # tests replace it
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def _header(resp: Response, name: str) -> str:
@@ -220,7 +211,7 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, tuple[d
     good: dict[str, set[str]] = defaultdict(set)
     for chunk in _chunks(list(account_ids)):
         for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": list(READER_SOURCES)}):
-            t, aid = _ts(e.get("observed_at")), str(e.get("account_id"))
+            t, aid = utc(e.get("observed_at")), str(e.get("account_id"))
             if t is None:
                 continue
             if e.get("fact") == SUMMARY_FACT and (aid not in reads or t > reads[aid][0]):
@@ -687,7 +678,7 @@ def coverage(store: Any, settings: Settings, today: date, *, run_id: str | None 
     texted: set[str] = set()  # accounts with benefits text from any of the reads counted
     for aid, evs in events.items():
         for e in evs:
-            value, t = e.get("value"), _ts(e.get("observed_at"))
+            value, t = e.get("value"), utc(e.get("observed_at"))
             if e.get("fact") != SUMMARY_FACT or not isinstance(value, Mapping) or t is None:
                 continue
             if run_id is not None and value.get("run_id") != run_id:
@@ -715,7 +706,7 @@ def latest_run(store: Any) -> str | None:
     """The run_id of the newest page_read fact."""
     best: tuple[datetime, str] | None = None
     for e in store.select("signal_events", {"source": SOURCE, "fact": SUMMARY_FACT}):
-        t, v = _ts(e.get("observed_at")), e.get("value")
+        t, v = utc(e.get("observed_at")), e.get("value")
         if t is not None and isinstance(v, Mapping) and v.get("run_id") and (best is None or t > best[0]):
             best = (t, str(v["run_id"]))
     return best[1] if best else None

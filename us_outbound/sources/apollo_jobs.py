@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, postings_in, total_entries
@@ -46,6 +46,7 @@ from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.timeparse import utc
 
 JOB = "apollo_signals"
 SOURCE = "apollo_jobs"
@@ -77,16 +78,6 @@ def is_people_title(title: str, terms: Sequence[str]) -> bool:
     return bool(find_terms(title or "", tuple(terms)))
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def _chunks(items: Sequence[str], n: int) -> list[Sequence[str]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
@@ -96,7 +87,7 @@ def last_read(ctx: Context, account_ids: Sequence[str]) -> dict[str, datetime]:
     out: dict[str, datetime] = {}
     for chunk in _chunks(list(account_ids), ID_CHUNK):
         for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": SOURCE}):
-            t = _ts(e.get("observed_at"))
+            t = utc(e.get("observed_at"))
             if t is not None and (e["account_id"] not in out or t > out[e["account_id"]]):
                 out[e["account_id"]] = t
     return out
