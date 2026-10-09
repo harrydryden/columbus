@@ -303,6 +303,22 @@ def test_a_row_with_no_time_is_chosen_only_where_the_reader_allows(ctx, name):
     assert adapter(ctx, [("undated", None)]) == ("undated" if undated_ok else None)
 
 
+# The readers that read through facts.py, where a tie (one observed_at) has one answer: the higher event_id. Before,
+# it was whichever row came first or last, and Postgres returns rows in no set order.
+MOVED = [
+    "labels.latest_verdict", "labels.latest_correction", "labels.Material.of", "labels._rules_material",
+    "labels._home_page", "labels.corrected_rows", "score.latest_facts", "score.calendar_facts",
+    "score._match_condition", "score._match_terms", "openers.contact_person_id", "openers.stored_focus",
+]
+
+
+@pytest.mark.parametrize("name", MOVED)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_a_tie_goes_to_the_higher_event_id(ctx, name, reverse):
+    specs = [("e1", T), ("e2", T)]
+    assert READERS[name][0](ctx, specs[::-1] if reverse else specs) == "e2"
+
+
 # -- what some readers do besides -------------------------------------------------------------------------------------
 
 

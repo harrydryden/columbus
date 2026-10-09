@@ -54,6 +54,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from us_outbound import facts
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.context import ConfigError, Context
@@ -196,15 +197,9 @@ def _clean(text: Any) -> str:
     return " ".join(str(text or "").replace("<", " ").replace(">", " ").split())
 
 
-def _newest(events: Iterable[Mapping[str, Any]], source: str, fact: str) -> Mapping[str, Any] | None:
-    rows = [e for e in events if e.get("source") == source and e.get("fact") == fact]
-    return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
-
-
 def _texts(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple)):
-        return [_clean(v) for v in value if _clean(v)]
-    return [_clean(s) for s in str(value or "").split(",") if _clean(s)]
+    """A list fact's items (facts.texts: a list or comma-separated text), each as _clean gives it."""
+    return [c for t in facts.texts(value) if (c := _clean(t))]
 
 
 @dataclass(frozen=True)
@@ -222,7 +217,7 @@ class Material:
     @classmethod
     def of(cls, account: Mapping[str, Any], events: Iterable[Mapping[str, Any]]) -> Material:
         events = list(events)
-        fact = {f: (e.get("value") if (e := _newest(events, APOLLO_SOURCE, f)) else None) for f in MATERIAL_FACTS}
+        fact = {f: facts.value(events, f, APOLLO_SOURCE) for f in MATERIAL_FACTS}
         home = ""
         page = _home_page(events)
         if page is not None:
@@ -321,7 +316,7 @@ def check_answer(answer: Mapping[str, Any], material: Material, names: Iterable[
 
 def latest_verdict(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_verdict fact's value, or None."""
-    e = _newest(events, JOB, VERDICT_FACT)
+    e = facts.newest(events, VERDICT_FACT, JOB)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
 
 
@@ -335,8 +330,7 @@ def _asked_at(events: Iterable[Mapping[str, Any]]) -> datetime | None:
 
 def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """The newest home_page fact that says something (an empty one records a read that found nothing)."""
-    rows = [e for e in events if e.get("fact") == HOME_FACT and isinstance(e.get("value"), Mapping) and e["value"]]
-    return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
+    return facts.newest(events, HOME_FACT, where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"]))
 
 
 def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -364,7 +358,7 @@ def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
 
 def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_corrected fact's value, or None."""
-    e = _newest(events, JOB, CORRECTED_FACT)
+    e = facts.newest(events, CORRECTED_FACT, JOB)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
 
 
@@ -374,9 +368,9 @@ def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
 def _rules_material(events: Iterable[Mapping[str, Any]]) -> tuple[list[str], str]:
     """(the newest Apollo NAICS codes, its keywords and Apollo industry as one text): what the rules read."""
     events = list(events)
-    codes = _texts((_newest(events, APOLLO_SOURCE, "naics") or {}).get("value"))
-    words = _texts((_newest(events, APOLLO_SOURCE, "keywords") or {}).get("value"))
-    industry = _clean((_newest(events, APOLLO_SOURCE, "apollo_industry") or {}).get("value"))
+    codes = _texts(facts.value(events, "naics", APOLLO_SOURCE))
+    words = _texts(facts.value(events, "keywords", APOLLO_SOURCE))
+    industry = _clean(facts.value(events, "apollo_industry", APOLLO_SOURCE))
     return codes, " ; ".join([*words, industry]).strip(" ;")
 
 
@@ -773,13 +767,13 @@ def corrected_rows(ctx: Context) -> list[dict]:
         a = ctx.store.get("accounts", account_id=e["account_id"])
         if a is None or not v.get("to"):
             continue
-        facts = {f: (x.get("value") if (x := _newest(ctx.store.select("signal_events", {
-            "account_id": a["account_id"], "source": APOLLO_SOURCE, "fact": f}), APOLLO_SOURCE, f)) else None)
-            for f in MATERIAL_FACTS}
+        apollo = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": APOLLO_SOURCE,
+                                                    "fact": list(MATERIAL_FACTS)})
+        fact = {f: facts.value(apollo, f) for f in MATERIAL_FACTS}
         rows.append({"name": a.get("clean_name") or a.get("domain"), "domain": a.get("domain"),
-                     "went_out_as": v.get("from"), "apollo_industry": facts["apollo_industry"] or "",
-                     "naics": _texts(facts["naics"]), "keywords": _texts(facts["keywords"]),
-                     "description": facts["description"] or "",
+                     "went_out_as": v.get("from"), "apollo_industry": fact["apollo_industry"] or "",
+                     "naics": _texts(fact["naics"]), "keywords": _texts(fact["keywords"]),
+                     "description": fact["description"] or "",
                      "expect": {"accept": [v["to"]], "action": VERIFY}, "why": f"corrected by {v.get('by')}"})
     return rows
 

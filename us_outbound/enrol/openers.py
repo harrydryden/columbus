@@ -74,7 +74,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import parse
+from us_outbound import facts, parse
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.enrol import copy_rules
@@ -342,12 +342,13 @@ def contact_person_id(contact: Mapping[str, Any], events: Iterable[Mapping[str, 
     if contact.get("apollo_person_id"):
         return str(contact["apollo_person_id"])
     cid = str(contact.get("contact_id") or "")
-    for e in sorted(events, key=lambda e: utc_or_epoch(e.get("observed_at")), reverse=True):
+
+    def theirs(e: Mapping[str, Any]) -> bool:
         v = e.get("value")
-        if (e.get("source") == SOURCE and e.get("fact") == OUTCOME_FACT and isinstance(v, Mapping)
-                and cid and str(v.get("contact_id") or "") == cid and v.get("apollo_person_id")):
-            return str(v["apollo_person_id"])
-    return ""
+        return isinstance(v, Mapping) and str(v.get("contact_id") or "") == cid and bool(v.get("apollo_person_id"))
+
+    e = facts.newest(events, OUTCOME_FACT, SOURCE, where=theirs) if cid else None
+    return str(e["value"]["apollo_person_id"]) if e else ""
 
 
 def contact_is_subject(contact: Mapping[str, Any], events: Sequence[Mapping[str, Any]], signal: Signal,
@@ -712,10 +713,9 @@ def focus_prompt(company: str, keywords: Sequence[str], about: str) -> str:
 
 def stored_focus(events: Iterable[Mapping[str, Any]], now: datetime) -> dict[str, Any] | None:
     """The account's latest opener_focus fact within FOCUS_REFRESH_DAYS, or None."""
-    rows = [e for e in events if e.get("source") == FOCUS_SOURCE and e.get("fact") == FOCUS_FACT
-            and isinstance(e.get("value"), Mapping)
-            and now - utc_or_epoch(e.get("observed_at")) < timedelta(days=FOCUS_REFRESH_DAYS)]
-    return dict(max(rows, key=lambda e: utc_or_epoch(e.get("observed_at")))["value"]) if rows else None
+    e = facts.newest(events, FOCUS_FACT, FOCUS_SOURCE, dated=True, where=lambda e: isinstance(e.get("value"), Mapping)
+                     and now - facts.at(e) < timedelta(days=FOCUS_REFRESH_DAYS))
+    return dict(e["value"]) if e else None
 
 
 def focus_phrase(ctx: Any, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], *,
