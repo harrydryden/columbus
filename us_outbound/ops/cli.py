@@ -462,6 +462,16 @@ def _status_limits(ctx: Context) -> None:
         print(f"  {line}")
 
 
+def cmd_daily(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound daily [--full]`: the short post the 09:00 job posts, or the full one (Harry, 9 Oct 2026)."""
+    from us_outbound.learn import daily_post
+
+    ctx = factory("daily_preview", False)
+    day = daily_post.gather(ctx)
+    print("\n".join(day.lines if args.full else daily_post.compact(ctx, day)))
+    return 0
+
+
 def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     try:
         ctx = factory("status", False)
@@ -1767,6 +1777,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # What Harry uses, in the order `--help` lists it.
     command("status", "the switches, what waits for you, jobs, mailboxes and campaigns", cmd_status)
+    dp = command("daily", "the daily post as it would read now (read-only; posts nothing)", cmd_daily)
+    dp.add_argument("--full", action="store_true", help="every section: sources, labels, mailboxes, credits")
     command("golive", "the read-only go/no-go check before the first sends", cmd_golive)
     # The choices are written out here, so --help does not import the view (ops/accounts_view.py STATUSES, TIERS).
     ac = command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV "

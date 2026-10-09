@@ -203,8 +203,8 @@ def test_the_daily_post_asks_first_and_carries_the_spend_line():
     ask, post = posts(t)
     assert ask.startswith("<@U_HARRY> Credits and spend") and "under apollo_floor (5,000)" in ask
     assert post.startswith("*Daily post")
-    assert ("  Spend: Apollo balance 4,000 credits (apollo_floor 5,000, under it: sourcing and email reveals have "
-            "stopped) · Claude $2.50 of $10 this month (25%) · website-visitor credits 1,150 of 1,200 left.") in post
+    assert ("\nSpend: Apollo balance 4,000 credits (apollo_floor 5,000, under it: sourcing and email reveals have "
+            "stopped) · Claude $2.50 of $10 this month (25%) · website-visitor credits 1,150 of 1,200 left.\n") in post
     assert out["spend_alert"]["keys"] == ["apollo_floor:2026-10-27"] and out["spend"]["apollo_left"] == 4_000
     assert out["mailboxes_ahead"] == {"checked": False}  # a Tuesday
 

@@ -61,12 +61,64 @@ def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
     assert any("Hannah Spalding's campaign is not active in Instantly" in x for x in lines)
 
 
+def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_what_to_watch():
+    """Harry, 9 Oct 2026: "a more readable pithier version of the daily report". The 09:00 job posts this; the
+    full post is `us-outbound daily --full`."""
+    ctx, t = world()
+    out = daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert post.json["text"].splitlines() == [
+        "*Daily post · Tue 27 Oct* · covers Mon 26 Oct",
+        "",
+        "*Needs you*",
+        "• Answer 1 reply (waited 30 hours)",
+        "• 1 kill-rule hold in force: `us-outbound killrules show`",
+        "• This week's hand-check: `us-outbound handcheck show`",
+        "",
+        "*Yesterday*",
+        "Sent 8 (step 1 5, step 2 3) · 4 replies (1 positive) · 1 bounce · 1 unsubscribe · 1 demo booked",
+        "Found 0 companies and 0 contacts",
+        "Positive: Acme Creative (positive, hannah@meetspill.org)",
+        "• Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”",
+        "Visited the US site after we emailed: Brightfin",
+        "",
+        "*Today: no new contacts*",
+        "Enrolment waits: optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so "
+        "nothing is sent; once it is, set optout_tested = yes on the General tab.",
+        "Senders: Hannah 3 · Harry 5 · Sam 3",
+        "This week: 0 of 150, 4 send days left",
+        "Running dry: live_sending is no, so enrol reaches nobody.",
+        "",
+        "*Pipeline*",
+        "Ready: 0",
+        "Behind it: 0 need a contact · 0 need verifying",
+        "",
+        next(x for x in post.json["text"].splitlines() if x.startswith("Spend: ")),
+        "",
+        "*Watch*",
+        "• Kill rule fired: emails found by clay: 4 of 100 sends bounced",
+        "",
+        "Nothing else to flag: mailboxes and campaigns are fine. Full detail: `us-outbound daily --full`.",
+    ]
+    assert (out["sent"], out["replies"], out["positive"]) == (8, 4, 1)  # the summary keeps the same numbers
+
+
+def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_to_sunday_on_monday():
+    ctx, _ = world(now=datetime(2026, 10, 26, 9, 0, tzinfo=UTC))
+    day = daily_post.gather(ctx)
+    day.mailboxes.append(("sam@meetspill.org", 0, 40, 2))
+    lines = daily_post.compact(ctx, day)
+    assert lines[0] == "*Daily post · Mon 26 Oct* · covers Fri 23 to Sun 25 Oct"
+    assert "*Since Fri 23 Oct*" in lines
+    assert "• sam@meetspill.org bounced 2 of its last 40 sends (5%)" in lines
+    assert lines[-1] == "Nothing else to flag: campaigns are fine. Full detail: `us-outbound daily --full`."
+
+
 def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approvals():
     ctx, t = world()
     out = daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    text = post.json["text"]
-    lines = text.splitlines()
+    lines, _ = daily_post.build(ctx)  # the full post: `us-outbound daily --full`
     assert lines[0] == "*Daily post, Tue 27 Oct*"
     assert lines[1] == ("Yesterday: 8 sent · 4 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
                         " · 0 ready to send")
@@ -127,7 +179,7 @@ def test_with_no_slack_token_the_post_goes_to_the_log(capsys):
     assert out["alert"]["posted"] is False and out["alert"]["error"] == "no Slack token: posted to the log"
     logged = [line for line in capsys.readouterr().out.splitlines() if '"event": "slack_off"' in line]
     assert len(logged) == 1  # the whole post, line by line, not clipped to 200 characters
-    assert "Waiting for approval: 2" in logged[0] and "hannah@meetspill.org" not in logged[0]  # emails hashed
+    assert "Answer 1 reply" in logged[0] and "hannah@meetspill.org" not in logged[0]  # emails hashed
 
 
 def test_dry_run_posts_to_the_dev_channel():
@@ -205,3 +257,16 @@ def test_reply_items_are_labelled_replies_and_a_lapsed_card_needs_nobody():
     [line] = [x for x in lines if x.startswith("Waiting for approval:")]
     assert line.startswith("Waiting for approval: 4 (") and "replies 1" in line and "reply approvals 1" in line
     assert "send approvals 1" in line and "kill-rule" not in line
+
+
+def test_the_daily_command_prints_the_short_or_the_full_post_and_posts_nothing(capsys):
+    from tests.test_cli import Harness
+
+    h = Harness()
+    assert h.run("daily") == 0
+    out = capsys.readouterr().out
+    assert "*Daily post · " in out and "*Needs you*" in out and "*Sources*" not in out
+    assert h.run("daily", "--full") == 0
+    out = capsys.readouterr().out
+    assert "*Daily post, " in out and "*Sources*" in out
+    assert not [r for r in h.transport.requests if r.url.endswith("chat.postMessage")]

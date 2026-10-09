@@ -118,6 +118,7 @@ QUEUE_OUT_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})  # not in the queue (s
 NOT_SCORED = "not scored yet"
 IN_SEQUENCE, FINISHED, STOPPED = "in_sequence", "finished", "stopped"
 _TOP_REVEALS = re.compile(r"^no sendable email among the top \d+ \(.*\)$")
+SOURCES_POINTER = " The page reader's coverage is under Sources."  # the full post's; the short post has no Sources
 
 
 # -- small helpers ---------------------------------------------------------------------------------
@@ -346,6 +347,11 @@ def sequence_states(ctx: Context, contacts: Iterable[Mapping[str, Any]]) -> Coun
     return Counter(state.values())
 
 
+def ready_groups(ready: Sequence[Candidate], settings: Settings) -> str:
+    """"Technology & Startups 39, Legal Teams 12, …": the ready accounts by Focus share, else industry group."""
+    return _groups(ready, settings).split(": ", 1)[1]
+
+
 def _groups(ready: Sequence[Candidate], settings: Settings) -> str:
     """Ready accounts by the Focus tab's groups (each listed, other last), else the largest industry groups."""
     if settings.focus:
@@ -393,8 +399,8 @@ def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set
                  f" · stopped {seq[STOPPED]} (reply, bounce or unsubscribe)")
     nums = {"ready_to_send": len(ready), "ready_by_tier": dict(tiers_), "awaiting_approval": len(awaiting),
             "supply_days": supply, "supply_pace": pace, "waiting_for_contact": len(need), "no_suitable_contact": stuck,
-            "waiting_for_verification": len(unverified), "in_sequence": seq[IN_SEQUENCE], "finished": seq[FINISHED],
-            "stopped": seq[STOPPED]}
+            "waiting_for_verification": len(unverified), "doubtful_facts": doubtful, "in_sequence": seq[IN_SEQUENCE],
+            "finished": seq[FINISHED], "stopped": seq[STOPPED]}
     return lines, nums
 
 
@@ -570,7 +576,7 @@ def _gaps(rows: Rows) -> list[str]:
         parts.append(f"nobody suitable at {_n(sum(nobody.values()), 'verified account')}, mostly {top} ({n})")
     if not parts:
         return []
-    return ["  Data gaps: " + "; ".join(parts) + ". The page reader's coverage is under Sources."]
+    return ["  Data gaps: " + "; ".join(parts) + "." + SOURCES_POINTER]
 
 
 def _review_ready(ctx: Context) -> list[str]:

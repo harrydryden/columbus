@@ -119,9 +119,7 @@ def section(lines, title):
 
 def test_the_headline_and_the_sections_top_to_bottom():
     ctx, t = funnel(auto_send=False)
-    out = daily_post.run(ctx)
-    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    lines = post.json["text"].splitlines()
+    lines, out = daily_post.build(ctx)  # the full post (`us-outbound daily --full`)
     assert lines[1] == ("Yesterday: 8 sent · 4 replies (1 positive) · 1 unsubscribe · 3 companies, 2 contacts found"
                         " · 3 ready to send")
     at = [next(n for n, line in enumerate(lines) if line.startswith(s)) for s in SECTIONS]

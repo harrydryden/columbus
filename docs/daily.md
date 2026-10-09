@@ -67,7 +67,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included. With `clay_cross_check` = yes, only the doubts Clay couldn't settle, with both values ("Clay says 62 staff, Apollo says 49") | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 | The daily post | Read the **Needs you** line under the headline first. Its **Labels** block says how many companies the label check checked and decided, and how many cards' industry you corrected (`1 industry correction of 28 decided (96% right)`) |
+| 09:00 | The daily post, short since 9 Oct 2026: **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -322,8 +322,8 @@ docs/railway-setup.md, step h.
   place; 🚫 if the company is no fit at all. For a company with no card,
   `us-outbound labels set DOMAIN "<label>" --live`; `us-outbound labels show DOMAIN` gives its label's
   history. Since 7 Oct the task model checks each company's label before it can get a card (the
-  label check, docs/pipeline.md stage 3), so this should be rare: the daily post's **Labels** line
-  counts the corrections. `us-outbound relabel` shows what the rules and the stored checks change for
+  label check, docs/pipeline.md stage 3), so this should be rare: the full daily post's **Labels** line
+  (`us-outbound daily --full`) counts the corrections, and an ask names them when there are several. `us-outbound relabel` shows what the rules and the stored checks change for
   the companies in the queue; `--live` applies it and withdraws the open cards it changes. Government
   domains (.gov, .mil) are never prospected.
 - **Start the waiting cards again:** `us-outbound approvals redo all --live` (or one card: `approvals redo
@@ -460,6 +460,7 @@ commands instead.
 | Command | What it does |
 | :- | :- |
 | `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number |
+| `daily`, `daily --full` | The daily post as it would read now, short or in full; it posts nothing |
 | `golive` | The read-only go/no-go check |
 | `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
