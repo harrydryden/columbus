@@ -89,6 +89,7 @@ from us_outbound.clients.apollo import BULK_ENRICH_MAX, MAX_PER_PAGE, enriched_i
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
+from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity
 from us_outbound.logs import log
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import Industry, Settings
@@ -312,10 +313,6 @@ def judged_recently(ctx: Context) -> set[str]:
     return out
 
 
-def _keyword_text(org: Mapping[str, Any]) -> str:
-    return " ; ".join([*universe.org_keywords(org), str(org.get("industry") or "")]).strip(" ;")
-
-
 def judge(ctx: Context, org: Mapping[str, Any]) -> Verdict:
     """Out only for a reason Apollo's record makes sure of; what it leaves unknown is a doubt, never a no.
     The domain's Overrides rows apply to its HQ state, size and industry, as in verify."""
@@ -327,15 +324,18 @@ def judge(ctx: Context, org: Mapping[str, Any]) -> Verdict:
         return Verdict("a personal email domain")
     if not universe.in_us(org):
         return Verdict("outside the US")
-    codes, text = universe.org_naics(org), _keyword_text(org)
-    label = universe.best_label(codes, text, s) if codes or text else None
-    if (codes or text) and label is None:
+    inp = RulesInput.from_org(org)
+    kind = entity(inp, s)
+    if kind:
+        return Verdict(ENTITY_REASONS[kind])  # before any label is tried (industry/material.py)
+    label = universe.best_label(inp.codes, inp.keyword_text, s) if inp else None
+    if inp and label is None:
         return Verdict("no Industries label fits")
     if label is not None and s.placeable(label) is None:
         return Verdict("its best Industries label is switched off")
     label = s.placeable(label)  # a switched-off label in a group we prospect: the group's own label
-    if tiers.partner_match({"naics": codes, "industry": label.industry if label else "",
-                            "keywords": universe.org_keywords(org), "apollo_industry": org.get("industry")}, {}):
+    if tiers.partner_match({"naics": list(inp.codes), "industry": label.industry if label else "",
+                            "keywords": list(inp.tags), "apollo_industry": org.get("industry")}, {}):
         return Verdict("a partner, never prospected")
     state = state_code(str(org.get("state") or ""))
     acct = verify.with_overrides({**universe.columns(org, label, state, ""), "domain": domain,

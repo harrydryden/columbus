@@ -60,6 +60,7 @@ from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_cal
 from us_outbound.clients.db import new_id
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol.openers import validate_focus
+from us_outbound.industry.material import RulesInput, naics_codes, texts
 from us_outbound.logs import log
 from us_outbound.settings.model import LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP, Industry, Settings
 from us_outbound.sources.apollo_universe import SOURCE as APOLLO_SOURCE
@@ -203,12 +204,6 @@ def _newest(events: Iterable[Mapping[str, Any]], source: str, fact: str) -> Mapp
     return max(rows, key=lambda e: utc_or_epoch(e.get("observed_at"))) if rows else None
 
 
-def _texts(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple)):
-        return [_clean(v) for v in value if _clean(v)]
-    return [_clean(s) for s in str(value or "").split(",") if _clean(s)]
-
-
 @dataclass(frozen=True)
 class Material:
     """What the model reads about one company: its Apollo facts and, when read, its home page."""
@@ -234,8 +229,8 @@ class Material:
             name=_clean(account.get("clean_name") or account.get("legal_name") or account.get("domain")),
             domain=_clean(account.get("domain")).lower(),
             industry=_clean(fact["apollo_industry"]),
-            naics=tuple(_texts(fact["naics"])),
-            keywords=tuple(_texts(fact["keywords"])[:KEYWORDS_KEPT]),
+            naics=tuple(naics_codes(fact["naics"])),
+            keywords=tuple(_clean(t) for t in texts(fact["keywords"])[:KEYWORDS_KEPT]),
             description=_clean(fact["description"])[:DESCRIPTION_CHARS],
             home=home[:HOME_CHARS],
         )
@@ -373,23 +368,21 @@ def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
 # -- the rules' label and the decision ------------------------------------------------------------------------------
 
 
-def _rules_material(events: Iterable[Mapping[str, Any]]) -> tuple[list[str], str]:
-    """(the newest Apollo NAICS codes, its keywords and Apollo industry as one text): what the rules read."""
+def rules_input(events: Iterable[Mapping[str, Any]]) -> RulesInput:
+    """The newest Apollo NAICS codes, keywords and industry: what the rules read."""
     events = list(events)
-    codes = _texts((_newest(events, APOLLO_SOURCE, "naics") or {}).get("value"))
-    words = _texts((_newest(events, APOLLO_SOURCE, "keywords") or {}).get("value"))
-    industry = _clean((_newest(events, APOLLO_SOURCE, "apollo_industry") or {}).get("value"))
-    return codes, " ; ".join([*words, industry]).strip(" ;")
+    return RulesInput.from_facts(*((_newest(events, APOLLO_SOURCE, f) or {}).get("value")
+                                   for f in ("naics", "keywords", "apollo_industry")))
 
 
 def rules_label(account: Mapping[str, Any], events: Iterable[Mapping[str, Any]], settings: Settings) -> Industry | None:
     """The label the Industries rules give the company now (best_label over its newest Apollo NAICS codes, keywords
     and Apollo industry, as `us-outbound relabel` reads them). A company with none of those on file keeps the label
     its source gave it."""
-    codes, text = _rules_material(events)
-    if not codes and not text:
+    inp = rules_input(events)
+    if not inp:
         return settings.industry(str(account.get("industry") or ""))
-    return best_label(codes, text, settings)
+    return best_label(inp.codes, inp.keyword_text, settings)
 
 
 @dataclass(frozen=True)
@@ -780,7 +773,7 @@ def corrected_rows(ctx: Context) -> list[dict]:
             for f in MATERIAL_FACTS}
         rows.append({"name": a.get("clean_name") or a.get("domain"), "domain": a.get("domain"),
                      "went_out_as": v.get("from"), "apollo_industry": facts["apollo_industry"] or "",
-                     "naics": _texts(facts["naics"]), "keywords": _texts(facts["keywords"]),
+                     "naics": naics_codes(facts["naics"]), "keywords": texts(facts["keywords"]),
                      "description": facts["description"] or "",
                      "expect": {"accept": [v["to"]], "action": VERIFY}, "why": f"corrected by {v.get('by')}"})
     return rows
@@ -970,7 +963,7 @@ def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> 
     pairs: dict[tuple[str, str], int] = {}
     uncoded = 0
     for aid, label in labelled.items():
-        codes = _texts((newest.get(aid) or {}).get("value"))
+        codes = naics_codes((newest.get(aid) or {}).get("value"))
         if not codes:
             uncoded += 1
         for code in dict.fromkeys(codes):

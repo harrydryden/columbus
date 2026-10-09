@@ -27,13 +27,13 @@ Hard exclusions are fixed in code, not in the settings sheet:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 from us_outbound import fmt, parse
 from us_outbound.accounts import any_us_state, us_country
+from us_outbound.industry.material import naics_codes, texts
 from us_outbound.scoring.angle import evidence_display
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Settings
@@ -135,24 +135,6 @@ def _first(account: Mapping[str, Any], facts: Mapping[str, Any], *fields: str) -
     return None
 
 
-def naics_codes(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [c for v in value for c in naics_codes(v)]
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    return re.findall(r"\d{2,6}", str(value))
-
-
-def _texts(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [str(v) for v in value if isinstance(v, str) and v.strip()]
-    return []
-
-
 # -- partners ------------------------------------------------------------------
 
 
@@ -164,7 +146,7 @@ def partner_match(account: Mapping[str, Any], facts: Mapping[str, Any]) -> tuple
         for p in prefixes:
             if code.startswith(p):
                 return PARTNER_NAICS[p], f"NAICS {code}"
-    text = " ; ".join(t for f in KEYWORD_FIELDS for src in (account, facts) for t in _texts(src.get(f)))
+    text = " ; ".join(t for f in KEYWORD_FIELDS for src in (account, facts) for t in texts(src.get(f)))
     if text:
         for category, words in PARTNER_KEYWORDS.items():
             found = find_terms(text, words)

@@ -442,3 +442,11 @@ def test_refresh_follows_the_shortest_visit_signal(days, want):
     signals = tuple(dataclasses.replace(s, counts_for_days=days) if "site_visits" in s.sources else s
                     for s in BASE.signals)
     assert sv.refresh_days(dataclasses.replace(BASE, signals=signals)) == want
+
+
+def test_an_association_or_a_public_body_is_judged_out_before_any_label():
+    ctx = make_context(BASE, job=sv.JOB, now=NOW)
+    assert sv.judge(ctx, visitor(1, naics_codes=["813910"], keywords=["networking"])).out == (
+        "an association or chamber, never prospected")
+    assert sv.judge(ctx, visitor(2, industry="Government Administration")).out == "a public body, never prospected"
+    assert sv.judge(ctx, visitor(3)).out == ""  # the fintech visitor is still in

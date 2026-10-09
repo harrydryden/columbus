@@ -93,8 +93,7 @@ def decide(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], ctx:
         return d, None, None
     if labels.override_for(account, s)[0]:
         return None  # an Overrides row's industry, or an approver's, stands
-    codes, text = labels._rules_material(events)
-    if not codes and not text:
+    if not labels.rules_input(events):
         return None  # nothing on file to decide on
     rules = labels.rules_label(account, events, s)
     stored = labels.latest_verdict(events)

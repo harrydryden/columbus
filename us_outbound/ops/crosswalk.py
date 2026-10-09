@@ -27,6 +27,7 @@ from typing import Any
 
 from us_outbound import labels
 from us_outbound.context import Context
+from us_outbound.industry.material import naics_codes, texts
 from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
@@ -163,8 +164,8 @@ def load(ctx: Context) -> list[Known]:
         evs = apollo.get(aid, [])
         rules = labels.rules_label(accounts.get(aid, {}), evs, s) if evs else None
         out.append(Known(aid, *k, industry=labels._fold(_value(evs, "apollo_industry") or ""),
-                         codes=tuple(labels._texts(_value(evs, "naics"))),
-                         tags=tuple(dict.fromkeys(labels._fold(t) for t in labels._texts(_value(evs, "keywords")))),
+                         codes=tuple(naics_codes(_value(evs, "naics"))),
+                         tags=tuple(dict.fromkeys(labels._fold(t) for t in texts(_value(evs, "keywords")))),
                          rules=rules.industry if rules else NO_RULES))
     return out
 

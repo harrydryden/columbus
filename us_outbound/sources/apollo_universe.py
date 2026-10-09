@@ -75,6 +75,7 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
+from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity, texts
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import parse_override
@@ -308,10 +309,6 @@ def _pages(body: Mapping[str, Any], page: int, found: int) -> int | None:
 # -- one company ----------------------------------------------------------------------------------
 
 
-def _texts(v: Any) -> list[str]:
-    return [x.strip() for x in v if isinstance(x, str) and x.strip()] if isinstance(v, (list, tuple)) else []
-
-
 def org_domain(org: Mapping[str, Any]) -> str | None:
     """The company's root domain: Apollo's primary domain, else its website."""
     for v in (org.get("primary_domain"), org.get("domain"), org.get("website_url")):
@@ -323,17 +320,17 @@ def org_domain(org: Mapping[str, Any]) -> str | None:
 
 def org_naics(org: Mapping[str, Any]) -> list[str]:
     """PHASE0-CONFIRM: search rows carry naics_codes (as enrichment does)."""
-    return tiers.naics_codes(org.get("naics_codes")) or tiers.naics_codes(org.get("naics_code"))
+    return list(RulesInput.from_org(org).codes)
 
 
 def org_keywords(org: Mapping[str, Any]) -> list[str]:
-    return _texts(org.get("keywords"))
+    return list(RulesInput.from_org(org).tags)
 
 
 def org_technologies(org: Mapping[str, Any]) -> list[str]:
-    names = _texts(org.get("technology_names"))
+    names = texts(org.get("technology_names"))
     if not names:
-        names = _texts([t.get("name") for t in org.get("current_technologies") or () if isinstance(t, Mapping)])
+        names = texts([t.get("name") for t in org.get("current_technologies") or () if isinstance(t, Mapping)])
     return list(dict.fromkeys(names))
 
 
@@ -389,10 +386,6 @@ def org_funding(org: Mapping[str, Any], today: date) -> dict[str, Any]:
     if amount:
         out["funding_amount_usd"] = amount
     return out
-
-
-def _keyword_text(org: Mapping[str, Any]) -> str:
-    return " ; ".join([*org_keywords(org), str(org.get("industry") or "")]).strip(" ;")
 
 
 def _naics_match(codes: Sequence[str], prefix: str) -> int:
@@ -584,8 +577,13 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     if employees is not None and not s.size_in_range(employees):
         run.skipped[f"outside {s.size_range_text()} employees"] += 1
         return
-    codes, text = org_naics(org), _keyword_text(org)
-    label = best_label(codes, text, s) if codes or text else s.industry(sl.label) if sl.label else None
+    inp = RulesInput.from_org(org)
+    kind = entity(inp, s)
+    if kind:
+        run.skipped[ENTITY_REASONS[kind]] += 1  # before any label is tried (industry/material.py)
+        return
+    codes = list(inp.codes)
+    label = best_label(inp.codes, inp.keyword_text, s) if inp else s.industry(sl.label) if sl.label else None
     if label is None:
         run.skipped["no Industries label fits"] += 1
         return
@@ -593,7 +591,7 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
         run.skipped["its best Industries label is switched off"] += 1
         return
     label = s.placeable(label)
-    partner = tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": org_keywords(org),
+    partner = tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": list(inp.tags),
                                    "apollo_industry": org.get("industry")}, {})
     if partner:
         run.skipped["a partner, never prospected"] += 1

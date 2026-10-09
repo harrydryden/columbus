@@ -228,13 +228,15 @@ def test_skipped_companies_and_why():
         org(7, naics=("541611",), keywords=()),  # management consulting, switched off
         org(8, domain="optedout.com"),
         org(9, domain="dupe.com"), org(10, domain="www.dupe.com"),
+        org(12, naics=("813910",), keywords=("trade association",), _always=True),  # before any label is tried
+        org(13, naics=("541511",), keywords=("fintech",), industry="Government Administration"),
     ])
     suppression.add(ctx.store, domain="optedout.com", reason="test", source="test", now=NOW)
     out = uni.run(ctx)
     assert out["skipped"] == {
         "a personal email domain": 1, "no website": 1, "HQ outside the active states": 1, "outside 10 to 249 employees": 1,
         "a partner, never prospected": 2, "no Industries label fits": 1, "its best Industries label is switched off": 1,
-        "suppressed": 1,
+        "suppressed": 1, "an association or chamber, never prospected": 1, "a public body, never prospected": 1,
     }
     assert sorted(accounts_by_domain(ctx)) == ["dupe.com"] and out["created"] == 1  # one account per root domain
     assert ctx.store.get("partners", domain="company5.com")["reason"] == "hr_tech"
