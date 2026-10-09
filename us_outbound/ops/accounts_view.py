@@ -183,13 +183,11 @@ def contacts_in_order(contacts: Sequence[Mapping[str, Any]], account: Mapping[st
 
 
 def _ready(ctx: Context) -> int:
-    """How many companies enrol could email today: verified, with a sendable contact, leaving out this week's
-    hand-check pulls and the companies whose send approval still waits (as golive's Queue line counts them)."""
-    from us_outbound.enrol import approvals
+    """How many contacts enrol could email today: verified, with a sendable contact, leaving out this week's
+    hand-check pulls and the companies whose send approval still waits (enrol/today.py, as every count of it)."""
+    from us_outbound.enrol import today
 
-    _, pulled = enrol.hand_check(ctx, ctx.now_et().date())
-    ready, _ = enrol.candidates(ctx, pulled, approvals.waiting(ctx).accounts)
-    return len(ready)
+    return today.read(ctx, campaigns=False).ready_count
 
 
 def _failed(exc: Exception) -> str:

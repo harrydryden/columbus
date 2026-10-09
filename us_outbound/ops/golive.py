@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from us_outbound import budget, fmt, labels, limits
+from us_outbound import budget, fmt, labels
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
@@ -345,16 +345,10 @@ def check_apollo(ctx: Context) -> Check:
 
 
 def check_queue(ctx: Context) -> Check:
-    from us_outbound.enrol import approvals
+    from us_outbound.enrol import today
 
-    day = ctx.now_et().date()
-    _, pulled = enrol.hand_check(ctx, day)
-    # As enrol.run: the send approvals still waiting keep their accounts out and hold their senders' slots.
-    held = approvals.waiting(ctx)
-    ready, skipped = enrol.candidates(ctx, pulled, held.accounts)
-    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
-    lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
-                       second_ready=len(seconds))
+    t = today.read(ctx)  # as enrol.run counts it
+    ready, skipped, held, lim = [*t.ready, *t.seconds], t.skipped, t.held, t.limits
     t = lim.terms
     detail = [lim.explanation, *lim.detail]
     if skipped:

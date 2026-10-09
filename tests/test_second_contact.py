@@ -637,3 +637,20 @@ def test_on_postgres_the_second_contact_is_found_enrolled_and_stopped(store, mon
     assert store.get("events", event_id="lead_stopped:nw-omar")["type"] == "lead_stopped"
     assert "nw-omar" in capacity.stopped_contacts(store)
     assert account_stop.to_stop(ctx) == []
+
+
+def test_every_count_of_ready_to_send_includes_the_second_contacts():
+    """enrol/today.py (9 Oct 2026): the daily post's headline counted first contacts only, its limits line both, and
+    the accounts view first contacts only. One count now: what enrol could propose today."""
+    from us_outbound.enrol import today
+    from us_outbound.learn import daily_post
+    from us_outbound.ops import accounts_view
+
+    ctx, _ = world(weekly_enrol_cap=40, accounts=[northwind(), *three_new_accounts()],
+                   contacts=[jane(), omar(), *three_new_contacts()], copy=COPY + (copy_row("agencies-v1", AGENCIES),))
+    t = today.read(ctx)
+    assert (len(t.ready), len(t.seconds), t.ready_count) == (3, 1, 4)
+    assert t.limits.terms["ready_accounts"] == 4
+    _, nums = daily_post.build(ctx)
+    assert (nums["ready_accounts"], nums["ready_to_send"]) == (4, 4)
+    assert accounts_view._ready(ctx) == 4

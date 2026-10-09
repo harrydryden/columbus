@@ -82,7 +82,7 @@ from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
-from us_outbound import budget, config_version, labels, limits
+from us_outbound import budget, config_version, labels
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render, variants
 from us_outbound.learn import holds
@@ -968,13 +968,13 @@ def run(ctx: Context) -> dict:
 
     # Send approvals still waiting (in either mode: auto_send may have been switched on since) are
     # not proposed again, and hold their sender's slots and their place in the week.
-    held = approvals.waiting(ctx)
-    cands, skipped = candidates(ctx, pulled, held.accounts)
-    # Second contacts (enrol/second.py; Harry, 6 Oct 2026): none, without a read, while second_contact is no.
-    seconds, not_second = second.candidates(ctx, pulled, held.accounts)
-    # campaigns=True: an owner whose Instantly campaign is not active gets no capacity in a live run (limits.py).
-    lim = limits.today(ctx, today, ready_accounts=len(cands) + len(seconds), pending=held.by_owner, campaigns=True,
-                       second_ready=len(seconds))
+    # Second contacts (enrol/second.py; Harry, 6 Oct 2026): none, without a read, while second_contact is no. An
+    # owner whose Instantly campaign is not active gets no capacity in a live run (limits.py). enrol/today.py is how
+    # the daily post, status, golive and the accounts view count the same.
+    from us_outbound.enrol.today import read as read_today
+
+    t = read_today(ctx, today, pulled=pulled)
+    held, cands, skipped, seconds, not_second, lim = t.held, t.ready, t.skipped, t.seconds, t.not_second, t.limits
     stopped = lim.not_sending
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})

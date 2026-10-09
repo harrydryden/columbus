@@ -72,7 +72,7 @@ from typing import Any
 
 from us_outbound import budget, fmt, labels, limits
 from us_outbound.context import UK, Context
-from us_outbound.enrol import approvals, enrol, focus, second
+from us_outbound.enrol import approvals, enrol, focus, second, today
 from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify, retention
@@ -274,14 +274,10 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
 
     # Today's number, its senders and the ready accounts exactly as enrol.run works them out: the send
     # approvals still waiting keep their accounts out of the candidates and hold their senders' slots.
-    today_et = ctx.now_et().date()
-    hand_check_waits, pulled = enrol.hand_check(ctx, today_et)
-    held = approvals.waiting(ctx)
-    ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
-    lim = limits.today(ctx, today_et, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
-                       second_ready=len(seconds))
-    nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
+    t = today.read(ctx)
+    today_et, hand_check_waits, held, lim = t.day, t.waits, t.held, t.limits
+    ready = [*t.ready, *t.seconds]  # every contact enrol could propose: first and second (enrol/today.py)
+    nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=t.ready_count)
 
     # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.
     data = daily_report.Rows.load(ctx)

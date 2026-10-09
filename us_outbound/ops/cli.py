@@ -432,18 +432,10 @@ def _waiting_for_you(ctx: Context) -> str:
 
 def _status_limits(ctx: Context) -> None:
     """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
-    from us_outbound import limits
-    from us_outbound.enrol import approvals, enrol, second
+    from us_outbound.enrol import today
 
     try:
-        # As enrol.run: pulled accounts and waiting cards stay out, and the cards hold their senders' slots.
-        day = ctx.now_et().date()
-        _, pulled = enrol.hand_check(ctx, day)
-        held = approvals.waiting(ctx)
-        ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-        seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
-        lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
-                           second_ready=len(seconds))
+        lim = today.read(ctx).limits  # as enrol.run sees it
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
