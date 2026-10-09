@@ -16,18 +16,11 @@ import csv
 from pathlib import Path
 
 from us_outbound.settings import spec
-from us_outbound.settings.model import TABS, General
+from us_outbound.settings.model import TABS, US_STATES, General  # US_STATES: read from here too
 
 # Each tab's columns in the sheet's order, from the one declaration per column (settings/spec.py, 9 Oct 2026).
 COLUMNS: dict[str, list[str]] = {tab: spec.columns(tab) for tab in TABS}
 assert tuple(COLUMNS) == TABS
-
-# USPS codes: the 50 states and DC.
-US_STATES = (
-    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS",
-    "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC",
-    "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
-)
 
 HARRY_TO_FILL = "Harry to fill"
 

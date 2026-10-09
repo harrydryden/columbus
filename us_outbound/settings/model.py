@@ -89,6 +89,12 @@ AGED_FACTS = frozenset({"days_since_funding", "people_leader_days_in_title", "da
 ACTIONS = ("Score", "Hold", "Exclude", "Suppress")
 TIERS = ("Priority", "Standard", "Control", "Held", "Excluded")
 MAILBOX_STATUSES = ("Warming", "Active", "Paused", "Retired")
+# USPS codes: the 50 states and DC (the States tab's rows).
+US_STATES = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS",
+    "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC",
+    "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+)
 COPY_STATUSES = ("draft", "approved", "retired")
 COPY_STEPS = (1, 2, 3, 4)
 GENERAL_COPY = "General"  # a Copy row for every industry: the fallback when an industry has no approved row

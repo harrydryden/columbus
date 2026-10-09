@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
-import math
 import re
 import typing
 from collections.abc import Callable, Iterable, Mapping
@@ -26,8 +25,23 @@ from us_outbound.clean.people import title_key
 from us_outbound.enrol import copy_markup, variants
 from us_outbound.enrol.copy_rules import money_violations, subject_violations
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
-from us_outbound.settings.defaults import COLUMNS, US_STATES, bundled_definitions
+from us_outbound.settings.defaults import COLUMNS, bundled_definitions
 from us_outbound.settings import spec
+from us_outbound.settings.parsers import (
+    email,
+    fail,
+    hint,
+    https,
+    one_of,
+    parse_bool,
+    parse_date,
+    parse_float,
+    parse_int,
+    parse_looks,
+    parse_share,
+    spill_page,
+    split_list,
+)
 from us_outbound.settings.model import (
     AB_TEST,
     ACTIONS,
@@ -45,7 +59,6 @@ from us_outbound.settings.model import (
     GENERIC_OPENER_KEYS,
     HOLDOUT_ARMS,
     HOLDOUT_TEST,
-    MAILBOX_STATUSES,
     OPENER_COLUMNS,
     OPENER_SELF_COLUMN,
     OPENER_TOKENS,
@@ -110,7 +123,6 @@ COPY_VARIABLES = frozenset(
     {"first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
      "industry_url", "site_url", "sender_first_name", "proof"}
 )
-SPILL_PAGE = re.compile(r"https://(?:www\.)?spill\.chat/\S*")
 OPENER_PLACEHOLDERS = frozenset(PLAIN_OPENER_TOKENS)  # SPEC 5: "Saw your benefits page mentions {evidence}"
 # The tokens each opener column may use (enrol/openers.py fills them from stored facts).
 OPENER_COLUMN_TOKENS: dict[str, tuple[str, ...]] = {
@@ -128,11 +140,9 @@ _GENERAL_REQUIRED_TEXT = frozenset(
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 _FULL_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-_EMAIL = re.compile(r"[a-z0-9._%+'-]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)")
 _DOMAIN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+")
 _CHANNEL = re.compile(r"#[a-z0-9][a-z0-9_-]*")
 _SLACK_USER = re.compile(r"[UW][A-Z0-9_]+")
-_NAICS = re.compile(r"\d{2,6}")
 _FIELD = re.compile(r"[a-z_][a-z0-9_]*")
 _VARIABLE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 _SINGLE_BRACE = re.compile(r"(?<!\{)\{([^{}]*)\}(?!\})")
@@ -156,89 +166,6 @@ class RowError:
 
 
 # -- cell parsers (raise ValueError with a message for Harry) ---------------------
-
-
-def _hint(value: str, choices: Iterable[str]) -> str:
-    close = difflib.get_close_matches(value, list(choices), n=1, cutoff=0.6)
-    return f" (did you mean {close[0]}?)" if close else ""
-
-
-def parse_bool(text: str) -> bool:
-    t = text.strip().lower()
-    if t in ("yes", "true"):
-        return True
-    if t in ("no", "false"):
-        return False
-    raise ValueError(f"must be yes or no, not {text!r}")
-
-
-def parse_int(text: str) -> int:
-    t = text.strip()
-    if re.fullmatch(r"[+-]?\d{1,3}(,\d{3})+", t):
-        t = t.replace(",", "")
-    if not re.fullmatch(r"[+-]?\d+", t):
-        raise ValueError(f"must be a whole number, not {text!r}")
-    return int(t)
-
-
-def parse_float(text: str) -> float:
-    try:
-        v = float(text.strip())
-    except ValueError:
-        raise ValueError(f"must be a number, not {text!r}") from None
-    if not math.isfinite(v):
-        raise ValueError(f"must be a number, not {text!r}")
-    return v
-
-
-def parse_date(text: str) -> date:
-    t = text.strip()
-    try:
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
-            raise ValueError
-        return date.fromisoformat(t)
-    except ValueError:
-        raise ValueError(f"must be a date written YYYY-MM-DD, not {text!r}") from None
-
-
-def parse_looks(text: str) -> tuple[int | date, ...]:
-    """"200; 2026-11-16" -> (200, date(2026, 11, 16)): a test's pre-registered looks (Harry, 6 Oct 2026), each a
-    whole number of accounts per arm with closed reply windows, or a date. Separated by semicolons or commas."""
-    out: list[int | date] = []
-    for part in split_list(text, ";,"):
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", part):
-            look: int | date = parse_date(part)
-        elif re.fullmatch(r"\d+", part) and int(part) >= 1:
-            look = int(part)
-        else:
-            raise ValueError(f"each look is a number of accounts per version, like 200, or a date written "
-                             f"YYYY-MM-DD, not {part!r}")
-        if look in out:
-            raise ValueError(f"{part} is listed twice")
-        out.append(look)
-    return tuple(out)
-
-
-def split_list(text: str, seps: str = ";") -> tuple[str, ...]:
-    parts = re.split("[" + re.escape(seps) + "]", text)
-    return tuple(p for p in (" ".join(x.split()) for x in parts) if p)
-
-
-def one_of(allowed: Iterable[str]) -> Callable[[str], str]:
-    """A parser accepting any of allowed, case-insensitively, returning its canonical spelling."""
-    allowed = tuple(allowed)
-
-    def parse(text: str) -> str:
-        for a in allowed:
-            if text.strip().casefold() == a.casefold():
-                return a
-        return _fail(f"must be one of {', '.join(allowed)}, not {text!r}{_hint(text.strip(), allowed)}")
-
-    return parse
-
-
-def _fail(message: str) -> Any:
-    raise ValueError(message)
 
 
 def _day(name: str) -> int:
@@ -338,25 +265,12 @@ def _parse_sources(text: str) -> tuple[str, ...]:
     for s in split_list(text, ",;"):
         key = s.lower()
         if key not in SOURCE_KEYS:
-            raise ValueError(f"unknown source {s!r}{_hint(key, SOURCE_KEYS)}; sources are {', '.join(SOURCE_KEYS)}")
+            raise ValueError(f"unknown source {s!r}{hint(key, SOURCE_KEYS)}; sources are {', '.join(SOURCE_KEYS)}")
         if key not in out:
             out.append(key)
     if not out:
         raise ValueError("names no source")
     return tuple(out)
-
-
-def _https(text: str) -> str:
-    if not re.fullmatch(r"https://\S+\.\S+", text):
-        raise ValueError(f"must be a full https:// link, not {text!r}")
-    return text
-
-
-def _email(text: str) -> str:
-    t = text.strip().lower()
-    if not _EMAIL.fullmatch(t):
-        raise ValueError(f"{text!r} is not an email address")
-    return t
 
 
 # -- rows ------------------------------------------------------------------------
@@ -390,6 +304,12 @@ class _Row:
     def fail(self, col: str, message: str) -> None:
         self.ok = False
         self.errors.append(RowError(self.tab, self.number, col, message, self.label))
+
+    def fields(self) -> dict[str, Any]:
+        """Every cell of the row, read as settings/spec.py declares its column (parser, required, default). A required
+        cell that is blank or unreadable is None, and the row has failed."""
+        return {c.name: self.parse(c.name, c.parse or str, required=c.required, default=None if c.required else c.default)
+                if c.parse or c.required else self.text(c.name) or c.default for c in spec.SPEC[self.tab]}
 
     def parse(self, col: str, fn: Callable[[str], Any], *, required: bool = True, default: Any = None) -> Any:
         t = self.text(col)
@@ -555,8 +475,8 @@ def email1_subject_problems(value: str) -> list[str]:
 
 
 def _check_general_value(key: str, value: Any) -> None:
-    hint = _GENERAL_TYPES[key]
-    if hint in (int, float) and value < 0:
+    kind = _GENERAL_TYPES[key]
+    if kind in (int, float) and value < 0:
         raise ValueError("must not be negative")
     if key == "control_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.15")
@@ -592,7 +512,7 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (a guard against a typo: settings/validate.py)")
     if key == "escalation_email":
-        _email(value)
+        email(value)
     # A model id the cap cannot price is refused at call time (clients/claude.py), not here, so a typo
     # stops only the Claude calls, never the whole General tab. `us-outbound copy` names the ids it knows.
     if key in ("claude_model", "claude_task_model") and not re.fullmatch(r"claude-[a-z0-9.-]+", value):
@@ -608,9 +528,9 @@ def _check_general_value(key: str, value: Any) -> None:
     if key in ("alert_channel", "dev_channel") and not _CHANNEL.fullmatch(value):
         raise ValueError(f"must be a Slack channel name like #us-outbound, not {value!r}")
     if key in ("booking_link", "booking_page") and value:
-        _https(value)
+        https(value)
     if key == "site_url":
-        _page_url(value)
+        spill_page(value)
     if key == "price_from" and value < 1:
         raise ValueError("is the starting price in dollars a month, like 195")
     if key == "approver_slack_ids":
@@ -642,16 +562,16 @@ def _general(rows: list[_Row]) -> General:
         if key in RETIRED_GENERAL:
             continue  # no longer used; the row can be deleted
         if key not in _GENERAL_TYPES:
-            r.fail("key", f"unknown key {key!r}{_hint(key, _GENERAL_TYPES)}")
+            r.fail("key", f"unknown key {key!r}{hint(key, _GENERAL_TYPES)}")
             continue
         if key in where:
             r.fail("key", f"{key} is already on row {where[key].number}")
             continue
         where[key] = r
-        hint = _GENERAL_TYPES[key]
-        blank = _blank_value(hint)
+        kind = _GENERAL_TYPES[key]
+        blank = _blank_value(kind)
         required = blank is None or key in _GENERAL_REQUIRED_TEXT
-        v = r.parse("value", _converter(hint), required=required, default=blank)
+        v = r.parse("value", _converter(kind), required=required, default=blank)
         if not r.ok:
             continue
         try:
@@ -701,8 +621,8 @@ def opener_token_problems(text: str, allowed: Iterable[str], retired: Iterable[s
         token = name.strip()
         if token not in allowed and token not in retired:
             close = difflib.get_close_matches(token, list(allowed), n=1, cutoff=0.6)
-            hint = f" (did you mean {{{close[0]}}}?)" if close else ""
-            out.append(f"unknown token {{{name}}}{hint}; this column can use {listed}")
+            near = f" (did you mean {{{close[0]}}}?)" if close else ""
+            out.append(f"unknown token {{{name}}}{near}; this column can use {listed}")
     if _VARIABLE.search(text):
         out.append(f"opener tokens take single braces, like {{{allowed[0]}}}; this column can use {listed}")
     return list(dict.fromkeys(out))
@@ -749,7 +669,7 @@ def _signals(rows: list[_Row]) -> list[tuple[Signal, int]]:
             if condition is not None:
                 known = frozenset().union(*(SOURCE_FIELDS[s] for s in sources))
                 for f in sorted(condition.fields - known):
-                    r.fail("looks_for", f"{f} is not a field of {', '.join(sources)}{_hint(f, known)}")
+                    r.fail("looks_for", f"{f} is not a field of {', '.join(sources)}{hint(f, known)}")
                 if context_rule:
                     r.fail("context_rule", "applies only to a list of terms, not to a condition")
             elif not any(s in TEXT_SOURCES for s in sources):
@@ -788,21 +708,19 @@ def _angles(rows: list[_Row]) -> list[tuple[Angle, int]]:
     names: dict[str, int] = {}
     orders: dict[int, int] = {}
     for r in rows:
-        name = r.parse("angle", str)
+        v = r.fields()
+        name, order, active = v["angle"], v["order"], v["active"]
         _unique(r, "angle", name.casefold() if name else None, names, f"angle {name!r}")
-        order = r.parse("order", parse_int)
         if order is not None and order < 1:
             r.fail("order", "must be 1 or more")
         _unique(r, "order", order, orders, f"order {order}")
-        active = r.parse("active", parse_bool)
-        argument = r.parse("argument", str)
-        opener = r.parse("default_opener", str, required=bool(active), default="")
-        landing = r.parse("landing_page_override", _https, required=False, default="")
+        if active and not v["default_opener"]:
+            r.fail("default_opener", "is required")
         if name == CONTROL_ANGLE and active is False:
             r.fail("active", f"{CONTROL_ANGLE} must stay active: Control-tier accounts always get it")
         if r.ok:
-            out.append((Angle(angle=name, order=order, argument=argument, default_opener=opener, active=active,
-                              landing_page_override=landing), r.number))
+            out.append((Angle(angle=name, order=order, argument=v["argument"], default_opener=v["default_opener"],
+                              active=active, landing_page_override=v["landing_page_override"]), r.number))
     if rows and CONTROL_ANGLE.casefold() not in names:
         rows[0].errors.append(
             RowError("Angles", HEADER_ROW, "angle", f"the {CONTROL_ANGLE} angle is missing; Control-tier accounts always get it")
@@ -810,77 +728,50 @@ def _angles(rows: list[_Row]) -> list[tuple[Angle, int]]:
     return out
 
 
-def _naics(text: str) -> tuple[str, ...]:
-    codes = split_list(text, ";,")
-    bad = [c for c in codes if not _NAICS.fullmatch(c)]
-    if bad:
-        raise ValueError(f"NAICS codes are 2 to 6 digits: {', '.join(bad)}")
-    return codes
-
-
-def _page_url(text: str) -> str:
-    """An industry page: emails link it, and emails link only to spill.chat."""
-    _https(text)
-    if not SPILL_PAGE.fullmatch(text):
-        raise ValueError(f"must be a page on https://www.spill.chat (emails link only there), not {text!r}")
-    return text
-
-
 def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
     out: list[tuple[Industry, int]] = []
     seen: dict[str, int] = {}
     spelled: dict[str, tuple[str, int]] = {}  # a group, casefolded -> (its first spelling, that row)
     for r in rows:
-        label = r.parse("industry", str)
+        v = r.fields()
+        label, group = v["industry"], v["industry_group"]
         _unique(r, "industry", label.casefold() if label else None, seen, f"industry {label!r}")
         if label and label.casefold() == GENERAL_COPY.casefold():
             r.fail("industry", f"{GENERAL_COPY!r} is kept for the Copy tab's fallback sequence; name the industry")
-        group = r.parse("industry_group", str)
         if group:  # the code compares groups exactly, so a second spelling splits the group (9 Oct 2026)
             first, at = spelled.setdefault(group.casefold(), (group, r.number))
             if first != group:
                 r.fail("industry_group", f"{group!r} is spelled {first!r} on row {at}: one spelling per group, or it "
                                          "splits in two")
-        active = r.parse("active", parse_bool)
-        naics = r.parse("naics_prefixes", _naics, required=False, default=())
-        exclude = r.parse("exclude_naics", _naics, required=False, default=())
-        keywords = split_list(r.text("apollo_keywords"), ";")
-        landing = r.parse("landing_page_url", _page_url, required=False, default="")
-        priority = r.parse("priority", parse_int, required=False, default=Industry.priority)
+        priority = v["priority"]
         if priority is not None and priority < 1:
             r.fail("priority", "must be 1 or more")
-        page = IndustryPage(**{f: r.text(f"page_{f}") for f in PAGE_FIELDS})
+        page = IndustryPage(**{f: v[f"page_{f}"] for f in PAGE_FIELDS})
         # A blank definition takes the build's line for the label (Harry, 7 Oct 2026), so the label check works
         # on a sheet without the column, and the sheet changes what it reads only where Harry edits a line.
-        definition = " ".join(r.text("definition").split()) or bundled_definitions().get((label or "").casefold(), "")
+        definition = " ".join(v["definition"].split()) or bundled_definitions().get((label or "").casefold(), "")
         if r.ok:
             out.append((
-                Industry(industry=label, industry_group=group, active=active, naics_prefixes=naics,
-                         exclude_naics=exclude, apollo_keywords=keywords, landing_page_url=landing,
-                         proof_point=r.text("proof_point"), priority=priority, page=page, definition=definition),
+                Industry(industry=label, industry_group=group, active=v["active"], naics_prefixes=v["naics_prefixes"],
+                         exclude_naics=v["exclude_naics"], apollo_keywords=v["apollo_keywords"],
+                         landing_page_url=v["landing_page_url"], proof_point=v["proof_point"], priority=priority,
+                         page=page, definition=definition),
                 r.number,
             ))
     return out
-
-
-def _usps(text: str) -> str:
-    code = text.strip().upper()
-    if code not in US_STATES:
-        raise ValueError(f"{text!r} is not a USPS state code like NY")
-    return code
 
 
 def _states(rows: list[_Row]) -> list[tuple[State, int]]:
     out: list[tuple[State, int]] = []
     seen: dict[str, int] = {}
     for r in rows:
-        code = r.parse("state", _usps)
+        v = r.fields()
+        code, active = v["state"], v["active"]
         _unique(r, "state", code, seen, code or "")
-        active = r.parse("active", parse_bool)
         if active and code in NEVER_ACTIVE_STATES:
             r.fail("active", f"{code} is never contacted (SPEC 1.3)")
         if r.ok:
-            out.append((State(code, active, r.text("note")), r.number))
+            out.append((State(code, active, v["note"]), r.number))
     return out
 
 
@@ -933,7 +824,7 @@ def _roles(rows: list[_Row]) -> list[tuple[Role, int]]:
     for r in rows:
         role = r.parse("role", str)
         _unique(r, "role", role.casefold() if role else None, names, f"role {role!r}")
-        titles = r.parse("titles", lambda t: split_list(t, ";") or _fail("lists no titles"))
+        titles = r.parse("titles", lambda t: split_list(t, ";") or fail("lists no titles"))
         for t in titles or ():
             other = titles_seen.get(title_key(t))
             if other and other[0] != role:
@@ -964,7 +855,7 @@ def _check_copy_text(r: _Row, col: str) -> None:
     text = r.text(col)
     for name in _VARIABLE.findall(text):
         if name not in COPY_VARIABLES:
-            r.fail(col, f"unknown variable {{{{{name}}}}}{_hint(name, COPY_VARIABLES)}")
+            r.fail(col, f"unknown variable {{{{{name}}}}}{hint(name, COPY_VARIABLES)}")
     for name in _SINGLE_BRACE.findall(text):
         r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
 
@@ -1017,12 +908,6 @@ def is_spill_domain(domain: str) -> bool:
     return d == SPILL_DOMAIN or d.endswith("." + SPILL_DOMAIN)
 
 
-def _slack_user(text: str) -> str:
-    if not _SLACK_USER.fullmatch(text):
-        raise ValueError(f"{text!r} is not a Slack user id (they look like U01ABCDEF)")
-    return text
-
-
 def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
     out: list[tuple[Mailbox, int]] = []
     seen: dict[str, int] = {}
@@ -1032,25 +917,20 @@ def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
     slack_owner: dict[str, str] = {}
     owner_slack: dict[str, str] = {}
     for r in rows:
-        address = r.parse("address", _email)
+        v = r.fields()
+        address, owner, cap, slack_id = v["address"], v["owner_name"], v["daily_cap"], v["slack_id"]
         _unique(r, "address", address, seen, address or "")
         own_domain = address.partition("@")[2] if address else ""
         if is_spill_domain(own_domain):
             r.fail("address", f"{SPILL_DOMAIN} never sends cold email (SPEC 1.2)")
-        domain = r.text("domain").lower() or own_domain
+        domain = v["domain"].lower() or own_domain
         if own_domain and domain != own_domain:
             r.fail("domain", f"must be the address's domain, {own_domain}")
-        owner = r.parse("owner_name", str)
-        status = r.parse("status", one_of(MAILBOX_STATUSES))
-        cap = r.parse("daily_cap", parse_int)
         if cap is not None and not 0 <= cap <= MAX_DAILY_CAP:
             r.fail("daily_cap", f"must be between 0 and {MAX_DAILY_CAP} (SPEC 13)")
-        added_on = r.parse("added_on", parse_date, required=False)
-        retire_after = r.parse("retire_after", parse_date, required=False)
-        account_id = r.text("instantly_account_id")
+        account_id = v["instantly_account_id"]
         if account_id:
             _unique(r, "instantly_account_id", account_id, ids, account_id)
-        slack_id = r.parse("slack_id", _slack_user, required=False, default="")
         if slack_id and owner:
             if slack_owner.setdefault(slack_id, owner) != owner:
                 r.fail("slack_id", f"{slack_id} is already {slack_owner[slack_id]}'s; one person per Slack id")
@@ -1059,9 +939,9 @@ def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
         if r.ok:
             out.append((
                 Mailbox(
-                    address=address, domain=domain, owner_name=owner, status=status, daily_cap=cap,
-                    instantly_account_id=account_id, provider=r.text("provider"), owner_role=r.text("owner_role"),
-                    signature=r.text("signature"), added_on=added_on, retire_after=retire_after,
+                    address=address, domain=domain, owner_name=owner, status=v["status"], daily_cap=cap,
+                    instantly_account_id=account_id, provider=v["provider"], owner_role=v["owner_role"],
+                    signature=v["signature"], added_on=v["added_on"], retire_after=v["retire_after"],
                     slack_id=slack_id or "",
                 ),
                 r.number,
@@ -1069,50 +949,31 @@ def _mailboxes(rows: list[_Row]) -> list[tuple[Mailbox, int]]:
     return out
 
 
-def _override_domain(text: str) -> str:
-    d = text.strip().lower()
-    if d.startswith("www.") or not _DOMAIN.fullmatch(d):
-        raise ValueError(f"must be a root domain like acme.com, not {text!r}")
-    return d
-
-
 def _overrides(rows: list[_Row]) -> list[tuple[Override, int]]:
     out: list[tuple[Override, int]] = []
     seen: dict[tuple[str, str], int] = {}
     for r in rows:
-        domain = r.parse("domain", _override_domain)
-        field = r.parse("field", lambda t: t if _FIELD.fullmatch(t) else _fail(f"{t!r} is not a field name like hq_state"))
+        v = r.fields()
+        domain, field = v["domain"], v["field"]
         if domain and field:
             _unique(r, "field", (domain, field), seen, f"{domain} {field}")
         if r.ok:
-            out.append((Override(domain=domain, field=field, value=r.text("value"), note=r.text("note")), r.number))
+            out.append((Override(domain=domain, field=field, value=v["value"], note=v["note"]), r.number))
     return out
 
 
 SHARE_A_MIN = 0.1  # a test's share_a runs from 10% to 90% (Harry, 8 Oct 2026: 70% with the warm intro)
 
 
-def parse_share(text: str) -> float:
-    """"60%" or "0.6" -> 0.6. A bare number above 1 is refused: write it with a % sign."""
-    t = text.strip()
-    try:
-        value = float(t[:-1].strip()) / 100 if t.endswith("%") else float(t)
-    except ValueError:
-        raise ValueError(f"must be a share like 60% or 0.6, not {text!r}") from None
-    if not 0 <= value <= 1:
-        raise ValueError(f"must be between 0% and 100%, not {text!r} (write 60% or 0.6)")
-    return value
-
-
 def _focus(rows: list[_Row]) -> list[tuple[Focus, int]]:
     out: list[tuple[Focus, int]] = []
     seen: dict[str, int] = {}
     for r in rows:
-        group = r.parse("industry_group", str)
+        v = r.fields()
+        group = v["industry_group"]
         _unique(r, "industry_group", group.casefold() if group else None, seen, f"industry group {group!r}")
-        share = r.parse("share", parse_share)
         if r.ok:
-            out.append((Focus(industry_group=group, share=share, note=r.text("note")), r.number))
+            out.append((Focus(industry_group=group, share=v["share"], note=v["note"]), r.number))
     total = sum(f.share for f, _ in out)
     if out and total > 1 + 1e-9:
         last = next(r for r in reversed(rows) if r.number == out[-1][1])
@@ -1127,14 +988,15 @@ def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
     out: list[tuple[NamedAccount, int]] = []
     seen: dict[str, int] = {}
     for r in rows:
-        domain = r.parse("domain", _override_domain)
+        v = r.fields()
+        domain = v["domain"]
         if domain and is_personal_domain(domain):
             r.fail("domain", f"{domain} is a personal email domain, not a company")
         elif domain == SPILL_DOMAIN:
             r.fail("domain", "spill.chat is Spill")
         _unique(r, "domain", domain, seen, domain or "")
         if r.ok:
-            out.append((NamedAccount(domain=domain, name=r.text("name"), note=r.text("note")), r.number))
+            out.append((NamedAccount(domain=domain, name=v["name"], note=v["note"]), r.number))
     return out
 
 
@@ -1155,9 +1017,9 @@ def _variant_text(r: _Row, col: str, change: str, email: int) -> str:
     for name in _VARIABLE.findall(text):
         if name not in variants.TEXT_VARIABLES:
             bad = True
-            hint = _hint(name, variants.TEXT_VARIABLES)
+            near = hint(name, variants.TEXT_VARIABLES)
             r.fail(col, f"{{{{{name}}}}} is a line of its own the Copy row places; a test's text may not use it"
-                   if name in COPY_VARIABLES else f"unknown variable {{{{{name}}}}}{hint}")
+                   if name in COPY_VARIABLES else f"unknown variable {{{{{name}}}}}{near}")
     for name in _SINGLE_BRACE.findall(text):
         bad = True
         r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
@@ -1324,7 +1186,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             if canonical is None:
                 errors["Signals"].append(RowError(
                     "Signals", row, "suggests_angle",
-                    f"{s.suggests_angle!r} is not on the Angles tab{_hint(s.suggests_angle, angles.values())}", s.signal,
+                    f"{s.suggests_angle!r} is not on the Angles tab{hint(s.suggests_angle, angles.values())}", s.signal,
                 ))
                 continue
             s = dataclasses.replace(s, suggests_angle=canonical)
@@ -1343,7 +1205,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             errors["Copy"].append(RowError(
                 "Copy", row, "industry",
                 f"{c.industry!r} is not an industry or industry_group on the Industries tab, nor {GENERAL_COPY!r}"
-                f"{_hint(c.industry, [*labels.values(), *groups.values()])}", c.copy_version,
+                f"{hint(c.industry, [*labels.values(), *groups.values()])}", c.copy_version,
             ))
             continue
         role = c.role
@@ -1351,7 +1213,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             role = roles.get(role.casefold())
             if role is None:
                 errors["Copy"].append(RowError("Copy", row, "role", f"{c.role!r} is not on the Roles tab"
-                                               f"{_hint(c.role, roles.values())}", c.copy_version))
+                                               f"{hint(c.role, roles.values())}", c.copy_version))
                 continue
         copy_rows.append((dataclasses.replace(c, industry=canonical, role=role), row))
     values["Copy"] = copy_rows
@@ -1362,7 +1224,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
         unknown = [g for g in role.industry_groups if g.casefold() not in groups]
         for g in unknown:
             errors["Roles"].append(RowError("Roles", row, "industry_groups", f"{g!r} is not an industry_group on the "
-                                            f"Industries tab{_hint(g, groups.values())}", role.role))
+                                            f"Industries tab{hint(g, groups.values())}", role.role))
         if not unknown:
             role = dataclasses.replace(role, industry_groups=tuple(groups[g.casefold()] for g in role.industry_groups))
             role_rows.append((role, row))
@@ -1397,7 +1259,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
             if canonical is None:
                 errors["Overrides"].append(RowError(
                     "Overrides", row, "value", f"{o.value!r} is not an {o.field} on the Industries tab"
-                    f"{_hint(o.value, names.values())}", f"{o.domain} {o.field}"))
+                    f"{hint(o.value, names.values())}", f"{o.domain} {o.field}"))
                 continue
             o = dataclasses.replace(o, value=canonical)
         overrides.append((o, row))
@@ -1412,7 +1274,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
         if canonical is None:
             errors["Focus"].append(RowError("Focus", row, "industry_group",
                                             f"{f.industry_group!r} is not an industry_group on the Industries tab"
-                                            f"{_hint(f.industry_group, groups.values())}", f.industry_group))
+                                            f"{hint(f.industry_group, groups.values())}", f.industry_group))
             continue
         if canonical.casefold() not in active_groups:
             errors["Focus"].append(RowError("Focus", row, "industry_group",
@@ -1428,7 +1290,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
     unknown = [g for g in general.apollo_enrich_groups if g.casefold() not in groups]
     for g in unknown:
         errors["General"].append(RowError("General", enrich_row, "value", f"apollo_enrich_groups: {g!r} is not an "
-                                          f"industry_group on the Industries tab{_hint(g, groups.values())}",
+                                          f"industry_group on the Industries tab{hint(g, groups.values())}",
                                           "apollo_enrich_groups"))
     if not unknown and general.apollo_enrich_groups:
         values["General"] = dataclasses.replace(general, apollo_enrich_groups=tuple(
