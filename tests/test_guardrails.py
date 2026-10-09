@@ -590,6 +590,9 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "bulk_match": lambda c, w: c.bulk_match([{"first_name": "Jane", "last_name": "Doe", "domain": "acmecreative.com"}]),
         "website_visitor_aggregates": lambda c, w: c.website_visitor_aggregates("spill.chat", ["org-1"]),
         "search_website_visitors": lambda c, w: c.search_website_visitors(["spill.chat"], days=30, pages=["/us"]),
+        # Pages a caller's own read (9 Oct 2026): every request is still one of the methods above.
+        "iter_pages": lambda c, w: list(c.iter_pages(
+            lambda page: c.search_organizations({"organization_locations[]": ["Ohio, US"]}, page=page), max_pages=2)),
     },
     "Clay": {
         "run_function": lambda c, w: c.run_function(CLAY_FUNCTIONS[0], {"domain": "acmecreative.com"}),

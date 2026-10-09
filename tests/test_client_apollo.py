@@ -14,6 +14,10 @@ from us_outbound.clients.apollo import (
     normalize_filters,
     org_id,
     organizations_in,
+    people_in,
+    while_counted,
+    while_full,
+    while_full_page,
 )
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS, Boundaries, Guard, GuardViolation, Op
 
@@ -53,7 +57,7 @@ def exercise(apollo):
 
 def test_there_are_no_write_methods():
     public = {n for n, _ in inspect.getmembers(Apollo, inspect.isfunction) if not n.startswith("_")}
-    inherited = {"headers", "request"}
+    inherited = {"headers", "request", "iter_pages"}  # iter_pages pages a caller's own read (9 Oct 2026)
     assert public - inherited == READ_METHODS
     assert set(READ_ENDPOINTS) <= APOLLO_READ_ACTIONS
     for _, path in READ_ENDPOINTS.values():
@@ -175,6 +179,36 @@ def test_a_saved_account_s_own_id_is_never_taken_for_its_organization_id():
         ("o1", "o1", None), (None, None, "acct-1"), ("o3", "o3", "acct-2")]
     assert [org_id(o) for o in rows] == ["o1", "", "o3"]
     assert org_id(None) == ""
+
+
+def test_iter_pages_keeps_each_caller_s_stop_rule():
+    """Apollo.iter_pages (9 Oct 2026): one page loop. Where Apollo gives no total_entries, the visitor searches go on
+    while pages are full (while_full) and the lookalike growth searches stop (while_counted), as they always did."""
+    def reader(pages):
+        asked = []
+
+        def read(n):
+            asked.append(n)
+            return pages[n - 1] if n <= len(pages) else None
+        return read, asked
+
+    full = {"organizations": [{"id": f"o{i}"} for i in range(2)]}  # a full page at per_page=2
+    counted = {**full, "pagination": {"total_entries": 3}}
+    for more, want in ((while_full, [1, 2, 3]), (while_counted, [1])):
+        read, asked = reader([full, full, {"organizations": []}])
+        got = list(Apollo.iter_pages(read, more=more, per_page=2))
+        assert asked == want and got[-1].last
+    read, asked = reader([counted, counted, counted])
+    assert [p.number for p in Apollo.iter_pages(read, more=while_counted, per_page=2)] == [1, 2]  # 3 of 3 by page 2
+    read, asked = reader([full, full, full])
+    pages = list(Apollo.iter_pages(read, per_page=2, max_pages=2))
+    assert asked == [1, 2] and not pages[-1].last  # max_pages, not the end of the search
+    read, asked = reader([full])
+    assert len(list(Apollo.iter_pages(read, per_page=2))) == 1 and asked == [1, 2]  # read() gave None: it ends
+    people = {"people": [{"id": "p1"}], "total_entries": 1}
+    read, asked = reader([people, people])
+    assert [p.rows for p in Apollo.iter_pages(read, more=while_full_page, rows=people_in, per_page=1, max_pages=2)] == [
+        [{"id": "p1"}], [{"id": "p1"}]]  # People API Search: only a short page ends it
 
 
 def test_enriched_in_reads_a_single_answer_and_an_empty_one():

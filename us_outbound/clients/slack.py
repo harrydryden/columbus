@@ -25,6 +25,7 @@ escalation when the forward endpoint is missing; in dry-run they go to the dev c
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 from typing import Any
 
 from us_outbound.clients.guard import Op
@@ -66,20 +67,26 @@ class Slack(HttpClient):
 
     # -- reads -----------------------------------------------------------------
 
+    def _pages(self, method: str, op: Op, params: dict[str, Any]) -> Iterator[dict]:
+        """Each page of a Web API list, following response_metadata.next_cursor (sent back as cursor) until there is
+        none (9 Oct 2026: two loops did this)."""
+        cursor = ""
+        while True:
+            body = self._api("GET", method, op, params={**params, "cursor": cursor} if cursor else dict(params)) or {}
+            yield body
+            cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+            if not cursor:
+                return
+
     def channel_id(self, name: str) -> str:
         """Resolve "#name" to its id via conversations.list (public and private), cached."""
         key = channel_key(name)
         if key not in self._ids:
-            cursor = ""
-            while True:
-                params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": LIST_PAGE}
-                if cursor:
-                    params["cursor"] = cursor
-                body = self._api("GET", "conversations.list", Op("conversations.list"), params=params) or {}
+            params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": LIST_PAGE}
+            for body in self._pages("conversations.list", Op("conversations.list"), params):
                 for c in body.get("channels", []):
                     self._ids.setdefault(channel_key(c.get("name", "")), c["id"])
-                cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
-                if key in self._ids or not cursor:
+                if key in self._ids:
                     break
         if key not in self._ids:
             raise LookupError(f"Slack channel #{key} not found; is the bot a member of it?")
@@ -92,18 +99,12 @@ class Slack(HttpClient):
         """
         cid = self.channel_id(channel)
         out: list[dict] = []
-        cursor = ""
-        while True:
-            params = {"channel": cid, "ts": ts, "limit": LIST_PAGE}
-            if cursor:
-                params["cursor"] = cursor
-            body = self._api("GET", "conversations.replies", Op("conversations.replies", target=channel), params=params) or {}
+        op = Op("conversations.replies", target=channel)
+        for body in self._pages("conversations.replies", op, {"channel": cid, "ts": ts, "limit": LIST_PAGE}):
             messages = body.get("messages", [])
             self._keep_reactions(cid, messages)
             out.extend(m for m in messages if m.get("ts") != ts)
-            cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
-            if not cursor:
-                return out
+        return out
 
     def _keep_reactions(self, cid: str, messages: list[dict]) -> None:
         """Keep each message's reactions when Slack listed every user of each (a long list may carry only some)."""

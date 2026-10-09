@@ -392,6 +392,28 @@ class Instantly(HttpClient):
         self._ids: dict[str, str] = {}  # campaign name -> id, US Outbound campaigns only
         self._dupes: set[str] = set()
 
+    # -- paging ----------------------------------------------------------------
+
+    def _every_item(self, method: str, path: str, op: Op, *, params: Mapping[str, Any] | None = None,
+                    json: Mapping[str, Any] | None = None) -> Iterator[dict]:
+        """Every item of a list Instantly pages with next_starting_after, sent back as starting_after (in the body of
+        a POST, else the query). It ends at a page with no cursor or no items (9 Oct 2026: three loops did this)."""
+        cursor = ""
+        while True:
+            page_params = dict(params) if params is not None else None
+            page_json = dict(json) if json is not None else None
+            if cursor:
+                if page_json is not None:
+                    page_json["starting_after"] = cursor
+                else:
+                    page_params = {**(page_params or {}), "starting_after": cursor}
+            body = self.request(method, path, op, params=page_params, json=page_json) or {}
+            items = body.get("items") or []
+            yield from items
+            cursor = body.get("next_starting_after") or ""
+            if not cursor or not items:
+                return
+
     # -- guard helpers ---------------------------------------------------------
 
     def _registry(self, action: str, accounts: Iterable[str], *, write: bool = False, target: str = "",
@@ -560,24 +582,13 @@ class Instantly(HttpClient):
     def list_campaigns(self) -> list[dict]:
         """Campaigns named "US Outbound – …" (search, then exact prefix); refreshes the name→id cache."""
         found: list[dict] = []
-        cursor = ""
         dropped = 0
-        while True:
-            params: dict[str, Any] = {"search": CAMPAIGN_SEARCH, "limit": PAGE}
-            if cursor:
-                params["starting_after"] = cursor
-            body = self.request(
-                "GET", "/campaigns", Op("campaign.list", target="campaigns", detail={"search": CAMPAIGN_SEARCH}), params=params
-            ) or {}
-            items = body.get("items") or []
-            for c in items:
-                if str(c.get("name", "")).startswith(US_CAMPAIGN_PREFIX) and c.get("id"):
-                    found.append(c)
-                else:
-                    dropped += 1
-            cursor = body.get("next_starting_after") or ""
-            if not cursor or not items:
-                break
+        op = Op("campaign.list", target="campaigns", detail={"search": CAMPAIGN_SEARCH})
+        for c in self._every_item("GET", "/campaigns", op, params={"search": CAMPAIGN_SEARCH, "limit": PAGE}):
+            if str(c.get("name", "")).startswith(US_CAMPAIGN_PREFIX) and c.get("id"):
+                found.append(c)
+            else:
+                dropped += 1
         if dropped:
             log("instantly_dropped", action="campaign.list", dropped=dropped, reason="not a US Outbound campaign")
         ids: dict[str, str] = {}
@@ -747,22 +758,13 @@ class Instantly(HttpClient):
         """Every lead in this campaign (POST /leads/list filtered by campaign id)."""
         cid = self._campaign_id(name, "lead.list", False)
         out: list[dict] = []
-        cursor = ""
         dropped = 0
-        while True:
-            payload: dict[str, Any] = {"campaign": cid, "limit": PAGE}
-            if cursor:
-                payload["starting_after"] = cursor
-            body = self.request("POST", "/leads/list", Op("lead.list", target=name, detail={"id": cid}), json=payload) or {}
-            items = body.get("items") or []
-            for lead in items:
-                if str(lead.get("campaign") or "") == cid:
-                    out.append(lead)
-                else:
-                    dropped += 1
-            cursor = body.get("next_starting_after") or ""
-            if not cursor or not items:
-                break
+        op = Op("lead.list", target=name, detail={"id": cid})
+        for lead in self._every_item("POST", "/leads/list", op, json={"campaign": cid, "limit": PAGE}):
+            if str(lead.get("campaign") or "") == cid:
+                out.append(lead)
+            else:
+                dropped += 1
         if dropped:
             log("instantly_dropped", action="lead.list", dropped=dropped, reason="lead of another campaign")
         return out
@@ -850,30 +852,20 @@ class Instantly(HttpClient):
         seen: set[str] = set()
         dropped = 0
         for acct in accs:
-            cursor = ""
-            while True:
-                params: dict[str, Any] = {"eaccount": acct, "limit": PAGE}
-                if since:
-                    params["min_timestamp_created"] = _timestamp(since)
-                if until:
-                    params["max_timestamp_created"] = _timestamp(until)
-                if email_type:
-                    params["email_type"] = email_type
-                if cursor:
-                    params["starting_after"] = cursor
-                body = self.request(
-                    "GET", "/emails", Op("email.list", target=acct, detail={"accounts": [acct]}), params=params
-                ) or {}
-                items = body.get("items") or []
-                for e in items:
-                    if str(e.get("eaccount", "")).strip().lower() != acct:
-                        dropped += 1
-                    elif str(e.get("id")) not in seen:
-                        seen.add(str(e.get("id")))
-                        out.append(e)
-                cursor = body.get("next_starting_after") or ""
-                if not cursor or not items:
-                    break
+            params: dict[str, Any] = {"eaccount": acct, "limit": PAGE}
+            if since:
+                params["min_timestamp_created"] = _timestamp(since)
+            if until:
+                params["max_timestamp_created"] = _timestamp(until)
+            if email_type:
+                params["email_type"] = email_type
+            op = Op("email.list", target=acct, detail={"accounts": [acct]})
+            for e in self._every_item("GET", "/emails", op, params=params):
+                if str(e.get("eaccount", "")).strip().lower() != acct:
+                    dropped += 1
+                elif str(e.get("id")) not in seen:
+                    seen.add(str(e.get("id")))
+                    out.append(e)
         if dropped:
             log("instantly_dropped", action="email.list", dropped=dropped, reason="email of a non-registry account")
         return out

@@ -84,7 +84,7 @@ from typing import Any
 from us_outbound import budget, ledger
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
-from us_outbound.clients.apollo import credits_left
+from us_outbound.clients.apollo import credits_left, people_in, while_full_page
 from us_outbound.clients.clay import (
     WORK_EMAIL_FUNCTION_ID,
     ClayError,
@@ -277,15 +277,15 @@ def search(ctx: Context, account: Mapping[str, Any], titles: Sequence[str]) -> l
     people: list[dict] = []
     seen: set[str] = set()
     filters = search_filters(account, titles)
-    for page in range(1, SEARCH_PAGES + 1):
-        batch = ctx.clients.apollo.search_people(filters, page=page, per_page=SEARCH_PER_PAGE).get("people") or []
-        for p in batch:
+    apollo = ctx.clients.apollo
+    pages = apollo.iter_pages(lambda page: apollo.search_people(filters, page=page, per_page=SEARCH_PER_PAGE),
+                              more=while_full_page, rows=people_in, per_page=SEARCH_PER_PAGE, max_pages=SEARCH_PAGES)
+    for page in pages:
+        for p in page.rows:
             pid = str(p.get("id") or "")
             if pid and pid not in seen:
                 seen.add(pid)
                 people.append(p)
-        if len(batch) < SEARCH_PER_PAGE:
-            break
     return people
 
 

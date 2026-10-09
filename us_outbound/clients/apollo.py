@@ -24,7 +24,8 @@ says which reads are paid (paid_reads), so none is resent after a timeout.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any
 
@@ -178,6 +179,51 @@ def total_entries(page: Mapping[str, Any]) -> int | None:
         return None
 
 
+@dataclass(frozen=True)
+class Page:
+    """One page of a paged search (Apollo.iter_pages): its number, Apollo's answer, its rows and total_entries."""
+
+    number: int
+    per_page: int
+    body: Mapping[str, Any]
+    rows: list[dict]
+    total: int | None
+    last: bool = False  # the stop rule ends the search here: no page after this one is asked for
+
+    @property
+    def full(self) -> bool:
+        return len(self.rows) >= self.per_page
+
+    @property
+    def counted_through(self) -> bool:
+        """total_entries says no row lies beyond this page."""
+        return self.total is not None and self.total <= self.number * self.per_page
+
+
+# The stop rules of the paged searches (9 Oct 2026: each caller had its own loop). Each says whether to ask for the
+# page after this one; the callers' rules differ where Apollo gives no total_entries, and are kept as they were.
+def while_full(page: Page) -> bool:
+    """Another page while this one was full and total_entries, when given, counts more (site_visits: a full page
+    with no total goes on)."""
+    return page.full and not page.counted_through
+
+
+def while_counted(page: Page) -> bool:
+    """Another page only while this one had rows and total_entries counts more (the lookalike growth searches: a
+    page with no total ends the search)."""
+    return bool(page.rows) and page.total is not None and not page.counted_through
+
+
+def while_full_page(page: Page) -> bool:
+    """Another page while this one was full, whatever total_entries says (People API Search)."""
+    return page.full
+
+
+def people_in(body: Mapping[str, Any]) -> list[dict]:
+    """The rows of a People API Search page."""
+    return list(body.get("people") or [])
+
+
 def _segment(value: str) -> str:
     v = str(value or "").strip()
     if not _PATH_SEGMENT.fullmatch(v):
@@ -266,6 +312,31 @@ class Apollo(HttpClient):
         if not 1 <= page <= MAX_PAGE:
             raise ValueError(f"Apollo shows at most {MAX_PAGE} pages; slice the search further (SPEC 7)")
         return {"page": page, "per_page": per_page}
+
+    @staticmethod
+    def iter_pages(
+        read: Callable[[int], Mapping[str, Any] | None],
+        *,
+        more: Callable[[Page], bool] = while_full,
+        rows: Callable[[Mapping[str, Any]], list[dict]] = organizations_in,
+        per_page: int = MAX_PER_PAGE,
+        max_pages: int = MAX_PAGE,
+    ) -> Iterator[Page]:
+        """Pages 1, 2, ... of one search, each yielded as a Page, until `more` says no page follows (that Page has
+        last set), max_pages are read, or read() gives None.
+
+        read(n) asks for page n: the caller's call, so it checks its budget first, charges the page to the ledger
+        and handles Apollo's errors, giving None for a page it did not get (it has said why).
+        """
+        for number in range(1, max_pages + 1):
+            body = read(number)
+            if body is None:
+                return
+            page = Page(number, per_page, body, rows(body), total_entries(body))
+            page = replace(page, last=not more(page))
+            yield page
+            if page.last:
+                return
 
     def credit_usage(self) -> dict:
         """Team credit balances for the current cycle, keyed by credit type (0 credits)."""

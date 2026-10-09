@@ -19,6 +19,7 @@ from typing import Any
 
 from us_outbound.clients.guard import HUBSPOT_EMPTY_ONLY, HUBSPOT_PROPERTY_GROUP, Op
 from us_outbound.clients.http import ApiError, HttpClient
+from us_outbound.logs import log
 
 SEARCH_PAGE = 100  # HubSpot allows up to 200 per search page
 SEARCH_CAP = 10_000  # search never pages past 10k results; we re-query on hs_object_id instead
@@ -120,6 +121,29 @@ class HubSpot(HttpClient):
 
     # -- reads -----------------------------------------------------------------
 
+    def _pages(self, method: str, path: str, op: Op, *, params: Mapping[str, Any] | None = None,
+               json: Mapping[str, Any] | None = None, cap: int | None = None) -> Iterator[dict]:
+        """Each page of a list HubSpot pages with paging.next.after, sent back as `after` (in the body of a POST, else
+        the query). With cap: it ends where after reaches cap, past which the search API returns nothing, and says so
+        in the log (9 Oct 2026: a search stopped there silently; _iter_by_object_id reads past it)."""
+        after: str | None = None
+        while True:
+            page_params = dict(params) if params is not None else None
+            page_json = dict(json) if json is not None else None
+            if after:
+                if page_json is not None:
+                    page_json["after"] = after
+                else:
+                    page_params = {**(page_params or {}), "after": after}
+            page = self.request(method, path, op, params=page_params, json=page_json) or {}
+            yield page
+            after = ((page.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                return
+            if cap is not None and str(after).isdigit() and int(after) >= cap:
+                log("hubspot_search_capped", action=op.action, target=op.target, cap=cap)
+                return
+
     def _search(
         self,
         obj: str,
@@ -128,21 +152,13 @@ class HubSpot(HttpClient):
         sorts: list[dict] | None = None,
         limit: int = SEARCH_PAGE,
     ) -> Iterator[dict]:
-        """POST /crm/v3/objects/{obj}/search, following the after cursor."""
-        after: str | None = None
-        while True:
-            body: dict[str, Any] = {"filterGroups": filter_groups, "properties": list(properties), "limit": limit}
-            if sorts:
-                body["sorts"] = sorts
-            if after:
-                body["after"] = after
-            page = self.request(
-                "POST", f"/crm/v3/objects/{obj}/search", Op(f"{_SINGULAR.get(obj, obj)}.search", target=obj), json=body
-            ) or {}
+        """POST /crm/v3/objects/{obj}/search, following the after cursor up to the search API's SEARCH_CAP results."""
+        body: dict[str, Any] = {"filterGroups": filter_groups, "properties": list(properties), "limit": limit}
+        if sorts:
+            body["sorts"] = sorts
+        op = Op(f"{_SINGULAR.get(obj, obj)}.search", target=obj)
+        for page in self._pages("POST", f"/crm/v3/objects/{obj}/search", op, json=body, cap=SEARCH_CAP):
             yield from page.get("results", [])
-            after = ((page.get("paging") or {}).get("next") or {}).get("after")
-            if not after or (str(after).isdigit() and int(after) >= SEARCH_CAP):
-                return
 
     def _get(self, obj: str, record_id: str, properties: Iterable[str]) -> dict:
         body = self.request(
@@ -291,29 +307,11 @@ class HubSpot(HttpClient):
             {"propertyName": "hs_email_optout", "operator": "EQ", "value": "true"},
             {"propertyName": "hs_email_hard_bounce_reason_enum", "operator": "HAS_PROPERTY"},
         ):
-            last = "0"
-            while True:
-                groups = [{"filters": [condition, {"propertyName": "hs_object_id", "operator": "GT", "value": last}]}]
-                body = self.request(
-                    "POST",
-                    "/crm/v3/objects/contacts/search",
-                    Op("contact.search", target="contacts"),
-                    json={
-                        "filterGroups": groups,
-                        "properties": ["email", "hs_object_id"],
-                        "sorts": [{"propertyName": "hs_object_id", "direction": "ASCENDING"}],
-                        "limit": SEARCH_PAGE,
-                    },
-                ) or {}
-                results = body.get("results", [])
-                for r in results:
-                    email = str((r.get("properties") or {}).get("email") or "").strip().lower()
-                    if email and email not in seen:
-                        seen.add(email)
-                        yield email
-                if len(results) < SEARCH_PAGE:
-                    break
-                last = str(results[-1]["id"])
+            for r in self._iter_by_object_id("contacts", [[condition]], ["email"]):
+                email = str(r["properties"].get("email") or "").strip().lower()
+                if email and email not in seen:
+                    seen.add(email)
+                    yield email
 
     def _iter_by_object_id(self, obj: str, filter_groups: list[list[dict]], properties: Iterable[str]) -> Iterator[dict]:
         """Every record matching any of the filter groups (each a list of filters, all of which must hold), once.
@@ -363,21 +361,11 @@ class HubSpot(HttpClient):
     def deal_company_ids(self, deal_id: str) -> list[str]:
         """Ids of the companies associated with a deal (v4 associations; a GET, read only)."""
         ids: list[str] = []
-        after: str | None = None
-        while True:
-            params: dict[str, Any] = {"limit": ASSOCIATION_PAGE}
-            if after:
-                params["after"] = after
-            body = self.request(
-                "GET",
-                f"/crm/v4/objects/deals/{_quote(str(deal_id))}/associations/companies",
-                Op("association.list", target="deals/companies"),
-                params=params,
-            ) or {}
+        path = f"/crm/v4/objects/deals/{_quote(str(deal_id))}/associations/companies"
+        op = Op("association.list", target="deals/companies")
+        for body in self._pages("GET", path, op, params={"limit": ASSOCIATION_PAGE}):
             ids.extend(str(r["toObjectId"]) for r in body.get("results", []) if r.get("toObjectId") is not None)
-            after = ((body.get("paging") or {}).get("next") or {}).get("after")
-            if not after:
-                return ids
+        return ids
 
     # -- writes (guarded; dry-run returns dry_result) ----------------------------
 

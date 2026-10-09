@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.apollo import total_entries
+from us_outbound.clients.apollo import people_in, total_entries, while_full_page
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.contacts import pick
@@ -247,15 +247,15 @@ def search_rows(ctx: Context, r: _Run, filters: Mapping[str, Any]) -> list[dict]
     """The rows of a search, each once, up to pick.SEARCH_PAGES pages."""
     rows: list[dict] = []
     seen: set[str] = set()
-    for page in range(1, pick.SEARCH_PAGES + 1):
-        batch = r.search(ctx, filters, page=page, per_page=pick.SEARCH_PER_PAGE).get("people") or []
-        for p in batch:
+    pages = ctx.clients.apollo.iter_pages(
+        lambda page: r.search(ctx, filters, page=page, per_page=pick.SEARCH_PER_PAGE),
+        more=while_full_page, rows=people_in, per_page=pick.SEARCH_PER_PAGE, max_pages=pick.SEARCH_PAGES)
+    for page in pages:
+        for p in page.rows:
             pid = str(p.get("id") or "")
             if pid and pid not in seen:
                 seen.add(pid)
                 rows.append(p)
-        if len(batch) < pick.SEARCH_PER_PAGE:
-            break
     return rows
 
 

@@ -218,10 +218,11 @@ def read_search(ctx: Context, search: Search, run: _Run) -> Read:
     """Every page of one visitor search, within the run's credits; each page into credit_ledger."""
     out = Read(search)
     domain = tracked_domain(ctx.settings)
-    for page in range(1, MAX_PAGES_PER_SEARCH + 1):
+
+    def read(page: int) -> Mapping[str, Any] | None:
         if not run.allows():
             out.stopped = f"the run's cap of {run.cap:g} credits"
-            return out
+            return None
         what = {"search": search.key, "days": search.days, "page": page}
         # Reserved under "reserved" (ledger.reserved_note), so quiet_runs never reads a page that was not answered.
         with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
@@ -239,20 +240,24 @@ def read_search(ctx: Context, search: Search, run: _Run) -> Read:
                 else:
                     run.errors.append(f"{search.key} page {page}: {str(exc)[:200]}")
                     out.stopped = f"an error on page {page}"
-                return out
+                return None
             orgs = organizations_in(body)
-            total = total_entries(body)
-            spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps({**what, "results": len(orgs), "total": total}))
-        run.credits += spent
-        out.pages, out.total = page, total
-        if total is not None and total > MAX_PLAUSIBLE:
-            out.problem = (f"implausible: Apollo says {total:,} companies visited, so the visitor filters were "
+            run.credits += paid.settle(1.0 if orgs else 0.0, note=json.dumps(
+                {**what, "results": len(orgs), "total": total_entries(body)}))
+        return body
+
+    # A full page with no total_entries goes on (while_full, the default), as it always has here.
+    for page in ctx.clients.apollo.iter_pages(read, max_pages=MAX_PAGES_PER_SEARCH):
+        out.pages, out.total = page.number, page.total
+        if page.total is not None and page.total > MAX_PLAUSIBLE:
+            out.problem = (f"implausible: Apollo says {page.total:,} companies visited, so the visitor filters were "
                            "probably ignored; nothing from this search is used")
-            run.refused = f"Apollo answered the website-visitor search with {total:,} companies: the filters were ignored"
+            run.refused = (f"Apollo answered the website-visitor search with {page.total:,} companies: the filters "
+                           "were ignored")
             out.rows = []
             return out
-        out.rows.extend(orgs)
-        if len(orgs) < MAX_PER_PAGE or (total is not None and page * MAX_PER_PAGE >= total):
+        out.rows.extend(page.rows)
+        if page.last:
             out.complete = True
             return out
     return out
