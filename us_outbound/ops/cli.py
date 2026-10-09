@@ -1247,6 +1247,30 @@ def _audit_report(out: dict, live: bool) -> None:
         print(f"Withdrew {len(out['cards_withdrawn'])} open card(s): {', '.join(out['cards_withdrawn'])}.")
 
 
+def _crosswalk_report(out: dict) -> None:
+    r = out["rules"]
+    n = out["known"]
+    labelled = n - r["no_rules_label"]
+    print(f"{n} companies with a known label ({out['by_approver']} corrected by an approver, {out['by_model']} the "
+          f"model was sure of; {out['outside_our_labels']} outside our labels).")
+    if n:
+        print(f"The rules' label against it: the same label {r['exact_label']} ({r['exact_label'] / n:.0%}); of the "
+              f"{labelled} the rules labelled, the same group {r['same_group']}, another group {r['other_group']}; "
+              f"no rules label {r['no_rules_label']}.")
+    for key, title in (("poor", "Translations that are mostly wrong"),
+                       ("group_only", "Translations that place the group but not the label"),
+                       ("add", "Apollo values the tab does not translate, with a clear answer")):
+        if out[key]:
+            print(f"{title}:")
+            for row in out[key]:
+                right = f", {row['share_right']} right" if row["share_right"] else ""
+                says = f" → {row['tab_says']}" if row["tab_says"] else ""
+                print(f"  {row['kind']} “{row['value']}”{says}: {row['companies']} companies{right}; {row['verdict']} "
+                      f"(top label {row['top_label']} {row['label_share']}, group {row['top_group']} "
+                      f"{row['group_share']})")
+    print(f"{out['rows']} rows" + (" written to the Crosswalk tab." if out["tab_written"] else "."))
+
+
 def _eval_report(out: dict, live: bool) -> int:
     if not live:
         print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
@@ -1273,6 +1297,13 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         out = run_job(ctx, lambda c: relabel.audit(c, args.limit))
         _audit_report(out, ctx.live)
         _dry_note(ctx, "no model was asked and no company or card was changed.")
+        return 0
+    if args.action == "crosswalk":  # reads only; with --live it also writes the Crosswalk tab
+        from us_outbound.ops import crosswalk
+
+        ctx = factory(crosswalk.JOB, args.live, operator=True)
+        _crosswalk_report(run_job(ctx, crosswalk.run))
+        _dry_note(ctx, f"the {crosswalk.TAB} tab was not written.")
         return 0
     if args.action == "eval":
         ctx = factory("labels_eval", args.live, operator=True)
@@ -1898,8 +1929,9 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
     lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
-                 "company's label, or show its label and history", cmd_labels, takes_live=True)
-    lb.add_argument("action", choices=["audit", "eval", "set", "show"])
+                 "company's label, show its label and history, or measure how Apollo's industries, NAICS codes and "
+                 "keywords translate into labels (crosswalk)", cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show", "crosswalk"])
     lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
     lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
     lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")

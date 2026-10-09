@@ -865,7 +865,8 @@ class Tally:
     checked: int = 0  # companies the model was asked about, each once (its latest check in the period)
     decisions: dict[str, int] = field(default_factory=dict)  # source, or held / disqualified
     labelled: int = 0  # checked companies the rules gave a label: what agreement is measured over
-    disagreed_groups: dict[str, int] = field(default_factory=dict)  # the rules' group, where the model differed
+    same_group: int = 0  # of those, the model's label in the rules' group (the same label, or one within the group)
+    disagreed_groups: dict[str, int] = field(default_factory=dict)  # the rules' group, where the model's group differed
     no_rules: dict[str, str] = field(default_factory=dict)  # account_id -> the model's label, where the rules had none
     corrections: list[tuple[str, str]] = field(default_factory=list)  # (from, to)
     approvals: int = 0  # cards decided by a person, corrections aside
@@ -883,6 +884,13 @@ class Tally:
         label cannot agree; it is counted in no_rules instead (9 Oct 2026: the ask read 31% "agreement" that was
         mostly companies with no rules label)."""
         return self.agreed / self.labelled if self.labelled else None
+
+    def share_same_group(self) -> float | None:
+        """Of the companies the rules labelled, the share the model placed in the rules' group. The rules give a
+        group's own label when the codes alone place a company (best_label), and the model names the label within it,
+        so "Marketing & Creative Agencies" from the rules and "Publishers" from the model agree on the group: what
+        the codes can tell (9 Oct 2026: the ask read 15% where most of the rest were such refinements)."""
+        return self.same_group / self.labelled if self.labelled else None
 
     def share_right(self) -> float | None:
         return 1 - len(self.corrections) / self.cards if self.cards else None
@@ -920,9 +928,12 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
             t.no_rules[aid] = str(v.get("model") or NONE)
         else:
             t.labelled += 1
-            if v.get("rules") != v.get("model"):
-                g = str(v.get("rules_group") or v.get("rules"))
-                groups[g] = groups.get(g, 0) + 1
+            rules_group = str(v.get("rules_group") or v.get("rules"))
+            model = ctx.settings.industry(str(v.get("model") or ""))
+            if v.get("rules") == v.get("model") or (model is not None and model.industry_group == rules_group):
+                t.same_group += 1
+            else:
+                groups[rules_group] = groups.get(rules_group, 0) + 1
     t.decisions, t.disagreed_groups = decisions, groups
     t.approvals = sum(1 for e in _between(ctx.store.select("events", {"type": "send_approval"}), "occurred_at", start,
                                           end) if e.get("approval") in DECIDED)
@@ -980,8 +991,9 @@ def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     t, run = tally(ctx, start, end), last_verify(ctx)
     d = t.decisions
     unchecked = int(run.get("unchecked") or 0)
-    lines = [f"  Checked: {t.checked} (rules and model agreed on {t.agreed} of the {t.labelled} the rules labelled, "
-             f"{_pct(t.agreed, t.labelled)}; no rules label {len(t.no_rules)}; model overruled {d.get(MODEL, 0)}; "
+    lines = [f"  Checked: {t.checked} (of the {t.labelled} the rules labelled, the model agreed on the label for "
+             f"{t.agreed} and the group for {t.same_group}, {_pct(t.same_group, t.labelled)}; no rules label "
+             f"{len(t.no_rules)}; model overruled {d.get(MODEL, 0)}; "
              f"group copy {d.get(UMBRELLA, 0)}; General copy {d.get(DISPUTED, 0)}; held {d.get('held', 0)}; "
              f"disqualified {d.get('disqualified', 0)}; waiting unchecked {unchecked})."]
     if run.get("unavailable_reason"):
@@ -1009,13 +1021,14 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
                     f"labels: {n} industry correction{'' if n == 1 else 's'} since the last send day ({n} of "
                     f"{t.cards} cards). Check the Industries tab's definitions and keywords for {_moves(t.corrections)}; "
                     "`us-outbound labels audit --live` checks the queue again."))
-    share = t.share_agreed()
+    share = t.share_same_group()
     if t.labelled >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
         worst, k = max(t.disagreed_groups.items(), key=lambda kv: kv[1]) if t.disagreed_groups else ("the groups", 0)
+        moved = t.labelled - t.same_group
         out.append((f"labels_agreement:{day}",
-                    f"labels: where the rules gave a label, the model agreed on only {share:.0%} of {t.labelled} "
-                    f"companies; most differences were in {worst} ({k}). Check that group's naics_prefixes and "
-                    "apollo_keywords on the Industries tab."))
+                    f"labels: the model put {moved} of the {t.labelled} companies the rules labelled ({1 - share:.0%}) "
+                    f"in another group or outside our labels; most were under {worst} ({k}). `us-outbound labels "
+                    "crosswalk` shows which NAICS codes and keywords bring them in."))
     gaps = len(t.no_rules)
     if gaps >= ASK_MIN_CHECKS and gaps >= ASK_NO_RULES * t.checked:
         said = Counter(label for label in t.no_rules.values() if label != NONE).most_common(GAP_CODES)
@@ -1054,10 +1067,10 @@ def readout_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     lines = ["", f"*Industry labels* (the label check; target: {TARGET_RIGHT:.0%} of cards with the right industry)"]
     for name, t in (("Last week", week), ("So far", ever)):
         d = t.decisions
-        lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on "
-                     f"{_pct(t.agreed, t.labelled)}" + (f" of the {t.labelled} the rules labelled ({len(t.no_rules)} "
-                     "had no rules label)" if t.no_rules else "") + f"; held {d.get('held', 0)}, disqualified "
-                     f"{d.get('disqualified', 0)}.")
+        lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on the group for "
+                     f"{_pct(t.same_group, t.labelled)}" + (f" of the {t.labelled} the rules labelled "
+                     f"({len(t.no_rules)} had no rules label)" if t.no_rules else "") + f"; held {d.get('held', 0)}, "
+                     f"disqualified {d.get('disqualified', 0)}.")
         if t.corrections:
             lines.append(f"  Corrections: {_moves(t.corrections, 10)}")
     return lines
