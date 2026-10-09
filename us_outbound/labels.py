@@ -114,7 +114,7 @@ class Entry:
 
 def _umbrella(settings: Settings, group: str) -> Industry | None:
     """The group's own label (its name is the group's), or None."""
-    return next((i for i in settings.industries if i.industry_group == group and i.industry == group), None)
+    return settings.umbrella(group)
 
 
 def entries(settings: Settings) -> list[Entry]:
@@ -679,8 +679,10 @@ def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping
 
     def on_rules(why: str) -> tuple[Decision | None, Verdict | None, Industry | None, str, bool]:
         d = decide(rules, None, s, mode=SKIP)
-        if d is not None and rules is None and not any(_rules_material(events)):
-            # Nothing on file for the rules either: the label its source gave it stays as it is.
+        if d is not None and rules is None:
+            # The rules give no label, from nothing on file or from codes no row matches: the label the company
+            # has stays, as `us-outbound relabel` keeps it (9 Oct 2026: clearing it held the company for "Apollo
+            # gives no industry", a doubt the hand-check cannot clear).
             d = Decision(account.get("industry") or None, account.get("industry_group") or None, RULES, "",
                          GROUP_COPY, VERIFY)
         return d, None, rules, why, False

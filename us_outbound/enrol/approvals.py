@@ -1906,8 +1906,9 @@ def redo(ctx: Context, ref: str) -> dict:
     it replaces. A company that cannot be made ready now goes back to the queue for the next enrol, or, when it may
     not be emailed at all (disqualified by the label check, suppressed, excluded), is not emailed. A card whose lead
     is being added is left alone. A dry run lists the cards and changes nothing."""
-    todo = items(ctx.store, (OPEN,)) if str(ref).strip().lower() == "all" else [find_item(ctx, ref)]
-    if ref != "all":
+    every = str(ref).strip().lower() == "all"
+    todo = items(ctx.store, (OPEN,)) if every else [find_item(ctx, ref)]
+    if not every:  # "ALL" too (9 Oct 2026: with no open cards it read todo[0] and failed)
         _actionable(todo[0])
     out: dict[str, Any] = {"dry_run": ctx.dry_run, "cards": len(todo), "posted_again": [], "back_to_queue": [],
                            "not_emailed": [], "left_alone": []}

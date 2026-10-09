@@ -94,6 +94,17 @@ def test_looks_parse_and_check_against_the_test(tabs):
         assert e.column == "looks" and message in e.message
 
 
+def test_an_ab_test_takes_the_copy_rows_own_spelling(tabs):
+    """9 Oct 2026: a version written in other capitals validated, then enrol (which matches exactly) found no row."""
+    t = set_test_row(tabs, status="running", start_date="2026-10-05", read_date="2026-12-14",
+                     version_a="LEGAL-TEAMS-PEOPLE-V1", version_b="Legal-Teams-Founder-V1")
+    settings, errors = validate_all(t)
+    assert not any(errors.values())
+    test = settings.running_test()
+    assert (test.version_a, test.version_b) == ("legal-teams-people-v1", "legal-teams-founder-v1")
+    assert settings.copy_row(test.version_a) is not None
+
+
 def test_a_holdout_compares_the_two_arms_of_one_split(tabs):
     t = set_test_row(tabs, kind="holdout", version_a="Opener", version_b="holdout", status="running",
                   start_date="2026-10-05", read_date="2026-12-14")

@@ -80,7 +80,7 @@ from us_outbound.clean.pages import (
 )
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.clients.http import ApiError, Response
+from us_outbound.clients.http import ApiError, Response, TransportError
 from us_outbound.clients.public import ROBOTS_AGENT, absolute_location, split_url
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus, queue
@@ -326,7 +326,7 @@ class Reader:
         for _ in range(MAX_REDIRECTS + 1):
             try:
                 resp = self.ctx.clients.sites.site_get(url, self.domain, timeout=PAGE_TIMEOUT)
-            except OSError:
+            except TransportError:
                 return ERROR
             self.requests += 1
             if not 300 <= resp.status < 400:
@@ -380,8 +380,8 @@ class Reader:
                 return Fetched(why, url, note="robots.txt")
             try:
                 resp = self.ctx.clients.sites.site_get(url, self.domain, timeout=PAGE_TIMEOUT)
-            except OSError as exc:  # requests' ConnectionError and Timeout are OSErrors
-                return Fetched(ERROR, url, note=type(exc).__name__)
+            except TransportError as exc:  # no answer: a timeout or a dropped connection
+                return Fetched(ERROR, url, note=exc.reason)
             self.requests += 1
             if 300 <= resp.status < 400:
                 location = _header(resp, "Location")
@@ -478,14 +478,14 @@ class Reader:
         """READ when the feed is read and is the account's; else missing, unconfirmed, BLOCKED or ERROR."""
         try:
             body = self.ctx.clients.sites.get(board.url, params=board.params, timeout=FEED_TIMEOUT)
+        except TransportError:
+            self.requests += 1
+            return ERROR
         except ApiError as exc:
             self.requests += 1
             if exc.status in (404, 410) or 300 <= exc.status < 400:
                 return "missing"
             return BLOCKED if exc.status in BLOCK_CODES else ERROR
-        except OSError:
-            self.requests += 1
-            return ERROR
         self.requests += 1
         why = job_posts.confirms(board, body, self.account)
         if why is None:

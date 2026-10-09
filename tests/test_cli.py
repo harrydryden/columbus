@@ -478,6 +478,18 @@ def test_test_start_needs_a_read_date_and_approved_copy(capsys):
     assert "pre-register" in capsys.readouterr().err
 
 
+def test_test_start_checks_the_row_as_it_will_be_written(capsys):
+    """9 Oct 2026: a read_date of 2026-9-30 passed a comparison of text; the sheet said running and the next
+    settings_sync refused the Tests tab, so the test the operator was told is running was not."""
+    settings = dataclasses.replace(SETTINGS, copy=_approved())
+    for bad, says in (("2026-9-30", "read_date"), ("30/11/2026", "read_date"), ("2026-10-01", "must be after")):
+        h = Harness(settings, sheet_tabs={"Tests": [_tests_tab(read_date=bad)]})
+        assert h.run("test", "start", "t1", "--live") == 2
+        err = capsys.readouterr().err
+        assert "would not pass the checks settings_sync makes once it is running" in err and says in err
+        assert h.sheet_tabs["Tests"][0]["status"] == "planned"
+
+
 def _read_world(read_date: date):
     """Four accounts in t1, step 1 on Mon 21 Sep (their windows closed on 19 Oct); the Harness's now is 27 Oct."""
     test = CopyTest("t1", "h", "eap-v1", "general-v1", 400, "running", date(2026, 9, 14), read_date, "reply rate")

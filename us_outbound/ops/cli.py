@@ -772,8 +772,12 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     except ValueError as exc:
         raise Refused(f"looks on the Tests tab: {exc}") from exc
     start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
-    if read_date <= start:
-        raise Refused(f"read_date {read_date} must be after the start date {start}")
+    # The row as it will be written, checked as settings_sync will read it, whatever its kind (9 Oct 2026: a read_date
+    # of 2026-9-30 passed a comparison of text, the sheet said running, and the next sync refused the tab).
+    _, errors = validate_tab("Tests", [{**row, "status": "running", "start_date": start}])
+    if errors:
+        raise Refused("the Tests tab's row would not pass the checks settings_sync makes once it is running: "
+                      + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
     split: dict[str, str] = {}
     if (row.get("share_a") or "").strip():  # version_a's share of the accounts (Harry, 8 Oct 2026)
         try:

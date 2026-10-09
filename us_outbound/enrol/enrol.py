@@ -194,28 +194,30 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     """(why enrollment waits, or None; the account ids Harry pulled). SPEC 11 weekly hand-check.
 
     This ISO week's hand_check items (payload.iso_week, else created_at) must all be handled.
-    Accounts listed in a handled item's payload.pulled_account_ids are not enrolled. While auto_send
+    Accounts listed in any of the week's items' payload.pulled_account_ids are not enrolled, whatever the item's
+    status: a pull only ever narrows, and an item re-opened to add the sample keeps its pulls (9 Oct 2026: they were
+    dropped while it was open, so the re-check before a ✅ let a pulled company through). While auto_send
     is yes the week's items must hold the random sample too: one recorded while auto_send was no
     (only the doubtful accounts) does not pass the gate until the sample is added (hand_check.py).
     """
     week = iso_week(today)
     items = [r for r in ctx.store.select("hitl_items", {"kind": "hand_check"}) if _item_week(r) == week]
-    if not items:
-        return f"this week's hand-check ({week}) has not been posted", frozenset()
-    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
-        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
-                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
-                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
-                "`us-outbound handcheck show`"), frozenset()
-    if any(r.get("status") != "handled" for r in items):
-        return f"this week's hand-check ({week}) is not approved yet", frozenset()
-    pulled = {
+    pulled = frozenset(
         str(x)
         for r in items
         if isinstance(r.get("payload"), Mapping)
         for x in (r["payload"].get("pulled_account_ids") or ())
-    }
-    return None, frozenset(pulled)
+    )
+    if not items:
+        return f"this week's hand-check ({week}) has not been posted", pulled
+    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
+        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
+                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
+                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
+                "`us-outbound handcheck show`"), pulled
+    if any(r.get("status") != "handled" for r in items):
+        return f"this week's hand-check ({week}) is not approved yet", pulled
+    return None, pulled
 
 
 def optout_untested(ctx: Context) -> str | None:

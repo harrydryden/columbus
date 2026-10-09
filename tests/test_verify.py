@@ -542,6 +542,16 @@ def test_skip_verifies_on_the_rules_alone_with_the_groups_copy():
     assert (a["industry"], a["label_source"], labels.copy_level(a)) == ("Fintech", "rules", "group")
 
 
+def test_skip_keeps_the_label_when_the_rules_give_none():
+    """9 Oct 2026: codes no Industries row matches cleared the label, and the company was held for "Apollo gives no
+    industry", which the hand-check cannot clear. relabel keeps the label; so does the check now."""
+    facts = apollo_facts("a1", naics=("999999",), keywords=("quantum widgets",), industry="widgets")
+    ctx, sdk = labelled([account()], {}, settings=settings_with(label_check="skip"), facts={"a1": facts})
+    out = verify.run(ctx)
+    a = acc(ctx)
+    assert out["verified"] == 1 and sdk.calls == [] and (a["industry"], a["label_source"]) == ("Fintech", "rules")
+
+
 def test_an_overrides_row_stands_and_nothing_is_asked():
     s = settings_with(overrides=(Override("a1co.com", "industry", "Edtech"),))
     ctx, sdk = labelled([account()], {}, settings=s)

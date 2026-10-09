@@ -624,6 +624,20 @@ class Settings:
     def industry(self, label: str) -> Industry | None:
         return next((i for i in self.industries if i.industry == label), None)
 
+    def umbrella(self, group: str) -> Industry | None:
+        """The group's own label (the one named after the group), or None."""
+        return next((i for i in self.industries if i.industry_group == group and i.industry == group), None)
+
+    def placeable(self, ind: Industry | None) -> Industry | None:
+        """The label a company whose best label is ind goes under: ind when it is switched on, else its group's own
+        label when that is (as the label check places it, labels.decide), else None. 9 Oct 2026: sourcing dropped a
+        company whose best label was switched off ("Remote & hybrid teams"), though the check would have placed it
+        under Technology & Startups."""
+        if ind is None or ind.active:
+            return ind
+        umbrella = self.umbrella(ind.industry_group)
+        return umbrella if umbrella is not None and umbrella.active else None
+
     def size_bands(self) -> tuple[str, ...]:
         """The SIZE_BANDS the General size range touches, smallest first."""
         lo, hi = self.general.min_employees, self.general.max_employees

@@ -269,7 +269,8 @@ def test_a_doubtful_only_week_does_not_pass_the_gate_once_auto_send_is_yes():
     assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset({"mar-70"}))  # auto_send = no: fine
     _auto_send_on(ctx)
     why, pulled = enrol.hand_check(ctx, ctx.now_et().date())
-    assert why.startswith(f"this week's hand-check ({WEEK}) has no random sample") and pulled == frozenset()
+    assert why.startswith(f"this week's hand-check ({WEEK}) has no random sample")
+    assert pulled == frozenset({"mar-70"})  # a pull counts whatever the item's status (9 Oct 2026)
     # hand_check_post records it again with the sample, the pull kept, open until it is approved.
     out = hand_check.post(ctx)
     assert out["status"] == "recorded again with the sample (auto_send is yes now)" and out["accounts"] == 17
@@ -277,7 +278,8 @@ def test_a_doubtful_only_week_does_not_pass_the_gate_once_auto_send_is_yes():
     assert (item["status"], item["handled_by"], item["payload"]["per_group"]) == ("open", None, 10)
     assert item["payload"]["pulled_account_ids"] == ["mar-70"]
     assert posts(t)[-1].json["text"].startswith("<@U_HARRY> Week 44 check: 17 accounts drawn at random")
-    assert "not approved yet" in enrol.hand_check(ctx, ctx.now_et().date())[0]
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (f"this week's hand-check ({WEEK}) is not approved yet",
+                                                          frozenset({"mar-70"}))
     hand_check.approve(ctx, [], "harry")
     assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset({"mar-70"}))
     assert len(ctx.store.select("hitl_items", {"kind": "hand_check"})) == 1
