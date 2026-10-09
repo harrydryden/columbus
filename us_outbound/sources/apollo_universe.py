@@ -73,7 +73,7 @@ from us_outbound.clean.people import USPS_STATES, size_band, state_code
 from us_outbound.clients.apollo import MAX_PAGE, MAX_PER_PAGE, organizations_in, total_entries
 from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import Range, new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
 from us_outbound.logs import log
@@ -677,7 +677,7 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
             spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
             room.spend(spent)
             run.credits += spent
-            if exc.status in (401, 403):
+            if isinstance(exc, AuthError):
                 raise  # the key is wrong: every search would fail
             run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
             return False
@@ -731,7 +731,7 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
                     spent = paid.fail(exc, note=ledger.failed_note(what, exc))
                     room.spend(spent)
                     run.credits += spent
-                    if exc.status in (401, 403):
+                    if isinstance(exc, AuthError):
                         raise
                     run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
                     return banded

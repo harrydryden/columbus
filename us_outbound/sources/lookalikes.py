@@ -96,7 +96,7 @@ from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
 from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
@@ -740,7 +740,7 @@ def _search_band(ctx: Context, chunk: Sequence[str], band: str, g: _Growth, who:
                 body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
             except ApiError as exc:
                 g.spent += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
-                if exc.status in (401, 403):
+                if isinstance(exc, AuthError):
                     raise  # the key is wrong: every search would fail
                 g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
                 if len(g.errors) >= GROWTH_MAX_ERRORS:

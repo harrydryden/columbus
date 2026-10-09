@@ -231,7 +231,8 @@ def read_search(ctx: Context, search: Search, run: _Run) -> Read:
             except ApiError as exc:
                 run.credits += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
                 if exc.status == 401:
-                    raise  # the key is wrong: every Apollo job fails the same way
+                    raise  # the key is wrong: every Apollo job fails the same way. A 403 (an AuthError too) is
+                    # Apollo refusing the visitor filters on this plan, so it is not re-raised (REFUSED_STATUSES)
                 if exc.status in REFUSED_STATUSES and page == 1:
                     run.refused = f"Apollo refused the website-visitor search (HTTP {exc.status}): {str(exc.body)[:200]}"
                     out.problem = "Apollo refused the visitor filters"

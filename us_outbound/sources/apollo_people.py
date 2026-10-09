@@ -65,7 +65,7 @@ from typing import Any
 
 from us_outbound.clients.apollo import total_entries
 from us_outbound.clients.db import Store, new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.contacts import pick
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
@@ -408,9 +408,9 @@ def run(ctx: Context) -> dict:
         aid = str(account["account_id"])
         try:
             found = search_account(ctx, r, account)
+        except AuthError:
+            raise  # the key is wrong: every request would fail
         except ApiError as exc:
-            if exc.status in (401, 403):
-                raise  # the key is wrong: every request would fail
             r.errors.append(f"{account.get('domain')}: {str(exc)[:200]}")
             if exc.status == RATE_LIMITED:
                 stopped = "Apollo's rate limit (HTTP 429 after the transport's retries)"

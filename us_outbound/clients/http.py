@@ -50,6 +50,14 @@ class ApiError(Exception):
         super().__init__(f"{system} HTTP {status} for {urlparse(url).path}: {str(body)[:200]}")
 
 
+class AuthError(ApiError):
+    """HTTP 401 or 403: the key is wrong or lacks the scope, so every request like it fails the same way. An ApiError,
+    so per-item handlers still see it; a job that carries on past one failed item lets this one end the run (9 Oct
+    2026: eight sources each tested `exc.status in (401, 403)` to re-raise)."""
+
+    STATUSES = frozenset({401, 403})
+
+
 class TransportError(ApiError):
     """No answer at all to a read, or to a write that is safe to repeat: a timeout or a dropped connection (status 0).
     An ApiError, so each caller's per-item handling covers it as it covers a refusal (9 Oct 2026: one Clay read
@@ -178,7 +186,8 @@ class HttpClient:
         if raw:
             return resp
         if resp.status >= 300:  # a redirect is never followed with a key, so it is not a success
-            raise ApiError(self.system, resp.status, resp.body, url)
+            error = AuthError if resp.status in AuthError.STATUSES else ApiError
+            raise error(self.system, resp.status, resp.body, url)
         return resp.body
 
 

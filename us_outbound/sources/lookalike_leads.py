@@ -81,7 +81,7 @@ from us_outbound.clean.people import state_code
 from us_outbound.clients.apollo import LOOKALIKE_SEEDS_MAX, MAX_PER_PAGE, organizations_in
 from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
 from us_outbound.logs import log
@@ -297,7 +297,7 @@ def _search(ctx: Context, leads: _Leads, filters: Mapping[str, Any], note: Mappi
                 body = apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
         except ApiError as exc:
             leads.spent += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
-            if exc.status in (401, 403):
+            if isinstance(exc, AuthError):
                 raise  # the key is wrong: every search would fail
             leads.errors.append(f"Apollo {note.get('step')}: HTTP {exc.status}")  # never the body: it may echo a seed
             return None

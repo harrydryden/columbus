@@ -57,7 +57,7 @@ from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import BULK_ENRICH_MAX, enriched_in
 from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
 from us_outbound.logs import log
@@ -219,7 +219,7 @@ def _failed(paid: ledger.Charge, exc: ApiError, note: dict, what: str, r: _Run, 
     spent = paid.fail(exc, note=json.dumps({**note, "failed": exc.status}))
     room.spend(spent)
     r.credits += spent
-    if exc.status in (401, 403):
+    if isinstance(exc, AuthError):
         raise exc  # the key is wrong: every call would fail
     r.errors.append(f"{what}: {str(exc)[:200]}")
 

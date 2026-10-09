@@ -39,7 +39,7 @@ from typing import Any
 from us_outbound import ledger
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, postings_in, total_entries
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
 from us_outbound.logs import log
@@ -174,7 +174,7 @@ def screen(ctx: Context, batch: Sequence[dict], run: _Run, room: credits.Room) -
             spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
             room.spend(spent)
             run.credits += spent
-            if exc.status in (401, 403):
+            if isinstance(exc, AuthError):
                 raise
             run.errors.append(f"screen: {str(exc)[:200]}")
             return None
@@ -199,7 +199,7 @@ def read_postings(ctx: Context, account: Mapping[str, Any], terms: Sequence[str]
             spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
             room.spend(spent)
             run.credits += spent
-            if exc.status in (401, 403):
+            if isinstance(exc, AuthError):
                 raise
             run.errors.append(f"{account['account_id']}: {str(exc)[:200]}")
             return []

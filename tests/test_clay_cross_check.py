@@ -215,7 +215,7 @@ def test_a_failed_run_is_one_error_and_every_doubt_stands():
     clay(t, {"a1": answer()}, status=403)
     out = verify.run(ctx)
     assert out["clay_cross_check"]["errors"] == [
-        f"the Clay run failed (ApiError): clay HTTP 403 for /public/v0/routines/function:{FN}/run: "
+        f"the Clay run failed (AuthError): clay HTTP 403 for /public/v0/routines/function:{FN}/run: "
         "{'routine_run_id': 'run-x'}"]
     assert out["to_hand_check_accounts"][0]["reasons"] == [NEAR]
 

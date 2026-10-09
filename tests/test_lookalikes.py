@@ -17,7 +17,7 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound import accounts
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import AuthError
 from us_outbound.ops import cli
 from us_outbound.scoring import score
 from us_outbound.scoring.score import score_account
@@ -792,7 +792,7 @@ def test_a_failed_search_keeps_the_stored_counts(world):
     g = lk.run(dataclasses.replace(ctx, now=NOW + timedelta(days=31)))["growth"]
     assert g["customers"]["stored"] is False and g["errors"] and ctx.store.select("lookalike_growth") == before
     t.route("POST", "/mixed_companies/search", status=401, body={"error": "bad key"})
-    with pytest.raises(ApiError):
+    with pytest.raises(AuthError):  # a wrong key ends the run (9 Oct 2026: AuthError)
         lk.run(dataclasses.replace(ctx, now=NOW + timedelta(days=62)))
 
 
