@@ -116,22 +116,17 @@ class Entry:
         return f"{self.name} — {group} — {self.definition or 'no definition'} — {words}"
 
 
-def _umbrella(settings: Settings, group: str) -> Industry | None:
-    """The group's own label (its name is the group's), or None."""
-    return settings.umbrella(group)
-
-
 def entries(settings: Settings) -> list[Entry]:
     """The label list, in the tab's order: every label of a group that has an active label (switched off or not,
     so "Remote & hybrid teams" is there), and one entry for each group with none, named after the group."""
-    prospected = {i.industry_group for i in settings.industries if i.active}
+    prospected = set(settings.active_groups())
     out: list[Entry] = []
     seen: set[str] = set()
     for i in settings.industries:
         if i.industry_group in prospected:
             out.append(Entry(i.industry, i.industry_group, i.definition, i.apollo_keywords, True))
         elif i.industry_group not in seen:
-            row = _umbrella(settings, i.industry_group) or i
+            row = settings.umbrella(i.industry_group) or i
             out.append(Entry(i.industry_group, i.industry_group, row.definition, row.apollo_keywords, False))
         seen.add(i.industry_group)
     return out
@@ -439,7 +434,7 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
     model = settings.industry(verdict.label)
     if model is None or not model.active:
         group = model.industry_group if model else verdict.label
-        umbrella = _umbrella(settings, group)
+        umbrella = settings.umbrella(group)
         if umbrella is None or not umbrella.active:
             if c == HIGH:
                 return leave_out(f"its industry ({group}) is switched off on the Industries tab (the label check)")
@@ -458,7 +453,7 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
                         f"the rules said {r_name}; the model says {m_name} ({c})")
     said = f"the rules say {r_name}, the model says {m_name} ({c})"
     if rules.industry_group == model.industry_group:
-        umbrella = _umbrella(settings, rules.industry_group)
+        umbrella = settings.umbrella(rules.industry_group)
         if umbrella is not None and umbrella.active:
             return Decision(umbrella.industry, umbrella.industry_group, UMBRELLA, c, GROUP_COPY, VERIFY, said)
     return Decision(*keep, DISPUTED, c, GENERAL_COPY_LEVEL, VERIFY, said)
@@ -524,14 +519,7 @@ def apply(ctx: Context, account: Mapping[str, Any], d: Decision, verdict: Verdic
 def resolve(text: Any, settings: Settings) -> Industry | None:
     """The Industries label an approver means: "fintech" is Fintech (any case), "games" is Games studios (the only
     label containing it); None when nothing matches, or more than one label does."""
-    t = " ".join(str(text or "").split()).strip(" \"'“”‘’<>.!*_`").casefold()
-    if not t:
-        return None
-    exact = [i for i in settings.industries if i.industry.casefold() == t]
-    if exact:
-        return exact[0]
-    near = [i for i in settings.industries if t in i.industry.casefold()]
-    return near[0] if len(near) == 1 else None
+    return settings.label(text, fuzzy=True)
 
 
 # -- asking the model -----------------------------------------------------------------------------------------------

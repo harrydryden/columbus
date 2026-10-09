@@ -211,7 +211,7 @@ def plan(settings: Settings, groups: Sequence[str], states: Sequence[str]) -> di
         codes = [c for c in _prefixes(c for i in labels for c in i.naics_prefixes)
                  if not any(c.startswith(p) for p in covered)]
         covered += codes
-        umbrella = next((i.industry for i in labels if i.industry == group), "")
+        umbrella = next((i.industry for i in labels if i.is_umbrella), "")
         searches = [(NAICS, tuple(codes), umbrella)] if codes else []
         searches += [(i.industry, i.apollo_keywords, i.industry) for i in labels if not i.naics_prefixes]
         bands = START_BANDS if START_BANDS is not None else settings.size_bands()
@@ -426,10 +426,10 @@ def best_label(codes: Sequence[str], keyword_text: str, settings: Settings) -> I
         naics = max((_naics_match(codes, p) for p in ind.naics_prefixes), default=0)
         words = len(find_terms(keyword_text, ind.apollo_keywords)) if keyword_text else 0
         rows.append((ind, naics, words, idx))
-    pool = [r for r in rows if r[1] and (r[2] or r[0].industry == r[0].industry_group)] or [r for r in rows if r[2]]
+    pool = [r for r in rows if r[1] and (r[2] or r[0].is_umbrella)] or [r for r in rows if r[2]]
     if not pool:
         return None
-    return min(pool, key=lambda r: (-r[2], -r[1], r[0].industry == r[0].industry_group, r[0].priority, r[3]))[0]
+    return min(pool, key=lambda r: (-r[2], -r[1], r[0].is_umbrella, r[0].priority, r[3]))[0]
 
 
 def _quote(text: str) -> str:

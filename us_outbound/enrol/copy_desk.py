@@ -84,7 +84,7 @@ def sample_account(row: CopyRow, settings: Settings) -> dict[str, Any]:
     account = dict(SAMPLE_ACCOUNT)
     industry: Industry | None = settings.industry(row.industry)
     if industry is None and row.industry != GENERAL_COPY:
-        industry = next((i for i in settings.industries if i.industry_group == row.industry), None)
+        industry = settings.umbrella(row.industry) or next(iter(settings.labels_in(row.industry)), None)
     if industry is None:
         industry = next((i for i in settings.industries if i.landing_page_url), None)
     if industry is not None:
@@ -312,8 +312,7 @@ def render_overlay(account: Mapping[str, Any], settings: Settings) -> str:
 
 def industry_material(row_industry: str, settings: Settings) -> dict[str, str]:
     """The industry's page material from the Industries tab (the group's hub row for a group; none for General)."""
-    ind = settings.industry(row_industry) or next(
-        (i for i in settings.industries if i.industry_group == row_industry and i.industry == row_industry), None)
+    ind = settings.industry(row_industry) or settings.umbrella(row_industry)
     if ind is None:
         return {}
     out = {"industry": ind.industry, "industry_group": ind.industry_group, "page": ind.landing_page_url}

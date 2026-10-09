@@ -55,7 +55,16 @@ from pathlib import Path
 from typing import Any
 
 from us_outbound.enrol import copy_markup, copy_rules, utm
-from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.settings.model import (
+    CLAY_SKIP,
+    COPY_STEPS,
+    GENERAL_COPY,
+    LEGAL_GROUP,
+    CopyRow,
+    CopyStep,
+    Mailbox,
+    Settings,
+)
 
 STEPS = COPY_STEPS
 VARIABLES = (
@@ -63,7 +72,6 @@ VARIABLES = (
     "industry_url", "site_url", "sender_first_name", "proof",
 )
 OPTIONAL_VARIABLES = frozenset({"opener", "legal_overlay"})  # alone on their line; the line goes when empty
-LEGAL_GROUP = "Legal Teams"
 
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
 SIGNATURE_TEMPLATE = "signature.txt"

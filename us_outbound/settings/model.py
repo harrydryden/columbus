@@ -92,6 +92,7 @@ MAILBOX_STATUSES = ("Warming", "Active", "Paused", "Retired")
 COPY_STATUSES = ("draft", "approved", "retired")
 COPY_STEPS = (1, 2, 3, 4)
 GENERAL_COPY = "General"  # a Copy row for every industry: the fallback when an industry has no approved row
+LEGAL_GROUP = "Legal Teams"  # the group whose emails and angle carry the legal overlay (render, angle)
 EMAIL_FORMATS = ("html", "text")
 # The contacted roles (Roles tab) and the Copy-tab column holding each one's line for email 1.
 ROLE_LINE_COLUMNS = {"People leader": "people_leader_line", "Founder or executive": "founder_line",
@@ -367,6 +368,11 @@ class Industry:
     # Harry, 7 Oct 2026). A blank cell, or a sheet without the column, takes the build's (data/industries.csv).
     definition: str = ""
 
+    @property
+    def is_umbrella(self) -> bool:
+        """Whether this is its group's own label (named after the group): a company under it gets the group's copy."""
+        return self.industry == self.industry_group
+
 
 @dataclass(frozen=True)
 class State:
@@ -626,7 +632,27 @@ class Settings:
 
     def umbrella(self, group: str) -> Industry | None:
         """The group's own label (the one named after the group), or None."""
-        return next((i for i in self.industries if i.industry_group == group and i.industry == group), None)
+        return next((i for i in self.industries if i.industry_group == group and i.is_umbrella), None)
+
+    def labels_in(self, group: str) -> tuple[Industry, ...]:
+        """The group's labels, in the tab's order (switched off or not)."""
+        return tuple(i for i in self.industries if i.industry_group == group)
+
+    def active_groups(self) -> tuple[str, ...]:
+        """The groups with at least one label switched on, in the tab's order."""
+        return tuple(dict.fromkeys(i.industry_group for i in self.industries if i.active and i.industry_group))
+
+    def label(self, text: Any, *, fuzzy: bool = False) -> Industry | None:
+        """The Industries label a person means, in any case and spacing ("fintech" is Fintech). fuzzy: also the one
+        label the text is part of ("games" is Games studios); None when nothing matches, or more than one does."""
+        t = " ".join(str(text or "").split()).strip(" \"'“”‘’<>.!*_`").casefold()
+        if not t:
+            return None
+        exact = next((i for i in self.industries if i.industry.casefold() == t), None)
+        if exact is not None or not fuzzy:
+            return exact
+        near = [i for i in self.industries if t in i.industry.casefold()]
+        return near[0] if len(near) == 1 else None
 
     def placeable(self, ind: Industry | None) -> Industry | None:
         """The label a company whose best label is ind goes under: ind when it is switched on, else its group's own
@@ -690,9 +716,7 @@ class Settings:
 
     def industry_page_url(self, label: str) -> str:
         """The page of an Industries label or group (the group's own row), else ""."""
-        row = self.industry(label)
-        if row is None:
-            row = next((i for i in self.industries if i.industry_group == label and i.industry == label), None)
+        row = self.industry(label) or self.umbrella(label)
         return row.landing_page_url.strip() if row else ""
 
     def overrides_for(self, domain: str) -> dict[str, str]:

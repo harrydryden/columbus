@@ -24,14 +24,13 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, NamedTuple
 
-from us_outbound.settings.model import Settings
+from us_outbound.settings.model import LEGAL_GROUP, Settings
 
 if TYPE_CHECKING:
     from us_outbound.scoring.score import Evidence, Match
 
 GENERAL = "General"  # SPEC 5: Control-tier accounts always get this angle
 CONTROL = "Control"
-LEGAL_GROUP = "Legal Teams"
 LEGAL_OVERLAY = "The bar's Lawyer Assistance Program covers attorneys. Who covers paralegals and staff?"
 
 # Placeholders an opener may use. validate.py allows only {evidence} on the sheet today.

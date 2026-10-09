@@ -100,7 +100,7 @@ def _clip(text: Any, n: int = QUOTE_LIMIT) -> str:
 
 def active_groups(settings: Settings) -> list[str]:
     """Industry groups with at least one active industry, in Industries-tab order."""
-    return list(dict.fromkeys(i.industry_group for i in settings.industries if i.active and i.industry_group))
+    return list(settings.active_groups())
 
 
 # -- the sample ---------------------------------------------------------------------------------

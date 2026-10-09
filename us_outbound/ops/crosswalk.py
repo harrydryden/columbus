@@ -183,7 +183,7 @@ def measure(known: Iterable[Known], settings: Settings) -> list[Row]:
         key = (kind, value)
         if key not in rows:
             rows[key] = Row(kind, value, says.industry if says else "", says.industry_group if says else "",
-                            bool(says and says.industry == says.industry_group))
+                            bool(says and says.is_umbrella))
         return rows[key]
 
     def count(r: Row, k: Known) -> None:
