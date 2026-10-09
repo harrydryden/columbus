@@ -620,3 +620,23 @@ def test_campaigns_ensure_fix_in_flight_applies_it_to_them_and_logs_it(capsys):
         C_SAM, ["steps.1"], 1, "campaigns_ensure")
     assert h.run("campaigns", "ensure", "--in-flight") == 2  # --in-flight goes with --fix
     assert "--in-flight goes with ensure --fix" in capsys.readouterr().err
+
+
+def test_operate_refuses_in_the_jobs_words_and_lets_a_bug_through(capsys):
+    """cli._operate (9 Oct 2026): a LookupError or ValueError from the job is the command's refusal (exit 2); a
+    KeyError is a bug, so main prints its traceback instead of passing it off as a refusal."""
+    ctx = make_context(SETTINGS, job="x")
+
+    def factory(job, live, operator=False):
+        return ctx
+
+    def refuses(c):
+        raise LookupError("no send approval 'zz'")
+
+    with pytest.raises(cli.Refused, match="no send approval 'zz'"):
+        cli._operate(factory, "x", False, refuses)
+    with pytest.raises(KeyError):
+        cli._operate(factory, "x", False, lambda c: {}["missing"])
+    _, summary = cli._operate(factory, "x", False, lambda c: {"done": 1}, dry_note="nothing was changed.")
+    out = capsys.readouterr().out
+    assert summary == {"done": 1} and '"done": 1' in out and "Dry-run: nothing was changed." in out

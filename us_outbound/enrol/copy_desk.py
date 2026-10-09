@@ -424,6 +424,41 @@ def _notes(problems: Sequence[Mapping[str, Any]], summary: str) -> str:
     return "\n".join([summary.strip(), *lines]).strip()[:4000]
 
 
+QA_ERRORS_IN_A_ROW = 3  # copy qa: one row's failed answer is skipped; this many in a row stops the run
+
+
+def qa_run(ctx, rows: Sequence[CopyRow], settings: Settings, *, say: Callable[[str], None] = print) -> list[QAResult]:
+    """`copy qa --live`: each row through qa_row, its verdict written to the Copy tab as it comes (6 Oct 2026: a
+    dropped SSH session lost 43 held to the end), so a run cut short keeps what it paid for and the next starts from
+    the rows still unchecked. The month's Claude cap stops it; one row's failed answer leaves that row unchecked,
+    and QA_ERRORS_IN_A_ROW failures in a row stop it (the API may be down). say: each row's line, as it comes."""
+    from us_outbound.clients.claude import BudgetExceeded
+
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    results: list[QAResult] = []
+    errors = 0
+    for row in rows:
+        try:
+            r = qa_row(ctx, row, settings)
+            errors = 0
+        except BudgetExceeded as exc:  # the month's cap: stop, keeping what is done
+            say(f"{row.copy_version}: QA stopped: {exc}")
+            break
+        except Exception as exc:  # one row's answer failed: it stays unchecked, the rest go on
+            errors += 1
+            say(f"{row.copy_version}: not checked ({exc}); run copy qa again to retry it")
+            if errors >= QA_ERRORS_IN_A_ROW:
+                say(f"QA stopped after {errors} failures in a row: the API may be down")
+                break
+            continue
+        results.append(r)
+        say(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"))
+        if sheet_id:
+            ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version",
+                                           {r.copy_version: {"qa": r.cell, "qa_notes": r.notes}})
+    return results
+
+
 def qa_row(ctx, row: CopyRow, settings: Settings | None = None) -> QAResult:
     """The sheet check, then (only when it is clean) the task model's review."""
     settings = settings or ctx.settings

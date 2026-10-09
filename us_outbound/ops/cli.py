@@ -132,7 +132,8 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.logs import log, redact
-from us_outbound.ops import bootstrap
+from us_outbound.learn import copy_tests
+from us_outbound.ops import bootstrap, campaigns
 from us_outbound.ops.heartbeat import (
     OPERATOR_START,
     OPERATOR_STOP,
@@ -223,10 +224,6 @@ def _print(value: Any) -> None:
     print(json.dumps(value, indent=2, default=str, ensure_ascii=False))
 
 
-def _operator() -> str:
-    return os.environ.get("USER") or os.environ.get("RAILWAY_SERVICE_NAME") or "unknown"
-
-
 def _synced(ctx: Context) -> str:
     """When the sheet was last read into the settings in force (settings/sync.last_read), in UK time."""
     from us_outbound.settings import sync
@@ -248,6 +245,25 @@ def _only_reads(args: argparse.Namespace) -> None:
     """A read-only action given --live says so, rather than leave Harry thinking it acted."""
     if getattr(args, "live", False):
         print(READS_ONLY)
+
+
+def _operate(factory: Factory, job: str, live: bool, fn: Callable[[Context], Any], *, operator: bool = False,
+             dry_note: str = "", show: bool = True) -> tuple[Context, Any]:
+    """Run fn as the job (heartbeat.run_job) in a fresh context. What fn refuses (a LookupError or ValueError) is the
+    command's refusal, in fn's words (exit 2); a KeyError or IndexError is a bug and goes to main as one. Then its
+    summary is printed (show) and what a dry run left alone (dry_note). 9 Oct 2026: 30 commands repeated this."""
+    ctx = factory(job, live, operator=True) if operator else factory(job, live)
+    try:
+        summary = run_job(ctx, fn)
+    except (KeyError, IndexError):
+        raise
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    if show:
+        _print(summary)
+    if dry_note:
+        _dry_note(ctx, dry_note)
+    return ctx, summary
 
 
 def _dry_note(ctx: Context, what: str) -> None:
@@ -374,7 +390,6 @@ def cmd_dry_run(args: argparse.Namespace, factory: Factory) -> int:
 
 def cmd_rescore(args: argparse.Namespace, factory: Factory) -> int:
     return _job("score", args.live, factory)
-
 
 
 def _status_heartbeats(store: Any, now: datetime) -> None:
@@ -527,69 +542,13 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def _stop(ctx: Context) -> dict:
-    inst = ctx.clients.instantly
-    paused, left = [], []
-    for c in inst.list_campaigns():
-        # 0 draft, 2 paused, 3 completed: nothing is sending.
-        if c.get("status") in (0, 2, 3):
-            left.append(c["name"])
-            continue
-        inst.pause_campaign(c["name"])
-        paused.append(c["name"])
-    return {"dry_run": ctx.dry_run, "enrollment": "stopped", "by": _operator(),
-            "campaigns_paused": paused, "already_not_sending": left}
-
-
 def cmd_stop(args: argparse.Namespace, factory: Factory) -> int:
     ctx = factory(OPERATOR_STOP, args.live, operator=True)
-    summary = run_job(ctx, _stop)
+    summary = run_job(ctx, campaigns.stop)
     _print(summary)
     print("Enrollment is stopped (in every mode) until `us-outbound start --live` runs with live_sending = yes.")
     _dry_note(ctx, "campaigns were not paused in Instantly.")
     return 0
-
-
-def _start(ctx: Context) -> dict:
-    from us_outbound.registry import blackout
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words, sending_list
-
-    check = ensure_campaigns(ctx, create=False)
-    # Drift held while leads are in flight does not refuse: the campaign is consistent for them (Harry, 7 Oct 2026).
-    held = check.get("held") or {}
-    drift = {n: sorted(set(d) - set((held.get(n) or {}).get("keys") or ())) for n, d in check["drift"].items()}
-    if any(drift.values()):
-        raise Refused(
-            "campaign settings have drifted: "
-            + "; ".join(f"{n}: {', '.join(keys)}" for n, keys in drift.items() if keys)
-            + ". Fix with `us-outbound campaigns ensure --fix --live` first."
-        )
-    inst = ctx.clients.instantly
-    found = {c["name"]: c for c in inst.list_campaigns()}
-    # Over a blackout the campaigns stay paused, recorded as the blackout's, and the blackout job starts them after
-    # it (registry/blackout.py; Harry, 7 Oct 2026): enrollment still resumes.
-    over = blackout.hold(ctx.settings, ctx.now)
-    started, skipped, waiting = [], [], []
-    for owner in ctx.settings.owners():
-        name = campaign_name(owner)
-        if name not in found or not sending_list(ctx.settings, owner):
-            skipped.append(name)
-            continue
-        if found[name].get("status") != 1 and over is not None:
-            blackout.defer(ctx, name, found[name].get("status"), over)
-            waiting.append(name)
-            continue
-        if found[name].get("status") != 1:
-            inst.activate_campaign(name)
-        started.append(name)
-    out = {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
-           "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
-    if waiting:
-        out["paused_for_blackout"] = waiting
-        out["blackout"] = f"{over.words()}: the blackout job starts them then" if over else ""
-    if held:
-        out["drift_held"] = [held_words(n, h) for n, h in held.items()]
-    return out
 
 
 def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
@@ -607,7 +566,7 @@ def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
             synced = not summary.get("skipped")
             print(_sync_line(summary))
     ctx = factory(OPERATOR_START, args.live)  # reads the settings in force again, after the sync
-    _print(run_job(ctx, _start))
+    _print(run_job(ctx, campaigns.start))
     if ctx.dry_run and args.live and synced:
         print("Dry-run: campaigns were not activated and enrollment stays stopped. Nothing was sent.")
         print(f"Running dry: live_sending is no in the settings in force (synced {_synced(ctx)}, just now). "
@@ -651,28 +610,11 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def _unenrol(ctx: Context, month: str) -> dict:
-    inst = ctx.clients.instantly
-    contacts = ctx.store.select("contacts", {"enrolment_month": month})
-    removed, without_lead = [], 0
-    for c in contacts:
-        lead_id, campaign = c.get("instantly_lead_id"), c.get("instantly_campaign")
-        if not lead_id or not campaign:
-            without_lead += 1
-            continue
-        inst.delete_lead(str(campaign), str(lead_id))  # the client refuses a non-US Outbound campaign
-        removed.append(str(lead_id))
-    return {"dry_run": ctx.dry_run, "month": month, "contacts": len(contacts),
-            "leads_removed": len(removed) if ctx.live else 0, "leads_found": len(removed),
-            "contacts_without_lead": without_lead}
-
-
 def cmd_unenrol(args: argparse.Namespace, factory: Factory) -> int:
     if not MONTH_RE.fullmatch(args.month or ""):
         raise Refused("--month must be written YYYY-MM")
-    ctx = factory("unenrol", args.live, operator=True)
-    _print(run_job(ctx, lambda c: _unenrol(c, args.month)))
-    _dry_note(ctx, "no lead was removed from Instantly.")
+    ctx, _ = _operate(factory, "unenrol", args.live, lambda c: campaigns.unenrol(c, args.month),
+                     operator=True, dry_note="no lead was removed from Instantly.")
     return 0
 
 
@@ -717,107 +659,17 @@ def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
 # -- copy tests (SPEC 12) -----------------------------------------------------------------
 
 
-def _test_start(ctx: Context, test_id: str) -> dict:
-    """Pre-registration first (SPEC 12; Harry, 6 Oct 2026: kind and looks, learn/looks.py). One copy test (kind ab,
-    or variant: Harry, 7 Oct 2026) runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns
-    nothing, so it may run beside it, and its versions are the arms enrol records, not Copy rows. A variant's row is
-    checked as settings_sync checks it (its texts against the copy rules; enrol/variants.py), and refused when it
-    breaks one; the result says which sendable Copy rows the change can be made in (variants.coverage), and a
-    change that fits none of them is refused."""
-    from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
-    from us_outbound.settings.validate import parse_looks, parse_share, validate_tab
-
-    sheet_id = ctx.guard.bounds.settings_sheet_id
-    if not sheet_id:
-        raise Refused("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
-    rows = ctx.clients.sheets.read_tabs(sheet_id, ["Tests"])["Tests"]
-    row = next((r for r in rows if r.get("test_id", "").strip() == test_id), None)
-    if row is None:
-        raise Refused(f"no test {test_id!r} on the Tests tab")
-
-    def kind(r: dict) -> str:
-        return (r.get("kind") or "").strip().lower() or AB_TEST
-
-    if kind(row) not in TEST_KINDS:
-        raise Refused(f"kind {row.get('kind')!r} on the Tests tab is not one of {', '.join(TEST_KINDS)}")
-    others = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
-              and r.get("test_id", "").strip() != test_id and kind(r) in COPY_TEST_KINDS]
-    if others and kind(row) in COPY_TEST_KINDS:
-        raise Refused(f"only one copy test (ab or variant) runs at a time (SPEC 9); {', '.join(others)} is running")
-    copy_rows: dict[str, Any] = {}
-    if kind(row) == VARIANT_TEST:
-        from us_outbound.enrol import enrol, variants
-
-        checked, errors = validate_tab("Tests", [row])
-        if errors:
-            raise Refused("the Tests tab's row does not pass the checks settings_sync makes: "
-                          + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
-        fits, not_ = variants.coverage(checked[0], enrol.sendable_copy(ctx.settings).values(), ctx.settings)
-        if not_ and not fits:
-            raise Refused("the change cannot be made in any sendable Copy row, so the test would have no accounts: "
-                          + "; ".join(f"{v}: {why}" for v, why in list(not_.items())[:4]))
-        copy_rows = {"change_fits": len(fits), "sendable": len(fits) + len(not_),
-                     "not_in_the_test": dict(list(not_.items())[:10])}
-    if row.get("status", "").strip().lower() == "running":
-        return {"test_id": test_id, "status": "running", "changed": False}
-    read_date = row.get("read_date", "").strip()
-    if not read_date or not row.get("decision_rule", "").strip():
-        raise Refused("pre-register the read_date and decision_rule on the Tests tab first (SPEC 12)")
-    try:
-        parse_looks(row.get("looks", "") or "")
-    except ValueError as exc:
-        raise Refused(f"looks on the Tests tab: {exc}") from exc
-    start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
-    # The row as it will be written, checked as settings_sync will read it, whatever its kind (9 Oct 2026: a read_date
-    # of 2026-9-30 passed a comparison of text, the sheet said running, and the next sync refused the tab).
-    _, errors = validate_tab("Tests", [{**row, "status": "running", "start_date": start}])
-    if errors:
-        raise Refused("the Tests tab's row would not pass the checks settings_sync makes once it is running: "
-                      + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
-    split: dict[str, str] = {}
-    if (row.get("share_a") or "").strip():  # version_a's share of the accounts (Harry, 8 Oct 2026)
-        try:
-            share = parse_share(row["share_a"])
-        except ValueError as exc:
-            raise Refused(f"share_a on the Tests tab: {exc}") from exc
-        split = {"split": f"{row.get('version_a', '').strip()} {share:.0%}, {row.get('version_b', '').strip()} "
-                          f"{1 - share:.0%}"}
-    if kind(row) == AB_TEST:
-        missing = [
-            v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
-            if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
-        ]
-        if missing:
-            raise Refused("copy is not approved, with a current QA pass, in the synced settings for: "
-                          + ", ".join(missing))
-    sheets = ctx.clients.sheets
-    writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
-    for column, value in [*writes, ("status", "running")]:
-        if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
-            raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
-    return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
-            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live, **split,
-            **({"copy_rows": copy_rows} if copy_rows else {})}
-
-
 def read_test(ctx: Context, test_id: str) -> dict:
-    """The test at its latest pre-registered look (learn/looks.read); looks.NotYet before the first one.
-
-    Reply rate = accounts with a human reply (any class but out_of_office) within REPLY_WINDOW_DAYS (28) days of
-    step 1 ÷ accounts whose step 1 was delivered, as in v_account_outcomes, over the accounts the look covers.
-    """
-    from us_outbound.learn import looks
-
-    return looks.read(ctx, test_id)
+    """The test at its latest pre-registered look (learn/copy_tests.read)."""
+    return copy_tests.read(ctx, test_id)
 
 
 def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.learn import looks
 
     if args.action == "start":
-        ctx = factory("test_start", args.live, operator=True)
-        _print(run_job(ctx, lambda c: _test_start(c, args.test_id)))
-        _dry_note(ctx, "the Tests tab was not changed.")
+        ctx, _ = _operate(factory, "test_start", args.live, lambda c: copy_tests.start(c, args.test_id),
+                         operator=True, dry_note="the Tests tab was not changed.")
         return 0
     _only_reads(args)
     ctx = factory("test_read", False)
@@ -894,7 +746,6 @@ def _sheet_settings(ctx: Context):
     return settings
 
 
-QA_ERRORS_IN_A_ROW = 3  # copy qa: one row's failed answer is skipped; this many in a row stops the run
 
 
 def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, role: str | None) -> list:
@@ -1021,31 +872,7 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
             print(f"Dry-run: {len(rows)} rows, no model called. With --live they go to "
                   f"{settings.general.claude_task_model}, at most ${est:.2f} of the monthly cap.")
             return 0
-        from us_outbound.clients.claude import BudgetExceeded
-
-        sheet_id = ctx.guard.bounds.settings_sheet_id
-        results, errors = [], 0
-        for row in rows:
-            try:
-                r = copy_desk.qa_row(ctx, row, settings)
-                errors = 0
-            except BudgetExceeded as exc:  # the month's cap: stop, keeping what is done
-                print(f"{row.copy_version}: QA stopped: {exc}")
-                break
-            except Exception as exc:  # one row's answer failed: it stays unchecked, the rest go on
-                errors += 1
-                print(f"{row.copy_version}: not checked ({exc}); run copy qa again to retry it")
-                if errors >= QA_ERRORS_IN_A_ROW:
-                    print(f"QA stopped after {errors} failures in a row: the API may be down")
-                    break
-                continue
-            results.append(r)
-            print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"), flush=True)
-            # Each verdict goes to the sheet as it comes (6 Oct 2026: a dropped SSH session lost 43 held to the end),
-            # so a run cut short keeps what it paid for, and the next run starts from the rows still unchecked.
-            if sheet_id:
-                ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version",
-                                               {r.copy_version: {"qa": r.cell, "qa_notes": r.notes}})
+        results = copy_desk.qa_run(ctx, rows, settings, say=lambda line: print(line, flush=True))
         print(f"{sum(r.verdict == 'pass' for r in results)} of {len(results)} passed.")
         _dry_note(ctx, "the verdicts were not written to the sheet.")
         return 0
@@ -1156,24 +983,18 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
     action = args.action
     if action == "redo":  # Harry, 7 Oct 2026: today's cards withdrawn and posted again under the checked labels
-        ctx = factory("approvals_redo", args.live, operator=True)  # it reaches no prospect: --live alone
-        try:
-            summary = run_job(ctx, lambda c: approvals.redo(c, args.item_id))
-        except (LookupError, ValueError) as exc:
-            raise Refused(str(exc)) from exc
-        _print(summary)
-        _dry_note(ctx, "no card was withdrawn or posted.")
+        ctx, summary = _operate(
+            factory, "approvals_redo", args.live, lambda c: approvals.redo(c, args.item_id),
+            operator=True, dry_note="no card was withdrawn or posted.",
+        )  # it reaches no prospect: --live alone
         return 0
     if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
         if not args.label:
             raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
-        ctx = factory("approvals_industry", args.live, operator=True)  # it reaches no prospect: --live alone
-        try:
-            summary = run_job(ctx, lambda c: approvals.industry_item(c, args.item_id, args.label))
-        except (LookupError, ValueError) as exc:
-            raise Refused(str(exc)) from exc
-        _print(summary)
-        _dry_note(ctx, "the label, the Overrides tab and the card are unchanged.")
+        ctx, summary = _operate(
+            factory, "approvals_industry", args.live, lambda c: approvals.industry_item(c, args.item_id, args.label),
+            operator=True, dry_note="the label, the Overrides tab and the card are unchanged.",
+        )  # it reaches no prospect: --live alone
         return 0
     if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
         if args.contact or args.company:
@@ -1183,26 +1004,20 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
         if args.contact == args.company:
             raise Refused("approvals reject needs one of --contact (not this person) or --company (not this company)")
         # Rejecting reaches no prospect (a contact suppressed, or an account excluded): --live alone.
-        ctx = factory("approvals_reject", args.live, operator=True)
-        try:
-            summary = run_job(ctx, lambda c: approvals.reject_item(c, args.item_id,
-                                                                   "contact" if args.contact else "company"))
-        except (LookupError, ValueError) as exc:
-            raise Refused(str(exc)) from exc
-        _print(summary)
-        _dry_note(ctx, "the item, the contact and the account are unchanged.")
+        ctx, summary = _operate(
+            factory, "approvals_reject", args.live,
+            lambda c: approvals.reject_item(c, args.item_id, "contact" if args.contact else "company"),
+            operator=True, dry_note="the item, the contact and the account are unchanged.",
+        )
         return 0 if summary.get("done") or ctx.dry_run else 2
     if args.contact or args.company:
         raise Refused("--contact and --company go with reject, not send")
     # send (approve) is ✅.
     # approve adds the lead to Instantly, so it is live like a job: --live and live_sending = yes (SPEC 0.3).
-    ctx = factory(approvals.APPROVALS_CLI_JOB, args.live)
-    try:
-        summary = run_job(ctx, lambda c: approvals.approve(c, args.item_id))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
-    _print(summary)
-    _dry_note(ctx, "the lead was not added to Instantly and the item is unchanged.")
+    ctx, summary = _operate(
+        factory, approvals.APPROVALS_CLI_JOB, args.live, lambda c: approvals.approve(c, args.item_id),
+        dry_note="the lead was not added to Instantly and the item is unchanged.",
+    )
     if summary.get("held"):
         print("Held, not sent yet: " + "; ".join(summary["held"]) + ". The approval stands: poll_approvals adds the "
               "lead within 5 minutes of that clearing, unless the card expires first.")
@@ -1323,13 +1138,10 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if not args.label:
         raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
-    ctx = factory("labels_set", args.live, operator=True)  # it reaches no prospect: --live alone
-    try:
-        summary = run_job(ctx, lambda c: relabel.set_label(c, args.domain, args.label))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
-    _print(summary)
-    _dry_note(ctx, "the label, the Overrides tab and any card are unchanged.")
+    ctx, summary = _operate(
+        factory, "labels_set", args.live, lambda c: relabel.set_label(c, args.domain, args.label),
+        operator=True, dry_note="the label, the Overrides tab and any card are unchanged.",
+    )  # it reaches no prospect: --live alone
     return 0
 
 
@@ -1352,9 +1164,8 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.crm import hubspot_writes as hw
 
     if args.action == "setup":
-        ctx = factory("hubspot_setup", args.live, operator=True)
-        _print(run_job(ctx, hw.ensure_properties))
-        _dry_note(ctx, "no HubSpot property or group was created.")
+        ctx, _ = _operate(factory, "hubspot_setup", args.live, hw.ensure_properties,
+                         operator=True, dry_note="no HubSpot property or group was created.")
     else:
         _only_reads(args)
         ctx = factory("hubspot_ids", False)
@@ -1560,13 +1371,10 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if args.pull and args.action != "approve":
         raise Refused("--pull goes with approve")
-    ctx = factory("handcheck_approve", args.live, operator=True)
-    try:
-        summary = run_job(ctx, lambda c: hand_check.approve(c, args.pull or [], _operator()))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
-    _print(summary)
-    _dry_note(ctx, "the hand-check was not marked approved.")
+    ctx, summary = _operate(
+        factory, "handcheck_approve", args.live, lambda c: hand_check.approve(c, args.pull or [], campaigns.operator()),
+        operator=True, dry_note="the hand-check was not marked approved.",
+    )
     if ctx.live:
         print(f"Approved {summary['iso_week']}; enrollment can go ahead"
               + (f", leaving out {len(summary['pulled_account_ids'])} pulled accounts." if summary["pulled_account_ids"] else "."))
@@ -1638,12 +1446,12 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
         return 1
     if not args.address or not args.owner:
         raise Refused("seed send needs the seed inbox's address and --owner (whose campaign sends it)")
-    ctx = factory(seed.JOB, args.live, operator=True)
-    try:
-        summary = run_job(ctx, lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "",
-                                                   role=args.role or "", subject=args.subject))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
+    ctx, summary = _operate(
+        factory, seed.JOB, args.live,
+        lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "", role=args.role or "",
+                            subject=args.subject),
+        operator=True, show=False,
+    )
     print(f"Seed email for {summary['address']}, from {summary['sender']} ({summary['campaign']}, "
           f"{summary['campaign_status']}), copy {summary['copy_version']} ({summary['copy_status']}, {summary['role']}):")
     print(f"  Subject: {summary['subject']} ({seed.SUBJECT_NOTES[summary['subject_arm']]})")
@@ -1672,11 +1480,11 @@ def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
     (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
     from us_outbound.ops import phase0
 
-    ctx = factory(phase0.JOB, args.live, operator=True)
-    try:
-        report = run_job(ctx, lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
+    ctx, report = _operate(
+        factory, phase0.JOB, args.live,
+        lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits),
+        operator=True, show=False,
+    )
     for line in phase0.lines(report):
         print(line)
     return 0
@@ -1702,7 +1510,7 @@ def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("killrules clear needs the item id (`us-outbound killrules show` lists them)")
     ctx = factory("killrules_clear", args.live, operator=True)
     try:
-        summary = run_job(ctx, lambda c: kill_rules.clear(c, args.item, _operator()))
+        summary = run_job(ctx, lambda c: kill_rules.clear(c, args.item, campaigns.operator()))
     except LookupError as exc:
         raise Refused(str(exc)) from exc
     _print(summary)
@@ -1710,7 +1518,6 @@ def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
     if summary.get("next"):
         print(summary["next"])
     return 0
-
 
 
 def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
