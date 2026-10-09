@@ -22,8 +22,9 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from us_outbound.clean.people import title_key
-from us_outbound.enrol import copy_markup, variants
-from us_outbound.enrol.copy_rules import money_violations, subject_violations
+from us_outbound.copy import copy_markup, variant_text
+from us_outbound.copy.copy_rules import money_violations, subject_violations
+from us_outbound.copy.variables import VARIABLES
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
 from us_outbound.settings.defaults import COLUMNS, bundled_definitions
 from us_outbound.settings import spec
@@ -118,11 +119,7 @@ MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
 CLAUDE_CAP_USD = 100.0  # a guard against a typo; the sheet's value is the cap (SPEC 1.1 set $10; Harry, 7 Oct 2026: $50)
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
 CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
-# Variables a copy row may use (render.VARIABLES; style.md).
-COPY_VARIABLES = frozenset(
-    {"first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
-     "industry_url", "site_url", "sender_first_name", "proof"}
-)
+COPY_VARIABLES = frozenset(VARIABLES)  # the variables a copy row may use (copy/variables.py; style.md)
 OPENER_PLACEHOLDERS = frozenset(PLAIN_OPENER_TOKENS)  # SPEC 5: "Saw your benefits page mentions {evidence}"
 # The tokens each opener column may use (enrol/openers.py fills them from stored facts).
 OPENER_COLUMN_TOKENS: dict[str, tuple[str, ...]] = {
@@ -1011,20 +1008,20 @@ def _holdout_arms(a: str, b: str) -> str:
 
 def _variant_text(r: _Row, col: str, change: str, email: int) -> str:
     """One arm's text: the render variables only ({{opener}} and {{legal_overlay}} are the Copy row's lines), then
-    the copy rules that apply to it alone (variants.text_violations)."""
+    the copy rules that apply to it alone (variant_text.text_violations)."""
     text = r.text(col)
     bad = False
     for name in _VARIABLE.findall(text):
-        if name not in variants.TEXT_VARIABLES:
+        if name not in variant_text.TEXT_VARIABLES:
             bad = True
-            near = hint(name, variants.TEXT_VARIABLES)
+            near = hint(name, variant_text.TEXT_VARIABLES)
             r.fail(col, f"{{{{{name}}}}} is a line of its own the Copy row places; a test's text may not use it"
                    if name in COPY_VARIABLES else f"unknown variable {{{{{name}}}}}{near}")
     for name in _SINGLE_BRACE.findall(text):
         bad = True
         r.fail(col, f"variables take double braces: write {{{{{name.strip()}}}}}, not {{{name}}}")
     if text and not bad:
-        for problem in variants.text_violations(text, change=change, email=email):
+        for problem in variant_text.text_violations(text, change=change, email=email):
             r.fail(col, problem)
     return text
 

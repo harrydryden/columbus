@@ -124,7 +124,7 @@ The default is in brackets. Items marked PHASE0-CONFIRM are checked against the 
 39. Email 4 no longer offers the one-pager; it ends on the demo link too. Should one of the emails offer the one-pager instead? [no]
 40. Must every email mention same-day counseling? [not enforced]
 41. "therapy" and "therapist" are blocked even inside a quote from the prospect's page, and the opener then falls back to the default. [blocked]
-42. Please review the phrase lists for disparaging an EAP and for EAP in Spill's name, in `enrol/copy_rules.py`. [short lists]
+42. Please review the phrase lists for disparaging an EAP and for EAP in Spill's name, in `copy/copy_rules.py`. [short lists]
 43. Statistics: any percentage except the 30% utilization claim is blocked, as are "3x", "2 in 3" and "500+ companies". Prices and durations are allowed. [yes]
 44. "wellbeing" is blocked as British; use "well-being". [blocked]
 45. The signature ends "spill.chat/us", which mail clients turn into a link, so it can't go in step 1. The footer already names the sender. [yes]

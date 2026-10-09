@@ -132,6 +132,8 @@ Files added beyond the SPEC 13 tree:
 - `ops/schedule.py` (the job table) and `ops/scheduler.py` (the always-on worker that runs it)
 - `base/` (9 Oct 2026): the alert poster (`notify.py`), the heartbeats read back with the operator stop
   (`heartbeats.py`) and the kill-rule holds (`holds.py`), one layer below enrolment, learning and operations
+- `copy/` (9 Oct 2026): the copy rules, the Copy tab's markup, its variables and the variant-text check, moved
+  out of `enrol/` so settings_sync checks copy without importing enrolment
 - `deploy/slack-app-manifest.yaml` (the Slack app)
 - `replies/outcomes.py` (sync_outcomes), `replies/optout.py` (one opt-out path for links and replies),
   `replies/draft.py` (reply drafts); `replies/poll.py` holds the hitl_items contract with the reply desk

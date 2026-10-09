@@ -69,7 +69,7 @@ from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.crm import hubspot_writes as hw
-from us_outbound.enrol.copy_rules import content_violations, structure_violations
+from us_outbound.copy.copy_rules import content_violations, structure_violations
 from us_outbound.logs import clip, log
 from us_outbound.replies.items import (
     ACTIONABLE,

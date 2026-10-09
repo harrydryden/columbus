@@ -208,8 +208,8 @@ Gates first within each vendor, then by status (confirmed, seed probe, probe, wa
 
 | Id | Where | What | Status | Evidence, or how it is settled |
 | :- | :- | :- | :- | :- |
-| `COPY-PHRASES` | `enrol/copy_rules.py:71` | The EAP phrase lists | Moot | A rule of ours, not an API detail; Harry changes it like any copy rule. |
-| `COPY-PHRASES` | `enrol/copy_rules.py:166` | What counts as a statistic | Moot | As above. |
+| `COPY-PHRASES` | `copy/copy_rules.py:72` | The EAP phrase lists | Moot | A rule of ours, not an API detail; Harry changes it like any copy rule. |
+| `COPY-PHRASES` | `copy/copy_rules.py:167` | What counts as a statistic | Moot | As above. |
 
 ## What `phase0 check` runs
 

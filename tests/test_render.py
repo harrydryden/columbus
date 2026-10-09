@@ -9,7 +9,8 @@ from datetime import date
 
 import pytest
 
-from us_outbound.enrol import copy_markup, copy_rules, render
+from us_outbound.copy import copy_markup, copy_rules
+from us_outbound.enrol import render
 from us_outbound.settings.model import (
     Angle,
     CopyRow,

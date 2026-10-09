@@ -148,7 +148,8 @@ from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import STEP_DAYS
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.enrol import capacity, copy_markup, enrol, openers, plan, queue, render, second
+from us_outbound.copy import copy_markup
+from us_outbound.enrol import capacity, enrol, openers, plan, queue, render, second
 from us_outbound.logs import hash_email, log
 from us_outbound.registry import blackout
 from us_outbound.replies.desk import APPROVE_REACTIONS, SKIP_REACTIONS, slack_text
