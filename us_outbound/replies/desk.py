@@ -90,7 +90,7 @@ from us_outbound.settings.model import Settings
 from us_outbound.timeparse import utc
 
 JOB = "poll_approvals"
-SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals.py KIND: never re-posted or escalated here
+SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals/ KIND: never re-posted or escalated here
 HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while auto_send = yes
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
@@ -653,7 +653,7 @@ def _escalate_other(ctx: Context, row: Mapping[str, Any], slack: Any) -> str:
 def escalate(ctx: Context, slack: Any, run: _Run) -> None:
     """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11).
 
-    Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals.py).
+    Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals/).
     So is the weekly hand-check while auto_send = no: every email is approved in Slack then, and nothing
     waits for the hand-check (enrol/hand_check.py), so a task and a DM every week would ask for nothing.
     """

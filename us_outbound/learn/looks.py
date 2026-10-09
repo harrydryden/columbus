@@ -25,7 +25,7 @@ has got (accounts emailed, windows closed): never a reply, so nobody peeks. Repl
 detects a 2x difference); positive and meeting rates are for information, with the same two-proportion test as
 `signals review` (signal_review.p_value). Harry writes the result on the Tests tab.
 
-An email an approver edited on its send card (approved_edited; enrol/approvals.py) counts in the arm it was given,
+An email an approver edited on its send card (approved_edited; enrol/approvals/) counts in the arm it was given,
 as assigned (Harry, 7 Oct 2026): leaving edits out would bias the comparison whenever approvers edit one arm's emails
 more than the other's (a warm intro they dislike, say), while counting them only dilutes it. Each arm's read says how
 many of its emails were edited (edited), so a large or lopsided number is seen.
@@ -52,7 +52,7 @@ from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
 POSITIVE = kinds.WARM
-EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals.py)
+EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals/)
 
 
 class NotYet(Exception):

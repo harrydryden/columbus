@@ -1,4 +1,4 @@
-"""The send path and its gates (enrol/enrol.py, enrol/approvals.py, limits.py): one eligibility check for
+"""The send path and its gates (enrol/enrol.py, enrol/approvals/, limits.py): one eligibility check for
 enrol's candidates and a send approval's re-check, the campaign's status in Instantly, holds that keep a ✅
 valid against blocks that close the card, HubSpot at the ✅, and leads Instantly leaves out of its summary.
 

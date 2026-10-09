@@ -20,7 +20,7 @@ to wait for a full inbox, including on the Mondays that collect steps due at the
 
 Leads that have stopped (a reply, bounce or unsubscribe, the account-level stop that ends a
 second contact's lead with the first's, or an account no longer enrolled)
-hold nothing. A send approval still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026)
+hold nothing. A send approval still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026)
 holds one of today's slots for its sender until it is approved or expires (limits.today), so
 the next enrol run never proposes more than the senders can send.
 
@@ -271,7 +271,7 @@ class SenderCapacity:
     sent_last_day: int | None = None  # campaign emails this sender's inboxes sent that day
     instantly_says: str = ""  # why Instantly says the campaign is not sending, when it says so
     at_limit: bool = False  # Instantly says the campaign or all its inboxes hit their daily limit
-    # Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026): each holds one of
+    # Send approvals still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026): each holds one of
     # today's slots, so free is what is left after them (limits.today takes them off).
     pending: int = 0
     held_from: int | None = None  # free before the waiting send approvals took their slots

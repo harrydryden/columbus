@@ -1,4 +1,4 @@
-"""Send approvals (enrol/approvals.py; Harry, 2 Oct 2026): with auto_send = no every email waits for an
+"""Send approvals (enrol/approvals/; Harry, 2 Oct 2026): with auto_send = no every email waits for an
 approver's ✅ in Slack before its lead is added to Instantly.
 
 The enrol world is tests/test_enrol.py's (accounts, contacts, Instantly's /leads/add and HubSpot's searches on

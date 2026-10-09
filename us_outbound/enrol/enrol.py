@@ -48,7 +48,7 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
      comes to this channel first for approval"): each account becomes a send approval instead,
      a hitl_items row and a card in the alert channel showing every email of the sequence, and
-     its lead is added only when an approver's ✅ is read (enrol/approvals.py, poll_approvals).
+     its lead is added only when an approver's ✅ is read (enrol/approvals/, poll_approvals).
      A live run without US_OUTBOUND_SLACK_BOT_TOKEN refuses, as there is nowhere to approve.
 
   6. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026): at
@@ -419,7 +419,7 @@ def candidates(
 ) -> tuple[list[Candidate], Counter[str]]:
     """Every account that could be enrolled today, with its contact; and why the others cannot.
 
-    waiting: accounts with a send approval still waiting in Slack (enrol/approvals.py), which are not
+    waiting: accounts with a send approval still waiting in Slack (enrol/approvals/), which are not
     proposed again until it is approved, declined or expires.
     """
     store = ctx.store
@@ -599,7 +599,7 @@ def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: s
     """Tier Excluded now, and a fact so the next rescore keeps it excluded (the database, so dry-run too).
 
     fact is one scoring/tiers.py reads as a hard exclusion: a hubspot one, or declined_in_slack (an
-    approver dropped the company at a send approval, source send_approval; enrol/approvals.py).
+    approver dropped the company at a send approval, source send_approval; enrol/approvals/).
     """
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
@@ -628,7 +628,7 @@ class Prepared:
     opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
     subject_arm: str = render.COPY_SUBJECT  # personal or copy: email 1's subject (contacts.subject_arm)
-    # What a send approval's card shows and an edit re-renders with (enrol/approvals.py): the four emails
+    # What a send approval's card shows and an edit re-renders with (enrol/approvals/): the four emails
     # as rendered, the variables they were filled with, and the mailbox they were rendered for.
     rendered: list[render.Rendered] = field(default_factory=list)
     values: dict[str, str] = field(default_factory=dict)
@@ -1015,7 +1015,7 @@ def run(ctx: Context) -> dict:
     would: Counter[str] = Counter()
     month = today.strftime("%Y-%m")
     proposed: dict[str, Any] | None = None
-    if approve:  # each account becomes a send approval instead of a lead (enrol/approvals.py)
+    if approve:  # each account becomes a send approval instead of a lead (enrol/approvals/)
         proposed = approvals.propose(ctx, prepared, lim, slack)
         would = Counter(proposed["by_owner"])
         r.errors += proposed["errors"]

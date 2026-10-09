@@ -173,7 +173,7 @@ and emails 2 to 4 in the thread. An approver's ✅ (seeded by the bot, so it is 
 lead; ❌ offers ✏️ edit (a thread reply, re-rendered and checked against the copy rules, then
 approved again), 👤 another contact, or 🚫 drop the company. A card not approved by the end of its
 next send day expires. With `auto_send` = `yes`, `enrol` adds leads straight away after the weekly
-hand-check, as before. `us_outbound/enrol/approvals.py` has the hitl_items and events contract the
+hand-check, as before. `us_outbound/enrol/approvals/` has the hitl_items and events contract the
 daily report reads; `us-outbound approvals list|approve|reject` does the same work without Slack.
 
 Jobs beyond SPEC 9: `retention` (daily 00:40, live: SPEC 6's retention rules and SPEC 13's 31 days, which SPEC 9

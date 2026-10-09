@@ -7,7 +7,7 @@ unsubscribes were already in the post; this module adds the rest. It only reads 
 only in aggregate: no company or person is named here.
 
 Approvals: the Slack send approvals, where General auto_send = no makes every email wait for an
-approver's ✅. It reads the contract enrol/approvals.py writes:
+approver's ✅. It reads the contract enrol/approvals/ writes:
   * hitl_items, kind send_approval: status open (payload.state waiting, rejected or editing),
     sending or handled; created_at, handled_at; payload outcome, owner, copy_version, industry,
     industry_group, role, tier, opener_source, edited and send_day;

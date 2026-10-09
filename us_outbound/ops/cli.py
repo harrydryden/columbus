@@ -18,7 +18,7 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       stop --live is the brake: live_sending = no does not stop Instantly.
                                       Over a blackout start leaves the campaigns paused, and the blackout
                                       job starts them after it (registry/blackout.py; 7 Oct 2026)
-  approvals list | send | contact |   send approvals without Slack (enrol/approvals.py; Harry, 2 Oct 2026:
+  approvals list | send | contact |   send approvals without Slack (enrol/approvals/; Harry, 2 Oct 2026:
     company [ID]                      while auto_send = no every email waits for approval), in the Slack
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
                                       person, company = 🚫 not this company. approve, reject --contact and
@@ -965,7 +965,7 @@ def _print_send_approvals(items: list[dict]) -> None:
 
 
 def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
-    """Send approvals at the command line (enrol/approvals.py): the same close path as Slack, approved_by "cli"."""
+    """Send approvals at the command line (enrol/approvals/): the same close path as Slack, approved_by "cli"."""
     from us_outbound.enrol import approvals
 
     if args.action == "list":

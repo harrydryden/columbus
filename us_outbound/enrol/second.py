@@ -30,7 +30,7 @@ and a send approval's ✅ (enrol/approvals.recheck):
             the very one the first contact got (two colleagues with the same email reads as a mail merge). Its
             own opener, for its role. The test version, opener holdout and subject arm are by account, so both
             people share them.
-  Approvals the card says it is the second contact, and who the first was (enrol/approvals.py).
+  Approvals the card says it is the second contact, and who the first was (enrol/approvals/).
   Stops     replies/account_stop.py: anyone's reply, bounce, unsubscribe or complaint stops both sequences.
 """
 
