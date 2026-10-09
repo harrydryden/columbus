@@ -153,7 +153,7 @@ COLUMNS: dict[str, frozenset[str]] = {
         "changed_by", "run_id"}),
 }
 
-Where = dict[str, Any]  # {col: value} equality; list/tuple/set value means IN; None means IS NULL; Range: lo <= col < hi
+Where = dict[str, Any]  # {col: value} equality; a list, tuple or set: IN; None: IS NULL; Range: lo <= col < hi
 COLUMN_RE = re.compile(r"[a-z_][a-z0-9_]*")
 
 
