@@ -894,19 +894,16 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
     t = Tally()
     decisions: dict[str, int] = {}
     groups: dict[str, int] = {}
-    latest: dict[str, tuple[datetime, Mapping[str, Any]]] = {}
-    for e in _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
-                      "observed_at", start, end):
-        v = e.get("value") or {}
+    rows = _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
+                    "observed_at", start, end)
+    for e in rows:
         if e.get("fact") == CORRECTED_FACT:
+            v = e.get("value") or {}
             t.corrections.append((str(v.get("from") or "no label"), str(v.get("to") or "")))
-            continue
-        if not v.get("asked"):
-            continue
-        aid, at = str(e.get("account_id") or e.get("event_id")), utc_or_epoch(e.get("observed_at"))
-        if aid not in latest or at >= latest[aid][0]:
-            latest[aid] = (at, v)
-    for aid, (_, v) in latest.items():
+    latest = facts.newest_by(rows, lambda e: str(e.get("account_id") or e.get("event_id")), VERDICT_FACT,
+                             where=lambda e: bool((e.get("value") or {}).get("asked")))
+    for aid, e in latest.items():
+        v = e["value"]
         t.checked += 1
         d = v.get("decision") or {}
         key = {HOLD: "held", DISQUALIFY: "disqualified"}.get(str(d.get("action")), str(d.get("source") or ""))
@@ -954,12 +951,9 @@ def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> 
     labelled = {aid: label for aid, label in no_rules.items() if label and label != NONE}
     if not labelled:
         return [], 0
-    newest: dict[str, Mapping[str, Any]] = {}
-    for e in ctx.store.select("signal_events", {"account_id": sorted(labelled), "source": APOLLO_SOURCE,
-                                                "fact": "naics"}):
-        aid = str(e.get("account_id"))
-        if aid not in newest or utc_or_epoch(e.get("observed_at")) >= utc_or_epoch(newest[aid].get("observed_at")):
-            newest[aid] = e
+    newest = facts.newest_by(ctx.store.select("signal_events", {"account_id": sorted(labelled),
+                                                                "source": APOLLO_SOURCE, "fact": "naics"}),
+                             lambda e: str(e.get("account_id")))
     pairs: dict[tuple[str, str], int] = {}
     uncoded = 0
     for aid, label in labelled.items():

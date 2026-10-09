@@ -127,9 +127,17 @@ def score_terms(ctx, specs):
     return m.evidence[0].url if m else None
 
 
-def openers_latest(ctx, specs):
-    e = openers._latest([row(t, at, "apollo_jobs", "open_roles", t) for t, at in specs]).get("open_roles")
-    return e and e["value"]
+def openers_tokens(ctx, specs):
+    counts = {t: i + 2 for i, (t, _) in enumerate(specs)}  # OPEN_ROLES_MIN and up, each read as a word
+    got = openers.tokens({}, sig("Hiring", "apollo_jobs", "open_roles >= 1", 10), None,
+                         [row(t, at, "apollo_jobs", "open_roles", counts[t]) for t, at in specs], ctx.settings, TODAY)
+    return next((t for t, n in counts.items() if openers.number_word(n) == got.get("open_roles")), None)
+
+
+def openers_newest_leader(ctx, specs):
+    rows = [row(t, at, "apollo_people", pick.NEWEST_LEADER_FACT, {"apollo_person_id": t}) for t, at in specs]
+    return openers.newest_leader(rows, sig("New leader", "apollo_people", "people_found >= 1", 10), TODAY).get(
+        "apollo_person_id")
 
 
 def openers_focus_material(ctx, specs):
@@ -258,7 +266,8 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "score.unread_sources": (score_unread, True),
     "score._match_condition": (score_condition, True),
     "score._match_terms": (score_terms, True),
-    "openers._latest": (openers_latest, True),
+    "openers.tokens": (openers_tokens, False),  # fresh_facts leaves out a fact with no time
+    "openers.newest_leader": (openers_newest_leader, False),
     "openers.focus_material": (openers_focus_material, True),
     "openers.contact_person_id": (openers_person_id, True),
     "openers.stored_focus": (openers_stored_focus, False),  # undated is older than FOCUS_REFRESH_DAYS
@@ -309,6 +318,10 @@ MOVED = [
     "labels.latest_verdict", "labels.latest_correction", "labels.Material.of", "labels._rules_material",
     "labels._home_page", "labels.corrected_rows", "score.latest_facts", "score.calendar_facts",
     "score._match_condition", "score._match_terms", "openers.contact_person_id", "openers.stored_focus",
+    # the last-wins readers
+    "openers.tokens", "openers.newest_leader", "openers.focus_material", "labels.tally", "labels.gap_codes",
+    "score.unread_sources", "verify.doubt_history", "clay_cross_check.answers", "lookalikes._latest",
+    "named._latest", "approvals.recipient_source", "relabel.show",
 ]
 
 
@@ -335,6 +348,7 @@ def test_keywords_stored_as_text_read_as_a_list_by_labels():
     assert m.keywords == ("payroll", "hr software")
 
 
-def test_keywords_stored_as_text_read_by_the_opener_focus():
+def test_keywords_stored_as_text_read_as_a_list_by_the_opener_focus():
+    """facts.texts: as labels read them (before 9 Oct 2026 the opener read text keywords as none)."""
     keywords, _ = openers.focus_material([row("e1", T, "apollo_org", "keywords", "payroll, hr software")])
-    assert keywords == []
+    assert keywords == ["payroll", "hr software"]

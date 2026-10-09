@@ -80,7 +80,6 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from us_outbound import labels, parse
@@ -91,11 +90,11 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, focus, queue
+from us_outbound.facts import newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import latest_facts, parse_override
 from us_outbound.settings.model import CLAY_REQUIRED, SIZE_BANDS, General, Settings
-from us_outbound.timeparse import utc_or_epoch
 
 JOB = "verify_accounts"
 VERIFIED = "verified"
@@ -260,19 +259,13 @@ def doubt_history(ctx: Context, account_ids: Iterable[str] | None = None) -> tup
     else:
         for i in range(0, len(ids), ID_CHUNK):
             rows += ctx.store.select("signal_events", {**where, "account_id": ids[i : i + ID_CHUNK]})
-    latest: dict[str, tuple[datetime, dict]] = {}
+    latest = newest_by(rows, lambda e: str(e.get("account_id")), DOUBT_FACT,
+                       where=lambda e: isinstance(e.get("value"), Mapping))
     cleared: dict[str, set[str]] = defaultdict(set)
     for e in rows:
-        aid, value = str(e.get("account_id")), e.get("value")
-        if not isinstance(value, Mapping):
-            continue
-        if e.get("fact") == DOUBT_FACT:
-            t = utc_or_epoch(e.get("observed_at"))
-            if aid not in latest or t >= latest[aid][0]:
-                latest[aid] = (t, dict(value))
-        elif e.get("fact") == CLEARED_FACT:
-            cleared[aid] |= {str(r) for r in value.get("reasons") or ()}
-    return {aid: v for aid, (_, v) in latest.items()}, cleared
+        if e.get("fact") == CLEARED_FACT and isinstance(value := e.get("value"), Mapping):
+            cleared[str(e.get("account_id"))] |= {str(r) for r in value.get("reasons") or ()}
+    return {aid: dict(e["value"]) for aid, e in latest.items()}, cleared
 
 
 def open_doubts(ctx: Context) -> list[dict]:
