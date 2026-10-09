@@ -77,13 +77,13 @@ from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, s
 from us_outbound.logs import clip, log
 from us_outbound.ops import notify, retention
 from us_outbound.registry import ramp
+from us_outbound.replies import kinds
 from us_outbound.replies.items import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
 from us_outbound.timeparse import uk_midnight, utc
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
-WARM_CLASSES = ("positive", "referral")
 LISTED_CLASSES = ("objection", "negative", "other")
 LIST_LIMIT = 10  # accounts listed per section
 QUOTE = 120  # characters of reply text quoted
@@ -236,10 +236,13 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
         return names.get(str(e.get("account_id") or ""), "an account")
 
     steps = Counter(e.get("step") for e in sent)
-    classes = Counter(str(e.get("reply_class") or "not classified") for e in replies)
-    warm = [e for e in replies if e.get("reply_class") in WARM_CLASSES]
+    # A reply is a person writing back (replies/kinds.py), as the readout counts it; away messages are listed apart.
+    human = [e for e in replies if kinds.is_human(e.get("reply_class"))]
+    classes = Counter(str(e.get("reply_class") or "not classified") for e in human)
+    warm = [e for e in replies if kinds.is_warm(e.get("reply_class"))]
     nums = {
-        "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(replies),
+        "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(human),
+        "out_of_office": len(replies) - len(human),
         "by_class": dict(classes), "positive": len(warm), "bounced": len(by_type.get("bounced", [])),
         "unsubscribed": len(by_type.get("unsubscribed", [])),
         # By company: a meeting and a Spill 3.0 deal for one booking are two events (crm/readback.py, 6 Oct 2026).
@@ -250,19 +253,20 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     lines += ["", f"*Sent and outcomes* · {label} (UK)"]
     step_text = fmt.counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), label="step ")
     lines.append(f"  Sent: {len(sent)}" + (f" ({step_text})" if step_text else ""))
-    lines.append(f"  Replies: {len(replies)}" + (f" ({fmt.counts(classes)})" if replies else ""))
+    lines.append(f"  Replies: {len(human)}" + (f" ({fmt.counts(classes)})" if human else "")
+                 + (f" · out of office {nums['out_of_office']}" if nums["out_of_office"] else ""))
     lines.append(f"  Positive or referral: {len(warm)}"
                  + (" · " + "; ".join(f"{who(e)} ({e.get('reply_class')}, {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT])
                     if warm else ""))
     lines.append(f"  Bounces: {nums['bounced']} · Unsubscribes: {nums['unsubscribed']} · "
                  f"Demos booked: {nums['demos_booked']} · Demos held: {nums['demos_held']}")
-    listed = [e for e in replies if e.get("reply_class") in LISTED_CLASSES]
+    listed = [e for e in human if e.get("reply_class") in LISTED_CLASSES]
     objections = [f"{who(e)} ({e.get('reply_class')}): “{clip(' '.join(str(e.get('reply_text') or '').split()), QUOTE)}”"
                   for e in listed[:LIST_LIMIT]]
     if listed:
         lines.append("Objections, negatives and other replies:")
         lines += [f"  • {x}" for x in objections]
-    ooo = [e for e in replies if e.get("reply_class") == "out_of_office"]
+    ooo = [e for e in replies if not kinds.is_human(e.get("reply_class"))]
     if ooo:
         lines.append("Out of office: " + ", ".join(who(e) for e in ooo[:LIST_LIMIT]))
     visits = {str(e.get("account_id") or "") for e in by_type.get("site_visit", [])}

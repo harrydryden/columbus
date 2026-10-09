@@ -46,12 +46,12 @@ from us_outbound import fmt
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import signal_review
+from us_outbound.replies import kinds
 from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, VARIANT_ARMS, VARIANT_TEST, Test
 from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
-POSITIVE = frozenset({"positive", "referral"})
-NOT_HUMAN = "out_of_office"
+POSITIVE = kinds.WARM
 EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals.py)
 
 
@@ -74,7 +74,7 @@ class Outcome:
         return self.step1_at + WINDOW
 
     def replied(self) -> bool:
-        return any(self.step1_at <= t < self.closes_at and c != NOT_HUMAN for t, c in self.replies)
+        return any(self.step1_at <= t < self.closes_at and kinds.is_human(c) for t, c in self.replies)
 
     def positive(self) -> bool:
         return any(self.step1_at <= t < self.closes_at and c in POSITIVE for t, c in self.replies)

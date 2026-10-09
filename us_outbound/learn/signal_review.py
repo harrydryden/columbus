@@ -33,6 +33,7 @@ from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import Context
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.learn import kill_rules
+from us_outbound.replies import kinds
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 from us_outbound.timeparse import utc
 
@@ -40,8 +41,7 @@ MIN_COMPANIES = 30  # emailed companies on each side of a signal before a verdic
 P_VALUE = 0.10  # two-sided; a pilot's samples are small, so this is a lead to follow, not proof
 READY_DELIVERED = 60  # the daily post says the review is worth reading from this many emailed companies
 READY_DAYS = 14  # ... and this many days after the first send
-NOT_HUMAN = "out_of_office"
-POSITIVE = frozenset({"positive", "referral"})
+POSITIVE = kinds.WARM
 TIERS = ("Priority", "Standard", "Control")
 
 
@@ -101,7 +101,7 @@ def emailed(ctx: Context) -> tuple[list[Company], int]:
         if c is None or t is None or not c.step1_at <= t < c.step1_at + window:
             continue
         cls = str(r.get("reply_class") or "").strip().lower()
-        if cls == NOT_HUMAN:
+        if not kinds.is_human(cls):
             continue
         c.replied = True
         c.positive = c.positive or cls in POSITIVE

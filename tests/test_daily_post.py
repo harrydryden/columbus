@@ -76,7 +76,7 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "• This week's hand-check: `us-outbound handcheck show`",
         "",
         "*Yesterday*",
-        "Sent 8 (step 1 5, step 2 3) · 4 replies (1 positive) · 1 bounce · 1 unsubscribe · 1 demo booked",
+        "Sent 8 (step 1 5, step 2 3) · 3 replies (1 positive) · 1 bounce · 1 unsubscribe · 1 demo booked",
         "Found 0 companies and 0 contacts",
         "Positive: Acme Creative (positive, hannah@meetspill.org)",
         "• Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”",
@@ -100,7 +100,7 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "",
         "Nothing else to flag: mailboxes and campaigns are fine. Full detail: `us-outbound daily --full`.",
     ]
-    assert (out["sent"], out["replies"], out["positive"]) == (8, 4, 1)  # the summary keeps the same numbers
+    assert (out["sent"], out["replies"], out["positive"]) == (8, 3, 1)  # the summary keeps the same numbers (human replies)
 
 
 def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_to_sunday_on_monday():
@@ -120,13 +120,13 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
     lines, _ = daily_post.build(ctx)  # the full post: `us-outbound daily --full`
     assert lines[0] == "*Daily post, Tue 27 Oct*"
-    assert lines[1] == ("Yesterday: 8 sent · 4 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
+    assert lines[1] == ("Yesterday: 8 sent · 3 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
                         " · 0 ready to send")
     assert lines[2] == ("*Needs you:* 1 reply (waited 30 hours) · 1 kill-rule hold (`us-outbound killrules show`) · "
                         "this week's hand-check (`us-outbound handcheck show`)")
     assert "*Sent and outcomes* · Yesterday, Mon 26 Oct (UK)" in lines
     assert "  Sent: 8 (step 1 5, step 2 3)" in lines  # Sunday's send is not yesterday's
-    assert "  Replies: 4 (not classified 1, objection 1, out_of_office 1, positive 1)" in lines
+    assert "  Replies: 3 (not classified 1, objection 1, positive 1) · out of office 1" in lines
     assert "  Positive or referral: 1 · Acme Creative (positive, hannah@meetspill.org)" in lines
     assert "  Bounces: 1 · Unsubscribes: 1 · Demos booked: 1 · Demos held: 0" in lines
     assert ("  • Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”"
@@ -149,7 +149,8 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     assert "Waiting for approval: 2 (hand-checks 1, reply approvals 1); the oldest has waited 30 hours." in lines
     # Posted to the alert channel; the summary keeps the numbers, never the reply text (SPEC 6 purges it).
     assert post.json["channel"] == "C_ALERT"
-    assert (out["sent"], out["replies"], out["positive"], out["bounced"], out["demos_booked"]) == (8, 4, 1, 1, 1)
+    assert (out["sent"], out["replies"], out["positive"], out["bounced"], out["demos_booked"]) == (8, 3, 1, 1, 1)
+    assert out["out_of_office"] == 1  # an away message is not a reply (replies/kinds.py), as in the readout
     assert "text" not in out and "We already have" not in str(out)
 
 

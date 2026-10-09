@@ -90,6 +90,7 @@ from us_outbound.enrol.openers import HOLDOUT, OPENER
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.learn import kill_rules
 from us_outbound.limits import Limits
+from us_outbound.replies import kinds
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import CLAY_REQUIRED, TIERS, Settings
 from us_outbound.timeparse import utc
@@ -104,7 +105,6 @@ CONTACT_REJECTED, COMPANY_REJECTED = "contact_rejected", "company_rejected"
 EXPIRED, BLOCKED = "expired", "blocked"
 DECLINED = (CONTACT_REJECTED, COMPANY_REJECTED)
 DECIDED = (APPROVED, EDITED, *DECLINED)
-NOT_HUMAN = "out_of_office"  # every other reply class is a person writing back (kill_rules)
 
 # To improve.
 LEARN_DAYS = 90  # the window it reads: recent enough to tune on, long enough to reach the minimums below
@@ -394,7 +394,7 @@ class _Emailed:
         for r in ev.replies:
             cid = str(r.get("contact_id") or "") or by_account.get(str(r.get("account_id") or ""), "")
             t = utc(r.get("occurred_at"))
-            if cid not in step1 or t is None or t < step1[cid].at or _lower(r.get("reply_class")) == NOT_HUMAN:
+            if cid not in step1 or t is None or t < step1[cid].at or not kinds.is_human(r.get("reply_class")):
                 continue
             replied.add(cid)
             if _lower(r.get("reply_class")) in WARM_REPLY_CLASSES:

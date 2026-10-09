@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Mapping
 
+from us_outbound.replies.kinds import WARM
 from us_outbound.logs import log, redact
 
 US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
@@ -46,7 +47,7 @@ HUBSPOT_EMPTY_ONLY = frozenset({"hubspot_owner_id", "lifecyclestage", "hs_lead_s
 # Identity fields a new warm record needs; only on create.
 HUBSPOT_COMPANY_CREATE_FIELDS = frozenset({"name", "domain"})
 HUBSPOT_CONTACT_CREATE_FIELDS = frozenset({"email", "firstname", "lastname", "jobtitle"})
-WARM_REPLY_CLASSES = frozenset({"positive", "referral"})
+WARM_REPLY_CLASSES = WARM  # replies/kinds.py
 
 APOLLO_READ_ACTIONS = frozenset(
     {

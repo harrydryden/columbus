@@ -73,6 +73,7 @@ from us_outbound.learn import holds
 from us_outbound.learn.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.logs import log
 from us_outbound.ops import notify
+from us_outbound.replies import kinds
 from us_outbound.settings.model import Settings
 from us_outbound.timeparse import utc
 
@@ -349,7 +350,7 @@ def group_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) ->
             accounts[str(a["account_id"])] = a
     replied = defaultdict(list)
     for r in ev.replies:
-        if _lower(r.get("reply_class")) != "out_of_office":
+        if kinds.is_human(r.get("reply_class")):
             replied[ev.account(r)].append(utc(r["occurred_at"]))
     by_group: dict[str, list[tuple[str, _Send]]] = defaultdict(list)
     for aid, s in step1.items():

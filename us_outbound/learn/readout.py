@@ -50,6 +50,7 @@ from us_outbound.learn import cohorts, looks, signal_value
 from us_outbound.learn.kill_rules import COMPLAINT
 from us_outbound.logs import log
 from us_outbound.ops import notify
+from us_outbound.replies import kinds
 from us_outbound.timeparse import iso_date, utc
 
 JOB = "monday_readout"
@@ -64,7 +65,7 @@ CUTS = (("tier", "By tier"), ("angle", "By angle"), ("industry_group", "By indus
         ("step", "By step"))
 CUT_LIMIT = 8  # values listed per cut, the busiest first
 REPLY_ITEM, OOO_ITEM, OPT_OUT = "reply:", "out_of_office:", "unsubscribed:"  # poll_replies' and optout's ids
-POSITIVE = frozenset({"positive", "referral"})
+POSITIVE = kinds.WARM
 
 
 def rate(k: int, n: int, *, minimum: int = MIN_COMPANIES) -> str:
@@ -97,7 +98,7 @@ class _Events:
 
 
 def week_numbers(ev: _Events, start: datetime, end: datetime) -> dict[str, int]:
-    replies = [e for e in ev.between("replied", start, end) if e.get("reply_class") != "out_of_office"]
+    replies = [e for e in ev.between("replied", start, end) if kinds.is_human(e.get("reply_class"))]
     return {
         "sent": len(ev.between("sent", start, end)),
         "replies": len(replies),

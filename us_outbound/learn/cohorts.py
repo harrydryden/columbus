@@ -48,6 +48,7 @@ from us_outbound.context import UK, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.learn import signal_review
+from us_outbound.replies import kinds
 from us_outbound.timeparse import et_day, uk_day, utc
 
 AGES = (7, 14, 21, 28)  # days after email 1; 28 is the reply window (instantly.REPLY_WINDOW_DAYS)
@@ -66,8 +67,7 @@ NOT_RECORDED = "not recorded"
 SENT, BOUNCED, REPLIED, UNSUBSCRIBED, COMPLAINED = "sent", "bounced", "replied", "unsubscribed", "complained"
 MEETING, DEMO = "meeting_booked", "demo_held"
 EVENT_TYPES = (SENT, BOUNCED, REPLIED, UNSUBSCRIBED, COMPLAINED, MEETING, DEMO)
-NOT_HUMAN = "out_of_office"
-POSITIVE = frozenset({"positive", "referral"})
+POSITIVE = kinds.WARM
 ID_CHUNK = 1000
 
 
@@ -169,7 +169,7 @@ def companies(ctx: Context) -> list[Company]:
             co.step1_at = step1["at"]
             co.delivered = not any(e["type"] == BOUNCED and e.get("contact_id") == step1.get("contact_id")
                                    and e.get("step") in (1, None) for e in co.events)
-        co.events = [e for e in co.events if e["type"] != REPLIED or str(e.get("reply_class") or "") != NOT_HUMAN]
+        co.events = [e for e in co.events if e["type"] != REPLIED or kinds.is_human(e.get("reply_class"))]
     return sorted(out.values(), key=lambda c: (c.enrolled_at, c.account_id))
 
 
