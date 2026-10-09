@@ -12,6 +12,7 @@ from us_outbound.clients.apollo import (
     credits_left,
     enriched_in,
     normalize_filters,
+    org_id,
     organizations_in,
 )
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS, Boundaries, Guard, GuardViolation, Op
@@ -161,6 +162,19 @@ def test_bulk_enrich_is_one_paid_call_of_up_to_ten_root_domains():
         with pytest.raises(ValueError):
             apollo.bulk_enrich_organizations(bad)
     assert len(t.requests) == 1
+
+
+def test_a_saved_account_s_own_id_is_never_taken_for_its_organization_id():
+    """Defect 8 (9 Oct 2026): an `accounts` row with no organization_id carried its account id as `id`, which
+    callers took as the organization id (apollo_org_id, then paid job-postings lookups)."""
+    page = {"organizations": [{"id": "o1", "primary_domain": "acme.example"}],
+            "accounts": [{"id": "acct-1", "organization_id": None, "domain": "beta.example"},
+                         {"id": "acct-2", "organization_id": "o3", "domain": "gamma.example"}]}
+    rows = organizations_in(page)
+    assert [(o["organization_id"], o["id"], o.get("apollo_account_id")) for o in rows] == [
+        ("o1", "o1", None), (None, None, "acct-1"), ("o3", "o3", "acct-2")]
+    assert [org_id(o) for o in rows] == ["o1", "", "o3"]
+    assert org_id(None) == ""
 
 
 def test_enriched_in_reads_a_single_answer_and_an_empty_one():

@@ -355,6 +355,25 @@ def test_the_next_run_carries_on_from_the_next_page_and_a_new_month_starts_again
     assert november == [1, 2]  # page 1 again; its companies are accounts already, so page 2 too
 
 
+def test_a_saved_apollo_account_without_an_organization_id_stores_no_apollo_org_id():
+    """Defect 8 (9 Oct 2026): a search's `accounts` row whose organization_id is None gave its account id as the
+    account's apollo_org_id, later fed to paid job-postings lookups. It now gives none."""
+    ctx, t, fake = make([org(1)])
+
+    def as_saved_accounts(req):
+        page = fake.search(req)
+        page["accounts"] = [{**{k: v for k, v in o.items() if k not in ("id", "primary_domain")}, "id": "acct-77",
+                             "organization_id": None, "domain": o["primary_domain"]} for o in page.pop("organizations")]
+        return page
+
+    t.route("POST", "/mixed_companies/search", fn=as_saved_accounts)
+    assert uni.run(ctx)["created"] == 1
+    a = accounts_by_domain(ctx)["company1.com"]
+    assert a["apollo_org_id"] is None
+    facts = ctx.store.select("signal_events", {"account_id": a["account_id"]})
+    assert facts and all(e["source_url"] == "" for e in facts)  # no Apollo page named after the account id
+
+
 def test_a_page_with_results_costs_one_credit_and_an_empty_page_none():
     ctx, _, _ = make([org(1)])
     uni.run(ctx)

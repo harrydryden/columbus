@@ -103,18 +103,37 @@ def normalize_filters(filters: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _org_record(row: Mapping[str, Any], org_id: Any, domain: Any, account_id: Any = None) -> dict:
+    """One organization record as callers read it: organization_id, and id with it, is Apollo's organization id or
+    None, never an account id (an account's own id is kept as apollo_account_id)."""
+    oid = str(org_id).strip() if org_id not in (None, "") else None
+    out = {**row, "organization_id": oid or None, "id": oid or None, "domain": domain}
+    if account_id not in (None, ""):
+        out["apollo_account_id"] = str(account_id)
+    return out
+
+
+def org_id(org: Mapping[str, Any] | None) -> str:
+    """The Apollo organization id of a record from organizations_in() or enriched_in(), or "" when it has none."""
+    return str((org or {}).get("organization_id") or "")
+
+
 def organizations_in(page: Mapping[str, Any]) -> list[dict]:
     """Both result buckets of an organization search, each with organization_id and domain set.
 
     `organizations` rows carry the organization id as `id` and `primary_domain`; `accounts`
     rows (companies someone saved in Apollo) carry an account `id`, a separate
-    `organization_id` and `domain`.
+    `organization_id` and `domain`. Each record's organization_id, and its id, is the organization id or
+    None: an accounts row with no organization_id has none, and its account id is kept only as
+    apollo_account_id (9 Oct 2026: callers fell back to `id`, so such a row's account id was stored as
+    apollo_org_id and fed to paid job-postings lookups).
     """
     out: list[dict] = []
     for org in page.get("organizations") or []:
-        out.append({**org, "organization_id": org.get("id"), "domain": org.get("primary_domain") or org.get("domain")})
+        out.append(_org_record(org, org.get("id"), org.get("primary_domain") or org.get("domain")))
     for acct in page.get("accounts") or []:
-        out.append({**acct, "organization_id": acct.get("organization_id"), "domain": acct.get("domain") or acct.get("primary_domain")})
+        out.append(_org_record(acct, acct.get("organization_id"), acct.get("domain") or acct.get("primary_domain"),
+                               account_id=acct.get("id")))
     return out
 
 
@@ -127,8 +146,8 @@ def enriched_in(body: Mapping[str, Any]) -> list[dict]:
     """
     rows = [body.get("organization")] if isinstance(body.get("organization"), Mapping) else []
     rows += [o for o in body.get("organizations") or () if isinstance(o, Mapping)]
-    return [{**o, "organization_id": o.get("id") or o.get("organization_id"),
-             "domain": o.get("primary_domain") or o.get("domain")} for o in rows if o]
+    return [_org_record(o, o.get("id") or o.get("organization_id"), o.get("primary_domain") or o.get("domain"))
+            for o in rows if o]
 
 
 def postings_in(page: Mapping[str, Any]) -> list[dict]:

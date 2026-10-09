@@ -71,6 +71,7 @@ from us_outbound.clean.domains import is_personal_domain, record_alias, root_dom
 from us_outbound.clean.names import clean_company_name
 from us_outbound.clean.people import USPS_STATES, size_band, state_code
 from us_outbound.clients.apollo import MAX_PAGE, MAX_PER_PAGE, organizations_in, total_entries
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
@@ -476,7 +477,7 @@ def _quote(text: str) -> str:
 
 def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime) -> list[dict]:
     """The apollo_org facts of one organization record, each with a quote and the Apollo page."""
-    org_id = str(org.get("organization_id") or org.get("id") or "")
+    org_id = apollo_org_id(org)
     url = APOLLO_ORG_URL.format(org_id) if org_id else ""
     today = now.astimezone(UK).date()
     out: list[dict] = []
@@ -556,7 +557,7 @@ def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: st
     employees = _int(org.get("estimated_num_employees"))
     codes = org_naics(org)
     return {
-        "apollo_org_id": str(org.get("organization_id") or org.get("id") or "") or None,
+        "apollo_org_id": apollo_org_id(org) or None,
         "hq_city": str(org.get("city") or "").strip() or None,
         "hq_state": state,
         "hq_country": "United States" if in_us(org) and str(org.get("country") or "").strip() else None,
@@ -736,7 +737,7 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
                     raise
                 run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
                 return banded
-            found = [str(o.get("organization_id") or o.get("id") or "") for o in organizations_in(body)]
+            found = [apollo_org_id(o) for o in organizations_in(body)]
             rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
             spent = 1.0 if found else 0.0
             credits.record(ctx, JOB, spent, note=json.dumps({"backfill": band, "asked": len(batch) + len(rows),

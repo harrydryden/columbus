@@ -54,6 +54,7 @@ from typing import Any
 from us_outbound.clean.domains import root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import BULK_ENRICH_MAX, enriched_in
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
@@ -146,7 +147,7 @@ def answer_facts(account: Mapping[str, Any], org: Mapping[str, Any] | None, stor
         keep = FACTS | (EXTRA_FACTS - stored)
         facts = [e for e in uni.org_facts(aid, org, "", now) if e["fact"] in keep]
     got = {e["fact"]: e["value"] for e in facts}
-    org_id = str(org.get("organization_id") or org.get("id") or "") if org else ""
+    org_id = apollo_org_id(org)
     if org:
         days, stage, n = got.get("days_since_funding"), got.get("funding_stage"), got.get("employees")
         parts = ["found"]

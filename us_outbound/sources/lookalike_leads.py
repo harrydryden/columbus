@@ -79,6 +79,7 @@ from us_outbound import budget
 from us_outbound.clean.domains import root_domain
 from us_outbound.clean.people import state_code
 from us_outbound.clients.apollo import LOOKALIKE_SEEDS_MAX, MAX_PER_PAGE, organizations_in
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
@@ -387,7 +388,7 @@ def apollo_ids(ctx: Context, leads: _Leads, seeds: Sequence[Seed]) -> dict[str, 
         orgs = _search(ctx, leads, {"q_organization_domains_list": chunk}, {"step": "seed ids", "asked": len(chunk)})
         wanted = set(chunk)
         for org in orgs or ():
-            oid = str(org.get("organization_id") or org.get("id") or "")
+            oid = apollo_org_id(org)
             for root in sorted(_roots(org) & wanted):
                 if oid and root not in out:
                     out[root] = oid

@@ -94,6 +94,7 @@ from us_outbound import budget
 from us_outbound.clean.domains import is_personal_domain, root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
@@ -750,7 +751,7 @@ def _search_band(ctx: Context, chunk: Sequence[str], band: str, g: _Growth, who:
         g.spent += spent
         g.pages += 1
         for org in orgs:
-            oid = str(org.get("organization_id") or org.get("id") or "")
+            oid = apollo_org_id(org)
             for d in _org_domains(org) & asked:
                 out.setdefault(d, oid)
         if not orgs or total is None or total <= page * MAX_PER_PAGE:
