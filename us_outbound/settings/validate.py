@@ -333,6 +333,23 @@ def is_legacy_roles(columns: Iterable[str]) -> bool:
     return bool(LEGACY_ROLES_COLUMNS & cols) and not set(ROLE_ORDER_COLUMNS) & cols
 
 
+PAGE_SOURCE, CLAY_PAGE_SOURCE = "careers_pages", "clay_careers"  # our page reader (sources/pages.py SOURCE), and Clay's
+
+
+def page_signals_notice(settings: Settings) -> str | None:
+    """Why the page signals can't fire on the page reader's facts yet: a Signals tab loaded before 2 Oct 2026.
+
+    settings_sync's summary and read_pages say so. Moved here from sources/pages.py (9 Oct 2026, the refactoring
+    scan's phase 6), so settings_sync reads it without importing the sources."""
+    stale = [s.signal for s in settings.active_signals()
+             if CLAY_PAGE_SOURCE in s.sources and PAGE_SOURCE not in s.sources]
+    if not stale:
+        return None
+    return (f"the Signals tab's {', '.join(stale)} do not read {PAGE_SOURCE}, so what the page reader finds on company "
+            "sites adds nothing to them; run `us-outbound settings load --tab Signals --live` (its source column "
+            f"adds {PAGE_SOURCE})")
+
+
 def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[RowError]) -> list[_Row] | None:
     """Tab-level checks; None when the tab cannot be read row by row."""
     if rows is None:

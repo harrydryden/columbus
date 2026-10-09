@@ -575,8 +575,9 @@ def test_no_http_library_outside_the_http_client():
     from pathlib import Path
 
     root = Path(cli.__file__).resolve().parents[1]
-    mine = ["ops/cli.py", "ops/heartbeat.py", "base/heartbeats.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
-            "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
+    mine = ["ops/cli.py", "ops/heartbeat.py", "base/heartbeats.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py",
+            "ops/scheduler.py", "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py",
+            "__main__.py"]
     for rel in mine:
         text = (root / rel).read_text()
         assert not re.search(r"^\s*(import|from)\s+(requests|httpx|urllib)", text, re.M), rel
