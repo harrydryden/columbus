@@ -150,7 +150,7 @@ def _reached(share: float, steps: tuple[float, ...]) -> float | None:
 
 def apollo_floor_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     """Apollo's balance under the floor, or the floor under FLOOR_WARN_DAYS away: once a UK day."""
-    key = f"apollo_floor:{ctx.today_uk().isoformat()}"
+    key = notify.once_key(ctx, "apollo_floor")
     floor = sp.apollo_floor
     if sp.apollo_left is not None and sp.apollo_left < floor:
         return key, (f"Apollo has {sp.apollo_left:,.0f} credits, under apollo_floor ({floor:,}), so sourcing and email "
@@ -167,7 +167,7 @@ def apollo_floor_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     return None
 
 
-def budget_ask(b: budget.Budget) -> tuple[str, str] | None:
+def budget_ask(ctx: Context, b: budget.Budget) -> tuple[str, str] | None:
     """A monthly budget at 80% or 100% used: once a UK month for each step."""
     if b.budget <= 0:
         return None
@@ -176,7 +176,7 @@ def budget_ask(b: budget.Budget) -> tuple[str, str] | None:
         return None
     name, setting = b.system.capitalize(), budget.MONTHLY_KEYS[b.system]
     nxt = _next_month(b.month_end)
-    key = f"{b.system}_budget_{round(step * 100)}:{b.month_end:%Y-%m}"
+    key = notify.once_key(ctx, f"{b.system}_budget_{round(step * 100)}", per="month", on=b.month_end)
     if step >= 1.0:
         return key, (f"{name}: this month's {budget._n(b.budget)} credits are used ({budget._n(b.used)} spent), so "
                      f"{STOPS[b.system]} have stopped until {nxt:%-d %b}. To allow more, raise {setting} on the "
@@ -196,7 +196,7 @@ def claude_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     if step is None:
         return None
     month = ctx.now.astimezone(UTC).date()
-    key = f"claude_cap_{round(step * 100)}:{month:%Y-%m}"
+    key = notify.once_key(ctx, f"claude_cap_{round(step * 100)}", per="month", on=month)
     if step >= 1.0:
         return key, (f"Claude's monthly cap is used up: ${sp.claude_usd:,.2f} of ${cap:,.0f} this month, so "
                      f"{CLAUDE_STOPS} until {_next_month(month):%-d %b} (UTC). To go on, raise claude_monthly_cap_usd "
@@ -210,7 +210,7 @@ def visitors_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     v = sp.visitors
     if not v or v["limit"] <= 0 or v["left_over"] / v["limit"] >= VISITOR_WARN_SHARE:
         return None
-    return (f"apollo_visitors_low:{ctx.today_uk():%Y-%m}",
+    return (notify.once_key(ctx, "apollo_visitors_low", per="month"),
             f"Apollo's website-visitor credits are running low: {v['left_over']:,.0f} of {v['limit']:,.0f} left "
             f"({v['left_over'] / v['limit']:.0%}). Once they run out, Apollo stops naming the companies that visit the "
             "US site, so the site-visit signals stop. Buy more in Apollo.")
@@ -220,7 +220,7 @@ def asks(ctx: Context, sp: Spend) -> list[tuple[str, str]]:
     """Every (key, line) due today, before deduplication; the industry label check's asks last (labels.asks)."""
     from us_outbound import labels
 
-    found = [apollo_floor_ask(ctx, sp), *(budget_ask(sp.budgets[sys]) for sys in ("apollo", "clay")),
+    found = [apollo_floor_ask(ctx, sp), *(budget_ask(ctx, sp.budgets[sys]) for sys in ("apollo", "clay")),
              claude_ask(ctx, sp), visitors_ask(ctx, sp)]
     return [a for a in found if a is not None] + labels.asks(ctx)
 

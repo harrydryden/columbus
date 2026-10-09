@@ -116,8 +116,7 @@ def check(ctx: Context, ready: int) -> dict[str, Any]:
         a = plan(ctx, ready)
         out: dict[str, Any] = {"checked": True, **a.as_dict()}
         if a.add > 0:
-            year, week, _ = ctx.today_uk().isocalendar()
-            out["alert"] = notify.post_once(ctx, [(f"mailboxes:{year}-W{week:02d}", line(a))], head=HEAD)
+            out["alert"] = notify.post_once(ctx, [(notify.once_key(ctx, "mailboxes", per="week"), line(a))], head=HEAD)
     except GuardViolation:
         raise
     except Exception as exc:  # the daily post still goes

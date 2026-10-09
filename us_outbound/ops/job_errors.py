@@ -250,5 +250,5 @@ def check(ctx: Context, jobs: Iterable[str]) -> dict[str, Any]:
         log("job_errors_failed", error=str(exc)[:200])
         return {"found": [], "posted": [], "check_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     log("job_errors", found=[k for k, _ in pairs], posted=sent.get("keys"))
-    return {"found": [k.rsplit(":", 1)[0] for k, _ in pairs], "posted": sent.get("keys") or [],
+    return {"found": [notify.kind_of(k) for k, _ in pairs], "posted": sent.get("keys") or [],
             "post": {k: sent.get(k) for k in ("posted", "error")}}

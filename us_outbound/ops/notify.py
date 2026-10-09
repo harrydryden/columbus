@@ -22,6 +22,7 @@ stops the live post.
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from datetime import date
 from typing import Any
 
 from us_outbound.clients.http import ApiError
@@ -73,6 +74,28 @@ def sent_before(ctx: Context, keys: Iterable[str]) -> set[str]:
     if not ids:
         return set()
     return {ids[str(r["event_id"])] for r in ctx.store.select("events", {"event_id": sorted(ids)})}
+
+
+def once_key(ctx: Context, kind: str, *parts: Any, per: str = "day", on: date | None = None) -> str:
+    """The key post_once records a line under: its kind, any parts, then the period it is posted once in, last (the
+    day, ISO week or month of `on`, today in the UK by default): "mailboxes:2026-W44", "job_error:enrol:errors:
+    2026-10-26". One builder for every caller (9 Oct 2026: four modules built them by hand)."""
+    d = on or ctx.today_uk()
+    if per == "day":
+        period = d.isoformat()
+    elif per == "week":
+        year, week, _ = d.isocalendar()
+        period = f"{year}-W{week:02d}"
+    elif per == "month":
+        period = f"{d:%Y-%m}"
+    else:
+        raise ValueError(f"per must be day, week or month, not {per!r}")
+    return ":".join([kind, *(str(p) for p in parts), period])
+
+
+def kind_of(key: str) -> str:
+    """A once_key without its period ("job_error:enrol:errors")."""
+    return key.rsplit(":", 1)[0]
 
 
 def post_once(ctx: Context, lines: Sequence[tuple[str, str]], *, head: str, foot: str = "") -> dict[str, Any]:
