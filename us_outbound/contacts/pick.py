@@ -210,8 +210,9 @@ def history(store: Store, now: datetime) -> History:
     for aid, e in newest_by(rows, lambda e: str(e["account_id"]), OUTCOME_FACT).items():
         h.outcomes[aid] = (utc_strict(e["observed_at"]), dict(e["value"]))
     for e in rows:
-        t, value = utc_strict(e["observed_at"]), e["value"]
-        if e.get("fact") == REVEAL_FACT and now - t < timedelta(days=REVEAL_AGAIN_DAYS) and value.get("apollo_person_id"):
+        value = e["value"]
+        if (e.get("fact") == REVEAL_FACT and now - utc_strict(e["observed_at"]) < timedelta(days=REVEAL_AGAIN_DAYS)
+                and value.get("apollo_person_id")):
             h.revealed[str(e["account_id"])].add(str(value["apollo_person_id"]))
     return h
 

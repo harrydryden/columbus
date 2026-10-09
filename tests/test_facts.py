@@ -102,7 +102,8 @@ def test_latest_by_fact_takes_each_fact_from_whichever_source_wrote_it_last():
     got = facts.latest_by_fact(rows, skip_facts={"posting_text"})
     assert {f: r["value"] for f, r in got.items()} == {"employees": 40, "naics": ["5415"]}
     got = facts.latest_by_fact(rows, sources="apollo_org")
-    assert {f: r["value"] for f, r in got.items()} == {"employees": 180, "naics": ["5415"], "posting_text": "We are hiring"}
+    assert {f: r["value"] for f, r in got.items()} == {"employees": 180, "naics": ["5415"],
+                                                       "posting_text": "We are hiring"}
 
 
 @pytest.mark.parametrize("value, want", [
