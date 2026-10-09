@@ -71,6 +71,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, fmt, labels, limits
+from us_outbound.clients.db import Range
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, focus, second, today
 from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
@@ -224,8 +225,7 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     """The day's numbers and the full post. spent: what learn/spend.py read (read here when not given)."""
     start, end, label = period(ctx)
     types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit"]
-    rows = [e for e in ctx.store.select("events", {"type": types})
-            if (t := utc(e.get("occurred_at"))) is not None and start <= t < end]
+    rows = ctx.store.select("events", {"type": types, "occurred_at": Range(start, end)})  # the period's only
     by_type: dict[str, list[dict]] = {}
     for e in rows:
         by_type.setdefault(str(e.get("type")), []).append(e)
