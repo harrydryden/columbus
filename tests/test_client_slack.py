@@ -250,6 +250,16 @@ def test_slack_off_reacts_to_the_log():
     assert off.react("#us-outbound", "1.0", "x") is None and off.bot_user_id() == ""
 
 
+def test_both_slacks_say_whether_they_are_connected():
+    """SlackLike (9 Oct 2026): callers read connected instead of testing for SlackOff or a request method."""
+    from us_outbound.clients.slack import Slack, SlackLike, SlackOff
+
+    assert Slack.connected is True and SlackOff.connected is False
+    members = {n for n in vars(SlackLike) if not n.startswith("_")} | set(SlackLike.__annotations__)
+    for cls in (Slack, SlackOff):
+        assert all(hasattr(cls, m) for m in members), cls  # each has everything the jobs use
+
+
 def test_dm_in_dry_run_goes_to_the_dev_channel():
     slack, t, guard = approver_slack()
     guard.configure(live=False)

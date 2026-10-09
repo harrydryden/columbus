@@ -590,6 +590,9 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "bulk_match": lambda c, w: c.bulk_match([{"first_name": "Jane", "last_name": "Doe", "domain": "acmecreative.com"}]),
         "website_visitor_aggregates": lambda c, w: c.website_visitor_aggregates("spill.chat", ["org-1"]),
         "search_website_visitors": lambda c, w: c.search_website_visitors(["spill.chat"], days=30, pages=["/us"]),
+        # Pages a caller's own read (9 Oct 2026): every request is still one of the methods above.
+        "iter_pages": lambda c, w: list(c.iter_pages(
+            lambda page: c.search_organizations({"organization_locations[]": ["Ohio, US"]}, page=page), max_pages=2)),
     },
     "Clay": {
         "run_function": lambda c, w: c.run_function(CLAY_FUNCTIONS[0], {"domain": "acmecreative.com"}),
@@ -901,6 +904,24 @@ def test_disallowed_call_raises_before_any_request(case, tmp_path):
     assert w.pg.calls == [] and w.pg.connects == 0 and w.sdk.calls == []
     assert all(not c.sent for c in w.guard.calls if c.write), f"{case}: a write was recorded as sent"
     assert all(rows == [] for rows in w.clients["MemoryStore"].tables.values())
+
+
+def test_refuse_unless_allowed_judges_early_and_records_only_a_refusal():
+    """Guard.refuse_unless_allowed (9 Oct 2026): the clients' early refusals ask the guard rather than copy its rules.
+    It says whether authorize() would send the call and records nothing then; a refusal is recorded and raised."""
+    guard = Guard(live=False, bounds=BOUNDS)
+    assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=DEV, write=True)) is True
+    assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is False  # dry-run
+    assert guard.calls == []
+    with pytest.raises(GuardViolation, match="not a US Outbound channel"):
+        guard.refuse_unless_allowed("slack", Op("chat.postMessage", target="#general", write=True))
+    with pytest.raises(GuardViolation, match="approver"):
+        guard.refuse_unless_allowed("instantly", Op("email.reply", target=ADDRESSES[0], write=True, detail={
+            "accounts": [ADDRESSES[0]], "campaign": PREFIX + "Hannah", "approved_by": "U_SOMEONE"}))
+    assert [(c.system, c.target, c.sent) for c in guard.calls] == [("slack", "#general", False),
+                                                                  ("instantly", ADDRESSES[0], False)]
+    guard.configure(live=True)
+    assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is True
 
 
 # -- (c) static: who may import what ----------------------------------------------------------------

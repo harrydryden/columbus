@@ -75,12 +75,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, ledger
 from us_outbound.clean.domains import root_domain
 from us_outbound.clean.people import state_code
 from us_outbound.clients.apollo import LOOKALIKE_SEEDS_MAX, MAX_PER_PAGE, organizations_in
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
 from us_outbound.logs import log
@@ -288,19 +289,21 @@ def _search(ctx: Context, leads: _Leads, filters: Mapping[str, Any], note: Mappi
     """One Apollo search page (a lookalike search when seed_ids are given), recorded in credit_ledger; None if
     Apollo refused it. The note carries counts, the cell and the seeds' country, never a domain."""
     apollo = ctx.clients.apollo
-    try:
-        if seed_ids:
-            body = apollo.search_lookalike_organizations(seed_ids, filters, page=1, per_page=MAX_PER_PAGE)
-        else:
-            body = apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
-    except ApiError as exc:
-        if exc.status in (401, 403):
-            raise  # the key is wrong: every search would fail
-        leads.errors.append(f"Apollo {note.get('step')}: HTTP {exc.status}")  # never the body: it may echo a seed
-        return None
-    orgs = organizations_in(body)
-    spent = 1.0 if orgs else 0.0
-    credits.record(ctx, JOB, spent, note=json.dumps({**note, "page": 1, "results": len(orgs)}))
+    what = {**note, "page": 1}
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+        try:
+            if seed_ids:
+                body = apollo.search_lookalike_organizations(seed_ids, filters, page=1, per_page=MAX_PER_PAGE)
+            else:
+                body = apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
+        except ApiError as exc:
+            leads.spent += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+            if isinstance(exc, AuthError):
+                raise  # the key is wrong: every search would fail
+            leads.errors.append(f"Apollo {note.get('step')}: HTTP {exc.status}")  # never the body: it may echo a seed
+            return None
+        orgs = organizations_in(body)
+        spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps({**what, "results": len(orgs)}))
     leads.spent += spent
     leads.pages += 1
     return orgs
@@ -388,7 +391,7 @@ def apollo_ids(ctx: Context, leads: _Leads, seeds: Sequence[Seed]) -> dict[str, 
         orgs = _search(ctx, leads, {"q_organization_domains_list": chunk}, {"step": "seed ids", "asked": len(chunk)})
         wanted = set(chunk)
         for org in orgs or ():
-            oid = str(org.get("organization_id") or org.get("id") or "")
+            oid = apollo_org_id(org)
             for root in sorted(_roots(org) & wanted):
                 if oid and root not in out:
                     out[root] = oid

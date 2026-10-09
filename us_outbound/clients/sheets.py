@@ -16,15 +16,8 @@ from typing import Any
 
 from us_outbound.clients.guard import SETTINGS_SHEET_TITLE, Op
 from us_outbound.clients.http import HttpClient
+from us_outbound.clients.http import quote_segment as _quote  # tab names hold spaces and en dashes
 from us_outbound.logs import log
-
-_UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-
-
-def _quote(text: str) -> str:
-    """Percent-encode one URL path segment (tab names hold spaces and en dashes)."""
-    return "".join(chr(b) if b in _UNRESERVED else f"%{b:02X}" for b in text.encode())
-
 
 def a1_tab(tab: str) -> str:
     """A tab name quoted for A1 notation: General -> 'General', Harry's -> 'Harry''s'."""

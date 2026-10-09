@@ -44,9 +44,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import parse
+from us_outbound import ledger, parse
 from us_outbound.clients.apollo import VISITOR_CREDIT, credit_stats, credits_left, enriched_in, organizations_in
-from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation, Op
 from us_outbound.clients.hubspot import ASSOCIATION_TYPE_IDS
 from us_outbound.clients.http import ApiError
@@ -520,7 +519,7 @@ def deals_by_company(r: Run) -> Result:
 def slack_scopes(r: Run) -> Result:
     """The installed app's scopes (auth.test's X-OAuth-Scopes header) hold what the manifest asks for."""
     slack = r.ctx.clients.slack
-    if not hasattr(slack, "request"):
+    if not slack.connected:
         return Result(NOT_CHECKED, "no Slack token here (US_OUTBOUND_SLACK_BOT_TOKEN)")
     resp = slack.request("GET", "auth.test", Op("auth.test"), raw=True)
     headers = {str(k).lower(): str(v) for k, v in (resp.headers or {}).items()}
@@ -722,9 +721,7 @@ def _paid(r: Run, key: str) -> None:
     """A paid answer: counted for APO-CREDIT-COST, and in credit_ledger as the jobs count theirs (budget.py), so the
     month's Apollo budget sees it."""
     r.record.setdefault("apollo_paid", []).append(key)
-    r.ctx.store.insert("credit_ledger", [{
-        "entry_id": new_id(), "system": "apollo", "job": JOB, "run_id": r.ctx.run_id, "account_id": None,
-        "credits": 1.0, "usd": None, "occurred_at": r.ctx.now, "note": f"phase0 check: {key}"}])
+    ledger.record(r.ctx, "apollo", JOB, 1.0, note=f"phase0 check: {key}")
 
 
 def search_row(r: Run) -> Result:

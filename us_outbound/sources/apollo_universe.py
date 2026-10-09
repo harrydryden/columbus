@@ -66,13 +66,14 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
 
-from us_outbound import accounts, budget, parse
+from us_outbound import accounts, budget, ledger, parse
 from us_outbound.clean.domains import is_personal_domain, record_alias, root_domain
 from us_outbound.clean.names import clean_company_name
 from us_outbound.clean.people import USPS_STATES, size_band, state_code
 from us_outbound.clients.apollo import MAX_PAGE, MAX_PER_PAGE, organizations_in, total_entries
-from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.apollo import org_id as apollo_org_id
+from us_outbound.clients.db import Range, new_id
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
 from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity, texts
@@ -82,7 +83,7 @@ from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.settings.overrides import effective
 from us_outbound.sources import apollo_credits as credits
-from us_outbound.timeparse import iso_date, utc
+from us_outbound.timeparse import iso_date
 
 JOB = "source_universe"
 SOURCE = "apollo_org"
@@ -257,13 +258,11 @@ class Cursor:
 
 
 def cursors(ctx: Context) -> dict[str, Cursor]:
-    """Each search's place this month (UK), from this job's credit_ledger notes."""
+    """Each search's place this month (UK), from this job's credit_ledger notes: a settled page's "slice" (a
+    reservation, ledger.reserved_note, carries none, so a page never answered is read again)."""
     start, end = budget.month_bounds(ctx.now)
     out: dict[str, Cursor] = {}
-    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        t = utc(r.get("occurred_at"))
-        if t is None or not start <= t < end:
-            continue
+    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB, "occurred_at": Range(start, end)}):
         try:
             note = json.loads(r.get("note") or "")
         except ValueError:
@@ -439,7 +438,7 @@ def _quote(text: str) -> str:
 
 def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime) -> list[dict]:
     """The apollo_org facts of one organization record, each with a quote and the Apollo page."""
-    org_id = str(org.get("organization_id") or org.get("id") or "")
+    org_id = apollo_org_id(org)
     url = APOLLO_ORG_URL.format(org_id) if org_id else ""
     today = now.astimezone(UK).date()
     out: list[dict] = []
@@ -505,7 +504,7 @@ def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: st
     employees = parse.integer(org.get("estimated_num_employees"))
     codes = org_naics(org)
     return {
-        "apollo_org_id": str(org.get("organization_id") or org.get("id") or "") or None,
+        "apollo_org_id": apollo_org_id(org) or None,
         "hq_city": str(org.get("city") or "").strip() or None,
         "hq_state": state,
         "hq_country": "United States" if in_us(org) and str(org.get("country") or "").strip() else None,
@@ -633,21 +632,25 @@ def _write(ctx: Context, rows: list[dict], events: list[dict], partners: dict[st
 def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Room, depth: Counter[str]) -> bool:
     """Read the search's next page into accounts and facts; False if Apollo refused it."""
     page = cur.page + 1
-    try:
-        body = ctx.clients.apollo.search_organizations(sl.filters(ctx.settings), page=page, per_page=MAX_PER_PAGE)
-    except ApiError as exc:
-        if exc.status in (401, 403):
-            raise  # the key is wrong: every search would fail
-        run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
-        return False
-    orgs = organizations_in(body)
-    total = total_entries(body)
-    split = page == 1 and not sl.band and bool(split_reason(orgs, total))
-    spent = 1.0 if orgs else 0.0
+    what = {"search": sl.key, "page": page}  # never "slice" until settled: cursors() reads that key
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+        try:
+            body = ctx.clients.apollo.search_organizations(sl.filters(ctx.settings), page=page, per_page=MAX_PER_PAGE)
+        except ApiError as exc:
+            spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+            room.spend(spent)
+            run.credits += spent
+            if isinstance(exc, AuthError):
+                raise  # the key is wrong: every search would fail
+            run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
+            return False
+        orgs = organizations_in(body)
+        total = total_entries(body)
+        split = page == 1 and not sl.band and bool(split_reason(orgs, total))
+        spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps(
+            {"slice": sl.key, "page": page, "pages": _pages(body, page, len(orgs)), "results": len(orgs),
+             "total": total, "split": split, "why": split_reason(orgs, total) if split else ""}))
     cur.page, cur.pages, cur.split = page, _pages(body, page, len(orgs)), split
-    credits.record(ctx, JOB, spent, note=json.dumps(
-        {"slice": sl.key, "page": page, "pages": cur.pages, "results": len(orgs), "total": total, "split": split,
-         "why": split_reason(orgs, total) if split else ""}))
     room.spend(spent)
     run.pages += 1
     run.credits += spent
@@ -683,18 +686,22 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
                 return banded
             filters = {"organization_ids": list(batch),
                        "organization_num_employees_ranges": [ctx.settings.employee_range(band)]}
-            try:
-                body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
-            except ApiError as exc:
-                if exc.status in (401, 403):
-                    raise
-                run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
-                return banded
-            found = [str(o.get("organization_id") or o.get("id") or "") for o in organizations_in(body)]
-            rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
-            spent = 1.0 if found else 0.0
-            credits.record(ctx, JOB, spent, note=json.dumps({"backfill": band, "asked": len(batch) + len(rows),
-                                                              "banded": len(rows)}))
+            what = {"backfill": band, "asked": len(batch)}
+            with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+                try:
+                    body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
+                except ApiError as exc:
+                    spent = paid.fail(exc, note=ledger.failed_note(what, exc))
+                    room.spend(spent)
+                    run.credits += spent
+                    if isinstance(exc, AuthError):
+                        raise
+                    run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
+                    return banded
+                found = [apollo_org_id(o) for o in organizations_in(body)]
+                rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
+                spent = paid.settle(1.0 if found else 0.0, note=json.dumps(
+                    {"backfill": band, "asked": len(batch) + len(rows), "banded": len(rows)}))
             room.spend(spent)
             run.pages += 1
             run.credits += spent

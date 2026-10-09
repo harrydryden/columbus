@@ -90,12 +90,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, fmt, parse
+from us_outbound import budget, fmt, ledger, parse
 from us_outbound.clean.domains import is_personal_domain, root_domain
 from us_outbound.clean.people import size_band
-from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
+from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries, while_counted
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
@@ -711,39 +712,44 @@ def _org_domains(org: Mapping[str, Any]) -> set[str]:
 def _search_band(ctx: Context, chunk: Sequence[str], band: str, g: _Growth, who: str) -> dict[str, str] | None:
     """domain -> Apollo organization id, for the chunk's domains Apollo puts in this growth band; None when not
     every page could be read (the chunk's domains then stay unsearched for this band)."""
-    asked, out, page = set(chunk), {}, 1
+    asked, out = set(chunk), {}
     filters = {"q_organization_domains_list": list(chunk), "organization_headcount_growth_range": dict(GROWTH_RANGES[band]),
                "organization_headcount_growth_past_n_months": GROWTH_MONTHS}
-    while True:
+
+    def read(page: int) -> Mapping[str, Any] | None:
         if not g.allows():
             g.stopped = g.stopped or "the run's Apollo credits are used"
             return None
-        try:
-            body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
-        except ApiError as exc:
-            if exc.status in (401, 403):
-                raise  # the key is wrong: every search would fail
-            g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
-            if len(g.errors) >= GROWTH_MAX_ERRORS:
-                g.stopped = f"{GROWTH_MAX_ERRORS} Apollo errors"
-            return None
-        orgs, total = organizations_in(body), total_entries(body)
-        spent = 1.0 if orgs else 0.0
-        # The note carries counts only: never a customer's domain.
-        credits.record(ctx, JOB, spent, note=json.dumps({"growth": band, "for": who, "page": page, "asked": len(chunk),
-                                                         "results": len(orgs), "total": total}))
-        g.spent += spent
+        what = {"growth": band, "for": who, "page": page, "asked": len(chunk)}  # counts only: never a customer's domain
+        with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+            try:
+                body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
+            except ApiError as exc:
+                g.spent += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+                if isinstance(exc, AuthError):
+                    raise  # the key is wrong: every search would fail
+                g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
+                if len(g.errors) >= GROWTH_MAX_ERRORS:
+                    g.stopped = f"{GROWTH_MAX_ERRORS} Apollo errors"
+                return None
+            orgs = organizations_in(body)
+            g.spent += paid.settle(1.0 if orgs else 0.0, note=json.dumps(
+                {**what, "results": len(orgs), "total": total_entries(body)}))
         g.pages += 1
-        for org in orgs:
-            oid = str(org.get("organization_id") or org.get("id") or "")
+        return body
+
+    page = None
+    # A page with no total_entries ends the search (while_counted), as it always has here.
+    for page in ctx.clients.apollo.iter_pages(read, more=while_counted, max_pages=GROWTH_PAGES):
+        for org in page.rows:
+            oid = apollo_org_id(org)
             for d in _org_domains(org) & asked:
                 out.setdefault(d, oid)
-        if not orgs or total is None or total <= page * MAX_PER_PAGE:
+        if page.last:
             return out
-        if page >= GROWTH_PAGES:
-            g.errors.append(f"growth {band} search for {who}: over {GROWTH_PAGES} pages for {len(chunk)} domains")
-            return None
-        page += 1
+    if page is not None and page.number >= GROWTH_PAGES:
+        g.errors.append(f"growth {band} search for {who}: over {GROWTH_PAGES} pages for {len(chunk)} domains")
+    return None
 
 
 def search_growth(ctx: Context, domains: Sequence[str], g: _Growth, who: str) -> tuple[dict[str, tuple[str, str]], set[str]]:

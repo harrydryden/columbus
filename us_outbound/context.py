@@ -12,13 +12,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from functools import cached_property
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Boundaries, Guard
 from us_outbound.clients.http import Transport
 from us_outbound.settings.model import Settings
+
+if TYPE_CHECKING:
+    from us_outbound.clients.slack import SlackLike
 
 UK = ZoneInfo("Europe/London")
 ET = ZoneInfo("America/New_York")
@@ -148,7 +151,7 @@ class Clients:
         return HubSpot(self.guard, self.transport, self.secrets.get("hubspot"))
 
     @cached_property
-    def slack(self):
+    def slack(self) -> SlackLike:
         from us_outbound.clients.slack import Slack, SlackOff
 
         try:

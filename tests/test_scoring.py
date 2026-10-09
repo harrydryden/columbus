@@ -491,6 +491,8 @@ def test_rescore_does_not_shorten_an_existing_suppression():
 class RecordingSlack:
     """Stands in for ctx.clients.slack: records post(channel, text) per the client contract."""
 
+    connected = True  # clients/slack.SlackLike
+
     def __init__(self):
         self.posts: list[tuple[str, str]] = []
 

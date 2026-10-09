@@ -157,6 +157,19 @@ class Guard:
     # -- the one entry point -------------------------------------------------
 
     def authorize(self, system: str, op: Op) -> bool:
+        send = self._judge(system, op)
+        self._record(system, op, sent=send)
+        return send
+
+    def refuse_unless_allowed(self, system: str, op: Op) -> bool:
+        """The policy for op, judged before anything is sent for it, even a lookup it needs first (a campaign id, the
+        email replied to, a channel id): a refusal is recorded and raised as authorize() records and raises it.
+        Otherwise it says whether authorize() will send op (False: dry-run skips it) and records nothing, since
+        authorize() records the call when it is made. 9 Oct 2026: the Instantly and Slack clients each carried a
+        copy of these rules to refuse early; they ask here instead."""
+        return self._judge(system, op)
+
+    def _judge(self, system: str, op: Op) -> bool:
         check = getattr(self, f"_check_{system}", None)
         if check is None:
             raise GuardViolation(f"unknown system {system!r}")
@@ -166,10 +179,7 @@ class Guard:
             self._record(system, op, sent=False)
             log("guard_violation", system=system, action=op.action, target=op.target, reason=str(exc))
             raise
-        if send is None:
-            send = True
-        self._record(system, op, sent=send)
-        return send
+        return True if send is None else send
 
     def writes(self, system: str | None = None, sent: bool | None = None) -> list[CallRecord]:
         return [

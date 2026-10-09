@@ -245,7 +245,7 @@ def test_a_failed_customer_read_keeps_the_opt_outs_and_says_so(default_settings)
     w.transport.route("POST", "/crm/v3/objects/companies/search", status=403, body={"message": "missing scope"})
     out = hubspot_opts_out(w, JANE)
     assert out["added"] == 1 and suppression.is_suppressed(w.ctx.store, email=JANE, now=w.ctx.now)
-    assert out["customers_error"].startswith("Spill's customers could not be read from HubSpot (ApiError: ")
+    assert out["customers_error"].startswith("Spill's customers could not be read from HubSpot (AuthError: ")  # a 403
     assert out["customers_error"].endswith("yesterday's entries stand") and "customers" not in out
     [finding] = job_errors.findings("suppression_load", {"status": "ok", "detail": out, "started_at": w.ctx.now})
     assert finding.kind == "customers_error"  # heartbeat_check tells Harry, once a day

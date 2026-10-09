@@ -22,6 +22,17 @@ MAX_RETRY_WAIT = 30.0
 CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key", "clay-api-key"})
 
 
+_UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+
+def quote_segment(text: Any, keep: str = "") -> str:
+    """One URL path segment, percent-encoded: everything but RFC 3986's unreserved characters and `keep` (Instantly
+    keeps an email's @). An id, an email or a tab name can never add a path segment or a query (a "/", "?", "#"),
+    and an email in a path never carries a raw "+". 9 Oct 2026: three clients each had a copy."""
+    safe = _UNRESERVED | frozenset(keep.encode())
+    return "".join(chr(b) if b in safe else f"%{b:02X}" for b in str(text).encode())
+
+
 @dataclass
 class Response:
     status: int
@@ -48,6 +59,14 @@ class ApiError(Exception):
     def __init__(self, system: str, status: int, body: Any, url: str = ""):
         self.system, self.status, self.body, self.url = system, status, body, url
         super().__init__(f"{system} HTTP {status} for {urlparse(url).path}: {str(body)[:200]}")
+
+
+class AuthError(ApiError):
+    """HTTP 401 or 403: the key is wrong or lacks the scope, so every request like it fails the same way. An ApiError,
+    so per-item handlers still see it; a job that carries on past one failed item lets this one end the run (9 Oct
+    2026: eight sources each tested `exc.status in (401, 403)` to re-raise)."""
+
+    STATUSES = frozenset({401, 403})
 
 
 class TransportError(ApiError):
@@ -178,7 +197,8 @@ class HttpClient:
         if raw:
             return resp
         if resp.status >= 300:  # a redirect is never followed with a key, so it is not a success
-            raise ApiError(self.system, resp.status, resp.body, url)
+            error = AuthError if resp.status in AuthError.STATUSES else ApiError
+            raise error(self.system, resp.status, resp.body, url)
         return resp.body
 
 

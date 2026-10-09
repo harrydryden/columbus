@@ -495,6 +495,32 @@ def test_where_semantics(store):
     assert ids(store.select("accounts")) == ["a1", "a2", "a3"]
 
 
+def test_range_filters_as_memory_store_does_and_the_ledger_readers_use_it(store):
+    """Range (9 Oct 2026): lo <= column < hi in SQL, NULL never matching; budget.spent_in and the Claude cap read
+    only their period's credit_ledger rows."""
+    from us_outbound.clients.claude import month_spend_usd
+    from us_outbound.clients.db import Range
+
+    month = datetime(2026, 10, 1, tzinfo=UTC)
+    store.insert("credit_ledger", [
+        {"entry_id": "c1", "system": "clay", "job": "a", "credits": 10.0, "occurred_at": T0},
+        {"entry_id": "c2", "system": "clay", "job": "b", "credits": 5.0, "occurred_at": T0 + timedelta(hours=1)},
+        {"entry_id": "c3", "system": "clay", "job": "a", "credits": 100.0, "occurred_at": month - timedelta(days=3)},
+        {"entry_id": "c4", "system": "clay", "job": "a", "credits": 7.0, "occurred_at": None},
+        {"entry_id": "c5", "system": "claude", "job": "x", "usd": 0.25, "occurred_at": T0},
+        {"entry_id": "c6", "system": "claude", "job": "x", "usd": 3.0, "occurred_at": month - timedelta(minutes=1)},
+    ])
+    ids = lambda where: sorted(r["entry_id"] for r in store.select("credit_ledger", where))  # noqa: E731
+    assert ids({"system": "clay", "occurred_at": Range(T0, T0 + timedelta(hours=1))}) == ["c1"]  # hi left out
+    assert ids({"system": "clay", "occurred_at": Range(T0, None)}) == ["c1", "c2"]
+    assert ids({"system": "clay", "occurred_at": Range(None, T0)}) == ["c3"]
+    assert ids({"system": "clay", "occurred_at": Range()}) == ["c1", "c2", "c3"]  # never NULL
+    start, end = budget.month_bounds(T0)
+    assert budget.spent_in(store, "clay", start, end) == 15.0
+    assert budget.spent_in(store, "clay", start, end, jobs=("a",)) == 10.0
+    assert month_spend_usd(store, T0) == 0.25
+
+
 def test_latest_is_one_row_by_the_greatest_value(store):
     store.insert("heartbeats", [
         {"run_id": "r1", "job": "sync_outcomes", "status": "ok", "started_at": T0, "dry_run": False, "detail": {"n": 1}},

@@ -41,6 +41,8 @@ class StubSheets:
 
 
 class StubSlack:
+    connected = True  # clients/slack.SlackLike
+
     def __init__(self, fail: bool = False):
         self.posts: list[tuple[str, str]] = []
         self.fail = fail

@@ -25,7 +25,8 @@ escalation when the forward endpoint is missing; in dry-run they go to the dev c
 from __future__ import annotations
 
 import time
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, Protocol
 
 from us_outbound.clients.guard import Op
 from us_outbound.clients.http import ApiError, HttpClient
@@ -33,6 +34,33 @@ from us_outbound.logs import log
 
 LIST_PAGE = 200  # Slack recommends no more than 200 per page
 REACTIONS_FRESH = 60.0  # seconds a thread read's reactions answer reactions() for its messages
+
+
+class SlackLike(Protocol):
+    """What the jobs use of Slack: the client (Slack) or its stand-in without a token (SlackOff). connected says which,
+    so a caller need not test the class (9 Oct 2026: they tested isinstance(slack, SlackOff) or hasattr(slack,
+    "request")). A test's own double sets connected = True."""
+
+    connected: bool  # False: no token (dry-run only), so posts go to the log and nothing is read
+
+    def post(self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None,
+             *, broadcast: bool = False) -> dict | None: ...
+
+    def dm(self, user_id: str, text: str) -> dict | None: ...
+
+    def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> dict | None: ...
+
+    def react(self, channel: str, ts: str, name: str) -> dict | None: ...
+
+    def replies(self, channel: str, ts: str) -> list[dict]: ...
+
+    def reactions(self, channel: str, ts: str) -> list[dict]: ...
+
+    def permalink(self, channel: str, ts: str) -> str: ...
+
+    def auth_test(self) -> dict: ...
+
+    def bot_user_id(self) -> str: ...
 
 
 def channel_key(name: str) -> str:
@@ -43,6 +71,7 @@ def channel_key(name: str) -> str:
 class Slack(HttpClient):
     system = "slack"
     base_url = "https://slack.com/api/"
+    connected = True
 
     def __init__(self, guard, transport, token: str = ""):
         super().__init__(guard, transport, token)
@@ -64,28 +93,28 @@ class Slack(HttpClient):
             raise ApiError(self.system, 200, body, self.base_url + method)
         return body
 
-    def _preflight(self, op: Op) -> None:
-        """Let the guard reject a channel outside the US Outbound pair before any request (even the id lookup)."""
-        b = self.guard.bounds
-        if op.target not in {b.alert_channel, b.dev_channel}:
-            self.guard.authorize(self.system, op)
-
     # -- reads -----------------------------------------------------------------
+
+    def _pages(self, method: str, op: Op, params: dict[str, Any]) -> Iterator[dict]:
+        """Each page of a Web API list, following response_metadata.next_cursor (sent back as cursor) until there is
+        none (9 Oct 2026: two loops did this)."""
+        cursor = ""
+        while True:
+            body = self._api("GET", method, op, params={**params, "cursor": cursor} if cursor else dict(params)) or {}
+            yield body
+            cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
+            if not cursor:
+                return
 
     def channel_id(self, name: str) -> str:
         """Resolve "#name" to its id via conversations.list (public and private), cached."""
         key = channel_key(name)
         if key not in self._ids:
-            cursor = ""
-            while True:
-                params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": LIST_PAGE}
-                if cursor:
-                    params["cursor"] = cursor
-                body = self._api("GET", "conversations.list", Op("conversations.list"), params=params) or {}
+            params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": LIST_PAGE}
+            for body in self._pages("conversations.list", Op("conversations.list"), params):
                 for c in body.get("channels", []):
                     self._ids.setdefault(channel_key(c.get("name", "")), c["id"])
-                cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
-                if key in self._ids or not cursor:
+                if key in self._ids:
                     break
         if key not in self._ids:
             raise LookupError(f"Slack channel #{key} not found; is the bot a member of it?")
@@ -98,18 +127,12 @@ class Slack(HttpClient):
         """
         cid = self.channel_id(channel)
         out: list[dict] = []
-        cursor = ""
-        while True:
-            params = {"channel": cid, "ts": ts, "limit": LIST_PAGE}
-            if cursor:
-                params["cursor"] = cursor
-            body = self._api("GET", "conversations.replies", Op("conversations.replies", target=channel), params=params) or {}
+        op = Op("conversations.replies", target=channel)
+        for body in self._pages("conversations.replies", op, {"channel": cid, "ts": ts, "limit": LIST_PAGE}):
             messages = body.get("messages", [])
             self._keep_reactions(cid, messages)
             out.extend(m for m in messages if m.get("ts") != ts)
-            cursor = (body.get("response_metadata") or {}).get("next_cursor") or ""
-            if not cursor:
-                return out
+        return out
 
     def _keep_reactions(self, cid: str, messages: list[dict]) -> None:
         """Keep each message's reactions when Slack listed every user of each (a long list may carry only some)."""
@@ -188,17 +211,15 @@ class Slack(HttpClient):
         """
         op = Op("chat.postMessage", target=channel, write=True, detail={"thread_ts": thread_ts} if thread_ts else {})
         dev = self.guard.bounds.dev_channel
-        if not self.guard.live and channel != dev:
-            # Records the post as not sent, or raises for a channel outside the pair.
-            self.guard.authorize(self.system, op)
+        # The guard refuses a channel outside the pair before any request (even the id lookup).
+        if not self.guard.refuse_unless_allowed(self.system, op):  # dry-run: a post for the alert channel
+            self.guard.authorize(self.system, op)  # recorded as not sent; it goes to the dev channel instead
             note = f"[dry-run → {channel}]"
             text = f"{note} {text}"
             if blocks:
                 blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": note}]}, *blocks]
             channel = dev
             op = Op("chat.postMessage", target=dev, write=True, detail={**op.detail, "redirected": True})
-        else:
-            self._preflight(op)
         payload: dict[str, Any] = {
             "channel": self.channel_id(channel),
             "text": text,
@@ -225,12 +246,10 @@ class Slack(HttpClient):
         """
         user = str(user_id or "").strip()
         op = Op("chat.postMessage", target=f"@{user}", write=True, detail={"dm": True})
-        if not self.guard.live:
-            self.guard.authorize(self.system, op)  # records it as not sent, or refuses a non-approver
+        if not self.guard.refuse_unless_allowed(self.system, op):  # a non-approver is refused before any request
+            self.guard.authorize(self.system, op)  # dry-run: recorded as not sent, and posted to the dev channel
             dev = self.guard.bounds.dev_channel
             return self.post(dev, f"[dry-run → DM @{user}] {text}")
-        if user not in self.guard.bounds.approver_slack_ids:
-            self.guard.authorize(self.system, op)  # refuses before any request
         payload = {"channel": user, "text": text, "unfurl_links": False, "unfurl_media": False}
         body = self._api("POST", "chat.postMessage", op, json=payload)
         if body is None:
@@ -240,7 +259,7 @@ class Slack(HttpClient):
     def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> dict | None:
         """chat.update on a message this bot posted. Returns {"channel", "channel_id", "ts"}; None if skipped."""
         op = Op("chat.update", target=channel, write=True, detail={"ts": ts})
-        self._preflight(op)
+        self.guard.refuse_unless_allowed(self.system, op)  # a channel outside the pair: before the id lookup
         payload: dict[str, Any] = {"channel": self.channel_id(channel), "ts": ts, "text": text}
         if blocks is not None:
             payload["blocks"] = blocks
@@ -257,7 +276,7 @@ class Slack(HttpClient):
         already added is not an error.
         """
         op = Op("reactions.add", target=channel, write=True, detail={"ts": ts, "name": name})
-        self._preflight(op)
+        self.guard.refuse_unless_allowed(self.system, op)  # a channel outside the pair: before the id lookup
         payload = {"channel": self.channel_id(channel), "timestamp": ts, "name": name}
         self._reactions.pop((payload["channel"], str(ts)), None)  # changed now: asked again next time
         body = self.request("POST", "reactions.add", op, json=payload)
@@ -277,6 +296,7 @@ class SlackOff:
     """
 
     system = "slack"
+    connected = False
 
     def post(
         self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None,

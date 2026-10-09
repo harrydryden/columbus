@@ -185,13 +185,11 @@ def _mentions(ids: Iterable[str]) -> str:
 
 def slack_or_none(ctx: Context) -> Any | None:
     """The Slack client, or None (logged) when no bot token is set: the desk then works without Slack."""
-    from us_outbound.clients.slack import SlackOff
-
     try:
         slack = ctx.clients.slack
     except ConfigError:
         slack = None
-    if slack is None or isinstance(slack, SlackOff):
+    if slack is None or not slack.connected:
         log("slack_not_configured", job=ctx.job,
             reason="US_OUTBOUND_SLACK_BOT_TOKEN is not set: Slack approvals and re-posts are skipped; "
                    "use `us-outbound replies list|approve|skip`")

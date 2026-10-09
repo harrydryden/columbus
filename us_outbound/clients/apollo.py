@@ -24,7 +24,8 @@ says which reads are paid (paid_reads), so none is resent after a timeout.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any
 
@@ -103,18 +104,37 @@ def normalize_filters(filters: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _org_record(row: Mapping[str, Any], org_id: Any, domain: Any, account_id: Any = None) -> dict:
+    """One organization record as callers read it: organization_id, and id with it, is Apollo's organization id or
+    None, never an account id (an account's own id is kept as apollo_account_id)."""
+    oid = str(org_id).strip() if org_id not in (None, "") else None
+    out = {**row, "organization_id": oid or None, "id": oid or None, "domain": domain}
+    if account_id not in (None, ""):
+        out["apollo_account_id"] = str(account_id)
+    return out
+
+
+def org_id(org: Mapping[str, Any] | None) -> str:
+    """The Apollo organization id of a record from organizations_in() or enriched_in(), or "" when it has none."""
+    return str((org or {}).get("organization_id") or "")
+
+
 def organizations_in(page: Mapping[str, Any]) -> list[dict]:
     """Both result buckets of an organization search, each with organization_id and domain set.
 
     `organizations` rows carry the organization id as `id` and `primary_domain`; `accounts`
     rows (companies someone saved in Apollo) carry an account `id`, a separate
-    `organization_id` and `domain`.
+    `organization_id` and `domain`. Each record's organization_id, and its id, is the organization id or
+    None: an accounts row with no organization_id has none, and its account id is kept only as
+    apollo_account_id (9 Oct 2026: callers fell back to `id`, so such a row's account id was stored as
+    apollo_org_id and fed to paid job-postings lookups).
     """
     out: list[dict] = []
     for org in page.get("organizations") or []:
-        out.append({**org, "organization_id": org.get("id"), "domain": org.get("primary_domain") or org.get("domain")})
+        out.append(_org_record(org, org.get("id"), org.get("primary_domain") or org.get("domain")))
     for acct in page.get("accounts") or []:
-        out.append({**acct, "organization_id": acct.get("organization_id"), "domain": acct.get("domain") or acct.get("primary_domain")})
+        out.append(_org_record(acct, acct.get("organization_id"), acct.get("domain") or acct.get("primary_domain"),
+                               account_id=acct.get("id")))
     return out
 
 
@@ -127,8 +147,8 @@ def enriched_in(body: Mapping[str, Any]) -> list[dict]:
     """
     rows = [body.get("organization")] if isinstance(body.get("organization"), Mapping) else []
     rows += [o for o in body.get("organizations") or () if isinstance(o, Mapping)]
-    return [{**o, "organization_id": o.get("id") or o.get("organization_id"),
-             "domain": o.get("primary_domain") or o.get("domain")} for o in rows if o]
+    return [_org_record(o, o.get("id") or o.get("organization_id"), o.get("primary_domain") or o.get("domain"))
+            for o in rows if o]
 
 
 def postings_in(page: Mapping[str, Any]) -> list[dict]:
@@ -157,6 +177,51 @@ def total_entries(page: Mapping[str, Any]) -> int | None:
         return None if value is None else int(value)
     except (TypeError, ValueError):
         return None
+
+
+@dataclass(frozen=True)
+class Page:
+    """One page of a paged search (Apollo.iter_pages): its number, Apollo's answer, its rows and total_entries."""
+
+    number: int
+    per_page: int
+    body: Mapping[str, Any]
+    rows: list[dict]
+    total: int | None
+    last: bool = False  # the stop rule ends the search here: no page after this one is asked for
+
+    @property
+    def full(self) -> bool:
+        return len(self.rows) >= self.per_page
+
+    @property
+    def counted_through(self) -> bool:
+        """total_entries says no row lies beyond this page."""
+        return self.total is not None and self.total <= self.number * self.per_page
+
+
+# The stop rules of the paged searches (9 Oct 2026: each caller had its own loop). Each says whether to ask for the
+# page after this one; the callers' rules differ where Apollo gives no total_entries, and are kept as they were.
+def while_full(page: Page) -> bool:
+    """Another page while this one was full and total_entries, when given, counts more (site_visits: a full page
+    with no total goes on)."""
+    return page.full and not page.counted_through
+
+
+def while_counted(page: Page) -> bool:
+    """Another page only while this one had rows and total_entries counts more (the lookalike growth searches: a
+    page with no total ends the search)."""
+    return bool(page.rows) and page.total is not None and not page.counted_through
+
+
+def while_full_page(page: Page) -> bool:
+    """Another page while this one was full, whatever total_entries says (People API Search)."""
+    return page.full
+
+
+def people_in(body: Mapping[str, Any]) -> list[dict]:
+    """The rows of a People API Search page."""
+    return list(body.get("people") or [])
 
 
 def _segment(value: str) -> str:
@@ -247,6 +312,31 @@ class Apollo(HttpClient):
         if not 1 <= page <= MAX_PAGE:
             raise ValueError(f"Apollo shows at most {MAX_PAGE} pages; slice the search further (SPEC 7)")
         return {"page": page, "per_page": per_page}
+
+    @staticmethod
+    def iter_pages(
+        read: Callable[[int], Mapping[str, Any] | None],
+        *,
+        more: Callable[[Page], bool] = while_full,
+        rows: Callable[[Mapping[str, Any]], list[dict]] = organizations_in,
+        per_page: int = MAX_PER_PAGE,
+        max_pages: int = MAX_PAGE,
+    ) -> Iterator[Page]:
+        """Pages 1, 2, ... of one search, each yielded as a Page, until `more` says no page follows (that Page has
+        last set), max_pages are read, or read() gives None.
+
+        read(n) asks for page n: the caller's call, so it checks its budget first, charges the page to the ledger
+        and handles Apollo's errors, giving None for a page it did not get (it has said why).
+        """
+        for number in range(1, max_pages + 1):
+            body = read(number)
+            if body is None:
+                return
+            page = Page(number, per_page, body, rows(body), total_entries(body))
+            page = replace(page, last=not more(page))
+            yield page
+            if page.last:
+                return
 
     def credit_usage(self) -> dict:
         """Team credit balances for the current cycle, keyed by credit type (0 credits)."""

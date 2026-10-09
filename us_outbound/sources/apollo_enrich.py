@@ -51,11 +51,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from us_outbound import ledger
 from us_outbound.clean.domains import root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import BULK_ENRICH_MAX, enriched_in
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
 from us_outbound.logs import log
@@ -137,7 +139,7 @@ def answer_facts(account: Mapping[str, Any], org: Mapping[str, Any] | None, stor
         keep = FACTS | (EXTRA_FACTS - stored)
         facts = [e for e in uni.org_facts(aid, org, "", now) if e["fact"] in keep]
     got = {e["fact"]: e["value"] for e in facts}
-    org_id = str(org.get("organization_id") or org.get("id") or "") if org else ""
+    org_id = apollo_org_id(org)
     if org:
         days, stage, n = got.get("days_since_funding"), got.get("funding_stage"), got.get("employees")
         parts = ["found"]
@@ -203,14 +205,12 @@ class _Run:
     errors: list[str] = field(default_factory=list)
 
 
-def _failed(ctx: Context, entry: dict, exc: ApiError, reserved: float, note: dict, what: str, r: _Run,
-            room: credits.Room) -> None:
+def _failed(paid: ledger.Charge, exc: ApiError, note: dict, what: str, r: _Run, room: credits.Room) -> None:
     """Settle a call Apollo refused: 0 for a 4xx (refused unprocessed), else counted in case it charged."""
-    spent = 0.0 if 400 <= exc.status < 500 else reserved
-    credits.settle(ctx, entry, spent, note=json.dumps({**note, "failed": exc.status}))
+    spent = paid.fail(exc, note=json.dumps({**note, "failed": exc.status}))
     room.spend(spent)
     r.credits += spent
-    if exc.status in (401, 403):
+    if isinstance(exc, AuthError):
         raise exc  # the key is wrong: every call would fail
     r.errors.append(f"{what}: {str(exc)[:200]}")
 
@@ -225,16 +225,16 @@ def ask_bulk(ctx: Context, batch: Sequence[Mapping[str, Any]], r: _Run, room: cr
     """
     domains = [str(a["domain"]) for a in batch]
     note = {"bulk_enrich": len(domains)}
-    entry = credits.reserve(ctx, JOB, len(domains), note=json.dumps({**note, "reserved": True}))
-    try:
-        body = ctx.clients.apollo.bulk_enrich_organizations(domains)
-    except ApiError as exc:
-        _failed(ctx, entry, exc, float(len(domains)), note, f"bulk_enrich of {len(domains)} domains", r, room)
-        return None
-    orgs = enriched_in(body)
-    reported = max(float(body.get("unique_enriched_records") or 0), float(body.get("credits_consumed") or 0))
-    spent = max(float(len(orgs)), reported)
-    credits.settle(ctx, entry, spent, note=json.dumps({**note, "found": len(orgs), "reported": reported}))
+    with ledger.charge(ctx, credits.SYSTEM, JOB, len(domains), note=json.dumps({**note, "reserved": True})) as paid:
+        try:
+            body = ctx.clients.apollo.bulk_enrich_organizations(domains)
+        except ApiError as exc:
+            _failed(paid, exc, note, f"bulk_enrich of {len(domains)} domains", r, room)
+            return None
+        orgs = enriched_in(body)
+        reported = max(float(body.get("unique_enriched_records") or 0), float(body.get("credits_consumed") or 0))
+        spent = paid.settle(max(float(len(orgs)), reported),
+                            note=json.dumps({**note, "found": len(orgs), "reported": reported}))
     room.spend(spent)
     r.credits += spent
     r.bulk_calls += 1
@@ -256,17 +256,17 @@ def ask_one(ctx: Context, account: Mapping[str, Any], r: _Run, room: credits.Roo
     """(answered, Apollo's record or None when it has none) for one domain (1 credit if found); (False, None) on an error."""
     domain = str(account["domain"])
     note = {"enrich": domain}
-    entry = credits.reserve(ctx, JOB, 1.0, note=json.dumps({**note, "reserved": True}), account_id=account["account_id"])
-    try:
-        body = ctx.clients.apollo.enrich_organization(domain)
-    except ApiError as exc:
-        if exc.status != 404:  # PHASE0-CONFIRM: 404 is how Apollo says it has no record for the domain
-            _failed(ctx, entry, exc, 1.0, note, domain, r, room)
-            return False, None
-        body = {}
-    org = next(iter(enriched_in(body)), None)
-    spent = 1.0 if org else 0.0
-    credits.settle(ctx, entry, spent, note=json.dumps({**note, "found": bool(org)}))
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=json.dumps({**note, "reserved": True}),
+                       account_id=account["account_id"]) as paid:
+        try:
+            body = ctx.clients.apollo.enrich_organization(domain)
+        except ApiError as exc:
+            if exc.status != 404:  # PHASE0-CONFIRM: 404 is how Apollo says it has no record for the domain
+                _failed(paid, exc, note, domain, r, room)
+                return False, None
+            body = {}
+        org = next(iter(enriched_in(body)), None)
+        spent = paid.settle(1.0 if org else 0.0, note=json.dumps({**note, "found": bool(org)}))
     room.spend(spent)
     r.credits += spent
     r.single_calls += 1

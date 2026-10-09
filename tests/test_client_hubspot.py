@@ -366,3 +366,29 @@ def test_companies_by_id_searches_100_ids_at_a_time():
     assert len(found) == 250 and [len(a) for a in asked] == [100, 100, 100, 100, 50]
     assert {c["id"] for c in found} == {str(i) for i in range(1, 251)}
     assert t.requests[0].json["filterGroups"][0]["filters"][0]["operator"] == "IN"
+
+
+def test_record_ids_are_always_one_path_segment():
+    """9 Oct 2026: _update, associate and _get put ids in the path as they came (clients/http.quote_segment)."""
+    hs, t, _ = make(live=True)
+    hs.update_company("12/../34", {"hubspot_owner_id": "o1"}, current=None)  # reads the owner first (_get)
+    hs.associate("contact", "5?x", "company", "6#y")
+    assert [(r.method, r.url) for r in t.requests] == [
+        ("GET", f"{BASE}/crm/v3/objects/companies/12%2F..%2F34"),
+        ("PATCH", f"{BASE}/crm/v3/objects/companies/12%2F..%2F34"),
+        ("PUT", f"{BASE}/crm/v4/objects/contacts/5%3Fx/associations/default/companies/6%23y"),
+    ]
+
+
+def test_a_search_stops_at_the_search_api_s_cap_and_says_so(capsys):
+    """9 Oct 2026: past 10,000 results the search API returns nothing; _search stopped there without a word."""
+    hs, t, _ = make()
+
+    def page(req):
+        after = int(req.json.get("after") or 0)
+        return {"results": [{"id": str(after)}], "paging": {"next": {"after": str(after + 5000)}}}
+
+    t.route("POST", "/crm/v3/objects/deals/search", fn=page)
+    assert [d["id"] for d in hs.deals_for_company("c1")] == ["0", "5000"]
+    assert [r.json.get("after") for r in t.requests] == [None, "5000"]  # after=10000 is never asked for
+    assert '"event": "hubspot_search_capped"' in capsys.readouterr().out
