@@ -703,8 +703,10 @@ def focus_prompt(company: str, keywords: Sequence[str], about: str) -> str:
 
 def stored_focus(events: Iterable[Mapping[str, Any]], now: datetime) -> dict[str, Any] | None:
     """The account's latest opener_focus fact within FOCUS_REFRESH_DAYS, or None."""
-    e = facts.newest(events, FOCUS_FACT, FOCUS_SOURCE, dated=True, where=lambda e: isinstance(e.get("value"), Mapping)
-                     and now - facts.at(e) < timedelta(days=FOCUS_REFRESH_DAYS))
+    def fresh(e: Mapping[str, Any]) -> bool:
+        return isinstance(e.get("value"), Mapping) and now - facts.at(e) < timedelta(days=FOCUS_REFRESH_DAYS)
+
+    e = facts.newest(events, FOCUS_FACT, FOCUS_SOURCE, where=fresh, dated=True)
     return dict(e["value"]) if e else None
 
 

@@ -20,7 +20,7 @@ from typing import Any, TypeVar
 from us_outbound.timeparse import EPOCH, utc
 
 Row = Mapping[str, Any]
-Sources = str | Collection[str] | None
+Names = str | Collection[str] | None  # one source or fact, or several
 K = TypeVar("K", bound=Hashable)
 ID_CHUNK = 1000
 
@@ -36,7 +36,7 @@ def order(row: Row) -> tuple[bool, datetime, str]:
     return t is not None, t or EPOCH, str(row.get("event_id") or "")
 
 
-def _chosen(rows: Iterable[Row], fact: str | None, source: Sources, where: Callable[[Row], bool] | None,
+def _chosen(rows: Iterable[Row], fact: str | None, source: Names, where: Callable[[Row], bool] | None,
             dated: bool) -> Iterator[Row]:
     sources = {source} if isinstance(source, str) else None if source is None else set(source)
     for r in rows:
@@ -45,14 +45,14 @@ def _chosen(rows: Iterable[Row], fact: str | None, source: Sources, where: Calla
             yield r
 
 
-def newest(rows: Iterable[Row], fact: str | None = None, source: Sources = None, *,
+def newest(rows: Iterable[Row], fact: str | None = None, source: Names = None, *,
            where: Callable[[Row], bool] | None = None, dated: bool = False) -> Row | None:
     """The newest row of the fact (any fact when None), from the source or sources (any when None), that where
     accepts; dated leaves out rows with no time (where then sees only dated rows). None when no row is left."""
     return max(_chosen(rows, fact, source, where, dated), key=order, default=None)
 
 
-def newest_by(rows: Iterable[Row], key: Callable[[Row], K], fact: str | None = None, source: Sources = None, *,
+def newest_by(rows: Iterable[Row], key: Callable[[Row], K], fact: str | None = None, source: Names = None, *,
               where: Callable[[Row], bool] | None = None, dated: bool = False) -> dict[K, Row]:
     """key(row) -> the newest row with that key, over the rows newest() would choose from."""
     out: dict[K, tuple[tuple[bool, datetime, str], Row]] = {}
@@ -63,20 +63,20 @@ def newest_by(rows: Iterable[Row], key: Callable[[Row], K], fact: str | None = N
     return {k: r for k, (_, r) in out.items()}
 
 
-def latest_by_fact(rows: Iterable[Row], sources: Sources = None, skip_facts: Collection[str] = ()) -> dict[str, Row]:
+def latest_by_fact(rows: Iterable[Row], sources: Names = None, skip_facts: Collection[str] = ()) -> dict[str, Row]:
     """fact -> its newest row, over the rows that name a fact (from sources, when given), but those in skip_facts.
     A fact two sources write is taken from whichever wrote it last."""
     return newest_by(rows, lambda r: str(r["fact"]), source=sources,
                      where=lambda r: bool(r.get("fact")) and r["fact"] not in skip_facts)
 
 
-def value(rows: Iterable[Row], fact: str, source: Sources = None, default: Any = None) -> Any:
+def value(rows: Iterable[Row], fact: str, source: Names = None, default: Any = None) -> Any:
     """The newest row's value (newest()), or default when there is no such row."""
     r = newest(rows, fact, source)
     return default if r is None else r.get("value")
 
 
-def history(rows: Iterable[Row], fact: str | None = None, source: Sources = None) -> list[Row]:
+def history(rows: Iterable[Row], fact: str | None = None, source: Names = None) -> list[Row]:
     """The rows (of the fact, from the source or sources, when given), newest first."""
     return sorted(_chosen(rows, fact, source, None, False), key=order, reverse=True)
 
@@ -88,7 +88,7 @@ def texts(value: Any) -> list[str]:
     return [t for x in items if (t := " ".join(str(x or "").split()))]
 
 
-def load(store: Any, ids: Iterable[str], sources: Sources = None, facts: Sources = None) -> dict[str, list[dict]]:
+def load(store: Any, ids: Iterable[str], sources: Names = None, facts: Names = None) -> dict[str, list[dict]]:
     """account_id -> its signal_events rows (from sources, of facts, when given; an account with none reads as []),
     one select per ID_CHUNK accounts."""
     ids = list(ids)

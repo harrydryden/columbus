@@ -107,8 +107,8 @@ def overridden(settings: Settings, account: Mapping[str, Any]) -> set[str]:
 def answers(store: Store, account_ids: Iterable[str]) -> dict[str, dict]:
     """account_id -> Clay's latest answer (the FACT value)."""
     rows = load(store, sorted({str(i) for i in account_ids}), SOURCE, FACT)
-    return {aid: dict(e["value"]) for aid, evs in rows.items()
-            if (e := newest(evs, where=lambda e: isinstance(e.get("value"), Mapping)))}
+    latest = {aid: newest(evs, where=lambda e: isinstance(e.get("value"), Mapping)) for aid, evs in rows.items()}
+    return {aid: dict(e["value"]) for aid, e in latest.items() if e is not None}
 
 
 # -- 1 and 2: ask and fill (the pre-pass) ---------------------------------------------------------------------
