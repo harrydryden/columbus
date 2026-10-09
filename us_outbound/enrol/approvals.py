@@ -572,8 +572,9 @@ def industry_lines(p: Mapping[str, Any]) -> list[str]:
     industry, group = _text(p.get("industry")), _text(p.get("industry_group"))
     where = f"{industry} ({group})" if group and group.casefold() != industry.casefold() else (industry or group or "no label")
     lc = p.get("label_check") or {}
-    source = _text(p.get("label_source")) or _text((lc.get("decision") or {}).get("source"))
-    rules, model, conf = _text(lc.get("rules")) or "no label", _text(lc.get("model")), _text(lc.get("confidence"))
+    sv = labels.StoredVerdict.from_value(lc)  # the verdict as the card was rendered with it (enrol.Prepared)
+    source = _text(p.get("label_source")) or _text(sv.decision.get("source"))
+    rules, model, conf = _text(sv.rules) or "no label", _text(sv.verdict.label), _text(sv.verdict.confidence)
     copy = _esc(_copy_words(p))
     if source == labels.OVERRIDE:
         line = f"*Industry:* {_esc(where)} · set on the Overrides tab · {copy}"
@@ -592,7 +593,7 @@ def industry_lines(p: Mapping[str, Any]) -> list[str]:
         line = (f"*Industry:* ⚠️ {_esc(where)} · the rules say {_esc(rules)}, the model says {_esc(model)} "
                 f"({_esc(conf)}) · {copy}")
     out = [line]
-    phrase, quote = _text(lc.get("what_they_do")), _text(lc.get("evidence"))
+    phrase, quote = _text(sv.verdict.what_they_do), _text(sv.verdict.evidence)
     if phrase or quote:
         out.append("*They do:* " + " · ".join(x for x in (_esc(phrase), f"“{_esc(quote)}”" if quote else "") if x))
     return out

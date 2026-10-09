@@ -227,13 +227,14 @@ def show(ctx: Context, domain: str) -> dict:
             history.append({"at": str(e.get("observed_at")), "corrected": f"{v.get('from') or 'no label'} → {v.get('to')}",
                             "by": v.get("by"), "via": v.get("via")})
         elif e.get("fact") == labels.VERDICT_FACT:
-            d = v.get("decision") or {}
-            history.append({"at": str(e.get("observed_at")), "asked": bool(v.get("asked")), "rules": v.get("rules"),
-                            "model": v.get("model"), "confidence": v.get("confidence"), "entity": v.get("entity"),
-                            "evidence": v.get("evidence"), "what_they_do": v.get("what_they_do"),
+            sv = labels.StoredVerdict.from_value(v)
+            m, d = sv.verdict, sv.decision
+            history.append({"at": str(e.get("observed_at")), "asked": sv.asked, "rules": sv.rules,
+                            "model": m.label, "confidence": m.confidence, "entity": m.entity,
+                            "evidence": m.evidence, "what_they_do": m.what_they_do,
                             "decision": f"{d.get('action')}: {d.get('label')} ({d.get('source')}, {d.get('copy')} copy)"
                                         + (f"; {d.get('reason')}" if d.get("reason") else ""),
-                            "labels_hash": v.get("labels_hash")})
+                            "labels_hash": m.labels_hash})
     return {"domain": a.get("domain"), "industry": a.get("industry"), "industry_group": a.get("industry_group"),
             "status": a.get("status"), "label_source": a.get("label_source") or "not checked yet",
             "copy_level": labels.copy_level(a), "label_confidence": a.get("label_confidence"),

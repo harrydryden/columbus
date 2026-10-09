@@ -726,3 +726,21 @@ def test_the_monday_readout_carries_the_block():
     ctx = make_context(DEFAULT, now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
     lines, _ = readout.build(ctx)
     assert any(x.startswith("*Industry labels*") for x in lines)
+
+
+def test_a_stored_verdict_is_written_and_read_in_one_shape():
+    """labels.StoredVerdict (9 Oct 2026): what verdict_value writes reads back the same, key for key, and its outcome
+    is counted as verify's tally counts a decision."""
+    s, _ = validate_all(default_tabs())
+    v = labels.Verdict("Fintech", labels.HIGH, labels.COMPANY, "Payments software", "payments software", "h1", "m1",
+                       True)
+    d = labels.Decision("Fintech", "Technology & Startups", labels.MODEL, labels.HIGH, labels.LABEL_COPY, labels.VERIFY)
+    value = labels.verdict_value(s.industry("Adtech & martech"), v, d, asked=True)
+    sv = labels.StoredVerdict.from_value(value)
+    assert sv.to_value() == value and sv.verdict == v and sv.asked
+    assert (sv.rules, sv.rules_group, sv.outcome) == ("Adtech & martech", "Technology & Startups", labels.MODEL)
+    assert sv.same_group(s)  # Fintech is in the rules' group
+    held = labels.StoredVerdict.from_value({**value, "decision": {**d.as_dict(), "action": labels.HOLD}})
+    assert held.outcome == "held" == labels.outcome_key(labels.HOLD, labels.MODEL)
+    empty = labels.StoredVerdict.from_value({})
+    assert (empty.verdict.label, empty.rules, empty.asked) == (labels.NONE, None, False)

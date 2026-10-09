@@ -306,6 +306,64 @@ def check_answer(answer: Mapping[str, Any], material: Material, names: Iterable[
     return Verdict(label, confidence, entity, evidence, phrase, labels_hash, model_id, verified)
 
 
+OUTCOMES = {HOLD: "held", DISQUALIFY: "disqualified"}
+
+
+def outcome_key(action: str, source: str) -> str:
+    """How a decision is counted: "held", "disqualified", or its label_source (verify's tally and the readout's)."""
+    return OUTCOMES.get(action, source)
+
+
+@dataclass(frozen=True)
+class StoredVerdict:
+    """A label_verdict fact's value, the one shape it is written and read in (9 Oct 2026; four modules read its keys
+    by hand): the rules' label and group, the model's answer, the decision (Decision.as_dict), and whether the model
+    was asked for it (a decision re-made from a stored answer is written with asked false)."""
+
+    verdict: Verdict
+    decision: Mapping[str, Any]
+    rules: str | None = None
+    rules_group: str | None = None
+    asked: bool = False
+    prompt_version: str = ""
+
+    @classmethod
+    def of(cls, rules: Industry | None, v: Verdict, d: Decision, *, asked: bool) -> StoredVerdict:
+        return cls(v, d.as_dict(), rules.industry if rules else None, rules.industry_group if rules else None,
+                   asked, PROMPT_VERSION)
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any] | None) -> StoredVerdict:
+        v = value or {}
+        return cls(Verdict.from_value(v), dict(v.get("decision") or {}), v.get("rules") or None,
+                   v.get("rules_group") or None, bool(v.get("asked")), str(v.get("prompt_version") or ""))
+
+    def to_value(self) -> dict[str, Any]:
+        v = self.verdict
+        return {
+            "rules": self.rules, "rules_group": self.rules_group, "model": v.label, "confidence": v.confidence,
+            "entity": v.entity, "evidence": v.evidence, "evidence_verified": v.evidence_verified,
+            "what_they_do": v.what_they_do, "decision": dict(self.decision), "labels_hash": v.labels_hash,
+            "model_id": v.model_id, "prompt_version": self.prompt_version, "asked": self.asked,
+        }
+
+    @property
+    def outcome(self) -> str:
+        return outcome_key(str(self.decision.get("action")), str(self.decision.get("source") or ""))
+
+    def same_group(self, settings: Settings) -> bool:
+        """Whether the model put the company in the group the rules did (the same label, or one in its group)."""
+        model = settings.industry(self.verdict.label)
+        return self.rules == self.verdict.label or (
+            model is not None and model.industry_group == (self.rules_group or self.rules))
+
+
+def latest_stored(events: Iterable[Mapping[str, Any]]) -> StoredVerdict | None:
+    """The newest label_verdict fact, or None."""
+    value = latest_verdict(events)
+    return StoredVerdict.from_value(value) if value is not None else None
+
+
 def latest_verdict(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_verdict fact's value, or None."""
     e = facts.newest(events, VERDICT_FACT, JOB)
@@ -481,13 +539,8 @@ def columns(account: Mapping[str, Any], d: Decision) -> dict[str, Any]:
 
 
 def verdict_value(rules: Industry | None, v: Verdict, d: Decision, *, asked: bool) -> dict[str, Any]:
-    """A label_verdict fact's value: the rules' label, the model's answer and the decision."""
-    return {
-        "rules": rules.industry if rules else None, "rules_group": rules.industry_group if rules else None,
-        "model": v.label, "confidence": v.confidence, "entity": v.entity, "evidence": v.evidence,
-        "evidence_verified": v.evidence_verified, "what_they_do": v.what_they_do, "decision": d.as_dict(),
-        "labels_hash": v.labels_hash, "model_id": v.model_id, "prompt_version": PROMPT_VERSION, "asked": asked,
-    }
+    """A label_verdict fact's value: the rules' label, the model's answer and the decision (StoredVerdict)."""
+    return StoredVerdict.of(rules, v, d, asked=asked).to_value()
 
 
 def apply(ctx: Context, account: Mapping[str, Any], d: Decision, verdict: Verdict | None = None, *,
@@ -900,21 +953,18 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
     latest = facts.newest_by(rows, lambda e: str(e.get("account_id") or e.get("event_id")), VERDICT_FACT,
                              where=lambda e: bool((e.get("value") or {}).get("asked")))
     for aid, e in latest.items():
-        v = e["value"]
+        sv = StoredVerdict.from_value(e["value"])
         t.checked += 1
-        d = v.get("decision") or {}
-        key = {HOLD: "held", DISQUALIFY: "disqualified"}.get(str(d.get("action")), str(d.get("source") or ""))
-        decisions[key] = decisions.get(key, 0) + 1
-        if not v.get("rules"):
-            t.no_rules[aid] = str(v.get("model") or NONE)
+        decisions[sv.outcome] = decisions.get(sv.outcome, 0) + 1
+        if not sv.rules:
+            t.no_rules[aid] = sv.verdict.label
         else:
             t.labelled += 1
-            rules_group = str(v.get("rules_group") or v.get("rules"))
-            model = ctx.settings.industry(str(v.get("model") or ""))
-            if v.get("rules") == v.get("model") or (model is not None and model.industry_group == rules_group):
+            if sv.same_group(ctx.settings):
                 t.same_group += 1
             else:
-                groups[rules_group] = groups.get(rules_group, 0) + 1
+                group = sv.rules_group or sv.rules
+                groups[group] = groups.get(group, 0) + 1
     t.decisions, t.disagreed_groups = decisions, groups
     t.approvals = sum(1 for e in _between(ctx.store.select("events", {"type": "send_approval"}), "occurred_at", start,
                                           end) if e.get("approval") in DECIDED)

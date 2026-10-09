@@ -125,10 +125,10 @@ def _known(evs: Sequence[Mapping[str, Any]], settings: Settings) -> tuple[str, s
     corrected = labels.latest_correction(evs)
     if corrected and (ind := settings.industry(str(corrected.get("to") or ""))) is not None:
         return ind.industry, ind.industry_group, "approver"
-    v = labels.latest_verdict(evs)
-    if not v or v.get("confidence") != labels.HIGH:
+    sv = labels.latest_stored(evs)
+    if sv is None or sv.verdict.confidence != labels.HIGH:
         return None
-    entity, label = str(v.get("entity") or ""), str(v.get("model") or labels.NONE)
+    entity, label = sv.verdict.entity, sv.verdict.label
     if entity in (labels.ASSOCIATION, labels.PUBLIC_BODY) or label == labels.NONE:
         return OUTSIDE, OUTSIDE, "model"
     ind = settings.industry(label)

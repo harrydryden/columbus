@@ -345,7 +345,7 @@ class LabelRun:
     changed: list[dict] = field(default_factory=list)  # verified accounts whose label, copy level or status moved
 
     def decided(self, d: labels.Decision) -> None:
-        self.tally[{labels.HOLD: "held", labels.DISQUALIFY: "disqualified"}.get(d.action, d.source)] += 1
+        self.tally[labels.outcome_key(d.action, d.source)] += 1
 
     def summary(self) -> dict[str, Any]:
         ch = self.checker
