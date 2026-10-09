@@ -27,7 +27,7 @@ from datetime import date, datetime, time
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation, Op
-from us_outbound.clients.http import ApiError, HttpClient
+from us_outbound.clients.http import ApiError, HttpClient, quote_segment
 from us_outbound.logs import log
 from us_outbound.settings.model import SendWindow
 
@@ -170,7 +170,6 @@ INTEREST_MEETING_BOOKED = 2
 # mark_interested), and that marking it changes nothing else about the lead, which Instantly stopped on the reply.
 INTEREST_INTERESTED = 1
 
-_UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~@")
 _RE_PREFIX = ("re:", "re ")
 
 
@@ -219,8 +218,8 @@ def reply_subject(subject: Any) -> str:
 
 
 def _segment(text: str) -> str:
-    """Percent-encode one URL path segment (an email address keeps its @, loses a raw +)."""
-    return "".join(chr(b) if b in _UNRESERVED else f"%{b:02X}" for b in str(text).encode())
+    """One URL path segment, percent-encoded (an email address keeps its @, loses a raw +)."""
+    return quote_segment(text, keep="@")
 
 
 def _lower_all(values: Iterable[str] | str) -> list[str]:

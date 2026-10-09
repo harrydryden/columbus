@@ -25,7 +25,6 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from us_outbound.clients.http import ApiError
-from us_outbound.clients.slack import SlackOff
 from us_outbound.context import ConfigError, Context
 from us_outbound.logs import log
 
@@ -45,7 +44,7 @@ def alert(ctx: Context, text: str, *, channel: str | None = None) -> dict[str, A
         slack = ctx.clients.slack
     except ConfigError as exc:
         return _to_log(channel, text, str(exc))
-    if isinstance(slack, SlackOff):
+    if not slack.connected:
         return _to_log(channel, text, "dry-run without a Slack token")
     try:
         sent = slack.post(channel, text)

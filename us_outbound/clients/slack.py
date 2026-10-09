@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Protocol
 
 from us_outbound.clients.guard import Op
 from us_outbound.clients.http import ApiError, HttpClient
@@ -34,6 +34,33 @@ from us_outbound.logs import log
 
 LIST_PAGE = 200  # Slack recommends no more than 200 per page
 REACTIONS_FRESH = 60.0  # seconds a thread read's reactions answer reactions() for its messages
+
+
+class SlackLike(Protocol):
+    """What the jobs use of Slack: the client (Slack) or its stand-in without a token (SlackOff). connected says which,
+    so a caller need not test the class (9 Oct 2026: they tested isinstance(slack, SlackOff) or hasattr(slack,
+    "request")). A test's own double sets connected = True."""
+
+    connected: bool  # False: no token (dry-run only), so posts go to the log and nothing is read
+
+    def post(self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None,
+             *, broadcast: bool = False) -> dict | None: ...
+
+    def dm(self, user_id: str, text: str) -> dict | None: ...
+
+    def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> dict | None: ...
+
+    def react(self, channel: str, ts: str, name: str) -> dict | None: ...
+
+    def replies(self, channel: str, ts: str) -> list[dict]: ...
+
+    def reactions(self, channel: str, ts: str) -> list[dict]: ...
+
+    def permalink(self, channel: str, ts: str) -> str: ...
+
+    def auth_test(self) -> dict: ...
+
+    def bot_user_id(self) -> str: ...
 
 
 def channel_key(name: str) -> str:
@@ -44,6 +71,7 @@ def channel_key(name: str) -> str:
 class Slack(HttpClient):
     system = "slack"
     base_url = "https://slack.com/api/"
+    connected = True
 
     def __init__(self, guard, transport, token: str = ""):
         super().__init__(guard, transport, token)
@@ -268,6 +296,7 @@ class SlackOff:
     """
 
     system = "slack"
+    connected = False
 
     def post(
         self, channel: str, text: str, blocks: list[dict] | None = None, thread_ts: str | None = None,

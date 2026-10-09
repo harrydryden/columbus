@@ -523,7 +523,7 @@ def deals_by_company(r: Run) -> Result:
 def slack_scopes(r: Run) -> Result:
     """The installed app's scopes (auth.test's X-OAuth-Scopes header) hold what the manifest asks for."""
     slack = r.ctx.clients.slack
-    if not hasattr(slack, "request"):
+    if not slack.connected:
         return Result(NOT_CHECKED, "no Slack token here (US_OUTBOUND_SLACK_BOT_TOKEN)")
     resp = slack.request("GET", "auth.test", Op("auth.test"), raw=True)
     headers = {str(k).lower(): str(v) for k, v in (resp.headers or {}).items()}

@@ -8,7 +8,15 @@ import requests
 from us_outbound.clients.apollo import Apollo
 from us_outbound.clients.clay import Clay
 from us_outbound.clients.guard import Boundaries, Guard, Op
-from us_outbound.clients.http import ApiError, AuthError, HttpClient, RequestsTransport, TransportError, is_idempotent
+from us_outbound.clients.http import (
+    ApiError,
+    AuthError,
+    HttpClient,
+    RequestsTransport,
+    TransportError,
+    is_idempotent,
+    quote_segment,
+)
 from us_outbound.clients.public import Public
 from tests.fakes import FakeTransport
 
@@ -191,6 +199,13 @@ def test_a_401_or_403_is_an_auth_error_and_still_an_api_error(status, auth):
     with pytest.raises(ApiError) as caught:
         apollo._read("people.search", json={})
     assert isinstance(caught.value, AuthError) is auth and caught.value.status == status
+
+
+def test_quote_segment_keeps_a_value_to_one_path_segment():
+    """9 Oct 2026: one copy for HubSpot, Instantly and Sheets; Instantly keeps an email's @."""
+    assert quote_segment("a b/c?d#e+f@g–h") == "a%20b%2Fc%3Fd%23e%2Bf%40g%E2%80%93h"
+    assert quote_segment("jane+x@acme.com", keep="@") == "jane%2Bx@acme.com"
+    assert quote_segment(123) == "123" and quote_segment("Az09-._~") == "Az09-._~"
 
 
 def test_a_3xx_is_not_taken_as_success():

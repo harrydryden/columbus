@@ -354,13 +354,11 @@ def _cas(ctx: Context, item: Item, status: str, **values: Any) -> bool:
 
 def slack_or_none(ctx: Context) -> Any | None:
     """The Slack client, or None without a token (logged): the command line then does the work."""
-    from us_outbound.clients.slack import SlackOff
-
     try:
         slack = ctx.clients.slack
     except ConfigError:
         slack = None
-    if slack is None or isinstance(slack, SlackOff):
+    if slack is None or not slack.connected:
         log("slack_not_configured", job=ctx.job, reason="send approvals wait for `us-outbound approvals list|approve|reject`")
         return None
     return slack

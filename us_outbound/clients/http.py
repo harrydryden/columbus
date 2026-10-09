@@ -22,6 +22,17 @@ MAX_RETRY_WAIT = 30.0
 CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key", "clay-api-key"})
 
 
+_UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+
+def quote_segment(text: Any, keep: str = "") -> str:
+    """One URL path segment, percent-encoded: everything but RFC 3986's unreserved characters and `keep` (Instantly
+    keeps an email's @). An id, an email or a tab name can never add a path segment or a query (a "/", "?", "#"),
+    and an email in a path never carries a raw "+". 9 Oct 2026: three clients each had a copy."""
+    safe = _UNRESERVED | frozenset(keep.encode())
+    return "".join(chr(b) if b in safe else f"%{b:02X}" for b in str(text).encode())
+
+
 @dataclass
 class Response:
     status: int

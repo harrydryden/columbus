@@ -19,6 +19,7 @@ from typing import Any
 
 from us_outbound.clients.guard import HUBSPOT_EMPTY_ONLY, HUBSPOT_PROPERTY_GROUP, Op
 from us_outbound.clients.http import ApiError, HttpClient
+from us_outbound.clients.http import quote_segment as _quote  # an id or an email in a path
 from us_outbound.logs import log
 
 SEARCH_PAGE = 100  # HubSpot allows up to 200 per search page
@@ -77,14 +78,6 @@ ASSOCIATION_TYPE_IDS: dict[tuple[str, str], int] = {
 _PLURAL = {"company": "companies", "contact": "contacts", "deal": "deals", "note": "notes", "task": "tasks",
            "meeting": "meetings"}
 _SINGULAR = {v: k for k, v in _PLURAL.items()}
-
-_UNRESERVED = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-
-
-def _quote(text: str) -> str:
-    """Percent-encode one URL path segment (an email in a path must not carry a raw '+')."""
-    return "".join(chr(b) if b in _UNRESERVED else f"%{b:02X}" for b in text.encode())
-
 
 def plural_type(name: str) -> str:
     """'company' or 'companies' -> 'companies'."""
@@ -163,7 +156,7 @@ class HubSpot(HttpClient):
     def _get(self, obj: str, record_id: str, properties: Iterable[str]) -> dict:
         body = self.request(
             "GET",
-            f"/crm/v3/objects/{obj}/{record_id}",
+            f"/crm/v3/objects/{obj}/{_quote(record_id)}",
             Op(f"{_SINGULAR.get(obj, obj)}.get", target=obj),
             params={"properties": ",".join(properties)},
         )
@@ -413,7 +406,7 @@ class HubSpot(HttpClient):
         )
         return self.request(
             "PATCH",
-            f"/crm/v3/objects/{obj}/{record_id}",
+            f"/crm/v3/objects/{obj}/{_quote(record_id)}",
             op,
             json={"properties": dict(properties)},
             dry_result={"id": str(record_id), "dry_run": True, "properties": dict(properties)},
@@ -436,7 +429,7 @@ class HubSpot(HttpClient):
         f, t = plural_type(from_type), plural_type(to_type)
         self.request(
             "PUT",
-            f"/crm/v4/objects/{f}/{from_id}/associations/default/{t}/{to_id}",
+            f"/crm/v4/objects/{f}/{_quote(from_id)}/associations/default/{t}/{_quote(to_id)}",
             Op("association.create", target=f"{f}/{t}", write=True, detail={"from_id": str(from_id), "to_id": str(to_id)}),
         )
 
