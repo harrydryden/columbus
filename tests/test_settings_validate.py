@@ -608,6 +608,47 @@ def test_overrides(tabs):
     assert [(e.row, e.column) for e in errs] == [(3, "domain"), (4, "field"), (5, "field")]
 
 
+def test_an_overrides_industry_is_one_on_the_industries_tab(tabs):
+    """9 Oct 2026: "fintech" was taken as written; the label check then failed it on every run."""
+    tabs["Overrides"] = [
+        {"domain": "acme.com", "field": "industry", "value": "fintech", "note": ""},
+        {"domain": "beta.io", "field": "industry_group", "value": "technology & startups", "note": ""},
+    ]
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values())
+    assert [(o.field, o.value) for o in settings.overrides] == [("industry", "Fintech"),
+                                                                ("industry_group", "Technology & Startups")]
+    tabs["Overrides"].append({"domain": "gamma.io", "field": "industry", "value": "Fintek", "note": ""})
+    [e] = _errors(tabs, "Overrides")
+    assert (e.row, e.column) == (4, "value") and "'Fintek' is not an industry on the Industries tab" in e.message
+
+
+def test_a_group_has_one_spelling(tabs):
+    """9 Oct 2026: one row's "Technology & startups" validated and split the group in two."""
+    n, row = next((i + 2, r) for i, r in enumerate(tabs["Industries"]) if r["industry"] == "Fintech")
+    row["industry_group"] = "Technology & startups"
+    [e] = _errors(tabs, "Industries")
+    assert (e.row, e.column) == (n, "industry_group")
+    assert e.message.startswith("'Technology & startups' is spelled 'Technology & Startups' on row 2")
+
+
+def test_a_mistyped_header_is_refused_by_name(tabs):
+    """9 Oct 2026: a "Share_A" header holding 70% read as no column, so the test ran 50/50 without a word."""
+    for r in tabs["Tests"]:
+        r["Share_A"] = r.pop("share_a", "") or "70%"
+    [e] = _errors(tabs, "Tests")
+    assert (e.row, e.column) == (1, "Share_A")
+    assert e.message == "the header 'Share_A' looks like the column 'share_a': rename it, or its values are not read"
+
+
+def test_general_lists_split_on_semicolons_too(tabs):
+    """9 Oct 2026: "/us/pricing; /us/demo" was read as one path that never matches."""
+    n, row = _row(tabs, "General", key="site_visit_intent_paths")
+    row["value"] = "/us/pricing; /us/demo"
+    settings, errors = validate_all(tabs)
+    assert not any(errors.values()) and settings.general.site_visit_intent_paths == ("/us/pricing", "/us/demo")
+
+
 def test_tests(tabs):
     # A planned test may name copy not written yet; a running one needs both versions approved.
     n, row = _row(tabs, "Tests", test_id="t1-eap-opener")

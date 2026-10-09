@@ -51,6 +51,24 @@ def test_errors_a_job_carried_on_past_are_posted_once_a_day_with_the_first_quote
     assert len(posts(t)) == 2 and "the first: “again”" in posts(t)[-1]["text"]
 
 
+def test_a_daily_job_s_failure_is_told_on_its_own_day_and_not_again_after_midnight():
+    """read_pages failed at 03:45 on Thu 8 Oct 2026 and was told at 09:05; at 00:05 on Friday it was still the latest
+    run, and keyed on the new day it was told again. The key is the day its run began."""
+    ctx, t = world()
+    jobs = [*JOBS, "read_pages"]
+    nul = "UntranslatableCharacter: unsupported Unicode escape sequence DETAIL: \\u0000 cannot be converted to text."
+    beat(ctx.store, "read_pages", MON_NOON - timedelta(hours=8, minutes=15), status="error", error=nul)
+    assert job_errors.check(ctx, jobs)["posted"] == ["job_error:read_pages:failed:2026-10-26"]
+    assert "• read_pages failed (Mon 03:45 UK)" in text(t)
+    ctx.now = MON_NOON + timedelta(hours=12, minutes=5)  # Tuesday 00:05 UK: Monday's run is still the latest
+    out = job_errors.check(ctx, jobs)
+    assert out["found"] == ["job_error:read_pages:failed"] and out["posted"] == [] and len(posts(t)) == 1
+    beat(ctx.store, "read_pages", MON_NOON + timedelta(hours=15, minutes=45), status="error", error=nul)
+    ctx.now = MON_NOON + timedelta(hours=16, minutes=5)  # Tuesday's run failed too: told on Tuesday
+    assert job_errors.check(ctx, jobs)["posted"] == ["job_error:read_pages:failed:2026-10-27"]
+    assert len(posts(t)) == 2
+
+
 @pytest.mark.parametrize("job, detail, error, says", [
     ("hubspot_readback", {"errors": ["meetings: hubspot HTTP 401 for /crm/v3/objects/meetings/search: expired"]}, None,
      "HubSpot refused our key or this request: if the key was revoked, replace US_OUTBOUND_HUBSPOT_TOKEN in Railway "

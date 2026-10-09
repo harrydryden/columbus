@@ -370,9 +370,10 @@ def _copy_lines(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> lis
 
 
 def _test_words(t: Mapping[str, Any]) -> str:
-    """"warm-intro (variant: email 1, first_line; warm intro against no intro)"."""
+    """"warm-intro (variant: email 1, first_line; warm intro against no intro)", and ", 70/30" for an uneven split."""
     what = f"email {t.get('email')}, {t.get('change')}; " if t.get("kind") == "variant" else ""
-    return f"{t.get('test_id')} ({t.get('kind')}: {what}{t.get('version_a')} against {t.get('version_b')})"
+    split = f", {t['share_a']:.0%}/{1 - t['share_a']:.0%}".replace("%", "") if t.get("share_a") else ""
+    return f"{t.get('test_id')} ({t.get('kind')}: {what}{t.get('version_a')} against {t.get('version_b')}{split})"
 
 
 def _test_lines(a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:

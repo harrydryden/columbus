@@ -24,8 +24,9 @@ A failure that says a service rejected its key (HTTP 401 or 403 from a client, S
 token_revoked or account_inactive, Google's 401 or 403 or a service-account key refused, Anthropic's
 authentication_error or permission_error) is told apart: "<System> refused our key or this request: if the key was revoked, replace <variable> in Railway
 (Variables), then redeploy", the variable from context.SECRET_NAMES (and ops/bootstrap.GOOGLE_KEY_VAR).
-Each (job, kind) is posted at most once a UK day, and each rejected key once a day whichever jobs met it
-(notify.post_once keeps what was sent in events). A dead Slack token cannot post any of this: the outside
+Each (job, kind) is posted at most once for each UK day a run of it began, and each rejected key once a day whichever
+jobs met it (notify.post_once keeps what was sent in events): a run that failed on Thursday is told on Thursday and
+not again on Friday while it is still the latest. A dead Slack token cannot post any of this: the outside
 watchdog's /fail ping covers it (ops/watchdog.py).
 """
 
@@ -201,26 +202,33 @@ def describe(f: Finding) -> str:
     return f"• {f.job} ({_when(f.at)}): {f.kind.replace('_', ' ')}: {_quote(f.texts[0])}"
 
 
+def _run_day(at: datetime | None, day: str) -> str:
+    """The UK day the run began, which keys its post; `day` (today) when its start is unknown."""
+    return at.astimezone(UK).date().isoformat() if at else day
+
+
 def lines(found: Iterable[Finding], day: str) -> list[tuple[str, str]]:
-    """(key, line) per finding, a rejected key told as such (once a day per system, naming every job that met it)."""
-    keys: dict[str, list[tuple[str, str]]] = {}  # system -> [(job, the error)]
+    """(key, line) per finding, a rejected key told as such (once a day per system, naming every job that met it).
+    A key carries the UK day its run began, not today: a daily job's failed run stays its latest until the next run,
+    and keyed on today it was told again just after midnight (read_pages, Thu 8 Oct 2026, told again at 00:05 Fri)."""
+    keys: dict[str, list[tuple[str, str, str]]] = {}  # system -> [(job, the error, its run's day)]
     out: list[tuple[str, str]] = []
     for f in found:
         others = []
         for text in f.texts:
             system = rejected_key(text)
             if system in KEYS:
-                keys.setdefault(system, []).append((f.job, text))
+                keys.setdefault(system, []).append((f.job, text, _run_day(f.at, day)))
             else:
                 others.append(text)
         if f.texts and not others:
             continue  # every error of it is a rejected key, told below
         f.texts = others
-        out.append((f"job_error:{f.job}:{f.kind}:{day}", describe(f)))
+        out.append((f"job_error:{f.job}:{f.kind}:{_run_day(f.at, day)}", describe(f)))
     for system, hits in keys.items():
         name, var = KEYS[system]
-        jobs = ", ".join(dict.fromkeys(j for j, _ in hits))
-        out.insert(0, (f"key_rejected:{system}:{day}",
+        jobs = ", ".join(dict.fromkeys(j for j, _, _ in hits))
+        out.insert(0, (f"key_rejected:{system}:{max(d for _, _, d in hits)}",
                        f"• {name} refused our key or this request: if the key was revoked, replace {var} in Railway "
                        f"(Variables), then redeploy; if it is current, the {name} plan may not allow this. "
                        f"({jobs}: {_quote(hits[0][1])})"))

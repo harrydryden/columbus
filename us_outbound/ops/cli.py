@@ -729,7 +729,7 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     breaks one; the result says which sendable Copy rows the change can be made in (variants.coverage), and a
     change that fits none of them is refused."""
     from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
-    from us_outbound.settings.validate import parse_looks, validate_tab
+    from us_outbound.settings.validate import parse_looks, parse_share, validate_tab
 
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
@@ -772,8 +772,20 @@ def _test_start(ctx: Context, test_id: str) -> dict:
     except ValueError as exc:
         raise Refused(f"looks on the Tests tab: {exc}") from exc
     start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
-    if read_date <= start:
-        raise Refused(f"read_date {read_date} must be after the start date {start}")
+    # The row as it will be written, checked as settings_sync will read it, whatever its kind (9 Oct 2026: a read_date
+    # of 2026-9-30 passed a comparison of text, the sheet said running, and the next sync refused the tab).
+    _, errors = validate_tab("Tests", [{**row, "status": "running", "start_date": start}])
+    if errors:
+        raise Refused("the Tests tab's row would not pass the checks settings_sync makes once it is running: "
+                      + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
+    split: dict[str, str] = {}
+    if (row.get("share_a") or "").strip():  # version_a's share of the accounts (Harry, 8 Oct 2026)
+        try:
+            share = parse_share(row["share_a"])
+        except ValueError as exc:
+            raise Refused(f"share_a on the Tests tab: {exc}") from exc
+        split = {"split": f"{row.get('version_a', '').strip()} {share:.0%}, {row.get('version_b', '').strip()} "
+                          f"{1 - share:.0%}"}
     if kind(row) == AB_TEST:
         missing = [
             v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
@@ -788,7 +800,7 @@ def _test_start(ctx: Context, test_id: str) -> dict:
         if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
             raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
     return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
-            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live,
+            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live, **split,
             **({"copy_rows": copy_rows} if copy_rows else {})}
 
 
@@ -1239,6 +1251,30 @@ def _audit_report(out: dict, live: bool) -> None:
         print(f"Withdrew {len(out['cards_withdrawn'])} open card(s): {', '.join(out['cards_withdrawn'])}.")
 
 
+def _crosswalk_report(out: dict) -> None:
+    r = out["rules"]
+    n = out["known"]
+    labelled = n - r["no_rules_label"]
+    print(f"{n} companies with a known label ({out['by_approver']} corrected by an approver, {out['by_model']} the "
+          f"model was sure of; {out['outside_our_labels']} outside our labels).")
+    if n:
+        print(f"The rules' label against it: the same label {r['exact_label']} ({r['exact_label'] / n:.0%}); of the "
+              f"{labelled} the rules labelled, the same group {r['same_group']}, another group {r['other_group']}; "
+              f"no rules label {r['no_rules_label']}.")
+    for key, title in (("poor", "Translations that are mostly wrong"),
+                       ("group_only", "Translations that place the group but not the label"),
+                       ("add", "Apollo values the tab does not translate, with a clear answer")):
+        if out[key]:
+            print(f"{title}:")
+            for row in out[key]:
+                right = f", {row['share_right']} right" if row["share_right"] else ""
+                says = f" → {row['tab_says']}" if row["tab_says"] else ""
+                print(f"  {row['kind']} “{row['value']}”{says}: {row['companies']} companies{right}; {row['verdict']} "
+                      f"(top label {row['top_label']} {row['label_share']}, group {row['top_group']} "
+                      f"{row['group_share']})")
+    print(f"{out['rows']} rows" + (" written to the Crosswalk tab." if out["tab_written"] else "."))
+
+
 def _eval_report(out: dict, live: bool) -> int:
     if not live:
         print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
@@ -1265,6 +1301,13 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         out = run_job(ctx, lambda c: relabel.audit(c, args.limit))
         _audit_report(out, ctx.live)
         _dry_note(ctx, "no model was asked and no company or card was changed.")
+        return 0
+    if args.action == "crosswalk":  # reads only; with --live it also writes the Crosswalk tab
+        from us_outbound.ops import crosswalk
+
+        ctx = factory(crosswalk.JOB, args.live, operator=True)
+        _crosswalk_report(run_job(ctx, crosswalk.run))
+        _dry_note(ctx, f"the {crosswalk.TAB} tab was not written.")
         return 0
     if args.action == "eval":
         ctx = factory("labels_eval", args.live, operator=True)
@@ -1890,8 +1933,9 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
     lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
-                 "company's label, or show its label and history", cmd_labels, takes_live=True)
-    lb.add_argument("action", choices=["audit", "eval", "set", "show"])
+                 "company's label, show its label and history, or measure how Apollo's industries, NAICS codes and "
+                 "keywords translate into labels (crosswalk)", cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show", "crosswalk"])
     lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
     lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
     lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")

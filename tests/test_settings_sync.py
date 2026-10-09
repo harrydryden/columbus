@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 
 import us_outbound.scoring
+import us_outbound.sources.pages  # noqa: F401  sync imports it late; load it before fake_score stubs scoring.score
 from tests.fakes import TEST_SHEET_ID, make_context
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
@@ -261,6 +262,23 @@ def test_rejected_signals_hold_back_an_angles_change_they_depend_on(ctx, sheet):
     assert "Angles row 1: kept the previous version: the Signals tab in force refers to it" in post[1]
     settings, _ = sync.load_current(ctx.store)
     assert settings.angle("Growing team") and settings.angle("Growing fast") is None
+
+
+def test_a_renamed_group_that_general_still_names_is_held_back(ctx, sheet):
+    """9 Oct 2026: renaming an Industries group left General's apollo_enrich_groups naming the old one. General kept
+    its previous version but Industries went in, so the settings in force did not validate and every job refused."""
+    sync.run(ctx)
+    for tab in ("Industries", "Focus", "Roles", "Copy"):
+        for r in sheet[tab]:
+            for col in ("industry_group", "industry", "industry_groups"):
+                if col in r and r[col]:
+                    r[col] = r[col].replace("Technology & Startups", "Tech & Startups")
+    ctx.now = T2
+    summary = sync.run(ctx)
+    assert "General" in summary["rejected"] and "Industries" in summary["rejected"] and summary["unusable"] == []
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values())
+    assert any(i.industry_group == "Technology & Startups" for i in settings.industries)
 
 
 def test_general_note_rows_are_not_stored(ctx, sheet):

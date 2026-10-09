@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from us_outbound.clients.guard import Op
-from us_outbound.clients.http import HttpClient, Response
+from us_outbound.clients.http import HttpClient, Response, TransportError
 from us_outbound.logs import log
 
 USER_AGENT = "spill-us-outbound/1.0 (+https://www.spill.chat/us)"
@@ -87,8 +87,8 @@ class Public(HttpClient):
         _, _, host, _ = split_url(url)
         try:
             resp = self._head(url, Op("resolve_redirect", target=host))
-        except OSError as exc:  # requests' ConnectionError and Timeout are OSErrors
-            log("redirect_unresolved", host=host, reason=type(exc).__name__)
+        except TransportError as exc:  # no answer: a timeout or a dropped connection
+            log("redirect_unresolved", host=host, reason=exc.reason)
             return url
         if resp is None or not 300 <= resp.status < 400:
             if resp is not None and resp.status >= 400:

@@ -14,6 +14,9 @@ from us_outbound.clients.guard import Guard, Op
 
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})  # resent only when the request is idempotent
 RATE_LIMITED = 429  # the server refused the request unprocessed, so any request may be resent
+# The longest Retry-After waited out: a longer one is handed back as the 429 it is, so a 4-minute job is not killed
+# asleep (9 Oct 2026: three waits of a Slack Retry-After: 120 came to 360 s).
+MAX_RETRY_WAIT = 30.0
 # Headers that carry a key. requests re-sends custom ones (X-Api-Key, clay-api-key) to the host
 # a redirect names, so a request carrying any of them never follows a redirect.
 CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key", "clay-api-key"})
@@ -45,6 +48,19 @@ class ApiError(Exception):
     def __init__(self, system: str, status: int, body: Any, url: str = ""):
         self.system, self.status, self.body, self.url = system, status, body, url
         super().__init__(f"{system} HTTP {status} for {urlparse(url).path}: {str(body)[:200]}")
+
+
+class TransportError(ApiError):
+    """No answer at all to a read, or to a write that is safe to repeat: a timeout or a dropped connection (status 0).
+    An ApiError, so each caller's per-item handling covers it as it covers a refusal (9 Oct 2026: one Clay read
+    timeout got past pick_contacts' handlers and aborted the whole run). reason is the transport's own error, such as
+    ReadTimeout. A write that may have happened all the same (a POST that adds a lead, sends a reply, creates a
+    record) is not one: its error is raised as it came, so the caller's own recovery for an unknown outcome runs (a
+    send approval left "sending" and looked up later) and nothing is taken as refused and sent again."""
+
+    def __init__(self, system: str, error: BaseException, url: str = ""):
+        self.reason = type(error).__name__
+        super().__init__(system, 0, f"{self.reason}: {error}", url)
 
 
 class RequestsTransport:
@@ -90,10 +106,12 @@ class RequestsTransport:
                 delay *= 2
                 continue
             if r.status_code in retry and attempt < self.attempts:
-                wait = r.headers.get("Retry-After")
-                time.sleep(float(wait) if wait and wait.replace(".", "", 1).isdigit() else delay)
-                delay *= 2
-                continue
+                asked = r.headers.get("Retry-After")
+                wait = float(asked) if asked and asked.replace(".", "", 1).isdigit() else delay
+                if wait <= MAX_RETRY_WAIT:
+                    time.sleep(wait)
+                    delay *= 2
+                    continue
             ctype = r.headers.get("Content-Type", "")
             body: Any = r.text
             if "json" in ctype and r.content:
@@ -147,10 +165,16 @@ class HttpClient:
             return dry_result
         url = path if path.startswith("http") else (base_url or self.base_url) + path
         extra = {"timeout": timeout} if timeout is not None else {}
-        resp = self.transport.send(
-            method, url, headers=headers or self.headers(), params=params, json=json, data=data,
-            idempotent=is_idempotent(method, op, self.paid_reads), **extra,
-        )
+        idempotent = is_idempotent(method, op, self.paid_reads)
+        try:
+            resp = self.transport.send(
+                method, url, headers=headers or self.headers(), params=params, json=json, data=data,
+                idempotent=idempotent, **extra,
+            )
+        except OSError as exc:  # requests' ConnectionError and Timeout are OSErrors
+            if op.write and not idempotent:
+                raise  # it may have happened: never to be taken as refused (TransportError)
+            raise TransportError(self.system, exc, url) from exc
         if raw:
             return resp
         if resp.status >= 300:  # a redirect is never followed with a key, so it is not a success

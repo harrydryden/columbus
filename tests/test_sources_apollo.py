@@ -241,6 +241,20 @@ def test_skipped_companies_and_why():
     assert ctx.store.get("partners", domain="company11.com")["reason"] == "broker"
 
 
+def test_a_switched_off_label_in_a_group_we_prospect_goes_under_the_groups_own_label():
+    """9 Oct 2026: sourcing dropped a company whose best label was switched off, though the label check would have
+    placed it under its group's own label. Both now follow the check's rule (Settings.placeable)."""
+    remote = uni.best_label([], "remote-first ; distributed team ; saas", BASE)
+    assert (remote.industry, remote.active) == ("Remote & hybrid teams", False)
+    assert BASE.placeable(remote).industry == "Technology & Startups"
+    consulting = uni.best_label(["541611"], "", BASE)
+    assert consulting.industry_group == "Professional Services" and BASE.placeable(consulting) is None  # group off
+    ctx, _, _ = make([org(1, naics=(), keywords=("remote-first", "distributed team"), _always=True)])
+    assert uni.run(ctx)["created"] == 1
+    [a] = accounts_by_domain(ctx).values()
+    assert (a["industry"], a["industry_group"]) == ("Technology & Startups", "Technology & Startups")
+
+
 def test_an_account_found_again_keeps_its_source_and_status_and_overrides_win():
     s = settings_with(overrides=(Override("company2.com", "hq_state", "IL"), Override("company2.com", "employees", "30")))
     ctx, _, _ = make([org(1, domain="named.co"), org(2)], settings=s)

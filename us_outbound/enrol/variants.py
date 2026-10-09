@@ -21,10 +21,13 @@ which are lines of their own that the Copy row places. coverage() is what `test 
 rows the change can be made in.
 
 Who is in it (choose). Every account enrolled from start_date on, whatever its tier (Control too), industry, role or
-Copy row: "a" or "b" by sha256(account_id + test_id) (queue.test_version, as an ab test splits). The opener holdout
+Copy row: "a" or "b" by sha256(account_id + test_id) (queue.test_version, as an ab test splits), half and half
+unless the row's share_a says otherwise (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email 1s";
+70% gives version_a seven accounts in ten). The opener holdout
 and the subject split hash the account id with salts of their own, so the three splits are independent and the
 designs factorial. A second contact gets its account's arm when its first contact is in the test, and is never
-counted as a new account. Each arm takes accounts_per_version accounts; once an arm has them, the accounts it would
+counted as a new account. Each arm takes its cap (accounts_per_version, counted in the smaller arm and scaled to the
+larger: Test.cap); once an arm has them, the accounts it would
 have had get the Copy row as it is and are not in the test (nor are any once Harry sets the test read or stopped).
 
 Where the change cannot be made, the account is not in the test, whichever arm it hashes to: a replace whose find is
@@ -174,8 +177,8 @@ class Arm:
 
 
 def arm_for(test: Test, account_id: Any) -> str:
-    """"a" or "b": sha256(account_id + test_id) % 2, as an ab test splits (queue.test_version)."""
-    return queue.test_version(str(account_id), test.test_id)
+    """"a" or "b" by sha256(account_id + test_id), in the test's share_a (queue.test_version), as an ab test splits."""
+    return queue.test_version(str(account_id), test.test_id, test.share_a)
 
 
 def choose(test: Test | None, account: Mapping[str, Any], row: CopyRow, *, today: date, subject_arm: str,
@@ -190,8 +193,8 @@ def choose(test: Test | None, account: Mapping[str, Any], row: CopyRow, *, today
     if first is not None and str(first.get("test_id") or "") != test.test_id:
         return None
     arm = arm_for(test, account["account_id"])
-    if first is None and 0 < test.accounts_per_version <= counts.get(arm, 0):
-        return Arm(test.test_id, note=f"{test.arm_name(arm)} has its {test.accounts_per_version} accounts")
+    if first is None and 0 < test.cap(arm) <= counts.get(arm, 0):
+        return Arm(test.test_id, note=f"{test.arm_name(arm)} has its {test.cap(arm)} accounts")
     if test.change == SUBJECT and test.email == render.SUBJECT_STEP and subject_arm == render.PERSONAL_SUBJECT:
         return Arm(test.test_id, note="its email 1 has the personal subject (General email1_subject), which the test "
                                       "does not change")

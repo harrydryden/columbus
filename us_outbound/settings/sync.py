@@ -54,6 +54,9 @@ SLACK_ERROR_LINES = 20
 DEPENDS_ON: dict[str, tuple[str, ...]] = {
     "Signals": ("Angles",), "Copy": ("Industries", "Roles"), "Tests": ("Copy",), "Focus": ("Industries",),
     "Roles": ("Industries",),  # industry_groups (Harry, 1 Oct 2026)
+    # apollo_enrich_groups names Industries groups, and an Overrides industry a label (9 Oct 2026: a renamed group
+    # left General invalid with no version to fall back on, so every job refused to run).
+    "General": ("Industries",), "Overrides": ("Industries",),
 }
 
 ORDER_TAB = "_order"  # key = a tab name, values = {"keys": [its keys in sheet order]}; views ignore it

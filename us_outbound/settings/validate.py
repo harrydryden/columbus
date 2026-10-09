@@ -99,7 +99,8 @@ TAB_OPTIONAL_COLUMNS: dict[str, frozenset[str]] = {
     "Mailboxes": frozenset({"slack_id"}),  # decision D11 (Harry, 1 Oct 2026): owners approve their own replies
     "Signals": frozenset({*OPENER_COLUMNS.values(), OPENER_SELF_COLUMN}),  # tokenized openers (Harry, 2 Oct 2026)
     "Tests": frozenset({"kind", "looks",  # pre-registered looks (Harry, 6 Oct 2026): blank kind is ab
-                        *VARIANT_COLUMNS}),  # a variant test's (Harry, 7 Oct 2026): blank on any other kind
+                        *VARIANT_COLUMNS,  # a variant test's (Harry, 7 Oct 2026): blank on any other kind
+                        "share_a"}),  # an uneven split (Harry, 8 Oct 2026): blank is 50%
 }
 # The Copy tab's layout before 30 Sep 2026 (one row per step): read as no copy, with a notice.
 LEGACY_COPY_COLUMNS = frozenset({"step", "subject", "body"})
@@ -460,7 +461,25 @@ def _prepare(tab: str, rows: Iterable[Mapping[str, Any]] | None, errors: list[Ro
         noun = "columns are" if len(missing) > 1 else "column is"
         errors.append(RowError(tab, HEADER_ROW, ", ".join(missing), f"the {noun} missing from the header row"))
         return None
+    # A header that is a known column mistyped is read as no column at all, and an optional one silently as blank
+    # (9 Oct 2026: a "Share_A" holding 70% read as 50/50), so it is refused by name.
+    absent = [c for c in COLUMNS[tab] if c not in present]
+    near = [(h, close) for h in sorted(present - set(COLUMNS[tab])) if h and (close := _near_column(h, absent))]
+    if near:
+        errors.append(RowError(tab, HEADER_ROW, ", ".join(h for h, _ in near), "; ".join(
+            f"the header {h!r} looks like the column {c!r}: rename it, or its values are not read" for h, c in near)))
+        return None
     return [_Row(tab, i + FIRST_DATA_ROW, r, errors) for i, r in enumerate(rows)]
+
+
+def _near_column(header: str, columns: Iterable[str]) -> str:
+    """The known column a header is a mistyping of ("Share_A", "slack id", "industy" for "industry"), or ""."""
+    fold = re.sub(r"[\s\-]+", "_", header.strip().casefold())
+    columns = list(columns)
+    if fold in columns:
+        return fold
+    close = difflib.get_close_matches(fold, columns, n=1, cutoff=0.85)
+    return close[0] if close else ""
 
 
 def _unique(r: _Row, col: str, value: Any, seen: dict[Any, int], what: str = "") -> bool:
@@ -501,8 +520,8 @@ def _converter(hint: Any) -> Callable[[str], Any]:
         return parse_float
     if hint is str:
         return str
-    if hint == tuple[str, ...]:
-        return lambda t: split_list(t, ",")
+    if hint == tuple[str, ...]:  # ids, groups and paths: no value holds either separator (9 Oct 2026: ";" was one value)
+        return lambda t: split_list(t, ";,")
     if hint is SendWindow:
         return parse_send_window
     if hint == tuple[DateRange, ...]:
@@ -831,12 +850,18 @@ def _page_url(text: str) -> str:
 def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
     out: list[tuple[Industry, int]] = []
     seen: dict[str, int] = {}
+    spelled: dict[str, tuple[str, int]] = {}  # a group, casefolded -> (its first spelling, that row)
     for r in rows:
         label = r.parse("industry", str)
         _unique(r, "industry", label.casefold() if label else None, seen, f"industry {label!r}")
         if label and label.casefold() == GENERAL_COPY.casefold():
             r.fail("industry", f"{GENERAL_COPY!r} is kept for the Copy tab's fallback sequence; name the industry")
         group = r.parse("industry_group", str)
+        if group:  # the code compares groups exactly, so a second spelling splits the group (9 Oct 2026)
+            first, at = spelled.setdefault(group.casefold(), (group, r.number))
+            if first != group:
+                r.fail("industry_group", f"{group!r} is spelled {first!r} on row {at}: one spelling per group, or it "
+                                         "splits in two")
         active = r.parse("active", parse_bool)
         naics = r.parse("naics_prefixes", _naics, required=False, default=())
         exclude = r.parse("exclude_naics", _naics, required=False, default=())
@@ -1082,6 +1107,9 @@ def _overrides(rows: list[_Row]) -> list[tuple[Override, int]]:
     return out
 
 
+SHARE_A_MIN = 0.1  # a test's share_a runs from 10% to 90% (Harry, 8 Oct 2026: 70% with the warm intro)
+
+
 def parse_share(text: str) -> float:
     """"60%" or "0.6" -> 0.6. A bare number above 1 is refused: write it with a % sign."""
     t = text.strip()
@@ -1192,7 +1220,8 @@ def _variant(r: _Row, kind: str) -> tuple[int, str, str, str, str]:
 
 def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
     """The Tests tab. kind (ab, the default, holdout or variant) and looks (Harry, 6 Oct 2026) are optional columns,
-    and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026)."""
+    and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026), and share_a, the share
+    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank)."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
@@ -1229,6 +1258,13 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
             elif n is not None and look > n:
                 r.fail("looks", f"{look} is more than accounts_per_version ({n})")
         email, change, text_a, text_b, find = _variant(r, kind or AB_TEST)
+        share_a = r.parse("share_a", parse_share, required=False, default=0.5)
+        if share_a is not None and share_a != 0.5:
+            if kind == HOLDOUT_TEST:
+                r.fail("share_a", "applies to ab and variant tests: a holdout reads a split enrol already makes")
+            elif not SHARE_A_MIN <= share_a <= 1 - SHARE_A_MIN:
+                r.fail("share_a", f"must be between {SHARE_A_MIN:.0%} and {1 - SHARE_A_MIN:.0%}: the smaller arm "
+                                  "decides when the test can be read")
         # SPEC 9: one copy test at a time, since it decides each account's copy; a variant test decides part of it,
         # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it runs beside either.
         if is_running and kind in COPY_TEST_KINDS:
@@ -1239,7 +1275,7 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
                 running = r.number
         if r.ok:
             out.append((Test(test_id, hypothesis, a, b, n, status, start, read, rule, r.text("result"), kind, looks,
-                             email, change, text_a, text_b, find), r.number))
+                             email, change, text_a, text_b, find, share_a if share_a is not None else 0.5), r.number))
     return out
 
 
@@ -1349,7 +1385,13 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
 
     # A test's versions may be written after it is planned; a running test needs both approved.
     versions = {_cell(r, "copy_version").casefold(): _cell(r, "status").lower() for r in raw["Copy"] or ()}
+    spelled = {_cell(r, "copy_version").casefold(): _cell(r, "copy_version") for r in raw["Copy"] or ()}
+    tests = []
     for t, row in values["Tests"]:
+        if t.kind == AB_TEST:  # enrol matches a version exactly: take the Copy row's own spelling (9 Oct 2026)
+            t = dataclasses.replace(t, version_a=spelled.get(t.version_a.casefold(), t.version_a),
+                                    version_b=spelled.get(t.version_b.casefold(), t.version_b))
+        tests.append((t, row))
         if t.status != "running" or t.kind != AB_TEST:  # a holdout's arms are no copy versions
             continue
         for col, version in (("version_a", t.version_a), ("version_b", t.version_b)):
@@ -1358,6 +1400,23 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tupl
                 errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
             elif status != "approved":
                 errors["Tests"].append(RowError("Tests", row, col, f"a running test needs {version} approved", t.test_id))
+    values["Tests"] = tests
+
+    # An Overrides industry names an Industries label and an industry_group a group, as written there (9 Oct 2026:
+    # "fintech" was taken as it stood, and the label check then failed it on every run).
+    overrides = []
+    for o, row in values["Overrides"]:
+        names = {"industry": labels, "industry_group": groups}.get(o.field)
+        if names is not None:
+            canonical = names.get(o.value.strip().casefold())
+            if canonical is None:
+                errors["Overrides"].append(RowError(
+                    "Overrides", row, "value", f"{o.value!r} is not an {o.field} on the Industries tab"
+                    f"{_hint(o.value, names.values())}", f"{o.domain} {o.field}"))
+                continue
+            o = dataclasses.replace(o, value=canonical)
+        overrides.append((o, row))
+    values["Overrides"] = overrides
 
     # A Focus row names an industry group on the Industries tab that has an active industry.
     groups = _names(raw["Industries"], "industry_group")

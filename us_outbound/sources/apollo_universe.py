@@ -619,9 +619,10 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     if label is None:
         run.skipped["no Industries label fits"] += 1
         return
-    if not label.active:
+    if s.placeable(label) is None:
         run.skipped["its best Industries label is switched off"] += 1
         return
+    label = s.placeable(label)
     partner = tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": org_keywords(org),
                                    "apollo_industry": org.get("industry")}, {})
     if partner:

@@ -622,8 +622,9 @@ def test_the_daily_posts_labels_block():
     ctx = measured(facts_, events, {"unchecked": 3, "unavailable_reason": "the monthly Claude cap is reached"})
     start, end, _ = period(ctx)
     assert labels.post_lines(ctx, start, end) == [
-        "  Checked: 9 (rules and model agreed on 5, 56%; model overruled 1; group copy 1; General copy 0; held 1; "
-        "disqualified 1; waiting unchecked 3).",
+        "  Checked: 9 (of the 9 the rules labelled, the model agreed on the label for 5 and the group for 8, 89%; "
+        "no rules label 0; model overruled 1; group copy 1; General copy 0; held 1; disqualified 1; waiting "
+        "unchecked 3).",
         "  The label check could not ask the model at the last verify run: the monthly Claude cap is reached.",
         "  Cards: 1 industry correction of 20 decided (95% right): Games studios → Technology & Startups.",
     ]
@@ -637,24 +638,61 @@ def test_the_daily_post_carries_the_block():
     ctx, _ = post_world()
     lines, _ = daily_post.build(ctx)
     i = lines.index("*Labels*")
-    assert lines[i + 1].startswith("  Checked: 0 (rules and model agreed on 0, n/a;") and lines.index("*Mailboxes*") > i
+    assert lines[i + 1].startswith("  Checked: 0 (of the 0 the rules labelled, the model agreed on the label for 0 "
+                                   "and the group for 0, n/a;") and lines.index("*Mailboxes*") > i
 
 
 def test_the_asks_trip_once_a_day_on_corrections_agreement_and_an_unavailable_check():
     facts_ = [*(correction(i, "Adtech & martech", "Fintech") for i in range(3)),
               *(checked_fact(10 + i, "rules+model") for i in range(10)),
-              *(checked_fact(30 + i, "model", rules="Adtech & martech", model="Fintech") for i in range(12))]
+              *(checked_fact(30 + i, "model", rules="Adtech & martech", model="Marketing agencies") for i in range(12)),
+              *(checked_fact(50 + i, "model", rules="Adtech & martech", model="Fintech") for i in range(3))]
     ctx = measured(facts_, [decided(i) for i in range(20)], {"unchecked": 4, "unavailable_reason": "Claude did not answer"})
     got = dict(labels.asks(ctx))
     assert got["labels_corrections:2026-10-27"] == (
         "labels: 3 industry corrections since the last send day (3 of 23 cards). Check the Industries tab's definitions "
         "and keywords for Adtech & martech → Fintech (3); `us-outbound labels audit --live` checks the queue again.")
     assert got["labels_agreement:2026-10-27"] == (
-        "labels: the rules and the model agreed on only 45% of 22 companies; the Industries tab's NAICS codes or "
-        "keywords for Technology & Startups need a look.")
+        "labels: the model put 12 of the 25 companies the rules labelled (48%) in another group or outside our "
+        "labels; most were under Technology & Startups (12). `us-outbound labels crosswalk` shows which NAICS codes "
+        "and keywords bring them in.")
+    assert "labels_no_rules:2026-10-27" not in got
     assert got["labels_unavailable:2026-10-27"].startswith(
         "The label check did not run (Claude did not answer); 4 companies wait unverified")
     assert labels.asks(measured([checked_fact(1, "rules+model")], [decided(1)])) == []
+
+
+def test_a_company_asked_twice_counts_once_by_its_latest_check():
+    """Thu 8 Oct 2026: two audits and the home-page second look asked about the same companies, and the ask said
+    "1172 companies"."""
+    first = checked_fact(1, "disputed", action="hold", model="Edtech", at=MON - timedelta(hours=3))
+    again = {**checked_fact(1, "rules+model"), "event_id": "v1-again"}
+    t = labels.tally(measured([first, again]), MON - timedelta(days=1), TUE_9)
+    assert (t.checked, t.labelled, t.agreed, t.decisions) == (1, 1, 1, {"rules+model": 1})
+
+
+def test_no_rules_label_is_its_own_ask_naming_the_codes_to_add():
+    """A company the rules gave no label cannot agree with the model: it is a gap in the Industries tab's codes,
+    told with the model's labels and the companies' Apollo NAICS codes, not as disagreement."""
+    facts_ = [*(checked_fact(i, "rules+model") for i in range(20)),
+              *(checked_fact(100 + i, "disputed", action="hold", rules=None, group=None, model="Fintech")
+                for i in range(15)),
+              *(checked_fact(200 + i, "model", rules=None, group=None, model="Edtech") for i in range(6)),
+              checked_fact(300, "disputed", action="hold", rules=None, group=None, model="none")]
+    naics = [{"event_id": f"n{i}", "account_id": f"a{i}", "source": "apollo_org", "fact": "naics",
+              "value": ["522320"] if i < 112 else [], "observed_at": MON - timedelta(days=5)} for i in range(100, 115)]
+    naics += [{"event_id": f"n{i}", "account_id": f"a{i}", "source": "apollo_org", "fact": "naics",
+               "value": ["611710", "541990"], "observed_at": MON - timedelta(days=5)} for i in range(200, 206)]
+    ctx = measured([*facts_, *naics], [decided(i) for i in range(5)])
+    got = dict(labels.asks(ctx))
+    assert "labels_agreement:2026-10-27" not in got  # the 20 the rules labelled all agree
+    assert got["labels_no_rules:2026-10-27"] == (
+        "labels: the rules gave no label to 22 of 42 companies checked (52%); the model most often said Fintech (15), "
+        "Edtech (6). Their commonest NAICS codes: 522320 → Fintech (12), 541990 → Edtech (6), 611710 → Edtech (6). "
+        "Add each to that label's naics_prefixes on the Industries tab, then `us-outbound sync` and "
+        "`us-outbound relabel --live`. 3 have no NAICS code from Apollo, so only apollo_keywords can label them.")
+    t = labels.tally(ctx, *period(ctx)[:2])
+    assert (t.checked, t.labelled, t.share_agreed()) == (42, 20, 1.0)
 
 
 def test_the_asks_go_out_with_the_spend_asks():
@@ -676,7 +714,7 @@ def test_the_readout_block():
     lines = labels.readout_lines(ctx, start, end)
     assert lines[1] == "*Industry labels* (the label check; target: 95% of cards with the right industry)"
     assert lines[2] == ("Last week: 38 of 40 cards had the right industry (95%): met. 9 checked, the rules and the "
-                        "model agreeing on 89%; held 1, disqualified 0.")
+                        "model agreeing on the group for 100%; held 1, disqualified 0.")
     assert lines[3] == "  Corrections: Games studios → Technology & Startups (2)"
     few = labels.readout_lines(measured([correction(1, "a", "b", at=at)], [decided(1, at=at)]), start, end)
     assert few[2].startswith("Last week: 1 of 2 cards had the right industry (too few to read).")
