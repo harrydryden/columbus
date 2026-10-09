@@ -903,6 +903,24 @@ def test_disallowed_call_raises_before_any_request(case, tmp_path):
     assert all(rows == [] for rows in w.clients["MemoryStore"].tables.values())
 
 
+def test_refuse_unless_allowed_judges_early_and_records_only_a_refusal():
+    """Guard.refuse_unless_allowed (9 Oct 2026): the clients' early refusals ask the guard rather than copy its rules.
+    It says whether authorize() would send the call and records nothing then; a refusal is recorded and raised."""
+    guard = Guard(live=False, bounds=BOUNDS)
+    assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=DEV, write=True)) is True
+    assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is False  # dry-run
+    assert guard.calls == []
+    with pytest.raises(GuardViolation, match="not a US Outbound channel"):
+        guard.refuse_unless_allowed("slack", Op("chat.postMessage", target="#general", write=True))
+    with pytest.raises(GuardViolation, match="approver"):
+        guard.refuse_unless_allowed("instantly", Op("email.reply", target=ADDRESSES[0], write=True, detail={
+            "accounts": [ADDRESSES[0]], "campaign": PREFIX + "Hannah", "approved_by": "U_SOMEONE"}))
+    assert [(c.system, c.target, c.sent) for c in guard.calls] == [("slack", "#general", False),
+                                                                  ("instantly", ADDRESSES[0], False)]
+    guard.configure(live=True)
+    assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is True
+
+
 # -- (c) static: who may import what ----------------------------------------------------------------
 
 IMPORT_RULES: list[tuple[str, set[str]]] = [

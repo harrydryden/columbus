@@ -26,7 +26,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from typing import Any
 
-from us_outbound.clients.guard import CLI_APPROVER, REPLIES_CLI_JOB, US_CAMPAIGN_PREFIX, GuardViolation, Op
+from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation, Op
 from us_outbound.clients.http import ApiError, HttpClient
 from us_outbound.logs import log
 from us_outbound.settings.model import SendWindow
@@ -394,23 +394,19 @@ class Instantly(HttpClient):
 
     # -- guard helpers ---------------------------------------------------------
 
-    def _registry(self, action: str, accounts: Iterable[str], *, write: bool = False, target: str = "") -> list[str]:
-        """Lower-cased accounts, all in the registry; otherwise the guard refuses before any request."""
+    def _registry(self, action: str, accounts: Iterable[str], *, write: bool = False, target: str = "",
+                  **detail: Any) -> list[str]:
+        """Lower-cased accounts, which the guard has judged with the rest of the call's detail before any request."""
         accs = _lower_all(accounts)
-        allowed = {x.lower() for x in self.guard.bounds.registry_accounts}
-        if not accs or any(a not in allowed for a in accs):
-            self.guard.authorize(self.system, Op(action, target=target, write=write, detail={"accounts": accs}))
-            raise GuardViolation(f"Instantly {action} must stay within the registry accounts (SPEC 1.2)")
+        self.guard.refuse_unless_allowed(self.system, Op(action, target=target, write=write,
+                                                         detail={"accounts": accs, **detail}))
         return accs
 
-    def _us_name(self, name: str, action: str, write: bool) -> None:
-        """Refuse a campaign outside "US Outbound – " before any request (even the id lookup)."""
-        if not name.startswith(US_CAMPAIGN_PREFIX):
-            self.guard.authorize(self.system, Op(action, target=name, write=write))
-            raise GuardViolation(f"Instantly campaign {name!r} is not a US Outbound campaign")
-
-    def _campaign_id(self, name: str, action: str, write: bool, *, required: bool = True) -> str | None:
-        self._us_name(name, action, write)
+    def _campaign_id(self, name: str, action: str, write: bool, *, required: bool = True,
+                     detail: Mapping[str, Any] | None = None) -> str | None:
+        """The campaign's id. The guard judges the call first, so a campaign outside "US Outbound – " is refused
+        before any request, even the id lookup."""
+        self.guard.refuse_unless_allowed(self.system, Op(action, target=name, write=write, detail=dict(detail or {})))
         if name not in self._ids and name not in self._dupes:
             self.list_campaigns()
         if name in self._dupes:
@@ -535,8 +531,8 @@ class Instantly(HttpClient):
 
     def set_daily_limit(self, email: str, daily_limit: int) -> None:
         """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap)."""
-        [acc] = self._registry("account.update_limit", [email], write=True)
         limit = int(daily_limit)
+        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit)
         self.request(
             "PATCH", f"/accounts/{_segment(acc)}",
             Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
@@ -551,8 +547,8 @@ class Instantly(HttpClient):
         PHASE0-CONFIRM: that Instantly builds the From display name from the account's first_name and
         last_name (API v2 account object), and that PATCH /accounts/{email} takes exactly those two fields.
         """
-        [acc] = self._registry("account.update_name", [email], write=True)
         name = {"first_name": str(first_name).strip(), "last_name": str(last_name).strip()}
+        [acc] = self._registry("account.update_name", [email], write=True, **name)
         self.request(
             "PATCH", f"/accounts/{_segment(acc)}",
             Op("account.update_name", target=acc, write=True, detail={"accounts": [acc], **name}),
@@ -616,14 +612,11 @@ class Instantly(HttpClient):
         text_only: bool = False,
     ) -> dict | None:
         """Create the owner's campaign with the SPEC 9 settings. It stays in Draft: never activated here."""
-        self._us_name(name, "campaign.create", True)
+        accs = _lower_all(accounts)
+        op = Op("campaign.create", target=name, write=True, detail={"accounts": accs, "daily_limit": int(daily_limit)})
+        self.guard.refuse_unless_allowed(self.system, op)  # a US Outbound name, a registry owner and accounts
         options = dict(options or {})
         _check_campaign_fields(options)
-        accs = self._registry("campaign.create", accounts, write=True, target=name)
-        op = Op("campaign.create", target=name, write=True, detail={"accounts": accs, "daily_limit": int(daily_limit)})
-        if name[len(US_CAMPAIGN_PREFIX):] not in self.guard.bounds.registry_owners:
-            self.guard.authorize(self.system, op)  # refuses: no such owner in the registry
-            raise GuardViolation(f"no registry owner for campaign {name!r}")
         if isinstance(schedule, SendWindow) or schedule is None:
             campaign_schedule = instantly_schedule(schedule)
         else:
@@ -637,7 +630,7 @@ class Instantly(HttpClient):
             "email_list": accs,
             "daily_limit": int(daily_limit),
         }
-        if self._campaign_id(name, "campaign.create", True, required=False) is not None:
+        if self._campaign_id(name, "campaign.create", True, required=False, detail=op.detail) is not None:
             raise ValueError(f"Instantly campaign {name!r} already exists")
         body = self.request(
             "POST", "/campaigns", op, json=payload, dry_result={"id": None, "name": name, "status": 0, "dry_run": True}
@@ -655,9 +648,8 @@ class Instantly(HttpClient):
             accs = _lower_all(accounts)
             if not accs:
                 raise ValueError("an empty sending list: pause the campaign instead")
-            detail["accounts"] = self._registry("campaign.update", accs, write=True, target=name)
-            fields["email_list"] = detail["accounts"]
-        cid = self._campaign_id(name, "campaign.update", True)
+            detail["accounts"] = fields["email_list"] = accs
+        cid = self._campaign_id(name, "campaign.update", True, detail=detail)  # the guard checks the accounts too
         self.request("PATCH", f"/campaigns/{_segment(cid)}", Op("campaign.update", target=name, write=True, detail=detail), json=fields)
 
     def pause_campaign(self, name: str) -> None:
@@ -910,19 +902,6 @@ class Instantly(HttpClient):
                 return name
         return None
 
-    def _need_approval(self, acct: str, approved_by: str) -> None:
-        """Refuse before any request unless an approver approved this reply (SPEC 1.3, D11; the guard checks too)."""
-        b = self.guard.bounds
-        owners = {sid for address, sid in b.owner_slack_ids if address.lower() == acct}
-        by = str(approved_by or "").strip()
-        if (by == CLI_APPROVER and self.guard.job == REPLIES_CLI_JOB) or (
-            by not in ("", CLI_APPROVER) and by in b.approver_slack_ids | owners
-        ):
-            return
-        detail = {"accounts": [acct], "campaign": US_CAMPAIGN_PREFIX, "approved_by": by}
-        self.guard.authorize(self.system, Op("email.reply", target=acct, write=True, detail=detail))  # refuses
-        raise GuardViolation("nothing goes to a prospect after their reply unless an approver approved it (SPEC 1.3)")
-
     def reply(
         self, eaccount: str, reply_to_uuid: str, subject: str | None, body: str, *, approved_by: str
     ) -> dict | None:
@@ -934,8 +913,11 @@ class Instantly(HttpClient):
         approved_by is the approver's Slack id, or "cli" from `us-outbound replies approve`; the
         guard refuses anyone else (SPEC 1.3, decision D11). subject None answers "Re: " the original's.
         """
-        [acct] = self._registry("email.reply", [eaccount], write=True, target=eaccount)
-        self._need_approval(acct, approved_by)
+        # Before any request (even reading the email): the registry mailbox and the approver (SPEC 1.3, D11), judged
+        # as for a thread of a US Outbound campaign; the thread's own campaign is judged once the email is read.
+        by = str(approved_by or "").strip()
+        [acct] = self._registry("email.reply", [eaccount], write=True, target=eaccount,
+                                campaign=US_CAMPAIGN_PREFIX, approved_by=by)
         original = self._owned_email(acct, reply_to_uuid)
         cid = str(original.get("campaign_id") or "").strip()
         campaign = self._campaign_named_by_id(cid) if cid else None
@@ -943,12 +925,9 @@ class Instantly(HttpClient):
             "email.reply",
             target=acct,
             write=True,
-            detail={"accounts": [acct], "reply_to_uuid": reply_to_uuid, "campaign": campaign or "",
-                    "approved_by": str(approved_by).strip()},
+            detail={"accounts": [acct], "reply_to_uuid": reply_to_uuid, "campaign": campaign or "", "approved_by": by},
         )
-        if campaign is None:
-            self.guard.authorize(self.system, op)  # refuses: not a thread of a US Outbound campaign
-            raise GuardViolation(f"email {reply_to_uuid} is not in a US Outbound campaign")
+        self.guard.refuse_unless_allowed(self.system, op)  # not a thread of a US Outbound campaign: refused here
         payload = {
             "eaccount": acct,
             "reply_to_uuid": reply_to_uuid,
@@ -964,15 +943,13 @@ class Instantly(HttpClient):
 
         PHASE0-CONFIRM: POST /emails/forward is in the v2 OpenAPI; confirm it works on our plan.
         """
-        [acct] = self._registry("email.forward", [eaccount], write=True, target=eaccount)
         recipients = _lower_all([to] if isinstance(to, str) else to)
         if not recipients:
             raise ValueError("forward needs a recipient")
+        # The guard judges the mailbox and the recipients before any request (even reading the email).
+        [acct] = self._registry("email.forward", [eaccount], write=True, target=eaccount, to=recipients,
+                                id=email_id)
         op = Op("email.forward", target=acct, write=True, detail={"accounts": [acct], "to": recipients, "id": email_id})
-        escalation = self.guard.bounds.escalation_email.strip().lower()
-        if not escalation or set(recipients) != {escalation}:
-            self.guard.authorize(self.system, op)  # refuses before any request (even reading the email)
-            raise GuardViolation("Instantly forwards go only to escalation_email (SPEC 11)")
         original = self._owned_email(acct, email_id)
         payload = {
             "eaccount": acct,

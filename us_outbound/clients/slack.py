@@ -64,12 +64,6 @@ class Slack(HttpClient):
             raise ApiError(self.system, 200, body, self.base_url + method)
         return body
 
-    def _preflight(self, op: Op) -> None:
-        """Let the guard reject a channel outside the US Outbound pair before any request (even the id lookup)."""
-        b = self.guard.bounds
-        if op.target not in {b.alert_channel, b.dev_channel}:
-            self.guard.authorize(self.system, op)
-
     # -- reads -----------------------------------------------------------------
 
     def channel_id(self, name: str) -> str:
@@ -188,17 +182,15 @@ class Slack(HttpClient):
         """
         op = Op("chat.postMessage", target=channel, write=True, detail={"thread_ts": thread_ts} if thread_ts else {})
         dev = self.guard.bounds.dev_channel
-        if not self.guard.live and channel != dev:
-            # Records the post as not sent, or raises for a channel outside the pair.
-            self.guard.authorize(self.system, op)
+        # The guard refuses a channel outside the pair before any request (even the id lookup).
+        if not self.guard.refuse_unless_allowed(self.system, op):  # dry-run: a post for the alert channel
+            self.guard.authorize(self.system, op)  # recorded as not sent; it goes to the dev channel instead
             note = f"[dry-run → {channel}]"
             text = f"{note} {text}"
             if blocks:
                 blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": note}]}, *blocks]
             channel = dev
             op = Op("chat.postMessage", target=dev, write=True, detail={**op.detail, "redirected": True})
-        else:
-            self._preflight(op)
         payload: dict[str, Any] = {
             "channel": self.channel_id(channel),
             "text": text,
@@ -225,12 +217,10 @@ class Slack(HttpClient):
         """
         user = str(user_id or "").strip()
         op = Op("chat.postMessage", target=f"@{user}", write=True, detail={"dm": True})
-        if not self.guard.live:
-            self.guard.authorize(self.system, op)  # records it as not sent, or refuses a non-approver
+        if not self.guard.refuse_unless_allowed(self.system, op):  # a non-approver is refused before any request
+            self.guard.authorize(self.system, op)  # dry-run: recorded as not sent, and posted to the dev channel
             dev = self.guard.bounds.dev_channel
             return self.post(dev, f"[dry-run → DM @{user}] {text}")
-        if user not in self.guard.bounds.approver_slack_ids:
-            self.guard.authorize(self.system, op)  # refuses before any request
         payload = {"channel": user, "text": text, "unfurl_links": False, "unfurl_media": False}
         body = self._api("POST", "chat.postMessage", op, json=payload)
         if body is None:
@@ -240,7 +230,7 @@ class Slack(HttpClient):
     def update(self, channel: str, ts: str, text: str, blocks: list[dict] | None = None) -> dict | None:
         """chat.update on a message this bot posted. Returns {"channel", "channel_id", "ts"}; None if skipped."""
         op = Op("chat.update", target=channel, write=True, detail={"ts": ts})
-        self._preflight(op)
+        self.guard.refuse_unless_allowed(self.system, op)  # a channel outside the pair: before the id lookup
         payload: dict[str, Any] = {"channel": self.channel_id(channel), "ts": ts, "text": text}
         if blocks is not None:
             payload["blocks"] = blocks
@@ -257,7 +247,7 @@ class Slack(HttpClient):
         already added is not an error.
         """
         op = Op("reactions.add", target=channel, write=True, detail={"ts": ts, "name": name})
-        self._preflight(op)
+        self.guard.refuse_unless_allowed(self.system, op)  # a channel outside the pair: before the id lookup
         payload = {"channel": self.channel_id(channel), "timestamp": ts, "name": name}
         self._reactions.pop((payload["channel"], str(ts)), None)  # changed now: asked again next time
         body = self.request("POST", "reactions.add", op, json=payload)
