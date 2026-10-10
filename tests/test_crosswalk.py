@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from tests.fakes import make_context
 from tests.test_copy_desk import MemorySheet
 from tests.test_labels import DEFAULT
+from us_outbound.clients.http import ApiError
 from us_outbound.ops import cli, crosswalk
 
 AT = datetime(2026, 10, 8, 4, 30, tzinfo=UTC)
@@ -55,6 +56,13 @@ def world(live=False):
 
 
 class Sheet(MemorySheet):
+    def read_tabs(self, sheet_id, tabs):
+        """As the Sheets API answers: a tab the sheet does not have is a 400 (9 Oct 2026: the first `crosswalk --live`
+        stopped on it, as the tab was read before it was added)."""
+        if missing := [t for t in tabs if t not in self.tabs]:
+            raise ApiError("sheets", 400, f"Unable to parse range: {missing[0]}")
+        return super().read_tabs(sheet_id, tabs)
+
     def add_tab(self, sheet_id, tab):
         if self._ok("spreadsheet.addSheet", sheet_id, tab):
             self.tabs.setdefault(tab, [])
