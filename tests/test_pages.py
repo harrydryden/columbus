@@ -668,12 +668,15 @@ def test_a_long_home_page_is_cut_to_its_first_600_characters():
 # -- the label check's home-page pass (Harry, 7 Oct 2026) ----------------------------------------------------------
 
 
-def _verdict(aid, confidence, when=NOW - timedelta(days=1)) -> dict:
+def _verdict(aid, confidence, when=NOW - timedelta(days=1), source="rules+model") -> dict:
+    """A stored verdict; source: its decision's label_source (rules+model: the rules agreed, so no page is wanted
+    once the model is sure)."""
     from us_outbound import labels
 
     return {"event_id": f"v-{aid}", "account_id": aid, "source": labels.JOB, "fact": labels.VERDICT_FACT,
             "value": {"model": "Advertising agencies", "confidence": confidence, "entity": "company",
-                      "labels_hash": "h", "asked": True}, "quote": "", "source_url": "", "observed_at": when}
+                      "labels_hash": "h", "asked": True, "decision": {"source": source}},
+            "quote": "", "source_url": "", "observed_at": when}
 
 
 def test_the_nightly_run_reads_only_the_home_page_of_a_company_the_model_was_unsure_of(world):
