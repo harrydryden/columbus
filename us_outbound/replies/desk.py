@@ -8,11 +8,11 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      approver counts (decision D11, approved by Harry, 1 Oct 2026): a Slack id on approver_slack_ids,
      or the owner of the mailbox the prospect wrote to (Mailboxes slack_id), for that mailbox only.
      Anyone else is ignored.
-       ✅ on the draft, or "send"   send the draft;
+       ✅ on the draft, or "send"   send the draft ("approve" too, as on a send-approval card);
        "send: <text>"              send that text instead (SPEC 11);
        "edit: <text>"              the text replaces the draft, which is posted again in the thread;
                                    ✅ on that message, or "send", then sends it;
-       ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11).
+       ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11; "no", "reject" or "don't send" too).
      Thread replies count in order, then the reactions on the current draft message; ❌ beats ✅.
      A ✅ on a draft that was edited since, or whose send failed, no longer counts. The bot seeds ✅
      and ❌ on each alert (replies/poll.py) and on a changed draft, so deciding is one click; its own
@@ -69,7 +69,7 @@ from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.crm import hubspot_writes as hw
-from us_outbound.enrol.copy_rules import content_violations, structure_violations
+from us_outbound.copy.copy_rules import content_violations, structure_violations
 from us_outbound.logs import clip, log
 from us_outbound.replies.items import (
     ACTIONABLE,
@@ -84,13 +84,13 @@ from us_outbound.replies.items import (
     is_reply,
     reply_items,
     save_payload,
-    ts,
 )
 from us_outbound.replies.outcomes import REPLY_SENT
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 JOB = "poll_approvals"
-SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals.py KIND: never re-posted or escalated here
+SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals/ KIND: never re-posted or escalated here
 HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while auto_send = yes
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
@@ -107,8 +107,10 @@ EXCERPT_CHARS = 200  # SPEC 1.7: at most 200 characters of any email body leave 
 # -- Slack text -----------------------------------------------------------------------------------
 
 _SLACK_LINK = re.compile(r"<([^<>|]+)(?:\|([^<>]*))?>")
-_SEND = re.compile(r"^send[\s.!]*$", re.I)
-_SKIP = re.compile(r"^skip[\s.!]*$", re.I)
+# The words a send-approval card takes (enrol/approvals._COMMANDS; 9 Oct 2026: "approve" in a reply thread was
+# dropped without a word).
+_SEND = re.compile(r"^(?:send|approve)[\s.!]*$", re.I)
+_SKIP = re.compile(r"^(?:skip|no|reject|don'?t send)[\s.!]*$", re.I)
 _SEND_TEXT = re.compile(r"^send\s*:\s*(.*)$", re.I | re.S)
 _EDIT = re.compile(r"^edit\s*:\s*(.*)$", re.I | re.S)
 
@@ -185,13 +187,11 @@ def _mentions(ids: Iterable[str]) -> str:
 
 def slack_or_none(ctx: Context) -> Any | None:
     """The Slack client, or None (logged) when no bot token is set: the desk then works without Slack."""
-    from us_outbound.clients.slack import SlackOff
-
     try:
         slack = ctx.clients.slack
     except ConfigError:
         slack = None
-    if slack is None or isinstance(slack, SlackOff):
+    if slack is None or not slack.connected:
         log("slack_not_configured", job=ctx.job,
             reason="US_OUTBOUND_SLACK_BOT_TOKEN is not set: Slack approvals and re-posts are skipped; "
                    "use `us-outbound replies list|approve|skip`")
@@ -515,7 +515,7 @@ class _Run:
 
 def _stuck(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
     """An item left at "sending" by a run that died: back to open for a person, never resent alone."""
-    started = ts((item.desk.get("sending") or {}).get("at"))
+    started = utc((item.desk.get("sending") or {}).get("at"))
     if started is not None and ctx.now - started < timedelta(minutes=10):
         return  # a send may still be going
     run.add("stuck", item.short_id)
@@ -653,7 +653,7 @@ def _escalate_other(ctx: Context, row: Mapping[str, Any], slack: Any) -> str:
 def escalate(ctx: Context, slack: Any, run: _Run) -> None:
     """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11).
 
-    Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals.py).
+    Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals/).
     So is the weekly hand-check while auto_send = no: every email is approved in Slack then, and nothing
     waits for the hand-check (enrol/hand_check.py), so a task and a DM every week would ask for nothing.
     """
@@ -666,7 +666,7 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
             continue
         reply = is_reply(row)
         item = ReplyItem(row)
-        started = item.created_at if reply else ts(row.get("created_at"))
+        started = item.created_at if reply else utc(row.get("created_at"))
         if started is None or started > cutoff:
             continue
         if ctx.dry_run:

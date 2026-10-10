@@ -112,6 +112,7 @@ from us_outbound.logs import log
 from us_outbound.replies import classify, desk, draft, optout, outcomes
 from us_outbound.replies.outcomes import Directory, Match
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import iso_date, utc
 
 JOB = "poll_replies"
 KIND = "reply"  # hitl_items.kind for a reply waiting for a person (the reply desk reads these)
@@ -148,13 +149,6 @@ def _lower(v: Any) -> str:
 def _esc(text: Any) -> str:
     """Slack mrkdwn escaping: a reply can never mention a channel or fake a link."""
     return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _date(v: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(v)[:10]) if v else None
-    except ValueError:
-        return None
 
 
 def owner_of(settings: Settings, mailbox: str, account: Mapping[str, Any]) -> str:
@@ -219,7 +213,7 @@ class _Seen:
             "event_id": email_id, "contact_id": item.get("contact_id"), "account_id": item.get("account_id"),
             "type": outcomes.REPLIED, "mailbox": payload.get("mailbox"),
             "reply_class": payload.get("reply_class") or "other",
-            "occurred_at": outcomes.to_time(payload.get("received_at")) or self.ctx.now,
+            "occurred_at": utc(payload.get("received_at")) or self.ctx.now,
         }])
         self.classified.add(email_id)
         return True
@@ -492,7 +486,7 @@ def _sweep_opt_outs(ctx: Context, d: Directory, done: set[str], out: dict) -> No
             continue
         result = optout.opt_out(ctx, marker=marker, addresses=addresses, contact=contact or None,
                                 account_id=ev.get("account_id"),
-                                mailbox=mailbox, occurred_at=outcomes.to_time(ev.get("occurred_at")) or ctx.now,
+                                mailbox=mailbox, occurred_at=utc(ev.get("occurred_at")) or ctx.now,
                                 source=REPLY_SOURCE, done=done)
         out["opted_out_on_retry"][result] += 1
 
@@ -503,7 +497,7 @@ def _resume_ooo(ctx: Context, out: dict) -> None:
     for row in ctx.store.select("hitl_items", {"kind": OOO_KIND}):
         payload = dict(row.get("payload") or {})
         retime = dict(payload.get("retime") or {})
-        resume = _date(retime.get("resume_on"))
+        resume = iso_date(retime.get("resume_on"))
         if retime.get("status") != "paused" or resume is None or resume > today:
             continue
         try:
@@ -540,7 +534,7 @@ def _notes(p: Mapping[str, Any]) -> list[str]:
     if ref:
         notes.append("Referral: " + _esc(", ".join(v for v in (ref.get("name"), ref.get("title"), ref.get("email")) if v)))
     if p.get("follow_up_date"):
-        d = _date(p["follow_up_date"])
+        d = iso_date(p["follow_up_date"])
         when = f"{d:%a %d %b %Y}" if d else str(p["follow_up_date"])
         notes.append(f"Follow up on {when}" + (" (the date they gave)." if p.get("follow_up_source") == "reply"
                                                else " (no date given; the draft asks when)."))
@@ -640,7 +634,7 @@ def run(ctx: Context) -> dict:
         if _clock() >= stop:  # the rest wait for the next run, which reads from the first of them
             rest = ordered[i:]
             out["left_for_next_run"] = len(rest)
-            first = min((outcomes.to_time(e.get("timestamp_created")) or outcomes.email_time(e) or ctx.now) for e in rest)
+            first = min((utc(e.get("timestamp_created")) or outcomes.email_time(e) or ctx.now) for e in rest)
             out["resume_from"] = first.isoformat()
             log("poll_replies_time_budget", run_id=ctx.run_id, left=len(rest), resume_from=out["resume_from"])
             break

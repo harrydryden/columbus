@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.fakes import FakeTransport, make_context
+from us_outbound.base import heartbeats
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.ops import heartbeat as hb
 from us_outbound.settings.model import General, Settings
@@ -206,7 +207,7 @@ def test_a_job_killed_every_run_is_missed():
                  detail={"skipped": True, "reason": hb.OVERLAP_REASON, "other_run_id": f"killed-{i - i % 4}"})
         start += timedelta(minutes=15)
         i += 1
-    assert hb.latest_runs(ctx.store)["poll_replies"]["status"] in {"running", "skipped"}
+    assert heartbeats.latest_runs(ctx.store)["poll_replies"]["status"] in {"running", "skipped"}
     assert hb.check_heartbeats(ctx, jobs=["poll_replies"]) == ["poll_replies"]
 
 
@@ -256,7 +257,7 @@ def test_latest_runs_uses_the_view_when_the_store_has_one():
     ctx.store.query_handlers["v_heartbeats"] = lambda store, params: seen.append(1) or [
         {"job": "poll_replies", "status": "ok", "started_at": MON_NOON, "finished_at": MON_NOON, "last_ok_at": MON_NOON}
     ]
-    assert hb.latest_runs(ctx.store)["poll_replies"]["status"] == "ok" and seen == [1]
+    assert heartbeats.latest_runs(ctx.store)["poll_replies"]["status"] == "ok" and seen == [1]
 
 
 # -- operator stop / start -------------------------------------------------------------------
@@ -265,20 +266,20 @@ def test_latest_runs_uses_the_view_when_the_store_has_one():
 def test_enrolment_paused_follows_stop_and_live_start():
     ctx = ctx_at(MON_NOON)
     s = ctx.store
-    assert hb.enrolment_paused(s) is None
-    beat(s, hb.OPERATOR_STOP, MON_NOON - timedelta(hours=3), status="error")  # a failed stop still stops
-    assert hb.enrolment_paused(s)["job"] == hb.OPERATOR_STOP
-    beat(s, hb.OPERATOR_START, MON_NOON - timedelta(hours=2), dry_run=True)  # a dry-run start does not
-    assert hb.enrolment_paused(s) is not None
-    beat(s, hb.OPERATOR_START, MON_NOON - timedelta(hours=1), dry_run=False)
-    assert hb.enrolment_paused(s) is None
-    beat(s, hb.OPERATOR_STOP, MON_NOON, dry_run=True)
-    assert hb.enrolment_paused(s) is not None
+    assert heartbeats.enrolment_paused(s) is None
+    beat(s, heartbeats.OPERATOR_STOP, MON_NOON - timedelta(hours=3), status="error")  # a failed stop still stops
+    assert heartbeats.enrolment_paused(s)["job"] == heartbeats.OPERATOR_STOP
+    beat(s, heartbeats.OPERATOR_START, MON_NOON - timedelta(hours=2), dry_run=True)  # a dry-run start does not
+    assert heartbeats.enrolment_paused(s) is not None
+    beat(s, heartbeats.OPERATOR_START, MON_NOON - timedelta(hours=1), dry_run=False)
+    assert heartbeats.enrolment_paused(s) is None
+    beat(s, heartbeats.OPERATOR_STOP, MON_NOON, dry_run=True)
+    assert heartbeats.enrolment_paused(s) is not None
 
 
 def test_operator_commands_are_never_skipped_by_the_lock():
-    ctx = ctx_at(MON_NOON, job=hb.OPERATOR_STOP)
-    beat(ctx.store, hb.OPERATOR_STOP, MON_NOON - timedelta(minutes=2), status="running", run_id="stuck")
+    ctx = ctx_at(MON_NOON, job=heartbeats.OPERATOR_STOP)
+    beat(ctx.store, heartbeats.OPERATOR_STOP, MON_NOON - timedelta(minutes=2), status="running", run_id="stuck")
     ran = []
     hb.run_job(ctx, lambda c: ran.append(1) or {})
     assert ran == [1]

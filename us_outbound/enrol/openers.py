@@ -74,9 +74,10 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import facts, parse
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
-from us_outbound.enrol import copy_rules
+from us_outbound.copy import copy_rules
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring.score import Evidence, Match, fresh_facts, score_account
@@ -88,6 +89,8 @@ from us_outbound.settings.model import (
     Settings,
     Signal,
 )
+from us_outbound.settings.overrides import effective
+
 
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
 PLAIN_COLUMN = "opener"
@@ -270,19 +273,10 @@ def number_word(n: int) -> str:
 
 def growth_words(value: Any) -> str | None:
     """12-month headcount growth (a fraction, 0.34) as words ("grown by about a third"); None below GROWTH_MIN."""
-    g = _number(value)
+    g = parse.number(value)
     if g is None or g < GROWTH_MIN or g > GROWTH_MAX:
         return None
     return next((words for upper, words in GROWTH_WORDS if g < upper), "more than doubled")
-
-
-def _number(v: Any) -> float | None:
-    if isinstance(v, bool) or v in (None, ""):
-        return None
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return None
 
 
 def _american(text: str) -> str:
@@ -324,36 +318,12 @@ PAGE_WORDS = {"careers_pages": CAREERS_PAGE, "clay_careers": CAREERS_PAGE, "job_
 
 # -- facts ---------------------------------------------------------------------------------------------
 
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-def _ts(v: Any) -> datetime:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return _EPOCH
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return _EPOCH
-
-
-def _latest(events: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
-    """The newest event of each fact."""
-    out: dict[str, Mapping[str, Any]] = {}
-    for e in sorted(events, key=lambda e: _ts(e.get("observed_at"))):
-        if e.get("fact"):
-            out[str(e["fact"])] = e
-    return out
-
 
 def newest_leader(events: Iterable[Mapping[str, Any]], signal: Signal, today: date) -> dict[str, Any]:
     """The new People leader the signal counts (people_leader_newest within its window), or {}."""
     from us_outbound.contacts.pick import NEWEST_LEADER_FACT
 
-    e = _latest(fresh_facts(events, signal, today)).get(NEWEST_LEADER_FACT)
+    e = facts.newest(fresh_facts(events, signal, today), NEWEST_LEADER_FACT)
     return dict(e["value"]) if e and isinstance(e.get("value"), Mapping) else {}
 
 
@@ -364,12 +334,13 @@ def contact_person_id(contact: Mapping[str, Any], events: Iterable[Mapping[str, 
     if contact.get("apollo_person_id"):
         return str(contact["apollo_person_id"])
     cid = str(contact.get("contact_id") or "")
-    for e in sorted(events, key=lambda e: _ts(e.get("observed_at")), reverse=True):
+
+    def theirs(e: Mapping[str, Any]) -> bool:
         v = e.get("value")
-        if (e.get("source") == SOURCE and e.get("fact") == OUTCOME_FACT and isinstance(v, Mapping)
-                and cid and str(v.get("contact_id") or "") == cid and v.get("apollo_person_id")):
-            return str(v["apollo_person_id"])
-    return ""
+        return isinstance(v, Mapping) and str(v.get("contact_id") or "") == cid and bool(v.get("apollo_person_id"))
+
+    e = facts.newest(events, OUTCOME_FACT, SOURCE, where=theirs) if cid else None
+    return str(e["value"]["apollo_person_id"]) if e else ""
 
 
 def contact_is_subject(contact: Mapping[str, Any], events: Sequence[Mapping[str, Any]], signal: Signal,
@@ -386,8 +357,7 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
     """Every token that has a stored fact passing its check, as it reads in a sentence; the rest are absent."""
     from us_outbound.sources.apollo_jobs import is_people_title, people_titles
 
-    domain = str(account.get("domain") or "").strip().lower()
-    acct = {**account, **(settings.overrides_for(domain) if domain else {})}
+    acct = effective(account, settings)
     out: dict[str, str] = {}
     company = " ".join(str(acct.get("clean_name") or "").split())
     if company and len(company) <= 60:
@@ -397,12 +367,12 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
     if signal is None:
         return out
 
-    facts = _latest(fresh_facts(events, signal, today))
+    latest = facts.latest_by_fact(fresh_facts(events, signal, today))
 
     def value(fact: str) -> Any:
-        return facts[fact].get("value") if fact in facts else None
+        return latest[fact].get("value") if fact in latest else None
 
-    n = _number(value("open_roles"))
+    n = parse.number(value("open_roles"))
     if n is not None and n.is_integer() and OPEN_ROLES_MIN <= n <= OPEN_ROLES_MAX:
         out["open_roles"] = number_word(int(n))
     titles = value("posting_titles")
@@ -683,11 +653,11 @@ _FOCUS_STOP = frozenset({"a", "an", "the", "and", "or", "of", "for", "to", "in",
 
 
 def focus_material(events: Iterable[Mapping[str, Any]]) -> tuple[list[str], str]:
-    """(Apollo's keywords, Apollo's description) from the account's newest apollo_org facts."""
-    latest = _latest(e for e in events if e.get("source") == "apollo_org")
-    kw = latest.get("keywords", {}).get("value")
-    keywords = [k.strip() for k in kw if isinstance(k, str) and k.strip()] if isinstance(kw, (list, tuple)) else []
-    about = latest.get("description", {}).get("value")
+    """(Apollo's keywords, a list or comma-separated text (facts.texts), and Apollo's description) from the account's
+    newest apollo_org facts."""
+    events = list(events)
+    keywords = facts.texts(facts.value(events, "keywords", "apollo_org"))
+    about = facts.value(events, "description", "apollo_org")
     return keywords[:KEYWORDS_KEPT], " ".join(str(about).split())[:DESCRIPTION_CHARS] if isinstance(about, str) else ""
 
 
@@ -734,9 +704,11 @@ def focus_prompt(company: str, keywords: Sequence[str], about: str) -> str:
 
 def stored_focus(events: Iterable[Mapping[str, Any]], now: datetime) -> dict[str, Any] | None:
     """The account's latest opener_focus fact within FOCUS_REFRESH_DAYS, or None."""
-    rows = [e for e in events if e.get("source") == FOCUS_SOURCE and e.get("fact") == FOCUS_FACT
-            and isinstance(e.get("value"), Mapping) and now - _ts(e.get("observed_at")) < timedelta(days=FOCUS_REFRESH_DAYS)]
-    return dict(max(rows, key=lambda e: _ts(e.get("observed_at")))["value"]) if rows else None
+    def fresh(e: Mapping[str, Any]) -> bool:
+        return isinstance(e.get("value"), Mapping) and now - facts.at(e) < timedelta(days=FOCUS_REFRESH_DAYS)
+
+    e = facts.newest(events, FOCUS_FACT, FOCUS_SOURCE, where=fresh, dated=True)
+    return dict(e["value"]) if e else None
 
 
 def focus_phrase(ctx: Any, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], *,

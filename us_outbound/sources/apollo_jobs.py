@@ -33,12 +33,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
+from us_outbound import ledger
 from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, postings_in, total_entries
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
 from us_outbound.logs import log
@@ -46,6 +47,7 @@ from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.timeparse import utc
 
 JOB = "apollo_signals"
 SOURCE = "apollo_jobs"
@@ -77,16 +79,6 @@ def is_people_title(title: str, terms: Sequence[str]) -> bool:
     return bool(find_terms(title or "", tuple(terms)))
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def _chunks(items: Sequence[str], n: int) -> list[Sequence[str]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
@@ -96,7 +88,7 @@ def last_read(ctx: Context, account_ids: Sequence[str]) -> dict[str, datetime]:
     out: dict[str, datetime] = {}
     for chunk in _chunks(list(account_ids), ID_CHUNK):
         for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": SOURCE}):
-            t = _ts(e.get("observed_at"))
+            t = utc(e.get("observed_at"))
             if t is not None and (e["account_id"] not in out or t > out[e["account_id"]]):
                 out[e["account_id"]] = t
     return out
@@ -164,17 +156,21 @@ def screen(ctx: Context, batch: Sequence[dict], run: _Run, room: credits.Room) -
     mixed_companies/search (each screen of 100 accounts returned 50 to 66 as hiring).
     """
     ids = [str(a["apollo_org_id"]) for a in batch]
-    try:
-        body = ctx.clients.apollo.search_organizations(
-            {"organization_ids": ids, "organization_num_jobs_range[min]": 1}, per_page=SCREEN_BATCH)
-    except ApiError as exc:
-        if exc.status in (401, 403):
-            raise
-        run.errors.append(f"screen: {str(exc)[:200]}")
-        return None
-    hiring = {str(o.get("organization_id")) for o in organizations_in(body) if o.get("organization_id")}
-    spent = 1.0 if hiring else 0.0
-    credits.record(ctx, JOB, spent, note=json.dumps({"screen": len(ids), "with_postings": len(hiring)}))
+    what = {"screen": len(ids)}
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+        try:
+            body = ctx.clients.apollo.search_organizations(
+                {"organization_ids": ids, "organization_num_jobs_range[min]": 1}, per_page=SCREEN_BATCH)
+        except ApiError as exc:
+            spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+            room.spend(spent)
+            run.credits += spent
+            if isinstance(exc, AuthError):
+                raise
+            run.errors.append(f"screen: {str(exc)[:200]}")
+            return None
+        hiring = {str(o.get("organization_id")) for o in organizations_in(body) if o.get("organization_id")}
+        spent = paid.settle(1.0 if hiring else 0.0, note=json.dumps({**what, "with_postings": len(hiring)}))
     room.spend(spent)
     run.credits += spent
     run.screened += len(ids)
@@ -185,16 +181,22 @@ def read_postings(ctx: Context, account: Mapping[str, Any], terms: Sequence[str]
                   room: credits.Room) -> list[dict]:
     """The account's facts from its job postings (1 credit); [] if Apollo refused the request."""
     org = str(account["apollo_org_id"])
-    try:
-        body = ctx.clients.apollo.job_postings(org, per_page=POSTINGS_PER_PAGE)
-    except ApiError as exc:
-        if exc.status in (401, 403):
-            raise
-        run.errors.append(f"{account['account_id']}: {str(exc)[:200]}")
-        return []
-    credits.record(ctx, JOB, 1.0, note=json.dumps({"postings": org}), account_id=account["account_id"])
-    room.spend(1.0)
-    run.credits += 1.0
+    what = {"postings": org}
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what),
+                       account_id=account["account_id"]) as paid:
+        try:
+            body = ctx.clients.apollo.job_postings(org, per_page=POSTINGS_PER_PAGE)
+        except ApiError as exc:
+            spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+            room.spend(spent)
+            run.credits += spent
+            if isinstance(exc, AuthError):
+                raise
+            run.errors.append(f"{account['account_id']}: {str(exc)[:200]}")
+            return []
+        spent = paid.settle(1.0, note=json.dumps(what))
+    room.spend(spent)
+    run.credits += spent
     run.read += 1
     return postings_facts(account, body, terms, ctx.now)
 

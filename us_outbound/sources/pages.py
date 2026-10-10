@@ -63,7 +63,7 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import labels
@@ -80,22 +80,24 @@ from us_outbound.clean.pages import (
 )
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.clients.http import ApiError, Response
+from us_outbound.clients.http import ApiError, Response, TransportError
 from us_outbound.clients.public import ROBOTS_AGENT, absolute_location, split_url
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus, queue
+from us_outbound.facts import load, newest
 from us_outbound.logs import log
 from us_outbound.scoring.score import match_signal
 from us_outbound.settings.conditions import ContextRules
 from us_outbound.settings.model import Settings, Signal
+from us_outbound.settings.validate import page_signals_notice
 from us_outbound.sources import job_posts
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.timeparse import utc, utc_strict
 
 JOB = "read_pages"
 SOURCE = "careers_pages"
 FEED_SOURCE = job_posts.SOURCE
 READER_SOURCES = (SOURCE, FEED_SOURCE)
-CLAY_SOURCE = "clay_careers"
 READ, NO_PAGES, BLOCKED, ERROR = "read", "no_pages_found", "blocked", "error"
 OUTCOMES = (READ, NO_PAGES, BLOCKED, ERROR)
 UNREAD = frozenset({BLOCKED, ERROR})  # scoring/score.UNREAD_STATUSES
@@ -136,16 +138,6 @@ SKIP_EXTENSIONS = re.compile(r"\.(pdf|jpe?g|png|gif|svg|webp|zip|docx?|xlsx?|ppt
 HTML_TYPES = ("html", "text/plain", "xml")
 
 _clock = time.monotonic  # tests replace it
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def _header(resp: Response, name: str) -> str:
@@ -197,16 +189,6 @@ def vocabulary(settings: Settings) -> Vocabulary:
     return Vocabulary(terms, context, tuple((s.terms, s.context) for s in sigs))
 
 
-def sheet_notice(settings: Settings) -> str | None:
-    """Why the page signals can't fire on this job's facts yet: a sheet loaded before 2 Oct 2026."""
-    stale = [s.signal for s in settings.active_signals() if CLAY_SOURCE in s.sources and SOURCE not in s.sources]
-    if not stale:
-        return None
-    return (f"the Signals tab's {', '.join(stale)} do not read {SOURCE}, so what the page reader finds on company "
-            "sites adds nothing to them; run `us-outbound settings load --tab Signals --live` (its source column "
-            f"adds {SOURCE})")
-
-
 # -- which accounts ------------------------------------------------------------------------------
 
 
@@ -218,15 +200,12 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, tuple[d
     """(account_id -> (when last read, its outcome); account_id -> the sources it has a good read of)."""
     reads: dict[str, tuple[datetime, str]] = {}
     good: dict[str, set[str]] = defaultdict(set)
-    for chunk in _chunks(list(account_ids)):
-        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": list(READER_SOURCES)}):
-            t, aid = _ts(e.get("observed_at")), str(e.get("account_id"))
-            if t is None:
-                continue
-            if e.get("fact") == SUMMARY_FACT and (aid not in reads or t > reads[aid][0]):
-                value = e.get("value") if isinstance(e.get("value"), Mapping) else {}
-                reads[aid] = (t, str(value.get("outcome") or ""))
-            elif e.get("fact") == "read_status" and e.get("value") == READ:
+    for aid, rows in load(ctx.store, account_ids, READER_SOURCES).items():
+        if (e := newest(rows, SUMMARY_FACT, dated=True)) is not None:
+            value = e.get("value") if isinstance(e.get("value"), Mapping) else {}
+            reads[aid] = (utc_strict(e.get("observed_at")), str(value.get("outcome") or ""))
+        for e in rows:
+            if e.get("fact") == "read_status" and e.get("value") == READ and utc(e.get("observed_at")) is not None:
                 good[aid].add(str(e.get("source")))
     return reads, good
 
@@ -326,7 +305,7 @@ class Reader:
         for _ in range(MAX_REDIRECTS + 1):
             try:
                 resp = self.ctx.clients.sites.site_get(url, self.domain, timeout=PAGE_TIMEOUT)
-            except OSError:
+            except TransportError:
                 return ERROR
             self.requests += 1
             if not 300 <= resp.status < 400:
@@ -380,8 +359,8 @@ class Reader:
                 return Fetched(why, url, note="robots.txt")
             try:
                 resp = self.ctx.clients.sites.site_get(url, self.domain, timeout=PAGE_TIMEOUT)
-            except OSError as exc:  # requests' ConnectionError and Timeout are OSErrors
-                return Fetched(ERROR, url, note=type(exc).__name__)
+            except TransportError as exc:  # no answer: a timeout or a dropped connection
+                return Fetched(ERROR, url, note=exc.reason)
             self.requests += 1
             if 300 <= resp.status < 400:
                 location = _header(resp, "Location")
@@ -478,14 +457,14 @@ class Reader:
         """READ when the feed is read and is the account's; else missing, unconfirmed, BLOCKED or ERROR."""
         try:
             body = self.ctx.clients.sites.get(board.url, params=board.params, timeout=FEED_TIMEOUT)
+        except TransportError:
+            self.requests += 1
+            return ERROR
         except ApiError as exc:
             self.requests += 1
             if exc.status in (404, 410) or 300 <= exc.status < 400:
                 return "missing"
             return BLOCKED if exc.status in BLOCK_CODES else ERROR
-        except OSError:
-            self.requests += 1
-            return ERROR
         self.requests += 1
         why = job_posts.confirms(board, body, self.account)
         if why is None:
@@ -680,22 +659,21 @@ def coverage(store: Any, settings: Settings, today: date, *, run_id: str | None 
     The signal counts match each page signal against the reader's own facts only, so they say
     what this job adds, whatever Clay or another source may have.
     """
+    def counted(e: Mapping[str, Any]) -> bool:
+        v = e.get("value")
+        return isinstance(v, Mapping) and (run_id is None or v.get("run_id") == run_id)
+
     events: dict[str, list[dict]] = defaultdict(list)
     for e in store.select("signal_events", {"source": list(READER_SOURCES)}):
         events[str(e.get("account_id"))].append(e)
     summaries: dict[str, tuple[datetime, dict]] = {}
     texted: set[str] = set()  # accounts with benefits text from any of the reads counted
     for aid, evs in events.items():
-        for e in evs:
-            value, t = e.get("value"), _ts(e.get("observed_at"))
-            if e.get("fact") != SUMMARY_FACT or not isinstance(value, Mapping) or t is None:
-                continue
-            if run_id is not None and value.get("run_id") != run_id:
-                continue
-            if value.get("snippets") or value.get("posting_snippets"):
-                texted.add(aid)
-            if aid not in summaries or t > summaries[aid][0]:
-                summaries[aid] = (t, dict(value))
+        reads = [e for e in evs if e.get("fact") == SUMMARY_FACT and utc(e.get("observed_at")) and counted(e)]
+        if any(e["value"].get("snippets") or e["value"].get("posting_snippets") for e in reads):
+            texted.add(aid)
+        if (e := newest(reads)) is not None:
+            summaries[aid] = (utc_strict(e.get("observed_at")), dict(e["value"]))
     sigs = reader_signals(settings)
     cov = Coverage(signals={s.signal: 0 for s in sigs})
     for aid, (t, v) in summaries.items():
@@ -713,12 +691,9 @@ def coverage(store: Any, settings: Settings, today: date, *, run_id: str | None 
 
 def latest_run(store: Any) -> str | None:
     """The run_id of the newest page_read fact."""
-    best: tuple[datetime, str] | None = None
-    for e in store.select("signal_events", {"source": SOURCE, "fact": SUMMARY_FACT}):
-        t, v = _ts(e.get("observed_at")), e.get("value")
-        if t is not None and isinstance(v, Mapping) and v.get("run_id") and (best is None or t > best[0]):
-            best = (t, str(v["run_id"]))
-    return best[1] if best else None
+    e = newest(store.select("signal_events", {"source": SOURCE, "fact": SUMMARY_FACT}), dated=True,
+               where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"].get("run_id")))
+    return str(e["value"]["run_id"]) if e else None
 
 
 def decision(cov: Coverage) -> str:
@@ -748,7 +723,7 @@ def report(ctx: Context) -> list[str]:
     lines.append(decision(total))
     waiting, _ = candidates(ctx)
     lines.append(f"Waiting to be read: {len(waiting)} queue accounts (at most {MAX_ACCOUNTS_PER_RUN} a run).")
-    notice = sheet_notice(ctx.settings)
+    notice = page_signals_notice(ctx.settings)
     if notice:
         lines.append(f"Note: {notice}.")
     return lines
@@ -769,7 +744,7 @@ def post_lines(ctx: Context) -> list[str]:
              f"  So far {total.accounts} accounts: feed {total.share(total.with_feed):.0%}, "
              f"benefits text {total.share(total.with_text):.0%}; signals matched: {sigs}.",
              f"  {decision(total)}"]
-    notice = sheet_notice(ctx.settings)
+    notice = page_signals_notice(ctx.settings)
     if notice:
         lines.append(f"  Note: {notice}.")
     return lines
@@ -827,7 +802,7 @@ def run(ctx: Context) -> dict:
         status="ok", stopped_by=stopped, candidates=len(todo), attempted=read, left_for_next_run=len(todo) - read,
         requests=requests, facts=rows_written, seconds=round(_clock() - start, 1),
         run=this_run.as_dict(), cumulative=total.as_dict(), decision=decision(total),
-        sheet_notice=sheet_notice(ctx.settings), errors=errors[:LIST_LIMIT],
+        sheet_notice=page_signals_notice(ctx.settings), errors=errors[:LIST_LIMIT],
     )
     log("read_pages_done", run_id=ctx.run_id, **summary)
     return summary

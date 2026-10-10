@@ -7,6 +7,7 @@ up in Apollo's organization enrich; one Apollo leaves in doubt comes in held for
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -362,6 +363,23 @@ def test_lookups_are_capped_and_the_rest_are_looked_up_next_run(monkeypatch):
     assert (nxt["enriched"], nxt["deferred"], len(nxt["created"])) == (2, 0, 2)
 
 
+def test_a_lookup_apollo_did_not_answer_is_reserved_first_kept_and_asked_again():
+    """Defect 9 (9 Oct 2026): the lookup reserved nothing and counted 0 when it failed. It is now reserved at a credit
+    a company before the call; a 5xx keeps it (it may have been charged); its companies are not taken as judged."""
+    ctx, t, fake = make([visitor(1, domain="newco.com"), visitor(2, domain="other.com")])
+    t.route("POST", "/organizations/bulk_enrich", status=503, body={"error": "unavailable"})
+    out = sv.run(ctx)
+    assert out["created"] == [] and out["credits"] == 4.0  # two searches with results, and the lookup's 2
+    [lookup] = [r for r in ledger(ctx) if "enrich" in json.loads(r["note"]).get("reserved", {})]
+    assert lookup["credits"] == 2.0 and json.loads(lookup["note"])["failed"] == 503
+    assert sv.judged_recently(ctx) == set()
+    t.routes.pop()  # Apollo answers again
+    nxt = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=1), run_id="tuesday"))
+    assert nxt["created"] == ["newco.com", "other.com"]
+    settled = [json.loads(r["note"]) for r in ledger(ctx) if r["run_id"] == "tuesday"]
+    assert {"enrich": 2, "found": 2, "judged": ["org001", "org002"]} in settled
+
+
 def test_visitors_the_old_screen_turned_away_are_judged_again():
     ctx, _, fake = make([visitor(1, domain="nostate.com", state="", country="")])
     ctx.store.insert("credit_ledger", [{"entry_id": "e1", "system": "apollo", "job": sv.JOB, "credits": 1.0, "usd": 0.0,
@@ -442,3 +460,11 @@ def test_refresh_follows_the_shortest_visit_signal(days, want):
     signals = tuple(dataclasses.replace(s, counts_for_days=days) if "site_visits" in s.sources else s
                     for s in BASE.signals)
     assert sv.refresh_days(dataclasses.replace(BASE, signals=signals)) == want
+
+
+def test_an_association_or_a_public_body_is_judged_out_before_any_label():
+    ctx = make_context(BASE, job=sv.JOB, now=NOW)
+    assert sv.judge(ctx, visitor(1, naics_codes=["813910"], keywords=["networking"])).out == (
+        "an association or chamber, never prospected")
+    assert sv.judge(ctx, visitor(2, industry="Government Administration")).out == "a public body, never prospected"
+    assert sv.judge(ctx, visitor(3)).out == ""  # the fintech visitor is still in

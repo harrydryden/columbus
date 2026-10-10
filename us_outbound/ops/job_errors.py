@@ -24,8 +24,9 @@ A failure that says a service rejected its key (HTTP 401 or 403 from a client, S
 token_revoked or account_inactive, Google's 401 or 403 or a service-account key refused, Anthropic's
 authentication_error or permission_error) is told apart: "<System> refused our key or this request: if the key was revoked, replace <variable> in Railway
 (Variables), then redeploy", the variable from context.SECRET_NAMES (and ops/bootstrap.GOOGLE_KEY_VAR).
-Each (job, kind) is posted at most once a UK day, and each rejected key once a day whichever jobs met it
-(notify.post_once keeps what was sent in events). A dead Slack token cannot post any of this: the outside
+Each (job, kind) is posted at most once for each UK day a run of it began, and each rejected key once a day whichever
+jobs met it (notify.post_once keeps what was sent in events): a run that failed on Thursday is told on Thursday and
+not again on Friday while it is still the latest. A dead Slack token cannot post any of this: the outside
 watchdog's /fail ping covers it (ops/watchdog.py).
 """
 
@@ -34,17 +35,18 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
+from us_outbound.base import notify
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import SECRET_NAMES, UK, Context
 from us_outbound.logs import clip, log, redact
-from us_outbound.ops import notify
 from us_outbound.ops.bootstrap import GOOGLE_KEY_VAR
 from us_outbound.ops.heartbeat import DAILY, EXPECTED
 from us_outbound.ops.watchdog import JOB as SELF  # heartbeat_check: its own detail holds what it found
 from us_outbound.settings.validate import CLAUDE_CAP_USD
+from us_outbound.timeparse import utc
 
 LOOKBACK = timedelta(hours=26)  # a daily job's latest run is always this recent
 QUOTE = 160  # characters of the first error quoted
@@ -97,18 +99,6 @@ class Finding:
     at: datetime | None = None
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
 def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
     """job -> its latest finished run that started in the last LOOKBACK, with its detail (one query)."""
     wanted = set(jobs)
@@ -118,10 +108,10 @@ def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
     except NotImplementedError:  # MemoryStore: the same in Python
         rows = []
         for r in ctx.store.select("heartbeats", {"job": sorted(wanted)}):
-            started = _ts(r.get("started_at"))
+            started = utc(r.get("started_at"))
             if r.get("status") != "running" and started is not None and started >= since:
                 rows.append(r)
-        rows.sort(key=lambda r: (_ts(r.get("started_at")), str(r.get("run_id"))), reverse=True)
+        rows.sort(key=lambda r: (utc(r.get("started_at")), str(r.get("run_id"))), reverse=True)
     out: dict[str, dict] = {}
     for r in rows:
         job = str(r.get("job") or "")
@@ -142,7 +132,7 @@ def _walk(detail: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
 
 def findings(job: str, run: Mapping[str, Any]) -> list[Finding]:
     """What one run's heartbeat records as gone wrong (the module docstring's kinds)."""
-    at = _ts(run.get("started_at"))
+    at = utc(run.get("started_at"))
     detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
     if run.get("status") == "error":
         if "unusable" in detail:
@@ -201,26 +191,33 @@ def describe(f: Finding) -> str:
     return f"• {f.job} ({_when(f.at)}): {f.kind.replace('_', ' ')}: {_quote(f.texts[0])}"
 
 
+def _run_day(at: datetime | None, day: str) -> str:
+    """The UK day the run began, which keys its post; `day` (today) when its start is unknown."""
+    return at.astimezone(UK).date().isoformat() if at else day
+
+
 def lines(found: Iterable[Finding], day: str) -> list[tuple[str, str]]:
-    """(key, line) per finding, a rejected key told as such (once a day per system, naming every job that met it)."""
-    keys: dict[str, list[tuple[str, str]]] = {}  # system -> [(job, the error)]
+    """(key, line) per finding, a rejected key told as such (once a day per system, naming every job that met it).
+    A key carries the UK day its run began, not today: a daily job's failed run stays its latest until the next run,
+    and keyed on today it was told again just after midnight (read_pages, Thu 8 Oct 2026, told again at 00:05 Fri)."""
+    keys: dict[str, list[tuple[str, str, str]]] = {}  # system -> [(job, the error, its run's day)]
     out: list[tuple[str, str]] = []
     for f in found:
         others = []
         for text in f.texts:
             system = rejected_key(text)
             if system in KEYS:
-                keys.setdefault(system, []).append((f.job, text))
+                keys.setdefault(system, []).append((f.job, text, _run_day(f.at, day)))
             else:
                 others.append(text)
         if f.texts and not others:
             continue  # every error of it is a rejected key, told below
         f.texts = others
-        out.append((f"job_error:{f.job}:{f.kind}:{day}", describe(f)))
+        out.append((f"job_error:{f.job}:{f.kind}:{_run_day(f.at, day)}", describe(f)))
     for system, hits in keys.items():
         name, var = KEYS[system]
-        jobs = ", ".join(dict.fromkeys(j for j, _ in hits))
-        out.insert(0, (f"key_rejected:{system}:{day}",
+        jobs = ", ".join(dict.fromkeys(j for j, _, _ in hits))
+        out.insert(0, (f"key_rejected:{system}:{max(d for _, _, d in hits)}",
                        f"• {name} refused our key or this request: if the key was revoked, replace {var} in Railway "
                        f"(Variables), then redeploy; if it is current, the {name} plan may not allow this. "
                        f"({jobs}: {_quote(hits[0][1])})"))
@@ -242,5 +239,5 @@ def check(ctx: Context, jobs: Iterable[str]) -> dict[str, Any]:
         log("job_errors_failed", error=str(exc)[:200])
         return {"found": [], "posted": [], "check_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     log("job_errors", found=[k for k, _ in pairs], posted=sent.get("keys"))
-    return {"found": [k.rsplit(":", 1)[0] for k, _ in pairs], "posted": sent.get("keys") or [],
+    return {"found": [notify.kind_of(k) for k, _ in pairs], "posted": sent.get("keys") or [],
             "post": {k: sent.get(k) for k in ("posted", "error")}}

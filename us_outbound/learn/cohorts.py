@@ -43,11 +43,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import config_version
-from us_outbound.context import ET, UK, Context
+from us_outbound import config_version, fmt
+from us_outbound.context import UK, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.learn import signal_review
+from us_outbound.replies import kinds
+from us_outbound.timeparse import et_day, uk_day, utc
 
 AGES = (7, 14, 21, 28)  # days after email 1; 28 is the reply window (instantly.REPLY_WINDOW_DAYS)
 CUTS = ("all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm", "opener_arm",
@@ -65,35 +67,15 @@ NOT_RECORDED = "not recorded"
 SENT, BOUNCED, REPLIED, UNSUBSCRIBED, COMPLAINED = "sent", "bounced", "replied", "unsubscribed", "complained"
 MEETING, DEMO = "meeting_booked", "demo_held"
 EVENT_TYPES = (SENT, BOUNCED, REPLIED, UNSUBSCRIBED, COMPLAINED, MEETING, DEMO)
-NOT_HUMAN = "out_of_office"
-POSITIVE = frozenset({"positive", "referral"})
+POSITIVE = kinds.WARM
 ID_CHUNK = 1000
 
 
 # -- small helpers ----------------------------------------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str) and v:
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    return None
-
-
-def _n(n: int | float, one: str, many: str | None = None) -> str:
-    return f"{n:,} {one if n == 1 else (many or one + 's')}"
-
-
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.1%}" if n else "-"
-
-
 def rate(k: int, n: int, minimum: int = MIN_COMPANIES) -> str:
-    return _pct(k, n) if n >= minimum else "too few to read"
+    return fmt.pct(k, n) if n >= minimum else "too few to read"
 
 
 def short_week(week: str) -> str:
@@ -105,10 +87,6 @@ def week_days(start: date) -> str:
     """The Monday of a week -> "5–11 Oct", or "28 Sep–4 Oct" across a month."""
     end = start + timedelta(days=6)
     return f"{start.day}–{end.day} {end:%b}" if start.month == end.month else f"{start.day} {start:%b}–{end.day} {end:%b}"
-
-
-def _uk_day(t: datetime) -> date:
-    return t.astimezone(UK).date()
 
 
 def _chunks(items: Sequence[str]) -> Iterable[list[str]]:
@@ -165,7 +143,7 @@ def _values(ctx: Context, account: Mapping[str, Any], first: Mapping[str, Any]) 
 def companies(ctx: Context) -> list[Company]:
     """Every company with an enrolled contact, with its events, step 1 and whether step 1 was delivered."""
     store = ctx.store
-    contacts = [c for c in store.select("contacts") if _ts(c.get("enrolled_at")) and c.get("account_id")]
+    contacts = [c for c in store.select("contacts") if utc(c.get("enrolled_at")) and c.get("account_id")]
     by_account: dict[str, list[dict]] = defaultdict(list)
     for c in contacts:
         by_account[str(c["account_id"])].append(c)
@@ -173,14 +151,14 @@ def companies(ctx: Context) -> list[Company]:
                 for a in store.select("accounts", {"account_id": chunk})}
     out: dict[str, Company] = {}
     for aid, people in by_account.items():
-        first = min(people, key=lambda c: (_ts(c["enrolled_at"]), str(c.get("contact_id"))))
-        at = _ts(first["enrolled_at"])
-        day = _uk_day(at)
+        first = min(people, key=lambda c: (utc(c["enrolled_at"]), str(c.get("contact_id"))))
+        at = utc(first["enrolled_at"])
+        day = uk_day(at)
         out[aid] = Company(aid, iso_week(day), day - timedelta(days=day.weekday()), at, len(people),
                            _values(ctx, accounts.get(aid, {}), first), str(first.get("code_sha") or ""))
     account_of = {str(c["contact_id"]): str(c["account_id"]) for c in contacts}
     for e in store.select("events", {"type": list(EVENT_TYPES)}):
-        t = _ts(e.get("occurred_at"))
+        t = utc(e.get("occurred_at"))
         co = out.get(str(e.get("account_id") or "") or account_of.get(str(e.get("contact_id") or ""), ""))
         if t is not None and co is not None:
             co.events.append({**e, "at": t})
@@ -191,7 +169,7 @@ def companies(ctx: Context) -> list[Company]:
             co.step1_at = step1["at"]
             co.delivered = not any(e["type"] == BOUNCED and e.get("contact_id") == step1.get("contact_id")
                                    and e.get("step") in (1, None) for e in co.events)
-        co.events = [e for e in co.events if e["type"] != REPLIED or str(e.get("reply_class") or "") != NOT_HUMAN]
+        co.events = [e for e in co.events if e["type"] != REPLIED or kinds.is_human(e.get("reply_class"))]
     return sorted(out.values(), key=lambda c: (c.enrolled_at, c.account_id))
 
 
@@ -303,7 +281,7 @@ def spend_line(ctx: Context) -> str:
     split by cohort, Claude's ledger rows carrying no company."""
     now = ctx.now.astimezone(UTC)
     rows_ = ctx.store.select("credit_ledger", {"system": ["apollo", "claude"]})
-    month = [r for r in rows_ if (t := _ts(r.get("occurred_at"))) is not None and (t.year, t.month) == (now.year, now.month)]
+    month = [r for r in rows_ if (t := utc(r.get("occurred_at"))) is not None and (t.year, t.month) == (now.year, now.month)]
     searches = sum(float(r.get("credits") or 0) for r in month if r.get("system") == "apollo" and not r.get("account_id"))
     claude = sum(float(r.get("usd") or 0) for r in month if r.get("system") == "claude")
     return (f"Not split by cohort, this month (UTC): {searches:,.0f} Apollo credits on searches, and ${claude:,.2f} of "
@@ -329,7 +307,7 @@ def _rows_at(ctx: Context, tab: str, at: datetime | None) -> dict[str, dict]:
         return {}
     out: dict[str, dict] = {}
     for r in ctx.store.select("settings", {"tab": tab}):
-        start, end = _ts(r.get("effective_from")), _ts(r.get("effective_to"))
+        start, end = utc(r.get("effective_from")), utc(r.get("effective_to"))
         if start is not None and start <= at and (end is None or end > at):
             out[str(r.get("key"))] = dict(r.get("values") or {})
     return out
@@ -363,16 +341,17 @@ def _copy_lines(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> lis
     out += [f"Copy {v}: no longer sent" for v in sorted(set(old) - set(new))]
     reworded = sorted(v for v in set(old) & set(new) if old[v] != new[v])
     if reworded:
-        found = _tab_lines(ctx, "Copy", _ts(a.get("first_seen")), _ts(b.get("first_seen")), reworded)
+        found = _tab_lines(ctx, "Copy", utc(a.get("first_seen")), utc(b.get("first_seen")), reworded)
         named = [line for line in found if line != "Copy: changed"]
         out += named or [f"Copy {v}: new wording ({old[v]} → {new[v]})" for v in reworded]
     return out
 
 
 def _test_words(t: Mapping[str, Any]) -> str:
-    """"warm-intro (variant: email 1, first_line; warm intro against no intro)"."""
+    """"warm-intro (variant: email 1, first_line; warm intro against no intro)", and ", 70/30" for an uneven split."""
     what = f"email {t.get('email')}, {t.get('change')}; " if t.get("kind") == "variant" else ""
-    return f"{t.get('test_id')} ({t.get('kind')}: {what}{t.get('version_a')} against {t.get('version_b')})"
+    split = f", {t['share_a']:.0%}/{1 - t['share_a']:.0%}".replace("%", "") if t.get("share_a") else ""
+    return f"{t.get('test_id')} ({t.get('kind')}: {what}{t.get('version_a')} against {t.get('version_b')}{split})"
 
 
 def _test_lines(a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
@@ -410,7 +389,7 @@ def diff(ctx: Context, a: Mapping[str, Any], b: Mapping[str, Any]) -> list[str]:
     old_v, new_v = a.get("settings_versions") or {}, b.get("settings_versions") or {}
     for tab in config_version.CONTENT_TABS:
         if old_v.get(tab) != new_v.get(tab):
-            out += _tab_lines(ctx, tab, _ts(old_v.get(tab)), _ts(new_v.get(tab)))
+            out += _tab_lines(ctx, tab, utc(old_v.get(tab)), utc(new_v.get(tab)))
     return out
 
 
@@ -418,7 +397,7 @@ def log_lines(ctx: Context, start: datetime | None, end: datetime | None) -> lis
     """The config_log rows in [start, end): campaign changes made under leads in flight, From names set, and the
     campaigns paused over a blackout and started again after it (registry/blackout.py)."""
     out = []
-    found = [(t, r) for r in ctx.store.select(config_version.LOG_TABLE) if (t := _ts(r.get("changed_at"))) is not None
+    found = [(t, r) for r in ctx.store.select(config_version.LOG_TABLE) if (t := utc(r.get("changed_at"))) is not None
              and (start is None or t >= start) and (end is None or t < end)]
     for t, r in sorted(found, key=lambda x: (x[0], str(x[1].get("log_id")))):
         when = t.astimezone(UK).strftime("%a %d %b %H:%M")
@@ -427,17 +406,17 @@ def log_lines(ctx: Context, start: datetime | None, end: datetime | None) -> lis
         if r.get("kind") == config_version.SENDER_NAME:
             name = " ".join(str(x) for x in (detail.get("to") or ()))
             out.append(f"{when}: From name of {', '.join(r.get('changed_keys') or ())} set to \"{name}\" "
-                       f"({_n(n, 'lead')} in flight)")
+                       f"({fmt.plural(n, 'lead')} in flight)")
         elif r.get("kind") == config_version.BLACKOUT_PAUSE:
             until = f" until {detail['resumes_on']}" if detail.get("resumes_on") else ""
-            out.append(f"{when}: {r.get('campaign')} paused for the blackout{until} ({_n(n, 'lead')} in flight)")
+            out.append(f"{when}: {r.get('campaign')} paused for the blackout{until} ({fmt.plural(n, 'lead')} in flight)")
         elif r.get("kind") == config_version.BLACKOUT_RESUME:
             done = ("started again after the blackout" if detail.get("outcome") == "resumed"
                     else f"not started again after the blackout: {detail.get('why') or detail.get('outcome')}")
-            out.append(f"{when}: {r.get('campaign')} {done} ({_n(n, 'lead')} in flight)")
+            out.append(f"{when}: {r.get('campaign')} {done} ({fmt.plural(n, 'lead')} in flight)")
         else:
             out.append(f"{when}: {', '.join(r.get('changed_keys') or ())} applied to {r.get('campaign')} with "
-                       f"{_n(n, 'lead')} in flight")
+                       f"{fmt.plural(n, 'lead')} in flight")
     return out
 
 
@@ -455,7 +434,7 @@ def changes(ctx: Context, a: str, b: str) -> list[str]:
         missing = ", ".join(v for v, row in ((a, old), (b, new)) if row is None)
         return [f"Not recorded for {missing}: contacts enrolled before 8 Oct 2026 are unstamped."]
     out = diff(ctx, old, new)
-    seen = sorted(t for t in (_ts(old.get("first_seen")), _ts(new.get("first_seen"))) if t is not None)
+    seen = sorted(t for t in (utc(old.get("first_seen")), utc(new.get("first_seen"))) if t is not None)
     if len(seen) == 2:
         out += log_lines(ctx, seen[0], seen[1])
     return out or ["No change."]
@@ -464,7 +443,7 @@ def changes(ctx: Context, a: str, b: str) -> list[str]:
 def versions(ctx: Context) -> list[dict]:
     """Every recorded config version, first seen first."""
     rows_ = ctx.store.select(config_version.TABLE)
-    return sorted(rows_, key=lambda r: (_ts(r.get("first_seen")) or datetime.min.replace(tzinfo=UTC),
+    return sorted(rows_, key=lambda r: (utc(r.get("first_seen")) or datetime.min.replace(tzinfo=UTC),
                                         str(r.get("config_version"))))
 
 
@@ -473,7 +452,7 @@ def week_changes(ctx: Context, start: datetime, end: datetime) -> list[str]:
     out: list[str] = []
     before: dict | None = None
     for v in versions(ctx):
-        t = _ts(v.get("first_seen"))
+        t = utc(v.get("first_seen"))
         if t is None or t >= end:
             break
         if t >= start and before is not None:
@@ -495,7 +474,7 @@ def _compare(what: str, verb: str, label_a: str, label_b: str, age: int, a: tupl
     """One verdict line: b against a (k of n each). always: also say so when there is no clear difference."""
     (ka, na), (kb, nb) = a, b
     p = signal_review.p_value(na, ka, nb, kb)
-    numbers = f"{_pct(kb, nb)} vs {_pct(ka, na)}" + (f", p = {p:.2f}" if p is not None else "")
+    numbers = f"{fmt.pct(kb, nb)} vs {fmt.pct(ka, na)}" + (f", p = {p:.2f}" if p is not None else "")
     if p is not None and p < P_VALUE:
         more = "more" if kb / nb > ka / na else "less"
         return f"{label_b} {verb} {more} than {label_a} at {age} days ({numbers})."
@@ -512,7 +491,7 @@ def compare(ctx: Context, older: Cohort, newer: Cohort, label_a: str = "", label
     a, b = older.ages[age], newer.ages[age]
     if min(a.matured, b.matured) < MIN_COMPANIES:
         label, small = (label_b, b) if b.matured < MIN_COMPANIES else (label_a, a)
-        return [f"Too few to read: {label} has {_n(small.matured, 'company', 'companies')} at {age} days "
+        return [f"Too few to read: {label} has {fmt.plural(small.matured, 'company', 'companies')} at {age} days "
                 f"({MIN_COMPANIES} needed on each side to compare {label_b} with {label_a})."]
     out = [_compare("replies", "replies", label_a, label_b, age, (a.replied, a.matured), (b.replied, b.matured), True)]
     out.append(_compare("positive replies", "has positive replies", label_a, label_b, age,
@@ -542,7 +521,7 @@ def run_of_three(cohorts: Sequence[Cohort], age: int = 14) -> str | None:
     if not (rates[0] < rates[1] < rates[2] or rates[0] > rates[1] > rates[2]):
         return None
     way = "risen" if rates[2] > rates[0] else "fallen"
-    shown = ", ".join(f"{c.label} {_pct(c.ages[age].replied, c.ages[age].matured)}" for c in last)
+    shown = ", ".join(f"{c.label} {fmt.pct(c.ages[age].replied, c.ages[age].matured)}" for c in last)
     return f"The {age}-day reply rate has {way} three cohorts running: {shown}."
 
 
@@ -602,9 +581,9 @@ def in_flight_lines(ctx: Context) -> list[str]:
         if not leads:
             out.append(f"  {name}: none: a change to its campaign reaches no lead")
             continue
-        last = max(capacity.step_days(_ts(c["enrolled_at"]).astimezone(ET).date(), ctx.settings)[-1] for c in leads)
-        weeks = Counter(iso_week(_uk_day(_ts(c["enrolled_at"]))) for c in leads)
-        out.append(f"  {name}: {_n(len(leads), 'lead')}, the last step due {last:%a %d %b} ("
+        last = max(capacity.step_days(et_day(c["enrolled_at"]), ctx.settings)[-1] for c in leads)
+        weeks = Counter(iso_week(uk_day(c["enrolled_at"])) for c in leads)
+        out.append(f"  {name}: {fmt.plural(len(leads), 'lead')}, the last step due {last:%a %d %b} ("
                    + ", ".join(f"{short_week(w)} {n}" for w, n in sorted(weeks.items())) + ")")
     return out
 
@@ -617,13 +596,13 @@ def age_line(a: Age) -> str:
     (1.3%), 0 unsubscribes, 0 complaints"."""
     if not a.emailed:
         return f"{a.days} days: not reached yet"
-    bounce = f"{_n(a.bounced, 'bounce')} of {_n(a.sends, 'send')}" + (
-        f" ({_pct(a.bounced, a.sends)})" if a.sends >= MIN_SENDS else "")
+    bounce = f"{fmt.plural(a.bounced, 'bounce')} of {fmt.plural(a.sends, 'send')}" + (
+        f" ({fmt.pct(a.bounced, a.sends)})" if a.sends >= MIN_SENDS else "")
     steps = ", ".join(f"step {s} {n}" for s, n in sorted(a.sends_by_step.items()))
     return (f"{a.days} days: {a.replied} of {a.matured} replied ({rate(a.replied, a.matured)}), {a.positive} positive "
-            f"({rate(a.positive, a.matured)}), {_n(a.meetings, 'meeting')}, {_n(a.demos, 'demo')} held · {bounce}"
-            + (f" ({steps})" if steps else "") + f", {_n(a.unsubscribed, 'unsubscribe')}, "
-            f"{_n(a.complained, 'complaint')}")
+            f"({rate(a.positive, a.matured)}), {fmt.plural(a.meetings, 'meeting')}, {fmt.plural(a.demos, 'demo')} held · {bounce}"
+            + (f" ({steps})" if steps else "") + f", {fmt.plural(a.unsubscribed, 'unsubscribe')}, "
+            f"{fmt.plural(a.complained, 'complaint')}")
 
 
 def _versions_text(c: Cohort) -> str:
@@ -632,8 +611,8 @@ def _versions_text(c: Cohort) -> str:
 
 def cohort_head(c: Cohort) -> str:
     code = ", ".join(sha[:7] for sha in sorted(c.code) if sha != UNSTAMPED) or UNSTAMPED
-    return (f"{c.week} ({week_days(c.week_start)}): {_n(c.enrolled, 'company', 'companies')} enrolled "
-            f"({_n(c.contacts, 'contact')}), {c.emailed:,} emailed, {c.delivered:,} delivered · versions "
+    return (f"{c.week} ({week_days(c.week_start)}): {fmt.plural(c.enrolled, 'company', 'companies')} enrolled "
+            f"({fmt.plural(c.contacts, 'contact')}), {c.emailed:,} emailed, {c.delivered:,} delivered · versions "
             f"{_versions_text(c)} · code {code} · {c.apollo_credits:,.0f} Apollo credits")
 
 
@@ -664,9 +643,9 @@ def changes_lines(ctx: Context, a: str | None = None, b: str | None = None) -> l
     known = versions(ctx)
     if a is None or b is None:
         if len(known) < 2:
-            return [f"{_n(len(known), 'config version')} recorded so far: nothing to compare yet."]
+            return [f"{fmt.plural(len(known), 'config version')} recorded so far: nothing to compare yet."]
         a, b = str(known[-2]["config_version"]), str(known[-1]["config_version"])
-    seen = {str(v["config_version"]): _ts(v.get("first_seen")) for v in known}
+    seen = {str(v["config_version"]): utc(v.get("first_seen")) for v in known}
 
     def name(v: str) -> str:
         t = seen.get(v)
@@ -687,7 +666,7 @@ def readout_lines(ctx: Context, start: datetime, end: datetime) -> tuple[list[st
         at = c.latest_age()
         a = c.ages[at] if at else None
         tail = (f"; at {at} days {a.replied} of {a.matured} replied ({rate(a.replied, a.matured)}), "
-                f"{_n(a.meetings, 'meeting')}; {_n(a.bounced, 'bounce')} of {_n(a.sends, 'send')}") if a else \
+                f"{fmt.plural(a.meetings, 'meeting')}; {fmt.plural(a.bounced, 'bounce')} of {fmt.plural(a.sends, 'send')}") if a else \
             "; no company has reached 7 days yet"
         out.append(f"  {c.label} ({week_days(c.week_start)}): {c.enrolled:,} enrolled, {c.emailed:,} emailed{tail}")
     out += [f"  {x}" for x in insights(ctx, cohorts, found, latest_only=True)]  # the CLI has every pair

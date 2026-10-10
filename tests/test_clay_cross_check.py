@@ -13,8 +13,8 @@ import pytest
 from tests.test_verify import account, make, status
 from tests.test_sources_apollo import settings_with
 from us_outbound import clay_cross_check as cc, verify
+from us_outbound.base import holds
 from us_outbound.clients.clay import ClayError, parse_cross_check_output
-from us_outbound.learn import holds
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import General, Override
 from us_outbound.settings.validate import validate_all
@@ -215,7 +215,7 @@ def test_a_failed_run_is_one_error_and_every_doubt_stands():
     clay(t, {"a1": answer()}, status=403)
     out = verify.run(ctx)
     assert out["clay_cross_check"]["errors"] == [
-        f"the Clay run failed (ApiError): clay HTTP 403 for /public/v0/routines/function:{FN}/run: "
+        f"the Clay run failed (AuthError): clay HTTP 403 for /public/v0/routines/function:{FN}/run: "
         "{'routine_run_id': 'run-x'}"]
     assert out["to_hand_check_accounts"][0]["reasons"] == [NEAR]
 

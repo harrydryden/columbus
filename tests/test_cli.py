@@ -11,6 +11,7 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2, SAM, SETTINGS, FakeInstantly, StubSheets, slack_routes
+from us_outbound.base import heartbeats
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
@@ -320,12 +321,12 @@ def test_stop_pauses_every_us_campaign_and_enrolment():
     harry = h.instantly.add_campaign(C_HARRY, status=0)
     eu = h.instantly.add_campaign("EU Outbound – Anna", status=1)
     assert h.run("stop") == 0  # dry-run: enrolment stops, campaigns do not
-    assert hb.enrolment_paused(h.store) is not None
+    assert heartbeats.enrolment_paused(h.store) is not None
     assert hannah["status"] == 1
     assert h.run("stop", "--live") == 0  # operator command: --live alone
     assert hannah["status"] == 2 and harry["status"] == 0 and eu["status"] == 1
     assert not [r for r in h.transport.requests if f"/{eu['id']}" in r.url]
-    assert [b["status"] for b in h.beats(hb.OPERATOR_STOP)] == ["ok", "ok"]
+    assert [b["status"] for b in h.beats(heartbeats.OPERATOR_STOP)] == ["ok", "ok"]
 
 
 def test_campaigns_show_prints_each_owner_campaign_as_instantly_holds_it(capsys):
@@ -348,7 +349,7 @@ def test_start_needs_live_sending_and_checks_drift():
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())
-    assert hb.enrolment_paused(h.store) is not None
+    assert heartbeats.enrolment_paused(h.store) is not None
 
     live = Harness(LIVE_SETTINGS)
     live.store, live.instantly, live.transport = h.store, h.instantly, h.transport
@@ -359,7 +360,7 @@ def test_start_needs_live_sending_and_checks_drift():
     h.instantly.by_name(C_SAM)["open_tracking"] = False
     assert live.run("start", "--live") == 0
     assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
-    assert hb.enrolment_paused(h.store) is None
+    assert heartbeats.enrolment_paused(h.store) is None
 
 
 # -- operator commands ----------------------------------------------------------------------------------
@@ -478,6 +479,18 @@ def test_test_start_needs_a_read_date_and_approved_copy(capsys):
     assert "pre-register" in capsys.readouterr().err
 
 
+def test_test_start_checks_the_row_as_it_will_be_written(capsys):
+    """9 Oct 2026: a read_date of 2026-9-30 passed a comparison of text; the sheet said running and the next
+    settings_sync refused the Tests tab, so the test the operator was told is running was not."""
+    settings = dataclasses.replace(SETTINGS, copy=_approved())
+    for bad, says in (("2026-9-30", "read_date"), ("30/11/2026", "read_date"), ("2026-10-01", "must be after")):
+        h = Harness(settings, sheet_tabs={"Tests": [_tests_tab(read_date=bad)]})
+        assert h.run("test", "start", "t1", "--live") == 2
+        err = capsys.readouterr().err
+        assert "would not pass the checks settings_sync makes once it is running" in err and says in err
+        assert h.sheet_tabs["Tests"][0]["status"] == "planned"
+
+
 def _read_world(read_date: date):
     """Four accounts in t1, step 1 on Mon 21 Sep (their windows closed on 19 Oct); the Harness's now is 27 Oct."""
     test = CopyTest("t1", "h", "eap-v1", "general-v1", 400, "running", date(2026, 9, 14), read_date, "reply rate")
@@ -562,8 +575,9 @@ def test_no_http_library_outside_the_http_client():
     from pathlib import Path
 
     root = Path(cli.__file__).resolve().parents[1]
-    mine = ["ops/cli.py", "ops/heartbeat.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py", "ops/scheduler.py",
-            "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py", "__main__.py"]
+    mine = ["ops/cli.py", "ops/heartbeat.py", "base/heartbeats.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py",
+            "ops/scheduler.py", "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py",
+            "__main__.py"]
     for rel in mine:
         text = (root / rel).read_text()
         assert not re.search(r"^\s*(import|from)\s+(requests|httpx|urllib)", text, re.M), rel
@@ -608,3 +622,23 @@ def test_campaigns_ensure_fix_in_flight_applies_it_to_them_and_logs_it(capsys):
         C_SAM, ["steps.1"], 1, "campaigns_ensure")
     assert h.run("campaigns", "ensure", "--in-flight") == 2  # --in-flight goes with --fix
     assert "--in-flight goes with ensure --fix" in capsys.readouterr().err
+
+
+def test_operate_refuses_in_the_jobs_words_and_lets_a_bug_through(capsys):
+    """cli._operate (9 Oct 2026): a LookupError or ValueError from the job is the command's refusal (exit 2); a
+    KeyError is a bug, so main prints its traceback instead of passing it off as a refusal."""
+    ctx = make_context(SETTINGS, job="x")
+
+    def factory(job, live, operator=False):
+        return ctx
+
+    def refuses(c):
+        raise LookupError("no send approval 'zz'")
+
+    with pytest.raises(cli.Refused, match="no send approval 'zz'"):
+        cli._operate(factory, "x", False, refuses)
+    with pytest.raises(KeyError):
+        cli._operate(factory, "x", False, lambda c: {}["missing"])
+    _, summary = cli._operate(factory, "x", False, lambda c: {"done": 1}, dry_note="nothing was changed.")
+    out = capsys.readouterr().out
+    assert summary == {"done": 1} and '"done": 1' in out and "Dry-run: nothing was changed." in out

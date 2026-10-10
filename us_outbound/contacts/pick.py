@@ -43,7 +43,7 @@ Dry-run and live are the same: the job writes only to the database and its Apoll
 reads, which the guard allows in dry-run, so reveals spend credits in both, within the budget
 (as verify_in_clay spends Clay's). The scheduler runs it without --live.
 
-A kill rule pausing the apollo email source (learn/holds.paused_sources: Apollo's addresses bounced;
+A kill rule pausing the apollo email source (base/holds.paused_sources: Apollo's addresses bounced;
 learn/kill_rules.py) stops the run before any search, reveal or credit, and the run's summary and so its
 heartbeat say why (apollo_paused; Harry, 7 Oct 2026), as the clay source's pause stops Clay's lookups
 (clay_room). Clay alone is not used meanwhile, even with clay_email_fallback = yes and the clay source not
@@ -62,7 +62,7 @@ otherwise the workspace's Work Email function as it is (its own inputs: Full Nam
 Social Profile URL, Company Name; clients/clay.WORK_EMAIL_INPUTS; it charges only when it finds an
 email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN a run, each within today's share
 of clay_monthly_credits (budget.py; credit_ledger, reserved before the call and settled after it),
-none while a kill rule pauses the clay source (learn/holds.paused_sources) or the Clay API key is
+none while a kill rule pauses the clay source (base/holds.paused_sources) or the Clay API key is
 not set, and none for the rest of the run once CLAY_MAX_ERRORS lookups have failed (a wrong key or
 a function without "API & CLI" would otherwise spend every lookup's reserve). Only a "valid"
 result is used: catch_all_valid waits for pipeline change 8 (whether a catch-all is sendable with
@@ -78,13 +78,14 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, ledger
+from us_outbound.base import holds
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
-from us_outbound.clients.apollo import credits_left
+from us_outbound.clients.apollo import credits_left, people_in, while_full_page
 from us_outbound.clients.clay import (
     WORK_EMAIL_FUNCTION_ID,
     ClayError,
@@ -96,9 +97,10 @@ from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol import enrol, queue, second
-from us_outbound.learn import holds
+from us_outbound.facts import newest_by
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
+from us_outbound.timeparse import iso_date, utc, utc_strict
 
 JOB = "pick_contacts"
 SOURCE = "pick_contacts"  # signal_events.source of this job's facts
@@ -141,17 +143,6 @@ CLAY_LEDGER_NOTE = "email waterfall (Clay)"
 US_LOCATION = "United States"
 SEARCH_EMAIL_STATUSES = ("verified",)
 US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    return None
 
 
 def _lower(v: Any) -> str:
@@ -214,14 +205,15 @@ class History:
 
 def history(store: Store, now: datetime) -> History:
     h = History()
-    for e in store.select("signal_events", {"source": SOURCE}):
-        t, aid, value = _ts(e.get("observed_at")), str(e.get("account_id") or ""), e.get("value")
-        if t is None or not aid or not isinstance(value, Mapping):
-            continue
-        if e.get("fact") == OUTCOME_FACT and (aid not in h.outcomes or t >= h.outcomes[aid][0]):
-            h.outcomes[aid] = (t, dict(value))
-        elif e.get("fact") == REVEAL_FACT and now - t < timedelta(days=REVEAL_AGAIN_DAYS) and value.get("apollo_person_id"):
-            h.revealed[aid].add(str(value["apollo_person_id"]))
+    rows = [e for e in store.select("signal_events", {"source": SOURCE})
+            if e.get("account_id") and isinstance(e.get("value"), Mapping) and utc(e.get("observed_at"))]
+    for aid, e in newest_by(rows, lambda e: str(e["account_id"]), OUTCOME_FACT).items():
+        h.outcomes[aid] = (utc_strict(e["observed_at"]), dict(e["value"]))
+    for e in rows:
+        value = e["value"]
+        if (e.get("fact") == REVEAL_FACT and now - utc_strict(e["observed_at"]) < timedelta(days=REVEAL_AGAIN_DAYS)
+                and value.get("apollo_person_id")):
+            h.revealed[str(e["account_id"])].add(str(value["apollo_person_id"]))
     return h
 
 
@@ -277,15 +269,15 @@ def search(ctx: Context, account: Mapping[str, Any], titles: Sequence[str]) -> l
     people: list[dict] = []
     seen: set[str] = set()
     filters = search_filters(account, titles)
-    for page in range(1, SEARCH_PAGES + 1):
-        batch = ctx.clients.apollo.search_people(filters, page=page, per_page=SEARCH_PER_PAGE).get("people") or []
-        for p in batch:
+    apollo = ctx.clients.apollo
+    pages = apollo.iter_pages(lambda page: apollo.search_people(filters, page=page, per_page=SEARCH_PER_PAGE),
+                              more=while_full_page, rows=people_in, per_page=SEARCH_PER_PAGE, max_pages=SEARCH_PAGES)
+    for page in pages:
+        for p in page.rows:
             pid = str(p.get("id") or "")
             if pid and pid not in seen:
                 seen.add(pid)
                 people.append(p)
-        if len(batch) < SEARCH_PER_PAGE:
-            break
     return people
 
 
@@ -293,9 +285,8 @@ def days_in_role(person: Mapping[str, Any], today: date) -> int | None:
     """Days since the person started their current job, when Apollo gives it (employment_history)."""
     for job in person.get("employment_history") or ():
         if isinstance(job, Mapping) and job.get("current") and job.get("start_date"):
-            try:
-                start = date.fromisoformat(str(job["start_date"])[:10])
-            except ValueError:
+            start = iso_date(job["start_date"])
+            if start is None:
                 continue
             return max(0, (today - start).days)
     return None
@@ -495,22 +486,18 @@ def reveal(ctx: Context, account: Mapping[str, Any], cand: Candidate, batch: _Ru
     reveal that fails or is cut off still counts against the budget. A match with an email
     counts at least REVEAL_CREDITS, whatever Apollo reports.
     """
-    entry = {"entry_id": new_id(), "system": "apollo", "job": JOB, "run_id": ctx.run_id,
-             "account_id": account["account_id"], "credits": REVEAL_CREDITS, "usd": None, "occurred_at": ctx.now,
-             "note": f"{LEDGER_NOTE}, reserved"}
-    ctx.store.insert("credit_ledger", [entry])
-    try:
-        body = ctx.clients.apollo.bulk_match([{"id": cand.id}])
-    except ApiError as exc:
-        ctx.store.upsert("credit_ledger", [{**entry, "note": f"{LEDGER_NOTE} failed (HTTP {exc.status}); "
-                                                             "counted in case Apollo charged it"}])
-        batch.spend(REVEAL_CREDITS)
-        raise
-    match = next((m for m in body.get("matches") or () if m), None)
-    credits = float(body.get("credits_consumed") or 0)
-    if match and match.get("email"):
-        credits = max(credits, REVEAL_CREDITS)
-    ctx.store.upsert("credit_ledger", [{**entry, "credits": credits, "note": LEDGER_NOTE}])
+    with ledger.charge(ctx, "apollo", JOB, REVEAL_CREDITS, note=f"{LEDGER_NOTE}, reserved",
+                       account_id=account["account_id"]) as paid:
+        try:
+            body = ctx.clients.apollo.bulk_match([{"id": cand.id}])
+        except ApiError as exc:
+            batch.spend(paid.keep(note=f"{LEDGER_NOTE} failed (HTTP {exc.status}); counted in case Apollo charged it"))
+            raise
+        match = next((m for m in body.get("matches") or () if m), None)
+        credits = float(body.get("credits_consumed") or 0)
+        if match and match.get("email"):
+            credits = max(credits, REVEAL_CREDITS)
+        paid.settle(credits, note=LEDGER_NOTE)
     batch.spend(credits)
     return match, credits
 
@@ -599,26 +586,23 @@ def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match
     function = g.clay_contacts_function_id or WORK_EMAIL_FUNCTION_ID
     if not g.clay_contacts_function_id:
         inputs = as_work_email(inputs, account)
-    entry = {"entry_id": new_id(), "system": "clay", "job": JOB, "run_id": ctx.run_id,
-             "account_id": account["account_id"], "credits": CLAY_RESERVE, "usd": None, "occurred_at": ctx.now,
-             "note": f"{CLAY_LEDGER_NOTE}, reserved"}
-    ctx.store.insert("credit_ledger", [entry])
-    try:
-        out = ctx.clients.clay.run_function(function, inputs)
-        got = parse_contacts_output(out) if g.clay_contacts_function_id else parse_work_email_output(out)
-    except (ApiError, ClayError) as exc:
-        ctx.store.upsert("credit_ledger", [{**entry, "note": f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"}])
-        batch.clay_spend(CLAY_RESERVE)
-        why = f"Clay lookup failed ({type(exc).__name__})"
-        batch.clay_errors += 1
-        log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
-        if batch.clay_errors >= CLAY_MAX_ERRORS:
-            batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
-        return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
-    credits = got["credits_used"]
-    if credits is None:
-        credits = CLAY_RESERVE if got["email"] else 0.0
-    ctx.store.upsert("credit_ledger", [{**entry, "credits": credits, "note": CLAY_LEDGER_NOTE}])
+    with ledger.charge(ctx, "clay", JOB, CLAY_RESERVE, note=f"{CLAY_LEDGER_NOTE}, reserved",
+                       account_id=account["account_id"]) as paid:
+        try:
+            out = ctx.clients.clay.run_function(function, inputs)
+            got = parse_contacts_output(out) if g.clay_contacts_function_id else parse_work_email_output(out)
+        except (ApiError, ClayError) as exc:
+            batch.clay_spend(paid.keep(note=f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"))
+            why = f"Clay lookup failed ({type(exc).__name__})"
+            batch.clay_errors += 1
+            log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
+            if batch.clay_errors >= CLAY_MAX_ERRORS:
+                batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
+            return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
+        credits = got["credits_used"]
+        if credits is None:
+            credits = CLAY_RESERVE if got["email"] else 0.0
+        paid.settle(credits, note=CLAY_LEDGER_NOTE)
     batch.clay_spend(credits)
     value.update(status=got["status"], credits=credits, provider=got.get("provider"))
     if got["status"] not in CLAY_ACCEPTED or not got["email"]:

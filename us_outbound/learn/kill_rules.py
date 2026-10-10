@@ -40,13 +40,13 @@ last time it fired for the same mailbox, domain, source or group, so old bounces
 At least 2 bounces (MIN_BOUNCES) before a rate rule fires: on the ramp's 10 a day a single
 bounce would be 10%, and would pause a healthy mailbox (a block bounce still pauses at once).
 
-Each firing is a hitl_items row (kind kill_rule; learn/holds.py says what it holds). A mailbox
+Each firing is a hitl_items row (kind kill_rule; base/holds.py says what it holds). A mailbox
 is paused through the registry pause path (registry/mailboxes.mailbox_pause: Paused on the
 Mailboxes tab and off its campaign's sending list); if the sheet cannot be written it still
 comes off the sending list, and the hold keeps it out of every job either way. A rule does not
 fire again while its item is open. Every bounced contact goes on suppression (reason bounce).
 All firings of a run go in one Slack message to the alert channel, mentioning the approvers;
-with no Slack token the message goes to the log (ops/notify.py). Dry-run computes, records the
+with no Slack token the message goes to the log (base/notify.py). Dry-run computes, records the
 items and posts to the dev channel, but changes neither the sheet nor Instantly.
 
 Not here: a human-in-the-loop item left for 24 hours (the reply desk escalates it; enrol already
@@ -64,16 +64,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import suppression
+from us_outbound import fmt, suppression
+from us_outbound.base import holds, notify
+from us_outbound.base.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, ConfigError, Context
-from us_outbound.learn import holds
-from us_outbound.learn.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.logs import log
-from us_outbound.ops import notify
+from us_outbound.replies import kinds
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 JOB = "kill_rules"
 ACTIVE = "Active"
@@ -96,28 +97,12 @@ BOUNCE_REASON = "bounce"
 LIST_LIMIT = 100
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
 def _lower(v: Any) -> str:
     return str(v or "").strip().lower()
 
 
 def _domain(address: str) -> str:
     return address.rsplit("@", 1)[-1].lower() if "@" in address else ""
-
-
-def _pct(x: float) -> str:
-    return f"{x:.1%}"
 
 
 # -- what fired --------------------------------------------------------------------------------
@@ -157,7 +142,7 @@ class _Events:
         rows = store.select("events", {"type": ["sent", "bounced", "replied", "meeting_booked", COMPLAINT, SEED_SPAM]})
         by_type: dict[str, list[dict]] = defaultdict(list)
         for e in rows:
-            if _ts(e.get("occurred_at")) is not None:
+            if utc(e.get("occurred_at")) is not None:
                 by_type[str(e.get("type"))].append(e)
         self.bounces = by_type["bounced"]
         self.replies = by_type["replied"]
@@ -167,10 +152,10 @@ class _Events:
         bounce_at: dict[str, list[tuple[Any, datetime]]] = defaultdict(list)
         for b in self.bounces:
             if b.get("contact_id"):
-                bounce_at[str(b["contact_id"])].append((b.get("step"), _ts(b["occurred_at"])))
+                bounce_at[str(b["contact_id"])].append((b.get("step"), utc(b["occurred_at"])))
         self.sends: list[_Send] = []
         for e in by_type["sent"]:
-            at = _ts(e["occurred_at"])
+            at = utc(e["occurred_at"])
             s = _Send(str(e.get("event_id")), _lower(e.get("mailbox")), str(e.get("contact_id") or ""),
                       str(e.get("account_id") or ""), e.get("step"), at)
             s.bounced = any((step is None or step == s.step) and t >= at for step, t in bounce_at.get(s.contact_id, ()))
@@ -210,7 +195,7 @@ class _Fired:
 
     def since(self, *keys: tuple[str, str]) -> datetime | None:
         """When any of these (scope, target) last fired; events at or before it are already counted."""
-        times = [_ts(i.get("created_at")) for k in keys for i in self._match(*k)]
+        times = [utc(i.get("created_at")) for k in keys for i in self._match(*k)]
         times = [t for t in times if t is not None]
         return max(times) if times else None
 
@@ -266,10 +251,10 @@ def mailbox_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) 
         if fired.open("mailbox", a) or fired.open("domain", _domain(a)):
             continue
         since = fired.since(("mailbox", a), ("domain", _domain(a)))
-        blocks = [b for b in ev.bounces if ev.bounce_mailbox(b) == a and _after(_ts(b["occurred_at"]), since, start)
+        blocks = [b for b in ev.bounces if ev.bounce_mailbox(b) == a and _after(utc(b["occurred_at"]), since, start)
                   and BLOCK_CODE.search(f"{b.get('reply_class') or ''} {b.get('reply_text') or ''}")]
-        complaints = [c for c in ev.complaints if ev.bounce_mailbox(c) == a and _after(_ts(c["occurred_at"]), since, start)]
-        seeds = [s for s in ev.seed_spam if _lower(s.get("mailbox")) == a and _after(_ts(s["occurred_at"]), since, start)]
+        complaints = [c for c in ev.complaints if ev.bounce_mailbox(c) == a and _after(utc(c["occurred_at"]), since, start)]
+        seeds = [s for s in ev.seed_spam if _lower(s.get("mailbox")) == a and _after(utc(s["occurred_at"]), since, start)]
         why = ""
         rule = ""
         if blocks:
@@ -290,7 +275,7 @@ def mailbox_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) 
         n, b, rate = _rate(sends)
         if _over(n, b, rate):
             out.append(Firing("mailbox_bounce_rate", "mailbox", a, PAUSE_MAILBOX,
-                              f"{a}: {b} of its last {n} sends bounced ({_pct(rate)}; the limit is {BOUNCE_RATE:.0%})",
+                              f"{a}: {b} of its last {n} sends bounced ({fmt.share(rate)}; the limit is {BOUNCE_RATE:.0%})",
                               [a], None, {"sends": n, "bounced": b, "rate": round(rate, 4), "window_days": WINDOW_DAYS}))
     return out, vitals_error
 
@@ -308,7 +293,7 @@ def domain_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired, a
         if boxes and _over(n, b, rate, min_sends=MIN_SENDS):
             out.append(Firing("domain_bounce_rate", "domain", domain, PAUSE_MAILBOX,
                               f"{domain}: {b} of its {n} sends in the last {WINDOW_DAYS} days bounced "
-                              f"({_pct(rate)}; the limit is {BOUNCE_RATE:.0%})",
+                              f"({fmt.share(rate)}; the limit is {BOUNCE_RATE:.0%})",
                               boxes, None, {"sends": n, "bounced": b, "rate": round(rate, 4), "window_days": WINDOW_DAYS}))
     return out
 
@@ -338,7 +323,7 @@ def source_rules(ctx: Context, ev: _Events, fired: _Fired) -> list[Firing]:
         if _over(n, b, rate, min_sends=MIN_SENDS):
             out.append(Firing("source_bounce_rate", "source", src, PAUSE_SOURCE,
                               f"emails found by {src}: {b} of {n} sends in the last {WINDOW_DAYS} days bounced "
-                              f"({_pct(rate)}; the limit is {BOUNCE_RATE:.0%})",
+                              f"({fmt.share(rate)}; the limit is {BOUNCE_RATE:.0%})",
                               numbers={"sends": n, "bounced": b, "rate": round(rate, 4), "window_days": WINDOW_DAYS}))
     return out
 
@@ -364,8 +349,8 @@ def group_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) ->
             accounts[str(a["account_id"])] = a
     replied = defaultdict(list)
     for r in ev.replies:
-        if _lower(r.get("reply_class")) != "out_of_office":
-            replied[ev.account(r)].append(_ts(r["occurred_at"]))
+        if kinds.is_human(r.get("reply_class")):
+            replied[ev.account(r)].append(utc(r["occurred_at"]))
     by_group: dict[str, list[tuple[str, _Send]]] = defaultdict(list)
     for aid, s in step1.items():
         group = settings.industry_group_of(accounts.get(aid, {}))
@@ -383,7 +368,7 @@ def group_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) ->
         if delivered >= GROUP_MIN_DELIVERED and rate < GROUP_REPLY_FLOOR:
             out.append(Firing("group_reply_rate", "industry_group", group, STOP_GROUP,
                               f"{group}: {humans} human replies from {delivered} accounts delivered "
-                              f"({_pct(rate)}; the floor is {GROUP_REPLY_FLOOR:.1%})",
+                              f"({fmt.share(rate)}; the floor is {GROUP_REPLY_FLOOR:.1%})",
                               numbers={"delivered": delivered, "replied": humans, "rate": round(rate, 4)}))
     return out
 
@@ -400,7 +385,7 @@ def stop_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) -> 
     if g.stop_rule_accounts > 0 and g.stop_rule_meetings > 0 and not fired.ever("stop_rule_meetings"):
         first: dict[str, datetime] = {}
         for c in ctx.store.select("contacts"):
-            t = _ts(c.get("enrolled_at"))
+            t = utc(c.get("enrolled_at"))
             aid = str(c.get("account_id") or "")
             if t is not None and aid and (aid not in first or t < first[aid]):
                 first[aid] = t
@@ -426,14 +411,14 @@ def stop_rules(ctx: Context, settings: Settings, ev: _Events, fired: _Fired) -> 
         if len(bounced) / n > g.stop_rule_bounce_rate:
             out.append(Firing("stop_rule_bounce_rate", "enrolment", "stop_rule", PAUSE_ENROLMENT,
                               f"{len(bounced)} of the {n} accounts sent step 1 in the last {STOP_WINDOW_DAYS} days bounced "
-                              f"({_pct(len(bounced) / n)}; the limit, stop_rule_bounce_rate, is "
-                              f"{_pct(g.stop_rule_bounce_rate)})",
+                              f"({fmt.share(len(bounced) / n)}; the limit, stop_rule_bounce_rate, is "
+                              f"{fmt.share(g.stop_rule_bounce_rate)})",
                               numbers={"accounts": n, "bounced": len(bounced)}))
         elif len(complained) / n > g.stop_rule_complaint_rate:
             out.append(Firing("stop_rule_complaint_rate", "enrolment", "stop_rule", PAUSE_ENROLMENT,
                               f"{len(complained)} of the {n} accounts sent step 1 in the last {STOP_WINDOW_DAYS} days "
-                              f"made a spam complaint ({_pct(len(complained) / n)}; the limit, stop_rule_complaint_rate, "
-                              f"is {_pct(g.stop_rule_complaint_rate)})",
+                              f"made a spam complaint ({fmt.share(len(complained) / n)}; the limit, stop_rule_complaint_rate, "
+                              f"is {fmt.share(g.stop_rule_complaint_rate)})",
                               numbers={"accounts": n, "complained": len(complained)}))
     return out[:1]  # one stop is enough; the next fires only after Harry clears it
 
@@ -633,7 +618,7 @@ def run(ctx: Context) -> dict:
 
 def show(ctx: Context) -> list[dict]:
     """The kill-rule holds in force, oldest first."""
-    rows = sorted(holds.in_force(ctx.store), key=lambda r: _ts(r.get("created_at")) or datetime.min.replace(tzinfo=UTC))
+    rows = sorted(holds.in_force(ctx.store), key=lambda r: utc(r.get("created_at")) or datetime.min.replace(tzinfo=UTC))
     out = []
     for r in rows:
         p = r.get("payload") if isinstance(r.get("payload"), Mapping) else {}

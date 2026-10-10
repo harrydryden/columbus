@@ -28,7 +28,7 @@ blackout_pause, config_version.log_change), with the leads then in flight, so th
 
 What it starts again once the hold is over: only the campaigns whose latest blackout row is a pause (paused), each
 once, and only while Instantly shows it paused (or a draft `start` deferred, below). It leaves paused, and says why:
-  * one an operator stop holds (ops/heartbeat.enrolment_paused): `us-outbound start --live` starts it;
+  * one an operator stop holds (base/heartbeats.enrolment_paused): `us-outbound start --live` starts it;
   * one a kill rule paused since (its mailbox hold left the owner no Active mailbox; registry/mailboxes
     ._kill_rule_pauses): mailbox_health starts it once that mailbox is Active again;
   * one whose owner has no Active mailbox now (a kill rule's hold counts), as _sync_campaign leaves it.
@@ -61,14 +61,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from us_outbound import budget, config_version
+from us_outbound.base import holds, notify
+from us_outbound.base.heartbeats import enrolment_paused
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS
 from us_outbound.context import UK, Context
-from us_outbound.learn import holds
 from us_outbound.logs import log
-from us_outbound.ops import notify
-from us_outbound.ops.heartbeat import enrolment_paused
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import iso_date, utc
 
 JOB = "blackout"
 PAUSE, RESUME = config_version.BLACKOUT_PAUSE, config_version.BLACKOUT_RESUME  # config_log.kind
@@ -80,25 +80,6 @@ HEAD = "Blackout dates:"
 
 def _day(d: date | None) -> str:
     return f"{d:%a} {d.day} {d:%b}" if d else "the next send day"
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
-def _date(v: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(v)[:10]) if v else None
-    except ValueError:
-        return None
 
 
 def _status(campaign: Mapping[str, Any]) -> int | None:
@@ -166,7 +147,7 @@ def paused(store: Any) -> dict[str, dict]:
     floor = datetime.min.replace(tzinfo=UTC)
     for r in store.select(config_version.LOG_TABLE, {"kind": [PAUSE, RESUME]}):
         name = str(r.get("campaign") or "")
-        key = (_ts(r.get("changed_at")) or floor, str(r.get("log_id")))
+        key = (utc(r.get("changed_at")) or floor, str(r.get("log_id")))
         if name and (name not in latest or key > latest[name][0]):
             latest[name] = (key, r)
     return {name: r for name, (_, r) in latest.items() if r.get("kind") == PAUSE}
@@ -183,7 +164,7 @@ def words(store: Any, settings: Settings, now: datetime) -> dict[str, str]:
     if not rows:
         return {}
     h = hold(settings, now)
-    return {name: _words(h.until if h else _date((r.get("detail") or {}).get("resumes_on")))
+    return {name: _words(h.until if h else iso_date((r.get("detail") or {}).get("resumes_on")))
             for name, r in rows.items()}
 
 
@@ -268,11 +249,11 @@ def _blocker(name: str, campaign: Mapping[str, Any] | None, row: Mapping[str, An
     if status not in (PAUSED, DRAFT):
         return NOT_NEEDED, f"Instantly shows it {CAMPAIGN_STATUS.get(status, status)}"
     if stop is not None:
-        since = _ts(stop.get("started_at"))
+        since = utc(stop.get("started_at"))
         when = f" since {since.astimezone(UK):%a %d %b %H:%M} UK" if since else ""
         return LEFT_PAUSED, f"an operator stop is in force{when}: `us-outbound start --live` starts it"
-    paused_at = _ts(row.get("changed_at"))
-    killed = [i for i in kill.get(name, ()) if paused_at is None or (_ts(i.get("created_at")) or paused_at) > paused_at]
+    paused_at = utc(row.get("changed_at"))
+    killed = [i for i in kill.get(name, ()) if paused_at is None or (utc(i.get("created_at")) or paused_at) > paused_at]
     if killed:
         why = (killed[0].get("payload") or {}).get("reason") or "a kill rule"
         return LEFT_PAUSED, f"a kill rule paused it since ({why}): it starts again once its mailbox is Active"
@@ -289,7 +270,7 @@ def _resume(ctx: Context, open_: Mapping[str, dict]) -> dict:
     inst = ctx.clients.instantly
     settings = holds.with_holds(ctx.store, ctx.settings)
     stop = enrolment_paused(ctx.store)
-    since = min((t for r in open_.values() if (t := _ts(r.get("changed_at"))) is not None),
+    since = min((t for r in open_.values() if (t := utc(r.get("changed_at"))) is not None),
                 default=ctx.now - timedelta(days=366))
     kill = reg._kill_rule_pauses(ctx.store, since - timedelta(seconds=1))
     found = {str(c.get("name")): c for c in inst.list_campaigns()}
@@ -320,7 +301,7 @@ def _resume(ctx: Context, open_: Mapping[str, dict]) -> dict:
     if out["left_paused"]:
         parts.append("Left paused: " + "; ".join(f"{c} ({why})" for c, why in out["left_paused"].items()) + ".")
     if parts:
-        until = min((d for r in open_.values() if (d := _date((r.get("detail") or {}).get("resumes_on")))),
+        until = min((d for r in open_.values() if (d := iso_date((r.get("detail") or {}).get("resumes_on")))),
                     default=day)
         out["slack"] = notify.post_once(ctx, [(f"{RESUME}:{_iso(until)}", " ".join(parts))], head=HEAD)
     if ctx.dry_run:

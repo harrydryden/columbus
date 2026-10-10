@@ -17,7 +17,8 @@ import pytest
 from tests.fakes import make_context
 from tests.test_client_claude import FakeSDK
 from tests.test_render import contact, make_settings
-from us_outbound.enrol import copy_desk, copy_rules, enrol, hand_check, openers, queue, render
+from us_outbound.copy import copy_rules
+from us_outbound.enrol import copy_desk, enrol, hand_check, openers, queue, render
 from us_outbound.scoring.angle import choose_angle
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.defaults import default_tabs

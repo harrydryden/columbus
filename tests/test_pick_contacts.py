@@ -253,7 +253,7 @@ def test_the_budget_stops_the_batch_partway(ctx, transport):
 
 
 def pause_source(ctx, source: str, reason: str = "5% bounced", status: str = "open") -> None:
-    from us_outbound.learn import holds
+    from us_outbound.base import holds
 
     ctx.store.upsert("hitl_items", [{"item_id": f"k-{source}", "kind": holds.KIND, "status": status,
                                      "payload": {"action": holds.PAUSE_SOURCE, "target": source, "reason": reason}}])

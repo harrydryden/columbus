@@ -26,32 +26,17 @@ from __future__ import annotations
 import math
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.db import Store
+from us_outbound.clients.db import Range, Store
 from us_outbound.context import UK
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import uk_midnight, utc
 
 MONTHLY_KEYS = {"apollo": "apollo_monthly_credits", "clay": "clay_monthly_credits"}
 AHEAD = 1.10  # spend more than 10% above the month's pace is "ahead of budget"
 PACE_WORDS = {"ahead": "ahead of pace", "on": "on pace", "behind": "behind pace"}
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
-def _uk_midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, tzinfo=UK)
 
 
 # -- the month --------------------------------------------------------------------------------
@@ -62,7 +47,7 @@ def month_bounds(now: datetime) -> tuple[datetime, datetime]:
     d = now.astimezone(UK).date()
     first = d.replace(day=1)
     nxt = date(first.year + first.month // 12, first.month % 12 + 1, 1)
-    return _uk_midnight(first), _uk_midnight(nxt)
+    return uk_midnight(first), uk_midnight(nxt)
 
 
 def weekdays(start: date, end: date) -> int:
@@ -162,25 +147,25 @@ def _n(x: float) -> str:
 
 
 def spent_in(store: Store, system: str, start: datetime, end: datetime, jobs: Collection[str] | None = None) -> float:
-    """Credits credit_ledger records for system in [start, end); only those jobs' rows when jobs is given."""
-    return sum(
-        float(r.get("credits") or 0)
-        for r in store.select("credit_ledger", {"system": system})
-        if (t := _ts(r.get("occurred_at"))) is not None and start <= t < end
-        and (jobs is None or r.get("job") in jobs)
-    )
+    """Credits credit_ledger records for system in [start, end); only those jobs' rows when jobs is given.
+
+    The database reads only the period's rows (Range; 9 Oct 2026: it read every row the system ever had)."""
+    where: dict[str, Any] = {"system": system, "occurred_at": Range(start, end)}
+    if jobs is not None:
+        where["job"] = list(jobs)
+    return sum(float(r.get("credits") or 0) for r in store.select("credit_ledger", where))
 
 
 def monthly(store: Store, settings: Settings, system: str, now: datetime) -> Budget:
     """This month's budget for apollo or clay, with what credit_ledger says is spent."""
     start, end = month_bounds(now)
     today = now.astimezone(UK).date()
-    today_start = _uk_midnight(today)
+    today_start = uk_midnight(today)
     return Budget(
         system=system,
         budget=float(getattr(settings.general, MONTHLY_KEYS[system])),
         used=spent_in(store, system, start, end),
-        used_today=spent_in(store, system, today_start, _uk_midnight(today + timedelta(days=1))),
+        used_today=spent_in(store, system, today_start, uk_midnight(today + timedelta(days=1))),
         weekdays_in_month=weekdays(start.date(), end.date()),
         weekdays_before_today=weekdays(start.date(), today),
         month_end=end.date() - timedelta(days=1),
@@ -193,7 +178,7 @@ def share_for_jobs(store: Store, settings: Settings, system: str, now: datetime,
     """`share` of the system's monthly budget, kept for `jobs`, with what they spent; paced the same way."""
     whole = monthly(store, settings, system, now)
     start, end = month_bounds(now)
-    today = _uk_midnight(now.astimezone(UK).date())
+    today = uk_midnight(now.astimezone(UK).date())
     return replace(
         whole,
         budget=whole.budget * share,
@@ -216,17 +201,17 @@ def room_today(store: Store, settings: Settings, system: str, now: datetime, *,
 def week_start(now: datetime) -> datetime:
     """Monday 00:00 UK time of the week now falls in."""
     d = now.astimezone(UK).date()
-    return _uk_midnight(d - timedelta(days=d.weekday()))
+    return uk_midnight(d - timedelta(days=d.weekday()))
 
 
 def week_bounds(now: datetime) -> tuple[datetime, datetime]:
     """[Monday 00:00, next Monday 00:00), UK time; 167 or 169 hours across a clock change."""
     start = week_start(now)
-    return start, _uk_midnight(start.date() + timedelta(days=7))
+    return start, uk_midnight(start.date() + timedelta(days=7))
 
 
 def in_week(v: Any, now: datetime) -> bool:
-    t = _ts(v)
+    t = utc(v)
     if t is None:
         return False
     start, end = week_bounds(now)

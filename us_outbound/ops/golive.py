@@ -30,7 +30,7 @@ missing key, an API error) FAILs with the reason.
   Queue             verified accounts with a sendable contact, against today's number, counting the
                     send approvals still waiting as enrol does (their accounts and their senders' slots)
   auto_send         the General switch (Harry, 2 Oct 2026): no PASSes, as every email then waits for
-                    an approver's ✅ in Slack (enrol/approvals.py; the Slack line checks the token);
+                    an approver's ✅ in Slack (enrol/approvals/; the Slack line checks the token);
                     yes WARNs, as emails are then added to Instantly without approval
   Second contact    the General switch (Harry, 6 Oct 2026; enrol/second.py), for information: off, or on
                     with its size threshold and delay; either PASSes
@@ -59,13 +59,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from us_outbound import budget, labels, limits
+from us_outbound import budget, fmt, labels
+from us_outbound.base import holds
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import enrol, second
 from us_outbound.enrol.capacity import CAMPAIGN_COMPLETED, TAKES_LEADS
-from us_outbound.learn import holds
 from us_outbound.logs import redact
 from us_outbound.registry import blackout, ramp
 from us_outbound.settings.model import GENERAL_COPY, ROLE_LINE_COLUMNS
@@ -91,9 +91,7 @@ def _worst(statuses: list[str]) -> str:
 
 
 def _when(v: Any) -> str:
-    if not isinstance(v, datetime):
-        return "never"
-    return v.astimezone(UK).strftime("%a %d %b %H:%M UK")
+    return fmt.uk_time(v, missing="never")
 
 
 # -- the checks ---------------------------------------------------------------------------------
@@ -347,16 +345,10 @@ def check_apollo(ctx: Context) -> Check:
 
 
 def check_queue(ctx: Context) -> Check:
-    from us_outbound.enrol import approvals
+    from us_outbound.enrol import today
 
-    day = ctx.now_et().date()
-    _, pulled = enrol.hand_check(ctx, day)
-    # As enrol.run: the send approvals still waiting keep their accounts out and hold their senders' slots.
-    held = approvals.waiting(ctx)
-    ready, skipped = enrol.candidates(ctx, pulled, held.accounts)
-    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
-    lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
-                       second_ready=len(seconds))
+    t = today.read(ctx)  # as enrol.run counts it
+    ready, skipped, held, lim = [*t.ready, *t.seconds], t.skipped, t.held, t.limits
     t = lim.terms
     detail = [lim.explanation, *lim.detail]
     if skipped:

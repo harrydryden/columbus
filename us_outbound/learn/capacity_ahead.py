@@ -24,12 +24,13 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+from us_outbound import fmt
+from us_outbound.base import notify
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.enrol import capacity
 from us_outbound.learn import daily_report
 from us_outbound.logs import log
-from us_outbound.ops import notify
 from us_outbound.registry import ramp
 from us_outbound.registry.mailboxes import MAX_CAP
 
@@ -90,20 +91,16 @@ def plan(ctx: Context, ready: int) -> Ahead:
                  per_mailbox=per_mailbox, need=need, add=add)
 
 
-def _n(n: int, one: str, many: str) -> str:
-    return f"{n} {one if n == 1 else many}"
-
-
 def line(a: Ahead) -> str:
     """The ask, as Harry reads it."""
     takes = "takes" if a.active == 1 else "take"
-    text = (f"Add {_n(a.add, 'mailbox', 'mailboxes')} now: a new mailbox takes about {WARMUP_WEEKS} weeks to warm up. "
-            f"At full ramp your {_n(a.active, 'Active mailbox', 'Active mailboxes')} {takes} about {a.weekly} new "
+    text = (f"Add {fmt.plural(a.add, 'mailbox', 'mailboxes')} now: a new mailbox takes about {WARMUP_WEEKS} weeks to warm up. "
+            f"At full ramp your {fmt.plural(a.active, 'Active mailbox', 'Active mailboxes')} {takes} about {a.weekly} new "
             f"companies a week; weekly_enrol_cap is {a.cap} and {a.ready} companies are ready")
     weeks = a.weeks_ready
     text += f" ({weeks:.1f} weeks)." if weeks is not None else "."
     if a.warming:
-        text += f" {_n(a.warming, 'mailbox is', 'mailboxes are')} warming already, counted in."
+        text += f" {fmt.plural(a.warming, 'mailbox is', 'mailboxes are')} warming already, counted in."
     return text + (' `us-outbound mailbox add ADDRESS --owner "NAME" --live` adds one; it warms for 21 days, then '
                    "starts its sending ramp.")
 
@@ -116,8 +113,7 @@ def check(ctx: Context, ready: int) -> dict[str, Any]:
         a = plan(ctx, ready)
         out: dict[str, Any] = {"checked": True, **a.as_dict()}
         if a.add > 0:
-            year, week, _ = ctx.today_uk().isocalendar()
-            out["alert"] = notify.post_once(ctx, [(f"mailboxes:{year}-W{week:02d}", line(a))], head=HEAD)
+            out["alert"] = notify.post_once(ctx, [(notify.once_key(ctx, "mailboxes", per="week"), line(a))], head=HEAD)
     except GuardViolation:
         raise
     except Exception as exc:  # the daily post still goes

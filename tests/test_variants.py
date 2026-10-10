@@ -495,7 +495,7 @@ def test_redo_and_reprepare_give_the_same_arm():
 
 
 def edited(ctx, i: int) -> None:
-    """Account i's step-1 contact's card was edited before it was approved (enrol/approvals.py)."""
+    """Account i's step-1 contact's card was edited before it was approved (enrol/approvals/)."""
     ctx.store.insert("events", [{"event_id": f"send-approval:e{i}", "type": "send_approval",
                                  "approval": "approved_edited", "account_id": f"a{i}", "contact_id": f"k{i}",
                                  "step": 1, "occurred_at": T0 - timedelta(hours=1)}])
@@ -606,3 +606,95 @@ def test_cohorts_changes_say_when_a_copy_test_started_changed_or_stopped():
     assert cohorts.changes(ctx, "v2", "v3") == ["Copy test warm-intro: accounts_per_version 400 → 500, text_a changed"]
     assert cohorts.changes(ctx, "v3", "v4") == ["Copy test warm-intro stopped"]
     assert cohorts.changes(ctx, "v4", "v5") == ["No change."]
+
+
+# -- an uneven split (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email 1s") ------------------------
+
+
+WARM_70 = dataclasses.replace(WARM_TEST, share_a=0.7)
+
+
+def test_share_a_sends_about_that_share_to_version_a_and_blank_is_half_and_half(tabs):
+    ids = [f"acct-{i}" for i in range(4000)]
+    arms = [variants.arm_for(WARM_70, i) for i in ids]
+    assert arms == [variants.arm_for(WARM_70, i) for i in ids]  # deterministic
+    assert 0.67 < arms.count("a") / len(ids) < 0.73
+    assert [variants.arm_for(WARM_TEST, i) for i in ids] == [queue.test_version(i, "warm-intro") for i in ids]
+    for text, share in (("70%", 0.7), ("0.7", 0.7), ("", 0.5)):
+        tabs["Tests"] = [variant_row(share_a=text)]
+        settings, errors = validate_all(tabs)
+        assert not any(errors.values()) and settings.tests[0].share_a == share
+
+
+def test_share_a_is_checked():
+    assert errors_for(variant_row(share_a="95%")) == [
+        ("share_a", "must be between 10% and 90%: the smaller arm decides when the test can be read")]
+    assert errors_for(variant_row(share_a="70")) == [
+        ("share_a", "must be between 0% and 100%, not '70' (write 60% or 0.6)")]
+    holdout = _tests_tab(kind="holdout", version_a="opener", version_b="holdout", share_a="70%")
+    assert errors_for(holdout) == [
+        ("share_a", "applies to ab and variant tests: a holdout reads a split enrol already makes")]
+    assert errors_for(_tests_tab(share_a="70%")) == []  # an ab test may be uneven too
+
+
+def test_the_smaller_arm_takes_accounts_per_version_and_the_larger_its_share():
+    assert (WARM_70.cap("a"), WARM_70.cap("b")) == (933, 400)
+    assert (WARM_70.scaled(200, "a"), WARM_70.scaled(200, "b")) == (467, 200)
+    flipped = dataclasses.replace(WARM_TEST, share_a=0.3)
+    assert (flipped.cap("a"), flipped.cap("b")) == (400, 933)
+    assert (WARM_TEST.cap("a"), WARM_TEST.cap("b")) == (400, 400)
+    assert dataclasses.replace(WARM_70, accounts_per_version=0).cap("a") == 0  # no cap
+
+
+def test_an_uneven_arm_fills_at_its_own_cap():
+    small = dataclasses.replace(WARM_70, accounts_per_version=3)  # 7 accounts in version_a, 3 in version_b
+    s = make_settings(tests=(small,))
+    ctx, _ = make(settings=s)
+    free, rows = Counter({"Hannah Spalding": 5}), enrol.sendable_copy(s)
+    arm = variants.arm_for(small, "acc-1")
+    cap = small.cap(arm)
+    p = enrol.prepare(ctx, enrol.Candidate(account(), contact()), free, Counter({arm: cap - 1}), rows)
+    assert (p.test_id, p.test_arm) == ("warm-intro", arm)
+    p = enrol.prepare(ctx, enrol.Candidate(account(), contact()), free, Counter({arm: cap}), rows)
+    assert p.test_id == "" and p.test_note == f"{small.arm_name(arm)} has its {cap} accounts"
+
+
+def test_an_uneven_ab_test_splits_by_its_share():
+    accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(40)]
+    cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(40)]
+    rows = make_settings().copy + (copy_row("agencies-v2", "Marketing & Creative Agencies"),)
+    uneven = dataclasses.replace(FIRST_TEST, share_a=0.8)
+    ctx, _ = make(live=True, settings=make_settings(live_sending=True, tests=(uneven,), copy=rows),
+                  accounts=accts, contacts=cons)
+    enrol.run(ctx)
+    arms = {i: ctx.store.get("contacts", contact_id=f"c-{i}").get("test_arm") for i in range(40)}
+    in_test = {i: arm for i, arm in arms.items() if arm}
+    assert len(in_test) >= 6
+    assert in_test == {i: queue.test_version(f"ag-{i}", uneven.test_id, 0.8) for i in in_test}
+    assert list(in_test.values()).count("a") > list(in_test.values()).count("b")
+
+
+def test_test_start_says_the_split(capsys):
+    h = Harness(SETTINGS, sheet_tabs={"Tests": [variant_row(share_a="70%")]})
+    assert h.run("test", "start", "warm-intro") == 0
+    out = capsys.readouterr().out
+    result, _ = json.JSONDecoder().raw_decode(out[out.index('{\n  "dry_run"'):])
+    assert result["split"] == "warm intro 70%, no intro 30%"
+    h2 = Harness(SETTINGS, sheet_tabs={"Tests": [variant_row()]})
+    assert h2.run("test", "start", "warm-intro") == 0
+    out = capsys.readouterr().out
+    assert "split" not in json.JSONDecoder().raw_decode(out[out.index('{\n  "dry_run"'):])[0]
+
+
+def test_an_even_test_keeps_its_config_version_and_an_uneven_one_says_its_split():
+    even = config_version.copy_test(make_settings(tests=(WARM_TEST,)))
+    uneven = config_version.copy_test(make_settings(tests=(WARM_70,)))
+    assert "share_a" not in even and uneven == {**even, "share_a": 0.7}
+    ctx = make_context(make_settings())
+    base = {"code_sha": "dev", "campaign_fingerprint": "f1", "signature_hash": "s1", "step_days": [0, 7, 14, 21],
+            "settings_versions": {}, "copy_hashes": {}, "general": {}}
+    for i, (vid, test) in enumerate({"v1": None, "v2": uneven}.items()):
+        ctx.store.insert("config_versions", [{"config_version": vid, "run_id": "r", **base, "copy_test": test,
+                                              "first_seen": datetime(2026, 10, 12 + i, tzinfo=UTC)}])
+    assert cohorts.changes(ctx, "v1", "v2") == [
+        "Copy test warm-intro (variant: email 1, first_line; warm intro against no intro, 70/30) started"]

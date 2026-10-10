@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -22,10 +22,11 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, PostgresStore
+from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
 from us_outbound import budget
-from us_outbound.ops import ddl, erase, heartbeat
+from us_outbound.base import heartbeats
+from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
 SCHEMA = "us_outbound"
@@ -495,6 +496,32 @@ def test_where_semantics(store):
     assert ids(store.select("accounts")) == ["a1", "a2", "a3"]
 
 
+def test_range_filters_as_memory_store_does_and_the_ledger_readers_use_it(store):
+    """Range (9 Oct 2026): lo <= column < hi in SQL, NULL never matching; budget.spent_in and the Claude cap read
+    only their period's credit_ledger rows."""
+    from us_outbound.clients.claude import month_spend_usd
+    from us_outbound.clients.db import Range
+
+    month = datetime(2026, 10, 1, tzinfo=UTC)
+    store.insert("credit_ledger", [
+        {"entry_id": "c1", "system": "clay", "job": "a", "credits": 10.0, "occurred_at": T0},
+        {"entry_id": "c2", "system": "clay", "job": "b", "credits": 5.0, "occurred_at": T0 + timedelta(hours=1)},
+        {"entry_id": "c3", "system": "clay", "job": "a", "credits": 100.0, "occurred_at": month - timedelta(days=3)},
+        {"entry_id": "c4", "system": "clay", "job": "a", "credits": 7.0, "occurred_at": None},
+        {"entry_id": "c5", "system": "claude", "job": "x", "usd": 0.25, "occurred_at": T0},
+        {"entry_id": "c6", "system": "claude", "job": "x", "usd": 3.0, "occurred_at": month - timedelta(minutes=1)},
+    ])
+    ids = lambda where: sorted(r["entry_id"] for r in store.select("credit_ledger", where))  # noqa: E731
+    assert ids({"system": "clay", "occurred_at": Range(T0, T0 + timedelta(hours=1))}) == ["c1"]  # hi left out
+    assert ids({"system": "clay", "occurred_at": Range(T0, None)}) == ["c1", "c2"]
+    assert ids({"system": "clay", "occurred_at": Range(None, T0)}) == ["c3"]
+    assert ids({"system": "clay", "occurred_at": Range()}) == ["c1", "c2", "c3"]  # never NULL
+    start, end = budget.month_bounds(T0)
+    assert budget.spent_in(store, "clay", start, end) == 15.0
+    assert budget.spent_in(store, "clay", start, end, jobs=("a",)) == 10.0
+    assert month_spend_usd(store, T0) == 0.25
+
+
 def test_latest_is_one_row_by_the_greatest_value(store):
     store.insert("heartbeats", [
         {"run_id": "r1", "job": "sync_outcomes", "status": "ok", "started_at": T0, "dry_run": False, "detail": {"n": 1}},
@@ -565,6 +592,55 @@ def test_timestamps_come_back_aware_utc(store):
     assert row["at"].tzinfo is UTC
 
 
+# Each way a job might write a timestamp, and what Postgres gives back (MemoryStore must give back the same).
+STAMPS = {
+    "offset": ("2026-10-01T09:00:00+01:00", datetime(2026, 10, 1, 8, 0, tzinfo=UTC)),
+    "zulu": ("2026-10-01T08:00:00Z", datetime(2026, 10, 1, 8, 0, tzinfo=UTC)),
+    "spaced": ("2026-10-01 08:30:00", datetime(2026, 10, 1, 8, 30, tzinfo=UTC)),  # no zone: UTC, the session's
+    "naive": (datetime(2026, 10, 1, 9, 0), datetime(2026, 10, 1, 9, 0, tzinfo=UTC)),
+    "london": (datetime(2026, 7, 1, 9, 0, tzinfo=ZoneInfo("Europe/London")), datetime(2026, 7, 1, 8, 0, tzinfo=UTC)),
+    "day": (date(2026, 10, 1), datetime(2026, 10, 1, tzinfo=UTC)),  # midnight in the session's zone, UTC
+    "none": (None, None),
+}
+
+
+def _stamped(s) -> dict:
+    s.insert("heartbeats", [{"run_id": r, "job": "j", "started_at": given} for r, (given, _) in STAMPS.items()])
+    return {r["run_id"]: r["started_at"] for r in s.select("heartbeats")}
+
+
+def test_memory_store_stores_timestamps_as_postgres_does(store):
+    """9 Oct 2026: MemoryStore kept whatever it was given (text, a date, a naive time), so a test could pass on a
+    value production never reads back. Now both stores give back the same aware UTC datetimes, compare a where on a
+    timestamp as an instant, and refuse what Postgres refuses."""
+    memory = MemoryStore(Guard())
+    got = _stamped(memory)
+    assert got == _stamped(store) == {r: back for r, (_, back) in STAMPS.items()}
+    assert all(v.tzinfo is UTC for v in got.values() if v is not None)
+    for s in (store, memory):
+        assert sorted(r["run_id"] for r in s.select("heartbeats", {"started_at": "2026-10-01T08:00:00+00:00"})) == [
+            "offset", "zulu"]
+        s.update("heartbeats", {"run_id": "none"}, {"finished_at": "2026-10-02T01:00:00+01:00"})
+        assert s.get("heartbeats", run_id="none")["finished_at"] == datetime(2026, 10, 2, tzinfo=UTC)
+        # settings' key holds a timestamp: one instant written two ways is one row
+        s.upsert("settings", [{"tab": "General", "key": "k", "values": {"v": 1},
+                               "effective_from": "2026-10-01T01:00:00+01:00"}])
+        s.upsert("settings", [{"tab": "General", "key": "k", "values": {"v": 2},
+                               "effective_from": datetime(2026, 10, 1)}])
+        assert [r["values"] for r in s.select("settings")] == [{"v": 2}]
+    for bad in ("soon", "", "2026-13-01"):
+        with pytest.raises(psycopg.errors.DataError):  # invalid input syntax, or a month out of range
+            store.insert("heartbeats", [{"run_id": "bad", "started_at": bad}])
+        with pytest.raises(ValueError, match="not a timestamp"):
+            memory.insert("heartbeats", [{"run_id": "bad", "started_at": bad}])
+    for call in (lambda s: s.select("heartbeats", {"started": T0}), lambda s: s.insert("heartbeats", [{"started": T0}]),
+                 lambda s: s.update("heartbeats", {"run_id": "none"}, {"started": T0})):
+        with pytest.raises(psycopg.errors.UndefinedColumn):
+            call(store)
+        with pytest.raises(ValueError, match="heartbeats has no column 'started'"):
+            call(memory)
+
+
 def test_query_binds_params(store):
     store.insert("contacts", [{"contact_id": "k1", "email": "  Jane@Acme.com "}])
     rows = store.query(f"SELECT contact_id FROM {SCHEMA}.contacts WHERE lower(trim(email)) = %(e)s", {"e": "jane@acme.com"})
@@ -593,7 +669,7 @@ def test_close_and_reconnect(store):
 
 
 def test_erase_and_heartbeat_sql_run_on_postgres(store):
-    """ops/erase.py and ops/heartbeat.py query the database directly; their SQL must run on it."""
+    """ops/erase.py and base/heartbeats.py query the database directly; their SQL must run on it."""
     store.insert("contacts", [{"contact_id": "k1", "email": "Jane.Doe@Acme.com "}, {"contact_id": "k2", "email": "j@x.com"}])
     store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
                                        {"key": "x.com|J", "payload": {"email": "j@x.com"}}])
@@ -609,7 +685,7 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
-    runs = heartbeat.latest_runs(store)
+    runs = heartbeats.latest_runs(store)
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
@@ -658,7 +734,8 @@ def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
     """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
     events (Harry, 7 Oct 2026)."""
-    from us_outbound.ops import job_errors, notify
+    from us_outbound.base import notify
+    from us_outbound.ops import job_errors
 
     now = datetime.now(UTC)
     store.insert("heartbeats", [
@@ -731,6 +808,34 @@ def test_bad_columns_are_refused_before_connecting():
         s.insert("accounts", [{"account_id": "a", "Tier": "x"}])
     with pytest.raises(ValueError, match="bad column"):
         s.upsert("accounts", [{"account_id": "a"}, {"account_id": "b", "tier x": "y"}])
+
+
+def test_memory_store_converts_timestamps_and_refuses_unknown_columns_without_a_database():
+    """What test_memory_store_stores_timestamps_as_postgres_does checks against Postgres, for runs without one."""
+    s = MemoryStore(Guard())
+    s.insert("signal_events", [{"event_id": "e1", "observed_at": "2026-10-01T09:00:00+01:00"},
+                               {"event_id": "e2", "observed_at": date(2026, 10, 1)},
+                               {"event_id": "e3", "observed_at": None}])
+    assert {r["event_id"]: r["observed_at"] for r in s.select("signal_events")} == {
+        "e1": datetime(2026, 10, 1, 8, 0, tzinfo=UTC), "e2": datetime(2026, 10, 1, tzinfo=UTC), "e3": None}
+    assert [r["event_id"] for r in s.select("signal_events", {"observed_at": ["2026-10-01T00:00:00Z", None]})] == [
+        "e2", "e3"]
+    assert [r["event_id"] for r in s.select("signal_events", {"observed_at": lambda t: t and t.hour == 8})] == ["e1"]
+    s.upsert("accounts", [{"account_id": "a1", "first_seen": datetime(2026, 10, 1, 9)}])
+    s.update("accounts", {"account_id": "a1"}, {"last_scored": "2026-10-02T00:00:00Z"})
+    a = s.get("accounts", account_id="a1")
+    assert a["first_seen"] == datetime(2026, 10, 1, 9, tzinfo=UTC)
+    assert a["last_scored"] == datetime(2026, 10, 2, tzinfo=UTC)
+    with pytest.raises(ValueError, match="not a timestamp"):
+        s.insert("signal_events", [{"event_id": "e4", "observed_at": ""}])
+    with pytest.raises(ValueError, match="not a timestamp"):
+        s.update("accounts", {"account_id": "a1"}, {"last_scored": "yesterday"})
+    with pytest.raises(ValueError, match="accounts has no column 'acount_id'"):
+        s.select("accounts", {"acount_id": "a1"})
+    with pytest.raises(ValueError, match="accounts has no column 'Tier', 'x'"):
+        s.upsert("accounts", [{"account_id": "a1", "x": 1, "Tier": "Held"}])
+    with pytest.raises(GuardViolation, match="unknown table"):  # the guard's refusal comes first
+        s.insert("hubspot_contacts", [{"id": "x"}])
 
 
 def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):

@@ -33,35 +33,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
-from us_outbound.context import ET
 from us_outbound.settings.model import Mailbox, Settings
+from us_outbound.timeparse import et_day
 
 RAMP_CAPS = (10, 20)  # sends a day in the first and the second sending week (Harry, 1 Oct 2026)
 WEEK_DAYS = 7
 RETIRED = "Retired"
 FIRST_SEND, PROMOTION, FIRST_ENROLMENT, NOT_STARTED = "first send", "promotion", "first enrolment", ""
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
-def _et_date(v: Any) -> date | None:
-    t = _ts(v)
-    return t.astimezone(ET).date() if t else None
 
 
 @dataclass(frozen=True)
@@ -136,7 +119,7 @@ def _first_sends(store: Store) -> tuple[dict[str, date], bool]:
     for e in store.select("events", {"type": "sent"}):
         any_send = True
         address = str(e.get("mailbox") or "").strip().lower()
-        d = _et_date(e.get("occurred_at"))
+        d = et_day(e.get("occurred_at"))
         if address and d is not None and (address not in first or d < first[address]):
             first[address] = d
     return first, any_send
@@ -153,7 +136,7 @@ def _promotions(store: Store) -> dict[str, date]:
             promoted = [detail.get("address")] if detail.get("status") == "Active" else []
         else:
             promoted = list(detail.get("promoted") or ())
-        d = _et_date(r.get("started_at"))
+        d = et_day(r.get("started_at"))
         for a in promoted:
             address = str(a or "").strip().lower()
             if address and d is not None and (address not in out or d > out[address]):
@@ -166,7 +149,7 @@ def _first_enrolments(store: Store) -> dict[str, date]:
     out: dict[str, date] = {}
     for c in store.select("contacts"):
         campaign = str(c.get("instantly_campaign") or "")
-        d = _et_date(c.get("enrolled_at"))
+        d = et_day(c.get("enrolled_at"))
         if not campaign.startswith(US_CAMPAIGN_PREFIX) or d is None:
             continue
         owner = campaign[len(US_CAMPAIGN_PREFIX):]

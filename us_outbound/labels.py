@@ -47,20 +47,25 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from functools import partial
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from us_outbound import facts, fmt
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol.openers import validate_focus
+from us_outbound.industry.material import RulesInput, naics_codes, texts
 from us_outbound.logs import log
 from us_outbound.settings.model import LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP, Industry, Settings
 from us_outbound.sources.apollo_universe import SOURCE as APOLLO_SOURCE
 from us_outbound.sources.apollo_universe import best_label
+from us_outbound.timeparse import utc_or_epoch
 
 JOB = "label_check"  # credit_ledger.job of each call and signal_events.source of each verdict
 VERDICT_FACT, CORRECTED_FACT = "label_verdict", "label_corrected"
@@ -111,22 +116,17 @@ class Entry:
         return f"{self.name} — {group} — {self.definition or 'no definition'} — {words}"
 
 
-def _umbrella(settings: Settings, group: str) -> Industry | None:
-    """The group's own label (its name is the group's), or None."""
-    return next((i for i in settings.industries if i.industry_group == group and i.industry == group), None)
-
-
 def entries(settings: Settings) -> list[Entry]:
     """The label list, in the tab's order: every label of a group that has an active label (switched off or not,
     so "Remote & hybrid teams" is there), and one entry for each group with none, named after the group."""
-    prospected = {i.industry_group for i in settings.industries if i.active}
+    prospected = set(settings.active_groups())
     out: list[Entry] = []
     seen: set[str] = set()
     for i in settings.industries:
         if i.industry_group in prospected:
             out.append(Entry(i.industry, i.industry_group, i.definition, i.apollo_keywords, True))
         elif i.industry_group not in seen:
-            row = _umbrella(settings, i.industry_group) or i
+            row = settings.umbrella(i.industry_group) or i
             out.append(Entry(i.industry_group, i.industry_group, row.definition, row.apollo_keywords, False))
         seen.add(i.industry_group)
     return out
@@ -194,27 +194,6 @@ def _clean(text: Any) -> str:
     return " ".join(str(text or "").replace("<", " ").replace(">", " ").split())
 
 
-def _when(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime(1970, 1, 1, tzinfo=UTC)
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
-def _newest(events: Iterable[Mapping[str, Any]], source: str, fact: str) -> Mapping[str, Any] | None:
-    rows = [e for e in events if e.get("source") == source and e.get("fact") == fact]
-    return max(rows, key=lambda e: _when(e.get("observed_at"))) if rows else None
-
-
-def _texts(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple)):
-        return [_clean(v) for v in value if _clean(v)]
-    return [_clean(s) for s in str(value or "").split(",") if _clean(s)]
-
-
 @dataclass(frozen=True)
 class Material:
     """What the model reads about one company: its Apollo facts and, when read, its home page."""
@@ -230,7 +209,7 @@ class Material:
     @classmethod
     def of(cls, account: Mapping[str, Any], events: Iterable[Mapping[str, Any]]) -> Material:
         events = list(events)
-        fact = {f: (e.get("value") if (e := _newest(events, APOLLO_SOURCE, f)) else None) for f in MATERIAL_FACTS}
+        fact = {f: facts.value(events, f, APOLLO_SOURCE) for f in MATERIAL_FACTS}
         home = ""
         page = _home_page(events)
         if page is not None:
@@ -240,8 +219,8 @@ class Material:
             name=_clean(account.get("clean_name") or account.get("legal_name") or account.get("domain")),
             domain=_clean(account.get("domain")).lower(),
             industry=_clean(fact["apollo_industry"]),
-            naics=tuple(_texts(fact["naics"])),
-            keywords=tuple(_texts(fact["keywords"])[:KEYWORDS_KEPT]),
+            naics=tuple(naics_codes(fact["naics"])),
+            keywords=tuple(_clean(t) for t in texts(fact["keywords"])[:KEYWORDS_KEPT]),
             description=_clean(fact["description"])[:DESCRIPTION_CHARS],
             home=home[:HOME_CHARS],
         )
@@ -327,9 +306,67 @@ def check_answer(answer: Mapping[str, Any], material: Material, names: Iterable[
     return Verdict(label, confidence, entity, evidence, phrase, labels_hash, model_id, verified)
 
 
+OUTCOMES = {HOLD: "held", DISQUALIFY: "disqualified"}
+
+
+def outcome_key(action: str, source: str) -> str:
+    """How a decision is counted: "held", "disqualified", or its label_source (verify's tally and the readout's)."""
+    return OUTCOMES.get(action, source)
+
+
+@dataclass(frozen=True)
+class StoredVerdict:
+    """A label_verdict fact's value, the one shape it is written and read in (9 Oct 2026; four modules read its keys
+    by hand): the rules' label and group, the model's answer, the decision (Decision.as_dict), and whether the model
+    was asked for it (a decision re-made from a stored answer is written with asked false)."""
+
+    verdict: Verdict
+    decision: Mapping[str, Any]
+    rules: str | None = None
+    rules_group: str | None = None
+    asked: bool = False
+    prompt_version: str = ""
+
+    @classmethod
+    def of(cls, rules: Industry | None, v: Verdict, d: Decision, *, asked: bool) -> StoredVerdict:
+        return cls(v, d.as_dict(), rules.industry if rules else None, rules.industry_group if rules else None,
+                   asked, PROMPT_VERSION)
+
+    @classmethod
+    def from_value(cls, value: Mapping[str, Any] | None) -> StoredVerdict:
+        v = value or {}
+        return cls(Verdict.from_value(v), dict(v.get("decision") or {}), v.get("rules") or None,
+                   v.get("rules_group") or None, bool(v.get("asked")), str(v.get("prompt_version") or ""))
+
+    def to_value(self) -> dict[str, Any]:
+        v = self.verdict
+        return {
+            "rules": self.rules, "rules_group": self.rules_group, "model": v.label, "confidence": v.confidence,
+            "entity": v.entity, "evidence": v.evidence, "evidence_verified": v.evidence_verified,
+            "what_they_do": v.what_they_do, "decision": dict(self.decision), "labels_hash": v.labels_hash,
+            "model_id": v.model_id, "prompt_version": self.prompt_version, "asked": self.asked,
+        }
+
+    @property
+    def outcome(self) -> str:
+        return outcome_key(str(self.decision.get("action")), str(self.decision.get("source") or ""))
+
+    def same_group(self, settings: Settings) -> bool:
+        """Whether the model put the company in the group the rules did (the same label, or one in its group)."""
+        model = settings.industry(self.verdict.label)
+        return self.rules == self.verdict.label or (
+            model is not None and model.industry_group == (self.rules_group or self.rules))
+
+
+def latest_stored(events: Iterable[Mapping[str, Any]]) -> StoredVerdict | None:
+    """The newest label_verdict fact, or None."""
+    value = latest_verdict(events)
+    return StoredVerdict.from_value(value) if value is not None else None
+
+
 def latest_verdict(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_verdict fact's value, or None."""
-    e = _newest(events, JOB, VERDICT_FACT)
+    e = facts.newest(events, VERDICT_FACT, JOB)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
 
 
@@ -338,13 +375,12 @@ def _asked_at(events: Iterable[Mapping[str, Any]]) -> datetime | None:
     re-made from a stored verdict is written with asked false and carries the same answer)."""
     rows = [e for e in events if e.get("source") == JOB and e.get("fact") == VERDICT_FACT
             and isinstance(e.get("value"), Mapping) and e["value"].get("asked")]
-    return max((_when(e.get("observed_at")) for e in rows), default=None)
+    return max((utc_or_epoch(e.get("observed_at")) for e in rows), default=None)
 
 
 def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """The newest home_page fact that says something (an empty one records a read that found nothing)."""
-    rows = [e for e in events if e.get("fact") == HOME_FACT and isinstance(e.get("value"), Mapping) and e["value"]]
-    return max(rows, key=lambda e: _when(e.get("observed_at"))) if rows else None
+    return facts.newest(events, HOME_FACT, where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"]))
 
 
 def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -356,7 +392,7 @@ def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
     if not stored or stored.get("confidence") == HIGH or page is None:
         return False
     asked = _asked_at(events)
-    return asked is None or _when(page.get("observed_at")) > asked
+    return asked is None or utc_or_epoch(page.get("observed_at")) > asked
 
 
 def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
@@ -372,30 +408,28 @@ def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
 
 def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_corrected fact's value, or None."""
-    e = _newest(events, JOB, CORRECTED_FACT)
+    e = facts.newest(events, CORRECTED_FACT, JOB)
     return dict(e["value"]) if e is not None and isinstance(e.get("value"), Mapping) else None
 
 
 # -- the rules' label and the decision ------------------------------------------------------------------------------
 
 
-def _rules_material(events: Iterable[Mapping[str, Any]]) -> tuple[list[str], str]:
-    """(the newest Apollo NAICS codes, its keywords and Apollo industry as one text): what the rules read."""
+def rules_input(events: Iterable[Mapping[str, Any]]) -> RulesInput:
+    """The newest Apollo NAICS codes, keywords and industry: what the rules read."""
     events = list(events)
-    codes = _texts((_newest(events, APOLLO_SOURCE, "naics") or {}).get("value"))
-    words = _texts((_newest(events, APOLLO_SOURCE, "keywords") or {}).get("value"))
-    industry = _clean((_newest(events, APOLLO_SOURCE, "apollo_industry") or {}).get("value"))
-    return codes, " ; ".join([*words, industry]).strip(" ;")
+    return RulesInput.from_facts(*(facts.value(events, f, APOLLO_SOURCE)
+                                   for f in ("naics", "keywords", "apollo_industry")))
 
 
 def rules_label(account: Mapping[str, Any], events: Iterable[Mapping[str, Any]], settings: Settings) -> Industry | None:
     """The label the Industries rules give the company now (best_label over its newest Apollo NAICS codes, keywords
     and Apollo industry, as `us-outbound relabel` reads them). A company with none of those on file keeps the label
     its source gave it."""
-    codes, text = _rules_material(events)
-    if not codes and not text:
+    inp = rules_input(events)
+    if not inp:
         return settings.industry(str(account.get("industry") or ""))
-    return best_label(codes, text, settings)
+    return best_label(inp.codes, inp.keyword_text, settings)
 
 
 @dataclass(frozen=True)
@@ -452,7 +486,7 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
     model = settings.industry(verdict.label)
     if model is None or not model.active:
         group = model.industry_group if model else verdict.label
-        umbrella = _umbrella(settings, group)
+        umbrella = settings.umbrella(group)
         if umbrella is None or not umbrella.active:
             if c == HIGH:
                 return leave_out(f"its industry ({group}) is switched off on the Industries tab (the label check)")
@@ -471,7 +505,7 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
                         f"the rules said {r_name}; the model says {m_name} ({c})")
     said = f"the rules say {r_name}, the model says {m_name} ({c})"
     if rules.industry_group == model.industry_group:
-        umbrella = _umbrella(settings, rules.industry_group)
+        umbrella = settings.umbrella(rules.industry_group)
         if umbrella is not None and umbrella.active:
             return Decision(umbrella.industry, umbrella.industry_group, UMBRELLA, c, GROUP_COPY, VERIFY, said)
     return Decision(*keep, DISPUTED, c, GENERAL_COPY_LEVEL, VERIFY, said)
@@ -505,13 +539,8 @@ def columns(account: Mapping[str, Any], d: Decision) -> dict[str, Any]:
 
 
 def verdict_value(rules: Industry | None, v: Verdict, d: Decision, *, asked: bool) -> dict[str, Any]:
-    """A label_verdict fact's value: the rules' label, the model's answer and the decision."""
-    return {
-        "rules": rules.industry if rules else None, "rules_group": rules.industry_group if rules else None,
-        "model": v.label, "confidence": v.confidence, "entity": v.entity, "evidence": v.evidence,
-        "evidence_verified": v.evidence_verified, "what_they_do": v.what_they_do, "decision": d.as_dict(),
-        "labels_hash": v.labels_hash, "model_id": v.model_id, "prompt_version": PROMPT_VERSION, "asked": asked,
-    }
+    """A label_verdict fact's value: the rules' label, the model's answer and the decision (StoredVerdict)."""
+    return StoredVerdict.of(rules, v, d, asked=asked).to_value()
 
 
 def apply(ctx: Context, account: Mapping[str, Any], d: Decision, verdict: Verdict | None = None, *,
@@ -537,14 +566,7 @@ def apply(ctx: Context, account: Mapping[str, Any], d: Decision, verdict: Verdic
 def resolve(text: Any, settings: Settings) -> Industry | None:
     """The Industries label an approver means: "fintech" is Fintech (any case), "games" is Games studios (the only
     label containing it); None when nothing matches, or more than one label does."""
-    t = " ".join(str(text or "").split()).strip(" \"'“”‘’<>.!*_`").casefold()
-    if not t:
-        return None
-    exact = [i for i in settings.industries if i.industry.casefold() == t]
-    if exact:
-        return exact[0]
-    near = [i for i in settings.industries if t in i.industry.casefold()]
-    return near[0] if len(near) == 1 else None
+    return settings.label(text, fuzzy=True)
 
 
 # -- asking the model -----------------------------------------------------------------------------------------------
@@ -651,17 +673,31 @@ class Checker:
     def usd(self) -> float:
         """What this run's calls cost (credit_ledger rows of its job written at the run's time)."""
         return round(sum(float(r.get("usd") or 0.0) for r in self.ctx.store.select("credit_ledger", {"job": self.purpose})
-                         if _when(r.get("occurred_at")) == _when(self.ctx.now)), 4)
+                         if utc_or_epoch(r.get("occurred_at")) == utc_or_epoch(self.ctx.now)), 4)
 
 
 def override_for(account: Mapping[str, Any], settings: Settings) -> tuple[str | None, str]:
-    """(the label an Overrides row or an approver set, its label_source), or (None, "")."""
-    sheet = str(settings.overrides_for(str(account.get("domain") or "").strip().lower()).get("industry") or "").strip()
+    """(the label an Overrides row or an approver set, its label_source), or (None, ""). A row that gives only the
+    industry_group places the company under the group's own label (9 Oct 2026: it was ignored, and the check then
+    overwrote the group the universe had taken from it)."""
+    rows = settings.overrides_for(str(account.get("domain") or "").strip().lower())
+    sheet = str(rows.get("industry") or "").strip()
+    if not sheet and (group := str(rows.get("industry_group") or "").strip()):
+        umbrella = settings.umbrella(group)
+        sheet = umbrella.industry if umbrella else ""
     if sheet:
         return sheet, OVERRIDE
     if str(account.get("label_source") or "") == APPROVER and account.get("industry"):
         return str(account["industry"]), APPROVER
     return None, ""
+
+
+def override_moves(account: Mapping[str, Any], settings: Settings) -> bool:
+    """Whether an Overrides row would change the account's label columns: verify then decides it again, though it is
+    verified and its verdict fresh, so every reader of the columns (enrol's copy, the queue, Focus, the cards) sees
+    the row (9 Oct 2026: an industry row never reached an account already checked)."""
+    label, source = override_for(account, settings)
+    return source == OVERRIDE and bool(columns(account, decide(None, None, settings, override=label)))
 
 
 def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], *,
@@ -678,8 +714,10 @@ def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping
 
     def on_rules(why: str) -> tuple[Decision | None, Verdict | None, Industry | None, str, bool]:
         d = decide(rules, None, s, mode=SKIP)
-        if d is not None and rules is None and not any(_rules_material(events)):
-            # Nothing on file for the rules either: the label its source gave it stays as it is.
+        if d is not None and rules is None:
+            # The rules give no label, from nothing on file or from codes no row matches: the label the company
+            # has stays, as `us-outbound relabel` keeps it (9 Oct 2026: clearing it held the company for "Apollo
+            # gives no industry", a doubt the hand-check cannot clear).
             d = Decision(account.get("industry") or None, account.get("industry_group") or None, RULES, "",
                          GROUP_COPY, VERIFY)
         return d, None, rules, why, False
@@ -779,13 +817,13 @@ def corrected_rows(ctx: Context) -> list[dict]:
         a = ctx.store.get("accounts", account_id=e["account_id"])
         if a is None or not v.get("to"):
             continue
-        facts = {f: (x.get("value") if (x := _newest(ctx.store.select("signal_events", {
-            "account_id": a["account_id"], "source": APOLLO_SOURCE, "fact": f}), APOLLO_SOURCE, f)) else None)
-            for f in MATERIAL_FACTS}
+        apollo = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": APOLLO_SOURCE,
+                                                    "fact": list(MATERIAL_FACTS)})
+        fact = {f: facts.value(apollo, f) for f in MATERIAL_FACTS}
         rows.append({"name": a.get("clean_name") or a.get("domain"), "domain": a.get("domain"),
-                     "went_out_as": v.get("from"), "apollo_industry": facts["apollo_industry"] or "",
-                     "naics": _texts(facts["naics"]), "keywords": _texts(facts["keywords"]),
-                     "description": facts["description"] or "",
+                     "went_out_as": v.get("from"), "apollo_industry": fact["apollo_industry"] or "",
+                     "naics": naics_codes(fact["naics"]), "keywords": texts(fact["keywords"]),
+                     "description": fact["description"] or "",
                      "expect": {"accept": [v["to"]], "action": VERIFY}, "why": f"corrected by {v.get('by')}"})
     return rows
 
@@ -852,6 +890,8 @@ TARGET_RIGHT = 0.95  # cards with the right industry; SPEC 14's 90% bar is the h
 MIN_CARDS = 30  # a rate on fewer cards is "too few to read" in the readout
 ASK_CORRECTIONS, ASK_SHARE, ASK_MIN_CARDS = 3, 0.10, 10  # corrections in a day that ask for a look at the tab
 ASK_AGREEMENT, ASK_MIN_CHECKS = 0.70, 20  # rules-model agreement under which the tab's codes need a look
+ASK_NO_RULES = 0.30  # the share of checked companies the rules gave no label over which the tab's codes need adding
+GAP_CODES = 3  # NAICS codes named in that ask
 VERIFY_JOB = "verify_accounts"
 
 
@@ -859,9 +899,12 @@ VERIFY_JOB = "verify_accounts"
 class Tally:
     """The label check's numbers over a period: the model's checks, their decisions, and the cards decided."""
 
-    checked: int = 0
+    checked: int = 0  # companies the model was asked about, each once (its latest check in the period)
     decisions: dict[str, int] = field(default_factory=dict)  # source, or held / disqualified
-    disagreed_groups: dict[str, int] = field(default_factory=dict)  # the rules' group, where the model differed
+    labelled: int = 0  # checked companies the rules gave a label: what agreement is measured over
+    same_group: int = 0  # of those, the model's label in the rules' group (the same label, or one within the group)
+    disagreed_groups: dict[str, int] = field(default_factory=dict)  # the rules' group, where the model's group differed
+    no_rules: dict[str, str] = field(default_factory=dict)  # account_id -> the model's label, where the rules had none
     corrections: list[tuple[str, str]] = field(default_factory=list)  # (from, to)
     approvals: int = 0  # cards decided by a person, corrections aside
 
@@ -874,36 +917,54 @@ class Tally:
         return self.approvals + len(self.corrections)
 
     def share_agreed(self) -> float | None:
-        return self.agreed / self.checked if self.checked else None
+        """Of the companies the rules labelled, the share the model gave the same label. A company the rules gave no
+        label cannot agree; it is counted in no_rules instead (9 Oct 2026: the ask read 31% "agreement" that was
+        mostly companies with no rules label)."""
+        return self.agreed / self.labelled if self.labelled else None
+
+    def share_same_group(self) -> float | None:
+        """Of the companies the rules labelled, the share the model placed in the rules' group. The rules give a
+        group's own label when the codes alone place a company (best_label), and the model names the label within it,
+        so "Marketing & Creative Agencies" from the rules and "Publishers" from the model agree on the group: what
+        the codes can tell (9 Oct 2026: the ask read 15% where most of the rest were such refinements)."""
+        return self.same_group / self.labelled if self.labelled else None
 
     def share_right(self) -> float | None:
         return 1 - len(self.corrections) / self.cards if self.cards else None
 
 
 def _between(rows: Iterable[Mapping[str, Any]], key: str, start: datetime | None, end: datetime) -> list[Mapping]:
-    return [r for r in rows if (start is None or _when(r.get(key)) >= start) and _when(r.get(key)) < end]
+    return [r for r in rows if (start is None or utc_or_epoch(r.get(key)) >= start) and utc_or_epoch(r.get(key)) < end]
 
 
 def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
-    """The checks asked, the corrections approvers made and the cards decided in [start, end) (start None: ever)."""
+    """The companies checked, the corrections approvers made and the cards decided in [start, end) (start None:
+    ever). A company asked more than once in the period (an audit, then a second look) counts once, by its latest
+    check."""
     t = Tally()
     decisions: dict[str, int] = {}
     groups: dict[str, int] = {}
-    for e in _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
-                      "observed_at", start, end):
-        v = e.get("value") or {}
+    rows = _between(ctx.store.select("signal_events", {"source": JOB, "fact": [VERDICT_FACT, CORRECTED_FACT]}),
+                    "observed_at", start, end)
+    for e in rows:
         if e.get("fact") == CORRECTED_FACT:
+            v = e.get("value") or {}
             t.corrections.append((str(v.get("from") or "no label"), str(v.get("to") or "")))
-            continue
-        if not v.get("asked"):
-            continue
+    latest = facts.newest_by(rows, lambda e: str(e.get("account_id") or e.get("event_id")), VERDICT_FACT,
+                             where=lambda e: bool((e.get("value") or {}).get("asked")))
+    for aid, e in latest.items():
+        sv = StoredVerdict.from_value(e["value"])
         t.checked += 1
-        d = v.get("decision") or {}
-        key = {HOLD: "held", DISQUALIFY: "disqualified"}.get(str(d.get("action")), str(d.get("source") or ""))
-        decisions[key] = decisions.get(key, 0) + 1
-        if v.get("rules") != v.get("model"):
-            g = str(v.get("rules_group") or "no rules label")
-            groups[g] = groups.get(g, 0) + 1
+        decisions[sv.outcome] = decisions.get(sv.outcome, 0) + 1
+        if not sv.rules:
+            t.no_rules[aid] = sv.verdict.label
+        else:
+            t.labelled += 1
+            if sv.same_group(ctx.settings):
+                t.same_group += 1
+            else:
+                group = sv.rules_group or sv.rules
+                groups[group] = groups.get(group, 0) + 1
     t.decisions, t.disagreed_groups = decisions, groups
     t.approvals = sum(1 for e in _between(ctx.store.select("events", {"type": "send_approval"}), "occurred_at", start,
                                           end) if e.get("approval") in DECIDED)
@@ -915,12 +976,11 @@ def last_verify(ctx: Context) -> dict:
     rows = [r for r in ctx.store.select("heartbeats", {"job": VERIFY_JOB}) if isinstance(r.get("detail"), Mapping)]
     if not rows:
         return {}
-    newest = max(rows, key=lambda r: _when(r.get("started_at")))
+    newest = max(rows, key=lambda r: utc_or_epoch(r.get("started_at")))
     return dict(newest["detail"].get("labels") or {})
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.0%}" if n else "n/a"
+_pct = partial(fmt.pct, places=0, empty="n/a")
 
 
 def _moves(pairs: Sequence[tuple[str, str]], n: int = 5) -> str:
@@ -931,15 +991,38 @@ def _moves(pairs: Sequence[tuple[str, str]], n: int = 5) -> str:
     return "; ".join(m + (f" ({k})" if k > 1 else "") for m, k in ranked)
 
 
+def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> tuple[list[tuple[str, str, int]], int]:
+    """([(Apollo NAICS code, the model's label, companies)] most common first, the companies with no NAICS code) over
+    the companies the rules gave no label and the model did: the codes to add to that label's naics_prefixes."""
+    labelled = {aid: label for aid, label in no_rules.items() if label and label != NONE}
+    if not labelled:
+        return [], 0
+    newest = facts.newest_by(ctx.store.select("signal_events", {"account_id": sorted(labelled),
+                                                                "source": APOLLO_SOURCE, "fact": "naics"}),
+                             lambda e: str(e.get("account_id")))
+    pairs: dict[tuple[str, str], int] = {}
+    uncoded = 0
+    for aid, label in labelled.items():
+        codes = naics_codes((newest.get(aid) or {}).get("value"))
+        if not codes:
+            uncoded += 1
+        for code in dict.fromkeys(codes):
+            pairs[(code, label)] = pairs.get((code, label), 0) + 1
+    ranked = sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+    return [(code, label, k) for (code, label), k in ranked], uncoded
+
+
 def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     """The daily post's Labels block: the checks and their decisions in the period, the latest verify run's unchecked
     companies (and why, when the model could not be asked), and the cards' industry corrections."""
     t, run = tally(ctx, start, end), last_verify(ctx)
     d = t.decisions
     unchecked = int(run.get("unchecked") or 0)
-    lines = [f"  Checked: {t.checked} (rules and model agreed on {t.agreed}, {_pct(t.agreed, t.checked)}; model "
-             f"overruled {d.get(MODEL, 0)}; group copy {d.get(UMBRELLA, 0)}; General copy {d.get(DISPUTED, 0)}; held "
-             f"{d.get('held', 0)}; disqualified {d.get('disqualified', 0)}; waiting unchecked {unchecked})."]
+    lines = [f"  Checked: {t.checked} (of the {t.labelled} the rules labelled, the model agreed on the label for "
+             f"{t.agreed} and the group for {t.same_group}, {_pct(t.same_group, t.labelled)}; no rules label "
+             f"{len(t.no_rules)}; model overruled {d.get(MODEL, 0)}; "
+             f"group copy {d.get(UMBRELLA, 0)}; General copy {d.get(DISPUTED, 0)}; held {d.get('held', 0)}; "
+             f"disqualified {d.get('disqualified', 0)}; waiting unchecked {unchecked})."]
     if run.get("unavailable_reason"):
         lines.append(f"  The label check could not ask the model at the last verify run: {run['unavailable_reason']}.")
     if t.cards:
@@ -965,12 +1048,27 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
                     f"labels: {n} industry correction{'' if n == 1 else 's'} since the last send day ({n} of "
                     f"{t.cards} cards). Check the Industries tab's definitions and keywords for {_moves(t.corrections)}; "
                     "`us-outbound labels audit --live` checks the queue again."))
-    share = t.share_agreed()
-    if t.checked >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
-        worst = max(t.disagreed_groups.items(), key=lambda kv: kv[1])[0] if t.disagreed_groups else "the groups"
+    share = t.share_same_group()
+    if t.labelled >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
+        worst, k = max(t.disagreed_groups.items(), key=lambda kv: kv[1]) if t.disagreed_groups else ("the groups", 0)
+        moved = t.labelled - t.same_group
         out.append((f"labels_agreement:{day}",
-                    f"labels: the rules and the model agreed on only {share:.0%} of {t.checked} companies; the "
-                    f"Industries tab's NAICS codes or keywords for {worst} need a look."))
+                    f"labels: the model put {moved} of the {t.labelled} companies the rules labelled ({1 - share:.0%}) "
+                    f"in another group or outside our labels; most were under {worst} ({k}). `us-outbound labels "
+                    "crosswalk` shows which NAICS codes and keywords bring them in."))
+    gaps = len(t.no_rules)
+    if gaps >= ASK_MIN_CHECKS and gaps >= ASK_NO_RULES * t.checked:
+        said = Counter(label for label in t.no_rules.values() if label != NONE).most_common(GAP_CODES)
+        codes, uncoded = gap_codes(ctx, t.no_rules)
+        text = (f"labels: the rules gave no label to {gaps} of {t.checked} companies checked ({gaps / t.checked:.0%})"
+                + (f"; the model most often said {', '.join(f'{x} ({k})' for x, k in said)}" if said else "") + ".")
+        if codes:
+            text += (" Their commonest NAICS codes: " + ", ".join(f"{c} → {x} ({k})" for c, x, k in codes)
+                     + ". Add each to that label's naics_prefixes on the Industries tab, then `us-outbound sync` and "
+                     "`us-outbound relabel --live`.")
+        if uncoded:
+            text += f" {uncoded} have no NAICS code from Apollo, so only apollo_keywords can label them."
+        out.append((f"labels_no_rules:{day}", text))
     waiting = int(run.get("unchecked") or 0)
     if run.get("unavailable_reason") and waiting:
         out.append((f"labels_unavailable:{day}",
@@ -996,8 +1094,10 @@ def readout_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     lines = ["", f"*Industry labels* (the label check; target: {TARGET_RIGHT:.0%} of cards with the right industry)"]
     for name, t in (("Last week", week), ("So far", ever)):
         d = t.decisions
-        lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on "
-                     f"{_pct(t.agreed, t.checked)}; held {d.get('held', 0)}, disqualified {d.get('disqualified', 0)}.")
+        lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on the group for "
+                     f"{_pct(t.same_group, t.labelled)}" + (f" of the {t.labelled} the rules labelled "
+                     f"({len(t.no_rules)} had no rules label)" if t.no_rules else "") + f"; held {d.get('held', 0)}, "
+                     f"disqualified {d.get('disqualified', 0)}.")
         if t.corrections:
             lines.append(f"  Corrections: {_moves(t.corrections, 10)}")
     return lines

@@ -21,10 +21,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from us_outbound.base import notify
 from us_outbound.clients import instantly
 from us_outbound.context import Context
 from us_outbound.logs import log
-from us_outbound.ops import notify
 
 SKIP = "Instantly plan limit"  # the skip reason (enrol) and the hold (a send approval)
 KEPT = "Instantly's plan has no room for new leads: the contact is kept and is added when there is room"
@@ -37,7 +37,7 @@ HEAD = "Instantly's plan:"
 
 def full_alert(ctx: Context) -> dict[str, Any]:
     """The plan-full ask, once a UK day."""
-    out = notify.post_once(ctx, [(f"instantly_plan_full:{ctx.today_uk().isoformat()}", ALERT)], head=HEAD)
+    out = notify.post_once(ctx, [(notify.once_key(ctx, "instantly_plan_full"), ALERT)], head=HEAD)
     log("instantly_plan_full", job=ctx.job, posted=out.get("keys"))
     return out
 
@@ -47,11 +47,10 @@ def low_alert(ctx: Context, remaining: int) -> dict[str, Any] | None:
     cap = ctx.settings.general.weekly_enrol_cap
     if remaining >= LOW_WEEKS * cap:
         return None
-    year, week, _ = ctx.today_uk().isocalendar()
     text = (f"Instantly's plan has room for {remaining:,} more leads, under {LOW_WEEKS} weeks at weekly_enrol_cap "
             f"({cap} a week). Upgrade the Instantly plan, or delete leads that finished their sequence, before it "
             "fills: then nothing new is sent.")
-    return notify.post_once(ctx, [(f"instantly_plan_low:{year}-W{week:02d}", text)], head=HEAD)
+    return notify.post_once(ctx, [(notify.once_key(ctx, "instantly_plan_low", per="week"), text)], head=HEAD)
 
 
 def after_add(ctx: Context, answer: Mapping[str, Any] | None) -> dict[str, Any]:

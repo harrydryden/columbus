@@ -1,5 +1,12 @@
 """daily_post, 09:00 UK (SPEC 9, 11 "Daily post"): one message on yesterday's outbound and what waits for Harry.
 
+Since 9 Oct 2026 (Harry: "a more readable pithier version of the daily report") the job posts the short post
+(compact): Needs you as bullets, yesterday in two lines, today's number with what limits it and each sender's
+share, the pipeline, the one-line spend summary, and a Watch block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill
+rule, a campaign not sending, the To improve lines), ending with the areas checked that are fine. Every number is
+gathered once (gather) and the full post below is kept as it was, for `us-outbound daily --full`; the summary
+numbers in the heartbeat are the same either way. What follows describes the full post.
+
 Harry, 2 Oct 2026: "the number of emails sent, the number of companies and contacts identified, the
 pipeline of companies to send to, the [un]subscribes, the replies, and anything else important to
 surface to make the system better over time". It covers the last send day (Mondays cover Friday to
@@ -46,10 +53,10 @@ Each section has a bold title (Slack mrkdwn) after a blank line, and no table. I
 message, as before, well under Slack's 40,000-character limit on text (about 5,000 in the tests):
 account lists stop at LIST_LIMIT, and the funnel sections are aggregates that name no company or person.
 It posts to the alert channel (the dev channel in dry-run), or to the log with no Slack token
-(ops/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
+(base/notify.py). Not yet in it: not-now dates coming due (the reply desk stores them).
 
 Before it, the asks (Harry, 7 Oct 2026), each in its own message with the approvers mentioned and each
-line once (ops/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
+line once (base/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
 apollo_floor, the monthly Apollo and Clay budgets, Claude's spend against its cap, Apollo's website-visitor
 credits), and on Mondays the mailboxes to add three weeks ahead (learn/capacity_ahead.py). The credit
 budget lines end with the one-line spend summary (spend.summary_line).
@@ -59,23 +66,26 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, labels, limits
+from us_outbound import budget, fmt, labels, limits
+from us_outbound.base import holds, notify
+from us_outbound.clients.db import Range
 from us_outbound.context import UK, Context
-from us_outbound.enrol import approvals, enrol, second
-from us_outbound.learn import capacity_ahead, daily_report, holds, kill_rules, spend
+from us_outbound.enrol import approvals, enrol, focus, second, today
+from us_outbound.learn import capacity_ahead, daily_report, kill_rules, spend
 from us_outbound.logs import clip, log
-from us_outbound.ops import notify, retention
+from us_outbound.ops import retention
 from us_outbound.registry import ramp
+from us_outbound.replies import kinds
 from us_outbound.replies.items import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
+from us_outbound.timeparse import uk_midnight, utc
 
 JOB = "daily_post"
 WAITING = ("open", "escalated")
-WARM_CLASSES = ("positive", "referral")
 LISTED_CLASSES = ("objection", "negative", "other")
 LIST_LIMIT = 10  # accounts listed per section
 QUOTE = 120  # characters of reply text quoted
@@ -87,22 +97,6 @@ KIND_LABELS = {"reply": "replies", "reply_approval": "reply approvals", HAND_CHE
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
-def _midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, tzinfo=UK)
-
-
 def period(ctx: Context) -> tuple[datetime, datetime, str]:
     """[start, end) and its label: the last send day before today (UK), through yesterday."""
     today = ctx.today_uk()
@@ -112,7 +106,7 @@ def period(ctx: Context) -> tuple[datetime, datetime, str]:
             break
         day -= timedelta(days=1)
     label = f"Yesterday, {day:%a %d %b}" if day == today - timedelta(days=1) else f"Since {day:%a %d %b}"
-    return _midnight(day), _midnight(today), label
+    return uk_midnight(day), uk_midnight(today), label
 
 
 def mailbox_last_100(ctx: Context) -> dict[str, tuple[int, int]]:
@@ -138,10 +132,6 @@ def _names(ctx: Context, ids: set[str]) -> dict[str, str]:
         for a in ctx.store.select("accounts", {"account_id": ids_[i : i + 1000]}):
             out[str(a["account_id"])] = str(a.get("clean_name") or a.get("domain") or a["account_id"])
     return out
-
-
-def _counts(c: Counter, label: str = "") -> str:
-    return ", ".join(f"{label}{k} {v}" for k, v in sorted(c.items(), key=lambda kv: (-kv[1], str(kv[0]))))
 
 
 # -- what waits for Harry -----------------------------------------------------------------------------
@@ -175,10 +165,10 @@ def for_you(ctx: Context, open_items: Sequence[Mapping[str, Any]] | None = None)
 
 
 def _oldest(ctx: Context, items: Sequence[Mapping[str, Any]]) -> str:
-    oldest = min((t for i in items if (t := _ts(i.get("created_at"))) is not None), default=None)
+    oldest = min((t for i in items if (t := utc(i.get("created_at"))) is not None), default=None)
     if oldest is None:
         return ""
-    waited = daily_report._age(ctx.now - oldest)
+    waited = fmt.hours(ctx.now - oldest)
     return f"waited {waited}" if len(items) == 1 else f"the oldest has waited {waited}"
 
 
@@ -187,24 +177,56 @@ def needs_you(ctx: Context, w: ForYou) -> str:
     parts = []
     if w.send_approvals:
         age = _oldest(ctx, w.send_approvals)
-        parts.append(f"{daily_report._n(len(w.send_approvals), 'send approval')} ({age + '; ' if age else ''}"
+        parts.append(f"{fmt.plural(len(w.send_approvals), 'send approval')} ({age + '; ' if age else ''}"
                      "a card lapses at the end of the next send day)")
     if w.replies:
         age = _oldest(ctx, w.replies)
-        parts.append(daily_report._n(len(w.replies), "reply", "replies") + (f" ({age})" if age else ""))
+        parts.append(fmt.plural(len(w.replies), "reply", "replies") + (f" ({age})" if age else ""))
     if w.holds:
-        parts.append(f"{daily_report._n(len(w.holds), 'kill-rule hold')} (`us-outbound killrules show`)")
+        parts.append(f"{fmt.plural(len(w.holds), 'kill-rule hold')} (`us-outbound killrules show`)")
     if w.hand_checks:
         parts.append("this week's hand-check (`us-outbound handcheck show`)")
     return "*Needs you:* " + (" · ".join(parts) if parts else "nothing")
 
 
+@dataclass
+class Day:
+    """Everything the post reads, gathered once: the full post's lines (`us-outbound daily --full`), the numbers
+    for the summary, and what the short post (compact) picks from."""
+
+    start: datetime
+    end: datetime
+    label: str
+    lines: list[str]
+    nums: dict[str, Any]
+    waiting_on: ForYou
+    lim: limits.Limits
+    why: str | None = None
+    warm: list[str] = field(default_factory=list)  # "Acme Creative (positive, hannah@…)"
+    objections: list[str] = field(default_factory=list)  # the full post's quoted lines
+    visited: list[str] = field(default_factory=list)  # enrolled accounts that visited the US site
+    groups: str = ""  # ready accounts by Focus share or industry group
+    improve: list[str] = field(default_factory=list)  # To improve, "too early" and "nothing" left out
+    mailboxes: list[tuple[str, int, int, int]] = field(default_factory=list)  # (address, sent, sends, bounces)
+    ramping: int = 0  # Active mailboxes still on the sending ramp
+    fired: list[str] = field(default_factory=list)  # kill rules fired in the period
+    holds: int = 0  # kill-rule holds in force
+    retention: str = ""
+    spend: str = ""  # "Spend: Apollo balance …" (spend.summary_line)
+
+
 def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], dict[str, Any]]:
-    """(the message lines, the numbers for the summary). spent: what learn/spend.py read (read here when not given)."""
+    """(the full post's lines, the numbers for the summary): `us-outbound daily --full`. The job posts the short
+    post (compact) made from the same day."""
+    day = gather(ctx, spent)
+    return day.lines, day.nums
+
+
+def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
+    """The day's numbers and the full post. spent: what learn/spend.py read (read here when not given)."""
     start, end, label = period(ctx)
     types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit"]
-    rows = [e for e in ctx.store.select("events", {"type": types})
-            if (t := _ts(e.get("occurred_at"))) is not None and start <= t < end]
+    rows = ctx.store.select("events", {"type": types, "occurred_at": Range(start, end)})  # the period's only
     by_type: dict[str, list[dict]] = {}
     for e in rows:
         by_type.setdefault(str(e.get("type")), []).append(e)
@@ -215,10 +237,13 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
         return names.get(str(e.get("account_id") or ""), "an account")
 
     steps = Counter(e.get("step") for e in sent)
-    classes = Counter(str(e.get("reply_class") or "not classified") for e in replies)
-    warm = [e for e in replies if e.get("reply_class") in WARM_CLASSES]
+    # A reply is a person writing back (replies/kinds.py), as the readout counts it; away messages are listed apart.
+    human = [e for e in replies if kinds.is_human(e.get("reply_class"))]
+    classes = Counter(str(e.get("reply_class") or "not classified") for e in human)
+    warm = [e for e in replies if kinds.is_warm(e.get("reply_class"))]
     nums = {
-        "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(replies),
+        "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(human),
+        "out_of_office": len(replies) - len(human),
         "by_class": dict(classes), "positive": len(warm), "bounced": len(by_type.get("bounced", [])),
         "unsubscribed": len(by_type.get("unsubscribed", [])),
         # By company: a meeting and a Spill 3.0 deal for one booking are two events (crm/readback.py, 6 Oct 2026).
@@ -227,49 +252,51 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     }
     lines = [f"*Daily post, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else "")]
     lines += ["", f"*Sent and outcomes* · {label} (UK)"]
-    step_text = _counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), "step ")
+    step_text = fmt.counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), label="step ")
     lines.append(f"  Sent: {len(sent)}" + (f" ({step_text})" if step_text else ""))
-    lines.append(f"  Replies: {len(replies)}" + (f" ({_counts(classes)})" if replies else ""))
+    lines.append(f"  Replies: {len(human)}" + (f" ({fmt.counts(classes)})" if human else "")
+                 + (f" · out of office {nums['out_of_office']}" if nums["out_of_office"] else ""))
     lines.append(f"  Positive or referral: {len(warm)}"
                  + (" · " + "; ".join(f"{who(e)} ({e.get('reply_class')}, {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT])
                     if warm else ""))
     lines.append(f"  Bounces: {nums['bounced']} · Unsubscribes: {nums['unsubscribed']} · "
                  f"Demos booked: {nums['demos_booked']} · Demos held: {nums['demos_held']}")
-    listed = [e for e in replies if e.get("reply_class") in LISTED_CLASSES]
+    listed = [e for e in human if e.get("reply_class") in LISTED_CLASSES]
+    objections = [f"{who(e)} ({e.get('reply_class')}): “{clip(' '.join(str(e.get('reply_text') or '').split()), QUOTE)}”"
+                  for e in listed[:LIST_LIMIT]]
     if listed:
         lines.append("Objections, negatives and other replies:")
-        lines += [f"  • {who(e)} ({e.get('reply_class')}): “{clip(' '.join(str(e.get('reply_text') or '').split()), QUOTE)}”"
-                  for e in listed[:LIST_LIMIT]]
-    ooo = [e for e in replies if e.get("reply_class") == "out_of_office"]
+        lines += [f"  • {x}" for x in objections]
+    ooo = [e for e in replies if not kinds.is_human(e.get("reply_class"))]
     if ooo:
         lines.append("Out of office: " + ", ".join(who(e) for e in ooo[:LIST_LIMIT]))
     visits = {str(e.get("account_id") or "") for e in by_type.get("site_visit", [])}
     enrolled = {str(a["account_id"]) for a in ctx.store.select("accounts", {"account_id": sorted(visits)})
                 if a.get("status") in ("enrolled", "engaged")} if visits else set()
+    visited = sorted(names.get(a, a) for a in enrolled)[:LIST_LIMIT]
     if enrolled:
-        lines.append("Warm accounts (enrolled, visited the US site): " + ", ".join(sorted(names.get(a, a) for a in enrolled)[:LIST_LIMIT]))
+        lines.append("Warm accounts (enrolled, visited the US site): " + ", ".join(visited))
 
     # Today's number, its senders and the ready accounts exactly as enrol.run works them out: the send
     # approvals still waiting keep their accounts out of the candidates and hold their senders' slots.
-    today_et = ctx.now_et().date()
-    hand_check_waits, pulled = enrol.hand_check(ctx, today_et)
-    held = approvals.waiting(ctx)
-    ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-    seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
-    lim = limits.today(ctx, today_et, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
-                       second_ready=len(seconds))
-    nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=len(ready))
+    t = today.read(ctx)
+    today_et, hand_check_waits, held, lim = t.day, t.waits, t.held, t.limits
+    ready = [*t.ready, *t.seconds]  # every contact enrol could propose: first and second (enrol/today.py)
+    nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=t.ready_count)
 
     # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.
     data = daily_report.Rows.load(ctx)
     section, more = daily_report.approvals(ctx, data, start, end)
     lines += ["", *section] if section else []
     nums.update(more)
+    improve: list[str] = []
     for section, more in (daily_report.found(ctx, data, start, end, label),
                           daily_report.pipeline(ctx, data, ready, set(held.accounts), lim),
                           daily_report.to_improve(ctx, data)):
         lines += ["", *section]
         nums.update(more)
+        if section[0].startswith("*To improve*"):
+            improve = [x.strip() for x in section[1:] if not x.strip().startswith(("Too early", "Nothing to flag"))]
     lines.insert(1, daily_report.headline(label.split(",")[0], nums))
     waiting_on = for_you(ctx, data.open_items)
     lines.insert(2, needs_you(ctx, waiting_on))
@@ -292,7 +319,8 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     lines.append("Credit budgets this month:")
     lines += [f"  {line}" for line in lim.budget_lines]
     spent = spent if spent is not None else spend.read(ctx)
-    lines.append(f"  {spend.summary_line(spent)}.")
+    spend_line = spend.summary_line(spent)
+    lines.append(f"  {spend_line}.")
     nums.update(spend=spent.as_dict())
 
     # The careers and benefits page reader's coverage, for Harry's call on enhancing it (2 Oct 2026).
@@ -317,12 +345,16 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     last100 = mailbox_last_100(ctx)
     ramps = ramp.ramps(ctx.store, ctx.settings, today_et)
     sent_by = Counter(str(e.get("mailbox") or "").lower() for e in sent)
+    boxes: list[tuple[str, int, int, int]] = []
+    ramping = 0
     for m in ctx.settings.mailboxes:
         if m.status == "Retired":
             continue
         a = m.address.lower()
         n, b = last100.get(a, (0, 0))
         r = ramps.get(a)
+        boxes.append((a, sent_by.get(a, 0), n, b))
+        ramping += bool(m.status == "Active" and r is not None and r.ramping)
         line = f"  • {a} ({m.status}): {sent_by.get(a, 0)} sent; "
         line += f"bounces {b} of its last {n} sends ({b / n:.1%})" if n else "no sends on record yet"
         if r is not None and r.ramping:
@@ -332,7 +364,7 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     # Kill rules (SPEC 11: "any kill rule that fired").
     lines += ["", "*Kill rules and items waiting*"]
     fired = [i for i in ctx.store.select("hitl_items", {"kind": holds.KIND})
-             if (t := _ts(i.get("created_at"))) is not None and start <= t < ctx.now]
+             if (t := utc(i.get("created_at"))) is not None and start <= t < ctx.now]
     in_force = waiting_on.holds  # holds.in_force, from the open items already read
     if fired:
         lines.append("Kill rules fired: " + "; ".join(str((i.get("payload") or {}).get("reason")) for i in fired[:LIST_LIMIT]))
@@ -346,9 +378,9 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     waiting = [i for i in data.open_items if i.get("kind") != holds.KIND]
     by_kind = Counter(KIND_LABELS.get(str(i.get("kind")), str(i.get("kind"))) for i in waiting)
     if waiting:
-        oldest = min((_ts(i.get("created_at")) for i in waiting if _ts(i.get("created_at"))), default=None)
+        oldest = min((utc(i.get("created_at")) for i in waiting if utc(i.get("created_at"))), default=None)
         age = f"; the oldest has waited {int((ctx.now - oldest).total_seconds() // 3600)} hours" if oldest else ""
-        lines.append(f"Waiting for approval: {len(waiting)} ({_counts(by_kind)}){age}.")
+        lines.append(f"Waiting for approval: {len(waiting)} ({fmt.counts(by_kind)}){age}.")
     else:
         lines.append("Waiting for approval: nothing.")
     nums.update(waiting=len(waiting), waiting_by_kind=dict(by_kind))
@@ -358,7 +390,170 @@ def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], di
     if line:
         lines += ["", line]
     nums.update(retention=done)
-    return lines, nums
+    warm_lines = [f"{who(e)} ({e.get('reply_class')}, {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT]]
+    return Day(start, end, label, lines, nums, waiting_on, lim, why=why, warm=warm_lines, objections=objections,
+               visited=visited, groups=daily_report.ready_groups(ready, ctx.settings) if ready else "",
+               improve=improve, mailboxes=boxes, ramping=ramping,
+               fired=[str((i.get("payload") or {}).get("reason")) for i in fired], holds=len(in_force),
+               retention=line or "", spend=spend_line)
+
+
+# -- the short post (Harry, 9 Oct 2026: "a more readable pithier version of the daily report") -------------------
+
+BOUNCE_WATCH = 0.03  # a mailbox's bounces over its last 100 sends, from MIN_WATCH_SENDS sends, that the post flags
+MIN_WATCH_SENDS = 20
+
+
+def _span(day: Day) -> str:
+    """"Mon 26 Oct", or "Fri 23 to Sun 25 Oct" for Monday's post."""
+    first, last = day.start.astimezone(UK), (day.end - timedelta(days=1)).astimezone(UK)
+    if first.date() == last.date():
+        return f"{first:%a %-d %b}"
+    return f"{first:%a %-d} to {last:%a %-d %b}" if first.month == last.month else f"{first:%a %-d %b} to {last:%a %-d %b}"
+
+
+def _short_names(owners: Sequence[str]) -> dict[str, str]:
+    """Each sender by first name, with the surname's initial where two share one ("Hannah S", "Hannah M")."""
+    first = Counter(o.split()[0] for o in owners if o.split())
+    return {o: (o.split()[0] if first[o.split()[0]] == 1 or len(o.split()) < 2 else f"{o.split()[0]} {o.split()[-1][0]}")
+            for o in owners if o.split()}
+
+
+def _needs(ctx: Context, w: ForYou) -> list[str]:
+    out = []
+    if w.send_approvals:
+        age = _oldest(ctx, w.send_approvals)
+        out.append(f"• Approve {fmt.plural(len(w.send_approvals), 'email')} in Slack ({age + '; ' if age else ''}a card "
+                   "lapses at the end of the next send day)")
+    if w.replies:
+        age = _oldest(ctx, w.replies)
+        out.append(f"• Answer {fmt.plural(len(w.replies), 'reply', 'replies')}" + (f" ({age})" if age else ""))
+    if w.holds:
+        out.append(f"• {fmt.plural(len(w.holds), 'kill-rule hold')} in force: `us-outbound killrules show`")
+    if w.hand_checks:
+        out.append("• This week's hand-check: `us-outbound handcheck show`")
+    return out or ["Nothing needs you today."]
+
+
+def _yesterday(day: Day) -> list[str]:
+    n = day.nums
+    if n.get("sent") or n.get("replies"):
+        steps = ", ".join(f"step {k} {v}" for k, v in sorted(n.get("by_step", {}).items()))
+        parts = [f"Sent {n.get('sent', 0)}" + (f" ({steps})" if steps else ""),
+                 f"{fmt.plural(n.get('replies', 0), 'reply', 'replies')} ({n.get('positive', 0)} positive)"]
+    else:
+        parts = ["Nothing sent"]
+    parts += [fmt.plural(n[k], word) for k, word in (("bounced", "bounce"), ("unsubscribed", "unsubscribe"))
+              if n.get(k)]
+    if n.get("demos_booked"):
+        parts.append(f"{fmt.plural(n['demos_booked'], 'demo')} booked")
+    cards = [(n.get("approved", 0), "approved"), (n.get("contact_declined", 0) + n.get("company_dropped", 0), "declined"),
+             (n.get("approvals_expired", 0), "lapsed unapproved")]
+    if any(k for k, _ in cards):
+        parts.append("cards " + ", ".join(f"{k} {word}" for k, word in cards if k))
+    out = [" · ".join(parts)]
+    found = f"Found {fmt.plural(n.get('found_companies', 0), 'company', 'companies')}"
+    sources = n.get("found_by_source") or {}
+    if len(sources) == 1:
+        found += f" (all {next(iter(sources)).replace('_', ' ')})"
+    elif sources:
+        found += " (" + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(sources.items(), key=lambda kv: -kv[1])) + ")"
+    found += f" and {fmt.plural(n.get('found_contacts', 0), 'contact')}"
+    if n.get("verified_in_period"):
+        found += f" · {n['verified_in_period']} verified"
+    out.append(found)
+    out += [f"Positive: {x}" for x in day.warm]
+    out += [f"• {x}" for x in day.objections]
+    if day.visited:
+        out.append("Visited the US site after we emailed: " + ", ".join(day.visited))
+    return out
+
+
+def _today(ctx: Context, day: Day) -> list[str]:
+    lim, t = day.lim, day.lim.terms
+    if day.why:
+        out = ["*Today: no new contacts*", f"Enrolment waits: {day.why}."]
+    else:
+        out = [f"*Today: up to {fmt.plural(lim.number, 'new contact')}*"]
+        limit = limits.LABELS.get(str(t.get("binding")), str(t.get("binding")))
+        if t.get("binding") == "sending_capacity" and day.ramping:
+            limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
+        out.append(f"Limit: {limit}")
+    names = _short_names(list(lim.senders))
+    senders = []
+    for owner, c in lim.senders.items():
+        part = f"{names.get(owner, owner)} {c.free}"
+        if c.pending:
+            part += f" (+{c.pending} awaiting ✅)"
+        if c.not_sending:
+            part += " (not sending)"
+        senders.append(part)
+    if senders:
+        out.append("Senders: " + " · ".join(senders))
+    week = (f"This week: {t.get('enrolled_this_week', 0)} of {t.get('weekly_enrol_cap', 0)}, "
+            f"{fmt.plural(int(t.get('send_days_left_in_week') or 0), 'send day')} left")
+    q = focus.today(ctx, int(t.get("send_days_left_in_week") or 0))
+    if q.active:
+        week += " · " + " · ".join(f"{k} {q.done[k]}/{q.targets[k]}" for k in q.targets)
+    out.append(week)
+    if not ctx.settings.general.live_sending:
+        out.append("Running dry: live_sending is no, so enrol reaches nobody.")
+    return out
+
+
+def _pipeline(day: Day) -> list[str]:
+    n = day.nums
+    ready = n.get("ready_to_send", 0)
+    line = f"Ready: {ready:,}"
+    if n.get("supply_days") is not None:
+        line += f", {n['supply_days']} days' supply"
+    if day.groups:
+        line += f" ({day.groups})"
+    behind = [f"{n.get('waiting_for_contact', 0):,} need a contact",
+              f"{n.get('waiting_for_verification', 0):,} need verifying"
+              + (f" ({n['doubtful_facts']} in the hand-check)" if n.get("doubtful_facts") else "")]
+    out = [line, "Behind it: " + " · ".join(behind)]
+    if n.get("in_sequence") or n.get("finished") or n.get("stopped"):
+        out.append(f"In sequence: {n.get('in_sequence', 0)} · finished {n.get('finished', 0)} · stopped "
+                   f"{n.get('stopped', 0)}")
+    return out
+
+
+def _watch(day: Day) -> tuple[list[str], list[str]]:
+    """(the lines that need a look, the areas checked that need none)."""
+    out = [f"• {x.removesuffix(daily_report.SOURCES_POINTER)}" for x in day.improve]
+    fine = []
+    loud = [(a, b, n) for a, _, n, b in day.mailboxes if n >= MIN_WATCH_SENDS and b / n >= BOUNCE_WATCH]
+    out += [f"• {a} bounced {b} of its last {n} sends ({b / n:.0%})" for a, b, n in loud]
+    if not loud:
+        fine.append("mailboxes")
+    out += [f"• Kill rule fired: {x}" for x in day.fired]
+    if not day.fired and not day.holds:
+        fine.append("kill rules")
+    stopped = [c for c in day.lim.senders.values() if c.not_sending]
+    out += [f"• {c.owner}: {c.not_sending}" for c in stopped]
+    if not stopped:
+        fine.append("campaigns")
+    return out, fine
+
+
+def compact(ctx: Context, day: Day) -> list[str]:
+    """The short post: what needs Harry, yesterday in two lines, today's number, the pipeline, and only what needs a
+    look; the rest is in `us-outbound daily --full` and the Monday readout."""
+    title = f"*Daily post · {ctx.now.astimezone(UK):%a %-d %b}* · covers {_span(day)}" + (" (dry-run)" if ctx.dry_run else "")
+    lines = [title, "", "*Needs you*", *_needs(ctx, day.waiting_on), "", f"*{day.label.split(',')[0]}*", *_yesterday(day),
+             "", *_today(ctx, day), "", "*Pipeline*", *_pipeline(day)]
+    if day.spend:
+        lines += ["", f"{day.spend}."]
+    watch, fine = _watch(day)
+    if watch:
+        lines += ["", "*Watch*", *watch]
+    if day.retention:
+        lines += ["", day.retention]
+    listed = " and ".join([", ".join(fine[:-1]), fine[-1]] if len(fine) > 1 else fine)
+    lines += ["", (f"Nothing else to flag: {listed} are fine. " if fine else "")
+              + "Full detail: `us-outbound daily --full`."]
+    return lines
 
 
 def run(ctx: Context) -> dict:
@@ -368,7 +563,8 @@ def run(ctx: Context) -> dict:
     replies, and reply text is purged after 90 days (SPEC 6), which a heartbeat row is not.
     """
     spent, asked = spend.check(ctx)  # the credit and spend asks first, so a failing post below never holds them
-    lines, nums = build(ctx, spent)
+    day = gather(ctx, spent)
+    lines, nums = compact(ctx, day), day.nums
     mailboxes = capacity_ahead.check(ctx, int(nums.get("ready_accounts") or 0))  # Mondays only
     sent = notify.alert(ctx, "\n".join(lines))
     summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent, "spend_alert": asked,

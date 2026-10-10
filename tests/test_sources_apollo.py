@@ -228,17 +228,33 @@ def test_skipped_companies_and_why():
         org(7, naics=("541611",), keywords=()),  # management consulting, switched off
         org(8, domain="optedout.com"),
         org(9, domain="dupe.com"), org(10, domain="www.dupe.com"),
+        org(12, naics=("813910",), keywords=("trade association",), _always=True),  # before any label is tried
+        org(13, naics=("541511",), keywords=("fintech",), industry="Government Administration"),
     ])
     suppression.add(ctx.store, domain="optedout.com", reason="test", source="test", now=NOW)
     out = uni.run(ctx)
     assert out["skipped"] == {
         "a personal email domain": 1, "no website": 1, "HQ outside the active states": 1, "outside 10 to 249 employees": 1,
         "a partner, never prospected": 2, "no Industries label fits": 1, "its best Industries label is switched off": 1,
-        "suppressed": 1,
+        "suppressed": 1, "an association or chamber, never prospected": 1, "a public body, never prospected": 1,
     }
     assert sorted(accounts_by_domain(ctx)) == ["dupe.com"] and out["created"] == 1  # one account per root domain
     assert ctx.store.get("partners", domain="company5.com")["reason"] == "hr_tech"
     assert ctx.store.get("partners", domain="company11.com")["reason"] == "broker"
+
+
+def test_a_switched_off_label_in_a_group_we_prospect_goes_under_the_groups_own_label():
+    """9 Oct 2026: sourcing dropped a company whose best label was switched off, though the label check would have
+    placed it under its group's own label. Both now follow the check's rule (Settings.placeable)."""
+    remote = uni.best_label([], "remote-first ; distributed team ; saas", BASE)
+    assert (remote.industry, remote.active) == ("Remote & hybrid teams", False)
+    assert BASE.placeable(remote).industry == "Technology & Startups"
+    consulting = uni.best_label(["541611"], "", BASE)
+    assert consulting.industry_group == "Professional Services" and BASE.placeable(consulting) is None  # group off
+    ctx, _, _ = make([org(1, naics=(), keywords=("remote-first", "distributed team"), _always=True)])
+    assert uni.run(ctx)["created"] == 1
+    [a] = accounts_by_domain(ctx).values()
+    assert (a["industry"], a["industry_group"]) == ("Technology & Startups", "Technology & Startups")
 
 
 def test_an_account_found_again_keeps_its_source_and_status_and_overrides_win():
@@ -339,6 +355,40 @@ def test_the_next_run_carries_on_from_the_next_page_and_a_new_month_starts_again
     november = [b["page"] for b in fake.searches[before:] if b["organization_locations"] == ["New York, US"]
                 and "5415" in b.get("organization_naics_codes", ())]
     assert november == [1, 2]  # page 1 again; its companies are accounts already, so page 2 too
+
+
+def test_a_saved_apollo_account_without_an_organization_id_stores_no_apollo_org_id():
+    """Defect 8 (9 Oct 2026): a search's `accounts` row whose organization_id is None gave its account id as the
+    account's apollo_org_id, later fed to paid job-postings lookups. It now gives none."""
+    ctx, t, fake = make([org(1)])
+
+    def as_saved_accounts(req):
+        page = fake.search(req)
+        page["accounts"] = [{**{k: v for k, v in o.items() if k not in ("id", "primary_domain")}, "id": "acct-77",
+                             "organization_id": None, "domain": o["primary_domain"]} for o in page.pop("organizations")]
+        return page
+
+    t.route("POST", "/mixed_companies/search", fn=as_saved_accounts)
+    assert uni.run(ctx)["created"] == 1
+    a = accounts_by_domain(ctx)["company1.com"]
+    assert a["apollo_org_id"] is None
+    facts = ctx.store.select("signal_events", {"account_id": a["account_id"]})
+    assert facts and all(e["source_url"] == "" for e in facts)  # no Apollo page named after the account id
+
+
+def test_a_page_apollo_did_not_answer_keeps_its_credit_and_is_read_again():
+    """Defect 9 (9 Oct 2026): a search page is reserved before it is asked for. One that fails with a 5xx may have
+    been charged, so it keeps its credit; its reservation is no page read, so the next run asks for it again."""
+    ctx, t, _ = make([org(1)])
+    t.route("POST", "/mixed_companies/search", status=503, body={"error": "unavailable"})
+    out = uni.run(ctx)
+    assert out["created"] == 0 and out["errors"]
+    failed = ledger(ctx)
+    assert failed and all(r["credits"] == 1.0 and json.loads(r["note"])["failed"] == 503 for r in failed)
+    assert out["credits"] == len(failed) and uni.cursors(ctx) == {}
+    t.routes.pop()  # Apollo answers again
+    again = uni.run(dataclasses.replace(ctx, run_id="next"))
+    assert again["created"] == 1
 
 
 def test_a_page_with_results_costs_one_credit_and_an_empty_page_none():

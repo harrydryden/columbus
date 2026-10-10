@@ -2,7 +2,8 @@
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.validate import validate_all
 from us_outbound.settings.model import CopyStep
-from us_outbound.enrol import render, copy_markup
+from us_outbound.copy import copy_markup
+from us_outbound.enrol import render
 
 ASK_TECH = "\n\nIs this on the list at {{company}} this year, or already covered?"
 ASK_LEGAL = "\n\nIs this on the list for the firm this year, or already covered?"

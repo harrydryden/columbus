@@ -60,20 +60,22 @@ import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound.clients.apollo import total_entries
+from us_outbound.clients.apollo import people_in, total_entries, while_full_page
 from us_outbound.clients.db import Store, new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.contacts import pick
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
+from us_outbound.facts import load, newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
 from us_outbound.settings.model import AGED_FACTS, SIZE_BANDS, Settings
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.timeparse import utc
 
 JOB = "apollo_people"
 SOURCE = pick.PEOPLE_SOURCE  # apollo_people: the People signals read it (settings/model.py SOURCE_FIELDS)
@@ -91,7 +93,6 @@ RUN_SECONDS = 9 * 60  # starts no account after this, so its facts are in before
 PACE_SECONDS = 1.5  # between requests: at most 40 a minute
 MAX_ERRORS = 5  # Apollo errors before the run stops
 RATE_LIMITED = 429
-ID_CHUNK = 1000
 QUOTE_LIMIT = 300  # SPEC 6
 DONE = "every account due a People search is searched"
 NEW_SIGNAL, OLD_SIGNAL = "First People hire (likely)", "First People hire"
@@ -100,32 +101,13 @@ _clock = time.monotonic  # tests replace it
 _sleep = time.sleep  # tests replace it
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
-def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> list[Sequence[str]]:
-    return [items[i : i + n] for i in range(0, len(items), n)]
-
-
-def _newer(e: Mapping[str, Any], than: Mapping[str, Any] | None) -> bool:
-    t = _ts(e.get("observed_at"))
-    return t is not None and (than is None or t > (_ts(than.get("observed_at")) or t))
-
-
 # -- which accounts ---------------------------------------------------------------------------------
 
 
 def searched_recently(store: Store, account_id: str, now: datetime) -> bool:
     """This job searched the account less than REFRESH_DAYS ago (pick_contacts then leaves its facts alone)."""
     e = store.latest("signal_events", "observed_at", {"account_id": account_id, "source": SOURCE, "fact": MARKER})
-    t = _ts(e.get("observed_at")) if e else None
+    t = utc(e.get("observed_at")) if e else None
     return t is not None and now - t < timedelta(days=REFRESH_DAYS)
 
 
@@ -133,17 +115,11 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, dict[st
     """(account_id -> fact -> its newest apollo_people event, the marker among them;
     account_id -> its newest apollo_org employees value)."""
     stored: dict[str, dict[str, dict]] = defaultdict(dict)
-    employees: dict[str, dict] = {}
-    for chunk in _chunks(list(account_ids)):
-        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": SOURCE}):
-            aid, fact = str(e.get("account_id")), str(e.get("fact") or "")
-            if _newer(e, stored[aid].get(fact)):
-                stored[aid][fact] = e
-        for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": ORG_SOURCE, "fact": "employees"}):
-            aid = str(e.get("account_id"))
-            if _newer(e, employees.get(aid)):
-                employees[aid] = e
-    return stored, {aid: e.get("value") for aid, e in employees.items()}
+    for aid, rows in load(ctx.store, account_ids, SOURCE).items():
+        stored[aid] = newest_by(rows, lambda e: str(e.get("fact") or ""), dated=True)
+    employees = {aid: e.get("value") for aid, rows in load(ctx.store, account_ids, ORG_SOURCE, "employees").items()
+                 if (e := newest(rows, dated=True)) is not None}
+    return stored, employees
 
 
 def leader_titles(settings: Settings, account: Mapping[str, Any]) -> list[str]:
@@ -154,7 +130,7 @@ def leader_titles(settings: Settings, account: Mapping[str, Any]) -> list[str]:
 
 def searched_at(stored: Mapping[str, Mapping[str, Any]] | None) -> datetime | None:
     marker = (stored or {}).get(MARKER)
-    return _ts(marker.get("observed_at")) if marker else None
+    return utc(marker.get("observed_at")) if marker else None
 
 
 @dataclass
@@ -247,15 +223,15 @@ def search_rows(ctx: Context, r: _Run, filters: Mapping[str, Any]) -> list[dict]
     """The rows of a search, each once, up to pick.SEARCH_PAGES pages."""
     rows: list[dict] = []
     seen: set[str] = set()
-    for page in range(1, pick.SEARCH_PAGES + 1):
-        batch = r.search(ctx, filters, page=page, per_page=pick.SEARCH_PER_PAGE).get("people") or []
-        for p in batch:
+    pages = ctx.clients.apollo.iter_pages(
+        lambda page: r.search(ctx, filters, page=page, per_page=pick.SEARCH_PER_PAGE),
+        more=while_full_page, rows=people_in, per_page=pick.SEARCH_PER_PAGE, max_pages=pick.SEARCH_PAGES)
+    for page in pages:
+        for p in page.rows:
             pid = str(p.get("id") or "")
             if pid and pid not in seen:
                 seen.add(pid)
                 rows.append(p)
-        if len(batch) < pick.SEARCH_PER_PAGE:
-            break
     return rows
 
 
@@ -324,7 +300,7 @@ def unchanged(new: Mapping[str, Any], old: Mapping[str, Any] | None, today: date
 
     A day count is compared as of today (scoring ages it), and the newest leader by person and title.
     """
-    t = _ts(old.get("observed_at")) if old else None
+    t = utc(old.get("observed_at")) if old else None
     if old is None or t is None or now - t >= timedelta(days=REFRESH_DAYS):
         return False
     fact, value, before = new["fact"], new["value"], old.get("value")
@@ -408,9 +384,9 @@ def run(ctx: Context) -> dict:
         aid = str(account["account_id"])
         try:
             found = search_account(ctx, r, account)
+        except AuthError:
+            raise  # the key is wrong: every request would fail
         except ApiError as exc:
-            if exc.status in (401, 403):
-                raise  # the key is wrong: every request would fail
             r.errors.append(f"{account.get('domain')}: {str(exc)[:200]}")
             if exc.status == RATE_LIMITED:
                 stopped = "Apollo's rate limit (HTTP 429 after the transport's retries)"

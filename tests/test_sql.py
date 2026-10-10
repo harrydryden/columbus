@@ -16,7 +16,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
-from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS
+from us_outbound.clients.db import COLUMNS, JSON_COLUMNS, TABLE_KEYS, TIMESTAMP_COLUMNS
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.ops import ddl
 from us_outbound.settings.model import SIZE_BANDS, TABS, TIERS
@@ -131,10 +131,10 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("contacts", "test_arm"): {"a", "b"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
-        "escalated", "send_approval",  # enrol/approvals.py (Harry, 2 Oct 2026)
+        "escalated", "send_approval",  # enrol/approvals/ (Harry, 2 Oct 2026)
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
-        "alert",  # ops/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
+        "alert",  # base/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
                            "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
@@ -142,7 +142,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
     },
-    # A reply's approval, then a send approval's outcome (enrol/approvals.py).
+    # A reply's approval, then a send approval's outcome (enrol/approvals/).
     ("events", "approval"): {"approved", "edited", "skipped", "approved_edited", "contact_rejected", "company_rejected",
                              "expired", "blocked"},
     ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
@@ -352,6 +352,15 @@ def test_json_columns_are_jsonb_and_only_they(tables):
     for t in tables.values():
         jsonb = {c for c in t.columns if t.type(c) == "JSONB"}
         assert jsonb == set(JSON_COLUMNS.get(t.name, ())), t.name
+
+
+def test_memory_store_columns_match_the_ddl(tables):
+    """MemoryStore refuses a column not in COLUMNS and stores a TIMESTAMP_COLUMNS value as Postgres does (clients/db.py;
+    9 Oct 2026). No column is a date or a timestamp without a zone, which it would have to convert as well."""
+    assert {name: set(t.columns) for name, t in tables.items()} == {name: set(c) for name, c in COLUMNS.items()}
+    stamps = {name: {c for c in t.columns if t.type(c) == "TIMESTAMPTZ"} for name, t in tables.items()}
+    assert {name: c for name, c in stamps.items() if c} == {name: set(c) for name, c in TIMESTAMP_COLUMNS.items()}
+    assert not [f"{t.name}.{c}" for t in tables.values() for c in t.columns if t.type(c) in {"DATE", "TIMESTAMP"}]
 
 
 def test_column_types(tables):

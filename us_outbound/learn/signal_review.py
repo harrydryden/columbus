@@ -27,20 +27,21 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import Context
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.learn import kill_rules
+from us_outbound.replies import kinds
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
+from us_outbound.timeparse import utc
 
 MIN_COMPANIES = 30  # emailed companies on each side of a signal before a verdict
 P_VALUE = 0.10  # two-sided; a pilot's samples are small, so this is a lead to follow, not proof
 READY_DELIVERED = 60  # the daily post says the review is worth reading from this many emailed companies
 READY_DAYS = 14  # ... and this many days after the first send
-NOT_HUMAN = "out_of_office"
-POSITIVE = frozenset({"positive", "referral"})
+POSITIVE = kinds.WARM
 TIERS = ("Priority", "Standard", "Control")
 
 
@@ -85,10 +86,6 @@ class Review:
     subject: Verdict | None = None  # email 1's personal subject (with) against the Copy row's (without)
 
 
-def _ts(v: Any) -> datetime | None:
-    return kill_rules._ts(v)
-
-
 def emailed(ctx: Context) -> tuple[list[Company], int]:
     """Each company's first delivered step 1, whether a human replied within the window, and how many windows closed."""
     ev = kill_rules._Events(ctx.store, ctx.now)
@@ -100,11 +97,11 @@ def emailed(ctx: Context) -> tuple[list[Company], int]:
     window = timedelta(days=REPLY_WINDOW_DAYS)
     for r in ev.replies:
         c = out.get(ev.account(r))
-        t = _ts(r.get("occurred_at"))
+        t = utc(r.get("occurred_at"))
         if c is None or t is None or not c.step1_at <= t < c.step1_at + window:
             continue
         cls = str(r.get("reply_class") or "").strip().lower()
-        if cls == NOT_HUMAN:
+        if not kinds.is_human(cls):
             continue
         c.replied = True
         c.positive = c.positive or cls in POSITIVE
@@ -177,10 +174,6 @@ def review(ctx: Context) -> Review:
     return out
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.1%}" if n else "-"
-
-
 # What a subject verdict means: "raise" is the personal subject replying more.
 SUBJECT_VERDICTS = {
     "raise": "the personal subject replies more: keep it, or raise email1_subject_share",
@@ -194,8 +187,8 @@ def subject_line(v: Verdict) -> str:
     """Email 1's subject split in one line: personal (General email1_subject) against the Copy row's."""
     p = f" · p = {v.p:.2f}" if v.p is not None else ""
     return (f"Email 1 subject (General email1_subject_share): personal {v.with_n} companies, "
-            f"{_pct(v.with_replied, v.with_n)} replied vs the Copy row's {v.without_n}, "
-            f"{_pct(v.without_replied, v.without_n)}{p}: {SUBJECT_VERDICTS[v.verdict]}.")
+            f"{fmt.pct(v.with_replied, v.with_n)} replied vs the Copy row's {v.without_n}, "
+            f"{fmt.pct(v.without_replied, v.without_n)}{p}: {SUBJECT_VERDICTS[v.verdict]}.")
 
 
 def lines(r: Review) -> list[str]:
@@ -207,9 +200,9 @@ def lines(r: Review) -> list[str]:
     positive = sum(c.positive for c in r.companies)
     first = f", the first on {r.first_send:%a %d %b}" if r.first_send else ""
     out = [f"Signal review: {n} companies emailed{first}; {r.closed} of their {REPLY_WINDOW_DAYS}-day reply windows "
-           f"have closed. Replied: {replied} ({_pct(replied, n)}), positive: {positive} ({_pct(positive, n)}).",
+           f"have closed. Replied: {replied} ({fmt.pct(replied, n)}), positive: {positive} ({fmt.pct(positive, n)}).",
            "By tier at enrolment (scoring works if Priority replies most and Control least):"]
-    out += [f"  {t}: {e} emailed, {_pct(k, e)} replied" for t, (e, k) in r.tiers.items()]
+    out += [f"  {t}: {e} emailed, {fmt.pct(k, e)} replied" for t, (e, k) in r.tiers.items()]
     if r.subject is not None:
         out.append(subject_line(r.subject))
     order = {"raise": 0, "lower": 1, "keep": 2, "too few": 3}
@@ -219,7 +212,7 @@ def lines(r: Review) -> list[str]:
     for v in judged:
         p = f"p = {v.p:.2f}" if v.p is not None else ""
         out.append(f"  {v.verdict.upper():5}  {v.signal} (weight {v.weight}): {v.with_n} companies, "
-                   f"{_pct(v.with_replied, v.with_n)} vs {_pct(v.without_replied, v.without_n)} without · {p}")
+                   f"{fmt.pct(v.with_replied, v.with_n)} vs {fmt.pct(v.without_replied, v.without_n)} without · {p}")
     few = [v for v in r.verdicts if v.verdict == "too few"]
     if few:
         names = ", ".join(f"{v.signal} ({v.with_n})" for v in sorted(few, key=lambda v: (-v.with_n, v.signal)))

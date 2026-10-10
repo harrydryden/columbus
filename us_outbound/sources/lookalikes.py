@@ -90,18 +90,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget
+from us_outbound import budget, fmt, ledger, parse
 from us_outbound.clean.domains import is_personal_domain, root_domain
 from us_outbound.clean.people import size_band
-from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries
+from us_outbound.clients.apollo import MAX_PER_PAGE, organizations_in, total_entries, while_counted
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
+from us_outbound.facts import newest_by
 from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.defaults import US_STATES
 from us_outbound.settings.model import SIZE_BANDS, Settings, Signal, band_bounds
 from us_outbound.sources import apollo_credits as credits
+from us_outbound.timeparse import utc_or_epoch, utc_strict_or_none
 
 SOURCE = "lookalike"
 JOB = "lookalikes"  # credit_ledger's job for the growth searches
@@ -271,15 +274,6 @@ class Customer:
 # -- one company ------------------------------------------------------------------------------
 
 
-def _number(v: Any) -> float | None:
-    if v is None or isinstance(v, bool):
-        return None
-    try:
-        return float(str(v).replace(",", "").strip())
-    except ValueError:
-        return None
-
-
 def band_of(employees: float) -> str:
     n = int(round(employees))
     if n < 10:
@@ -300,10 +294,10 @@ def customer_band(props: Mapping[str, Any]) -> str:
     (05 §3.1). An enriched headcount that is the top of a range is read as that range
     (BUCKET_BANDS), and is unknown when the range spans two bands.
     """
-    covered = _number(props.get("employees_covered"))
+    covered = parse.number(props.get("employees_covered"), commas=True)
     if covered is not None and covered > 0:
         return band_of(covered)
-    n = _number(props.get("numberofemployees"))
+    n = parse.number(props.get("numberofemployees"), commas=True)
     if n is None or n <= 0:
         return UNKNOWN
     if n.is_integer() and int(n) in BUCKET_BANDS:
@@ -548,23 +542,10 @@ def group_cells(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], dict
 # -- keeping customers out ---------------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
-
-
 def _latest(events: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], tuple[datetime, Any]]:
-    """(account_id, fact) -> (observed_at, value) of the newest event."""
-    out: dict[tuple[str, str], tuple[datetime, Any]] = {}
-    floor = datetime(1970, 1, 1, tzinfo=UTC)
-    for e in events:
-        key = (str(e.get("account_id")), str(e.get("fact")))
-        t = _ts(e.get("observed_at")) or floor
-        if key not in out or t >= out[key][0]:
-            out[key] = (t, e.get("value"))
-    return out
+    """(account_id, fact) -> (observed_at, value) of the newest event (the epoch for one with no time)."""
+    newest = newest_by(events, lambda e: (str(e.get("account_id")), str(e.get("fact"))))
+    return {k: (utc_or_epoch(e.get("observed_at")), e.get("value")) for k, e in newest.items()}
 
 
 def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
@@ -584,7 +565,7 @@ def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
     rows, new = [], 0
     for domain in domains:
         old = existing.get(domain)
-        old_expiry = _ts(old.get("expires_at")) if old is not None else None
+        old_expiry = utc_strict_or_none(old.get("expires_at")) if old is not None else None
         if old is not None and (old_expiry is None or old_expiry >= expires):
             continue  # indefinite, or already suppressed for longer
         if old is None or (old_expiry is not None and old_expiry <= now):
@@ -620,7 +601,7 @@ def exclude(ctx: Context, customers: Iterable[Customer]) -> dict[str, int]:
 
 def growth_band_of(growth: Any) -> str | None:
     """The band of a headcount_growth_12m figure, a fraction (0.12 is 12%; PHASE0-CONFIRM in apollo_universe)."""
-    g = _number(growth)
+    g = parse.number(growth, commas=True)
     if g is None:
         return None
     pct = round(g * 100, 6)
@@ -681,7 +662,7 @@ def growth_todo(ctx: Context, skip: Iterable[str] = ()) -> tuple[list[dict], lis
         from_figure = growth_band_of(figure[1]) if figure and _age(figure[0], today) < GROWTH_REFRESH_DAYS else None
         if from_figure:
             if not (fresh_band and band[1] == from_figure):
-                pct = float(_number(figure[1]) or 0.0)
+                pct = parse.number(figure[1], commas=True) or 0.0
                 facts.append(_band_fact(aid, from_figure, f"Apollo: headcount {pct:+.0%} over 12 months, so "
                                                           f"{GROWTH_WORDS[from_figure]}", ctx.now))
             continue
@@ -726,39 +707,44 @@ def _org_domains(org: Mapping[str, Any]) -> set[str]:
 def _search_band(ctx: Context, chunk: Sequence[str], band: str, g: _Growth, who: str) -> dict[str, str] | None:
     """domain -> Apollo organization id, for the chunk's domains Apollo puts in this growth band; None when not
     every page could be read (the chunk's domains then stay unsearched for this band)."""
-    asked, out, page = set(chunk), {}, 1
+    asked, out = set(chunk), {}
     filters = {"q_organization_domains_list": list(chunk), "organization_headcount_growth_range": dict(GROWTH_RANGES[band]),
                "organization_headcount_growth_past_n_months": GROWTH_MONTHS}
-    while True:
+
+    def read(page: int) -> Mapping[str, Any] | None:
         if not g.allows():
             g.stopped = g.stopped or "the run's Apollo credits are used"
             return None
-        try:
-            body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
-        except ApiError as exc:
-            if exc.status in (401, 403):
-                raise  # the key is wrong: every search would fail
-            g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
-            if len(g.errors) >= GROWTH_MAX_ERRORS:
-                g.stopped = f"{GROWTH_MAX_ERRORS} Apollo errors"
-            return None
-        orgs, total = organizations_in(body), total_entries(body)
-        spent = 1.0 if orgs else 0.0
-        # The note carries counts only: never a customer's domain.
-        credits.record(ctx, JOB, spent, note=json.dumps({"growth": band, "for": who, "page": page, "asked": len(chunk),
-                                                         "results": len(orgs), "total": total}))
-        g.spent += spent
+        what = {"growth": band, "for": who, "page": page, "asked": len(chunk)}  # counts only: never a customer's domain
+        with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+            try:
+                body = ctx.clients.apollo.search_organizations(filters, page=page, per_page=MAX_PER_PAGE)
+            except ApiError as exc:
+                g.spent += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+                if isinstance(exc, AuthError):
+                    raise  # the key is wrong: every search would fail
+                g.errors.append(f"growth {band} search for {who}, page {page}: {str(exc)[:200]}")
+                if len(g.errors) >= GROWTH_MAX_ERRORS:
+                    g.stopped = f"{GROWTH_MAX_ERRORS} Apollo errors"
+                return None
+            orgs = organizations_in(body)
+            g.spent += paid.settle(1.0 if orgs else 0.0, note=json.dumps(
+                {**what, "results": len(orgs), "total": total_entries(body)}))
         g.pages += 1
-        for org in orgs:
-            oid = str(org.get("organization_id") or org.get("id") or "")
+        return body
+
+    page = None
+    # A page with no total_entries ends the search (while_counted), as it always has here.
+    for page in ctx.clients.apollo.iter_pages(read, more=while_counted, max_pages=GROWTH_PAGES):
+        for org in page.rows:
+            oid = apollo_org_id(org)
             for d in _org_domains(org) & asked:
                 out.setdefault(d, oid)
-        if not orgs or total is None or total <= page * MAX_PER_PAGE:
+        if page.last:
             return out
-        if page >= GROWTH_PAGES:
-            g.errors.append(f"growth {band} search for {who}: over {GROWTH_PAGES} pages for {len(chunk)} domains")
-            return None
-        page += 1
+    if page is not None and page.number >= GROWTH_PAGES:
+        g.errors.append(f"growth {band} search for {who}: over {GROWTH_PAGES} pages for {len(chunk)} domains")
+    return None
 
 
 def search_growth(ctx: Context, domains: Sequence[str], g: _Growth, who: str) -> tuple[dict[str, tuple[str, str]], set[str]]:
@@ -1120,8 +1106,7 @@ def _share(us: float, total: float) -> str:
 
 
 def _when(v: Any) -> str:
-    t = _ts(v)
-    return t.astimezone(UK).strftime("%a %d %b %Y %H:%M UK") if t else "-"
+    return fmt.uk_time(v, fmt.WHEN_YEAR)
 
 
 def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = False) -> list[str]:
@@ -1130,7 +1115,7 @@ def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = F
     if not rows:
         return ["No lookalike cells yet. `us-outbound run lookalikes` reads Spill's customers from HubSpot "
                 "(read only) and fills them."]
-    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=lambda v: _ts(v), default=None)
+    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=utc_strict_or_none, default=None)
     shown = [r for r in rows if all_bands or r.get("size_band") in TARGET_BANDS]
     shown.sort(key=lambda r: (-float(r.get("strength") or 0), -int(r.get("active_customers") or 0),
                               str(r.get("industry_label") or "~"), BANDS.index(r["size_band"])
@@ -1193,7 +1178,7 @@ def growth_line(store: Any) -> str:
     n: Counter[str] = Counter()
     for r in rows:
         n[str(r.get("growth_band"))] += int(r.get("active_customers") or 0) + int(r.get("churned_customers") or 0)
-    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=lambda v: _ts(v), default=None)
+    computed = max((r.get("computed_at") for r in rows if r.get("computed_at")), key=utc_strict_or_none, default=None)
     known = sum(n[b] for b in GROWTH_BANDS)
     parts = ", ".join(f"{b} {n[b]}" for b in GROWTH_BANDS)
     return (f"Customers' 12-month headcount growth (Apollo, {_when(computed)}): {parts}; unknown {n[UNKNOWN]} "
@@ -1304,7 +1289,7 @@ def fit_report(ctx: Context, close: tuple[int, int] | None = None,
     fitted = len(accounts) - no_fit
     cells = [c.get("computed_at") for c in store.select(TABLE) if c.get("computed_at")]
     lines = [f"Lookalike fit of {len(accounts)} open accounts, worked out now from the cells of "
-             f"{_when(max(cells, key=lambda v: _ts(v), default=None))}.",
+             f"{_when(max(cells, key=utc_strict_or_none, default=None))}.",
              growth_line(store),
              f"  {'Fit':<8} {'Accounts':>8}"]
     lines += [f"  {f'{lo}-{hi}':<8} {fits[(lo, hi)]:>8}" for lo, hi in FIT_BANDS]

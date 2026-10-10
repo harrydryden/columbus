@@ -5,7 +5,7 @@ Today's number is the smallest of three terms (enrol/queue.py):
   * sending_capacity: the senders' free slots after follow-ups already due (enrol/capacity.py),
                       each mailbox at its place on the sending ramp (registry/ramp.py);
   * ready_accounts:   verified accounts with a sendable email.
-Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026) count as enrolled
+Send approvals still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026) count as enrolled
 this week for the weekly target, and each takes one of its sender's slots today.
 The budgets sit behind ready_accounts: Clay credits verify accounts and Apollo credits find
 emails, each within its monthly budget and today's share of it (budget.py). While the General key

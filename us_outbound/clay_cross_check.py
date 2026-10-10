@@ -11,7 +11,7 @@ clay_cross_check = yes (default no), Clay is asked first, so Harry sees only wha
      is a signal_events fact (source clay, fact FACT, Clay's source note as the quote), and an account with
      one is not asked again. A Clay error is not stored, so that account is asked again next run; the job
      summary reports it and the doubt stands for the hand-check. Not while a kill rule pauses the clay source
-     (learn/holds.paused_sources), and only within today's share of clay_monthly_credits (budget.py): RESERVE
+     (base/holds.paused_sources), and only within today's share of clay_monthly_credits (budget.py): RESERVE
      is written to credit_ledger for each account before the call and settled after it at what Clay reports.
   2. Fill: a missing HQ state, or a missing size (no count and no band), is filled in on the account from
      Clay's answer before the checks, so the account can verify the same day; never a field an Overrides row
@@ -36,21 +36,21 @@ pick_contacts' email lookups do.
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
-from datetime import UTC, datetime
 from typing import Any
 
-from us_outbound import budget, verify
+from us_outbound import budget, ledger, verify
+from us_outbound.base import holds
 from us_outbound.clean.people import size_band, state_code
 from us_outbound.clients.clay import RUN_ITEMS_MAX, ClayError, parse_cross_check_output
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
-from us_outbound.learn import holds
+from us_outbound.facts import load, newest
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.settings.model import SIZE_BANDS, Settings
 
-SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (learn/holds.py)
+SOURCE = "clay"  # signal_events.source of Clay's answers; the clay source a kill rule pauses (base/holds.py)
 FACT = "hq_and_size"
 # What one lookup costs (a data provider, or Claygent reading the company's pages) is unconfirmed, and moot until
 # the "US Outbound – Accounts" function is built and clay_cross_check is yes (CLAY-CROSS-COST). Reserved for
@@ -61,18 +61,7 @@ OFF = "clay_cross_check is no"
 NO_FUNCTION = ("clay_accounts_function_id is blank: build the \"US Outbound – Accounts\" function in Clay "
                "(docs/pipeline.md) and paste its id on the General tab")
 SIZE_FIELDS = frozenset({"employees", "size_band"})
-ID_CHUNK = 1000
 ERROR_LIMIT = 20
-
-
-def _when(v: Any) -> datetime:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return datetime(1970, 1, 1, tzinfo=UTC)
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 # -- telling doubts apart ----------------------------------------------------------------------------------
@@ -117,14 +106,9 @@ def overridden(settings: Settings, account: Mapping[str, Any]) -> set[str]:
 
 def answers(store: Store, account_ids: Iterable[str]) -> dict[str, dict]:
     """account_id -> Clay's latest answer (the FACT value)."""
-    ids = sorted({str(i) for i in account_ids})
-    latest: dict[str, tuple[datetime, dict]] = {}
-    for i in range(0, len(ids), ID_CHUNK):
-        for e in store.select("signal_events", {"source": SOURCE, "fact": FACT, "account_id": ids[i : i + ID_CHUNK]}):
-            aid, value, t = str(e.get("account_id")), e.get("value"), _when(e.get("observed_at"))
-            if isinstance(value, Mapping) and (aid not in latest or t >= latest[aid][0]):
-                latest[aid] = (t, dict(value))
-    return {aid: v for aid, (_, v) in latest.items()}
+    rows = load(store, sorted({str(i) for i in account_ids}), SOURCE, FACT)
+    latest = {aid: newest(evs, where=lambda e: isinstance(e.get("value"), Mapping)) for aid, evs in rows.items()}
+    return {aid: dict(e["value"]) for aid, e in latest.items() if e is not None}
 
 
 # -- 1 and 2: ask and fill (the pre-pass) ---------------------------------------------------------------------
@@ -173,10 +157,8 @@ def wanted(ctx: Context, todo: Sequence[Mapping[str, Any]], facts: Mapping[str, 
 def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]], report: dict) -> dict[str, dict]:
     """Clay's answers for these accounts, each stored as a fact; credit_ledger first, errors into the report."""
     fid = ctx.settings.general.clay_accounts_function_id.strip()
-    entries = {a["account_id"]: {"entry_id": new_id(), "system": "clay", "job": ctx.job, "run_id": ctx.run_id,
-                                 "account_id": a["account_id"], "credits": RESERVE, "usd": None,
-                                 "occurred_at": ctx.now, "note": f"{LEDGER_NOTE}, reserved"} for a, _ in batch}
-    ctx.store.insert("credit_ledger", list(entries.values()))
+    entries = ledger.reserve_each(ctx, "clay", ctx.job, RESERVE, [a["account_id"] for a, _ in batch],
+                                  note=f"{LEDGER_NOTE}, reserved")
     report["asked"] = len(batch)
     inputs = {a["account_id"]: {"domain": a.get("domain"), "company_name": a.get("clean_name") or None}
               for a, _ in batch}
@@ -186,7 +168,7 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
         report["errors"].append(f"the Clay run failed ({type(exc).__name__}): {str(exc)[:200]}")
         results = {}
     got: dict[str, dict] = {}
-    settled: list[dict] = []
+    settled: list[tuple[dict, float, str]] = []
     rows: list[dict] = []
     for a, reasons in batch:
         aid = a["account_id"]
@@ -202,7 +184,7 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
             except ClayError as exc:
                 error = str(exc)
         if answer is None:
-            settled.append({**entries[aid], "note": f"{LEDGER_NOTE} failed; counted in case Clay charged it"})
+            settled.append((entries[aid], RESERVE, f"{LEDGER_NOTE} failed; counted in case Clay charged it"))
             report["failed"] += 1
             report["credits"] += RESERVE
             if results and len(report["errors"]) < ERROR_LIMIT:
@@ -210,8 +192,8 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
             continue
         reported = answer["credits_used"]
         credits = RESERVE if reported is None else reported
-        settled.append({**entries[aid], "credits": credits,
-                        "note": LEDGER_NOTE if reported is not None else f"{LEDGER_NOTE}; no credits reported, the reserve kept"})
+        settled.append((entries[aid], credits,
+                        LEDGER_NOTE if reported is not None else f"{LEDGER_NOTE}; no credits reported, the reserve kept"))
         report["credits"] += credits
         report["answered"] += 1
         value = {"hq_state": answer["hq_state"], "hq_state_given": answer["hq_state_given"],
@@ -221,7 +203,7 @@ def _ask_clay(ctx: Context, batch: Sequence[tuple[Mapping[str, Any], list[str]]]
         rows.append({"event_id": new_id(), "account_id": aid, "source": SOURCE, "fact": FACT, "value": value,
                      "quote": answer["source"], "source_url": "", "observed_at": ctx.now})
         got[aid] = value
-    ctx.store.upsert("credit_ledger", settled)
+    ledger.settle_each(ctx, settled)
     if rows:
         ctx.store.insert("signal_events", rows)
     return got

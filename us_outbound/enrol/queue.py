@@ -29,6 +29,7 @@ from collections.abc import Mapping
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from us_outbound import parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.settings.model import Settings
 
@@ -57,13 +58,6 @@ def daily_number(*, weekly_target: int, sending_capacity: int, ready_accounts: i
 # -- order and selection ----------------------------------------------------------------------
 
 
-def _number(v: Any) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def industry_priority(row: Mapping[str, Any], settings: Settings) -> int:
     ind = settings.industry(str(row.get("industry") or ""))
     return ind.priority if ind else DEFAULT_INDUSTRY_PRIORITY
@@ -73,7 +67,7 @@ def order_key(row: Mapping[str, Any], settings: Settings) -> tuple:
     """Tier, score (high first), size band (20 to 99 first), industry priority; then first_seen, id."""
     return (
         TIER_RANK.get(str(row.get("tier")), 9),
-        -_number(row.get("score")),
+        -(parse.number(row.get("score")) or 0.0),
         SIZE_BAND_RANK.get(str(row.get("size_band") or ""), 3),
         industry_priority(row, settings),
         str(row.get("first_seen") or ""),
@@ -94,9 +88,13 @@ def control_count(n: int, settings: Settings, control_available: int) -> int:
 # -- test versions (SPEC 9, 12) ----------------------------------------------------------------
 
 
-def test_version(account_id: str, test_id: str) -> str:
-    """"a" or "b", from sha256(account_id + test_id) % 2; 0 is version_a."""
-    return "a" if int(hashlib.sha256((account_id + test_id).encode()).hexdigest(), 16) % 2 == 0 else "b"
+def test_version(account_id: str, test_id: str, share_a: float = 0.5) -> str:
+    """"a" or "b", from sha256(account_id + test_id): % 2 when the arms are even (0 is version_a), else version_a
+    for the accounts whose hash falls in its share (Test.share_a; Harry, 8 Oct 2026), in steps of 0.01%."""
+    h = int(hashlib.sha256((account_id + test_id).encode()).hexdigest(), 16)
+    if share_a == 0.5:
+        return "a" if h % 2 == 0 else "b"
+    return "a" if h % 10000 < round(share_a * 10000) else "b"
 
 
 test_version.__test__ = False  # not a pytest test, despite the name

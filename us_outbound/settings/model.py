@@ -89,9 +89,16 @@ AGED_FACTS = frozenset({"days_since_funding", "people_leader_days_in_title", "da
 ACTIONS = ("Score", "Hold", "Exclude", "Suppress")
 TIERS = ("Priority", "Standard", "Control", "Held", "Excluded")
 MAILBOX_STATUSES = ("Warming", "Active", "Paused", "Retired")
+# USPS codes: the 50 states and DC (the States tab's rows).
+US_STATES = (
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS",
+    "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC",
+    "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+)
 COPY_STATUSES = ("draft", "approved", "retired")
 COPY_STEPS = (1, 2, 3, 4)
 GENERAL_COPY = "General"  # a Copy row for every industry: the fallback when an industry has no approved row
+LEGAL_GROUP = "Legal Teams"  # the group whose emails and angle carry the legal overlay (render, angle)
 EMAIL_FORMATS = ("html", "text")
 # The contacted roles (Roles tab) and the Copy-tab column holding each one's line for email 1.
 ROLE_LINE_COLUMNS = {"People leader": "people_leader_line", "Founder or executive": "founder_line",
@@ -188,7 +195,7 @@ class General:
 
     live_sending: bool = False
     # (build) Harry, 2 Oct 2026: no, every email waits for an approver's ✅ in Slack before its lead is added
-    # to Instantly (enrol/approvals.py); yes, enrol adds leads straight away, as before.
+    # to Instantly (enrol/approvals/); yes, enrol adds leads straight away, as before.
     auto_send: bool = False
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
     control_share: float = 0.15
@@ -367,6 +374,11 @@ class Industry:
     # Harry, 7 Oct 2026). A blank cell, or a sheet without the column, takes the build's (data/industries.csv).
     definition: str = ""
 
+    @property
+    def is_umbrella(self) -> bool:
+        """Whether this is its group's own label (named after the group): a company under it gets the group's copy."""
+        return self.industry == self.industry_group
+
 
 @dataclass(frozen=True)
 class State:
@@ -525,7 +537,12 @@ class Test:
 
     A variant test (Harry, 7 Oct 2026; enrol/variants.py) also says which email it changes (1 to 4), how
     (VARIANT_CHANGES), and what each arm's email carries: text_a for version_a's accounts, text_b for version_b's,
-    "" for the Copy row's email as it is. find is the exact text a replace changes."""
+    "" for the Copy row's email as it is. find is the exact text a replace changes.
+
+    share_a (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email 1s") is the share of an ab or variant
+    test's accounts that version_a takes, 0.5 (half and half) when the column is blank. accounts_per_version and the
+    count looks are then counted in the smaller arm, and the larger arm takes proportionally more (scaled): at 70/30,
+    400 accounts per version is 400 in the smaller arm and 933 in the larger."""
 
     test_id: str
     hypothesis: str
@@ -544,6 +561,7 @@ class Test:
     text_a: str = ""
     text_b: str = ""
     find: str = ""
+    share_a: float = 0.5
 
     def arm_name(self, arm: str) -> str:
         """The name of arm "a" or "b": version_a or version_b ("warm intro", "no intro")."""
@@ -552,6 +570,21 @@ class Test:
     def text(self, arm: str) -> str:
         """A variant test's text for arm "a" or "b"; "" leaves that arm's email as the Copy row has it."""
         return self.text_a if arm == "a" else self.text_b
+
+    def share(self, arm: str) -> float:
+        """The share of the test's accounts that arm "a" or "b" takes."""
+        return self.share_a if arm == "a" else 1 - self.share_a
+
+    def scaled(self, n: int, arm: str) -> int:
+        """n, counted in the smaller arm, as arm "a" or "b"'s count: n itself when the arms are even, and the larger
+        arm's proportionally more when they are not (70/30: 200 in the smaller arm is 467 in the larger)."""
+        if self.share_a == 0.5:
+            return n
+        return round(n * self.share(arm) / min(self.share_a, 1 - self.share_a))
+
+    def cap(self, arm: str) -> int:
+        """How many accounts arm "a" or "b" takes (accounts_per_version, scaled); 0 for no cap."""
+        return self.scaled(self.accounts_per_version, arm) if self.accounts_per_version > 0 else 0
 
 
 @dataclass(frozen=True)
@@ -602,6 +635,40 @@ class Settings:
 
     def industry(self, label: str) -> Industry | None:
         return next((i for i in self.industries if i.industry == label), None)
+
+    def umbrella(self, group: str) -> Industry | None:
+        """The group's own label (the one named after the group), or None."""
+        return next((i for i in self.industries if i.industry_group == group and i.is_umbrella), None)
+
+    def labels_in(self, group: str) -> tuple[Industry, ...]:
+        """The group's labels, in the tab's order (switched off or not)."""
+        return tuple(i for i in self.industries if i.industry_group == group)
+
+    def active_groups(self) -> tuple[str, ...]:
+        """The groups with at least one label switched on, in the tab's order."""
+        return tuple(dict.fromkeys(i.industry_group for i in self.industries if i.active and i.industry_group))
+
+    def label(self, text: Any, *, fuzzy: bool = False) -> Industry | None:
+        """The Industries label a person means, in any case and spacing ("fintech" is Fintech). fuzzy: also the one
+        label the text is part of ("games" is Games studios); None when nothing matches, or more than one does."""
+        t = " ".join(str(text or "").split()).strip(" \"'“”‘’<>.!*_`").casefold()
+        if not t:
+            return None
+        exact = next((i for i in self.industries if i.industry.casefold() == t), None)
+        if exact is not None or not fuzzy:
+            return exact
+        near = [i for i in self.industries if t in i.industry.casefold()]
+        return near[0] if len(near) == 1 else None
+
+    def placeable(self, ind: Industry | None) -> Industry | None:
+        """The label a company whose best label is ind goes under: ind when it is switched on, else its group's own
+        label when that is (as the label check places it, labels.decide), else None. 9 Oct 2026: sourcing dropped a
+        company whose best label was switched off ("Remote & hybrid teams"), though the check would have placed it
+        under Technology & Startups."""
+        if ind is None or ind.active:
+            return ind
+        umbrella = self.umbrella(ind.industry_group)
+        return umbrella if umbrella is not None and umbrella.active else None
 
     def size_bands(self) -> tuple[str, ...]:
         """The SIZE_BANDS the General size range touches, smallest first."""
@@ -655,9 +722,7 @@ class Settings:
 
     def industry_page_url(self, label: str) -> str:
         """The page of an Industries label or group (the group's own row), else ""."""
-        row = self.industry(label)
-        if row is None:
-            row = next((i for i in self.industries if i.industry_group == label and i.industry == label), None)
+        row = self.industry(label) or self.umbrella(label)
         return row.landing_page_url.strip() if row else ""
 
     def overrides_for(self, domain: str) -> dict[str, str]:

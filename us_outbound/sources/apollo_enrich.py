@@ -48,22 +48,26 @@ import json
 from collections import Counter, defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
+from us_outbound import ledger
 from us_outbound.clean.domains import root_domain
 from us_outbound.clean.people import size_band
 from us_outbound.clients.apollo import BULK_ENRICH_MAX, enriched_in
+from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import Context
 from us_outbound.enrol import focus, queue
+from us_outbound.facts import newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
 from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
+from us_outbound.timeparse import utc, utc_strict
 
 JOB = "apollo_enrich"
 SOURCE = uni.SOURCE  # apollo_org: the funding signals read it
@@ -82,16 +86,6 @@ DONE, SPENT = "every account due an enrich is enriched", "today's Apollo credits
 ID_CHUNK = 1000
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def _chunks(items: Sequence[str], n: int) -> list[Sequence[str]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
@@ -107,7 +101,7 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, datetim
         for e in ctx.store.select("signal_events", {"account_id": list(chunk), "source": SOURCE}):
             aid = e["account_id"]
             stored[aid].add(str(e.get("fact")))
-            t = _ts(e.get("observed_at")) if e.get("fact") == MARKER else None
+            t = utc(e.get("observed_at")) if e.get("fact") == MARKER else None
             if t is not None and (aid not in last or t > last[aid]):
                 last[aid] = t
     return last, stored
@@ -146,7 +140,7 @@ def answer_facts(account: Mapping[str, Any], org: Mapping[str, Any] | None, stor
         keep = FACTS | (EXTRA_FACTS - stored)
         facts = [e for e in uni.org_facts(aid, org, "", now) if e["fact"] in keep]
     got = {e["fact"]: e["value"] for e in facts}
-    org_id = str(org.get("organization_id") or org.get("id") or "") if org else ""
+    org_id = apollo_org_id(org)
     if org:
         days, stage, n = got.get("days_since_funding"), got.get("funding_stage"), got.get("employees")
         parts = ["found"]
@@ -212,14 +206,12 @@ class _Run:
     errors: list[str] = field(default_factory=list)
 
 
-def _failed(ctx: Context, entry: dict, exc: ApiError, reserved: float, note: dict, what: str, r: _Run,
-            room: credits.Room) -> None:
+def _failed(paid: ledger.Charge, exc: ApiError, note: dict, what: str, r: _Run, room: credits.Room) -> None:
     """Settle a call Apollo refused: 0 for a 4xx (refused unprocessed), else counted in case it charged."""
-    spent = 0.0 if 400 <= exc.status < 500 else reserved
-    credits.settle(ctx, entry, spent, note=json.dumps({**note, "failed": exc.status}))
+    spent = paid.fail(exc, note=json.dumps({**note, "failed": exc.status}))
     room.spend(spent)
     r.credits += spent
-    if exc.status in (401, 403):
+    if isinstance(exc, AuthError):
         raise exc  # the key is wrong: every call would fail
     r.errors.append(f"{what}: {str(exc)[:200]}")
 
@@ -234,16 +226,16 @@ def ask_bulk(ctx: Context, batch: Sequence[Mapping[str, Any]], r: _Run, room: cr
     """
     domains = [str(a["domain"]) for a in batch]
     note = {"bulk_enrich": len(domains)}
-    entry = credits.reserve(ctx, JOB, len(domains), note=json.dumps({**note, "reserved": True}))
-    try:
-        body = ctx.clients.apollo.bulk_enrich_organizations(domains)
-    except ApiError as exc:
-        _failed(ctx, entry, exc, float(len(domains)), note, f"bulk_enrich of {len(domains)} domains", r, room)
-        return None
-    orgs = enriched_in(body)
-    reported = max(float(body.get("unique_enriched_records") or 0), float(body.get("credits_consumed") or 0))
-    spent = max(float(len(orgs)), reported)
-    credits.settle(ctx, entry, spent, note=json.dumps({**note, "found": len(orgs), "reported": reported}))
+    with ledger.charge(ctx, credits.SYSTEM, JOB, len(domains), note=json.dumps({**note, "reserved": True})) as paid:
+        try:
+            body = ctx.clients.apollo.bulk_enrich_organizations(domains)
+        except ApiError as exc:
+            _failed(paid, exc, note, f"bulk_enrich of {len(domains)} domains", r, room)
+            return None
+        orgs = enriched_in(body)
+        reported = max(float(body.get("unique_enriched_records") or 0), float(body.get("credits_consumed") or 0))
+        spent = paid.settle(max(float(len(orgs)), reported),
+                            note=json.dumps({**note, "found": len(orgs), "reported": reported}))
     room.spend(spent)
     r.credits += spent
     r.bulk_calls += 1
@@ -265,17 +257,17 @@ def ask_one(ctx: Context, account: Mapping[str, Any], r: _Run, room: credits.Roo
     """(answered, Apollo's record or None when it has none) for one domain (1 credit if found); (False, None) on an error."""
     domain = str(account["domain"])
     note = {"enrich": domain}
-    entry = credits.reserve(ctx, JOB, 1.0, note=json.dumps({**note, "reserved": True}), account_id=account["account_id"])
-    try:
-        body = ctx.clients.apollo.enrich_organization(domain)
-    except ApiError as exc:
-        if exc.status != 404:  # PHASE0-CONFIRM: 404 is how Apollo says it has no record for the domain
-            _failed(ctx, entry, exc, 1.0, note, domain, r, room)
-            return False, None
-        body = {}
-    org = next(iter(enriched_in(body)), None)
-    spent = 1.0 if org else 0.0
-    credits.settle(ctx, entry, spent, note=json.dumps({**note, "found": bool(org)}))
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=json.dumps({**note, "reserved": True}),
+                       account_id=account["account_id"]) as paid:
+        try:
+            body = ctx.clients.apollo.enrich_organization(domain)
+        except ApiError as exc:
+            if exc.status != 404:  # PHASE0-CONFIRM: 404 is how Apollo says it has no record for the domain
+                _failed(paid, exc, note, domain, r, room)
+                return False, None
+            body = {}
+        org = next(iter(enriched_in(body)), None)
+        spent = paid.settle(1.0 if org else 0.0, note=json.dumps({**note, "found": bool(org)}))
     room.spend(spent)
     r.credits += spent
     r.single_calls += 1
@@ -306,19 +298,17 @@ class Tally:
 
 def tally(store: Any, today: date, *, run_id: str | None = None) -> Tally:
     """What the enrich found: for one run (its org_enrich facts), or for every account enriched so far."""
-    latest: dict[str, dict] = {}
-    for e in store.select("signal_events", {"source": SOURCE, "fact": MARKER}):
-        v, t = e.get("value"), _ts(e.get("observed_at"))
-        if not isinstance(v, Mapping) or t is None or (run_id is not None and v.get("run_id") != run_id):
-            continue
-        aid = str(e.get("account_id"))
-        if aid not in latest or t > latest[aid]["observed_at"]:
-            latest[aid] = {**e, "observed_at": t}
+    def counted(e: Mapping[str, Any]) -> bool:
+        v = e.get("value")
+        return isinstance(v, Mapping) and (run_id is None or v.get("run_id") == run_id)
+
+    latest = newest_by(store.select("signal_events", {"source": SOURCE, "fact": MARKER}),
+                       lambda e: str(e.get("account_id")), where=counted, dated=True)
     out = Tally()
     for e in latest.values():
-        v = e["value"]
+        v, t = e["value"], utc_strict(e.get("observed_at"))
         out.accounts += 1
-        out.run_at = e["observed_at"] if out.run_at is None or e["observed_at"] > out.run_at else out.run_at
+        out.run_at = t if out.run_at is None or t > out.run_at else out.run_at
         if v.get("outcome") != FOUND:
             out.not_found += 1
             continue
@@ -334,12 +324,9 @@ def tally(store: Any, today: date, *, run_id: str | None = None) -> Tally:
 
 def latest_run(store: Any) -> str | None:
     """The run_id of the newest org_enrich fact."""
-    best: tuple[datetime, str] | None = None
-    for e in store.select("signal_events", {"source": SOURCE, "fact": MARKER}):
-        t, v = _ts(e.get("observed_at")), e.get("value")
-        if t is not None and isinstance(v, Mapping) and v.get("run_id") and (best is None or t > best[0]):
-            best = (t, str(v["run_id"]))
-    return best[1] if best else None
+    e = newest(store.select("signal_events", {"source": SOURCE, "fact": MARKER}), dated=True,
+               where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"].get("run_id")))
+    return str(e["value"]["run_id"]) if e else None
 
 
 def post_lines(ctx: Context) -> list[str]:

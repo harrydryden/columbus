@@ -10,7 +10,7 @@ Environment (on Railway: service variables, the keys sealed; docs/railway-setup.
   US_OUTBOUND_*_API_KEY / _TOKEN          the six keys (context.SECRET_NAMES), read when used
 
 Order: a guard that starts in dry-run, the database store, the settings in force (with any
-mailbox a kill rule holds shown as Paused, learn/holds.py), and
+mailbox a kill rule holds shown as Paused, base/holds.py), and
 only then the live decision and the boundaries, so nothing can be sent before the
 settings are known. If the settings are unusable, jobs refuse to run; settings_sync, the
 sheet bootstrap and `settings load` start from the General defaults so they can repair them,
@@ -34,14 +34,14 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from us_outbound.base.heartbeats import OPERATOR_STOP
+from us_outbound.base.holds import with_holds
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Guard
 from us_outbound.clients.http import Transport
 from us_outbound.context import Clients, ConfigError, Context, Secrets, boundaries_for, effective_live
-from us_outbound.learn.holds import with_holds
 from us_outbound.logs import log
 from us_outbound.ops import watchdog
-from us_outbound.ops.heartbeat import OPERATOR_STOP
 from us_outbound.settings.model import General, Settings
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
@@ -89,7 +89,7 @@ def _load_settings(store: Store) -> tuple[Settings | None, Mapping[str, list[Any
     from us_outbound.settings.sync import load_current  # built alongside; imported when used
 
     settings, errors = load_current(store)
-    # A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (learn/holds.py).
+    # A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py).
     return (with_holds(store, settings) if settings is not None else None), errors
 
 

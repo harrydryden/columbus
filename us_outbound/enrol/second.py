@@ -30,7 +30,7 @@ and a send approval's ✅ (enrol/approvals.recheck):
             the very one the first contact got (two colleagues with the same email reads as a mail merge). Its
             own opener, for its role. The test version, opener holdout and subject arm are by account, so both
             people share them.
-  Approvals the card says it is the second contact, and who the first was (enrol/approvals.py).
+  Approvals the card says it is the second contact, and who the first was (enrol/approvals/).
   Stops     replies/account_stop.py: anyone's reply, bounce, unsubscribe or complaint stops both sequences.
 """
 
@@ -43,9 +43,10 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clean.people import company_size
-from us_outbound.context import ET, Context
+from us_outbound.context import Context
 from us_outbound.enrol import capacity, enrol, queue
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import et_day, utc
 
 FIRST, SECOND = 1, 2  # contacts.contact_slot
 ENROLLED = "enrolled"
@@ -79,17 +80,6 @@ def _lower(v: Any) -> str:
 def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> Iterator[Sequence[str]]:
     for i in range(0, len(items), n):
         yield items[i : i + n]
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str) and v:
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    return None
 
 
 def slot_of(contact: Mapping[str, Any]) -> int:
@@ -136,7 +126,7 @@ class Thread:
     def enrolled(self) -> list[dict]:
         floor = datetime.min.replace(tzinfo=UTC)
         return sorted((c for c in self.contacts if is_enrolled(c)),
-                      key=lambda c: (_ts(c.get("enrolled_at")) or floor, str(c.get("contact_id"))))
+                      key=lambda c: (utc(c.get("enrolled_at")) or floor, str(c.get("contact_id"))))
 
     @property
     def first(self) -> dict | None:
@@ -151,7 +141,7 @@ class Thread:
     @property
     def first_email(self) -> date | None:
         """The US Eastern day the first contact's email 1 went, as sync_outcomes recorded it."""
-        return min(self.first_sends).astimezone(ET).date() if self.first_sends else None
+        return et_day(min(self.first_sends)) if self.first_sends else None
 
     def due(self, settings: Settings) -> date | None:
         """The first day a second contact may be enrolled: second_contact_delay_days after the first's email 1."""
@@ -192,7 +182,7 @@ def threads(ctx: Context, accounts: Sequence[Mapping[str, Any]]) -> dict[str, Th
     firsts = {str(t.first["contact_id"]): aid for aid, t in out.items() if t.first}
     for chunk in _chunks(sorted(firsts)):
         for e in store.select("events", {"type": SENT, "contact_id": list(chunk)}):
-            t = _ts(e.get("occurred_at"))
+            t = utc(e.get("occurred_at"))
             if t is not None and not e.get("approval"):  # an approval marks an old desk reply, not a step
                 out[firsts[str(e["contact_id"])]].first_sends.append(t)
     return out

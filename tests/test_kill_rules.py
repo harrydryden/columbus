@@ -1,4 +1,4 @@
-"""kill_rules (SPEC 12 "Kill rules"; learn/kill_rules.py, learn/holds.py): the rules, the registry pause
+"""kill_rules (SPEC 12 "Kill rules"; learn/kill_rules.py, base/holds.py): the rules, the registry pause
 path, suppression, the holds enrol and the registry honour, the alert, and the killrules command."""
 
 from __future__ import annotations
@@ -19,9 +19,10 @@ from tests.test_registry import (
     row,
     setup,
 )
+from us_outbound.base import holds
 from us_outbound.context import Secrets
 from us_outbound.enrol import capacity, enrol
-from us_outbound.learn import holds, kill_rules
+from us_outbound.learn import kill_rules
 from us_outbound.logs import hash_email
 from us_outbound.registry import mailboxes as reg
 

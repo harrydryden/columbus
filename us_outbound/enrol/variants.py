@@ -13,18 +13,19 @@ text_a is what version_a's accounts get and text_b version_b's; a blank text lea
 row has it, so the warm-intro test is text_a the line and text_b blank. version_a and version_b name the arms
 ("warm intro", "no intro").
 
-text_violations() is the check settings_sync makes of each text (settings/validate.py), and `us-outbound test start`
-with it: the copy rules that apply to a line of body (copy_rules.line_violations) or to a subject
-(copy_rules.subject_violations), on the text as written and as filled with SAMPLE_VALUES. A text may use the render
-variables ({{first_name}}, {{company}} and the rest of render.VARIABLES) but not {{opener}} or {{legal_overlay}},
-which are lines of their own that the Copy row places. coverage() is what `test start` reports: the sendable Copy
-rows the change can be made in.
+copy/variant_text.py's text_violations() is the check settings_sync makes of each text (settings/validate.py), and
+`us-outbound test start` with it: the copy rules that apply to a line of body or to a subject, on the text alone. A
+text may use the render variables but not {{opener}} or {{legal_overlay}}, which are lines of their own that the Copy
+row places. coverage() is what `test start` reports: the sendable Copy rows the change can be made in.
 
 Who is in it (choose). Every account enrolled from start_date on, whatever its tier (Control too), industry, role or
-Copy row: "a" or "b" by sha256(account_id + test_id) (queue.test_version, as an ab test splits). The opener holdout
+Copy row: "a" or "b" by sha256(account_id + test_id) (queue.test_version, as an ab test splits), half and half
+unless the row's share_a says otherwise (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email 1s";
+70% gives version_a seven accounts in ten). The opener holdout
 and the subject split hash the account id with salts of their own, so the three splits are independent and the
 designs factorial. A second contact gets its account's arm when its first contact is in the test, and is never
-counted as a new account. Each arm takes accounts_per_version accounts; once an arm has them, the accounts it would
+counted as a new account. Each arm takes its cap (accounts_per_version, counted in the smaller arm and scaled to the
+larger: Test.cap); once an arm has them, the accounts it would
 have had get the Copy row as it is and are not in the test (nor are any once Harry sets the test read or stopped).
 
 Where the change cannot be made, the account is not in the test, whichever arm it hashes to: a replace whose find is
@@ -50,7 +51,8 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Any
 
-from us_outbound.enrol import copy_markup, copy_rules, queue, render
+from us_outbound.copy import copy_rules
+from us_outbound.enrol import queue, render
 from us_outbound.settings.model import (
     FIRST_LINE,
     LAST_LINE,
@@ -64,43 +66,8 @@ from us_outbound.settings.model import (
     Test,
 )
 
-# The variables a variant's text may use: every render variable but the optional lines, which the Copy row places.
-TEXT_VARIABLES = tuple(v for v in render.VARIABLES if v not in render.OPTIONAL_VARIABLES)
-# A made-up prospect and sender for the check at sync (copy_desk's sample prospect); each email is checked again
-# for its own lead when it is rendered.
-SAMPLE_VALUES = {
-    "first_name": "Dana", "company": "Harbor & Finch", "place": "Boston, MA",
-    "role_line": "You want support your team will use.", "price_line": render.PRICE_LINE.format(dollars=195),
-    "demo_url": "https://www.spill.chat/us/book-demo", "industry_url": "https://www.spill.chat/us/industry",
-    "site_url": "https://www.spill.chat/us", "sender_first_name": "Hannah", "proof": "Teams like yours use Spill.",
-}
-EXEMPT = ("Dana", "Harbor & Finch", "Boston, MA", "Hannah")  # proper nouns, not our wording (copy_rules._mask)
-LINES = (FIRST_LINE, LAST_LINE)  # the changes that add a line of its own
-
 # The copy-rule problems of one email of a contact's Copy row, written as given and rendered for that contact.
 Check = Callable[[int, CopyStep], Sequence[str]]
-
-
-def text_violations(text: str, *, change: str, email: int) -> list[str]:
-    """Why one arm's text may not go in its email, or []: the copy rules that apply to it alone (module docstring).
-
-    A subject takes the subject rules, with the email's own ask rule (only email 1 may not name a demo). A line of its
-    own (first_line, last_line) is one line with no link: the body has one link, its call to action. A replacement
-    may span lines and carry a link (find may hold one); the rules on the whole email decide that, at render time.
-    The variables are settings/validate.py's to check first."""
-    if change == SUBJECT:
-        out = ["is more than one line; a subject is one line"] if "\n" in text else []
-        if copy_markup.links(text) or "**" in text:
-            out.append("has markup; a subject is plain text")
-        filled, _ = copy_markup.fill_text(text, SAMPLE_VALUES)
-        return out + copy_rules.subject_violations(filled, exempt=EXEMPT, step=email)
-    out = []
-    if change in LINES and "\n" in text:
-        out.append("is more than one line; it is a line of its own in the email")
-    if change in LINES and copy_markup.links(text):
-        out.append("has a link; the body's one link is its call to action, so a line of its own carries none")
-    rendered = copy_markup.render(text, SAMPLE_VALUES)
-    return out + rendered.problems + copy_rules.line_violations(text, rendered.words, step=email, exempt=EXEMPT)
 
 
 # -- one email, changed ------------------------------------------------------------------------------------------------
@@ -174,8 +141,8 @@ class Arm:
 
 
 def arm_for(test: Test, account_id: Any) -> str:
-    """"a" or "b": sha256(account_id + test_id) % 2, as an ab test splits (queue.test_version)."""
-    return queue.test_version(str(account_id), test.test_id)
+    """"a" or "b" by sha256(account_id + test_id), in the test's share_a (queue.test_version), as an ab test splits."""
+    return queue.test_version(str(account_id), test.test_id, test.share_a)
 
 
 def choose(test: Test | None, account: Mapping[str, Any], row: CopyRow, *, today: date, subject_arm: str,
@@ -190,8 +157,8 @@ def choose(test: Test | None, account: Mapping[str, Any], row: CopyRow, *, today
     if first is not None and str(first.get("test_id") or "") != test.test_id:
         return None
     arm = arm_for(test, account["account_id"])
-    if first is None and 0 < test.accounts_per_version <= counts.get(arm, 0):
-        return Arm(test.test_id, note=f"{test.arm_name(arm)} has its {test.accounts_per_version} accounts")
+    if first is None and 0 < test.cap(arm) <= counts.get(arm, 0):
+        return Arm(test.test_id, note=f"{test.arm_name(arm)} has its {test.cap(arm)} accounts")
     if test.change == SUBJECT and test.email == render.SUBJECT_STEP and subject_arm == render.PERSONAL_SUBJECT:
         return Arm(test.test_id, note="its email 1 has the personal subject (General email1_subject), which the test "
                                       "does not change")

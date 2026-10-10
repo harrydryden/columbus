@@ -76,7 +76,7 @@ def slack_problem(ctx: Context) -> str:
             return f"Slack rejected the bot token ({code})"
         return f"Slack could not check the bot token ({code or f'HTTP {exc.status}'})"
     except Exception as exc:  # a connection error or a timeout, after the transport's retries
-        return f"Slack could not be reached ({type(exc).__name__})"
+        return f"Slack could not be reached ({getattr(exc, 'reason', type(exc).__name__)})"
     return ""
 
 
@@ -93,7 +93,7 @@ def ping(ctx: Context, reasons: Sequence[str] = ()) -> dict[str, Any]:
     except GuardViolation:
         raise
     except Exception as exc:  # the URL is in a requests error's text, so only its type is kept
-        error = str(exc) if isinstance(exc, PingFailed) else type(exc).__name__
+        error = str(exc) if isinstance(exc, PingFailed) else getattr(exc, "reason", type(exc).__name__)
         log("watchdog_ping_failed", fail=fail, error=error)
         return {"pinged": False, "fail": fail, "ping_error": error}
     log("watchdog_ping", fail=fail, status=status, reasons=list(reasons))

@@ -13,7 +13,9 @@ starts, what it compares and when it may be read:
     start_date on. ab and variant are the copy tests: one runs at a time.
   * looks: interim looks, each a whole number N (both arms have N accounts with step 1 delivered whose 28-day
     reply window has closed) or a date. read_date is always the last look.
-A count look is reached when the slower arm's Nth account's window closes; a date look on its date (UK).
+A count look is reached when the slower arm's Nth account's window closes; a date look on its date (UK). A test whose
+arms are uneven (share_a; Harry, 8 Oct 2026) counts N in its smaller arm and N scaled in the larger (Test.scaled: at
+70/30, a look at 200 is 200 accounts in the smaller arm and 467 in the larger), so each arm is read in its share.
 
 `us-outbound test read ID` reads the test at its latest look reached, and only over what that look covers: for
 a count look, each arm's first N accounts (by step 1); for a date look, the accounts whose window had closed by
@@ -23,7 +25,7 @@ has got (accounts emailed, windows closed): never a reply, so nobody peeks. Repl
 detects a 2x difference); positive and meeting rates are for information, with the same two-proportion test as
 `signals review` (signal_review.p_value). Harry writes the result on the Tests tab.
 
-An email an approver edited on its send card (approved_edited; enrol/approvals.py) counts in the arm it was given,
+An email an approver edited on its send card (approved_edited; enrol/approvals/) counts in the arm it was given,
 as assigned (Harry, 7 Oct 2026): leaving edits out would bias the comparison whenever approvers edit one arm's emails
 more than the other's (a warm intro they dislike, say), while counting them only dilutes it. Each arm's read says how
 many of its emails were edited (edited), so a large or lopsided number is seen.
@@ -40,15 +42,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound import fmt
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import signal_review
+from us_outbound.replies import kinds
 from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, VARIANT_ARMS, VARIANT_TEST, Test
+from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
-POSITIVE = frozenset({"positive", "referral"})
-NOT_HUMAN = "out_of_office"
-EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals.py)
+POSITIVE = kinds.WARM
+EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals/)
 
 
 class NotYet(Exception):
@@ -70,7 +74,7 @@ class Outcome:
         return self.step1_at + WINDOW
 
     def replied(self) -> bool:
-        return any(self.step1_at <= t < self.closes_at and c != NOT_HUMAN for t, c in self.replies)
+        return any(self.step1_at <= t < self.closes_at and kinds.is_human(c) for t, c in self.replies)
 
     def positive(self) -> bool:
         return any(self.step1_at <= t < self.closes_at and c in POSITIVE for t, c in self.replies)
@@ -96,27 +100,22 @@ class Look:
     day: date | None = None
     final: bool = False
     reached_at: datetime | None = None
+    per_arm: tuple[tuple[str, int], ...] = ()  # (arm, its count) for a count look: count, scaled to the arm's share
+
+    def needs(self, arm: str) -> int:
+        """How many accounts a count look reads in this arm (its count unless the arms are uneven)."""
+        return dict(self.per_arm).get(arm, self.count or 0)
 
     @property
     def label(self) -> str:
-        what = f"{self.count} accounts per arm with closed reply windows" if self.count else f"{self.day:%a %d %b %Y}"
+        counts = dict(self.per_arm)
+        if self.count and len(set(counts.values())) > 1:
+            what = " and ".join(f"{arm} {n}" for arm, n in counts.items()) + " accounts with closed reply windows"
+        elif self.count:
+            what = f"{self.count} accounts per arm with closed reply windows"
+        else:
+            what = f"{self.day:%a %d %b %Y}"
         return f"look {self.number}{' (the read date)' if self.final else ''}: {what}"
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
-
-
-def _midnight(d: date) -> datetime:
-    return datetime(d.year, d.month, d.day, tzinfo=UK)
 
 
 def arm_names(test: Test) -> tuple[str, str]:
@@ -124,8 +123,8 @@ def arm_names(test: Test) -> tuple[str, str]:
 
 
 def _since_start(test: Test, contacts: list[dict]) -> list[dict]:
-    start = _midnight(test.start_date) if test.start_date else None
-    return [c for c in contacts if (t := _ts(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
+    start = uk_midnight(test.start_date) if test.start_date else None
+    return [c for c in contacts if (t := utc(c.get("enrolled_at"))) is not None and (start is None or t >= start)]
 
 
 def _members(ctx: Context, test: Test) -> dict[str, str]:
@@ -149,7 +148,7 @@ def _members(ctx: Context, test: Test) -> dict[str, str]:
         def arm_of(c: dict) -> str:
             return str(c.get(column) or "")
     never = datetime.max.replace(tzinfo=UTC)
-    contacts.sort(key=lambda c: (_ts(c.get("enrolled_at")) or never, str(c.get("contact_id"))))
+    contacts.sort(key=lambda c: (utc(c.get("enrolled_at")) or never, str(c.get("contact_id"))))
     out: dict[str, str] = {}
     for c in contacts:
         arm = arm_of(c)
@@ -174,8 +173,8 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
     never = datetime.max.replace(tzinfo=UTC)
     for account_id, arm in members.items():
         evs = sorted(by_account.get(account_id, []),
-                     key=lambda e: (_ts(e.get("occurred_at")) or never, str(e.get("event_id"))))
-        step1 = next((e for e in evs if e.get("type") == "sent" and e.get("step") == 1 and _ts(e.get("occurred_at"))),
+                     key=lambda e: (utc(e.get("occurred_at")) or never, str(e.get("event_id"))))
+        step1 = next((e for e in evs if e.get("type") == "sent" and e.get("step") == 1 and utc(e.get("occurred_at"))),
                      None)
         if step1 is None:
             continue
@@ -184,11 +183,11 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
         if bounced:
             continue
         replies = tuple((t, str(e.get("reply_class") or "").strip().lower()) for e in evs
-                        if e.get("type") == "replied" and (t := _ts(e.get("occurred_at"))))
-        meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := _ts(e.get("occurred_at"))))
+                        if e.get("type") == "replied" and (t := utc(e.get("occurred_at"))))
+        meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := utc(e.get("occurred_at"))))
         edited = any(e.get("type") == "send_approval" and e.get("approval") == EDITED
                      and e.get("contact_id") == step1.get("contact_id") for e in evs)
-        out[arm].emailed.append(Outcome(account_id, _ts(step1["occurred_at"]), replies, meetings, edited))
+        out[arm].emailed.append(Outcome(account_id, utc(step1["occurred_at"]), replies, meetings, edited))
     for a in out.values():
         a.emailed.sort(key=lambda o: (o.step1_at, o.account_id))
     return out
@@ -201,11 +200,14 @@ def looks(test: Test, by_arm: Mapping[str, Arm]) -> list[Look]:
     for i, p in enumerate(points, start=1):
         final = i == len(points) and test.read_date is not None
         if isinstance(p, date):
-            out.append(Look(i, day=p, final=final, reached_at=_midnight(p)))
+            out.append(Look(i, day=p, final=final, reached_at=uk_midnight(p)))
             continue
-        lists = [a.emailed for a in by_arm.values()]
-        reached = max(lst[p - 1].closes_at for lst in lists) if lists and all(len(lst) >= p for lst in lists) else None
-        out.append(Look(i, count=p, final=final, reached_at=reached))
+        per_arm = tuple((name, test.scaled(p, arm)) for name, arm in zip(arm_names(test), VARIANT_ARMS))
+        need = dict(per_arm)
+        lists = [(a.emailed, need.get(name, p)) for name, a in by_arm.items()]
+        reached = (max(lst[n - 1].closes_at for lst, n in lists)
+                   if lists and all(len(lst) >= n for lst, n in lists) else None)
+        out.append(Look(i, count=p, final=final, reached_at=reached, per_arm=per_arm))
     return out
 
 
@@ -223,9 +225,10 @@ def upcoming(all_looks: Iterable[Look], now: datetime) -> Look | None:
 
 
 def covered(arm: Arm, look: Look) -> list[Outcome]:
-    """What a look reads in one arm: the first N accounts for a count look, those closed by the date for a date look."""
+    """What a look reads in one arm: the first N accounts for a count look (N scaled to the arm's share when the arms
+    are uneven), those closed by the date for a date look."""
     if look.count:
-        return arm.emailed[: look.count]
+        return arm.emailed[: look.needs(arm.name)]
     return [o for o in arm.emailed if o.closes_at <= look.reached_at]
 
 
@@ -283,13 +286,9 @@ def read(ctx: Context, test_id: str) -> dict:
     }
 
 
-def _pct(k: int, n: int) -> str:
-    return f"{k / n:.1%}" if n else "-"
-
-
 def summary_line(result: Mapping[str, Any]) -> str:
     """One line of a read: each arm's reply rate, and the test's p."""
-    arms_text = "; ".join(f"{name} {v['replied']} of {v['delivered']} replied ({_pct(v['replied'], v['delivered'])})"
+    arms_text = "; ".join(f"{name} {v['replied']} of {v['delivered']} replied ({fmt.pct(v['replied'], v['delivered'])})"
                           for name, v in result["versions"].items())
     p = result.get("reply_p_value")
     return arms_text + (f" · p = {p:.2f}" if p is not None else "")

@@ -54,17 +54,22 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from us_outbound.enrol import copy_markup, copy_rules, utm
-from us_outbound.settings.model import CLAY_SKIP, COPY_STEPS, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.copy import copy_markup, copy_rules
+from us_outbound.copy.variables import OPTIONAL_VARIABLES, PRICE_LINE, VARIABLES
+from us_outbound.enrol import utm
+from us_outbound.settings.model import (
+    CLAY_SKIP,
+    COPY_STEPS,
+    GENERAL_COPY,
+    LEGAL_GROUP,
+    CopyRow,
+    CopyStep,
+    Mailbox,
+    Settings,
+)
+from us_outbound.settings.overrides import effective
 
 STEPS = COPY_STEPS
-VARIABLES = (
-    "first_name", "company", "place", "opener", "legal_overlay", "role_line", "price_line", "demo_url",
-    "industry_url", "site_url", "sender_first_name", "proof",
-)
-OPTIONAL_VARIABLES = frozenset({"opener", "legal_overlay"})  # alone on their line; the line goes when empty
-LEGAL_GROUP = "Legal Teams"
-
 TEMPLATES_DIR = Path(os.environ.get("US_OUTBOUND_TEMPLATES") or Path(__file__).resolve().parents[2] / "templates") / "copy"
 SIGNATURE_TEMPLATE = "signature.txt"
 # Harry, 5 Oct 2026: "Ideally we would add some formatting to signature to make it look more professional."
@@ -93,10 +98,6 @@ PERSONAL_SUBJECT, COPY_SUBJECT = "personal", "copy"
 SUBJECT_ARMS = (PERSONAL_SUBJECT, COPY_SUBJECT)
 SUBJECT_SALT = "email1-subject:"  # not openers.HOLDOUT_SALT: the two splits never line up
 SUBJECT_STEP = 1  # only email 1's subject changes
-
-# Harry, 1 Oct 2026: one starting price in every email, as on the website, whatever the team's size
-# (General price_from). SPEC 4's price-by-size table is not quoted.
-PRICE_LINE = "Plans start from ${dollars} a month for the whole team, on a rolling 30-day contract."
 
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([a-z_]+)\}(?!\})")
 _FIXED_MISSING = {
@@ -188,8 +189,7 @@ def variables(
     legal_overlay: str = "",
 ) -> dict[str, str]:
     """The variables for one lead and one Copy row. Overrides for the account's domain win (SPEC 5, 13)."""
-    domain = str(account.get("domain") or "").strip().lower()
-    acct = {**account, **(settings.overrides_for(domain) if domain else {})}
+    acct = effective(account, settings)
     legal = settings.industry_group_of(acct).casefold() == LEGAL_GROUP.casefold()
     return {
         "first_name": str(contact.get("first_name") or "").strip(),

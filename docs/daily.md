@@ -67,7 +67,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | 07:00 | Mailbox health, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included. With `clay_cross_check` = yes, only the doubts Clay couldn't settle, with both values ("Clay says 62 staff, Apollo says 49") | `us-outbound handcheck show`, then `us-outbound handcheck approve --live`, adding `--pull DOMAIN` for any that are wrong. A missing fact needs an Overrides row (`hq_state`, `employees` or `industry`); approving alone keeps the account on the check |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 | The daily post | Read the **Needs you** line under the headline first. Its **Labels** block says how many companies the label check checked and decided, and how many cards' industry you corrected (`1 industry correction of 28 decided (96% right)`) |
+| 09:00 | The daily post, short since 9 Oct 2026: **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -81,8 +81,8 @@ one click decides.
 
 | On a send card (12:00) | On a reply card | What it does |
 | :- | :- | :- |
-| ✅ or `send` | ✅ or `send` | Sends it. A send card's lead goes to Instantly within 5 minutes |
-| ❌ or `skip` | ❌ or `skip` | A send card offers the three choices below. A reply card is closed, and nothing is sent |
+| ✅ or `send` (or `approve`) | ✅ or `send` (or `approve`) | Sends it. A send card's lead goes to Instantly within 5 minutes |
+| ❌ or `skip` (or `no`, `reject`, `don't send`) | ❌ or `skip` (or `no`, `reject`, `don't send`) | A send card offers the three choices below. A reply card is closed, and nothing is sent |
 | ✏️ (or `edit`), then a thread reply with the new email 1. Put "Subject: …" first, or "Email 2:" to change a follow-up | `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
 | — | `send: …` | Sends that text instead of the draft |
 | 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
@@ -162,8 +162,8 @@ first time, `us-outbound settings load --tab General --live` adds the key to the
 
 Harry, 7 Oct 2026: "A/B functionality to allow the system to try different versions of email copy". A
 `variant` test on the Tests tab changes one part of one email for every company enrolled from its
-`start_date`, whatever its tier, industry or Copy row, and splits them half and half: version_a's companies
-get `text_a`, version_b's get `text_b`. Its own columns:
+`start_date`, whatever its tier, industry or Copy row, and splits them half and half (or as `share_a`
+says; below): version_a's companies get `text_a`, version_b's get `text_b`. Its own columns:
 
 | Column | What it is |
 | :- | :- |
@@ -236,6 +236,23 @@ company's 28-day reply window then has to close:
 - `read_date`, 2027-03-29: the backstop. If volume runs slower (6 a day), the read on that date covers the
   companies whose windows have closed by then.
 
+**An uneven split: `share_a`** (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email
+1s"). A `share_a` column after `find` sets the share of companies that get version_a: `70%` (or `0.7`)
+gives version_a seven companies in ten and version_b three. Blank is half and half. It works for `ab` and
+`variant` tests, from 10% to 90%; a holdout test reads a split the system already makes, so it takes none.
+The first time, add the `share_a` header cell after `find` (or `us-outbound settings load --tab Tests
+--live`, which keeps your values).
+- `accounts_per_version` and the count looks are counted in the smaller version, and the larger takes
+  its share more: at 70/30, `290` is 290 companies with no intro and 677 with the warm intro, and a look
+  at `145` is 145 and 338. `test start` says the split, and the read compares the two versions' reply
+  rates whatever their sizes.
+- The cost is time. The smaller version decides when a look is reached, and an uneven split needs more
+  companies for the same power: 1.2 times as many at 70/30, 1.6 at 80/20, 2.8 at 90/10. For the warm
+  intro at 70/30, `290` in the smaller version (967 in all) finds the same 2× difference as 400 a
+  version did half and half (800 in all), about 17 send days later: look 2 in mid-April at 10 a day.
+- Change the split by starting a new test, not by editing a running one: companies already in the test
+  keep their version, so a mid-test change mixes two splits in one read.
+
 ## Expected volume in the pilot
 
 Each sender takes new contacts at a quarter of its daily cap, so the follow-ups on days 7, 14 and
@@ -260,7 +277,8 @@ comes back is new.
 | "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
 | "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 09:00, once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
 | "labels: N industry corrections since the last send day…" | 09:00, once a day, when you corrected 3 or more cards' industry, or 10% of at least 10 | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
-| "labels: the rules and the model agreed on only N%…" | 09:00, once a day, under 70% of at least 20 companies checked | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: trim them on the Industries tab |
+| "labels: the model put N of the M companies the rules labelled (P%) in another group or outside our labels…" | 09:00, once a day, when the model agreed on the group for under 70% of at least 20 companies the rules labelled (each counted once; the model naming a label within the rules' group, such as Publishers for Marketing & Creative Agencies, agrees) | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: `us-outbound labels crosswalk` says which, then trim them on the Industries tab |
+| "labels: the rules gave no label to N of M companies checked…" | 09:00, once a day, when at least 20 companies and 30% of those checked had no rules label | The line names the model's commonest labels for them and their commonest NAICS codes (`541511 → Software & SaaS (9)`): add each code to that label's `naics_prefixes` on the Industries tab, then `us-outbound sync` and `us-outbound relabel --live` |
 | "The label check did not run (…); N companies wait unverified" | 09:00, once a day, while the model cannot be asked (the Claude cap, an error) | At the cap, raise `claude_monthly_cap_usd`; on an error, it usually clears itself next run. Verified companies carry on meanwhile. To run on the rules alone, set `label_check` to `skip` |
 | "Instantly's plan has no room for new leads, so nothing new is being sent…" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and a ✅ already given goes through once there is room (the card says it is held) |
 | "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
@@ -304,8 +322,8 @@ docs/railway-setup.md, step h.
   place; 🚫 if the company is no fit at all. For a company with no card,
   `us-outbound labels set DOMAIN "<label>" --live`; `us-outbound labels show DOMAIN` gives its label's
   history. Since 7 Oct the task model checks each company's label before it can get a card (the
-  label check, docs/pipeline.md stage 3), so this should be rare: the daily post's **Labels** line
-  counts the corrections. `us-outbound relabel` shows what the rules and the stored checks change for
+  label check, docs/pipeline.md stage 3), so this should be rare: the full daily post's **Labels** line
+  (`us-outbound daily --full`) counts the corrections, and an ask names them when there are several. `us-outbound relabel` shows what the rules and the stored checks change for
   the companies in the queue; `--live` applies it and withdraws the open cards it changes. Government
   domains (.gov, .mil) are never prospected.
 - **Start the waiting cards again:** `us-outbound approvals redo all --live` (or one card: `approvals redo
@@ -442,6 +460,7 @@ commands instead.
 | Command | What it does |
 | :- | :- |
 | `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number |
+| `daily`, `daily --full` | The daily post as it would read now, short or in full; it posts nothing |
 | `golive` | The read-only go/no-go check |
 | `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
@@ -451,6 +470,7 @@ commands instead.
 | `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`, `industry ID "Fintech"`) | Send cards without Slack |
 | `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as `industry: Fintech` on a card does), or show its label and its check history |
 | `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` first reads the home page of each company the model was unsure of (public pages, no paid service) and asks about those again with it, then asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
+| `labels crosswalk`, `labels crosswalk --live` | How well the Industries tab translates Apollo's industry, NAICS codes and keyword tags into labels, measured on the companies whose label is known (your corrections, and the model's sure verdicts). It prints the translations that are mostly wrong ("naics 541613 → Marketing & Creative Agencies: 5 companies, 0% right; poor: mostly Adtech & martech"), those that place the group but not the label, and Apollo values the tab does not translate but could. `--live` also writes every row to a Crosswalk tab on the settings sheet. It asks no model and spends nothing |
 | `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies approvers corrected). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |

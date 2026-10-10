@@ -61,7 +61,7 @@ of its Active mailboxes' caps today, each the lower of the ramp (10 a day in a m
 first sending week, 20 in its second) and its daily_cap, and mailbox_health sets each
 Instantly account's own daily limit to the same number. So as the ramp moves, the daily drift
 check finds the campaign's limit behind and mailbox_health sets it (as `campaigns ensure --fix
---live` does). A mailbox a kill rule holds (learn/holds.py) counts as Paused here before the
+--live` does). A mailbox a kill rule holds (base/holds.py) counts as Paused here before the
 sheet catches up.
 """
 
@@ -71,10 +71,12 @@ import dataclasses
 import re
 from collections import Counter
 from collections.abc import Collection, Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound import config_version
+from us_outbound import config_version, parse
+from us_outbound.base import holds
+from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
@@ -86,15 +88,14 @@ from us_outbound.clients.instantly import (
     settings_drift,
     unsubscribe_line,
 )
-from us_outbound.context import UK, Context, boundaries_for
+from us_outbound.context import Context, boundaries_for
 from us_outbound.enrol import capacity
-from us_outbound.learn import holds
 from us_outbound.logs import log
-from us_outbound.ops.heartbeat import OPERATOR_START, OPERATOR_STOP
 from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Mailbox, Settings
 from us_outbound.settings.validate import SPILL_DOMAIN, is_spill_domain
+from us_outbound.timeparse import uk_day, utc_strict_or_none
 
 TAB = "Mailboxes"
 ACTIVE, WARMING, PAUSED, RETIRED = "Active", "Warming", "Paused", "Retired"
@@ -151,26 +152,6 @@ def _name_text(v: Any) -> str:
     return " ".join(str(v or "").split())
 
 
-def _date(v: Any) -> date | None:
-    if v is None or v == "":
-        return None
-    if isinstance(v, datetime):
-        return (v if v.tzinfo else v.replace(tzinfo=UTC)).astimezone(UK).date()
-    if isinstance(v, date):
-        return v
-    try:
-        return _date(datetime.fromisoformat(str(v).replace("Z", "+00:00")))
-    except ValueError:
-        return None
-
-
-def _ts(v: Any) -> datetime | None:
-    if v is None or v == "":
-        return None
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    return d if d.tzinfo else d.replace(tzinfo=UTC)
-
-
 def warmup_to_status(warmup: Mapping[str, Any], *, today: date | None = None, added_on: date | None = None) -> str:
     """ "Active" if Instantly shows the mailbox warm, otherwise "Warming" (see the module docstring)."""
     if not warmup.get("found", True) or not warmup.get("warmup_enabled"):
@@ -181,7 +162,7 @@ def warmup_to_status(warmup: Mapping[str, Any], *, today: date | None = None, ad
         if isinstance(score, (int, float)) and not isinstance(score, bool) and score >= WARM_SCORE:
             return ACTIVE
     if today is not None:
-        for start in (_date(warmup.get("warmup_started_at")), added_on):
+        for start in (uk_day(warmup.get("warmup_started_at")), added_on):
             if start is not None and (today - start).days >= WARM_DAYS:
                 return ACTIVE
     return WARMING
@@ -404,7 +385,7 @@ def _row(m: Mailbox) -> dict[str, str]:
         "provider": m.provider, "owner_name": m.owner_name, "owner_role": m.owner_role, "signature": m.signature,
         "status": m.status, "daily_cap": str(m.daily_cap),
         "added_on": m.added_on.isoformat() if m.added_on else "",
-        "retire_after": m.retire_after.isoformat() if m.retire_after else "",
+        "retire_after": m.retire_after.isoformat() if m.retire_after else "", "slack_id": m.slack_id,
     }
 
 
@@ -512,17 +493,11 @@ def mailbox_retire(ctx: Context, address: str) -> dict:
 def last_use(ctx: Context, address: str) -> datetime | None:
     """When the mailbox last sent: its latest campaign send or reply sent from the desk, or its contacts' last step."""
     a = address.lower()
-    times = [_ts(e.get("occurred_at")) for e in ctx.store.select("events", {"mailbox": a, "type": ["sent", "reply_sent"]})]
-    times += [_ts(c.get("last_step_at")) for c in ctx.store.select("contacts", {"mailbox": a})]
+    sends = ctx.store.select("events", {"mailbox": a, "type": ["sent", "reply_sent"]})
+    times = [utc_strict_or_none(e.get("occurred_at")) for e in sends]
+    times += [utc_strict_or_none(c.get("last_step_at")) for c in ctx.store.select("contacts", {"mailbox": a})]
     times = [t for t in times if t is not None]
     return max(times) if times else None
-
-
-def _as_int(v: Any) -> int:
-    try:
-        return int(v)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _lower_limit(row: Mapping[str, Any]) -> bool:
@@ -539,16 +514,17 @@ def _lower_limit(row: Mapping[str, Any]) -> bool:
 def went_live(store: Any) -> datetime | None:
     """When sending went live and still is: the latest live `start` that finished ok, if no `stop` came after it.
 
-    The same rule as ops/heartbeat.enrolment_paused: a stop counts in any mode and whatever its
+    The same rule as base/heartbeats.enrolment_paused: a stop counts in any mode and whatever its
     outcome (the safe direction); a start only when it ran live and finished ok.
     """
     rows = store.select("heartbeats", {"job": [OPERATOR_STOP, OPERATOR_START]})
     starts = [t for r in rows if r.get("job") == OPERATOR_START and r.get("status") == "ok" and r.get("dry_run") is False
-              and (t := _ts(r.get("started_at"))) is not None]
+              and (t := utc_strict_or_none(r.get("started_at"))) is not None]
     if not starts:
         return None
     last = max(starts)
-    stops = [t for r in rows if r.get("job") == OPERATOR_STOP and (t := _ts(r.get("started_at"))) is not None]
+    stops = [t for r in rows
+             if r.get("job") == OPERATOR_STOP and (t := utc_strict_or_none(r.get("started_at"))) is not None]
     return last if not stops or last > max(stops) else None
 
 
@@ -560,7 +536,7 @@ def _kill_rule_pauses(store: Any, since: datetime) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for r in store.select("hitl_items", {"kind": holds.KIND}):
         p = r.get("payload") if isinstance(r.get("payload"), Mapping) else {}
-        created = _ts(r.get("created_at"))
+        created = utc_strict_or_none(r.get("created_at"))
         if p.get("campaign_restarted") or created is None or created <= since:
             continue
         for name in p.get("campaigns_paused") or ():
@@ -774,7 +750,7 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
             continue
         out["instantly_daily_limits"][m.address.lower()] = w["daily_limit"]
         cap = ramp[m.address.lower()].cap if m.address.lower() in ramp else int(m.daily_cap or 0)
-        if m.status != RETIRED and _as_int(w["daily_limit"]) != cap:
+        if m.status != RETIRED and (parse.integer(w["daily_limit"]) or 0) != cap:
             out["limit_set"][m.address.lower()] = {"from": w["daily_limit"], "to": cap}
     # The sender name (Harry, 5 Oct 2026): Instantly's first_name and last_name, which make the From name
     # prospects see, against the owner's full name. Reported every day; set only with fix_names.
@@ -791,7 +767,8 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
     out["sent_by_day"] = {}
     if present:
         sends = inst.daily_sends(present, start_date=(today - timedelta(days=7)).isoformat(), end_date=today.isoformat())
-        out["sent_by_day"] = {a: {d: _as_int(r.get("sent")) for d, r in days.items()} for a, days in sends.items()}
+        out["sent_by_day"] = {a: {d: parse.integer(r.get("sent")) or 0 for d, r in days.items()}
+                              for a, days in sends.items()}
     out["campaign_status"] = {}
     for owner in settings.owners():
         try:

@@ -63,24 +63,27 @@ import re
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any
 
-from us_outbound import accounts, budget
+from us_outbound import accounts, budget, ledger, parse
 from us_outbound.clean.domains import is_personal_domain, record_alias, root_domain
 from us_outbound.clean.names import clean_company_name
 from us_outbound.clean.people import USPS_STATES, size_band, state_code
 from us_outbound.clients.apollo import MAX_PAGE, MAX_PER_PAGE, organizations_in, total_entries
-from us_outbound.clients.db import new_id
-from us_outbound.clients.http import ApiError
+from us_outbound.clients.apollo import org_id as apollo_org_id
+from us_outbound.clients.db import Range, new_id
+from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
+from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity, texts
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
-from us_outbound.scoring.score import parse_override
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
+from us_outbound.settings.overrides import effective
 from us_outbound.sources import apollo_credits as credits
+from us_outbound.timeparse import iso_date
 
 JOB = "source_universe"
 SOURCE = "apollo_org"
@@ -209,7 +212,7 @@ def plan(settings: Settings, groups: Sequence[str], states: Sequence[str]) -> di
         codes = [c for c in _prefixes(c for i in labels for c in i.naics_prefixes)
                  if not any(c.startswith(p) for p in covered)]
         covered += codes
-        umbrella = next((i.industry for i in labels if i.industry == group), "")
+        umbrella = next((i.industry for i in labels if i.is_umbrella), "")
         searches = [(NAICS, tuple(codes), umbrella)] if codes else []
         searches += [(i.industry, i.apollo_keywords, i.industry) for i in labels if not i.naics_prefixes]
         bands = START_BANDS if START_BANDS is not None else settings.size_bands()
@@ -254,24 +257,12 @@ class Cursor:
         return self.split or (self.pages is not None and self.page >= min(self.pages, MAX_PAGE))
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
-
-
 def cursors(ctx: Context) -> dict[str, Cursor]:
-    """Each search's place this month (UK), from this job's credit_ledger notes."""
+    """Each search's place this month (UK), from this job's credit_ledger notes: a settled page's "slice" (a
+    reservation, ledger.reserved_note, carries none, so a page never answered is read again)."""
     start, end = budget.month_bounds(ctx.now)
     out: dict[str, Cursor] = {}
-    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        t = _ts(r.get("occurred_at"))
-        if t is None or not start <= t < end:
-            continue
+    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB, "occurred_at": Range(start, end)}):
         try:
             note = json.loads(r.get("note") or "")
         except ValueError:
@@ -317,24 +308,6 @@ def _pages(body: Mapping[str, Any], page: int, found: int) -> int | None:
 # -- one company ----------------------------------------------------------------------------------
 
 
-def _int(v: Any) -> int | None:
-    try:
-        return None if v in (None, "") or isinstance(v, bool) else int(float(v))
-    except (TypeError, ValueError):
-        return None
-
-
-def _float(v: Any) -> float | None:
-    try:
-        return None if v in (None, "") or isinstance(v, bool) else float(v)
-    except (TypeError, ValueError):
-        return None
-
-
-def _texts(v: Any) -> list[str]:
-    return [x.strip() for x in v if isinstance(x, str) and x.strip()] if isinstance(v, (list, tuple)) else []
-
-
 def org_domain(org: Mapping[str, Any]) -> str | None:
     """The company's root domain: Apollo's primary domain, else its website."""
     for v in (org.get("primary_domain"), org.get("domain"), org.get("website_url")):
@@ -346,17 +319,17 @@ def org_domain(org: Mapping[str, Any]) -> str | None:
 
 def org_naics(org: Mapping[str, Any]) -> list[str]:
     """PHASE0-CONFIRM: search rows carry naics_codes (as enrichment does)."""
-    return tiers.naics_codes(org.get("naics_codes")) or tiers.naics_codes(org.get("naics_code"))
+    return list(RulesInput.from_org(org).codes)
 
 
 def org_keywords(org: Mapping[str, Any]) -> list[str]:
-    return _texts(org.get("keywords"))
+    return list(RulesInput.from_org(org).tags)
 
 
 def org_technologies(org: Mapping[str, Any]) -> list[str]:
-    names = _texts(org.get("technology_names"))
+    names = texts(org.get("technology_names"))
     if not names:
-        names = _texts([t.get("name") for t in org.get("current_technologies") or () if isinstance(t, Mapping)])
+        names = texts([t.get("name") for t in org.get("current_technologies") or () if isinstance(t, Mapping)])
     return list(dict.fromkeys(names))
 
 
@@ -375,13 +348,6 @@ def in_us(org: Mapping[str, Any]) -> bool:
     return not country or country in US_COUNTRIES
 
 
-def _date(v: Any) -> date | None:
-    try:
-        return date.fromisoformat(str(v)[:10]) if v else None
-    except ValueError:
-        return None
-
-
 def funding_usd(event: Mapping[str, Any]) -> int | None:
     """A funding event's amount in dollars: a number, or text like "8M", "$1.5B" or "750K"; None otherwise.
 
@@ -391,7 +357,7 @@ def funding_usd(event: Mapping[str, Any]) -> int | None:
     if str(event.get("currency") or "$").strip().upper() not in USD:
         return None
     v = event.get("amount")
-    n = _int(v)
+    n = parse.integer(v)
     if n is None and isinstance(v, str):
         m = AMOUNT.fullmatch(v.strip())
         if m:
@@ -405,11 +371,11 @@ def org_funding(org: Mapping[str, Any], today: date) -> dict[str, Any]:
     The amount is the latest round's own (an event on its date), never an earlier round's.
     PHASE0-CONFIRM: latest_funding_round_date, latest_funding_stage and funding_events[].amount.
     """
-    events = sorted((e for e in org.get("funding_events") or () if isinstance(e, Mapping) and _date(e.get("date"))),
-                    key=lambda e: _date(e.get("date")), reverse=True)
-    when = _date(org.get("latest_funding_round_date")) or (_date(events[0].get("date")) if events else None)
+    events = sorted((e for e in org.get("funding_events") or () if isinstance(e, Mapping) and iso_date(e.get("date"))),
+                    key=lambda e: iso_date(e.get("date")), reverse=True)
+    when = iso_date(org.get("latest_funding_round_date")) or (iso_date(events[0].get("date")) if events else None)
     stage = str(org.get("latest_funding_stage") or (events[0].get("type") if events else "") or "").strip()
-    amount = next((a for e in events if _date(e.get("date")) == when and (a := funding_usd(e))), None)
+    amount = next((a for e in events if iso_date(e.get("date")) == when and (a := funding_usd(e))), None)
     out: dict[str, Any] = {}
     if when is not None and when <= today:
         out["days_since_funding"] = (today - when).days
@@ -419,10 +385,6 @@ def org_funding(org: Mapping[str, Any], today: date) -> dict[str, Any]:
     if amount:
         out["funding_amount_usd"] = amount
     return out
-
-
-def _keyword_text(org: Mapping[str, Any]) -> str:
-    return " ; ".join([*org_keywords(org), str(org.get("industry") or "")]).strip(" ;")
 
 
 def _naics_match(codes: Sequence[str], prefix: str) -> int:
@@ -463,10 +425,10 @@ def best_label(codes: Sequence[str], keyword_text: str, settings: Settings) -> I
         naics = max((_naics_match(codes, p) for p in ind.naics_prefixes), default=0)
         words = len(find_terms(keyword_text, ind.apollo_keywords)) if keyword_text else 0
         rows.append((ind, naics, words, idx))
-    pool = [r for r in rows if r[1] and (r[2] or r[0].industry == r[0].industry_group)] or [r for r in rows if r[2]]
+    pool = [r for r in rows if r[1] and (r[2] or r[0].is_umbrella)] or [r for r in rows if r[2]]
     if not pool:
         return None
-    return min(pool, key=lambda r: (-r[2], -r[1], r[0].industry == r[0].industry_group, r[0].priority, r[3]))[0]
+    return min(pool, key=lambda r: (-r[2], -r[1], r[0].is_umbrella, r[0].priority, r[3]))[0]
 
 
 def _quote(text: str) -> str:
@@ -476,7 +438,7 @@ def _quote(text: str) -> str:
 
 def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime) -> list[dict]:
     """The apollo_org facts of one organization record, each with a quote and the Apollo page."""
-    org_id = str(org.get("organization_id") or org.get("id") or "")
+    org_id = apollo_org_id(org)
     url = APOLLO_ORG_URL.format(org_id) if org_id else ""
     today = now.astimezone(UK).date()
     out: list[dict] = []
@@ -487,13 +449,13 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
         out.append({"event_id": new_id(), "account_id": account_id, "source": SOURCE, "fact": fact, "value": value,
                     "quote": _quote(quote), "source_url": url, "observed_at": now})
 
-    employees = _int(org.get("estimated_num_employees"))
+    employees = parse.integer(org.get("estimated_num_employees"))
     add("employees", employees, f"Apollo: about {employees} employees")
     codes = org_naics(org)
     add("naics", codes, "Apollo NAICS: " + ", ".join(codes))
     city = str(org.get("city") or "").strip()
     add("hq_state", state, f"Apollo: HQ in {city + ', ' if city else ''}{state}")
-    growth = _float(org.get("organization_headcount_twelve_month_growth"))  # PHASE0-CONFIRM: a fraction (0.12)
+    growth = parse.number(org.get("organization_headcount_twelve_month_growth"))  # PHASE0-CONFIRM: a fraction (0.12)
     add("headcount_growth_12m", growth, f"Apollo: headcount {growth:+.0%} over 12 months" if growth is not None else "")
     funding = org_funding(org, today)
     when = funding.get("funding_date", "")
@@ -501,7 +463,7 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
     add("funding_stage", funding.get("funding_stage"), f"Apollo: latest round {funding.get('funding_stage')} ({when})")
     amount = funding.get("funding_amount_usd")
     add("funding_amount_usd", amount, f"Apollo: latest round ${amount:,}" if amount else "")
-    founded = _int(org.get("founded_year"))
+    founded = parse.integer(org.get("founded_year"))
     add("founded_year", founded, f"Apollo: founded {founded}")
     techs = org_technologies(org)
     add("technologies", techs, "Apollo technologies: " + ", ".join(techs))
@@ -515,22 +477,8 @@ def org_facts(account_id: str, org: Mapping[str, Any], state: str, now: datetime
 
 
 def with_overrides(row: Mapping[str, Any], domain: str, settings: Settings) -> dict:
-    """The account columns with the domain's Overrides rows applied (SPEC 5)."""
-    ov = settings.overrides_for(domain)
-    out = dict(row)
-    for f in OVERRIDABLE:
-        if f in ov:
-            out[f] = parse_override(ov[f])
-    if "naics" in ov:
-        out["naics"] = str(out["naics"])
-    if "hq_state" in ov:
-        out["hq_state"] = state_code(str(out["hq_state"])) or str(out["hq_state"]).strip().upper()
-    if "industry" in ov and "industry_group" not in ov:
-        ind = settings.industry(str(out["industry"]))
-        out["industry_group"] = ind.industry_group if ind else out.get("industry_group")
-    if "employees" in ov and "size_band" not in ov:
-        out["size_band"] = size_band(out["employees"])
-    return out
+    """The account columns with the domain's Overrides rows applied (SPEC 5; settings/overrides.py)."""
+    return effective(row, settings, domain=domain, fields=OVERRIDABLE)
 
 
 SIZE_COLUMNS = ("employees", "size_band")
@@ -553,10 +501,10 @@ def _keep_size(cols: Mapping[str, Any], account: Mapping[str, Any], overrides: M
 def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: str) -> dict:
     """The accounts columns Apollo gives (SPEC 6). No label leaves the industry blank: a site visitor held for
     the weekly hand-check (sources/site_visits.py) until an Overrides row gives one."""
-    employees = _int(org.get("estimated_num_employees"))
+    employees = parse.integer(org.get("estimated_num_employees"))
     codes = org_naics(org)
     return {
-        "apollo_org_id": str(org.get("organization_id") or org.get("id") or "") or None,
+        "apollo_org_id": apollo_org_id(org) or None,
         "hq_city": str(org.get("city") or "").strip() or None,
         "hq_state": state,
         "hq_country": "United States" if in_us(org) and str(org.get("country") or "").strip() else None,
@@ -565,7 +513,7 @@ def columns(org: Mapping[str, Any], label: Industry | None, state: str, band: st
         "naics": ", ".join(codes) or None,
         "employees": employees,
         "size_band": size_band(employees) if employees is not None else (band or None),
-        "founded_year": _int(org.get("founded_year")),
+        "founded_year": parse.integer(org.get("founded_year")),
     }
 
 
@@ -610,19 +558,25 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     if not in_us(org) or state not in run.states:
         run.skipped["HQ outside the active states"] += 1
         return
-    employees = _int(org.get("estimated_num_employees"))
+    employees = parse.integer(org.get("estimated_num_employees"))
     if employees is not None and not s.size_in_range(employees):
         run.skipped[f"outside {s.size_range_text()} employees"] += 1
         return
-    codes, text = org_naics(org), _keyword_text(org)
-    label = best_label(codes, text, s) if codes or text else s.industry(sl.label) if sl.label else None
+    inp = RulesInput.from_org(org)
+    kind = entity(inp, s)
+    if kind:
+        run.skipped[ENTITY_REASONS[kind]] += 1  # before any label is tried (industry/material.py)
+        return
+    codes = list(inp.codes)
+    label = best_label(inp.codes, inp.keyword_text, s) if inp else s.industry(sl.label) if sl.label else None
     if label is None:
         run.skipped["no Industries label fits"] += 1
         return
-    if not label.active:
+    if s.placeable(label) is None:
         run.skipped["its best Industries label is switched off"] += 1
         return
-    partner = tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": org_keywords(org),
+    label = s.placeable(label)
+    partner = tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": list(inp.tags),
                                    "apollo_industry": org.get("industry")}, {})
     if partner:
         run.skipped["a partner, never prospected"] += 1
@@ -678,21 +632,25 @@ def _write(ctx: Context, rows: list[dict], events: list[dict], partners: dict[st
 def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Room, depth: Counter[str]) -> bool:
     """Read the search's next page into accounts and facts; False if Apollo refused it."""
     page = cur.page + 1
-    try:
-        body = ctx.clients.apollo.search_organizations(sl.filters(ctx.settings), page=page, per_page=MAX_PER_PAGE)
-    except ApiError as exc:
-        if exc.status in (401, 403):
-            raise  # the key is wrong: every search would fail
-        run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
-        return False
-    orgs = organizations_in(body)
-    total = total_entries(body)
-    split = page == 1 and not sl.band and bool(split_reason(orgs, total))
-    spent = 1.0 if orgs else 0.0
+    what = {"search": sl.key, "page": page}  # never "slice" until settled: cursors() reads that key
+    with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+        try:
+            body = ctx.clients.apollo.search_organizations(sl.filters(ctx.settings), page=page, per_page=MAX_PER_PAGE)
+        except ApiError as exc:
+            spent = paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+            room.spend(spent)
+            run.credits += spent
+            if isinstance(exc, AuthError):
+                raise  # the key is wrong: every search would fail
+            run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
+            return False
+        orgs = organizations_in(body)
+        total = total_entries(body)
+        split = page == 1 and not sl.band and bool(split_reason(orgs, total))
+        spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps(
+            {"slice": sl.key, "page": page, "pages": _pages(body, page, len(orgs)), "results": len(orgs),
+             "total": total, "split": split, "why": split_reason(orgs, total) if split else ""}))
     cur.page, cur.pages, cur.split = page, _pages(body, page, len(orgs)), split
-    credits.record(ctx, JOB, spent, note=json.dumps(
-        {"slice": sl.key, "page": page, "pages": cur.pages, "results": len(orgs), "total": total, "split": split,
-         "why": split_reason(orgs, total) if split else ""}))
     room.spend(spent)
     run.pages += 1
     run.credits += spent
@@ -728,18 +686,22 @@ def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
                 return banded
             filters = {"organization_ids": list(batch),
                        "organization_num_employees_ranges": [ctx.settings.employee_range(band)]}
-            try:
-                body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
-            except ApiError as exc:
-                if exc.status in (401, 403):
-                    raise
-                run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
-                return banded
-            found = [str(o.get("organization_id") or o.get("id") or "") for o in organizations_in(body)]
-            rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
-            spent = 1.0 if found else 0.0
-            credits.record(ctx, JOB, spent, note=json.dumps({"backfill": band, "asked": len(batch) + len(rows),
-                                                              "banded": len(rows)}))
+            what = {"backfill": band, "asked": len(batch)}
+            with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+                try:
+                    body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
+                except ApiError as exc:
+                    spent = paid.fail(exc, note=ledger.failed_note(what, exc))
+                    room.spend(spent)
+                    run.credits += spent
+                    if isinstance(exc, AuthError):
+                        raise
+                    run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
+                    return banded
+                found = [apollo_org_id(o) for o in organizations_in(body)]
+                rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
+                spent = paid.settle(1.0 if found else 0.0, note=json.dumps(
+                    {"backfill": band, "asked": len(batch) + len(rows), "banded": len(rows)}))
             room.spend(spent)
             run.pages += 1
             run.credits += spent
@@ -758,7 +720,7 @@ def split_reason(orgs: Sequence[Mapping[str, Any]], total: int | None) -> str:
     """
     if total is not None and total > MAX_RESULTS:
         return "over 50,000 companies"
-    if orgs and all(_int(o.get("estimated_num_employees")) is None for o in orgs):
+    if orgs and all(parse.integer(o.get("estimated_num_employees")) is None for o in orgs):
         return "no employee counts"
     return ""
 

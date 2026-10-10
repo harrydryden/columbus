@@ -14,7 +14,7 @@ Hard exclusions are fixed in code, not in the settings sheet:
   * anything HubSpot marks: a customer (or a former one), an open deal, an active sequence, an
     opted-out or bounced contact, an owner other than Harry, or another user's activity in 90 days;
   * a company an approver dropped at a send approval (🚫 or "company" in Slack, or `approvals reject
-    --company`; enrol/approvals.py, Harry, 2 Oct 2026), kept as a declined_in_slack fact;
+    --company`; enrol/approvals/, Harry, 2 Oct 2026), kept as a declined_in_slack fact;
   * more than 20% of US-located staff in CA or WA (or in FL, until FL is switched on);
   * fewer than 5 US-located people found;
   * founded less than 2 years ago;
@@ -27,12 +27,13 @@ Hard exclusions are fixed in code, not in the settings sheet:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
+from us_outbound import fmt, parse
 from us_outbound.accounts import any_us_state, us_country
+from us_outbound.industry.material import naics_codes, texts
 from us_outbound.scoring.angle import evidence_display
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Settings
@@ -105,22 +106,12 @@ HUBSPOT_EXCLUSIONS = (
     ("hubspot_other_activity_90d", "activity by another HubSpot user in the last 90 days"),
 )
 # Decisions people made about an account, kept as facts so a rescore keeps them (enrol.mark_excluded writes
-# them). declined_in_slack: an approver dropped the company at a send approval (enrol/approvals.py).
+# them). declined_in_slack: an approver dropped the company at a send approval (enrol/approvals/).
 DECLINED_IN_SLACK = "declined_in_slack"
 DECISION_EXCLUSIONS = ((DECLINED_IN_SLACK, "dropped by an approver at a send approval in Slack"),)
 
 
 # -- small parsers -------------------------------------------------------------
-
-
-def _truthy(v: Any) -> bool:
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        return v != 0
-    if isinstance(v, str):
-        return v.strip().lower() in {"true", "yes", "1"}
-    return False
 
 
 def as_number(v: Any) -> float | None:
@@ -144,24 +135,6 @@ def _first(account: Mapping[str, Any], facts: Mapping[str, Any], *fields: str) -
     return None
 
 
-def naics_codes(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [c for v in value for c in naics_codes(v)]
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    return re.findall(r"\d{2,6}", str(value))
-
-
-def _texts(value: Any) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [str(v) for v in value if isinstance(v, str) and v.strip()]
-    return []
-
-
 # -- partners ------------------------------------------------------------------
 
 
@@ -173,7 +146,7 @@ def partner_match(account: Mapping[str, Any], facts: Mapping[str, Any]) -> tuple
         for p in prefixes:
             if code.startswith(p):
                 return PARTNER_NAICS[p], f"NAICS {code}"
-    text = " ; ".join(t for f in KEYWORD_FIELDS for src in (account, facts) for t in _texts(src.get(f)))
+    text = " ; ".join(t for f in KEYWORD_FIELDS for src in (account, facts) for t in texts(src.get(f)))
     if text:
         for category, words in PARTNER_KEYWORDS.items():
             found = find_terms(text, words)
@@ -191,10 +164,6 @@ def partner_category(account: Mapping[str, Any], facts: Mapping[str, Any]) -> st
 # -- hard exclusions ---------------------------------------------------------------
 
 
-def _pct(share: float) -> str:
-    return f"{share:.0%}"
-
-
 def hard_exclusion(
     account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settings, today: date | None = None
 ) -> str | None:
@@ -207,7 +176,7 @@ def hard_exclusion(
         return f"{PARTNER_LABELS[category]}, a partner ({what})"
 
     for fact, reason in HUBSPOT_EXCLUSIONS + DECISION_EXCLUSIONS:
-        if _truthy(facts.get(fact)):
+        if parse.truthy(facts.get(fact)):
             return reason
 
     active = {s.upper() for s in settings.active_states()}
@@ -223,14 +192,14 @@ def hard_exclusion(
 
     ca_wa = as_number(facts.get("ca_wa_share"))
     if ca_wa is not None and ca_wa > STATE_SHARE_LIMIT:
-        return f"{_pct(ca_wa)} of US staff are in CA or WA (over 20%)"
+        return f"{fmt.share(ca_wa, places=0)} of US staff are in CA or WA (over 20%)"
     # SPEC 9: "in CA or WA (or in FL, until it is switched on)": while FL is off it joins
     # the same restricted share.
     fl = as_number(facts.get("fl_share"))
     if fl is not None and "FL" not in active:
         combined = round((ca_wa or 0.0) + fl, 9)
         if combined > STATE_SHARE_LIMIT:
-            return f"{_pct(combined)} of US staff are in CA, WA or FL, which is not active (over 20%)"
+            return f"{fmt.share(combined, places=0)} of US staff are in CA, WA or FL, which is not active (over 20%)"
 
     us_people = as_number(facts.get("us_headcount"))
     if us_people is None:

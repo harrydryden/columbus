@@ -38,6 +38,7 @@ from typing import Any
 from us_outbound.clients.claude import estimate_call_usd
 from us_outbound.clients.instantly import OLD_UNSUBSCRIBE_TEXT, UNSUBSCRIBE_TEXT
 from us_outbound.context import ET, Context
+from us_outbound.timeparse import iso_date
 
 CLASSES = (
     "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe", "other",
@@ -221,11 +222,8 @@ class Verdict:
 
 
 def _date(text: Any, received: date) -> date | None:
-    try:
-        d = date.fromisoformat(str(text or "").strip()[:10])
-    except ValueError:
-        return None
-    return d if received <= d <= received + LONGEST_DATE else None
+    d = iso_date(text)
+    return d if d is not None and received <= d <= received + LONGEST_DATE else None
 
 
 def _text(v: Any, limit: int) -> str:

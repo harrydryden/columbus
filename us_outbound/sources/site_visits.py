@@ -79,21 +79,24 @@ import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import accounts, budget, verify
+from us_outbound import accounts, budget, ledger, verify
 from us_outbound.clean.domains import canonical_domain, is_personal_domain
 from us_outbound.clean.people import state_code
 from us_outbound.clients.apollo import BULK_ENRICH_MAX, MAX_PER_PAGE, enriched_in, organizations_in, total_entries
-from us_outbound.clients.db import new_id
+from us_outbound.clients.db import Range, new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
+from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity
+from us_outbound.facts import newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as universe
+from us_outbound.timeparse import utc, utc_strict
 
 JOB = "site_visits"
 SOURCE = "site_visits"  # signal_events.source (SPEC 7)
@@ -139,16 +142,6 @@ def tracked_domain(settings: Settings) -> str:
 
 
 # -- small helpers -----------------------------------------------------------------------------------
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    try:
-        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def _note(row: Mapping[str, Any]) -> dict:
@@ -218,38 +211,46 @@ def read_search(ctx: Context, search: Search, run: _Run) -> Read:
     """Every page of one visitor search, within the run's credits; each page into credit_ledger."""
     out = Read(search)
     domain = tracked_domain(ctx.settings)
-    for page in range(1, MAX_PAGES_PER_SEARCH + 1):
+
+    def read(page: int) -> Mapping[str, Any] | None:
         if not run.allows():
             out.stopped = f"the run's cap of {run.cap:g} credits"
-            return out
-        try:
-            body = ctx.clients.apollo.search_website_visitors(
-                [domain], days=search.days, pages=search.paths, page=page, per_page=MAX_PER_PAGE)
-        except ApiError as exc:
-            if exc.status == 401:
-                raise  # the key is wrong: every Apollo job fails the same way
-            if exc.status in REFUSED_STATUSES and page == 1:
-                run.refused = f"Apollo refused the website-visitor search (HTTP {exc.status}): {str(exc.body)[:200]}"
-                out.problem = "Apollo refused the visitor filters"
-            else:
-                run.errors.append(f"{search.key} page {page}: {str(exc)[:200]}")
-                out.stopped = f"an error on page {page}"
-            return out
-        orgs = organizations_in(body)
-        total = total_entries(body)
-        spent = 1.0 if orgs else 0.0
-        credits.record(ctx, JOB, spent, note=json.dumps(
-            {"search": search.key, "days": search.days, "page": page, "results": len(orgs), "total": total}))
-        run.credits += spent
-        out.pages, out.total = page, total
-        if total is not None and total > MAX_PLAUSIBLE:
-            out.problem = (f"implausible: Apollo says {total:,} companies visited, so the visitor filters were "
+            return None
+        what = {"search": search.key, "days": search.days, "page": page}
+        # Reserved under "reserved" (ledger.reserved_note), so quiet_runs never reads a page that was not answered.
+        with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
+            try:
+                body = ctx.clients.apollo.search_website_visitors(
+                    [domain], days=search.days, pages=search.paths, page=page, per_page=MAX_PER_PAGE)
+            except ApiError as exc:
+                run.credits += paid.fail(exc, note=ledger.failed_note(what, exc))  # kept unless refused (9 Oct 2026)
+                if exc.status == 401:
+                    raise  # the key is wrong: every Apollo job fails the same way. A 403 (an AuthError too) is
+                    # Apollo refusing the visitor filters on this plan, so it is not re-raised (REFUSED_STATUSES)
+                if exc.status in REFUSED_STATUSES and page == 1:
+                    run.refused = f"Apollo refused the website-visitor search (HTTP {exc.status}): {str(exc.body)[:200]}"
+                    out.problem = "Apollo refused the visitor filters"
+                else:
+                    run.errors.append(f"{search.key} page {page}: {str(exc)[:200]}")
+                    out.stopped = f"an error on page {page}"
+                return None
+            orgs = organizations_in(body)
+            run.credits += paid.settle(1.0 if orgs else 0.0, note=json.dumps(
+                {**what, "results": len(orgs), "total": total_entries(body)}))
+        return body
+
+    # A full page with no total_entries goes on (while_full, the default), as it always has here.
+    for page in ctx.clients.apollo.iter_pages(read, max_pages=MAX_PAGES_PER_SEARCH):
+        out.pages, out.total = page.number, page.total
+        if page.total is not None and page.total > MAX_PLAUSIBLE:
+            out.problem = (f"implausible: Apollo says {page.total:,} companies visited, so the visitor filters were "
                            "probably ignored; nothing from this search is used")
-            run.refused = f"Apollo answered the website-visitor search with {total:,} companies: the filters were ignored"
+            run.refused = (f"Apollo answered the website-visitor search with {page.total:,} companies: the filters "
+                           "were ignored")
             out.rows = []
             return out
-        out.rows.extend(orgs)
-        if len(orgs) < MAX_PER_PAGE or (total is not None and page * MAX_PER_PAGE >= total):
+        out.rows.extend(page.rows)
+        if page.last:
             out.complete = True
             return out
     return out
@@ -259,7 +260,7 @@ def quiet_runs(ctx: Context) -> int:
     """Runs in a row, newest first, whose one-day list was empty (this job's credit_ledger notes)."""
     runs: dict[str, tuple[datetime, int]] = {}
     for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        note, t = _note(r), _ts(r.get("occurred_at"))
+        note, t = _note(r), utc(r.get("occurred_at"))
         if t is None or note.get("search") != US_TODAY or note.get("page") != 1:
             continue
         rid = str(r.get("run_id") or r.get("entry_id"))
@@ -313,16 +314,11 @@ def judged_recently(ctx: Context) -> set[str]:
     """Apollo ids this job decided on in the last LOOK_AGAIN_DAYS (credit_ledger notes "judged")."""
     since = ctx.now - timedelta(days=LOOK_AGAIN_DAYS)
     out: set[str] = set()
-    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB}):
-        t = _ts(r.get("occurred_at"))
+    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB, "occurred_at": Range(since, None)}):
         note = _note(r)
-        if t is not None and t >= since and isinstance(note.get("judged"), list):
+        if isinstance(note.get("judged"), list):
             out |= {str(i) for i in note["judged"]}
     return out
-
-
-def _keyword_text(org: Mapping[str, Any]) -> str:
-    return " ; ".join([*universe.org_keywords(org), str(org.get("industry") or "")]).strip(" ;")
 
 
 def judge(ctx: Context, org: Mapping[str, Any]) -> Verdict:
@@ -336,14 +332,18 @@ def judge(ctx: Context, org: Mapping[str, Any]) -> Verdict:
         return Verdict("a personal email domain")
     if not universe.in_us(org):
         return Verdict("outside the US")
-    codes, text = universe.org_naics(org), _keyword_text(org)
-    label = universe.best_label(codes, text, s) if codes or text else None
-    if (codes or text) and label is None:
+    inp = RulesInput.from_org(org)
+    kind = entity(inp, s)
+    if kind:
+        return Verdict(ENTITY_REASONS[kind])  # before any label is tried (industry/material.py)
+    label = universe.best_label(inp.codes, inp.keyword_text, s) if inp else None
+    if inp and label is None:
         return Verdict("no Industries label fits")
-    if label is not None and not label.active:
+    if label is not None and s.placeable(label) is None:
         return Verdict("its best Industries label is switched off")
-    if tiers.partner_match({"naics": codes, "industry": label.industry if label else "",
-                            "keywords": universe.org_keywords(org), "apollo_industry": org.get("industry")}, {}):
+    label = s.placeable(label)  # a switched-off label in a group we prospect: the group's own label
+    if tiers.partner_match({"naics": list(inp.codes), "industry": label.industry if label else "",
+                            "keywords": list(inp.tags), "apollo_industry": org.get("industry")}, {}):
         return Verdict("a partner, never prospected")
     state = state_code(str(org.get("state") or ""))
     acct = verify.with_overrides({**universe.columns(org, label, state, ""), "domain": domain,
@@ -364,14 +364,22 @@ def enrich(ctx: Context, orgs: Sequence[Mapping[str, Any]], run: _Run) -> dict[s
             break
         by_id = {str(o["organization_id"]): o for o in batch}
         by_domain = {universe.org_domain(o): o for o in batch}
-        try:
-            body = ctx.clients.apollo.bulk_enrich_organizations(list(by_domain))
-        except ApiError as exc:
-            if exc.status == 401:
-                raise
-            run.errors.append(f"enrich: {str(exc)[:200]}")
-            break
-        found = enriched_in(body)
+        # Reserved at a credit a company before the call, as apollo_enrich does (9 Oct 2026: it reserved nothing, so a
+        # call cut off counted nothing); "judged" only once settled, so a failed call's companies are asked again.
+        what = {"enrich": len(batch)}
+        with ledger.charge(ctx, credits.SYSTEM, JOB, len(by_domain), note=ledger.reserved_note(what)) as paid:
+            try:
+                body = ctx.clients.apollo.bulk_enrich_organizations(list(by_domain))
+            except ApiError as exc:
+                run.credits += paid.fail(exc, note=ledger.failed_note(what, exc))
+                if exc.status == 401:
+                    raise
+                run.errors.append(f"enrich: {str(exc)[:200]}")
+                break
+            found = enriched_in(body)
+            reported = max(float(body.get("unique_enriched_records") or 0), float(body.get("credits_consumed") or 0))
+            spent = paid.settle(max(float(len(found)), reported), note=json.dumps(
+                {**what, "found": len(found), "judged": list(by_id)}))
         for rec in found:
             row = by_id.get(str(rec.get("organization_id") or "")) or by_domain.get(universe.org_domain(rec))
             if row is not None:
@@ -379,9 +387,6 @@ def enrich(ctx: Context, orgs: Sequence[Mapping[str, Any]], run: _Run) -> dict[s
                                                     "organization_id": row["organization_id"]}
         for oid, row in by_id.items():
             out.setdefault(oid, dict(row))
-        spent = float(len(found))
-        credits.record(ctx, JOB, spent, note=json.dumps(
-            {"enrich": len(batch), "found": len(found), "judged": list(by_id)}))
         run.credits += spent
         run.enriched += len(batch)
     return out
@@ -436,7 +441,7 @@ def admit_new(ctx: Context, reads: Sequence[Read], matched: dict[str, dict], run
         else:
             look.append(org)
     if out:
-        credits.record(ctx, JOB, 0.0, note=json.dumps({"judged": out}))  # decided on its search row: no credit
+        ledger.record(ctx, credits.SYSTEM, JOB, 0.0, note=json.dumps({"judged": out}))  # decided on its search row: no credit
     records = enrich(ctx, look[:MAX_ENRICH_PER_RUN], run)
     run.deferred = len(look) - len(records)
     for oid, org in records.items():
@@ -460,14 +465,10 @@ def refresh_days(settings: Settings) -> int:
 
 
 def latest_facts(ctx: Context) -> dict[tuple[str, str], tuple[datetime, Any]]:
-    """(account_id, fact) -> (observed_at, value) of the newest site_visits fact."""
-    out: dict[tuple[str, str], tuple[datetime, Any]] = {}
-    for e in ctx.store.select("signal_events", {"source": SOURCE, "fact": [US_FACT, INTENT_FACT]}):
-        t = _ts(e.get("observed_at"))
-        key = (str(e.get("account_id")), str(e.get("fact")))
-        if t is not None and (key not in out or t >= out[key][0]):
-            out[key] = (t, e.get("value"))
-    return out
+    """(account_id, fact) -> (observed_at, value) of the newest site_visits fact with a time."""
+    latest = newest_by(ctx.store.select("signal_events", {"source": SOURCE, "fact": [US_FACT, INTENT_FACT]}),
+                       lambda e: (str(e.get("account_id")), str(e.get("fact"))), dated=True)
+    return {k: (utc_strict(e.get("observed_at")), e.get("value")) for k, e in latest.items()}
 
 
 def _positive(v: Any) -> bool:
@@ -555,7 +556,7 @@ def last_summary(store: Any) -> dict | None:
     """The newest site_visits run's summary (heartbeats.detail), ok or skipped."""
     best: tuple[datetime, dict] | None = None
     for r in store.select("heartbeats", {"job": JOB, "status": ["ok", "skipped"]}):
-        t, d = _ts(r.get("started_at")), r.get("detail")
+        t, d = utc(r.get("started_at")), r.get("detail")
         if t is not None and isinstance(d, Mapping) and (best is None or t > best[0]):
             best = (t, dict(d))
     return best[1] if best else None

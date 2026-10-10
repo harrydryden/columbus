@@ -20,7 +20,7 @@ to wait for a full inbox, including on the Mondays that collect steps due at the
 
 Leads that have stopped (a reply, bounce or unsubscribe, the account-level stop that ends a
 second contact's lead with the first's, or an account no longer enrolled)
-hold nothing. A send approval still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026)
+hold nothing. A send approval still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026)
 holds one of today's slots for its sender until it is approved or expires (limits.today), so
 the next enrol run never proposes more than the senders can send.
 
@@ -29,7 +29,7 @@ Each mailbox's sends a day are the lowest of:
     week, 20 in its second, then its cap;
   * the Mailboxes tab's daily_cap;
   * Instantly's own daily limit on the account, when mailbox_health last saw one.
-A mailbox a kill rule holds (learn/holds.py) has no capacity, even before the sheet syncs.
+A mailbox a kill rule holds (base/holds.py) has no capacity, even before the sheet syncs.
 
 What Instantly reports back, from the latest mailbox_health run (registry/mailboxes.py):
   * each mailbox's own daily limit (the lower of it and the sheet's cap is used);
@@ -63,16 +63,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from us_outbound.base import holds
 from us_outbound.budget import is_send_day
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS, STEP_DAYS
 from us_outbound.context import ET, ConfigError, Context
-from us_outbound.learn import holds
 from us_outbound.registry import blackout
 from us_outbound.registry import ramp as ramps_
 from us_outbound.settings.model import Settings
+from us_outbound.timeparse import utc
 
 # Days after the step before, from the campaign's own step days (0, 7, 14, 21 -> 0, 7, 7, 7),
 # so the forecast and the Instantly campaign cannot drift apart.
@@ -113,18 +114,6 @@ def step_days(start: date, settings: Settings) -> list[date]:
 def owner_of(campaign: str) -> str:
     """"US Outbound – Hannah Spalding" -> "Hannah Spalding"; "" for any other name."""
     return campaign[len(US_CAMPAIGN_PREFIX):] if campaign.startswith(US_CAMPAIGN_PREFIX) else ""
-
-
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, str) and v:
-        try:
-            t = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return t if t.tzinfo else t.replace(tzinfo=UTC)
-    return None
 
 
 def _status(campaign: Mapping[str, Any]) -> int | None:
@@ -196,7 +185,7 @@ def instantly_report(store: Store) -> Mapping[str, Any]:
             if isinstance(r.get("detail"), Mapping) and not r["detail"].get("skipped")]
     if not runs:
         return {}
-    return max(runs, key=lambda r: _ts(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))["detail"]
+    return max(runs, key=lambda r: utc(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))["detail"]
 
 
 def instantly_limits(store: Store, report: Mapping[str, Any] | None = None) -> dict[str, int]:
@@ -258,7 +247,7 @@ def committed_steps(
     out: Counter[tuple[str, date]] = Counter()
     for c in contacts:
         owner = owner_of(str(c.get("instantly_campaign") or ""))
-        start = _ts(c.get("enrolled_at"))
+        start = utc(c.get("enrolled_at"))
         if not owner or start is None or str(c.get("contact_id")) in stopped:
             continue
         for day in step_days(start.astimezone(ET).date(), settings):
@@ -282,7 +271,7 @@ class SenderCapacity:
     sent_last_day: int | None = None  # campaign emails this sender's inboxes sent that day
     instantly_says: str = ""  # why Instantly says the campaign is not sending, when it says so
     at_limit: bool = False  # Instantly says the campaign or all its inboxes hit their daily limit
-    # Send approvals still waiting in Slack (enrol/approvals.py; Harry, 2 Oct 2026): each holds one of
+    # Send approvals still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026): each holds one of
     # today's slots, so free is what is left after them (limits.today takes them off).
     pending: int = 0
     held_from: int | None = None  # free before the waiting send approvals took their slots
@@ -419,7 +408,7 @@ def in_flight(store: Store, settings: Settings, today: date) -> list[dict]:
     stopped = stopped_contacts(store)
     out: list[dict] = []
     for c in store.select("contacts"):
-        start = _ts(c.get("enrolled_at"))
+        start = utc(c.get("enrolled_at"))
         if (start is None or not c.get("instantly_lead_id") or not owner_of(str(c.get("instantly_campaign") or ""))
                 or str(c.get("contact_id")) in stopped):
             continue

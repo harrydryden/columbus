@@ -281,6 +281,8 @@ Credit budgets are monthly, a calendar month in UK time, because that's how Apol
 
 **Today's share.** Each weekday may spend what was left of the month that morning ÷ the weekdays left, today included. The budget then lasts the whole month instead of going in the first week. A quiet day leaves more for the rest of the month. Unspent credits don't carry over.
 
+**How a call is counted.** Every paid call goes into `credit_ledger` one way (`us_outbound/ledger.py`, 9 Oct 2026). A call whose cost is known only from its answer (a search page, an enrichment, a reveal, a Clay lookup) is reserved before it is made, at the most it can cost, then settled at what it cost. A call that fails or gives no answer keeps its reservation, as it may have been charged, except an Apollo search or enrichment Apollo refused outright (an HTTP 4xx), which counts 0. So the budgets never under-count.
+
 **How the month is going** shows the same figures for each budget:
 - used and left;
 - the month's pace to date (the budget spread evenly over its weekdays, through today);
@@ -433,7 +435,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 
 **QA stamps the exact wording:** `qa` carries a check code over the row's subjects, bodies and role lines. Edit the copy and the code no longer matches, so the row stops being sent until it passes QA again (`us-outbound copy qa --version <v> --live`, about a cent a row).
 
-**The copy rules** (`enrol/copy_rules.py`; SPEC 10, plus Harry's changes):
+**The copy rules** (`copy/copy_rules.py`; SPEC 10, plus Harry's changes):
 - SPEC 10's word rules: counselor and counseling, never therapy or therapist; never licensed; never unlimited; American spelling; no statistic but "30% of employees use Spill"; never disparage their EAP; "EAP" never in Spill's name; demos only with Harry.
 - The shape of each email:
   - It opens "Hi {{first_name}}," and ends with a sign-off and `{{sender_first_name}}`.
@@ -542,7 +544,9 @@ and every email again as it is rendered; where the change cannot be made, or wou
 company's email under either arm, the company is left out of the test and gets the Copy row's email. Enrol
 records `contacts.test_id` and `test_arm`; the card names the arm; `learn/looks.py` reads the arms, counting an
 email an approver edited in the arm it was given; and the running copy test is in the config version
-(`copy_test`). One copy test, `ab` or `variant`, runs at a time.
+(`copy_test`). One copy test, `ab` or `variant`, runs at a time. `share_a` (Harry, 8 Oct 2026; blank is 50%)
+makes either kind uneven: version_a takes accounts whose hash falls in that share, `accounts_per_version` and the
+count looks count the smaller arm, and the larger arm's are scaled to its share (`Test.cap`, `Test.scaled`).
 
 **How a demo is booked, and read back.** The signature's "Book a call here" opens Harry's HubSpot meetings
 link (General `booking_link`); the emails' call to action opens spill.chat/us/book-demo (`booking_page`),
@@ -652,6 +656,12 @@ What the answer does, per account:
 
 Approving the hand-check clears "Clay says …" reasons like any other doubt; a missing fact still needs an
 Overrides row.
+
+An Overrides row is laid over an account in one place (`settings/overrides.py`, 9 Oct 2026): an `industry` row
+brings its label's group, an `employees` row its size band. An `industry` row, or an `industry_group` row alone (the
+group's own label), also reaches the account's columns: the next `verify_accounts` decides an account whose
+columns lag the row again, verified or not and asking the model nothing, so enrol's copy, the queue and the cards
+follow it.
 
 ## Which value wins
 

@@ -30,16 +30,20 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.db import new_id
 from us_outbound.context import UK, Context
+from us_outbound.facts import history, latest_by_fact, newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import AGED_FACTS, Settings, Signal
+from us_outbound.settings.overrides import effective
+from us_outbound.settings.overrides import parse_value as parse_override
+from us_outbound.timeparse import uk_day, utc
 
 TEXT_FACTS = frozenset({"benefit", "mental_health_provision", "culture_statement", "posting_text", "page_text"})
 UNREAD_STATUSES = frozenset({"blocked", "error"})
@@ -55,8 +59,6 @@ SHARE_TIERS = (tiers.PRIORITY, tiers.STANDARD, tiers.CONTROL)
 SHARE_MIN, SHARE_MAX = 0.05, 0.40  # each tier is 5-40% of the month's queue
 SHARE_MIN_ACCOUNTS = 20  # too few accounts to judge the mix below this
 ID_CHUNK = 1000
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -94,26 +96,9 @@ class ScoreResult:
 # -- time ----------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v)
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UK)
-    return None
-
-
 def age_days(event: Mapping[str, Any], today: date) -> int | None:
-    t = _ts(event.get("observed_at"))
-    return None if t is None else (today - t.astimezone(UK).date()).days
-
-
-def _newest_first(events: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    return sorted(events, key=lambda e: _ts(e.get("observed_at")) or _EPOCH, reverse=True)
+    d = uk_day(event.get("observed_at"))
+    return None if d is None else (today - d).days
 
 
 def fresh_facts(events: Iterable[Mapping[str, Any]], signal: Signal, today: date) -> list[Mapping[str, Any]]:
@@ -133,25 +118,14 @@ def fresh_facts(events: Iterable[Mapping[str, Any]], signal: Signal, today: date
 
 def unread_sources(events: Iterable[Mapping[str, Any]]) -> frozenset[str]:
     """Sources whose latest read_status is blocked or error (SPEC 8: not read)."""
-    latest: dict[str, tuple[datetime, Any]] = {}
-    for e in events:
-        if e.get("fact") != "read_status":
-            continue
-        t = _ts(e.get("observed_at")) or _EPOCH
-        src = e.get("source")
-        if src not in latest or t >= latest[src][0]:
-            latest[src] = (t, e.get("value"))
-    return frozenset(s for s, (_, v) in latest.items() if str(v or "").strip().lower() in UNREAD_STATUSES)
+    latest = newest_by(events, lambda e: e.get("source"), "read_status")
+    return frozenset(s for s, e in latest.items() if str(e.get("value") or "").strip().lower() in UNREAD_STATUSES)
 
 
 def latest_facts(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """The latest value of each field fact, whatever its source or age (for hard exclusions)."""
-    out: dict[str, Any] = {}
-    for e in reversed(_newest_first(events)):
-        if e.get("source") == SCORING_SOURCE or e.get("fact") in TEXT_FACTS or not e.get("fact"):
-            continue
-        out[e["fact"]] = e.get("value")
-    return out
+    rows = (e for e in events if e.get("source") != SCORING_SOURCE)
+    return {f: e.get("value") for f, e in latest_by_fact(rows, skip_facts=TEXT_FACTS).items()}
 
 
 def days_to_fiscal_year_start(fiscal_year_end_month: int, today: date) -> int:
@@ -165,13 +139,13 @@ def days_to_fiscal_year_start(fiscal_year_end_month: int, today: date) -> int:
 
 def calendar_facts(events: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any]:
     """The virtual calendar facts, computed from the UK date (SPEC 7: calendar, daily)."""
-    facts: dict[str, Any] = {"month": today.month}
-    fye = [e for e in events if e.get("source") == "irs_bmf" and e.get("fact") == "fiscal_year_end_month"]
+    out: dict[str, Any] = {"month": today.month}
+    fye = newest(events, "fiscal_year_end_month", "irs_bmf")
     if fye:
-        month = tiers.as_number(_newest_first(fye)[0].get("value"))
+        month = tiers.as_number(fye.get("value"))
         if month is not None and 1 <= month <= 12:
-            facts["days_to_fiscal_year_start"] = days_to_fiscal_year_start(int(month), today)
-    return facts
+            out["days_to_fiscal_year_start"] = days_to_fiscal_year_start(int(month), today)
+    return out
 
 
 def fact_text(event: Mapping[str, Any]) -> str:
@@ -192,22 +166,6 @@ def fact_text(event: Mapping[str, Any]) -> str:
     if isinstance(v, Mapping) and isinstance(v.get("type"), str) and v["type"].strip():
         parts.append(v["type"].replace("_", " "))  # Clay's provision type, e.g. "carrier_eap" -> "carrier eap"
     return "\n".join(parts)
-
-
-def parse_override(text: str) -> Any:
-    """An Overrides-tab value as a fact value: true/false/yes/no, a number, or the text."""
-    t = str(text).strip()
-    low = t.lower()
-    if low in {"true", "yes"}:
-        return True
-    if low in {"false", "no"}:
-        return False
-    if t.isdigit() and not (t.startswith("0") and len(t) > 1):
-        return int(t)
-    try:
-        return float(t)
-    except ValueError:
-        return t
 
 
 def _quote(text: Any) -> str:
@@ -259,10 +217,7 @@ def _match_condition(
 ) -> Match | None:
     cond = signal.condition
     assert cond is not None
-    latest: dict[str, Mapping[str, Any]] = {}
-    for e in reversed(_newest_first(events)):
-        if e.get("fact") and e.get("fact") not in TEXT_FACTS:
-            latest[e["fact"]] = e
+    latest = latest_by_fact(events, skip_facts=TEXT_FACTS)
     values: dict[str, Any] = {f: aged_value(f, e, today) for f, e in latest.items()}
     virtual: dict[str, Any] = {}
     if {"calendar", "irs_bmf"} & set(signal.sources):
@@ -297,7 +252,7 @@ def _match_condition(
                     quote=quote,
                     url=str(e.get("source_url") or ""),
                     source=str(e.get("source") or ""),
-                    observed_at=_ts(e.get("observed_at")),
+                    observed_at=utc(e.get("observed_at"), date_tz=UK),
                 )
             )
     return Match(signal, _weight(signal, 1), evidence)
@@ -306,7 +261,7 @@ def _match_condition(
 def _match_terms(signal: Signal, events: list[Mapping[str, Any]]) -> Match | None:
     remaining = list(signal.terms)
     evidence: list[Evidence] = []
-    for e in _newest_first(events):
+    for e in history(events):
         if e.get("fact") not in TEXT_FACTS:
             continue
         for tm in find_terms(fact_text(e), tuple(remaining), signal.context):
@@ -316,7 +271,7 @@ def _match_terms(signal: Signal, events: list[Mapping[str, Any]]) -> Match | Non
                     quote=_quote(e.get("quote")),
                     url=str(e.get("source_url") or ""),
                     source=str(e.get("source") or ""),
-                    observed_at=_ts(e.get("observed_at")),
+                    observed_at=utc(e.get("observed_at"), date_tz=UK),
                     term=tm.term,
                 )
             )
@@ -379,7 +334,7 @@ def score_account(
 ) -> ScoreResult:
     domain = str(account.get("domain") or "").strip().lower()
     overrides = {k: parse_override(v) for k, v in settings.overrides_for(domain).items()} if domain else {}
-    acct = {**account, **overrides}
+    acct = effective(account, settings)
     facts = {**latest_facts(events), **overrides}
 
     matches = [m for s in settings.active_signals()
@@ -441,7 +396,7 @@ def _apply_suppression(ctx: Context, wanted: dict[str, tuple[str, int]]) -> int:
         expires = ctx.now + timedelta(days=days)
         old = existing.get(domain)
         if old is not None:
-            old_expiry = _ts(old.get("expires_at"))
+            old_expiry = utc(old.get("expires_at"), date_tz=UK)
             if old_expiry is None or old_expiry >= expires:
                 continue  # indefinite, or already suppressed for longer
         rows.append({
@@ -470,11 +425,8 @@ def _add_partners(ctx: Context, wanted: dict[str, dict]) -> int:
 
 
 def _in_month(v: Any, today: date) -> bool:
-    t = _ts(v)
-    if t is None:
-        return False
-    d = t.astimezone(UK).date()
-    return (d.year, d.month) == (today.year, today.month)
+    d = uk_day(v)
+    return d is not None and (d.year, d.month) == (today.year, today.month)
 
 
 def tier_share(accounts: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any] | None:

@@ -307,6 +307,18 @@ def test_redo_all_withdraws_each_card_and_posts_it_again_in_its_place():
     assert instantly_posts(t) == []
 
 
+def test_redo_all_in_capitals_with_no_open_cards_does_nothing():
+    """9 Oct 2026: "ALL" was compared raw, so with no open cards it read the first of none and failed."""
+    from us_outbound.enrol import approvals
+
+    ctx, t, sl, _ = proposed()
+    for r in items(ctx, "open"):
+        ctx.store.update("hitl_items", {"item_id": r["item_id"]}, {"status": "handled"})
+    at(ctx, ctx.now, job="approvals_redo")
+    out = approvals.redo(ctx, "ALL")
+    assert out["cards"] == 0 and out["posted_again"] == []
+
+
 def test_redo_does_not_post_again_a_company_that_may_not_be_emailed():
     from us_outbound.enrol import approvals
 
@@ -327,3 +339,15 @@ def test_a_dry_redo_changes_nothing():
     out = approvals.redo(ctx, "all")
     assert out["dry_run"] and len(out["would"]) == 3 and len(items(ctx, "open")) == 3
     assert (len(sl.posts), len(sl.updates)) == before
+
+
+def test_an_overrides_row_the_columns_lag_is_applied():
+    """relabel puts an Overrides row's label in the columns when they lag it (9 Oct 2026, defect 5), as verify does."""
+    ctx, t, sl = world()
+    a = ctx.store.get("accounts", account_id="acc-2")
+    override = Override(a["domain"], "industry", "Edtech")
+    ctx.settings = dataclasses.replace(ctx.settings, overrides=(override,))
+    at(ctx, ctx.now, live=True, job="relabel")
+    relabel.run(ctx)
+    b = ctx.store.get("accounts", account_id="acc-2")
+    assert (b["industry"], b["label_source"]) == ("Edtech", "override")

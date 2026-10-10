@@ -603,14 +603,14 @@ def test_settings_load_brings_the_new_source_column_into_an_old_sheet(default_se
     rows = {r["signal"]: r for r in plan.rows}
     assert rows["EAP named"]["source"] == "clay_careers, careers_pages, job_posts"
     # Until the load, settings_sync says why the page signals add nothing.
-    from us_outbound.settings.validate import validate_all
+    from us_outbound.settings.validate import page_signals_notice, validate_all
 
     tabs = default_tabs()
     tabs["Signals"] = old
     stale, errors = validate_all(tabs)
     assert not errors["Signals"]
-    assert "settings load --tab Signals --live" in pages.sheet_notice(stale)
-    assert pages.sheet_notice(default_settings) is None
+    assert "settings load --tab Signals --live" in page_signals_notice(stale)
+    assert page_signals_notice(default_settings) is None
 
 
 def test_the_reader_s_vocabulary_comes_from_the_signals_tab(default_settings):

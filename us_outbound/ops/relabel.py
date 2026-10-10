@@ -43,8 +43,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
-from us_outbound import labels
+from us_outbound import facts, labels
 from us_outbound.clean.domains import is_public_body
+from us_outbound.clients.guard import CLI_APPROVER
 from us_outbound.context import Context
 from us_outbound.enrol import approvals
 from us_outbound.logs import log
@@ -91,10 +92,11 @@ def decide(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], ctx:
                             account.get("label_source") or labels.RULES, account.get("label_confidence") or "",
                             labels.copy_level(account), labels.DISQUALIFY, PUBLIC_BODY)
         return d, None, None
-    if labels.override_for(account, s)[0]:
-        return None  # an Overrides row's industry, or an approver's, stands
-    codes, text = labels._rules_material(events)
-    if not codes and not text:
+    label, source = labels.override_for(account, s)
+    if label:  # an Overrides row's industry, or an approver's, stands: applied when the columns lag it
+        d = labels.decide(None, None, s, override=label, override_source=source)
+        return (d, None, None) if source == labels.OVERRIDE and MOVES & set(labels.columns(account, d)) else None
+    if not labels.rules_input(events):
         return None  # nothing on file to decide on
     rules = labels.rules_label(account, events, s)
     stored = labels.latest_verdict(events)
@@ -209,7 +211,7 @@ def set_label(ctx: Context, domain: str, text: str) -> dict:
                  "label_source": labels.APPROVER, "label_checked_at": ctx.now}
         out["cards_to_withdraw"] = [item.company for item, _, _ in approvals.unfit_cards(ctx, {a["account_id"]: after})]
         return out
-    got = labels.correct(ctx, a, ind, by=approvals.CLI_APPROVER, via="cli", who="at the command line (labels set)")
+    got = labels.correct(ctx, a, ind, by=CLI_APPROVER, via="cli", who="at the command line (labels set)")
     found = approvals.unfit_cards(ctx, {a["account_id"]: ctx.store.get("accounts", account_id=a["account_id"])})
     return {**out, "sheet": got["sheet"], "cards_withdrawn": approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx),
                                                                                        found)}
@@ -220,19 +222,20 @@ def show(ctx: Context, domain: str) -> dict:
     a = _account(ctx, domain)
     events = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": labels.JOB})
     history = []
-    for e in sorted(events, key=lambda e: str(e.get("observed_at") or ""), reverse=True):
+    for e in facts.history(events):
         v = e.get("value") or {}
         if e.get("fact") == labels.CORRECTED_FACT:
             history.append({"at": str(e.get("observed_at")), "corrected": f"{v.get('from') or 'no label'} → {v.get('to')}",
                             "by": v.get("by"), "via": v.get("via")})
         elif e.get("fact") == labels.VERDICT_FACT:
-            d = v.get("decision") or {}
-            history.append({"at": str(e.get("observed_at")), "asked": bool(v.get("asked")), "rules": v.get("rules"),
-                            "model": v.get("model"), "confidence": v.get("confidence"), "entity": v.get("entity"),
-                            "evidence": v.get("evidence"), "what_they_do": v.get("what_they_do"),
+            sv = labels.StoredVerdict.from_value(v)
+            m, d = sv.verdict, sv.decision
+            history.append({"at": str(e.get("observed_at")), "asked": sv.asked, "rules": sv.rules,
+                            "model": m.label, "confidence": m.confidence, "entity": m.entity,
+                            "evidence": m.evidence, "what_they_do": m.what_they_do,
                             "decision": f"{d.get('action')}: {d.get('label')} ({d.get('source')}, {d.get('copy')} copy)"
                                         + (f"; {d.get('reason')}" if d.get("reason") else ""),
-                            "labels_hash": v.get("labels_hash")})
+                            "labels_hash": m.labels_hash})
     return {"domain": a.get("domain"), "industry": a.get("industry"), "industry_group": a.get("industry_group"),
             "status": a.get("status"), "label_source": a.get("label_source") or "not checked yet",
             "copy_level": labels.copy_level(a), "label_confidence": a.get("label_confidence"),

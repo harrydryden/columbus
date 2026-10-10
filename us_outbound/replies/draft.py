@@ -7,7 +7,7 @@ prospect wrote to.
 
 What every draft follows (templates/copy/style.md's voice, templates/copy/facts.md's claims):
   * US English, plain text, "Hi {first name}," and "Best wishes," then the sender's first name
-    (Harry, 1 Oct 2026); the copy rules' word rules (enrol/copy_rules.content_violations): counseling
+    (Harry, 1 Oct 2026); the copy rules' word rules (copy/copy_rules.content_violations): counseling
     and counselor, never therapy, licensed or unlimited, the 30% figure as the only statistic, never a
     word against their EAP, "EAP" never in Spill's name;
   * one link at most: Harry's booking_link for a positive reply, with the sender's demo line (SPEC 9:
@@ -47,8 +47,9 @@ from typing import Any
 
 from us_outbound.clients.claude import estimate_call_usd
 from us_outbound.context import Context
-from us_outbound.enrol import copy_rules, render
-from us_outbound.enrol.copy_markup import word_count
+from us_outbound.copy import copy_rules
+from us_outbound.copy.copy_markup import word_count
+from us_outbound.enrol import render
 from us_outbound.settings.model import Settings
 
 EFFORT = "medium"  # Opus 5.5's default, set explicitly; a draft is short but must read well

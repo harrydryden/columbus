@@ -18,7 +18,7 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       stop --live is the brake: live_sending = no does not stop Instantly.
                                       Over a blackout start leaves the campaigns paused, and the blackout
                                       job starts them after it (registry/blackout.py; 7 Oct 2026)
-  approvals list | send | contact |   send approvals without Slack (enrol/approvals.py; Harry, 2 Oct 2026:
+  approvals list | send | contact |   send approvals without Slack (enrol/approvals/; Harry, 2 Oct 2026:
     company [ID]                      while auto_send = no every email waits for approval), in the Slack
                                       words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
                                       person, company = 🚫 not this company. approve, reject --contact and
@@ -127,20 +127,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from us_outbound import fmt
+from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP, enrolment_paused, latest_runs
+from us_outbound.base.holds import held_mailboxes
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.context import UK, Context
+from us_outbound.context import Context
 from us_outbound.logs import log, redact
-from us_outbound.ops import bootstrap
-from us_outbound.ops.heartbeat import (
-    OPERATOR_START,
-    OPERATOR_STOP,
-    enrolment_paused,
-    latest_runs,
-    overdue_minutes,
-    run_job,
-    scheduled_jobs,
-)
+from us_outbound.learn import copy_tests
+from us_outbound.ops import bootstrap, campaigns
+from us_outbound.ops.heartbeat import overdue_minutes, run_job, scheduled_jobs
 
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
@@ -222,16 +218,12 @@ def _print(value: Any) -> None:
     print(json.dumps(value, indent=2, default=str, ensure_ascii=False))
 
 
-def _operator() -> str:
-    return os.environ.get("USER") or os.environ.get("RAILWAY_SERVICE_NAME") or "unknown"
-
-
 def _synced(ctx: Context) -> str:
     """When the sheet was last read into the settings in force (settings/sync.last_read), in UK time."""
     from us_outbound.settings import sync
 
     when = sync.last_read(ctx.store, ctx.settings)
-    return _fmt_time(when) if when else "never"
+    return fmt.uk_time(when) if when else "never"
 
 
 def _live_sending_note(ctx: Context) -> str:
@@ -247,6 +239,25 @@ def _only_reads(args: argparse.Namespace) -> None:
     """A read-only action given --live says so, rather than leave Harry thinking it acted."""
     if getattr(args, "live", False):
         print(READS_ONLY)
+
+
+def _operate(factory: Factory, job: str, live: bool, fn: Callable[[Context], Any], *, operator: bool = False,
+             dry_note: str = "", show: bool = True) -> tuple[Context, Any]:
+    """Run fn as the job (heartbeat.run_job) in a fresh context. What fn refuses (a LookupError or ValueError) is the
+    command's refusal, in fn's words (exit 2); a KeyError or IndexError is a bug and goes to main as one. Then its
+    summary is printed (show) and what a dry run left alone (dry_note). 9 Oct 2026: 30 commands repeated this."""
+    ctx = factory(job, live, operator=True) if operator else factory(job, live)
+    try:
+        summary = run_job(ctx, fn)
+    except (KeyError, IndexError):
+        raise
+    except (LookupError, ValueError) as exc:
+        raise Refused(str(exc)) from exc
+    if show:
+        _print(summary)
+    if dry_note:
+        _dry_note(ctx, dry_note)
+    return ctx, summary
 
 
 def _dry_note(ctx: Context, what: str) -> None:
@@ -375,14 +386,6 @@ def cmd_rescore(args: argparse.Namespace, factory: Factory) -> int:
     return _job("score", args.live, factory)
 
 
-def _fmt_time(v: Any) -> str:
-    if not v:
-        return "-"
-    d = v if isinstance(v, datetime) else datetime.fromisoformat(str(v))
-    d = d if d.tzinfo else d.replace(tzinfo=UTC)
-    return d.astimezone(UK).strftime("%a %d %b %H:%M UK")
-
-
 def _status_heartbeats(store: Any, now: datetime) -> None:
     """Only the jobs that need a look (the latest run failed, or the heartbeat is missed), then how many are ok."""
     runs = latest_runs(store)
@@ -401,7 +404,7 @@ def _status_heartbeats(store: Any, now: datetime) -> None:
             ok += 1
             continue
         mode = "dry-run" if run.get("dry_run") else "live"
-        print(f"  {job:<18} {run.get('status')} {_fmt_time(run.get('started_at'))} ({mode})"
+        print(f"  {job:<18} {run.get('status')} {fmt.uk_time(run.get('started_at'))} ({mode})"
               f"{'  MISSED its heartbeat' if missed else ''}")
         if run.get("status") == "error" and run.get("error"):
             print(f"  {'':<18} error: {str(run['error'])[:160]}")
@@ -438,18 +441,10 @@ def _waiting_for_you(ctx: Context) -> str:
 
 def _status_limits(ctx: Context) -> None:
     """This month's credit budgets and what limits today's enrollment (limits.py), as the enrol job would see it now."""
-    from us_outbound import limits
-    from us_outbound.enrol import approvals, enrol, second
+    from us_outbound.enrol import today
 
     try:
-        # As enrol.run: pulled accounts and waiting cards stay out, and the cards hold their senders' slots.
-        day = ctx.now_et().date()
-        _, pulled = enrol.hand_check(ctx, day)
-        held = approvals.waiting(ctx)
-        ready, _ = enrol.candidates(ctx, pulled, held.accounts)
-        seconds, _ = second.candidates(ctx, pulled, held.accounts)  # none while second_contact is no
-        lim = limits.today(ctx, day, ready_accounts=len(ready) + len(seconds), pending=held.by_owner, campaigns=True,
-                           second_ready=len(seconds))
+        lim = today.read(ctx).limits  # as enrol.run sees it
     except Exception as exc:  # status still prints what it can
         print(f"This week: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
         return
@@ -460,6 +455,16 @@ def _status_limits(ctx: Context) -> None:
     print(f"  {lim.explanation}")
     for line in lim.detail:
         print(f"  {line}")
+
+
+def cmd_daily(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound daily [--full]`: the short post the 09:00 job posts, or the full one (Harry, 9 Oct 2026)."""
+    from us_outbound.learn import daily_post
+
+    ctx = factory("daily_preview", False)
+    day = daily_post.gather(ctx)
+    print("\n".join(day.lines if args.full else daily_post.compact(ctx, day)))
+    return 0
 
 
 def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
@@ -483,7 +488,7 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
         print(f"Waiting for you: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     paused = enrolment_paused(ctx.store)
     if paused:
-        print(f"Enrollment: STOPPED since {_fmt_time(paused.get('started_at'))} (run `us-outbound start --live` to resume)")
+        print(f"Enrollment: STOPPED since {fmt.uk_time(paused.get('started_at'))} (run `us-outbound start --live` to resume)")
     else:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
@@ -501,7 +506,6 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
         print(f"Retention: unavailable ({type(exc).__name__}: {redact(str(exc))[:120]})")
     print("Mailboxes:")
     try:
-        from us_outbound.learn.holds import held_mailboxes
         from us_outbound.registry.ramp import ramps
 
         on_ramp, held = ramps(ctx.store, s, ctx.now_et().date()), held_mailboxes(ctx.store)
@@ -531,69 +535,13 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def _stop(ctx: Context) -> dict:
-    inst = ctx.clients.instantly
-    paused, left = [], []
-    for c in inst.list_campaigns():
-        # 0 draft, 2 paused, 3 completed: nothing is sending.
-        if c.get("status") in (0, 2, 3):
-            left.append(c["name"])
-            continue
-        inst.pause_campaign(c["name"])
-        paused.append(c["name"])
-    return {"dry_run": ctx.dry_run, "enrollment": "stopped", "by": _operator(),
-            "campaigns_paused": paused, "already_not_sending": left}
-
-
 def cmd_stop(args: argparse.Namespace, factory: Factory) -> int:
     ctx = factory(OPERATOR_STOP, args.live, operator=True)
-    summary = run_job(ctx, _stop)
+    summary = run_job(ctx, campaigns.stop)
     _print(summary)
     print("Enrollment is stopped (in every mode) until `us-outbound start --live` runs with live_sending = yes.")
     _dry_note(ctx, "campaigns were not paused in Instantly.")
     return 0
-
-
-def _start(ctx: Context) -> dict:
-    from us_outbound.registry import blackout
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words, sending_list
-
-    check = ensure_campaigns(ctx, create=False)
-    # Drift held while leads are in flight does not refuse: the campaign is consistent for them (Harry, 7 Oct 2026).
-    held = check.get("held") or {}
-    drift = {n: sorted(set(d) - set((held.get(n) or {}).get("keys") or ())) for n, d in check["drift"].items()}
-    if any(drift.values()):
-        raise Refused(
-            "campaign settings have drifted: "
-            + "; ".join(f"{n}: {', '.join(keys)}" for n, keys in drift.items() if keys)
-            + ". Fix with `us-outbound campaigns ensure --fix --live` first."
-        )
-    inst = ctx.clients.instantly
-    found = {c["name"]: c for c in inst.list_campaigns()}
-    # Over a blackout the campaigns stay paused, recorded as the blackout's, and the blackout job starts them after
-    # it (registry/blackout.py; Harry, 7 Oct 2026): enrollment still resumes.
-    over = blackout.hold(ctx.settings, ctx.now)
-    started, skipped, waiting = [], [], []
-    for owner in ctx.settings.owners():
-        name = campaign_name(owner)
-        if name not in found or not sending_list(ctx.settings, owner):
-            skipped.append(name)
-            continue
-        if found[name].get("status") != 1 and over is not None:
-            blackout.defer(ctx, name, found[name].get("status"), over)
-            waiting.append(name)
-            continue
-        if found[name].get("status") != 1:
-            inst.activate_campaign(name)
-        started.append(name)
-    out = {"dry_run": ctx.dry_run, "enrollment": "resumed" if ctx.live else "still stopped (dry-run)",
-           "by": _operator(), "campaigns_started": started, "skipped_no_active_mailbox": skipped}
-    if waiting:
-        out["paused_for_blackout"] = waiting
-        out["blackout"] = f"{over.words()}: the blackout job starts them then" if over else ""
-    if held:
-        out["drift_held"] = [held_words(n, h) for n, h in held.items()]
-    return out
 
 
 def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
@@ -611,7 +559,7 @@ def cmd_start(args: argparse.Namespace, factory: Factory) -> int:
             synced = not summary.get("skipped")
             print(_sync_line(summary))
     ctx = factory(OPERATOR_START, args.live)  # reads the settings in force again, after the sync
-    _print(run_job(ctx, _start))
+    _print(run_job(ctx, campaigns.start))
     if ctx.dry_run and args.live and synced:
         print("Dry-run: campaigns were not activated and enrollment stays stopped. Nothing was sent.")
         print(f"Running dry: live_sending is no in the settings in force (synced {_synced(ctx)}, just now). "
@@ -655,28 +603,11 @@ def cmd_mailbox(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def _unenrol(ctx: Context, month: str) -> dict:
-    inst = ctx.clients.instantly
-    contacts = ctx.store.select("contacts", {"enrolment_month": month})
-    removed, without_lead = [], 0
-    for c in contacts:
-        lead_id, campaign = c.get("instantly_lead_id"), c.get("instantly_campaign")
-        if not lead_id or not campaign:
-            without_lead += 1
-            continue
-        inst.delete_lead(str(campaign), str(lead_id))  # the client refuses a non-US Outbound campaign
-        removed.append(str(lead_id))
-    return {"dry_run": ctx.dry_run, "month": month, "contacts": len(contacts),
-            "leads_removed": len(removed) if ctx.live else 0, "leads_found": len(removed),
-            "contacts_without_lead": without_lead}
-
-
 def cmd_unenrol(args: argparse.Namespace, factory: Factory) -> int:
     if not MONTH_RE.fullmatch(args.month or ""):
         raise Refused("--month must be written YYYY-MM")
-    ctx = factory("unenrol", args.live, operator=True)
-    _print(run_job(ctx, lambda c: _unenrol(c, args.month)))
-    _dry_note(ctx, "no lead was removed from Instantly.")
+    ctx, _ = _operate(factory, "unenrol", args.live, lambda c: campaigns.unenrol(c, args.month),
+                     operator=True, dry_note="no lead was removed from Instantly.")
     return 0
 
 
@@ -721,95 +652,17 @@ def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
 # -- copy tests (SPEC 12) -----------------------------------------------------------------
 
 
-def _test_start(ctx: Context, test_id: str) -> dict:
-    """Pre-registration first (SPEC 12; Harry, 6 Oct 2026: kind and looks, learn/looks.py). One copy test (kind ab,
-    or variant: Harry, 7 Oct 2026) runs at a time, since it decides each account's copy (SPEC 9); a holdout assigns
-    nothing, so it may run beside it, and its versions are the arms enrol records, not Copy rows. A variant's row is
-    checked as settings_sync checks it (its texts against the copy rules; enrol/variants.py), and refused when it
-    breaks one; the result says which sendable Copy rows the change can be made in (variants.coverage), and a
-    change that fits none of them is refused."""
-    from us_outbound.settings.model import AB_TEST, COPY_TEST_KINDS, TEST_KINDS, VARIANT_TEST
-    from us_outbound.settings.validate import parse_looks, validate_tab
-
-    sheet_id = ctx.guard.bounds.settings_sheet_id
-    if not sheet_id:
-        raise Refused("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
-    rows = ctx.clients.sheets.read_tabs(sheet_id, ["Tests"])["Tests"]
-    row = next((r for r in rows if r.get("test_id", "").strip() == test_id), None)
-    if row is None:
-        raise Refused(f"no test {test_id!r} on the Tests tab")
-
-    def kind(r: dict) -> str:
-        return (r.get("kind") or "").strip().lower() or AB_TEST
-
-    if kind(row) not in TEST_KINDS:
-        raise Refused(f"kind {row.get('kind')!r} on the Tests tab is not one of {', '.join(TEST_KINDS)}")
-    others = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
-              and r.get("test_id", "").strip() != test_id and kind(r) in COPY_TEST_KINDS]
-    if others and kind(row) in COPY_TEST_KINDS:
-        raise Refused(f"only one copy test (ab or variant) runs at a time (SPEC 9); {', '.join(others)} is running")
-    copy_rows: dict[str, Any] = {}
-    if kind(row) == VARIANT_TEST:
-        from us_outbound.enrol import enrol, variants
-
-        checked, errors = validate_tab("Tests", [row])
-        if errors:
-            raise Refused("the Tests tab's row does not pass the checks settings_sync makes: "
-                          + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
-        fits, not_ = variants.coverage(checked[0], enrol.sendable_copy(ctx.settings).values(), ctx.settings)
-        if not_ and not fits:
-            raise Refused("the change cannot be made in any sendable Copy row, so the test would have no accounts: "
-                          + "; ".join(f"{v}: {why}" for v, why in list(not_.items())[:4]))
-        copy_rows = {"change_fits": len(fits), "sendable": len(fits) + len(not_),
-                     "not_in_the_test": dict(list(not_.items())[:10])}
-    if row.get("status", "").strip().lower() == "running":
-        return {"test_id": test_id, "status": "running", "changed": False}
-    read_date = row.get("read_date", "").strip()
-    if not read_date or not row.get("decision_rule", "").strip():
-        raise Refused("pre-register the read_date and decision_rule on the Tests tab first (SPEC 12)")
-    try:
-        parse_looks(row.get("looks", "") or "")
-    except ValueError as exc:
-        raise Refused(f"looks on the Tests tab: {exc}") from exc
-    start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
-    if read_date <= start:
-        raise Refused(f"read_date {read_date} must be after the start date {start}")
-    if kind(row) == AB_TEST:
-        missing = [
-            v for v in (row.get("version_a", "").strip(), row.get("version_b", "").strip())
-            if (c := ctx.settings.copy_row(v)) is None or c.status != "approved" or not c.qa_current
-        ]
-        if missing:
-            raise Refused("copy is not approved, with a current QA pass, in the synced settings for: "
-                          + ", ".join(missing))
-    sheets = ctx.clients.sheets
-    writes = [("start_date", start)] if not row.get("start_date", "").strip() else []
-    for column, value in [*writes, ("status", "running")]:
-        if not sheets.update_cell(sheet_id, "Tests", {"test_id": test_id}, column, value):
-            raise Refused(f"no row for test {test_id!r} on the Tests tab to update")
-    return {"dry_run": ctx.dry_run, "test_id": test_id, "kind": kind(row), "status": "running", "start_date": start,
-            "looks": row.get("looks", "").strip(), "read_date": read_date, "changed": ctx.live,
-            **({"copy_rows": copy_rows} if copy_rows else {})}
-
-
 def read_test(ctx: Context, test_id: str) -> dict:
-    """The test at its latest pre-registered look (learn/looks.read); looks.NotYet before the first one.
-
-    Reply rate = accounts with a human reply (any class but out_of_office) within REPLY_WINDOW_DAYS (28) days of
-    step 1 ÷ accounts whose step 1 was delivered, as in v_account_outcomes, over the accounts the look covers.
-    """
-    from us_outbound.learn import looks
-
-    return looks.read(ctx, test_id)
+    """The test at its latest pre-registered look (learn/copy_tests.read)."""
+    return copy_tests.read(ctx, test_id)
 
 
 def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.learn import looks
 
     if args.action == "start":
-        ctx = factory("test_start", args.live, operator=True)
-        _print(run_job(ctx, lambda c: _test_start(c, args.test_id)))
-        _dry_note(ctx, "the Tests tab was not changed.")
+        ctx, _ = _operate(factory, "test_start", args.live, lambda c: copy_tests.start(c, args.test_id),
+                         operator=True, dry_note="the Tests tab was not changed.")
         return 0
     _only_reads(args)
     ctx = factory("test_read", False)
@@ -886,7 +739,6 @@ def _sheet_settings(ctx: Context):
     return settings
 
 
-QA_ERRORS_IN_A_ROW = 3  # copy qa: one row's failed answer is skipped; this many in a row stops the run
 
 
 def _pick_rows(settings, versions: Sequence[str] | None, industry: str | None, role: str | None) -> list:
@@ -1013,31 +865,7 @@ def cmd_copy(args: argparse.Namespace, factory: Factory) -> int:
             print(f"Dry-run: {len(rows)} rows, no model called. With --live they go to "
                   f"{settings.general.claude_task_model}, at most ${est:.2f} of the monthly cap.")
             return 0
-        from us_outbound.clients.claude import BudgetExceeded
-
-        sheet_id = ctx.guard.bounds.settings_sheet_id
-        results, errors = [], 0
-        for row in rows:
-            try:
-                r = copy_desk.qa_row(ctx, row, settings)
-                errors = 0
-            except BudgetExceeded as exc:  # the month's cap: stop, keeping what is done
-                print(f"{row.copy_version}: QA stopped: {exc}")
-                break
-            except Exception as exc:  # one row's answer failed: it stays unchecked, the rest go on
-                errors += 1
-                print(f"{row.copy_version}: not checked ({exc}); run copy qa again to retry it")
-                if errors >= QA_ERRORS_IN_A_ROW:
-                    print(f"QA stopped after {errors} failures in a row: the API may be down")
-                    break
-                continue
-            results.append(r)
-            print(f"{r.copy_version}: {r.cell}" + ("" if r.verdict == "pass" else f"\n  {r.notes[:600]}"), flush=True)
-            # Each verdict goes to the sheet as it comes (6 Oct 2026: a dropped SSH session lost 43 held to the end),
-            # so a run cut short keeps what it paid for, and the next run starts from the rows still unchecked.
-            if sheet_id:
-                ctx.clients.sheets.update_rows(sheet_id, "Copy", "copy_version",
-                                               {r.copy_version: {"qa": r.cell, "qa_notes": r.notes}})
+        results = copy_desk.qa_run(ctx, rows, settings, say=lambda line: print(line, flush=True))
         print(f"{sum(r.verdict == 'pass' for r in results)} of {len(results)} passed.")
         _dry_note(ctx, "the verdicts were not written to the sheet.")
         return 0
@@ -1137,7 +965,7 @@ def _print_send_approvals(items: list[dict]) -> None:
 
 
 def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
-    """Send approvals at the command line (enrol/approvals.py): the same close path as Slack, approved_by "cli"."""
+    """Send approvals at the command line (enrol/approvals/): the same close path as Slack, approved_by "cli"."""
     from us_outbound.enrol import approvals
 
     if args.action == "list":
@@ -1148,24 +976,18 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
     action = args.action
     if action == "redo":  # Harry, 7 Oct 2026: today's cards withdrawn and posted again under the checked labels
-        ctx = factory("approvals_redo", args.live, operator=True)  # it reaches no prospect: --live alone
-        try:
-            summary = run_job(ctx, lambda c: approvals.redo(c, args.item_id))
-        except (LookupError, ValueError) as exc:
-            raise Refused(str(exc)) from exc
-        _print(summary)
-        _dry_note(ctx, "no card was withdrawn or posted.")
+        ctx, summary = _operate(
+            factory, "approvals_redo", args.live, lambda c: approvals.redo(c, args.item_id),
+            operator=True, dry_note="no card was withdrawn or posted.",
+        )  # it reaches no prospect: --live alone
         return 0
     if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
         if not args.label:
             raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
-        ctx = factory("approvals_industry", args.live, operator=True)  # it reaches no prospect: --live alone
-        try:
-            summary = run_job(ctx, lambda c: approvals.industry_item(c, args.item_id, args.label))
-        except (LookupError, ValueError) as exc:
-            raise Refused(str(exc)) from exc
-        _print(summary)
-        _dry_note(ctx, "the label, the Overrides tab and the card are unchanged.")
+        ctx, summary = _operate(
+            factory, "approvals_industry", args.live, lambda c: approvals.industry_item(c, args.item_id, args.label),
+            operator=True, dry_note="the label, the Overrides tab and the card are unchanged.",
+        )  # it reaches no prospect: --live alone
         return 0
     if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
         if args.contact or args.company:
@@ -1175,26 +997,20 @@ def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
         if args.contact == args.company:
             raise Refused("approvals reject needs one of --contact (not this person) or --company (not this company)")
         # Rejecting reaches no prospect (a contact suppressed, or an account excluded): --live alone.
-        ctx = factory("approvals_reject", args.live, operator=True)
-        try:
-            summary = run_job(ctx, lambda c: approvals.reject_item(c, args.item_id,
-                                                                   "contact" if args.contact else "company"))
-        except (LookupError, ValueError) as exc:
-            raise Refused(str(exc)) from exc
-        _print(summary)
-        _dry_note(ctx, "the item, the contact and the account are unchanged.")
+        ctx, summary = _operate(
+            factory, "approvals_reject", args.live,
+            lambda c: approvals.reject_item(c, args.item_id, "contact" if args.contact else "company"),
+            operator=True, dry_note="the item, the contact and the account are unchanged.",
+        )
         return 0 if summary.get("done") or ctx.dry_run else 2
     if args.contact or args.company:
         raise Refused("--contact and --company go with reject, not send")
     # send (approve) is ✅.
     # approve adds the lead to Instantly, so it is live like a job: --live and live_sending = yes (SPEC 0.3).
-    ctx = factory(approvals.APPROVALS_CLI_JOB, args.live)
-    try:
-        summary = run_job(ctx, lambda c: approvals.approve(c, args.item_id))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
-    _print(summary)
-    _dry_note(ctx, "the lead was not added to Instantly and the item is unchanged.")
+    ctx, summary = _operate(
+        factory, approvals.APPROVALS_CLI_JOB, args.live, lambda c: approvals.approve(c, args.item_id),
+        dry_note="the lead was not added to Instantly and the item is unchanged.",
+    )
     if summary.get("held"):
         print("Held, not sent yet: " + "; ".join(summary["held"]) + ". The approval stands: poll_approvals adds the "
               "lead within 5 minutes of that clearing, unless the card expires first.")
@@ -1239,6 +1055,30 @@ def _audit_report(out: dict, live: bool) -> None:
         print(f"Withdrew {len(out['cards_withdrawn'])} open card(s): {', '.join(out['cards_withdrawn'])}.")
 
 
+def _crosswalk_report(out: dict) -> None:
+    r = out["rules"]
+    n = out["known"]
+    labelled = n - r["no_rules_label"]
+    print(f"{n} companies with a known label ({out['by_approver']} corrected by an approver, {out['by_model']} the "
+          f"model was sure of; {out['outside_our_labels']} outside our labels).")
+    if n:
+        print(f"The rules' label against it: the same label {r['exact_label']} ({r['exact_label'] / n:.0%}); of the "
+              f"{labelled} the rules labelled, the same group {r['same_group']}, another group {r['other_group']}; "
+              f"no rules label {r['no_rules_label']}.")
+    for key, title in (("poor", "Translations that are mostly wrong"),
+                       ("group_only", "Translations that place the group but not the label"),
+                       ("add", "Apollo values the tab does not translate, with a clear answer")):
+        if out[key]:
+            print(f"{title}:")
+            for row in out[key]:
+                right = f", {row['share_right']} right" if row["share_right"] else ""
+                says = f" → {row['tab_says']}" if row["tab_says"] else ""
+                print(f"  {row['kind']} “{row['value']}”{says}: {row['companies']} companies{right}; {row['verdict']} "
+                      f"(top label {row['top_label']} {row['label_share']}, group {row['top_group']} "
+                      f"{row['group_share']})")
+    print(f"{out['rows']} rows" + (" written to the Crosswalk tab." if out["tab_written"] else "."))
+
+
 def _eval_report(out: dict, live: bool) -> int:
     if not live:
         print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
@@ -1266,6 +1106,13 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         _audit_report(out, ctx.live)
         _dry_note(ctx, "no model was asked and no company or card was changed.")
         return 0
+    if args.action == "crosswalk":  # reads only; with --live it also writes the Crosswalk tab
+        from us_outbound.ops import crosswalk
+
+        ctx = factory(crosswalk.JOB, args.live, operator=True)
+        _crosswalk_report(run_job(ctx, crosswalk.run))
+        _dry_note(ctx, f"the {crosswalk.TAB} tab was not written.")
+        return 0
     if args.action == "eval":
         ctx = factory("labels_eval", args.live, operator=True)
         rows = labels.gold_rows() + (labels.corrected_rows(ctx) if args.from_corrections else [])
@@ -1284,13 +1131,10 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if not args.label:
         raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
-    ctx = factory("labels_set", args.live, operator=True)  # it reaches no prospect: --live alone
-    try:
-        summary = run_job(ctx, lambda c: relabel.set_label(c, args.domain, args.label))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
-    _print(summary)
-    _dry_note(ctx, "the label, the Overrides tab and any card are unchanged.")
+    ctx, summary = _operate(
+        factory, "labels_set", args.live, lambda c: relabel.set_label(c, args.domain, args.label),
+        operator=True, dry_note="the label, the Overrides tab and any card are unchanged.",
+    )  # it reaches no prospect: --live alone
     return 0
 
 
@@ -1313,9 +1157,8 @@ def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.crm import hubspot_writes as hw
 
     if args.action == "setup":
-        ctx = factory("hubspot_setup", args.live, operator=True)
-        _print(run_job(ctx, hw.ensure_properties))
-        _dry_note(ctx, "no HubSpot property or group was created.")
+        ctx, _ = _operate(factory, "hubspot_setup", args.live, hw.ensure_properties,
+                         operator=True, dry_note="no HubSpot property or group was created.")
     else:
         _only_reads(args)
         ctx = factory("hubspot_ids", False)
@@ -1521,13 +1364,10 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if args.pull and args.action != "approve":
         raise Refused("--pull goes with approve")
-    ctx = factory("handcheck_approve", args.live, operator=True)
-    try:
-        summary = run_job(ctx, lambda c: hand_check.approve(c, args.pull or [], _operator()))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
-    _print(summary)
-    _dry_note(ctx, "the hand-check was not marked approved.")
+    ctx, summary = _operate(
+        factory, "handcheck_approve", args.live, lambda c: hand_check.approve(c, args.pull or [], campaigns.operator()),
+        operator=True, dry_note="the hand-check was not marked approved.",
+    )
     if ctx.live:
         print(f"Approved {summary['iso_week']}; enrollment can go ahead"
               + (f", leaving out {len(summary['pulled_account_ids'])} pulled accounts." if summary["pulled_account_ids"] else "."))
@@ -1588,7 +1428,7 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
             print("No seed lead in any US Outbound campaign yet: `us-outbound seed send ADDRESS --owner NAME --live`.")
             return 1
         for r in rows:
-            sent = f", last emailed {_fmt_time(r['last_contact'])}" if r["last_contact"] else ", not emailed yet"
+            sent = f", last emailed {fmt.uk_time(r['last_contact'])}" if r["last_contact"] else ", not emailed yet"
             print(f"{r['address']} in {r['campaign']} ({r['campaign_status']}): {r['status_text']}{sent}")
         if any(r["unsubscribed"] for r in rows):
             print("PASS: Instantly shows the seed lead as unsubscribed (status -2), which is what sync_outcomes reads. "
@@ -1599,12 +1439,12 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
         return 1
     if not args.address or not args.owner:
         raise Refused("seed send needs the seed inbox's address and --owner (whose campaign sends it)")
-    ctx = factory(seed.JOB, args.live, operator=True)
-    try:
-        summary = run_job(ctx, lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "",
-                                                   role=args.role or "", subject=args.subject))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
+    ctx, summary = _operate(
+        factory, seed.JOB, args.live,
+        lambda c: seed.send(c, args.address, args.owner, industry=args.industry or "", role=args.role or "",
+                            subject=args.subject),
+        operator=True, show=False,
+    )
     print(f"Seed email for {summary['address']}, from {summary['sender']} ({summary['campaign']}, "
           f"{summary['campaign_status']}), copy {summary['copy_version']} ({summary['copy_status']}, {summary['role']}):")
     print(f"  Subject: {summary['subject']} ({seed.SUBJECT_NOTES[summary['subject_arm']]})")
@@ -1633,11 +1473,11 @@ def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
     (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
     from us_outbound.ops import phase0
 
-    ctx = factory(phase0.JOB, args.live, operator=True)
-    try:
-        report = run_job(ctx, lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits))
-    except (LookupError, ValueError) as exc:
-        raise Refused(str(exc)) from exc
+    ctx, report = _operate(
+        factory, phase0.JOB, args.live,
+        lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits),
+        operator=True, show=False,
+    )
     for line in phase0.lines(report):
         print(line)
     return 0
@@ -1655,7 +1495,7 @@ def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
             print("No kill-rule hold is in force.")
         for r in rows:
             until = f" until {r['until']}" if r.get("until") else ""
-            print(f"{r['item_id']}  {r['rule']}: {r['action']} {r['target']}{until} ({_fmt_time(r.get('created_at'))}"
+            print(f"{r['item_id']}  {r['rule']}: {r['action']} {r['target']}{until} ({fmt.uk_time(r.get('created_at'))}"
                   f"{', dry-run' if r.get('dry_run') else ''})")
             print(f"    {r['reason']}")
         return 0
@@ -1663,7 +1503,7 @@ def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused("killrules clear needs the item id (`us-outbound killrules show` lists them)")
     ctx = factory("killrules_clear", args.live, operator=True)
     try:
-        summary = run_job(ctx, lambda c: kill_rules.clear(c, args.item, _operator()))
+        summary = run_job(ctx, lambda c: kill_rules.clear(c, args.item, campaigns.operator()))
     except LookupError as exc:
         raise Refused(str(exc)) from exc
     _print(summary)
@@ -1671,7 +1511,6 @@ def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
     if summary.get("next"):
         print(summary["next"])
     return 0
-
 
 
 def cmd_schedule(args: argparse.Namespace, factory: Factory) -> int:
@@ -1724,6 +1563,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # What Harry uses, in the order `--help` lists it.
     command("status", "the switches, what waits for you, jobs, mailboxes and campaigns", cmd_status)
+    dp = command("daily", "the daily post as it would read now (read-only; posts nothing)", cmd_daily)
+    dp.add_argument("--full", action="store_true", help="every section: sources, labels, mailboxes, credits")
     command("golive", "the read-only go/no-go check before the first sends", cmd_golive)
     # The choices are written out here, so --help does not import the view (ops/accounts_view.py STATUSES, TIERS).
     ac = command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV "
@@ -1890,8 +1731,9 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
 
     lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
-                 "company's label, or show its label and history", cmd_labels, takes_live=True)
-    lb.add_argument("action", choices=["audit", "eval", "set", "show"])
+                 "company's label, show its label and history, or measure how Apollo's industries, NAICS codes and "
+                 "keywords translate into labels (crosswalk)", cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show", "crosswalk"])
     lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
     lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
     lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")

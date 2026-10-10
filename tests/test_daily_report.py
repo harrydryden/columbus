@@ -85,7 +85,7 @@ def funnel(now=TUE_9, auto_send=None, approvals=True):
          "detail": {"verified": 9}},  # Friday's run, not yesterday's
     ])
     if approvals:
-        # As enrol/approvals.py writes them: posted today, approvable through the next send day, for a sender.
+        # As enrol/approvals/ writes them: posted today, approvable through the next send day, for a sender.
         card = {"owner": "Hannah Spalding", "send_day": now.date().isoformat(),
                 "expires_on": (now + timedelta(days=1)).date().isoformat()}
         ctx.store.insert("hitl_items", [
@@ -119,10 +119,8 @@ def section(lines, title):
 
 def test_the_headline_and_the_sections_top_to_bottom():
     ctx, t = funnel(auto_send=False)
-    out = daily_post.run(ctx)
-    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    lines = post.json["text"].splitlines()
-    assert lines[1] == ("Yesterday: 8 sent · 4 replies (1 positive) · 1 unsubscribe · 3 companies, 2 contacts found"
+    lines, out = daily_post.build(ctx)  # the full post (`us-outbound daily --full`)
+    assert lines[1] == ("Yesterday: 8 sent · 3 replies (1 positive) · 1 unsubscribe · 3 companies, 2 contacts found"
                         " · 3 ready to send")
     at = [next(n for n, line in enumerate(lines) if line.startswith(s)) for s in SECTIONS]
     assert at == sorted(at)

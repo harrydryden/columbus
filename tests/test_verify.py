@@ -542,6 +542,16 @@ def test_skip_verifies_on_the_rules_alone_with_the_groups_copy():
     assert (a["industry"], a["label_source"], labels.copy_level(a)) == ("Fintech", "rules", "group")
 
 
+def test_skip_keeps_the_label_when_the_rules_give_none():
+    """9 Oct 2026: codes no Industries row matches cleared the label, and the company was held for "Apollo gives no
+    industry", which the hand-check cannot clear. relabel keeps the label; so does the check now."""
+    facts = apollo_facts("a1", naics=("999999",), keywords=("quantum widgets",), industry="widgets")
+    ctx, sdk = labelled([account()], {}, settings=settings_with(label_check="skip"), facts={"a1": facts})
+    out = verify.run(ctx)
+    a = acc(ctx)
+    assert out["verified"] == 1 and sdk.calls == [] and (a["industry"], a["label_source"]) == ("Fintech", "rules")
+
+
 def test_an_overrides_row_stands_and_nothing_is_asked():
     s = settings_with(overrides=(Override("a1co.com", "industry", "Edtech"),))
     ctx, sdk = labelled([account()], {}, settings=s)
@@ -639,3 +649,29 @@ def test_an_account_with_a_card_waiting_is_checked_first(monkeypatch):
                                      "created_at": NOW - timedelta(hours=16), "payload": {}}])
     verify.run(ctx)
     assert sdk.domains() == ["t2co.com"]  # its card is the next email out, though t1 is first in the queue
+
+
+@pytest.mark.parametrize("mode", ["required", "skip"])
+def test_an_overrides_row_reaches_an_account_already_verified(mode):
+    """9 Oct 2026 (the refactoring scan's defect 5): an Overrides industry row never reached an account the check had
+    decided, so its columns, and enrol's copy, kept the old label for good. The next run puts the row in its columns,
+    asking nothing, and the run after changes nothing."""
+    s = settings_with(label_check=mode, overrides=(Override("a1co.com", "industry", "Edtech"),))
+    ctx, sdk = labelled([account(status="verified", label_source="rules+model", label_confidence="high")], {},
+                        settings=s)
+    out = verify.run(ctx)
+    a = acc(ctx)
+    assert (a["status"], a["industry"], a["industry_group"], a["label_source"]) == (
+        "verified", "Edtech", "Technology & Startups", "override")
+    assert sdk.calls == [] and [c["to"] for c in out["labels"]["changed"]] == ["Edtech"]
+    assert verify.run(ctx)["labels"]["changed"] == []
+
+
+def test_an_overrides_row_with_only_the_group_places_the_company_under_the_groups_own_label():
+    s = settings_with(overrides=(Override("a1co.com", "industry_group", "Marketing & Creative Agencies"),))
+    ctx, sdk = labelled([account(status="verified", label_source="rules+model")], {}, settings=s)
+    verify.run(ctx)
+    a = acc(ctx)
+    assert (a["industry"], a["industry_group"], a["label_source"]) == (
+        "Marketing & Creative Agencies", "Marketing & Creative Agencies", "override")
+    assert sdk.calls == []

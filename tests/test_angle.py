@@ -78,10 +78,11 @@ def test_the_strongest_suggesting_signal_sets_the_opener():
     mh = dataclasses.replace(MENTAL_HEALTH, opener="Saw your team offers {evidence} support.")
     progressive = dataclasses.replace(PROGRESSIVE, opener="Saw your careers page offers {evidence}.")
     settings = make_settings((mh, progressive))
-    ms = matches([benefit("therapy"), benefit("sabbatical"), benefit("parental leave"), benefit("wellness stipend")],
-                 settings)
+    ms = matches([benefit("therapy"), benefit("sabbatical"), benefit("parental leave", 1),
+                  benefit("wellness stipend", 2)], settings)
     # Progressive benefits (+30) outweighs Mental health support listed (+25); both suggest Progressive employer.
-    # Its first evidence is the first fact that matched.
+    # Its first evidence is the newest fact that matched (facts are read newest first; a tie by event_id, not by
+    # the order the rows came in).
     assert choose_angle("Priority", ms, settings) == AngleChoice(
         "Progressive employer", "Saw your careers page offers sabbatical.", ""
     )

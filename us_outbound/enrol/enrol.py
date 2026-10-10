@@ -23,7 +23,7 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
      pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
-     hold back an industry group or an email source (learn/holds.py). This is one check (eligible),
+     hold back an industry group or an email source (base/holds.py). This is one check (eligible),
      and a send approval's ✅ runs it again for the card's contact (enrol/approvals.recheck).
   4. In queue order (queue.order_key), control_share from Control and the rest from Priority
      then Standard, each account gets: its sender (kept for life; a paused sender's accounts
@@ -48,7 +48,7 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      auto_send = no (the default; Harry, 2 Oct 2026: "every single message that gets sent out
      comes to this channel first for approval"): each account becomes a send approval instead,
      a hitl_items row and a card in the alert channel showing every email of the sequence, and
-     its lead is added only when an approver's ✅ is read (enrol/approvals.py, poll_approvals).
+     its lead is added only when an approver's ✅ is read (enrol/approvals/, poll_approvals).
      A live run without US_OUTBOUND_SLACK_BOT_TOKEN refuses, as there is nowhere to approve.
 
   6. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026): at
@@ -74,22 +74,24 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 
+from us_outbound.base import holds
+from us_outbound.base.heartbeats import enrolment_paused
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, Context
-from us_outbound import budget, config_version, labels, limits
+from us_outbound import budget, config_version, labels
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render, variants
-from us_outbound.learn import holds
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.timeparse import utc
 
 
 JOB = "enrol"
@@ -114,19 +116,6 @@ OPTOUT_UNTESTED = ("optout_tested is no: the seed-inbox test of Instantly's unsu
 # -- small helpers ----------------------------------------------------------------------
 
 
-def _ts(v: Any) -> datetime | None:
-    if isinstance(v, str):
-        try:
-            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if isinstance(v, datetime):
-        return v if v.tzinfo else v.replace(tzinfo=UTC)
-    if isinstance(v, date):
-        return datetime(v.year, v.month, v.day, tzinfo=UTC)
-    return None
-
-
 def _chunks(items: Sequence[str], n: int = ID_CHUNK) -> Iterator[Sequence[str]]:
     for i in range(0, len(items), n):
         yield items[i : i + n]
@@ -146,8 +135,6 @@ def iso_week(d: date) -> str:
 
 def operator_pause(ctx: Context) -> str | None:
     """Why enrollment is paused by the stop command (SPEC 13); the stop rule's pause is holds.enrolment_stop."""
-    from us_outbound.ops.heartbeat import enrolment_paused
-
     stop = enrolment_paused(ctx.store)
     if stop is None:
         return None
@@ -173,7 +160,7 @@ def _item_week(item: Mapping[str, Any]) -> str:
     payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
     if payload.get("iso_week"):
         return str(payload["iso_week"])
-    t = _ts(item.get("created_at"))
+    t = utc(item.get("created_at"))
     return iso_week(t.astimezone(UK).date()) if t else ""
 
 
@@ -194,28 +181,30 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     """(why enrollment waits, or None; the account ids Harry pulled). SPEC 11 weekly hand-check.
 
     This ISO week's hand_check items (payload.iso_week, else created_at) must all be handled.
-    Accounts listed in a handled item's payload.pulled_account_ids are not enrolled. While auto_send
+    Accounts listed in any of the week's items' payload.pulled_account_ids are not enrolled, whatever the item's
+    status: a pull only ever narrows, and an item re-opened to add the sample keeps its pulls (9 Oct 2026: they were
+    dropped while it was open, so the re-check before a ✅ let a pulled company through). While auto_send
     is yes the week's items must hold the random sample too: one recorded while auto_send was no
     (only the doubtful accounts) does not pass the gate until the sample is added (hand_check.py).
     """
     week = iso_week(today)
     items = [r for r in ctx.store.select("hitl_items", {"kind": "hand_check"}) if _item_week(r) == week]
-    if not items:
-        return f"this week's hand-check ({week}) has not been posted", frozenset()
-    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
-        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
-                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
-                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
-                "`us-outbound handcheck show`"), frozenset()
-    if any(r.get("status") != "handled" for r in items):
-        return f"this week's hand-check ({week}) is not approved yet", frozenset()
-    pulled = {
+    pulled = frozenset(
         str(x)
         for r in items
         if isinstance(r.get("payload"), Mapping)
         for x in (r["payload"].get("pulled_account_ids") or ())
-    }
-    return None, frozenset(pulled)
+    )
+    if not items:
+        return f"this week's hand-check ({week}) has not been posted", pulled
+    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
+        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
+                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
+                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
+                "`us-outbound handcheck show`"), pulled
+    if any(r.get("status") != "handled" for r in items):
+        return f"this week's hand-check ({week}) is not approved yet", pulled
+    return None, pulled
 
 
 def optout_untested(ctx: Context) -> str | None:
@@ -257,7 +246,7 @@ def _in_force(ctx: Context, rows: Iterable[Mapping[str, Any]]) -> tuple[set[str]
     domains: set[str] = set()
     hashes: set[str] = set()
     for r in rows:
-        expires = _ts(r.get("expires_at"))
+        expires = utc(r.get("expires_at"))
         if expires is not None and expires <= ctx.now:
             continue
         if r.get("domain") and not r.get("email_sha256"):
@@ -305,7 +294,7 @@ class Gates:
     hashes: Collection[str]  # suppressed email hashes
     partners: Collection[str]
     pulled: frozenset[str] = frozenset()  # accounts pulled at this week's hand-check
-    stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (learn/holds.py)
+    stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (base/holds.py)
     sources: Collection[str] = frozenset()  # email sources a kill rule paused
 
 
@@ -430,7 +419,7 @@ def candidates(
 ) -> tuple[list[Candidate], Counter[str]]:
     """Every account that could be enrolled today, with its contact; and why the others cannot.
 
-    waiting: accounts with a send approval still waiting in Slack (enrol/approvals.py), which are not
+    waiting: accounts with a send approval still waiting in Slack (enrol/approvals/), which are not
     proposed again until it is approved, declined or expires.
     """
     store = ctx.store
@@ -523,8 +512,9 @@ def choose_copy(
 
     The account gets the most specific sendable row for its industry and its contact's role
     (copy_targets). A running ab test takes accounts that would get its version_a, other than
-    Control, and sends half of them (by account hash) version_b instead, while each arm
-    has fewer than accounts_per_version. (A variant test changes the row's emails instead: variants.choose.)
+    Control, and sends some of them (by account hash; share_a stay on version_a) version_b instead, while
+    each arm has fewer than its cap (accounts_per_version, scaled to its share: Test.cap). (A variant test
+    changes the row's emails instead: variants.choose.)
     """
     row, note = pick_copy(account, role, settings, rows)
     if row is None:
@@ -536,9 +526,9 @@ def choose_copy(
         return None, "", "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
     if t and t.kind == AB_TEST and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
-        arm = queue.test_version(str(account["account_id"]), t.test_id)
+        arm = queue.test_version(str(account["account_id"]), t.test_id, t.share_a)
         chosen = rows.get(t.arm_name(arm))
-        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(arm, 0) < t.accounts_per_version):
+        if chosen is not None and (t.accounts_per_version <= 0 or counts.get(arm, 0) < t.cap(arm)):
             return chosen, t.test_id, arm, "", note
     return row, "", "", "", note
 
@@ -609,7 +599,7 @@ def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: s
     """Tier Excluded now, and a fact so the next rescore keeps it excluded (the database, so dry-run too).
 
     fact is one scoring/tiers.py reads as a hard exclusion: a hubspot one, or declined_in_slack (an
-    approver dropped the company at a send approval, source send_approval; enrol/approvals.py).
+    approver dropped the company at a send approval, source send_approval; enrol/approvals/).
     """
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
@@ -638,7 +628,7 @@ class Prepared:
     opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, "focus", or the generic line's General key
     subject_arm: str = render.COPY_SUBJECT  # personal or copy: email 1's subject (contacts.subject_arm)
-    # What a send approval's card shows and an edit re-renders with (enrol/approvals.py): the four emails
+    # What a send approval's card shows and an edit re-renders with (enrol/approvals/): the four emails
     # as rendered, the variables they were filled with, and the mailbox they were rendered for.
     rendered: list[render.Rendered] = field(default_factory=list)
     values: dict[str, str] = field(default_factory=dict)
@@ -977,13 +967,13 @@ def run(ctx: Context) -> dict:
 
     # Send approvals still waiting (in either mode: auto_send may have been switched on since) are
     # not proposed again, and hold their sender's slots and their place in the week.
-    held = approvals.waiting(ctx)
-    cands, skipped = candidates(ctx, pulled, held.accounts)
-    # Second contacts (enrol/second.py; Harry, 6 Oct 2026): none, without a read, while second_contact is no.
-    seconds, not_second = second.candidates(ctx, pulled, held.accounts)
-    # campaigns=True: an owner whose Instantly campaign is not active gets no capacity in a live run (limits.py).
-    lim = limits.today(ctx, today, ready_accounts=len(cands) + len(seconds), pending=held.by_owner, campaigns=True,
-                       second_ready=len(seconds))
+    # Second contacts (enrol/second.py; Harry, 6 Oct 2026): none, without a read, while second_contact is no. An
+    # owner whose Instantly campaign is not active gets no capacity in a live run (limits.py). enrol/today.py is how
+    # the daily post, status, golive and the accounts view count the same.
+    from us_outbound.enrol.today import read as read_today
+
+    t = read_today(ctx, today, pulled=pulled)
+    held, cands, skipped, seconds, not_second, lim = t.held, t.ready, t.skipped, t.seconds, t.not_second, t.limits
     stopped = lim.not_sending
     n, terms = lim.number, lim.terms
     free = Counter({owner: c.free for owner, c in lim.senders.items()})
@@ -1025,7 +1015,7 @@ def run(ctx: Context) -> dict:
     would: Counter[str] = Counter()
     month = today.strftime("%Y-%m")
     proposed: dict[str, Any] | None = None
-    if approve:  # each account becomes a send approval instead of a lead (enrol/approvals.py)
+    if approve:  # each account becomes a send approval instead of a lead (enrol/approvals/)
         proposed = approvals.propose(ctx, prepared, lim, slack)
         would = Counter(proposed["by_owner"])
         r.errors += proposed["errors"]

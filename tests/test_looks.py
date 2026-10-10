@@ -94,6 +94,17 @@ def test_looks_parse_and_check_against_the_test(tabs):
         assert e.column == "looks" and message in e.message
 
 
+def test_an_ab_test_takes_the_copy_rows_own_spelling(tabs):
+    """9 Oct 2026: a version written in other capitals validated, then enrol (which matches exactly) found no row."""
+    t = set_test_row(tabs, status="running", start_date="2026-10-05", read_date="2026-12-14",
+                     version_a="LEGAL-TEAMS-PEOPLE-V1", version_b="Legal-Teams-Founder-V1")
+    settings, errors = validate_all(t)
+    assert not any(errors.values())
+    test = settings.running_test()
+    assert (test.version_a, test.version_b) == ("legal-teams-people-v1", "legal-teams-founder-v1")
+    assert settings.copy_row(test.version_a) is not None
+
+
 def test_a_holdout_compares_the_two_arms_of_one_split(tabs):
     t = set_test_row(tabs, kind="holdout", version_a="Opener", version_b="holdout", status="running",
                   start_date="2026-10-05", read_date="2026-12-14")
@@ -121,7 +132,7 @@ def test_settings_load_brings_the_new_columns_and_keeps_harrys_values():
     sheet = [{k: v for k, v in _tests_tab(test_id="t1-eap-opener", status="running", start_date="2026-10-05").items()},
              _tests_tab(test_id="harrys-own")]
     plan = load.plan_tab("Tests", sheet, default_tabs()["Tests"])
-    assert plan.new_columns == ["kind", "looks", "email", "change", "text_a", "text_b", "find"]
+    assert plan.new_columns == ["kind", "looks", "email", "change", "text_a", "text_b", "find", "share_a"]
     rows = {r["test_id"]: r for r in plan.rows}
     assert rows["t1-eap-opener"]["status"] == "running" and rows["t1-eap-opener"]["kind"] == "ab"
     assert rows["harrys-own"]["kind"] == "" and plan.extra == ["harrys-own"]
@@ -159,6 +170,25 @@ def test_a_count_look_reads_the_first_n_per_arm_once_their_windows_close():
     assert (eap["accounts"], eap["delivered"], eap["replied"], eap["positive"]) == (3, 2, 1, 1)  # the third is not read
     assert (general["accounts"], general["delivered"], general["replied"]) == (4, 2, 0)  # out-of-office is no reply
     assert result["next_look"] == "look 2 (the read date): Mon 21 Dec 2026"
+
+
+def test_an_uneven_test_s_count_look_reads_each_arm_in_its_share():
+    """At 70/30 a look at 3 is 3 accounts in the smaller arm and 7 in the larger (Harry, 8 Oct 2026)."""
+    test = ab_test(looks=(3,), share_a=0.7)
+    ctx = world(test)
+    for i in range(6):
+        emailed(ctx, i, "eap-v1", T0 + timedelta(hours=i), reply="positive" if i < 2 else None)
+    for i in range(6, 9):
+        emailed(ctx, i, "general-v1", T0)
+    [first, _] = looks.looks(test, looks.arms(ctx, test))
+    assert first.reached_at is None and first.label == (
+        "look 1: eap-v1 7 and general-v1 3 accounts with closed reply windows")
+    emailed(ctx, 9, "eap-v1", T0 + timedelta(days=1))
+    emailed(ctx, 10, "eap-v1", T0 + timedelta(days=2), reply="positive")  # the eighth: not read
+    result = looks.read(ctx, "t1")
+    assert result["look"]["reached_at"] == (T0 + timedelta(days=1, weeks=4)).isoformat()
+    eap, general = result["versions"]["eap-v1"], result["versions"]["general-v1"]
+    assert (eap["delivered"], eap["positive"], general["delivered"]) == (7, 2, 3)
 
 
 def test_a_date_look_reads_the_windows_closed_by_its_date_and_meetings_until_then():
