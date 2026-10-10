@@ -30,9 +30,10 @@ their emails were approved as they were.
 
 `us-outbound labels audit [--limit N] [--live]` (audit, below; Harry, 7 Oct 2026) is this with the model asked first
 about each open company with no fresh verdict, as verify_accounts asks about about 150 a run: it brings the whole
-queue under the label check at once. Live, it first reads the home page of each company the model was not sure of
-and whose page has not been read (sources/pages.home_pass: public pages, no paid service), so those are asked once
-more with what the company says it does (labels.second_look). Dry-run: how many pages it would read, how many it
+queue under the label check at once. Live, it first reads the home page of each company whose label the page could
+settle (labels.wants_home_page: never checked, the model unsure, or a label the model gave alone) and whose page has
+not been read (sources/pages.home_pass: public pages, no paid service), so those are asked once more with what the
+company says it does (labels.second_look). Dry-run: how many pages it would read, how many it
 would ask, what that costs at most, a sample prompt, and what the stored verdicts alone would change, asking nothing.
 """
 
@@ -103,7 +104,7 @@ def decide(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], ctx:
     v = verdict or (labels.Verdict.from_value(stored) if stored else None)
     if v is None and rules is None:
         return None  # the rules alone never rule a company out: the label check decides (the module docstring)
-    d = labels.decide(rules, v, s, mode=labels.SKIP)
+    d = labels.decide(rules, v, s, mode=labels.SKIP, page=labels.page_read(events, asked_now=verdict is not None))
     if d is None:
         return None
     if d.action == labels.HOLD:  # the hand-check is verify_accounts' to run: here, the safe label and copy only

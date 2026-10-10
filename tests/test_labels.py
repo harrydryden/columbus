@@ -396,8 +396,8 @@ def test_a_verdict_short_of_high_is_asked_again_once_the_home_page_is_read():
     assert not labels.second_look([*EVENTS, home(t0 - timedelta(days=1)), stored_verdict(ch, "medium", at=t0)])
     empty = [*unsure, home(t1, {})]
     assert not labels.second_look(empty) and not labels.wants_home_page(empty)  # read once, found nothing
-    # Never asked: no page wanted yet (a new company's page comes with its careers read).
-    assert not labels.wants_home_page(EVENTS)
+    # Never asked: the page is wanted before the first ask (10 Oct 2026; the careers read also brings it).
+    assert labels.wants_home_page(EVENTS)
 
 
 def test_an_empty_home_page_read_never_hides_one_that_said_something():
@@ -744,3 +744,17 @@ def test_a_stored_verdict_is_written_and_read_in_one_shape():
     assert held.outcome == "held" == labels.outcome_key(labels.HOLD, labels.MODEL)
     empty = labels.StoredVerdict.from_value({})
     assert (empty.verdict.label, empty.rules, empty.asked) == (labels.NONE, None, False)
+
+
+def test_a_label_the_model_gives_alone_needs_the_home_page_for_its_own_copy():
+    """10 Oct 2026, the 95% target: the model sure, the rules silent or saying another label, gets the label's own copy
+    only when it read the home page; from Apollo's facts alone, its group's own label and copy."""
+    v = verdict("Fintech", "high")
+    for rules in (None, ind("Advertising agencies")):
+        with_page = labels.decide(rules, v, DEFAULT, page=True)
+        alone = labels.decide(rules, v, DEFAULT, page=False)
+        assert (with_page.label, with_page.source, with_page.copy) == ("Fintech", labels.MODEL, labels.LABEL_COPY)
+        assert (alone.label, alone.source, alone.copy) == ("Technology & Startups", labels.UMBRELLA, labels.GROUP_COPY)
+        assert alone.action == labels.VERIFY and "until its home page is read" in alone.reason
+    agreed = labels.decide(ind("Fintech"), v, DEFAULT, page=False)  # the rules agree: no page needed
+    assert (agreed.source, agreed.copy) == (labels.AGREED, labels.LABEL_COPY)
