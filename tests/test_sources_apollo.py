@@ -210,6 +210,14 @@ def test_a_company_becomes_one_account_with_one_label_and_the_facts_scoring_read
     (("111110",), ("soybeans",), None),
     # Insurance and Financial Services exclude 524, so the keyword decides; the partner check then refuses it.
     (("524210",), ("insurtech",), "Insurtech"),
+    # Apollo's five-digit codes (the crosswalk, 10 Oct 2026): one the tab names a single code under stands for it,
+    # one it names several under reads at four digits, and an exclusion alone never decides it.
+    (("54161",), (), "Professional Services"),  # consulting: was Marketing, through 541613
+    (("54151",), (), "Technology & Startups"),  # computer systems design: was none, through 541512's exclusion
+    (("54181",), (), "Marketing & Creative Agencies"),  # 541810, the one code named under it
+    (("51321",), (), "Technology & Startups"),  # 513210
+    (("54111",), (), "Legal Teams"),  # 541110
+    (("54121",), (), "Professional Services"),  # 541214 is only an exclusion: read as 5412
 ])
 def test_best_label(naics, keywords, label):
     got = uni.best_label(list(naics), " ; ".join(keywords), BASE)

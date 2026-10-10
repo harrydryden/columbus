@@ -388,17 +388,29 @@ def org_funding(org: Mapping[str, Any], today: date) -> dict[str, Any]:
 
 
 def _naics_match(codes: Sequence[str], prefix: str) -> int:
-    """How many digits of the label's prefix the company's codes match (0 for none).
+    """How many digits of the label's prefix the company's codes match (0 for none): codes as _read_codes gives them."""
+    return max((len(prefix) for c in codes if c.startswith(prefix)), default=0)
 
-    A company code shorter than the prefix ("54181" for 541810) matches on its own digits, from 5.
+
+def _read_codes(codes: Sequence[str], settings: Settings) -> list[str]:
+    """The company's codes as the Industries tab can place them.
+
+    Apollo often gives five digits ("54161") for a six-digit code. That stands for the one six-digit code the tab
+    names under it when a row places that code (an exclusion alone says only what the code is not), and otherwise,
+    when the tab names any under it, for its first four digits.
+
+    The crosswalk, 10 Oct 2026: a five-digit code used to match every longer prefix that starts with it, so 54161
+    (consulting: 23 companies, 9% marketing) took Marketing's 541613, and 54151 (computer systems design: 38
+    companies, 84% tech) hit Technology & Startups' exclusions 541512/3/9 and got no label.
     """
-    best = 0
+    placed = {p for ind in settings.industries for p in ind.naics_prefixes if len(p) == 6}
+    named = placed | {p for ind in settings.industries for p in ind.exclude_naics if len(p) == 6}
+    out = []
     for c in codes:
-        if c.startswith(prefix):
-            best = max(best, len(prefix))
-        elif len(c) >= 5 and prefix.startswith(c):
-            best = max(best, len(c))
-    return best
+        if len(c) == 5 and (under := [p for p in named if p.startswith(c)]):
+            c = under[0] if len(under) == 1 and under[0] in placed else c[:4]
+        out.append(c)
+    return out
 
 
 def best_label(codes: Sequence[str], keyword_text: str, settings: Settings) -> Industry | None:
@@ -418,6 +430,7 @@ def best_label(codes: Sequence[str], keyword_text: str, settings: Settings) -> I
     to tell them apart the tie-break picked the first, or the longest code. Codes alone now place a
     company in its group, whose umbrella copy fits any company in it; a label's own copy needs its words.
     """
+    codes = _read_codes(codes, settings)
     rows = []
     for idx, ind in enumerate(settings.industries):
         if any(_naics_match(codes, x) for x in ind.exclude_naics):
