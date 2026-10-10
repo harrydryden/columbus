@@ -1079,6 +1079,38 @@ def _crosswalk_report(out: dict) -> None:
     print(f"{out['rows']} rows" + (" written to the Crosswalk tab." if out["tab_written"] else "."))
 
 
+def _sample_report(out: dict, live: bool) -> None:
+    from us_outbound.ops import label_sample
+
+    print(f"{out['drawn']} companies drawn at random from those emailed or to be emailed.")
+    for r in out["rows"]:
+        print(f"  {r['domain']} · {r['our_label']} ({r['copy']} copy) · {r['decided_by']}")
+    if out["verdicts_kept"]:
+        print(f"The {label_sample.TAB} tab already holds {out['verdicts_kept']} verdict(s), so it was not rewritten; "
+              "score it with `labels sample --score`, or clear the your_verdict column to draw again.")
+    elif out["tab_written"]:
+        print(f"Written to the {label_sample.TAB} tab. Fill your_verdict with one of: "
+              f"{', '.join(label_sample.VERDICTS)} (and right_label when ours is wrong), then run "
+              "`us-outbound labels sample --score`.")
+
+
+def _score_report(out: dict) -> None:
+    n = out["judged"]
+    print(f"{n} of {out['rows']} companies judged" + (f"; unreadable verdicts: {', '.join(out['unreadable'])}"
+                                                     if out["unreadable"] else "") + ".")
+    if not n:
+        return
+    for key, title in (("label_right", "Label right"), ("group_right", "Group right"),
+                       ("wrong_pitch", "Email copy saying more than is true")):
+        lo, hi = out["intervals"][key]
+        print(f"  {title}: {out[key]} of {n} ({out[key] / n:.0%}; 95% interval {lo:.0%} to {hi:.0%})")
+    if out["wrong"]:
+        print("Not right:")
+        for w in out["wrong"]:
+            fix = f" → {w['right_label']}" if w["right_label"] else ""
+            print(f"  {w['domain']} · ours {w['ours']} ({w['copy']} copy) · {w['verdict']}{fix}")
+
+
 def _eval_report(out: dict, live: bool) -> int:
     if not live:
         print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
@@ -1112,6 +1144,20 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         ctx = factory(crosswalk.JOB, args.live, operator=True)
         _crosswalk_report(run_job(ctx, crosswalk.run))
         _dry_note(ctx, f"the {crosswalk.TAB} tab was not written.")
+        return 0
+    if args.action == "sample":  # reads only; with --live it writes the Label sample tab, --score reads it back
+        from us_outbound.ops import label_sample
+
+        if args.score:
+            ctx = factory(label_sample.JOB, False, operator=True)
+            try:
+                _score_report(run_job(ctx, label_sample.run_score))
+            except LookupError as exc:
+                raise Refused(str(exc)) from exc
+            return 0
+        ctx = factory(label_sample.JOB, args.live, operator=True)
+        _sample_report(run_job(ctx, lambda c: label_sample.run(c, args.size or label_sample.SIZE)), ctx.live)
+        _dry_note(ctx, f"the {label_sample.TAB} tab was not written.")
         return 0
     if args.action == "eval":
         ctx = factory("labels_eval", args.live, operator=True)
@@ -1732,13 +1778,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
                  "company's label, show its label and history, or measure how Apollo's industries, NAICS codes and "
-                 "keywords translate into labels (crosswalk)", cmd_labels, takes_live=True)
-    lb.add_argument("action", choices=["audit", "eval", "set", "show", "crosswalk"])
+                 "keywords translate into labels (crosswalk), or draw a sample for you to judge by hand (sample)", cmd_labels,
+                 takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show", "crosswalk", "sample"])
     lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
     lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
     lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")
     lb.add_argument("--from-corrections", action="store_true",
                     help="eval: also score the companies approvers corrected, expecting their new label")
+    lb.add_argument("--size", type=int, help="sample: how many companies to draw (default 50)")
+    lb.add_argument("--score", action="store_true", help="sample: read your verdicts back from the tab and count them")
     rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
                  "withdraw open cards whose label changes", cmd_relabel, takes_live=True)
     rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")
