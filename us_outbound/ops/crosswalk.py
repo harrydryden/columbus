@@ -26,10 +26,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from us_outbound import facts, labels
-from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.industry.material import naics_codes, texts
 from us_outbound.logs import log
+from us_outbound.ops import label_sample as sample
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_universe as universe
@@ -245,20 +245,9 @@ def run(ctx: Context) -> dict[str, Any]:
     cells = [r.as_cells() for r in ordered if r.companies]
     sheet_id = ctx.guard.bounds.settings_sheet_id
     written = False
-    if ctx.live and sheet_id:
+    if ctx.live and sheet_id:  # 10 Oct 2026: the first `crosswalk --live` stopped on the missing tab's 400
         sheets = ctx.clients.sheets
-        try:
-            present = bool(sheets.read_tabs(sheet_id, [TAB]).get(TAB))
-        except ApiError as exc:  # a tab the sheet does not have yet is a 400, as settings/sync.read_sheet reads it
-            if exc.status != 400:
-                raise
-            present = False  # 10 Oct 2026: the first `crosswalk --live` stopped here instead of adding the tab
-        if not present:
-            try:
-                sheets.add_tab(sheet_id, TAB)
-            except Exception as exc:  # it is there, only empty
-                log("crosswalk_tab_exists", error=str(exc)[:120])
-        sheets.replace_tab(sheet_id, TAB, COLUMNS, cells)
+        sample.write_tab(sheets, sheet_id, TAB, COLUMNS, cells, sample.read_tab(sheets, sheet_id, TAB))
         written = True
     out.update(rows=len(cells), tab_written=written)
     log("labels_crosswalk", run_id=ctx.run_id, known=out["known"], rows=len(cells), written=written)
