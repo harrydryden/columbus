@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from us_outbound import facts, labels
+from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.industry.material import naics_codes, texts
 from us_outbound.logs import log
@@ -246,7 +247,13 @@ def run(ctx: Context) -> dict[str, Any]:
     written = False
     if ctx.live and sheet_id:
         sheets = ctx.clients.sheets
-        if not sheets.read_tabs(sheet_id, [TAB]).get(TAB):
+        try:
+            present = bool(sheets.read_tabs(sheet_id, [TAB]).get(TAB))
+        except ApiError as exc:  # a tab the sheet does not have yet is a 400, as settings/sync.read_sheet reads it
+            if exc.status != 400:
+                raise
+            present = False  # 10 Oct 2026: the first `crosswalk --live` stopped here instead of adding the tab
+        if not present:
             try:
                 sheets.add_tab(sheet_id, TAB)
             except Exception as exc:  # it is there, only empty
