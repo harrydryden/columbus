@@ -7,9 +7,10 @@ Wellbeing app or perk named, Progressive benefits and Modern mental-health vendo
 Their Signals rows list careers_pages and job_posts beside clay_careers, for when Clay returns.
 
 Each weekday at 03:45 UK, after apollo_signals (03:30) and before verify_accounts (04:30), whose
-rescore scores the new facts, first a home-page pass (home_pass) for the label check: each queue account the model
-was not sure of whose home page has not been read (labels.wants_home_page; Harry, 7 Oct 2026: the first audit held
-half the queue on Apollo's facts alone), robots.txt and the home page only, so verify_accounts asks the model once
+rescore scores the new facts, first a home-page pass (home_pass) for the label check: each queue account whose label
+the page could settle (never checked, the model unsure, or a label the model gave alone) and whose home page has not
+been read (labels.wants_home_page; Harry, 7 Oct 2026: the first audit held half the queue on Apollo's facts alone; 10
+Oct 2026: a label the model gives alone earns its own copy only with the page), robots.txt and the home page only, so verify_accounts asks the model once
 more with the page (labels.second_look); `labels audit --live` makes the same pass first. Then, for queue accounts
 (new, queued or verified, not Excluded or Held) with a domain: the Focus tab's groups first, then
 accounts never read, then queue order. An account is read again after REFRESH_DAYS, or after

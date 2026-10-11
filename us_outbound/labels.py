@@ -22,8 +22,10 @@ One deterministic rule (decide) combines the two, so a doubtful label can never 
     switched off is left out when the model is sure, and held for the weekly hand-check when it is not; a company
     the model cannot place is held;
   * the rules and the model agree: the label's own copy (rules+model);
-  * they disagree: the model's label when it is sure (model); otherwise, within one group, the group's own label
-    and copy (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed).
+  * they disagree, or the rules give none: the model's label when it is sure and read the company's home page
+    (model); sure from Apollo's facts alone, its group's own label and copy (umbrella) until the page is read and it
+    is asked again (10 Oct 2026, the 95% target); otherwise, within one group, the group's own label and copy
+    (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed).
 copy_level turns label_source into the most specific copy a company may get (enrol.copy_targets): the label's own,
 its group's, or General's. A company not checked yet (label_source blank) gets its group's.
 
@@ -33,8 +35,9 @@ the evidence must be a verbatim quote of the material (or it is dropped and the 
 both, escaped.
 
 A verdict is kept for good, as a label_verdict fact (source label_check), and asked again when labels_hash changes
-(the prompt version, the label list, a definition or keywords), or once when a verdict short of high was asked before
-the company's home page was read (second_look): the page is new material. The first audit (7 Oct 2026) held half the
+(the prompt version, the label list, a definition or keywords), or once when a verdict the page could improve (short
+of high, or a label the rules did not give) was asked before the company's home page was read (second_look): the page
+is new material. The first audit (7 Oct 2026) held half the
 queue on Apollo's facts alone, so read_pages and `labels audit` read the home page of a company the model was unsure
 of first (sources/pages.home_pass). Each call is about $0.01 on Sonnet 5.5 (effort
 low, at most MAX_TOKENS; the system block is cached), within the monthly Claude cap, and written to credit_ledger
@@ -383,27 +386,48 @@ def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return facts.newest(events, HOME_FACT, where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"]))
 
 
+def _page_would_help(stored: Mapping[str, Any] | None) -> bool:
+    """Whether the home page is worth reading for a verdict: none yet, one short of high, or a label the model gave
+    without the rules agreeing (10 Oct 2026: the page decides whether that label earns its own copy)."""
+    if not stored:
+        return True
+    return stored.get("confidence") != HIGH or (stored.get("decision") or {}).get("source") != AGREED
+
+
 def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
-    """A verdict short of high, asked before the home page was read: the page is new material, so the model is asked
-    once more (Checker.fresh). Once asked with the page, the verdict stands, whatever its confidence."""
+    """A verdict the page could improve (_page_would_help), asked before the home page was read: the page is new
+    material, so the model is asked once more (Checker.fresh). Once asked with the page, the verdict stands, whatever
+    its confidence."""
     events = list(events)
     stored = latest_verdict(events)
     page = _home_page(events)
-    if not stored or stored.get("confidence") == HIGH or page is None:
+    if not stored or not _page_would_help(stored) or page is None:
         return False
     asked = _asked_at(events)
     return asked is None or utc_or_epoch(page.get("observed_at")) > asked
 
 
 def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
-    """Whether the company's home page should be read for the check (sources/pages.home_pass): the model was asked
-    and was not sure, and the page has not been read (an empty home_page fact is a read that found nothing, so it is
-    not read again). A company never asked waits for its first verdict: a new one gets its page in the careers read."""
+    """Whether the company's home page should be read for the check (sources/pages.home_pass): the page could help
+    (_page_would_help: a company never asked, one the model was not sure of, or one whose label rests on the model
+    alone) and has not been read (an empty home_page fact is a read that found nothing, so it is not read again)."""
     events = list(events)
-    stored = latest_verdict(events)
-    if not stored or stored.get("confidence") == HIGH:
+    if not _page_would_help(latest_verdict(events)):
         return False
     return not any(e.get("fact") == HOME_FACT for e in events)
+
+
+def page_read(events: Iterable[Mapping[str, Any]], *, asked_now: bool = False) -> bool:
+    """Whether the verdict the decision rests on was asked with the home page in its material: one asked now, with a
+    page on file, or the stored one, asked after the page was read."""
+    events = list(events)
+    page = _home_page(events)
+    if page is None:
+        return False
+    if asked_now:
+        return True
+    asked = _asked_at(events)
+    return asked is not None and utc_or_epoch(page.get("observed_at")) <= asked
 
 
 def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
@@ -450,10 +474,11 @@ class Decision:
 
 
 def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, *, override: str | None = None,
-           override_source: str = OVERRIDE, mode: str = REQUIRED) -> Decision | None:
+           override_source: str = OVERRIDE, mode: str = REQUIRED, page: bool = True) -> Decision | None:
     """The decision rule (the module docstring), in its order. None: no verdict while label_check is required, so
     a new company waits. Hold and disqualify reasons depend only on the two labels and the confidence, so a hand-check
-    that clears one clears the same text next run (verify.clear_doubts matches it exactly)."""
+    that clears one clears the same text next run (verify.clear_doubts matches it exactly). page: whether the verdict
+    was asked with the company's home page (page_read); a label the model gives alone needs it for its own copy."""
     if override:
         ind = settings.industry(override)
         conf = HIGH if override_source == APPROVER else ""
@@ -493,16 +518,26 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
             return hold(f"the model says {verdict.label}, switched off on the Industries tab ({c})")
         model = umbrella  # a switched-off label in a group we prospect: the group's own label
     m_name = model.industry
+
+    def model_alone(said: str) -> Decision:
+        """The model sure, the rules not agreeing: its label's own copy when it read the home page, else its group's
+        (10 Oct 2026, the 95% target: Apollo's facts alone are where its sure answers go wrong)."""
+        if page:
+            return Decision(m_name, model.industry_group, MODEL, c, LABEL_COPY, VERIFY, said)
+        said += "; from Apollo's facts alone, so the group's copy until its home page is read"
+        umbrella = settings.umbrella(model.industry_group)
+        if umbrella is not None and umbrella.active:
+            return Decision(umbrella.industry, umbrella.industry_group, UMBRELLA, c, GROUP_COPY, VERIFY, said)
+        return Decision(m_name, model.industry_group, DISPUTED, c, GENERAL_COPY_LEVEL, VERIFY, said)
+
     if rules is None:
         if c == HIGH:
-            return Decision(m_name, model.industry_group, MODEL, c, LABEL_COPY, VERIFY,
-                            f"no rules label; the model says {m_name} ({c})")
+            return model_alone(f"no rules label; the model says {m_name} ({c})")
         return hold(f"no rules label; the model says {m_name} ({c})")
     if rules.industry == m_name:
         return Decision(*keep, AGREED, c, LABEL_COPY, VERIFY)
     if c == HIGH:
-        return Decision(m_name, model.industry_group, MODEL, c, LABEL_COPY, VERIFY,
-                        f"the rules said {r_name}; the model says {m_name} ({c})")
+        return model_alone(f"the rules said {r_name}; the model says {m_name} ({c})")
     said = f"the rules say {r_name}, the model says {m_name} ({c})"
     if rules.industry_group == model.industry_group:
         umbrella = settings.umbrella(rules.industry_group)
@@ -727,7 +762,7 @@ def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping
     v, why, asked = checker.verdict(account, events)
     if v is None and why == NO_MATERIAL:
         return on_rules(why)
-    return decide(rules, v, s, mode=mode), v, rules, why, asked
+    return decide(rules, v, s, mode=mode, page=page_read(events, asked_now=asked)), v, rules, why, asked
 
 
 # -- an approver's correction (Harry, 7 Oct 2026: one thread reply, "industry: Fintech") ------------------------------
