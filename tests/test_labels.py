@@ -712,12 +712,16 @@ def test_the_readout_block():
               correction(2, "Games studios", "Technology & Startups", at=at)]
     ctx = measured(facts_, [decided(i, at=at) for i in range(38)], now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
     lines = labels.readout_lines(ctx, start, end)
-    assert lines[1] == "*Industry labels* (the label check; target: 95% of cards with the right industry)"
-    assert lines[2] == ("Last week: 38 of 40 cards had the right industry (95%): met. 9 checked, the rules and the "
-                        "model agreeing on the group for 100%; held 1, disqualified 0.")
-    assert lines[3] == "  Corrections: Games studios → Technology & Startups (2)"
+    assert lines[1] == ("*Industry labels* (how often the industry on a send card was right, going by the approvers' "
+                        "corrections; target 95%)")
+    assert lines[2] == "  Right: last week 38 of 40 (95%, met) · so far 38 of 40 (95%, met)"
+    assert lines[3] == "  Corrected last week: Games studios → Technology & Startups (2)"
+    assert lines[4] == ("  Checked last week by the AI model against our industry-code rules: 9 · agreeing on the "
+                        "group for 100% · held for the hand-check 1 · disqualified 0")
     few = labels.readout_lines(measured([correction(1, "a", "b", at=at)], [decided(1, at=at)]), start, end)
-    assert few[2].startswith("Last week: 1 of 2 cards had the right industry (too few to read).")
+    assert few[2] == "  Right: last week 1 of 2 (too few to read) · so far 1 of 2 (too few to read)"
+    none = labels.readout_lines(measured([], []), start, end)
+    assert none == ["", lines[1] + ": no card decided and no company checked yet."]
 
 
 def test_the_monday_readout_carries_the_block():

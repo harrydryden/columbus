@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from tests.fakes import FakeTransport, make_context
 from tests.test_db import db, dsn, learning_world, store  # noqa: F401  (Postgres fixtures, for the end-to-end read)
 from tests.test_registry import SETTINGS, slack_routes
+from us_outbound.base import say
 from us_outbound.clients.guard import Guard
 from us_outbound.learn import readout, signal_value
 from us_outbound.ops import cli, heartbeat, schedule
@@ -56,24 +57,52 @@ def test_small_numbers_read_too_few_to_read_never_a_rate():
                        replies=1)]
     ctx, _ = world(weekly=weekly)
     out = text(ctx)
-    assert "Replied so far: 2 of 12 companies emailed (too few to read; the working assumption is 3 to 5%)" in out
-    assert "Positive: 1 (too few to read; about 1% assumed). Meetings: 0 (too few to read; 0.5 to 1% assumed)" in out
-    [tier] = [line for line in out.splitlines() if line.startswith("  Priority:")]
-    assert tier.endswith("3 companies emailed, 1 replied (too few to read)") and "33" not in tier
-    assert "16.7%" not in out  # 2 of 12 is never given as a rate
+    assert "*So far:* 12 companies emailed: too few to read a rate (it takes 30)." in out
+    assert "  Companies emailed so far: 12 (12 delivered) · 2 replied · 1 positive · 0 meetings" in out
+    [tier] = [line for line in out.splitlines() if line.startswith("  Top fit (Priority):")]
+    assert tier == "  Top fit (Priority): 3 sent, 1 reply · 3 emailed so far, 1 replied (too few to read)"
+    assert "16.7%" not in out and "33" not in out  # 2 of 12 is never given as a rate
 
 
 def test_from_30_companies_a_rate_is_given():
     weekly = [week_row("all", "all", accounts_enrolled=120, accounts_delivered=120, accounts_replied=5,
                        accounts_positive=1, accounts_meeting=1, accounts_window_closed=40)]
-    out = text(world(weekly=weekly)[0])
-    assert "Replied so far: 5 of 120 companies emailed (4.2%; the working assumption is 3 to 5%)." in out
-    assert "Meetings: 1 (0.8%; 0.5 to 1% assumed)" in out
-    assert "So far: 120 companies emailed, 120 delivered; 40 of their 28-day reply windows have closed, so the " \
-           "rates still rise as replies come in." in out
-    assert "Stop rule: 1 meeting from the first 120 companies emailed; enrolment pauses if the first 1,500 bring " \
-           "fewer than 5." in out
+    lines = readout.build(world(weekly=weekly)[0])[0]
+    assert lines[2] == ("*So far, against the targets:* replies 4.2% (3–5%: on track) · positive 0.8% (about 1%: "
+                        "below) · meetings 0.8% (0.5–1%: on track). Only 40 of 120 companies have had the full 28 "
+                        "days after email 1 to reply, so these still rise.")
+    out = "\n".join(lines)
+    assert "  Stop rule: 1 meeting from the first 120 companies; enrolment pauses by itself if the first 1,500 bring " \
+           "fewer than 5" in out
     assert readout.rate(5, 29) == "too few to read" and readout.rate(5, 30) == "16.7%"
+
+
+def test_the_summary_opens_with_what_needs_action_or_says_nothing_does():
+    ctx, _ = world(weekly=[])  # optout_tested is no: one thing to act on
+    lines, nums = readout.build(ctx)
+    assert lines[0] == ":warning: *Monday readout, 5–11 Oct: 1 thing to act on*"
+    assert lines[3] == "*Needs action:* test the unsubscribe link (details below)"
+    assert nums["to_act_on"] == ["test the unsubscribe link"]
+    assert ("    *What to do:* `railway ssh -- us-outbound seed send ADDRESS --owner NAME --live` to an inbox of ours, "
+            "click the email's unsubscribe link, then `railway ssh -- us-outbound seed check`; at PASS, set "
+            f"`optout_tested` to yes on the {say.sheet_link(ctx, 'General')}") in lines
+
+    # A bounce rate over 2% is not met, but has nothing to do: information only.
+    ctx, _ = world(LIVE, weekly=[])
+    ctx.store.insert("events", [*(ev(i, "sent", step=1, account_id=f"a{i}") for i in range(10)),
+                                ev(20, "bounced", contact_id="k1")])
+    lines, nums = readout.build(ctx)
+    assert lines[0] == ":bar_chart: *Monday readout, 5–11 Oct: nothing to act on*"
+    assert not lines[3] and nums["to_act_on"] == [] and "*What to do:*" not in "\n".join(lines)
+    assert "  *Not met:* bounces under 2%: 1 of 10 sends, 10.0%; under 100 sends, one bounce moves it a lot" in lines
+
+    # All five met: the readout asks whether to raise the weekly limit.
+    ctx, _ = world(LIVE, weekly=[])
+    ctx.store.insert("events", [ev(i, "sent", step=1, account_id=f"a{i}") for i in range(10)])
+    lines, nums = readout.build(ctx)
+    assert nums["to_act_on"] == ["decide whether to raise the weekly limit"]
+    assert ("  *What to do:* all 5 are met, so sending can grow: raise `weekly_enrol_cap` (now 150) on the "
+            f"{say.sheet_link(ctx, 'General')} in step with the mailbox ramp (docs/roadmap.md, Scaling)") in lines
 
 
 # -- last week and the cuts -----------------------------------------------------------------------------------------
@@ -97,9 +126,9 @@ def test_last_week_counts_only_last_week_in_uk_time():
     lines, nums = readout.build(ctx)
     assert nums["last_week"] == {"sent": 3, "replies": 2, "positive": 1, "meetings": 1, "bounces": 1,
                                  "unsubscribes": 1}
-    assert lines[1] == ("*Last week* (Mon 05 Oct to Sun 11 Oct, UK): 3 emails sent · 2 replies, 1 positive · "
-                        "1 meeting booked · 1 bounce · 1 unsubscribe")
-    assert lines[0] == "*Monday readout, Mon 12 Oct* (dry-run)"
+    assert lines[1] == ("*Last week:* 3 emails sent · 2 replies (1 positive) · 1 meeting booked · 1 bounce · "
+                        "1 unsubscribe")
+    assert lines[0].startswith(":warning: *Monday readout, 5–11 Oct: ")  # the dry-run note is the Slack client's
 
 
 def test_the_cuts_show_last_week_and_so_far_busiest_first():
@@ -115,15 +144,14 @@ def test_the_cuts_show_last_week_and_so_far_busiest_first():
         week_row("tier", "Held", start=date(2026, 9, 28)),  # nothing in it: not listed
     ]
     out = text(world(weekly=weekly)[0]).splitlines()
-    angle = out.index("*By angle* (last week · so far)")
-    assert out[angle + 1] == ("  Upgrade the EAP: 30 sent, 2 replies (1 positive), 1 meeting, 1 bounce · 20 companies "
-                              "emailed, 3 replied (too few to read)")
-    assert out[angle + 2] == "  General: 10 sent, 1 reply (0 positive), 0 meetings, 0 bounces · 40 companies emailed, " \
-                             "2 replied (5.0%)"
-    step = out.index("*By step* (last week)")
-    assert out[step + 1:step + 3] == ["  step 1: 25 sent, 2 replies (0 positive), 1 bounce",
-                                      "  step 2: 15 sent, 1 reply (0 positive), 0 bounces"]
-    assert "*By tier* (last week · so far)" not in out and "*By sender* (last week · so far)" in out
+    assert "*Cuts* (the numbers split several ways: last week · companies emailed so far)" in out
+    angle = out.index("_By angle_ (the pitch of the copy)")
+    assert out[angle + 1] == ("  Upgrade the EAP: 30 sent, 2 replies (1 positive), 1 meeting, 1 bounce · 20 emailed so "
+                              "far, 3 replied (too few to read)")
+    assert out[angle + 2] == "  General: 10 sent, 1 reply · 40 emailed so far, 2 replied (5.0%)"  # no zeros
+    step = out.index("_By step_ (which email of the sequence)")
+    assert out[step + 1:step + 3] == ["  step 1: 25 sent, 2 replies, 1 bounce", "  step 2: 15 sent, 1 reply"]
+    assert not any(x.startswith("_By tier_") for x in out) and "_By sender_ (whose mailbox sent it)" in out
 
 
 def test_without_the_views_the_rest_still_posts():
@@ -131,7 +159,7 @@ def test_without_the_views_the_rest_still_posts():
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
     assert nums["views"] is False and "need the database's views" in out
-    assert "*Exit criteria to scale*" in out and "*Tests*" in out and "*By tier*" not in out
+    assert "*Exit criteria to scale*" in out and "*Tests*" in out and "*Cuts*" not in out
 
 
 # -- the exit criteria to scale ---------------------------------------------------------------------------------------
@@ -155,11 +183,12 @@ def test_exit_criteria_met():
     out = "\n".join(lines)
     assert nums["exit_criteria"] == {"bounces": True, "complaints": True, "unsubscribes": True, "replies": True,
                                      "refusals": True}
-    assert "  Met: bounces under 2%: 1 of 150 sends so far (0.7%)." in out
-    assert "  Met: unsubscribes confirmed end to end: the seed test passed; 1 opt-out so far, each recorded" in out
-    assert "  Met: every reply classified and routed: 3 replies so far." in out
-    assert ("  Met: no unexplained refusal: no guard refusal last week; 2 emails held back by the copy rules, each "
-            "with its reason in enrol's run summary.") in out
+    assert "*Exit criteria to scale* (all 5 must be met before sending grows): 5 of 5 met" in out
+    assert ("  Met: bounces under 2% (1 of 150 sends, 0.7%) · no spam complaints · unsubscribes work end to end (link "
+            "tested; 1 opt-out so far, each in suppression, Instantly's blocklist and HubSpot) · every reply sorted and "
+            "routed (3 so far) · no unexplained safety-check refusal (2 emails held back by the copy rules, each with "
+            "its reason)") in lines
+    assert "*Not met:*" not in out
 
 
 def test_exit_criteria_not_met_say_why():
@@ -176,14 +205,21 @@ def test_exit_criteria_not_met_say_why():
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
     assert not any(nums["exit_criteria"].values())
-    assert ("  Not met: bounces under 2%: 1 of 40 sends so far (2.5%; on under 100 sends one bounce moves it a "
-            "lot).") in out
-    assert "  Not met: no complaints: 1 spam complaint recorded." in out
-    assert "  Not met: unsubscribes confirmed end to end: optout_tested is no on the General tab" in out
-    assert "; 1 opt-out not yet recorded in Instantly's blocklist and HubSpot" in out
-    assert ("  Not met: every reply classified and routed: 1 not classified after an hour; 1 with no reply card, "
-            "out-of-office record or opt-out (`us-outbound replies list`).") in out
-    assert "  Not met: no unexplained refusal: 1 guard refusal last week, in enrol, each with its error" in out
+    assert "): 0 of 5 met" in out and "  Met:" not in out
+    assert "  *Not met:* bounces under 2%: 1 of 40 sends, 2.5%; under 100 sends, one bounce moves it a lot" in lines
+    assert "  *Not met:* no spam complaints: 1 complaint" in lines
+    assert ("  *Not met:* unsubscribes work end to end: the unsubscribe-link test has not passed (`optout_tested` is "
+            "no); 1 opt-out not yet in Instantly's blocklist and HubSpot (retried by the next live run of recording "
+            "email results or checking for replies)") in lines
+    replies = lines.index("  *Not met:* every reply sorted and routed: 1 not sorted (positive, objection, …) after an "
+                          "hour; 1 with no reply card in Slack, out-of-office record or opt-out")
+    assert lines[replies + 1] == "    *What to do:* look at them with `railway ssh -- us-outbound replies list`"
+    refusal = lines.index("  *Not met:* no unexplained safety-check refusal: 1 refusal last week, in adding people to "
+                          "the email campaign")
+    assert lines[refusal + 1].startswith("    *What to do:* read each error with "
+                                         "`railway ssh -- us-outbound status` or in ")
+    assert nums["to_act_on"] == ["test the unsubscribe link", "check 2 replies", "explain 1 refusal"]
+    assert lines[0] == ":warning: *Monday readout, 5–11 Oct: 3 things to act on*"
 
 
 # -- the signal table and the tests ---------------------------------------------------------------------------------
@@ -207,13 +243,25 @@ def test_the_signal_headline_says_too_few_and_reads_the_rest():
         signal_row("Layoffs"),
     ]
     out = text(world(weekly=[], signals=signals)[0])
-    assert ("  EAP named (weight 10): 60 enrolled with it, 60 emailed, 12 replied, 3 positive, 2 meetings (20.0% "
-            "replied, against 4.0% of 100 without): replies more (p = 0.00)") in out
-    assert "  Hiring and growth (weight 10): 40 enrolled with it, 40 emailed, 2 replied, 0 positive, 0 meetings " \
-           "(5.0% replied, against 5.0% of 120 without): no clear difference yet (p = 1.00)" in out
+    assert ("  EAP named: 20.0% of 60 replied, against 4.0% of 100 without · 3 positive, 2 meetings: replies more "
+            "(p = 0.00)") in out
+    assert ("  Hiring and growth: 5.0% of 40 replied, against 5.0% of 120 without · 0 positive, 0 meetings: no clear "
+            "difference yet (p = 1.00)") in out
     assert "  Too few to read (under 30 companies emailed with or without it): New People leader (3)." in out
-    assert "33.3%" not in out and "Layoffs" not in out
+    assert "33.3%" not in out and "Layoffs" not in out and "*What to do:* decide whether to lower" not in out
     assert signal_value.verdict(signals[2]) == "too few to read"
+
+
+def test_a_signal_below_the_control_tier_says_what_to_do():
+    signals = [signal_row("Layoffs", weight=5, below_control=True, accounts_enrolled=220, accounts_sent=210,
+                          accounts_delivered=205, accounts_replied=2, without_delivered=300, without_replied=15)]
+    ctx, _ = world(weekly=[], signals=signals)
+    lines, nums = readout.build(ctx)
+    at = lines.index("  Layoffs replies less than the comparison group (Control) after 200 companies")
+    assert lines[at + 1] == (f"    *What to do:* decide whether to lower its weight (now 5) on the "
+                             f"{say.sheet_link(ctx, 'Signals')}; it applies at the next settings sync, or now with "
+                             "`railway ssh -- us-outbound sync`")
+    assert "review the weight of Layoffs" in nums["to_act_on"]
 
 
 def test_tests_at_a_look_are_listed_with_their_read(monkeypatch):
@@ -227,9 +275,13 @@ def test_tests_at_a_look_are_listed_with_their_read(monkeypatch):
                                    at=datetime(2026, 9, 1, tzinfo=UTC)) for i in range(4)])
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
-    assert nums["tests_at_a_look"] == ["t1"]
-    assert ("  t1 (ab) reached look 1 (the read date): Thu 08 Oct 2026 on Thu 08 Oct: eap-v1 0 of 2 replied (0.0%); "
-            "general-v1 0 of 2 replied (0.0%)") in out
+    assert nums["tests_at_a_look"] == ["t1"] and "decide on test t1" in nums["to_act_on"]
+    at = lines.index("  t1 (A/B copy test) reached look 1 (the read date): Thu 08 Oct 2026: eap-v1 0 of 2 replied "
+                     "(0.0%); general-v1 0 of 2 replied (0.0%) · p = 1.00")
+    assert lines[at + 1] == ('    *What to do:* apply its decision rule ("reply rate") and write the outcome in the '
+                             f"`result` column on the {say.sheet_link(ctx, 'Tests')}. `railway ssh -- us-outbound test "
+                             "read t1` has the full read.")
+    assert "*Tests* (copy tests, each read only at points fixed in advance on the Tests tab, called looks)" in out
 
 
 # -- the job: schedule, heartbeat, cli, the post -------------------------------------------------------------------------
@@ -247,7 +299,7 @@ def test_dry_run_posts_to_the_dev_channel_and_writes_only_its_heartbeat():
     before = {k: list(v) for k, v in ctx.store.tables.items()}
     summary = heartbeat.run_job(ctx, readout.run)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith(DRY + "*Monday readout")
+    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith(DRY + ":warning: *Monday readout")
     assert summary["dry_run"] and summary["alert"]["posted"]
     after = {k: v for k, v in ctx.store.tables.items() if v != before[k]}
     assert set(after) == {"heartbeats"}
@@ -297,9 +349,7 @@ def test_the_readout_reads_the_views_on_postgres(store):  # noqa: F811
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
     assert nums["views"] is True and nums["so_far"]["accounts_enrolled"] == 70
-    assert "Replied so far: 12 of 69 companies emailed (17.4%" in out
-    assert "  Priority: 0 sent, 0 replies (0 positive), 0 meetings, 0 bounces · 35 companies emailed, 10 replied " \
-           "(28.6%)" in out
-    assert "  eap_named (weight 10): 36 enrolled with it, 35 emailed, 10 replied, 3 positive, 2 meetings (28.6% " \
-           "replied, against 5.9% of 34 without): replies more" in out
+    assert "*So far, against the targets:* replies 17.4% (3–5%: on track)" in out
+    assert "  Top fit (Priority): 0 sent · 35 emailed so far, 10 replied (28.6%)" in out
+    assert "  eap_named: 28.6% of 35 replied, against 5.9% of 34 without · 3 positive, 2 meetings: replies more" in out
     assert "hiring" not in out.split("*Signal value*")[1].split("*Tests*")[0]  # nobody emailed with it

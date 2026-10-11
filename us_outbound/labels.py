@@ -1116,25 +1116,31 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
 
 
 def readout_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
-    """The Monday readout's Industry labels block: last week's cards right against the 95% target (a rate from
-    MIN_CARDS cards), the corrections, the agreement, the held and disqualified; and the same so far."""
+    """The Monday readout's Industry labels block, for a reader who may be new: the cards with the right industry
+    last week and so far against the 95% target (a rate from MIN_CARDS cards), last week's corrections, and last
+    week's label check (the rules and the model agreeing, the held and disqualified). Information only: the daily
+    post asks for a look when corrections pile up (asks)."""
 
     def right(t: Tally) -> str:
         ok = t.cards - len(t.corrections)
         if t.cards < MIN_CARDS:
-            return f"{ok} of {t.cards} cards had the right industry (too few to read)"
+            return f"{ok} of {t.cards} (too few to read)"
         rate = ok / t.cards
-        return (f"{ok} of {t.cards} cards had the right industry ({rate:.0%}): "
-                f"{'met' if rate >= TARGET_RIGHT else 'not met'}")
+        return f"{ok} of {t.cards} ({rate:.0%}, {'met' if rate >= TARGET_RIGHT else 'not met'})"
 
     week, ever = tally(ctx, start, end), tally(ctx, None, end)
-    lines = ["", f"*Industry labels* (the label check; target: {TARGET_RIGHT:.0%} of cards with the right industry)"]
-    for name, t in (("Last week", week), ("So far", ever)):
-        d = t.decisions
-        lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on the group for "
-                     f"{_pct(t.same_group, t.labelled)}" + (f" of the {t.labelled} the rules labelled "
-                     f"({len(t.no_rules)} had no rules label)" if t.no_rules else "") + f"; held {d.get('held', 0)}, "
-                     f"disqualified {d.get('disqualified', 0)}.")
-        if t.corrections:
-            lines.append(f"  Corrections: {_moves(t.corrections, 10)}")
+    head = (f"*Industry labels* (how often the industry on a send card was right, going by the approvers' "
+            f"corrections; target {TARGET_RIGHT:.0%})")
+    if not ever.cards and not week.checked:
+        return ["", f"{head}: no card decided and no company checked yet."]
+    lines = ["", head]
+    lines.append(f"  Right: last week {right(week)} · so far {right(ever)}")
+    if week.corrections:
+        lines.append(f"  Corrected last week: {_moves(week.corrections, 10)}")
+    if week.checked:
+        d = week.decisions
+        no_rules = f" ({len(week.no_rules)} had no rules label)" if week.no_rules else ""
+        lines.append(f"  Checked last week by the AI model against our industry-code rules: {week.checked} · agreeing "
+                     f"on the group for {_pct(week.same_group, week.labelled)}{no_rules} · held for the hand-check "
+                     f"{d.get('held', 0)} · disqualified {d.get('disqualified', 0)}")
     return lines

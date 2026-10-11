@@ -415,16 +415,17 @@ def test_the_readout_has_the_cohort_section_under_20_lines():
     w.cohort(W41, 30, 2, version="v1")
     w.company(datetime(2026, 11, 3, 15, tzinfo=UTC), version="v2")
     lines, nums = readout.build(w.ctx)
-    start, end = lines.index("*Cohorts* (companies by enrolment week, at the latest age reached after email 1; "
-                             "`us-outbound cohorts` has the table)"), lines.index(
-        "*Signal value* (companies with the signal at enrolment, against those without)")
+    start = lines.index("*Cohorts* (companies grouped by the week they were enrolled, each at the latest age reached "
+                        "after email 1)")
+    end = next(i for i, x in enumerate(lines) if x.startswith("*Industry labels*"))
     section = lines[start:end - 1]
     assert len(section) < 20, section
-    assert section[1] == "  W45 (2–8 Nov): 1 enrolled, 1 emailed; no company has reached 7 days yet"
-    assert section[3] == ("  W40 (28 Sep–4 Oct): 30 enrolled, 30 emailed; at 28 days 9 of 30 replied (30.0%), "
-                          "0 meetings; 0 bounces of 30 sends")
+    assert section[1] == "  W45 (2–8 Nov): 1 emailed · under 7 days since email 1"
+    assert section[3] == ("  W40 (28 Sep–4 Oct): 30 emailed · at 28 days 9 of 30 replied (30.0%) · 0 meetings · "
+                          "0 of 30 sends bounced")
     assert "  W41 replies less than W40 at 28 days (6.7% vs 30.0%, p = 0.02)." in section
-    assert section[section.index("*Settings changes* (last week)") + 1] == "  General price_from: 195 → 250"
+    changes = section.index("*Changes last week* (settings, copy, campaign and code)")
+    assert section[changes + 1] == "  General price_from: 195 → 250"
     assert nums["cohorts"]["2026-W41"]["replied"][28] == [2, 30] and nums["settings_changes"] == 1
 
 

@@ -520,7 +520,8 @@ def test_a_variant_test_is_read_from_its_arms_since_its_start():
     assert looks.summary_line(result) == ("warm intro 1 of 2 replied (50.0%); no intro 1 of 2 replied (50.0%) "
                                           "· p = 1.00")
     lines, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=60))
-    assert at_look == ["warm-intro"] and lines[0].startswith("  warm-intro (variant) reached look 1: 2 accounts")
+    assert at_look == ["warm-intro"] and lines[0].startswith(
+        "  warm-intro (one-change variant test) reached look 1: 2 accounts")
 
 
 def test_before_its_first_look_a_variant_test_shows_no_reply():

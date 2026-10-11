@@ -43,11 +43,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound import fmt
+from us_outbound.base import say
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import signal_review
 from us_outbound.replies import kinds
-from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, VARIANT_ARMS, VARIANT_TEST, Test
+from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, HOLDOUT_TEST, VARIANT_ARMS, VARIANT_TEST, Test
 from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
@@ -303,24 +304,35 @@ def edited_line(result: Mapping[str, Any]) -> str:
     return f"Edited by an approver before sending, and counted in the arm they were given: {each}."
 
 
+KIND_WORDS = {AB_TEST: "A/B copy test", VARIANT_TEST: "one-change variant test", HOLDOUT_TEST: "holdout test"}
+
+
 def readout_lines(ctx: Context, since: datetime) -> tuple[list[str], list[str]]:
     """The Monday readout's Tests section, and the ids of the tests at a look: each running test, at a look reached
-    since `since` (with its read), or how far it has got and its next look."""
+    since `since` (its read, and what to do: apply its decision rule and write the result on the Tests tab), or how
+    far it has got and its next look."""
     out: list[str] = []
     at_look: list[str] = []
+    tab = ""
     for test in ctx.settings.tests:
         if test.status != "running":
             continue
         by_arm = arms(ctx, test)
         all_looks = looks(test, by_arm)
         new = [lk for lk in reached(all_looks, ctx.now) if lk.reached_at >= since]
-        if new:
-            at_look.append(test.test_id)
-            result = read(ctx, test.test_id)
-            at = datetime.fromisoformat(result["look"]["reached_at"]).astimezone(UK)
-            out.append(f"  {test.test_id} ({test.kind}) reached {result['look']['label']} on {at:%a %d %b}: "
-                       f"{summary_line(result)}. `us-outbound test read {test.test_id}` has the full read; the "
-                       "decision rule is on the Tests tab.")
-        else:
-            out.append(f"  {test.test_id} ({test.kind}): no look reached this week. {progress(test, by_arm, ctx.now)}.")
+        kind = KIND_WORDS.get(test.kind, test.kind)
+        if not new:
+            out.append(f"  {test.test_id} ({kind}): no look reached this week. {progress(test, by_arm, ctx.now)}.")
+            continue
+        at_look.append(test.test_id)
+        result = read(ctx, test.test_id)
+        look = next(lk for lk in all_looks if lk.number == result["look"]["number"])
+        on = "" if look.day else f" on {look.reached_at.astimezone(UK):%a %d %b}"  # a date look's label has its date
+        tab = tab or say.sheet_link(ctx, "Tests")
+        rule = f' ("{test.decision_rule}")' if test.decision_rule else ""
+        then = f"; if it does not decide yet, the test runs on to {result['next_look']}" if result["next_look"] else ""
+        read_cmd = say.command(f"test read {test.test_id}")
+        out.append(f"  {test.test_id} ({kind}) reached {look.label}{on}: {summary_line(result)}")
+        out.append(f"    *What to do:* apply its decision rule{rule} and write the outcome in the `result` column on "
+                   f"the {tab}{then}. {read_cmd} has the full read.")
     return (out or ["  No test is running."]), at_look
