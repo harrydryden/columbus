@@ -18,8 +18,14 @@ from us_outbound.clients.slack import dry_run_note
 DRY = dry_run_note("#us-outbound") + "\n"
 
 TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK (GMT)
-FLOOR_TEXT = ("Apollo has 6,400 credits; at this pace it reaches apollo_floor (5,000) in about 14 days, after which "
-              "sourcing and email reveals stop. Buy credits, or lower apollo_monthly_credits on the General tab.")
+GENERAL = "<https://docs.google.com/spreadsheets/d/sheet-test/edit|General tab>"
+STOPS_APOLLO = "finding new companies and looking up contacts' emails"
+FLOOR_TEXT = (f":warning: *Apollo runs out in about 14 days (around Tue 10 Nov); then we stop {STOPS_APOLLO}.*\n"
+              "6,400 credits left, spending about 100 a day; spending stops under `apollo_floor`, the 5,000 credits we "
+              "keep in reserve.\n"
+              "*What to do:* buy credits in Apollo (about 3,000 credits covers a month at this pace). Or spend less: "
+              f"lower `apollo_monthly_credits` (now 2,000) on the {GENERAL}.")
+UNDER_FLOOR = f":rotating_light: *Apollo is below our reserve, so we have stopped {STOPS_APOLLO}.*"
 
 
 def usage(balance=None, visitors=None) -> dict:
@@ -63,7 +69,7 @@ def test_the_floor_is_asked_about_three_weeks_ahead_at_the_last_fortnight_s_pace
     sp, sent = spend.check(ctx)
     assert sp.apollo_pace == 100 and round(sp.days_to_floor) == 14
     [text] = posts(t)
-    assert text == f"<@U_HARRY> Credits and spend: a purchase or a setting needs you.\n{FLOOR_TEXT}"
+    assert text == f"<@U_HARRY> :warning: *Credits and settings: 1 thing needs a decision*\n{FLOOR_TEXT}"
     assert sent["keys"] == ["apollo_floor:2026-10-27"]
 
 
@@ -75,9 +81,12 @@ def test_the_floor_alert_is_once_a_day_and_survives_a_restart():
     again.store.guard = again.guard
     spend.check(again)
     assert len(posts(t)) == 1 and posts(again.clients.transport) == []
-    assert posts(t)[0].endswith("Apollo has 4,000 credits, under apollo_floor (5,000), so sourcing and email reveals "
-                                "have stopped. Buy credits in Apollo (or, to spend into that reserve, lower apollo_floor "
-                                "on the General tab).")
+    assert posts(t)[0] == (
+        "<@U_HARRY> :rotating_light: *Credits and settings: 1 thing needs a decision*\n"
+        f"{UNDER_FLOOR}\n"
+        "4,000 credits left; spending stops under `apollo_floor`, the 5,000 credits we keep in reserve.\n"
+        "*What to do:* buy credits in Apollo (at least 1,000 credits to get back above the reserve). Or, to spend into "
+        f"the reserve, lower `apollo_floor` (now 5,000) on the {GENERAL}.")
     tomorrow, t2 = world(balance=4_000, now=TUE_9 + timedelta(days=1))
     tomorrow.store = ctx.store
     tomorrow.store.guard = tomorrow.guard
@@ -103,9 +112,9 @@ def test_an_unread_balance_falls_back_on_a_source_s_skip_for_the_floor():
                                                 "reason": "Apollo has 4,900 credits left, below apollo_floor (5,000)"}}])
     sp = spend.read(ctx)
     assert sp.apollo_left is None and sp.apollo_error == "Apollo could not be read (ApiError)"
-    assert asked(ctx) == ["Apollo has 4,900 credits left, below apollo_floor (5,000), so sourcing and email reveals have "
-                          "stopped. Buy credits in Apollo (or, to spend into that reserve, lower apollo_floor on the "
-                          "General tab)."]
+    assert asked(ctx) == [f"{UNDER_FLOOR}\nApollo has 4,900 credits left, below apollo_floor (5,000) (the last job to "
+                          "check said so; Apollo's balance could not be read today).\n*What to do:* buy credits in "
+                          f"Apollo. Or, to spend into the reserve, lower `apollo_floor` (now 5,000) on the {GENERAL}."]
 
 
 # -- the monthly budgets -------------------------------------------------------------------------------------------
@@ -115,18 +124,26 @@ def test_the_monthly_budgets_at_80_and_100_percent_once_a_month_each():
     ctx, t = world()
     spent(ctx, "apollo", 1_650, days_ago=2)
     spend.check(ctx)
-    assert posts(t)[-1].endswith("Apollo: 1,650 of 2,000 credits used this month (82%). At 100%, sourcing and email "
-                                 "reveals stop until 1 Nov. To allow more, raise apollo_monthly_credits on the General tab.")
+    assert posts(t)[-1].endswith(
+        f":warning: *Apollo's monthly budget is 82% used; at 100% we stop {STOPS_APOLLO} until 1 Nov.*\n"
+        "1,650 of the 2,000 credits we allow a month are spent.\n"
+        "Nothing to do yet: at this month's pace it lasts until the month ends.")
     spend.check(ctx)
     assert len(posts(t)) == 1
     spent(ctx, "apollo", 400)
     spent(ctx, "clay", 1_900)
     spend.check(ctx)
     text = posts(t)[-1]
-    assert ("Apollo: this month's 2,000 credits are used (2,050 spent), so sourcing and email reveals have stopped until "
-            "1 Nov. To allow more, raise apollo_monthly_credits on the General tab.") in text
-    assert ("Clay: 1,900 of 2,000 credits used this month (95%). At 100%, Clay's verification and email lookups stop "
-            "until 1 Nov. To allow more, raise clay_monthly_credits on the General tab.") in text
+    assert text.startswith("<@U_HARRY> :rotating_light: *Credits and settings: 2 things need a decision*\n")
+    assert (f":rotating_light: *Apollo's monthly budget is used up, so we have stopped {STOPS_APOLLO} until 1 Nov.*\n"
+            "2,050 of the 2,000 credits we allow a month are spent.\n"
+            "*What to do:* to carry on this month, raise `apollo_monthly_credits` (now 2,000) to about 2,374, what this "
+            f"month needs at its pace so far, on the {GENERAL}; it applies at the next settings sync, or now with "
+            "`railway ssh -- us-outbound sync`. Otherwise it starts again on 1 Nov.") in text
+    assert (":warning: *Clay's monthly budget is 95% used; at 100% we stop checking companies in Clay and looking up "
+            "emails there until 1 Nov.*\n1,900 of the 2,000 credits we allow a month are spent.\n"
+            "*What to do:* this month needs about 2,200 at its pace so far: raise `clay_monthly_credits` (now 2,000) on "
+            f"the {GENERAL}, or let it stop.") in text
     november, t2 = world(now=datetime(2026, 11, 2, 9, 0, tzinfo=UTC))
     november.store = ctx.store
     november.store.guard = november.guard
@@ -137,21 +154,29 @@ def test_a_month_that_jumps_past_80_gets_only_the_100_line():
     ctx, _ = world()
     spent(ctx, "apollo", 2_000)
     lines = asked(ctx)
-    assert len(lines) == 1 and lines[0].startswith("Apollo: this month's 2,000 credits are used")
+    assert len(lines) == 1 and lines[0].startswith(":rotating_light: *Apollo's monthly budget is used up")
 
 
 # -- Claude ----------------------------------------------------------------------------------------------------------
 
 
+CLAUDE = "Claude (the AI that reads replies, drafts answers and checks labels)"
+CLAUDE_STOPS = ('replies get no draft and are filed as "other", the copy check stops, and new companies wait unchecked '
+                "for their industry label")
+
+
 @pytest.mark.parametrize("usd, line", [
     (20.0, None),
-    (26.0, 'Claude: $26.00 of the $50 monthly cap spent this month (52%). At the cap, replies are classified "other" '
-           "with no draft, copy QA stops, and new companies wait unverified for the industry label check."),
-    (41.0, 'Claude: $41.00 of the $50 monthly cap spent this month (82%). At the cap, replies are classified "other" '
-           "with no draft, copy QA stops, and new companies wait unverified for the industry label check."),
-    (49.6, 'Claude\'s monthly cap is used up: $49.60 of $50 this month, so replies are classified "other" with no draft, '
-           "copy QA stops, and new companies wait unverified for the industry label check until 1 Nov (UTC). To go on, "
-           "raise claude_monthly_cap_usd on the General tab (up to $100) and the Anthropic Console spend limit."),
+    (26.0, f":warning: *{CLAUDE} has used 52% of its monthly cap.* At the cap, until 1 Nov, {CLAUDE_STOPS}.\n"
+           "$26.00 of the $50 monthly cap is spent; at this pace the month needs about $30, inside the cap.\n"
+           "Nothing to do yet."),
+    (41.0, f":warning: *{CLAUDE} has used 82% of its monthly cap.* At the cap, until 1 Nov, {CLAUDE_STOPS}.\n"
+           "$41.00 of the $50 monthly cap is spent; at this pace the month needs about $47, inside the cap.\n"
+           "Nothing to do yet."),
+    (49.6, f":rotating_light: *{CLAUDE} has reached its monthly cap: until 1 Nov (UTC), {CLAUDE_STOPS}.*\n"
+           "$49.60 of the $50 monthly cap is spent; this month needs about $57 at its pace so far.\n"
+           "*What to do:* raise `claude_monthly_cap_usd` (now $50, at most $100) on the "
+           f"{GENERAL}, and the spend limit in the Anthropic Console to match."),
 ])
 def test_claude_s_spend_against_its_cap(usd, line):
     ctx, _ = world(claude_monthly_cap_usd=50.0)
@@ -176,9 +201,10 @@ def test_each_claude_step_is_asked_once_in_its_month():
 
 def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on():
     ctx, _ = world(visitors=150)
-    assert asked(ctx) == ["Apollo's website-visitor credits are running low: 150 of 1,200 left (12%). Once they run "
-                          "out, Apollo stops naming the companies that visit the US site, so the site-visit signals "
-                          "stop. Buy more in Apollo."]
+    assert asked(ctx) == [":warning: *Apollo's website-visitor credits are running low; when they run out, we stop "
+                          "learning which companies visit the US site.*\n150 of 1,200 left (12%).\n"
+                          "*What to do:* buy more website-visitor credits in Apollo (1,050 used so far in this "
+                          "allowance)."]
     ctx, _ = world(visitors=300)
     assert asked(ctx) == []
     ctx, _ = world(visitors=10, site_visit_domain="")  # site visits off: not asked about
@@ -191,7 +217,7 @@ def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on()
 def test_a_dry_run_preview_never_stops_the_live_ask():
     ctx, t = world(balance=4_000, live=False)
     spend.check(ctx)
-    assert posts(t)[0].startswith(DRY + "<@U_HARRY> Credits and spend")
+    assert posts(t)[0].startswith(DRY + "<@U_HARRY> :rotating_light: *Credits and settings")
     ctx.guard.configure(live=True)
     spend.check(ctx)
     assert len(posts(t)) == 2 and {e["event_id"] for e in ctx.store.select("events", {"type": "alert"})} == {
@@ -204,10 +230,10 @@ def test_the_daily_post_asks_first_and_carries_the_spend_line():
     spent(ctx, "claude", 0, usd=2.5)
     out = daily_post.run(ctx)
     ask, post = posts(t)
-    assert ask.startswith("<@U_HARRY> Credits and spend") and "under apollo_floor (5,000)" in ask
-    assert post.startswith("*Daily post")
-    assert ("\nSpend: Apollo balance 4,000 credits (apollo_floor 5,000, under it: sourcing and email reveals have "
-            "stopped) · Claude $2.50 of $10 this month (25%) · website-visitor credits 1,150 of 1,200 left.\n") in post
+    assert ask.startswith("<@U_HARRY> :rotating_light: *Credits and settings") and UNDER_FLOOR in ask
+    assert post.startswith(":warning: *Daily summary")
+    assert ("\nSpend: Apollo 4,000 credits left, below the 5,000 reserve: finding companies and emails has stopped · "
+            "Claude $2.50 of $10 this month (25%) · website-visitor credits 1,150 of 1,200 left\n") in post
     assert out["spend_alert"]["keys"] == ["apollo_floor:2026-10-27"] and out["spend"]["apollo_left"] == 4_000
     assert out["mailboxes_ahead"] == {"checked": False}  # a Tuesday
 
@@ -215,8 +241,8 @@ def test_the_daily_post_asks_first_and_carries_the_spend_line():
 def test_the_spend_line_with_the_balance_unknown_or_far_from_the_floor():
     ctx, t = world(balance=30_000)
     spent(ctx, "apollo", 140, days_ago=3)
-    assert spend.summary_line(spend.read(ctx)) == ("Spend: Apollo balance 30,000 credits (apollo_floor 5,000, about 2,500 "
-                                                   "days away at 10 a day) · Claude $0.00 of $10 this month (0%)")
+    assert spend.summary_line(spend.read(ctx)) == ("Spend: Apollo 30,000 credits left (about 2,500 days to the 5,000 "
+                                                   "reserve at 10 a day) · Claude $0.00 of $10 this month (0%)")
     t.route("POST", "/usage_stats/credit_usage_stats", body={"credit_usage_stats": {}})
     assert spend.summary_line(spend.read(ctx)).startswith(
-        "Spend: Apollo balance unknown: Apollo's answer had no lead-credit balance · Claude")
+        "Spend: Apollo balance unknown (Apollo's answer had no lead-credit balance) · Claude")

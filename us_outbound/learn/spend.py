@@ -33,7 +33,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound import budget
-from us_outbound.base import notify
+from us_outbound.base import notify, say
 from us_outbound.clients.apollo import VISITOR_CREDIT, credit_stats, credits_left
 from us_outbound.clients.claude import cap_reached_at, month_spend_usd
 from us_outbound.clients.guard import GuardViolation
@@ -52,10 +52,13 @@ LOOKBACK = timedelta(hours=26)  # a source's skip for the floor this recent stan
 # The jobs that check Apollo's balance against apollo_floor before spending (sources/apollo_credits.floor_reason).
 FLOOR_JOBS = ("source_universe", "apollo_signals", "apollo_enrich", "site_visits", "lookalikes", "lookalike_leads",
               "pick_contacts")
-STOPS = {"apollo": "sourcing and email reveals", "clay": "Clay's verification and email lookups"}
-CLAUDE_STOPS = ('replies are classified "other" with no draft, copy QA stops, and new companies wait unverified for '
-                'the industry label check')
-HEAD = "Credits and spend: a purchase or a setting needs you."
+# What we stop doing when Apollo or Clay has no credits left, in plain words ("we have stopped ...").
+STOPS = {"apollo": "finding new companies and looking up contacts' emails",
+         "clay": "checking companies in Clay and looking up emails there"}
+CLAUDE_STOPS = ("replies get no draft and are filed as \"other\", the copy check stops, and new companies wait unchecked "
+                "for their industry label")
+CLAUDE_WHAT = "Claude (the AI that reads replies, drafts answers and checks labels)"
+MONTH_DAYS = 30  # "a month at this pace", for how much to buy
 
 
 @dataclass
@@ -134,6 +137,8 @@ def read(ctx: Context) -> Spend:
 
 
 # -- the asks ----------------------------------------------------------------------------------------------
+# Each ask is one block under the head (check): an icon and a bold line saying what has stopped or will stop and
+# when, the numbers behind it, then "What to do:" with what to buy or which setting to change, how much, and where.
 
 
 def _days(n: float) -> str:
@@ -149,22 +154,48 @@ def _reached(share: float, steps: tuple[float, ...]) -> float | None:
     return max((x for x in steps if share >= x), default=None)
 
 
+def _general(ctx: Context) -> str:
+    return say.sheet_link(ctx, "General")
+
+
+def _apply() -> str:
+    """How a sheet edit comes into force."""
+    return f"it applies at the next settings sync, or now with {say.command('sync')}"
+
+
+def _buy(sp: Spend) -> str:
+    """How much Apollo to buy: a month at the pace, or what gets back above the floor when nothing is being spent."""
+    if sp.apollo_pace > 0:
+        return f"about {sp.apollo_pace * MONTH_DAYS:,.0f} credits covers a month at this pace"
+    short = sp.apollo_floor - (sp.apollo_left or 0)
+    return f"at least {short:,.0f} credits to get back above the reserve" if short > 0 else "credits"
+
+
 def apollo_floor_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     """Apollo's balance under the floor, or the floor under FLOOR_WARN_DAYS away: once a UK day."""
     key = notify.once_key(ctx, "apollo_floor")
     floor = sp.apollo_floor
+    reserve = f"`apollo_floor`, the {floor:,} credits we keep in reserve"
     if sp.apollo_left is not None and sp.apollo_left < floor:
-        return key, (f"Apollo has {sp.apollo_left:,.0f} credits, under apollo_floor ({floor:,}), so sourcing and email "
-                     "reveals have stopped. Buy credits in Apollo (or, to spend into that reserve, lower apollo_floor "
-                     "on the General tab).")
+        return key, (f"{say.URGENT} *Apollo is below our reserve, so we have stopped {STOPS['apollo']}.*\n"
+                     f"{sp.apollo_left:,.0f} credits left; spending stops under {reserve}.\n"
+                     f"*What to do:* buy credits in Apollo ({_buy(sp)}). Or, to spend into the reserve, lower "
+                     f"`apollo_floor` (now {floor:,}) on the {_general(ctx)}.")
     days = sp.days_to_floor
     if days is not None and days < FLOOR_WARN_DAYS:
-        return key, (f"Apollo has {sp.apollo_left:,.0f} credits; at this pace it reaches apollo_floor ({floor:,}) in "
-                     f"about {_days(days)}, after which sourcing and email reveals stop. Buy credits, or lower "
-                     "apollo_monthly_credits on the General tab.")
+        when = ctx.today_uk() + timedelta(days=max(1, round(days)))
+        monthly = ctx.settings.general.apollo_monthly_credits
+        return key, (f"{say.ACTION} *Apollo runs out in about {_days(days)} (around {when:%a %-d %b}); then we "
+                     f"stop {STOPS['apollo']}.*\n"
+                     f"{sp.apollo_left:,.0f} credits left, spending about {sp.apollo_pace:,.0f} a day; spending stops "
+                     f"under {reserve}.\n"
+                     f"*What to do:* buy credits in Apollo ({_buy(sp)}). Or spend less: lower "
+                     f"`apollo_monthly_credits` (now {monthly:,}) on the {_general(ctx)}.")
     if sp.apollo_left is None and sp.floor_skip:
-        return key, (f"{sp.floor_skip}, so sourcing and email reveals have stopped. Buy credits in Apollo (or, to "
-                     "spend into that reserve, lower apollo_floor on the General tab).")
+        return key, (f"{say.URGENT} *Apollo is below our reserve, so we have stopped {STOPS['apollo']}.*\n"
+                     f"{sp.floor_skip} (the last job to check said so; Apollo's balance could not be read today).\n"
+                     f"*What to do:* buy credits in Apollo. Or, to spend into the reserve, lower `apollo_floor` (now "
+                     f"{floor:,}) on the {_general(ctx)}.")
     return None
 
 
@@ -178,13 +209,22 @@ def budget_ask(ctx: Context, b: budget.Budget) -> tuple[str, str] | None:
     name, setting = b.system.capitalize(), budget.MONTHLY_KEYS[b.system]
     nxt = _next_month(b.month_end)
     key = notify.once_key(ctx, f"{b.system}_budget_{round(step * 100)}", per="month", on=b.month_end)
+    used = f"{budget._n(b.used)} of the {budget._n(b.budget)} credits we allow a month are spent."
+    need = b.projected
+    now = f"`{setting}` (now {budget._n(b.budget)})"
     if step >= 1.0:
-        return key, (f"{name}: this month's {budget._n(b.budget)} credits are used ({budget._n(b.used)} spent), so "
-                     f"{STOPS[b.system]} have stopped until {nxt:%-d %b}. To allow more, raise {setting} on the "
-                     "General tab.")
-    return key, (f"{name}: {budget._n(b.used)} of {budget._n(b.budget)} credits used this month "
-                 f"({b.used / b.budget:.0%}). At 100%, {STOPS[b.system]} stop until {nxt:%-d %b}. To allow more, "
-                 f"raise {setting} on the General tab.")
+        more = f" to about {budget._n(need)}, what this month needs at its pace so far," if need and need > b.budget else ""
+        return key, (f"{say.URGENT} *{name}'s monthly budget is used up, so we have stopped {STOPS[b.system]} until "
+                     f"{nxt:%-d %b}.*\n{used}\n"
+                     f"*What to do:* to carry on this month, raise {now}{more} on the {_general(ctx)}; {_apply()}. "
+                     f"Otherwise it starts again on {nxt:%-d %b}.")
+    if need and need > b.budget:
+        do = (f"*What to do:* this month needs about {budget._n(need)} at its pace so far: raise {now} on the "
+              f"{_general(ctx)}, or let it stop.")
+    else:
+        do = "Nothing to do yet: at this month's pace it lasts until the month ends."
+    return key, (f"{say.ACTION} *{name}'s monthly budget is {b.used / b.budget:.0%} used; at 100% we stop {STOPS[b.system]} "
+                 f"until {nxt:%-d %b}.*\n{used}\n{do}")
 
 
 def claude_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
@@ -197,13 +237,22 @@ def claude_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     if step is None:
         return None
     month = ctx.now.astimezone(UTC).date()
+    nxt = _next_month(month)
     key = notify.once_key(ctx, f"claude_cap_{round(step * 100)}", per="month", on=month)
+    need = sp.claude_usd / month.day * (nxt - month.replace(day=1)).days  # the UTC month at its pace, today counted
+    spent = f"${sp.claude_usd:,.2f} of the ${cap:,.0f} monthly cap is spent"
+    raise_it = (f"raise `claude_monthly_cap_usd` (now ${cap:,.0f}, at most ${CLAUDE_CAP_USD:,.0f}) on the "
+                f"{_general(ctx)}, and the spend limit in the Anthropic Console to match")
     if step >= 1.0:
-        return key, (f"Claude's monthly cap is used up: ${sp.claude_usd:,.2f} of ${cap:,.0f} this month, so "
-                     f"{CLAUDE_STOPS} until {_next_month(month):%-d %b} (UTC). To go on, raise claude_monthly_cap_usd "
-                     f"on the General tab (up to ${CLAUDE_CAP_USD:,.0f}) and the Anthropic Console spend limit.")
-    return key, (f"Claude: ${sp.claude_usd:,.2f} of the ${cap:,.0f} monthly cap spent this month ({share:.0%}). At the "
-                 f"cap, {CLAUDE_STOPS}.")
+        return key, (f"{say.URGENT} *{CLAUDE_WHAT} has reached its monthly cap: until {nxt:%-d %b} (UTC), "
+                     f"{CLAUDE_STOPS}.*\n{spent}; this month needs about ${need:,.0f} at its pace so far.\n"
+                     f"*What to do:* {raise_it}.")
+    if need <= cap:
+        pace, do = f"; at this pace the month needs about ${need:,.0f}, inside the cap.", "Nothing to do yet."
+    else:
+        pace, do = f"; at this pace the month needs about ${need:,.0f}.", f"*What to do:* {raise_it}, before it runs out."
+    return key, (f"{say.ACTION} *{CLAUDE_WHAT} has used {share:.0%} of its monthly cap.* At the cap, until "
+                 f"{nxt:%-d %b}, {CLAUDE_STOPS}.\n{spent}{pace}\n{do}")
 
 
 def visitors_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
@@ -212,9 +261,11 @@ def visitors_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
     if not v or v["limit"] <= 0 or v["left_over"] / v["limit"] >= VISITOR_WARN_SHARE:
         return None
     return (notify.once_key(ctx, "apollo_visitors_low", per="month"),
-            f"Apollo's website-visitor credits are running low: {v['left_over']:,.0f} of {v['limit']:,.0f} left "
-            f"({v['left_over'] / v['limit']:.0%}). Once they run out, Apollo stops naming the companies that visit the "
-            "US site, so the site-visit signals stop. Buy more in Apollo.")
+            f"{say.ACTION} *Apollo's website-visitor credits are running low; when they run out, we stop learning "
+            "which companies visit the US site.*\n"
+            f"{v['left_over']:,.0f} of {v['limit']:,.0f} left ({v['left_over'] / v['limit']:.0%}).\n"
+            f"*What to do:* buy more website-visitor credits in Apollo ({v['limit'] - v['left_over']:,.0f} used so far "
+            "in this allowance).")
 
 
 def asks(ctx: Context, sp: Spend) -> list[tuple[str, str]]:
@@ -226,12 +277,21 @@ def asks(ctx: Context, sp: Spend) -> list[tuple[str, str]]:
     return [a for a in found if a is not None] + labels.asks(ctx)
 
 
+def head(lines: list[tuple[str, str]]) -> str:
+    """The message's first line: the most urgent icon among the asks, and how many there are."""
+    icon = say.URGENT if any(line.startswith(say.URGENT) for _, line in lines) else say.ACTION
+    n = len(lines)
+    return f"{icon} *Credits and settings: {n} {'thing needs' if n == 1 else 'things need'} a decision*"
+
+
 def check(ctx: Context) -> tuple[Spend, dict[str, Any]]:
     """The daily check: read, then post the asks not posted before. Never raises (but a GuardViolation)."""
     sp = read(ctx)
     sp.alerts = asks(ctx, sp)
     try:
-        sent = notify.post_once(ctx, sp.alerts, head=HEAD) if sp.alerts else {"posted": False, "keys": []}
+        done = notify.sent_before(ctx, [k for k, _ in sp.alerts]) if sp.alerts else set()
+        new = [(k, line) for k, line in sp.alerts if k not in done]
+        sent = notify.post_once(ctx, new, head=head(new)) if new else {"posted": False, "keys": []}
     except GuardViolation:
         raise
     except Exception as exc:  # the database, say: the daily post still goes
@@ -245,19 +305,19 @@ def check(ctx: Context) -> tuple[Spend, dict[str, Any]]:
 
 
 def summary_line(sp: Spend) -> str:
-    """"Spend: Apollo balance 28,512 credits (apollo_floor 5,000, about 570 days away at 41 a day) · Claude $12.40
-    of $50 this month (25%) · website-visitor credits 1,150 of 1,200 left"."""
+    """"Spend: Apollo 28,512 credits left (about 570 days to the 5,000 reserve at 41 a day) · Claude $12.40 of $50
+    this month (25%) · website-visitor credits 1,150 of 1,200 left"."""
     if sp.apollo_left is None:
-        apollo = f"Apollo balance unknown: {sp.apollo_error or 'not read'}"
+        apollo = f"Apollo balance unknown ({sp.apollo_error or 'not read'})"
     else:
-        apollo = f"Apollo balance {sp.apollo_left:,.0f} credits (apollo_floor {sp.apollo_floor:,}"
+        apollo = f"Apollo {sp.apollo_left:,.0f} credits left"
         days = sp.days_to_floor
         if sp.apollo_left < sp.apollo_floor:
-            apollo += ", under it: sourcing and email reveals have stopped)"
+            apollo += f", below the {sp.apollo_floor:,} reserve: finding companies and emails has stopped"
         elif days is None:
-            apollo += f", no Apollo spend in the last {PACE_DAYS} days)"
+            apollo += f" ({sp.apollo_floor:,} kept in reserve; none spent in {PACE_DAYS} days)"
         else:
-            apollo += f", about {_days(days)} away at {sp.apollo_pace:,.0f} a day)"
+            apollo += f" (about {_days(days)} to the {sp.apollo_floor:,} reserve at {sp.apollo_pace:,.0f} a day)"
     parts = [apollo]
     if sp.claude_cap > 0:
         share = sp.claude_usd / sp.claude_cap

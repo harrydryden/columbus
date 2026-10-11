@@ -592,7 +592,7 @@ def test_the_daily_post_line_has_today_s_counts_only():
     beat(w.ctx, "by-hand", datetime(2026, 12, 15, 7, 0, tzinfo=UTC), False, leads={"deleted": 12, "already_gone": 3},
          reply_text={"events_cleared": 3, "items_cleared": 1}, contacts={"deleted": 1})
     line, counts = retention.post_line(w.ctx)
-    assert line == ("Retention deleted 12 Instantly leads (31 days after their last step), the reply text of 3 replies "
+    assert line == ("Old personal data deleted today (our retention rule): 12 Instantly leads (31 days after their last step), the reply text of 3 replies "
                     "and 1 reply card (90 days) and 1 contact who never replied (12 months).")
     assert counts == {"leads": 12, "replies": 3, "reply_cards": 1, "contacts": 1, "companies": 0, "dry_run": False}
 
@@ -601,8 +601,9 @@ def test_a_dry_run_says_what_it_would_delete():
     w = World(live=False, now=datetime(2026, 12, 15, 9, tzinfo=UTC))
     beat(w.ctx, "r", datetime(2026, 12, 15, 0, 40, tzinfo=UTC), True, leads={"due": 4}, accounts={"due": 2})
     line, counts = retention.post_line(w.ctx)
-    assert line == ("Retention would delete 4 Instantly leads (31 days after their last step) and 2 companies no source "
-                    "has refreshed (12 months) (dry-run: nothing changed).")
+    assert line == ("Old personal data due for deletion (a test run, so nothing was deleted): 4 Instantly leads (31 days "
+                    "after their last step) and 2 companies no source "
+                    "has refreshed (12 months).")
     assert counts["dry_run"] is True
 
 

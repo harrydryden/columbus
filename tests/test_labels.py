@@ -649,16 +649,21 @@ def test_the_asks_trip_once_a_day_on_corrections_agreement_and_an_unavailable_ch
               *(checked_fact(50 + i, "model", rules="Adtech & martech", model="Fintech") for i in range(3))]
     ctx = measured(facts_, [decided(i) for i in range(20)], {"unchecked": 4, "unavailable_reason": "Claude did not answer"})
     got = dict(labels.asks(ctx))
+    tab = "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Industries tab>"
     assert got["labels_corrections:2026-10-27"] == (
-        "labels: 3 industry corrections since the last send day (3 of 23 cards). Check the Industries tab's definitions "
-        "and keywords for Adtech & martech → Fintech (3); `us-outbound labels audit --live` checks the queue again.")
+        ":warning: *Industry labels: approvers corrected the industry on 3 of 23 email cards since the last send day.*\n"
+        "Corrections: Adtech & martech → Fintech (3).\n"
+        f"*What to do:* check those industries' definitions and keywords on the {tab}; then "
+        "`railway ssh -- us-outbound labels audit --live` checks the queued companies again.")
     assert got["labels_agreement:2026-10-27"] == (
-        "labels: the model put 12 of the 25 companies the rules labelled (48%) in another group or outside our "
-        "labels; most were under Technology & Startups (12). `us-outbound labels crosswalk` shows which NAICS codes "
-        "and keywords bring them in.")
+        ":warning: *Industry labels: the AI check (Claude) disagreed with our rules on 12 of 25 companies (48%).*\n"
+        "It put them in another group or outside our industries; most were under Technology & Startups (12).\n"
+        "*What to do:* run `railway ssh -- us-outbound labels crosswalk` to see which NAICS codes (US industry codes) "
+        f"and keywords bring them in, then fix those on the {tab}.")
     assert "labels_no_rules:2026-10-27" not in got
     assert got["labels_unavailable:2026-10-27"].startswith(
-        "The label check did not run (Claude did not answer); 4 companies wait unverified")
+        ":rotating_light: *Industry labels: the AI check (Claude) could not run, so 4 new companies wait unchecked.*\n"
+        "Why: Claude did not answer. While `label_check` is `required` (General tab), a company is not emailed")
     assert labels.asks(measured([checked_fact(1, "rules+model")], [decided(1)])) == []
 
 
@@ -687,10 +692,14 @@ def test_no_rules_label_is_its_own_ask_naming_the_codes_to_add():
     got = dict(labels.asks(ctx))
     assert "labels_agreement:2026-10-27" not in got  # the 20 the rules labelled all agree
     assert got["labels_no_rules:2026-10-27"] == (
-        "labels: the rules gave no label to 22 of 42 companies checked (52%); the model most often said Fintech (15), "
-        "Edtech (6). Their commonest NAICS codes: 522320 → Fintech (12), 541990 → Edtech (6), 611710 → Edtech (6). "
-        "Add each to that label's naics_prefixes on the Industries tab, then `us-outbound sync` and "
-        "`us-outbound relabel --live`. 3 have no NAICS code from Apollo, so only apollo_keywords can label them.")
+        ":warning: *Industry labels: our rules gave no industry to 22 of 42 companies checked (52%).*\n"
+        "The AI check (Claude) most often said Fintech (15), Edtech (6).\n"
+        "Their commonest NAICS codes (US industry codes): 522320 → Fintech (12), 541990 → Edtech (6), "
+        "611710 → Edtech (6). 3 have no NAICS code from Apollo, so only `apollo_keywords` can label them.\n"
+        "*What to do:*\n"
+        "1. Add each code to that industry's `naics_prefixes` on the "
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Industries tab>.\n"
+        "2. Run `railway ssh -- us-outbound sync`, then `railway ssh -- us-outbound relabel --live`.")
     t = labels.tally(ctx, *period(ctx)[:2])
     assert (t.checked, t.labelled, t.share_agreed()) == (42, 20, 1.0)
 

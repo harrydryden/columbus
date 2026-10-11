@@ -316,14 +316,16 @@ def test_to_improve_past_its_thresholds():
     lines, nums = daily_post.build(ctx)
     assert section(lines, "*To improve*") == [
         "*To improve* · last 90 days",
-        "  ❌ 3 of 20 send approvals declined, most in Legal Teams 2 of 9, People leader 2 of 9, "
-        "opener New People leader / opener_self 2 of 2: check targeting and scoring there.",
-        "  Edited before approval: LEG-PL-1 3 of 7: fix the template on the Copy tab.",
-        "  Replies, opener vs holdout: 4 of 50 (8.0%) vs 1 of 50 (2.0%); positive 2 vs 0. Counts, not conclusions.",
-        "  Bounces by email source: apollo 2 of 102 (2.0%), clay 10 emailed, too few; "
-        "the kill rule pauses a source over 3%.",
+        "  Declined at approval (❌): 3 of 20 emails, most in Legal Teams 2 of 9, People leader 2 of 9, "
+        "opener New People leader / opener_self 2 of 2. *What to do:* check who we aim at and how we score them there "
+        "(Industries, Roles and Signals tabs).",
+        "  Edited before approval: copy LEG-PL-1 3 of 7 times. *What to do:* fix that copy on the Copy tab.",
+        "  Replies, personal opening line vs none (the holdout): 4 of 50 (8.0%) vs 1 of 50 (2.0%); interested 2 vs 0. "
+        "Early counts, not proof.",
+        "  Bounces by where the address came from: Apollo 2 of 102 (2.0%), Clay 10 emailed, too few to judge; "
+        "a source over 3% is paused automatically.",
         "  Replies by angle: General 1 of 50, Hiring 4 of 50.",
-        "  Too early to compare: personal vs Copy-row subject, 0 and 0 of 50 emailed each.",
+        "  Too early to compare: personal subject vs the Copy tab's, 0 and 0 of 50 emailed each.",
     ]
     assert nums["improve_lines"] == 6
 
@@ -333,10 +335,10 @@ def test_to_improve_compares_email_1_s_personal_subject_with_the_copy_row_s():
     ctx, _ = learning(subjects=True)
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")
-    opener = body.index("  Replies, opener vs holdout: 4 of 50 (8.0%) vs 1 of 50 (2.0%); positive 2 vs 0. "
-                        "Counts, not conclusions.")
-    assert body[opener + 1] == ("  Replies, personal vs Copy-row subject: 4 of 50 (8.0%) vs 1 of 50 (2.0%); "
-                                "positive 2 vs 0. Counts, not conclusions.")
+    opener = body.index("  Replies, personal opening line vs none (the holdout): 4 of 50 (8.0%) vs 1 of 50 (2.0%); "
+                        "interested 2 vs 0. Early counts, not proof.")
+    assert body[opener + 1] == ("  Replies, personal subject vs the Copy tab's: 4 of 50 (8.0%) vs 1 of 50 (2.0%); "
+                                "interested 2 vs 0. Early counts, not proof.")
     assert not any("Too early" in line for line in body)
 
 
@@ -345,9 +347,10 @@ def test_to_improve_below_its_thresholds_says_what_it_needs_once():
     lines, _ = daily_post.build(ctx)
     assert section(lines, "*To improve*") == [
         "*To improve* · last 90 days",
-        "  Too early to compare: ❌ by segment, 5 of 20 decisions; opener vs holdout, 10 and 5 of 50 emailed each; "
-        "personal vs Copy-row subject, 0 and 0 of 50 emailed each; "
-        "angles and copy versions, 50 emailed each, two at least; bounces by source, 17 of 50 emailed.",
+        "  Too early to compare: ❌ by segment, 5 of 20 decisions; personal opening line vs none (the holdout), 10 and 5 "
+        "of 50 emailed each; personal subject vs the Copy tab's, 0 and 0 of 50 emailed each; "
+        "angles and Copy tab versions, 50 emailed each, two at least; bounces by where the address came from, 17 of 50 "
+        "emailed.",
     ]
 
 
@@ -358,7 +361,7 @@ def test_enough_decisions_but_too_few_declines_name_no_segment():
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")
     assert not any("❌" in line for line in body)  # 2 of 20 declined: nothing to say, and nothing missing
-    assert body[1] == "  Edited before approval: LEG-PL-1 3 of 7: fix the template on the Copy tab."
+    assert body[1] == "  Edited before approval: copy LEG-PL-1 3 of 7 times. *What to do:* fix that copy on the Copy tab."
 
 
 def test_to_improve_before_any_send():
@@ -367,8 +370,9 @@ def test_to_improve_before_any_send():
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")
     assert body[-1] == "  Too early to compare: no email sent in the last 90 days."
-    assert body[1].startswith("  Data gaps: no size band at 1 of 6 verified accounts (16.7%) and 2 of 5 waiting for "
-                              "verification; nobody suitable at 1 verified account, mostly company size unknown (1).")
+    assert body[1].startswith("  Missing data: no company size at 1 of 6 companies cleared to email (16.7%) and 2 of 5 "
+                              "still being checked; no one suitable to email at 1 cleared company, mostly company size "
+                              "unknown (1).")
 
 
 def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
@@ -379,10 +383,14 @@ def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")[1:]
     assert len(body) == daily_report.MAX_IMPROVE
-    assert body[4] == ("  Data gaps: no size band at 1 of 1 verified accounts (100.0%) and 0 of 20 waiting for "
-                       "verification. The page reader's coverage is under Sources.")
-    assert body[5] == ("  Tier mix of this month's queue (21 accounts): Priority 0%, Standard 0%, Control 100%; each should "
-                       "be 5% to 40%: review the thresholds and signal weights.")
+    assert body[4] == ("  Missing data: no company size at 1 of 1 companies cleared to email (100.0%) and 0 of 20 still "
+                       "being checked. The page reader's coverage is under Sources.")
+    # In the words of the score job's tier mix alert (scoring/score.py), with the same fix.
+    assert body[5] == ("  This month's list of companies to email is unbalanced (21 companies): Top fit (Priority) 0%, "
+                       "Good fit (Standard) 0%, Comparison group (Control) 100%; each group should be 5–40%. *What to "
+                       "do,* on the General tab: Lower `priority_threshold` (now 50), the score a company needs to count "
+                       "as top fit. Lower `standard_threshold` (now 20); companies scoring below it go to the comparison "
+                       "group.")
     assert not any(line.startswith("  Replies by angle") for line in body)  # last in line, so the first left out
 
 
