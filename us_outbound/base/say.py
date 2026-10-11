@@ -84,8 +84,18 @@ def command(cmd: str) -> str:
     return f"`railway ssh -- us-outbound {cmd}`"
 
 
+_TAB_IDS: dict[str, dict[str, int]] = {}  # per sheet, read once a process (each job runs in its own)
+
+
+def _tab_ids(ctx: Context, sheet_id: str) -> dict[str, int]:
+    if sheet_id not in _TAB_IDS:
+        _TAB_IDS[sheet_id] = ctx.clients.sheets.tab_ids(sheet_id)
+    return _TAB_IDS[sheet_id]
+
+
 def sheet_link(ctx: Context, tab: str | None = None, label: str | None = None) -> str:
-    """A Slack link to the settings sheet, opening on the tab when its id can be read: <url|label>."""
+    """A Slack link to the settings sheet, opening on the tab when its id can be read: <url|label>. The tab ids are
+    read once a process (a message can link several tabs, and a run can post many messages)."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
     text = label or (f"{tab} tab" if tab else "settings sheet")
     if not sheet_id:
@@ -93,7 +103,7 @@ def sheet_link(ctx: Context, tab: str | None = None, label: str | None = None) -
     url = SHEET_URL.format(sheet_id=sheet_id)
     if tab:
         try:
-            gid = ctx.clients.sheets.tab_ids(sheet_id).get(tab)
+            gid = _tab_ids(ctx, sheet_id).get(tab)
         except Exception as exc:  # the link still opens the sheet
             log("sheet_tab_id_failed", tab=tab, error=str(exc)[:160])
             gid = None

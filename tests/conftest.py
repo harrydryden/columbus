@@ -64,3 +64,13 @@ def no_claude_network(monkeypatch):
             raise exc
 
     monkeypatch.setattr(anthropic, "Anthropic", Offline)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_sheet_tab_ids():
+    """base/say.py reads the sheet's tab ids once a process; each test starts without them."""
+    from us_outbound.base import say
+
+    say._TAB_IDS.clear()
+    yield
+    say._TAB_IDS.clear()
