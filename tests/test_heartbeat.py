@@ -136,7 +136,7 @@ def test_the_monthly_lookalikes_job_is_missed_only_when_a_1st_passes_without_it(
     ctx = ctx_at(datetime(2026, 11, 2, 2, 5, tzinfo=UTC), job="heartbeat_check", transport=t)
     beat(ctx.store, "lookalikes", oct_1)
     assert hb.check_heartbeats(ctx, jobs=["lookalikes"]) == ["lookalikes"]  # the 1 Nov run never came
-    assert "expected at least every 32 days" in posts(t)[-1]["text"]
+    assert "due at least every 32 days" in posts(t)[-1]["text"]
     beat(ctx.store, "lookalikes", datetime(2026, 11, 1, 2, 30, tzinfo=UTC))
     assert hb.check_heartbeats(ctx, jobs=["lookalikes"]) == []
 
@@ -153,7 +153,52 @@ def test_stale_job_is_flagged_and_alerted_once_newly_missed():
     assert missed == ["poll_replies"]
     [post] = posts(t)
     assert post["channel"] == "C_DEV" and post["text"].startswith(DRY)
-    assert "poll_replies" in post["text"] and "settings_sync" not in post["text"]
+    assert "checking for replies" in post["text"] and "reading the settings sheet" not in post["text"]
+
+
+def test_the_missed_message_names_the_jobs_in_one_sentence_says_what_stopped_and_where_to_look():
+    t = slack_transport()
+    ctx = ctx_at(MON_NOON, job="heartbeat_check", transport=t)
+    beat(ctx.store, "poll_replies", MON_NOON - timedelta(minutes=50))
+    beat(ctx.store, "mailbox_health", MON_NOON - timedelta(hours=30), run_id="a")
+    beat(ctx.store, "mailbox_health", MON_NOON - timedelta(minutes=50), status="error", run_id="b",
+         error="ApiError: instantly HTTP 502 for /accounts: bad gateway")
+    hb.check_heartbeats(ctx, jobs=["poll_replies", "mailbox_health"])
+    [post] = posts(t)
+    assert post["text"] == DRY + "\n".join([
+        ":warning: *2 automatic jobs have stopped running*",
+        "Overdue: checking for replies (last good run Mon 26 Oct 11:11 UK; due at least every 45 minutes) and checking "
+        "the sending mailboxes (last good run Sun 25 Oct 06:01 UK; due at least every 26 hours).",
+        "What this means: replies from prospects are not being read and the sending mailboxes are not being checked.",
+        "Why checking the sending mailboxes stopped, from its latest run: “ApiError: instantly HTTP 502 for /accounts: "
+        "bad gateway”",
+        "*What to do:* See why in the worker's logs in Railway, or run `railway ssh -- us-outbound status` for each "
+        "job's last run. This clears by itself once they run again.",
+    ])
+
+
+def test_unusable_settings_are_the_cause_said_once_with_the_tab_its_errors_and_the_fix():
+    t = slack_transport()
+    ctx = ctx_at(MON_NOON, job="heartbeat_check", transport=t)
+    refused = "settings are unusable (Industries); fix the sheet, then run `us-outbound settings sync`"
+    for job in ("poll_replies", "poll_approvals", "hubspot_readback"):
+        beat(ctx.store, job, MON_NOON - timedelta(minutes=60), run_id=f"{job}-ok")
+        beat(ctx.store, job, MON_NOON - timedelta(minutes=5), status="error", error=refused)
+    assert hb.check_heartbeats(ctx, jobs=["poll_replies", "poll_approvals", "hubspot_readback"])
+    [post] = posts(t)
+    text = post["text"]
+    assert ":rotating_light: *3 automatic jobs have stopped running*" in text
+    assert ("Overdue: checking for replies (last good run Mon 26 Oct 11:01 UK; due at least every 45 minutes), "
+            "checking the approvals in Slack (") in text
+    assert ("What this means: replies from prospects are not being read, approvals given in Slack are not being acted "
+            "on and HubSpot is not being updated.") in text
+    assert text.count("settings sheet has errors") == 1 and "settings are unusable" not in text  # said once
+    assert "Why: the settings sheet has errors on the <https://docs.google.com/spreadsheets/d/" in text
+    assert "|Industries tab>, so every job except the hourly health check refuses to start." in text
+    assert "   ◦ Industries row 1:" in text  # the first errors of the saved version, without the logs
+    assert ("2. Run `railway ssh -- us-outbound sync` to read the sheet now. Otherwise it is read each time the worker "
+            "starts, and at 02:00 UK daily and 11:30 UK on weekdays.") in text
+    assert "3. The jobs start again by themselves at their next run." in text
 
 
 def test_long_missed_job_is_flagged_but_only_reminded_at_nine():

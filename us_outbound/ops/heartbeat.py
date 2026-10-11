@@ -21,7 +21,10 @@ a run killed by its task timeout stays "running" for ever, and the runs skipped 
 ("previous run still going") are no evidence either. The one exception is a job's only
 run so far, still within OVERLAP_MINUTES of its start.
 It posts one Slack message when a job is newly missed, and repeats the list at the
-09:00 UK check each day while anything is still missed.
+09:00 UK check each day while anything is still missed. The message (Harry, 12 Oct 2026: clear to a newcomer;
+base/say.py) names the jobs in plain words in one sentence, says what has stopped happening (IMPACT), and gives the fix:
+when the jobs refuse to start because the settings are unusable, that cause is said once, with a link to each failing
+tab and its first errors (settings_fault, shared with ops/job_errors.py); otherwise the logs and `us-outbound status`.
 
 The stop and start commands also write rows here (jobs operator_stop / operator_start). The read side
 (latest_runs, enrolment_paused and the row's names) is base/heartbeats.py (9 Oct 2026), so enrolment and the
@@ -30,16 +33,18 @@ registry read it without importing ops.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from us_outbound.base import notify
+from us_outbound.base import notify, say
 from us_outbound.base.heartbeats import ERROR, OK, OVERLAP_REASON, RUNNING, SKIPPED, TABLE, latest_runs
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
 from us_outbound.logs import clip, log, redact
+from us_outbound.settings.sync import SYNC_TIMES
 from us_outbound.timeparse import utc_strict_or_none
 
 ERROR_LIMIT = 1000  # characters of error text kept on the row
@@ -201,13 +206,104 @@ def scheduled_jobs() -> list[str]:
     return [j for j in built_jobs() if j in EXPECTED and j in enabled]
 
 
-def _describe(job: str, run: Mapping[str, Any], now: datetime) -> str:
+# What stops happening when a job stops, for a reader who does not know the job (say.job_name names it).
+IMPACT: dict[str, str] = {
+    "poll_replies": "replies from prospects are not being read",
+    "poll_approvals": "approvals given in Slack are not being acted on",
+    "hubspot_readback": "HubSpot is not being updated",
+    "sync_outcomes": "bounces, opt-outs and other email results are not being recorded",
+    "enrol": "nobody new is being added to the email campaign",
+    "pick_contacts": "no new contacts are being chosen",
+    "kill_rules": "bounce and complaint limits are not being checked",
+    "mailbox_health": "the sending mailboxes are not being checked",
+    "blackout": "sends are not being paused on holidays",
+    "suppression_load": "the do-not-contact list is not being refreshed",
+    "settings_sync": "edits to the settings sheet are not being picked up",
+    "daily_post": "the daily summary is not being posted",
+    "retention": "old personal data is not being deleted on time",
+}
+UNUSABLE = re.compile(r"settings are unusable \(([^)]*)\)")  # bootstrap.SettingsUnusable's text
+FAULT_LINES = 3  # the settings errors shown in an alert
+
+
+def unusable_tabs(error: Any) -> list[str]:
+    """The tabs a "settings are unusable (Copy, General); ..." error names; [] for any other error."""
+    m = UNUSABLE.search(str(error or ""))
+    return [t for t in (x.strip() for x in m.group(1).split(",")) if t and t != "unknown"] if m else []
+
+
+def esc(text: str) -> str:
+    """Text safe inside a Slack message (&, <, >)."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def and_list(items: Iterable[str]) -> str:
+    """"a", "a and b", "a, b and c"."""
+    items = list(items)
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}" if items else ""
+
+
+def settings_fault(ctx: Context, tabs: Iterable[str]) -> tuple[list[str], list[str]]:
+    """(facts, steps) for settings the jobs refuse to start on: a link to each failing tab, then the first errors of
+    the version saved in the database (settings/sync.load_current), so the reader can fix them without the logs."""
+    tabs = list(dict.fromkeys(tabs))
+    errors: list[Any] = []
+    try:
+        from us_outbound.settings import sync
+
+        _, report = sync.load_current(ctx.store)
+        tabs = tabs or [t for t, errs in report.items() if errs]
+        errors = [e for t in tabs for e in report.get(t, [])]
+    except Exception as exc:  # the alert still goes, with the tabs alone
+        log("settings_fault_unread", error=str(exc)[:160])
+    links = and_list(say.sheet_link(ctx, t) for t in tabs) or say.sheet_link(ctx)
+    facts = [f"The settings sheet has errors on the {links}, so every job except the hourly health check refuses to start."]
+    if errors:
+        facts.append("The first error:" if len(errors) == 1 else f"The first {min(len(errors), FAULT_LINES)} errors:")
+        facts += [f"   ◦ {esc(str(e))}" for e in errors[:FAULT_LINES]]
+        if len(errors) > FAULT_LINES:
+            facts.append(f"   ◦ …and {len(errors) - FAULT_LINES} more: the sync below lists every one in this channel.")
+    steps = [f"Correct {('this' if len(errors) == 1 else 'these') if errors else 'the errors'} on the {links}. If the sheet already looks right, the "
+             "copy saved earlier fails a newer check, and step 2 replaces it.",
+             f"Run {say.command('sync')} to read the sheet now. Otherwise it is read {SYNC_TIMES}.",
+             "The jobs start again by themselves at their next run."]
+    return facts, steps
+
+
+def _last_good(run: Mapping[str, Any], now: datetime) -> str:
     last = _last_healthy(run, now)
-    when = f"last healthy run {last.astimezone(UK):%a %d %b %H:%M} UK" if last else "no healthy run on record"
-    line = f"• {job}: {when} (expected at least every {_span(EXPECTED[job])})"
-    if run.get("status") == ERROR and run.get("error"):
-        line += f"; latest run failed: {clip(str(run['error']), 200)}"
-    return line
+    return f"last good run {last.astimezone(UK):%a %d %b %H:%M} UK" if last else "no good run yet"
+
+
+def missed_message(ctx: Context, missed: list[str], runs: Mapping[str, Mapping[str, Any]]) -> str:
+    """The Slack text for the missed jobs (module docstring)."""
+    now = ctx.now
+    first = say.job_name(missed[0])
+    head = (f"{first[:1].upper()}{first[1:]} has stopped running" if len(missed) == 1
+            else f"{len(missed)} automatic jobs have stopped running")
+    facts = ["Overdue: " + and_list(f"{say.job_name(j)} ({_last_good(runs[j], now)}; due at least every "
+                                    f"{_span(EXPECTED[j])})" for j in missed) + "."]
+    impacts = [IMPACT[j] for j in missed if j in IMPACT]
+    if impacts:
+        facts.append(f"What this means: {and_list(impacts)}.")
+    failing = [j for j in missed if runs[j].get("status") == ERROR and runs[j].get("error")]
+    stuck = {j: tabs for j in failing if (tabs := unusable_tabs(runs[j]["error"]))}
+    steps: list[str] = []
+    if stuck:  # one cause for them all: said once, not on every job
+        fault, steps = settings_fault(ctx, [t for tabs in stuck.values() for t in tabs])
+        who = "" if len(stuck) == len(missed) else f" ({and_list(say.job_name(j) for j in stuck)})"
+        facts.append(f"Why{who}: {fault[0][:1].lower()}{fault[0][1:]}")
+        facts += fault[1:]
+    for j in failing:
+        if j not in stuck:
+            quote = clip(" ".join(str(runs[j]["error"]).split()), 200)
+            facts.append(f"Why {say.job_name(j)} stopped, from its latest run: “{esc(quote)}”")
+    others = [j for j in missed if j not in stuck]
+    if others:
+        which = f"For {and_list(say.job_name(j) for j in others)}: see" if stuck else "See"
+        steps.append(f"{which} why in {say.logs_link()}, or run {say.command('status')} for each job's last run. "
+                     f"This clears by itself once {'it runs' if len(others) == 1 else 'they run'} again.")
+    return say.compose(say.URGENT if stuck else say.ACTION, head, facts, do=steps)
 
 
 def _span(minutes: int) -> str:
@@ -240,10 +336,7 @@ def check_heartbeats(ctx: Context, jobs: Iterable[str] | None = None) -> list[st
                 new.append(job)
     reminder = bool(missed) and now.astimezone(UK).hour == REMINDER_HOUR_UK
     if new or reminder:
-        lines = ["Missed heartbeats: these US Outbound jobs have not run when they should have."]
-        lines += [_describe(j, runs[j], now) for j in missed]
-        lines.append("Check the worker's logs in Railway, or run `us-outbound status`.")
-        notify.alert(ctx, "\n".join(lines))  # a Slack that fails is logged: the watchdog's ping still goes
+        notify.alert(ctx, missed_message(ctx, missed, runs))  # a Slack that fails is logged: the watchdog's ping goes
     log("heartbeat_check", missed=missed, newly_missed=new, alerted=bool(new or reminder))
     return missed
 

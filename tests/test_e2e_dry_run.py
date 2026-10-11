@@ -378,4 +378,5 @@ def test_the_bad_row_is_reported_once_in_the_dev_channel(flow):
     text = post.json["text"]
     assert text.startswith(DRY)
     assert f"Signals row {flow['bad_row']} (Q4 plan-year window), weight:" in text
-    assert "previous version stays in force" in text
+    assert "*The settings sheet has errors, so some edits were not applied*" in text
+    assert "The version read before stays in use until the errors are fixed." in text
