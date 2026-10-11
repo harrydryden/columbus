@@ -294,8 +294,8 @@ def test_the_label_checks_naics_trims(settings):
 
 def test_every_label_the_check_lists_has_a_definition_saying_what_it_is_and_is_not(settings):
     """Harry, 7 Oct 2026: the label check's list (labels.entries: the labels of every prospected group, and one row
-    for each group not prospected) carries the build's one-line definition of each, so it works before the column
-    reaches the sheet."""
+    for each group not prospected) carries each label's one-line definition. 11 Oct 2026: every label has one, and
+    the sheet is their one source (a blank cell is an error)."""
     from us_outbound import labels
 
     entries = labels.entries(settings)
@@ -304,7 +304,7 @@ def test_every_label_the_check_lists_has_a_definition_saying_what_it_is_and_is_n
         "Makes and publishes video games itself; not tools, engines or platforms for game makers (Gametech), and not "
         "an agency or app studio building software for clients.")
     assert "not FP&A or budgeting tools for finance teams" in settings.industry("Fintech").definition
-    assert sum(bool(i.definition) for i in settings.industries) == 50  # the rest are not in the list
+    assert all(i.definition for i in settings.industries)  # switched off or not
 
 
 IT_SERVICES = ("541512", "541513", "541519")  # computer systems design, facilities management, other IT services

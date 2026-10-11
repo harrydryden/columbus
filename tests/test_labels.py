@@ -104,12 +104,12 @@ def test_the_hash_follows_what_the_model_is_asked_and_nothing_else(monkeypatch):
     assert labels.labels_hash(edit("Fintech", proof_point="A proof.")) == base
     assert labels.labels_hash(edit("Hospitals", active=True)) == base  # Healthcare is listed either way
     assert labels.labels_hash(edit("CPA firms", active=True)) != base  # Professional Services becomes prospected
-    # A sheet without the definition column reads the build's lines: loading the column changes nothing the model
-    # reads, so no verdict goes stale for it (an edited line makes them all stale: the queue is asked again).
+    # The sheet is the definitions' one source (11 Oct 2026): a label with a blank line is an error, not the build's
+    # line, so the settings are not taken.
     tabs = default_tabs()
-    for r in tabs["Industries"]:
-        del r["definition"]
-    assert labels.labels_hash(validate_all(tabs)[0]) == base
+    tabs["Industries"][0]["definition"] = ""
+    settings, issues = validate_all(tabs)
+    assert settings is None and [e.column for e in issues["Industries"]] == ["definition"]
     monkeypatch.setattr(labels, "PROMPT_VERSION", "2026-10-08a")
     assert labels.labels_hash(DEFAULT) != base
 

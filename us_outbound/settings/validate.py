@@ -26,7 +26,7 @@ from us_outbound.copy import copy_markup, variant_text
 from us_outbound.copy.copy_rules import money_violations, subject_violations
 from us_outbound.copy.variables import VARIABLES
 from us_outbound.settings.conditions import ConditionError, parse_condition, parse_context_rule, parse_terms, try_parse_condition
-from us_outbound.settings.defaults import COLUMNS, bundled_definitions
+from us_outbound.settings.defaults import COLUMNS
 from us_outbound.settings import spec
 from us_outbound.settings.parsers import (
     email,
@@ -761,9 +761,11 @@ def _industries(rows: list[_Row]) -> list[tuple[Industry, int]]:
         if priority is not None and priority < 1:
             r.fail("priority", "must be 1 or more")
         page = IndustryPage(**{f: v[f"page_{f}"] for f in PAGE_FIELDS})
-        # A blank definition takes the build's line for the label (Harry, 7 Oct 2026), so the label check works
-        # on a sheet without the column, and the sheet changes what it reads only where Harry edits a line.
-        definition = " ".join(v["definition"].split()) or bundled_definitions().get((label or "").casefold(), "")
+        # The sheet is the definitions' one source (Harry, 11 Oct 2026): the label check reads each label's line, and
+        # a blank one is an error, not a line the build fills in.
+        definition = " ".join(v["definition"].split())
+        if not definition:
+            r.fail("definition", "needs a one-line definition: the label check reads it to tell labels apart")
         if r.ok:
             out.append((
                 Industry(industry=label, industry_group=group, active=v["active"], naics_prefixes=v["naics_prefixes"],
