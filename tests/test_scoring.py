@@ -13,6 +13,7 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound.clients.db import MemoryStore
+from us_outbound.clients.slack import dry_run_note
 from us_outbound.scoring import score as scoring
 from us_outbound.scoring.score import match_signal, rescore, score_account
 from us_outbound.settings.conditions import parse_condition, parse_context_rule, parse_terms, try_parse_condition
@@ -516,11 +517,17 @@ def test_tier_share_alert_posts_once_to_the_alert_channel():
     assert summary["tier_share"] == {"Priority": 0.0, "Standard": 0.0, "Control": 1.0}
     [(channel, text)] = slack.posts
     assert channel == "#us-outbound"
-    assert text == (
-        "Tier mix check: this month's queue (October 2026, 20 accounts) is Priority 0%, Standard 0%, Control 100%. "
-        "Each tier should be 5–40% of the queue; Priority is under 5%, Standard is under 5%, Control is over 40%. "
-        "Review the thresholds and signal weights in the settings sheet."
-    )
+    print(text)
+    lines = text.splitlines()
+    assert lines[0].endswith(":warning: *October's list of companies to email is unbalanced*")
+    assert "20 companies were added to the queue this month. How they split by score:" in lines
+    assert "• Top fit (Priority): 0%  ← below 5%" in lines
+    assert "• Comparison group (Control): 100%  ← above 40%" in lines
+    assert "*What to do:*" in lines and "General tab" in lines[lines.index("*What to do:*") + 1]
+    assert any(line.startswith("2. Lower `priority_threshold` (now 50)") for line in lines)
+    assert any(line.startswith("3. Lower `standard_threshold` (now 20)") for line in lines)
+    rescore(ctx)  # the score job runs several times a day: the same week's alert is not posted again
+    assert len(slack.posts) == 1
 
 
 def test_tier_share_check_skips_small_queues_and_passes_a_good_mix():
@@ -557,7 +564,8 @@ def test_tier_share_alert_in_dry_run_goes_to_the_dev_channel():
     rescore(ctx)
     [post] = [r for r in transport.requests if r.url.endswith("chat.postMessage")]
     assert post.json["channel"] == "C_DEV"
-    assert post.json["text"].startswith("[dry-run → #us-outbound] Tier mix check:")
+    assert post.json["text"].startswith(dry_run_note("#us-outbound") + "\n")
+    assert "list of companies to email is unbalanced" in post.json["text"]
 
 
 def test_rescore_writes_only_to_the_us_outbound_schema():

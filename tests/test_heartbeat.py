@@ -9,6 +9,9 @@ from us_outbound.base import heartbeats
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.ops import heartbeat as hb
 from us_outbound.settings.model import General, Settings
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 SETTINGS = Settings(general=General())
 MON_NOON = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)  # Monday 12:00 UK (BST ended on 25 Oct)
@@ -149,7 +152,7 @@ def test_stale_job_is_flagged_and_alerted_once_newly_missed():
     missed = hb.check_heartbeats(ctx, jobs=["poll_replies", "settings_sync", "mailbox_health"])
     assert missed == ["poll_replies"]
     [post] = posts(t)
-    assert post["channel"] == "C_DEV" and "[dry-run → #us-outbound]" in post["text"]
+    assert post["channel"] == "C_DEV" and post["text"].startswith(DRY)
     assert "poll_replies" in post["text"] and "settings_sync" not in post["text"]
 
 

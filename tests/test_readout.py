@@ -12,6 +12,9 @@ from tests.test_registry import SETTINGS, slack_routes
 from us_outbound.clients.guard import Guard
 from us_outbound.learn import readout, signal_value
 from us_outbound.ops import cli, heartbeat, schedule
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 MON = datetime(2026, 10, 12, 7, 30, tzinfo=UTC)  # Monday 08:30 UK (BST)
 LAST_WEEK = datetime(2026, 10, 7, 15, tzinfo=UTC)  # Wednesday of the week read
@@ -244,7 +247,7 @@ def test_dry_run_posts_to_the_dev_channel_and_writes_only_its_heartbeat():
     before = {k: list(v) for k, v in ctx.store.tables.items()}
     summary = heartbeat.run_job(ctx, readout.run)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith("[dry-run → #us-outbound] *Monday readout")
+    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith(DRY + "*Monday readout")
     assert summary["dry_run"] and summary["alert"]["posted"]
     after = {k: v for k, v in ctx.store.tables.items() if v != before[k]}
     assert set(after) == {"heartbeats"}

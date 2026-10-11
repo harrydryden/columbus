@@ -25,6 +25,9 @@ from us_outbound.ops import bootstrap, cli
 from us_outbound.replies import desk
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import State
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 HARRY_ID, BOT, SOMEONE = "U_HARRY", "U_BOT", "U_SOMEONE"
 HARRY_CAMPAIGN = "US Outbound – Harry Dryden"
@@ -246,7 +249,7 @@ def test_dry_run_writes_no_item_and_previews_five_cards_in_the_dev_channel():
     assert out["dry_run"] is True and (sa["would_post"], sa["previews"], sa["posted"]) == (7, 5, 0)
     assert sum(out["by_owner"].values()) == 7 and items(ctx) == [] and instantly_posts(t) == []
     assert sl.cards() == [] and len(sl.cards("C_DEV")) == 5
-    assert all(c["text"].startswith("[dry-run → #us-outbound] Send approval: Agency") for c in sl.cards("C_DEV"))
+    assert all(c["text"].startswith(DRY + "Send approval: Agency") for c in sl.cards("C_DEV"))
     assert all("approvals approve" not in blocks_text(c) for c in sl.cards("C_DEV"))  # a preview has no item
     assert all(r["channel"] == "C_DEV" for r in sl.reacted) and len(sl.reacted) == 10
     assert all(len(sl.thread(c["ts"])) == 1 for c in sl.cards("C_DEV"))  # emails 2 to 4, in the preview's thread
@@ -912,7 +915,7 @@ def test_dry_run_enrol_through_the_cli_previews_the_card_in_the_dev_channel():
     posts = [r for r in e["requests"] if r.url.startswith(SLACK) and r.method == "POST"]
     assert posts and {r.json["channel"] for r in posts} == {"C_DEV"}
     card = next(r for r in posts if r.url.endswith("chat.postMessage") and not r.json.get("thread_ts"))
-    assert card.json["text"].startswith("[dry-run → #us-outbound] Send approval: Acme Creative · Jane Doe")
+    assert card.json["text"].startswith(DRY + "Send approval: Acme Creative · Jane Doe")
     assert re.search(r"\*\w+ today:\* card 1 of \d+", blocks_text(card.json))
 
 

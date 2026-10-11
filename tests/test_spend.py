@@ -13,6 +13,9 @@ from tests.test_daily_post import world as post_world
 from tests.test_registry import SETTINGS, slack_routes
 from us_outbound.clients.db import new_id
 from us_outbound.learn import daily_post, spend
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK (GMT)
 FLOOR_TEXT = ("Apollo has 6,400 credits; at this pace it reaches apollo_floor (5,000) in about 14 days, after which "
@@ -188,7 +191,7 @@ def test_the_website_visitor_credits_under_15_percent_while_site_visits_are_on()
 def test_a_dry_run_preview_never_stops_the_live_ask():
     ctx, t = world(balance=4_000, live=False)
     spend.check(ctx)
-    assert posts(t)[0].startswith("[dry-run → #us-outbound] <@U_HARRY> Credits and spend")
+    assert posts(t)[0].startswith(DRY + "<@U_HARRY> Credits and spend")
     ctx.guard.configure(live=True)
     spend.check(ctx)
     assert len(posts(t)) == 2 and {e["event_id"] for e in ctx.store.select("events", {"type": "alert"})} == {

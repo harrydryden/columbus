@@ -47,6 +47,7 @@ from us_outbound.clients.sheets import Sheets
 from us_outbound.clients.slack import Slack
 from us_outbound.clients.watchdog import Watchdog
 from us_outbound.logs import redact
+from us_outbound.clients.slack import dry_run_note
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)
 ROOT = Path(__file__).resolve().parents[1]
@@ -999,7 +1000,7 @@ def test_dry_run_slack_posts_only_to_the_dev_channel(dry_world):
     posts = [r for r in w.transport.requests if _system_of(r.url) == "slack" and r.method == "POST"]
     assert posts, "the dry-run exercise posted nothing to Slack"
     assert {r.json["channel"] for r in posts} == {"C_DEV"}  # reactions too: only the dev channel's
-    redirected = [r for r in posts if str(r.json.get("text") or "").startswith(f"[dry-run → {ALERT}] ")]
+    redirected = [r for r in posts if str(r.json.get("text") or "").startswith(dry_run_note(ALERT) + "\n")]
     assert redirected, "the alert-channel post was not redirected with its dry-run prefix"
     refused = [c for c in w.guard.calls if c.system == "slack" and c.write and not c.sent]
     assert refused and {c.target for c in refused} == {ALERT} | SLACK_DMS  # the DM went to dev instead

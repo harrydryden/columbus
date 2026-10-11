@@ -8,6 +8,9 @@ from datetime import UTC, datetime, timedelta
 from tests.test_registry import HANNAH, SAM, setup
 from us_outbound.context import Secrets
 from us_outbound.learn import daily_post
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK (GMT), Tue 27 Oct
 MON = datetime(2026, 10, 26, 15, 0, tzinfo=UTC)  # Monday, inside the send window
@@ -187,7 +190,7 @@ def test_dry_run_posts_to_the_dev_channel():
     ctx, t = world(live=False)
     daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith("[dry-run → #us-outbound] *Daily post")
+    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith(DRY + "*Daily post")
 
 
 def test_daily_post_runs_as_a_job_from_the_cli():

@@ -36,6 +36,9 @@ from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import TABS
 from us_outbound.settings.sync import load_current
 from us_outbound.settings.validate import validate_all
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 NOW = datetime(2026, 9, 29, 11, 0, tzinfo=UTC)  # 12:00 UK, 07:00 ET: enrol's slot (SPEC 9)
 SHEET_ID = "sheet-e2e"
@@ -373,6 +376,6 @@ def test_the_bad_row_is_reported_once_in_the_dev_channel(flow):
     [post] = posts
     assert post.json["channel"] == "C_DEV"  # dry-run: the alert goes to #us-outbound-dev
     text = post.json["text"]
-    assert text.startswith("[dry-run → #us-outbound] ")
+    assert text.startswith(DRY)
     assert f"Signals row {flow['bad_row']} (Q4 plan-year window), weight:" in text
     assert "previous version stays in force" in text
