@@ -184,11 +184,24 @@ def score(rows: Sequence[Mapping[str, str]], settings: Settings) -> dict[str, An
         "intervals": {"label_right": interval(label_right, n), "group_right": interval(group_right, n),
                       "wrong_pitch": interval(len(wrong_pitch), n)},
         "opinions": opinions,
+        "truths": [(str(r.get("domain") or ""), truth) for r, _, truth in judged if isinstance(truth, Industry)],
         "wrong": [{"domain": str(r.get("domain") or ""), "ours": str(r.get("our_label") or ""),
                    "copy": str(r.get("copy") or ""), "verdict": v,
                    "right_label": (truth.industry if isinstance(truth, Industry) else str(r.get("right_label") or ""))}
                   for r, v, truth in judged if v != RIGHT],
     }
+
+
+def judged(rows: Sequence[Mapping[str, str]], settings: Settings) -> list[tuple[str, Industry]]:
+    """The judged companies whose right label is known: (domain, label), for `labels eval --from-sample`."""
+    return list(score(rows, settings)["truths"])
+
+
+def sample_rows(ctx: Context) -> list[tuple[str, Industry]]:
+    """The Label sample tab's judged companies with their right label (none when the tab is missing)."""
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    rows = read_tab(ctx.clients.sheets, sheet_id, TAB) if sheet_id else None
+    return judged(rows or [], ctx.settings)
 
 
 def run_score(ctx: Context) -> dict[str, Any]:

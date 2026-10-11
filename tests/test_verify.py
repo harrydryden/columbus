@@ -261,10 +261,13 @@ def test_from_apollo_to_a_verified_scored_account():
     apollo_universe.run(dataclasses.replace(ctx, job=apollo_universe.JOB))
     apollo_jobs.run(dataclasses.replace(ctx, job=apollo_jobs.JOB))
     out = verify.run(dataclasses.replace(ctx, job=verify.JOB))
-    assert out["verified"] == 1 and out["labels"]["checked"] == 1 and out["labels"]["rules+model"] == 1
+    # Sure of Fintech, but from Apollo's facts alone (no home page read in this run): its group's copy until the page
+    # is read and it is asked again (11 Oct 2026).
+    assert out["verified"] == 1 and out["labels"]["checked"] == 1 and out["labels"]["umbrella"] == 1
     [a] = ctx.store.select("accounts")
-    assert (a["domain"], a["status"], a["industry"], a["size_band"]) == ("company1.com", "verified", "Fintech", "50-99")
-    assert (a["label_source"], a["label_confidence"]) == ("rules+model", "high")
+    assert (a["domain"], a["status"], a["industry"], a["size_band"]) == (
+        "company1.com", "verified", "Technology & Startups", "50-99")
+    assert (a["label_source"], a["label_confidence"]) == ("umbrella", "high")
     matched = {e["value"]["signal"] for e in ctx.store.select("signal_events", {"source": "scoring"})}
     # apollo_org's funding fact, scored by the rescore (funding split by age, review Appendix A)
     assert matched & {"Recent funding", "Funding 6–12 months ago"}
@@ -405,14 +408,24 @@ def apollo_facts(aid: str, *, naics=("541511",), keywords=("fintech", "payments"
                          ("description", description)) if v]
 
 
-def labelled(accounts, answers, *, settings=None, facts=None, fail=False, **routes):
-    """verify's world with each account's Apollo facts and the task model answering by domain."""
+def home_page(aid: str, at: datetime, text: str = "Payments software for small businesses.") -> dict:
+    return {"event_id": f"home-{aid}-{at.isoformat()}", "account_id": aid, "source": "careers_pages",
+            "fact": "home_page", "value": {"title": aid, "text": text}, "quote": "", "source_url": "",
+            "observed_at": at}
+
+
+def labelled(accounts, answers, *, settings=None, facts=None, fail=False, home=True, **routes):
+    """verify's world with each account's Apollo facts and the task model answering by domain. home: each account's
+    home page already read, as read_pages does before verify_accounts (a sure verdict earns the label's own copy only
+    with it, labels.decide)."""
     sdk = LabelSDK(answers, fail=fail)
     t = hubspot_routes(FakeTransport(), **routes)
     ctx = make_context(settings or settings_with(), job=verify.JOB, now=NOW, transport=t, claude_sdk=sdk)
     ctx.store.insert("accounts", accounts)
     for a in accounts:
         ctx.store.insert("signal_events", (facts or {}).get(a["account_id"]) or apollo_facts(a["account_id"]))
+        if home:
+            ctx.store.insert("signal_events", [home_page(a["account_id"], NOW - timedelta(days=1))])
     return ctx, sdk
 
 
@@ -423,15 +436,15 @@ def acc(ctx, aid="a1") -> dict:
 def test_agreement_verifies_with_the_labels_own_copy_and_the_verdict_is_asked_once():
     ctx, sdk = labelled([account()], {"a1co.com": {"label": "Fintech", "evidence": "Payments software"}})
     out = verify.run(ctx)
-    assert out["verified"] == 1 and out["labels"]["checked"] == 1 and out["labels"]["rules+model"] == 1
+    assert out["verified"] == 1 and out["labels"]["checked"] == 1 and out["labels"]["model"] == 1
     assert out["labels"]["usd"] > 0 and out["labels"]["unavailable_reason"] == ""
     a = acc(ctx)
     assert (a["status"], a["industry"], a["label_source"], a["label_confidence"]) == (
-        "verified", "Fintech", "rules+model", "high")
+        "verified", "Fintech", "model", "high")
     [call] = sdk.calls
     assert call["model"] == "claude-sonnet-5-5" and "Fintech" not in call["messages"][0]["content"].split("Keywords")[0]
     [fact] = ctx.store.select("signal_events", {"source": "label_check"})
-    assert fact["value"]["decision"]["source"] == "rules+model" and fact["value"]["asked"] is True
+    assert fact["value"]["decision"]["source"] == "model" and fact["value"]["asked"] is True
     verify.run(ctx)
     assert len(sdk.calls) == 1  # kept for good: no call the second run
     assert len(ctx.store.select("signal_events", {"source": "label_check"})) == 1
@@ -464,15 +477,16 @@ def test_a_public_body_is_disqualified_by_the_model_and_a_gov_domain_without_a_c
     assert acc(ctx, "a2")["status"] == "new"  # the domain rule: no call, as before
 
 
-def test_a_cross_group_doubt_is_verified_with_general_copy_and_flagged():
+def test_an_unsure_answer_is_verified_under_the_models_group_whatever_the_rules_say():
+    """Harry, 11 Oct 2026: the model's label decides; unsure, its group's own label and copy."""
     ctx, _ = labelled([account()], {"a1co.com": {"label": "Advertising agencies", "confidence": "medium",
                                                  "evidence": "Payments software"}})
     out = verify.run(ctx)
     a = acc(ctx)
-    assert out["verified"] == 1 and (a["industry"], a["label_source"]) == ("Fintech", "disputed")
-    assert labels.copy_level(a) == "general"
+    assert out["verified"] == 1 and (a["industry"], a["label_source"]) == ("Marketing & Creative Agencies", "umbrella")
+    assert labels.copy_level(a) == "group"
     [fact] = ctx.store.select("signal_events", {"source": "label_check"})
-    assert fact["value"]["decision"]["reason"] == "the rules say Fintech, the model says Advertising agencies (medium)"
+    assert fact["value"]["decision"]["reason"] == "the model says Advertising agencies (medium): the group's copy"
 
 
 def test_a_doubt_whether_it_is_an_employer_goes_to_the_hand_check_and_approving_verifies_it():
@@ -501,9 +515,11 @@ def test_a_company_held_on_thin_facts_is_asked_again_once_its_home_page_is_read_
     reads the home page of each (sources/pages.home_pass); the next verify_accounts asks once more with it."""
     thin = {"a1": apollo_facts("a1", naics=(), keywords=("design",), industry="design services", description="")}
     ctx, sdk = labelled([account(industry="")], {"a1co.com": {"label": "Technology & Startups", "confidence": "low"}},
-                        facts=thin)
+                        facts=thin, home=False)
     out = verify.run(ctx)
-    assert out["labels"]["held"] == 1 and status(ctx) == "new" and len(verify.open_doubts(ctx)) == 1
+    # Unsure, the model's group decides (11 Oct 2026): verified with the group's copy, not held.
+    assert out["labels"]["umbrella"] == 1 and status(ctx) == "verified" and verify.open_doubts(ctx) == []
+    assert acc(ctx)["label_source"] == "umbrella"
     ctx.store.insert("signal_events", [{
         "event_id": "home-a1", "account_id": "a1", "source": "careers_pages", "fact": "home_page",
         "value": {"title": "Brightline", "text": "Brightline builds scheduling software for clinics."}, "quote": "",
@@ -511,9 +527,9 @@ def test_a_company_held_on_thin_facts_is_asked_again_once_its_home_page_is_read_
     sdk.answers["a1co.com"] = {"label": "Technology & Startups", "confidence": "high",
                                "evidence": "Brightline builds scheduling software for clinics"}
     ctx.now = NOW + timedelta(days=1)
-    again = verify.run(ctx)
+    verify.run(ctx)
     assert len(sdk.calls) == 2 and "Home page: Brightline" in sdk.calls[-1]["messages"][0]["content"]
-    assert again["verified"] == 1 and status(ctx) == "verified" and verify.open_doubts(ctx) == []
+    assert status(ctx) == "verified" and verify.open_doubts(ctx) == []
     assert (acc(ctx)["industry"], acc(ctx)["label_source"]) == ("Technology & Startups", "model")
     verify.run(ctx)
     assert len(sdk.calls) == 2  # asked with its page: the verdict stands
@@ -562,7 +578,8 @@ def test_an_overrides_row_stands_and_nothing_is_asked():
 
 def test_a_company_with_nothing_to_check_against_is_verified_on_its_label_with_the_groups_copy():
     ctx, sdk = labelled([account()], {}, facts={"a1": [{"event_id": "x", "account_id": "a1", "source": "apollo_org",
-                                                        "fact": "employees", "value": 64, "observed_at": NOW}]})
+                                                        "fact": "employees", "value": 64, "observed_at": NOW}]},
+                        home=False)
     assert verify.run(ctx)["verified"] == 1 and sdk.calls == []
     assert (acc(ctx)["industry"], acc(ctx)["label_source"]) == ("Fintech", "rules")
 
@@ -592,10 +609,12 @@ def test_a_verified_account_with_no_verdict_is_checked_and_its_label_put_right()
                         {"a1co.com": {"label": "Fintech", "evidence": "Payments software"}})
     out = verify.run(ctx)
     a = acc(ctx)
-    # Its facts say fintech: the rules now agree with the model (the label it was admitted under was the old tie-break).
-    assert (a["status"], a["industry"], a["label_source"]) == ("verified", "Fintech", "rules+model")
+    # The model is sure of Fintech, with the home page read: its label (the one it was admitted under was the old
+    # tie-break).
+    assert (a["status"], a["industry"], a["label_source"]) == ("verified", "Fintech", "model")
     assert out["labels"]["changed"] == [{"account_id": "a1", "domain": "a1co.com", "from": "Adtech & martech",
-                                         "to": "Fintech", "source": "rules+model", "action": "verify", "reason": ""}]
+                                         "to": "Fintech", "source": "model", "action": "verify",
+                                         "reason": "the model says Fintech (high)"}]
     assert hubspot_requests_count(ctx) == 0  # nothing else about it is checked again
     verify.run(ctx)
     assert len(sdk.calls) == 1

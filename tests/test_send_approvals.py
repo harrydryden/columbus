@@ -1030,12 +1030,11 @@ def lc(source, rules, model, confidence="high", evidence="", what=""):
      "*Industry:* Fintech (Technology &amp; Startups) · rules and model agree · Fintech copy"),
     ({"industry": "Technology & Startups", "label_source": "model", "copy_industry": "Technology & Startups",
       "label_check": lc("model", "Games studios", "Technology & Startups")},
-     "*Industry:* Technology &amp; Startups · the rules said Games studios; the model says Technology &amp; Startups "
-     "(high) · Technology &amp; Startups copy"),
+     "*Industry:* Technology &amp; Startups · the label check says Technology &amp; Startups (high) · "
+     "Technology &amp; Startups copy"),
     ({"industry": "Technology & Startups", "label_source": "umbrella", "copy_industry": "Technology & Startups",
       "label_check": lc("umbrella", "Adtech & martech", "Fintech", "medium")},
-     "*Industry:* Technology &amp; Startups · the rules said Adtech &amp; martech, the model Fintech (medium): "
-     "Technology &amp; Startups copy"),
+     "*Industry:* Technology &amp; Startups · the label check says Fintech (medium): Technology &amp; Startups copy"),
     ({"industry": "Games studios", "label_source": "disputed", "copy_industry": "General",
       "label_check": lc("disputed", "Games studios", "Logistics", "medium")},
      "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · the rules say Games studios, the model says Logistics "
@@ -1071,12 +1070,12 @@ def test_a_checked_account_s_card_carries_its_verdict_and_stays_under_slacks_lim
     enrol.run(ctx)
     p = item_for(ctx, "acc-1")["payload"]
     assert (p["label_source"], p["copy_level"], p["copy_industry"]) == (
-        "rules+model", "label", "Marketing & Creative Agencies")
+        "model", "label", "Marketing & Creative Agencies")
     assert p["label_check"]["model"] == "Advertising agencies" and p["label_check"]["evidence"] == "x" * 160
     card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
     text = blocks_text(card)
-    assert ("*Industry:* Advertising agencies (Marketing &amp; Creative Agencies) · rules and model agree · "
-            "the group's copy") in text
+    assert ("*Industry:* Advertising agencies (Marketing &amp; Creative Agencies) · the label check says Advertising "
+            "agencies (high) · the group's copy") in text
     assert f"*They do:* advertising for consumer brands · “{'x' * 160}”" in text
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
 

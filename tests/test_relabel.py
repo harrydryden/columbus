@@ -260,9 +260,11 @@ def test_a_live_audit_asks_decides_and_withdraws_the_cards_that_no_longer_fit(ca
     # (the home page said nothing): Fintech's group, with its group's copy.
     assert (a1["industry"], a1["label_source"]) == ("Technology & Startups", "umbrella")
     assert out["disagreements"][0]["domain"] == "acmecreative.com"
-    assert out["cards_withdrawn"] == ["Acme Creative"] and {r["account_id"] for r in items(ctx, "open")} == {
-        "acc-2", "acc-3"}
-    assert out["decisions"] == {"umbrella": 1, "rules+model": 1}
+    # Brightfin too: the model is sure of Fintech, but from Apollo's facts alone, so the group's copy until its page
+    # is read (11 Oct 2026: the rules agreeing no longer counts).
+    assert sorted(out["cards_withdrawn"]) == ["Acme Creative", "Brightfin"]
+    assert {r["account_id"] for r in items(ctx, "open")} == {"acc-3"}
+    assert out["decisions"] == {"umbrella": 2}
     # Asked once: a second audit finds nothing left to check.
     again = relabel.audit(ctx)
     assert again["to_check"] == 0 and len(sdk.calls) == 2
@@ -282,9 +284,10 @@ def test_a_live_audit_reads_the_home_page_of_a_company_the_model_was_unsure_of_a
     monkeypatch.setattr(pages, "home_pass", lambda *a, **k: {})  # the pass's time ran out before these pages
     first = relabel.audit(ctx)
     monkeypatch.undo()
-    assert first["decisions"]["held"] == 1
+    # Unsure, the model's label still decides (11 Oct 2026): its group's own label and copy, not the hand-check.
+    assert "held" not in first["decisions"]
     a3 = ctx.store.get("accounts", account_id="acc-3")
-    assert a3["status"] == "queued" and a3["label_source"] == "disputed"
+    assert (a3["industry"], a3["label_source"]) == (TECH, "umbrella")
 
     read: list[str] = []
 
@@ -299,19 +302,20 @@ def test_a_live_audit_reads_the_home_page_of_a_company_the_model_was_unsure_of_a
     calls = len(sdk.calls)
     at(ctx, ctx.now + timedelta(days=1), live=True, job=relabel.AUDIT_JOB)
     second = relabel.audit(ctx)
-    # Acme Creative's page too: the model gave its label (Fintech) alone, from Apollo's facts.
-    assert read == ["acmecreative.com", "loopstudio.com"] and second["home_pages"]["said_what_they_do"] == 2
-    assert second["asked"] == 2 and len(sdk.calls) == calls + 2
+    # Every company asked without its page gets it read and is asked again (11 Oct 2026).
+    assert read == ["acmecreative.com", "brightfin.com", "loopstudio.com"]
+    assert second["home_pages"]["said_what_they_do"] == 3
+    assert second["asked"] == 3 and len(sdk.calls) == calls + 3
     assert "Home page: Loop Studio · Loop makes design software." in sdk.calls[-1]["messages"][0]["content"]
     a3 = ctx.store.get("accounts", account_id="acc-3")
     assert (a3["industry"], a3["label_source"]) == (TECH, "model")
     cli._audit_report(second, True)
-    assert "Read the home page of 2 companies whose label the page could settle: 2 say what they do, 0 say nothing, 0 refused, " \
+    assert "Read the home page of 3 companies whose label the page could settle: 3 say what they do, 0 say nothing, 0 refused, " \
            "0 did not answer. Those with a page are asked again." in capsys.readouterr().out
     # Asked with its page: the verdict stands, and the page is not read again.
     at(ctx, ctx.now + timedelta(days=1), live=True, job=relabel.AUDIT_JOB)
     third = relabel.audit(ctx)
-    assert third["to_check"] == 0 and third["home_pages"] == {} and len(read) == 2
+    assert third["to_check"] == 0 and third["home_pages"] == {} and len(read) == 3
 
 
 # -- `approvals redo` (Harry, 7 Oct 2026: "bulk reject all of those contacts from today and send them round again") --

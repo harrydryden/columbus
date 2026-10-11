@@ -14,18 +14,20 @@ sees the rules' label, so their agreement means something. It answers one label 
 an active label, and one row for each group with none, marked "not prospected"), its confidence, what kind of body
 the company is, a quote from the material and a short "what they do" phrase.
 
-One deterministic rule (decide) combines the two, so a doubtful label can never earn a label's own pitch:
+One deterministic rule (decide) turns the verdict into the label and copy, so a doubtful label can never earn a
+label's own pitch:
   * an Overrides row, or an approver's correction (label_source approver), stands, and no model is asked;
   * the model unavailable (the cap, an error, no key): with General label_check = required, a new company waits
     unverified; with skip, the rules' label with the group's copy (source rules);
   * a public body is left out; a membership body or society, a company no label fits or one whose industry is
     switched off is left out when the model is sure, and held for the weekly hand-check when it is not; a company
     the model cannot place is held;
-  * the rules and the model agree: the label's own copy (rules+model);
-  * they disagree, or the rules give none: the model's label when it is sure and read the company's home page
-    (model); sure from Apollo's facts alone, its group's own label and copy (umbrella) until the page is read and it
-    is asked again (10 Oct 2026, the 95% target); otherwise, within one group, the group's own label and copy
-    (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed).
+  * otherwise the model's label decides (Harry, 11 Oct 2026: on 50 companies he judged by hand the model had the
+    right group for 42 of 44, the rules for 34 of 50, so the rules only source companies now): the label's own copy
+    when the model is sure and read the company's home page (model); its group's own label and copy when it is not
+    sure, or answered from Apollo's facts alone until the page is read and it is asked again (umbrella); General
+    copy only for a group with no label of its own switched on (disputed). The rules' label is still recorded beside
+    each verdict, for the crosswalk.
 copy_level turns label_source into the most specific copy a company may get (enrol.copy_targets): the label's own,
 its group's, or General's. A company not checked yet (label_source blank) gets its group's.
 
@@ -386,34 +388,23 @@ def _home_page(events: Iterable[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return facts.newest(events, HOME_FACT, where=lambda e: isinstance(e.get("value"), Mapping) and bool(e["value"]))
 
 
-def _page_would_help(stored: Mapping[str, Any] | None) -> bool:
-    """Whether the home page is worth reading for a verdict: none yet, one short of high, or a label the model gave
-    without the rules agreeing (10 Oct 2026: the page decides whether that label earns its own copy)."""
-    if not stored:
-        return True
-    return stored.get("confidence") != HIGH or (stored.get("decision") or {}).get("source") != AGREED
-
-
 def second_look(events: Iterable[Mapping[str, Any]]) -> bool:
-    """A verdict the page could improve (_page_would_help), asked before the home page was read: the page is new
-    material, so the model is asked once more (Checker.fresh). Once asked with the page, the verdict stands, whatever
-    its confidence."""
+    """A verdict asked before the home page was read: the page is new material, and a sure answer earns the label's
+    own copy only with it (decide), so the model is asked once more (Checker.fresh). Once asked with the page, the
+    verdict stands, whatever its confidence."""
     events = list(events)
     stored = latest_verdict(events)
     page = _home_page(events)
-    if not stored or not _page_would_help(stored) or page is None:
+    if not stored or page is None:
         return False
     asked = _asked_at(events)
     return asked is None or utc_or_epoch(page.get("observed_at")) > asked
 
 
 def wants_home_page(events: Iterable[Mapping[str, Any]]) -> bool:
-    """Whether the company's home page should be read for the check (sources/pages.home_pass): the page could help
-    (_page_would_help: a company never asked, one the model was not sure of, or one whose label rests on the model
-    alone) and has not been read (an empty home_page fact is a read that found nothing, so it is not read again)."""
-    events = list(events)
-    if not _page_would_help(latest_verdict(events)):
-        return False
+    """Whether the company's home page should be read for the check (sources/pages.home_pass): it has not been read
+    (an empty home_page fact is a read that found nothing, so it is not read again). Every label rests on the model
+    (11 Oct 2026), and its sure answer earns the label's own copy only with the page."""
     return not any(e.get("fact") == HOME_FACT for e in events)
 
 
@@ -518,32 +509,14 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
             return hold(f"the model says {verdict.label}, switched off on the Industries tab ({c})")
         model = umbrella  # a switched-off label in a group we prospect: the group's own label
     m_name = model.industry
-
-    def model_alone(said: str) -> Decision:
-        """The model sure, the rules not agreeing: its label's own copy when it read the home page, else its group's
-        (10 Oct 2026, the 95% target: Apollo's facts alone are where its sure answers go wrong)."""
-        if page:
-            return Decision(m_name, model.industry_group, MODEL, c, LABEL_COPY, VERIFY, said)
-        said += "; from Apollo's facts alone, so the group's copy until its home page is read"
-        umbrella = settings.umbrella(model.industry_group)
-        if umbrella is not None and umbrella.active:
-            return Decision(umbrella.industry, umbrella.industry_group, UMBRELLA, c, GROUP_COPY, VERIFY, said)
-        return Decision(m_name, model.industry_group, DISPUTED, c, GENERAL_COPY_LEVEL, VERIFY, said)
-
-    if rules is None:
-        if c == HIGH:
-            return model_alone(f"no rules label; the model says {m_name} ({c})")
-        return hold(f"no rules label; the model says {m_name} ({c})")
-    if rules.industry == m_name:
-        return Decision(*keep, AGREED, c, LABEL_COPY, VERIFY)
-    if c == HIGH:
-        return model_alone(f"the rules said {r_name}; the model says {m_name} ({c})")
-    said = f"the rules say {r_name}, the model says {m_name} ({c})"
-    if rules.industry_group == model.industry_group:
-        umbrella = settings.umbrella(rules.industry_group)
-        if umbrella is not None and umbrella.active:
-            return Decision(umbrella.industry, umbrella.industry_group, UMBRELLA, c, GROUP_COPY, VERIFY, said)
-    return Decision(*keep, DISPUTED, c, GENERAL_COPY_LEVEL, VERIFY, said)
+    said = f"the model says {m_name} ({c})" + ("" if page else ", from Apollo's facts alone")
+    if c == HIGH and page:
+        return Decision(m_name, model.industry_group, MODEL, c, LABEL_COPY, VERIFY, said)
+    umbrella = settings.umbrella(model.industry_group)
+    if umbrella is not None and umbrella.active:
+        return Decision(umbrella.industry, umbrella.industry_group, UMBRELLA, c, GROUP_COPY, VERIFY,
+                        f"{said}: the group's copy")
+    return Decision(m_name, model.industry_group, DISPUTED, c, GENERAL_COPY_LEVEL, VERIFY, f"{said}: General copy")
 
 
 def copy_level(account: Mapping[str, Any]) -> str:
@@ -840,8 +813,12 @@ def gold_events(row: Mapping[str, Any]) -> list[dict]:
     aid = f"gold:{row['domain']}"
     facts = (("naics", list(row.get("naics") or ())), ("keywords", list(row.get("keywords") or ())),
              ("apollo_industry", row.get("apollo_industry") or ""), ("description", row.get("description") or ""))
-    return [{"event_id": f"{aid}:{f}", "account_id": aid, "source": APOLLO_SOURCE, "fact": f, "value": v,
+    rows = [{"event_id": f"{aid}:{f}", "account_id": aid, "source": APOLLO_SOURCE, "fact": f, "value": v,
              "observed_at": "2026-10-07T00:00:00+00:00"} for f, v in facts if v]
+    if row.get("home"):  # a judged company's home page, as read_pages stored it
+        rows.append({"event_id": f"{aid}:home", "account_id": aid, "source": "careers_pages", "fact": HOME_FACT,
+                     "value": dict(row["home"]), "observed_at": "2026-10-07T00:00:00+00:00"})
+    return rows
 
 
 def corrected_rows(ctx: Context) -> list[dict]:
@@ -860,6 +837,31 @@ def corrected_rows(ctx: Context) -> list[dict]:
                      "naics": naics_codes(fact["naics"]), "keywords": texts(fact["keywords"]),
                      "description": fact["description"] or "",
                      "expect": {"accept": [v["to"]], "action": VERIFY}, "why": f"corrected by {v.get('by')}"})
+    return rows
+
+
+def judged_rows(ctx: Context, judged: Iterable[tuple[str, Industry]]) -> list[dict]:
+    """Companies a person judged (ops/label_sample.py: domain, the right label) as rows to score: their stored Apollo
+    facts and home page, expecting the right label, or its group's own label, whose copy is true of it too (Harry,
+    11 Oct 2026: every judged company joins the eval, so a change to the prompt or the definitions is scored on
+    them before it ships)."""
+    rows = []
+    for domain, right in judged:
+        a = ctx.store.get("accounts", domain=domain)
+        if a is None:
+            continue
+        evs = ctx.store.select("signal_events", {"account_id": a["account_id"],
+                                                 "source": [APOLLO_SOURCE, "careers_pages"],
+                                                 "fact": [*MATERIAL_FACTS, HOME_FACT]})
+        fact = {f: facts.value(evs, f) for f in MATERIAL_FACTS}
+        page = _home_page(evs)
+        umbrella = ctx.settings.umbrella(right.industry_group)
+        accept = [right.industry] + ([umbrella.industry] if umbrella and umbrella.industry != right.industry else [])
+        rows.append({"name": a.get("clean_name") or domain, "domain": domain, "went_out_as": a.get("industry"),
+                     "apollo_industry": fact["apollo_industry"] or "", "naics": naics_codes(fact["naics"]),
+                     "keywords": texts(fact["keywords"]), "description": fact["description"] or "",
+                     "home": dict(page["value"]) if page else None,
+                     "expect": {"accept": accept, "action": VERIFY}, "why": "judged in the label sample"})
     return rows
 
 

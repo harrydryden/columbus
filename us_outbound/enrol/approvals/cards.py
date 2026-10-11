@@ -148,10 +148,9 @@ def industry_lines(p: Mapping[str, Any]) -> list[str]:
     elif source == labels.AGREED:
         line = f"*Industry:* {_esc(where)} · rules and model agree · {copy}"
     elif source == labels.MODEL:
-        line = (f"*Industry:* {_esc(where)} · the rules said {_esc(rules)}; the model says {_esc(model)} ({_esc(conf)}) "
-                f"· {copy}")
+        line = f"*Industry:* {_esc(where)} · the label check says {_esc(model)} ({_esc(conf)}) · {copy}"
     elif source == labels.UMBRELLA:
-        line = f"*Industry:* {_esc(where)} · the rules said {_esc(rules)}, the model {_esc(model)} ({_esc(conf)}): {copy}"
+        line = f"*Industry:* {_esc(where)} · the label check says {_esc(model)} ({_esc(conf)}): {copy}"
     else:  # disputed: the rules' label, General copy
         line = (f"*Industry:* ⚠️ {_esc(where)} · the rules say {_esc(rules)}, the model says {_esc(model)} "
                 f"({_esc(conf)}) · {copy}")

@@ -138,3 +138,29 @@ def test_the_score_needs_the_tab_and_the_reports_print(capsys):
     text = capsys.readouterr().out
     assert "10 of 50 companies judged." in text
     assert "Label right: 10 of 10 (100%; 95% interval 72% to 100%)" in text
+
+
+def test_the_judged_companies_join_the_eval_with_their_facts_and_home_page():
+    """Harry, 11 Oct 2026: every company judged by hand is scored by `labels eval --from-sample`, so a change to the
+    prompt or the definitions is tried on them first."""
+    from us_outbound import labels
+
+    ctx = world(live=True, n=4)
+    ls.run(ctx, 4)
+    tab = ctx.clients.sheets.tabs[ls.TAB]
+    tab[0]["your_verdict"] = "Fintech"  # a000: we said Technology & Startups
+    tab[1]["your_verdict"] = "right"  # a001: we said Fintech
+    tab[2]["your_verdict"] = "outside"  # no label to expect: left out of the eval
+    ctx.store.insert("signal_events", [
+        {"event_id": "a000-d", "account_id": "a000", "source": "apollo_org", "fact": "description",
+         "value": "Payments software.", "observed_at": AT},
+        {"event_id": "a000-h", "account_id": "a000", "source": "careers_pages", "fact": "home_page",
+         "value": {"title": "Company 0", "text": "Card payments for shops."}, "observed_at": AT}])
+    judged = ls.sample_rows(ctx)
+    assert [(d, i.industry) for d, i in judged] == [("a000.com", "Fintech"), ("a001.com", "Fintech")]
+    rows = labels.judged_rows(ctx, judged)
+    assert [r["expect"]["accept"] for r in rows] == [["Fintech", TECH], ["Fintech", TECH]]
+    assert rows[0]["description"] == "Payments software." and rows[0]["home"]["text"] == "Card payments for shops."
+    events = labels.gold_events(rows[0])
+    assert {e["fact"] for e in events} == {"description", "home_page"}
+    assert labels.Material.of({"domain": "a000.com"}, events).home  # the model is shown the page

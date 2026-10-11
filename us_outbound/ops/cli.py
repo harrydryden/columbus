@@ -1169,6 +1169,10 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
     if args.action == "eval":
         ctx = factory("labels_eval", args.live, operator=True)
         rows = labels.gold_rows() + (labels.corrected_rows(ctx) if args.from_corrections else [])
+        if args.from_sample:
+            from us_outbound.ops import label_sample
+
+            rows += labels.judged_rows(ctx, label_sample.sample_rows(ctx))
         out = run_job(ctx, lambda c: labels.evaluate(c, rows))
         code = _eval_report(out, ctx.live)
         _dry_note(ctx, "no model was asked.")
@@ -1793,6 +1797,8 @@ def build_parser() -> argparse.ArgumentParser:
     lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")
     lb.add_argument("--from-corrections", action="store_true",
                     help="eval: also score the companies approvers corrected, expecting their new label")
+    lb.add_argument("--from-sample", action="store_true",
+                    help="eval: also score the companies judged on the Label sample tab, expecting their right label")
     lb.add_argument("--size", type=int, help="sample: how many companies to draw (default 50)")
     lb.add_argument("--score", action="store_true", help="sample: read your verdicts back from the tab and count them")
     rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
