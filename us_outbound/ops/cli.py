@@ -1590,7 +1590,7 @@ def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
 
     if args.list:
         return cmd_schedule(args, factory)
-    return scheduler.Scheduler(max_parallel=scheduler.max_parallel_from_env()).run()
+    return scheduler.Scheduler(max_parallel=scheduler.max_parallel_from_env(), at_start=scheduler.AT_START).run()
 
 
 # -- parser and entrypoint ----------------------------------------------------------------

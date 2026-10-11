@@ -21,6 +21,10 @@ The loop:
   * does not backfill: minutes the loop missed (a restart, a redeploy, a stall) are not run
     afterwards, and a job due in the minute the scheduler starts waits for its next time.
     heartbeat_check alerts on any job that misses its heartbeat (ops/heartbeat.py);
+  * runs the jobs in AT_START once as it starts: settings_sync, so a deploy whose validation
+    is stricter than the version in force brings the sheet in at once, instead of every job
+    refusing until the next scheduled sync (11 Oct 2026: the definition check left the
+    Industries version synced that morning unusable for the evening);
   * on SIGTERM or SIGINT (a Railway redeploy or restart) starts nothing more, waits up to
     25 s for running jobs, then terminates them. Railway must allow longer than that
     between SIGTERM and SIGKILL: RAILWAY_DEPLOYMENT_DRAINING_SECONDS=30.
@@ -69,6 +73,7 @@ POLL_SECONDS = 1.0  # between checks for finished runs, timeouts and free slots
 HORIZON = timedelta(days=366)  # how far next_run looks ahead
 HISTORY = 500  # finished runs kept in memory (the log has them all)
 EXIT_MEANING = {0: "ok", 1: "error", 2: "refused", 3: "blocked", 143: "terminated"}
+AT_START = ("settings_sync",)  # run once when the worker starts (module docstring)
 
 # -- cron -------------------------------------------------------------------------------
 
@@ -228,6 +233,7 @@ class Scheduler:
         sleep: Callable[[float], None] = time.sleep,
         launch: Callable[[ScheduledJob], Process] = launch,
         grace_seconds: float = GRACE_SECONDS,
+        at_start: Iterable[str] = (),
     ):
         if max_parallel < 1:
             raise ValueError("max_parallel must be 1 or more")
@@ -239,6 +245,10 @@ class Scheduler:
         self.pending: list[tuple[ScheduledJob, datetime]] = []
         self.history: deque[dict[str, Any]] = deque(maxlen=HISTORY)  # the latest finished runs, oldest first
         self.stopping = False
+        unknown = set(at_start) - {j.name for j, _ in self.jobs}
+        if unknown:
+            raise ValueError(f"at_start names jobs the table does not run: {', '.join(sorted(unknown))}")
+        self.at_start = tuple(at_start)
 
     # -- one minute, one poll --
 
@@ -324,7 +334,10 @@ class Scheduler:
         previous = self._install_signal_handlers()
         try:
             log("scheduler_start", jobs=[j.name for j, _ in self.jobs], max_parallel=self.max_parallel, pid=os.getpid())
-            next_minute = _floor(self.clock()) + MINUTE  # the minute it starts in is not run (no backfill)
+            start = self.clock()
+            next_minute = _floor(start) + MINUTE  # the minute it starts in is not run (no backfill)
+            by_name = {j.name: j for j, _ in self.jobs}
+            self.pending.extend((by_name[name], start) for name in self.at_start)
             while not self.stopping:
                 now = self.clock()
                 self._reap(now)  # a run that has ended is not "still going" when its job is due again
