@@ -63,6 +63,11 @@ class Sheet(MemorySheet):
             raise ApiError("sheets", 400, f"Unable to parse range: {missing[0]}")
         return super().read_tabs(sheet_id, tabs)
 
+    gids: dict = {}
+
+    def tab_ids(self, sheet_id):
+        return dict(self.gids)
+
     def add_tab(self, sheet_id, tab):
         if self._ok("spreadsheet.addSheet", sheet_id, tab):
             self.tabs.setdefault(tab, [])

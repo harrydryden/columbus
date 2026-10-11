@@ -104,12 +104,12 @@ def test_the_hash_follows_what_the_model_is_asked_and_nothing_else(monkeypatch):
     assert labels.labels_hash(edit("Fintech", proof_point="A proof.")) == base
     assert labels.labels_hash(edit("Hospitals", active=True)) == base  # Healthcare is listed either way
     assert labels.labels_hash(edit("CPA firms", active=True)) != base  # Professional Services becomes prospected
-    # A sheet without the definition column reads the build's lines: loading the column changes nothing the model
-    # reads, so no verdict goes stale for it (an edited line makes them all stale: the queue is asked again).
+    # The sheet is the definitions' one source (11 Oct 2026): a label with a blank line is an error, not the build's
+    # line, so the settings are not taken.
     tabs = default_tabs()
-    for r in tabs["Industries"]:
-        del r["definition"]
-    assert labels.labels_hash(validate_all(tabs)[0]) == base
+    tabs["Industries"][0]["definition"] = ""
+    settings, issues = validate_all(tabs)
+    assert settings is None and [e.column for e in issues["Industries"]] == ["definition"]
     monkeypatch.setattr(labels, "PROMPT_VERSION", "2026-10-08a")
     assert labels.labels_hash(DEFAULT) != base
 
@@ -208,27 +208,26 @@ HOLD_KEEPS = "; approving keeps Fintech"
        "industry uncertain: the model says Professional Services, switched off on the Industries tab (medium)"
        + HOLD_KEEPS)),
     # ... but a switched-off label in a group with its own label on is that group's label.
-    (TECH, verdict("Remote & hybrid teams", "low"), "required", D(TECH, TECH, "rules+model", "low", "label")),
-    # 9: no rules label.
+    (TECH, verdict("Remote & hybrid teams", "low"), "required",
+     D(TECH, TECH, "umbrella", "low", "group", reason=f"the model says {TECH} (low): the group's copy")),
+    # 9 (Harry, 11 Oct 2026): the model's label decides, whatever the rules say: its own copy when the model is sure,
+    # else its group's own label and copy.
     (None, verdict("Fintech", "high"), "required",
-     D("Fintech", TECH, "model", "high", "label", reason="no rules label; the model says Fintech (high)")),
+     D("Fintech", TECH, "model", "high", "label", reason="the model says Fintech (high)")),
     (None, verdict("Fintech", "medium"), "required",
-     D(None, None, "disputed", "medium", "general", "hold",
-       "industry uncertain: no rules label; the model says Fintech (medium); approving keeps no label")),
-    # 10: agreement, at any confidence.
-    ("Fintech", verdict("Fintech", "low"), "required", D("Fintech", TECH, "rules+model", "low", "label")),
-    # 11: within a group: the model when sure, else the group's own label and copy.
+     D(TECH, TECH, "umbrella", "medium", "group", reason="the model says Fintech (medium): the group's copy")),
+    ("Fintech", verdict("Fintech", "low"), "required",
+     D(TECH, TECH, "umbrella", "low", "group", reason="the model says Fintech (low): the group's copy")),
     ("Adtech & martech", verdict("Fintech", "high"), "required",
-     D("Fintech", TECH, "model", "high", "label", reason="the rules said Adtech & martech; the model says Fintech (high)")),
+     D("Fintech", TECH, "model", "high", "label", reason="the model says Fintech (high)")),
     ("Adtech & martech", verdict("Fintech", "medium"), "required",
-     D(TECH, TECH, "umbrella", "medium", "group", reason="the rules say Adtech & martech, the model says Fintech (medium)")),
-    # 12: across groups: the model when sure, else the rules' label with General copy, flagged, not held.
+     D(TECH, TECH, "umbrella", "medium", "group", reason="the model says Fintech (medium): the group's copy")),
     ("Advertising agencies", verdict("Fintech", "high"), "required",
-     D("Fintech", TECH, "model", "high", "label",
-       reason="the rules said Advertising agencies; the model says Fintech (high)")),
+     D("Fintech", TECH, "model", "high", "label", reason="the model says Fintech (high)")),
+    # 10: unsure, in a group with no label of its own switched on: General copy.
     ("Healthtech", verdict("Digital health", "medium"), "required",
-     D("Healthtech", TECH, "disputed", "medium", "general",
-       reason="the rules say Healthtech, the model says Digital health (medium)")),
+     D("Digital health", "Healthcare", "disputed", "medium", "general",
+       reason="the model says Digital health (medium): General copy")),
 ])
 def test_the_decision_rule(rules, v, mode, want):
     assert labels.decide(ind(rules) if rules else None, v, DEFAULT, mode=mode) == want
@@ -245,7 +244,7 @@ def test_within_a_group_whose_own_label_is_off_a_doubt_gets_general_copy():
     rows = tuple(dataclasses.replace(i, active=True) if i.industry == "Hospitals" else i for i in DEFAULT.industries)
     s = dataclasses.replace(DEFAULT, industries=rows)  # Healthcare's own label stays off
     d = labels.decide(ind("Digital health", s), verdict("Hospitals", "medium"), s)
-    assert (d.label, d.source, d.copy, d.action) == ("Digital health", "disputed", "general", "verify")
+    assert (d.label, d.source, d.copy, d.action) == ("Hospitals", "disputed", "general", "verify")
 
 
 def test_a_hold_reads_the_same_whatever_the_quote_so_a_cleared_hand_check_stays_cleared():
@@ -297,7 +296,7 @@ def test_apply_writes_the_changed_columns_and_one_fact_per_new_decision():
         "rules": "Adtech & martech", "rules_group": TECH, "model": "Fintech", "confidence": "medium",
         "entity": "company", "evidence": "payments", "evidence_verified": False, "what_they_do": "payments software",
         "decision": {"label": TECH, "group": TECH, "source": "umbrella", "copy": "group", "action": "verify",
-                     "reason": "the rules say Adtech & martech, the model says Fintech (medium)"},
+                     "reason": "the model says Fintech (medium): the group's copy"},
         "labels_hash": "h1", "model_id": "claude-sonnet-5-5", "prompt_version": labels.PROMPT_VERSION, "asked": True,
     }
     assert labels.latest_verdict(ctx.store.select("signal_events")) == fact["value"]
@@ -391,8 +390,9 @@ def test_a_verdict_short_of_high_is_asked_again_once_the_home_page_is_read():
     redone = [*read, stored_verdict(ch, "medium", at=t2, asked=False)]
     assert labels.second_look(redone)
     # A sure verdict needs no page; a page read before the verdict was asked is not new; nor is a page saying nothing.
+    # A sure verdict wants the page too (11 Oct 2026: it earns the label's own copy only with it).
     sure = [*EVENTS, stored_verdict(ch, "high", at=t0)]
-    assert not labels.wants_home_page(sure) and not labels.second_look([*sure, home(t1)])
+    assert labels.wants_home_page(sure) and labels.second_look([*sure, home(t1)])
     assert not labels.second_look([*EVENTS, home(t0 - timedelta(days=1)), stored_verdict(ch, "medium", at=t0)])
     empty = [*unsure, home(t1, {})]
     assert not labels.second_look(empty) and not labels.wants_home_page(empty)  # read once, found nothing
@@ -747,14 +747,15 @@ def test_a_stored_verdict_is_written_and_read_in_one_shape():
 
 
 def test_a_label_the_model_gives_alone_needs_the_home_page_for_its_own_copy():
-    """10 Oct 2026, the 95% target: the model sure, the rules silent or saying another label, gets the label's own copy
-    only when it read the home page; from Apollo's facts alone, its group's own label and copy."""
+    """10 Oct 2026, the 95% target: the model sure gets the label's own copy only when it read the home page; from
+    Apollo's facts alone, its group's own label and copy."""
     v = verdict("Fintech", "high")
     for rules in (None, ind("Advertising agencies")):
         with_page = labels.decide(rules, v, DEFAULT, page=True)
         alone = labels.decide(rules, v, DEFAULT, page=False)
         assert (with_page.label, with_page.source, with_page.copy) == ("Fintech", labels.MODEL, labels.LABEL_COPY)
         assert (alone.label, alone.source, alone.copy) == ("Technology & Startups", labels.UMBRELLA, labels.GROUP_COPY)
-        assert alone.action == labels.VERIFY and "until its home page is read" in alone.reason
-    agreed = labels.decide(ind("Fintech"), v, DEFAULT, page=False)  # the rules agree: no page needed
-    assert (agreed.source, agreed.copy) == (labels.AGREED, labels.LABEL_COPY)
+        assert alone.action == labels.VERIFY and "from Apollo's facts alone" in alone.reason
+    # The rules agreeing makes no difference (11 Oct 2026): they only source companies.
+    agreed = labels.decide(ind("Fintech"), v, DEFAULT, page=False)
+    assert (agreed.source, agreed.copy) == (labels.UMBRELLA, labels.GROUP_COPY)

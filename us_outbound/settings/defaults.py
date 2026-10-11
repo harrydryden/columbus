@@ -688,22 +688,6 @@ def _industries() -> list[dict[str, str]]:
     return _csv_rows(INDUSTRIES_FILE, "Industries")
 
 
-_DEFINITIONS: dict[str, str] | None = None
-
-
-def bundled_definitions() -> dict[str, str]:
-    """Industries label (casefolded) -> the build's one-line definition from data/industries.csv (Harry, 7 Oct 2026).
-
-    validate.py gives a label with a blank definition cell, or a sheet without the column, the build's line, so the
-    model's label check (labels.py) works before the column reaches the sheet, and loading it changes nothing the
-    check reads unless Harry has edited a line."""
-    global _DEFINITIONS
-    if _DEFINITIONS is None:
-        _DEFINITIONS = {r["industry"].strip().casefold(): " ".join(r["definition"].split()) for r in _industries()
-                        if r["definition"].strip()}  # spaces folded, as validate.py folds a sheet cell
-    return _DEFINITIONS
-
-
 # -- Focus (Harry, 30 Sep 2026; the shares at launch from the design review, Appendix A.4) -------------
 
 _FOCUS: list[tuple[str, str, str]] = [

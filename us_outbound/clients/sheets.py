@@ -15,7 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from us_outbound.clients.guard import SETTINGS_SHEET_TITLE, Op
-from us_outbound.clients.http import HttpClient
+from us_outbound.clients.http import ApiError, HttpClient
 from us_outbound.clients.http import quote_segment as _quote  # tab names hold spaces and en dashes
 from us_outbound.logs import log
 
@@ -101,6 +101,17 @@ class Sheets(HttpClient):
         ranges = body.get("valueRanges", [])
         # valueRanges come back in the order requested.
         return {tab: rows_to_dicts(ranges[i].get("values", []) if i < len(ranges) else []) for i, tab in enumerate(tabs)}
+
+    def tab_ids(self, sheet_id: str) -> dict[str, int]:
+        """Each tab's numeric id (its gid, which a link opens on), by title."""
+        body = self.request(
+            "GET",
+            f"/{sheet_id}",
+            Op("spreadsheet.get", target=sheet_id, detail={"fields": "sheets.properties"}),
+            params={"fields": "sheets.properties(sheetId,title)"},
+        ) or {}
+        return {s["properties"]["title"]: int(s["properties"]["sheetId"]) for s in body.get("sheets", [])
+                if "title" in s.get("properties", {})}
 
     # -- writes ----------------------------------------------------------------
 
@@ -280,3 +291,27 @@ class Sheets(HttpClient):
             return None
         log("settings_sheet_created", spreadsheet_id=body.get("spreadsheetId"), url=body.get("spreadsheetUrl"))
         return body.get("spreadsheetId")
+
+
+# -- whole tabs the jobs write (the crosswalk, the label sample, the definition suggestions) ---------------------
+
+
+def read_tab(sheets: Any, sheet_id: str, tab: str) -> list[dict[str, str]] | None:
+    """The tab's rows, or None when the sheet has no such tab (the Sheets API answers that read with a 400)."""
+    try:
+        return sheets.read_tabs(sheet_id, [tab]).get(tab) or []
+    except ApiError as exc:
+        if exc.status != 400:
+            raise
+        return None
+
+
+def write_tab(sheets: Any, sheet_id: str, tab: str, columns: Sequence[str], cells: Sequence[Mapping[str, str]],
+              rows: list[dict[str, str]] | None) -> None:
+    """Rewrite the tab, adding it first when read_tab found none."""
+    if rows is None:
+        try:
+            sheets.add_tab(sheet_id, tab)
+        except Exception as exc:  # it is there, only empty
+            log("tab_exists", tab=tab, error=str(exc)[:120])
+    sheets.replace_tab(sheet_id, tab, columns, cells)

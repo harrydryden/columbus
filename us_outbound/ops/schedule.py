@@ -111,6 +111,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # leads in Instantly, so it needs --live, and like every job it stays dry until live_sending = yes
     # (ops/retention.py).
     ScheduledJob("retention", "40 0 * * *", live=True, enabled=True, timeout_minutes=30, phase=2),
+    # Harry, 11 Oct 2026: the labels judged by hand, a batch a month (ops/label_sample.py). The 1st at 09:15, after
+    # the daily post: last month's batch scored, this month's added to the Label sample tab, and both posted with a
+    # link to the tab. It writes the sheet and posts to the alert channel, so --live; no model, no credits.
+    ScheduledJob("label_sample_monthly", "15 9 1 * *", live=True, enabled=True, timeout_minutes=15, phase=2),
 )
 
 

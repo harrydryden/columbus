@@ -419,6 +419,16 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
   it found under **Sources**, with how the UK customers' searches did beside the US customers'.
   It spends at most 60 Apollo credits. `us-outbound run lookalike_leads` runs it by hand; a second
   run in the same month does nothing, since the customers are much the same.
+- **The 1st, 09:15 UK: the label sample** (`label_sample_monthly`). 25 companies we email or will
+  email, not judged before, are added to the Label sample tab, and a Slack post links to the tab
+  with last month's score (label right, group right, emails with an untrue pitch) and the score over
+  every batch. Type the right label in `your_verdict` for each. Judged rows are never redrawn: they
+  are the label check's answer key (`us-outbound labels eval --from-sample`). The same run drafts
+  definition changes for the labels the check confused (the writing model), scores the answer key
+  with and without them, and puts them on the Definition suggestions tab, linked from the post. Set
+  `decision` to approve or reject; the next settings sync (02:00, or 11:30 on weekdays) writes each
+  approved line into its label's `definition` on the Industries tab and dates `applied`. A changed
+  definition sends every company back through the label check, about $0.01 each.
 
 ## Where the data is
 
@@ -471,8 +481,8 @@ commands instead.
 | `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as `industry: Fintech` on a card does), or show its label and its check history |
 | `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` first reads the home page of each company whose label the page could settle: never checked, the model unsure, or a label the model gave without the rules agreeing (public pages, no paid service), and asks about those again with it. A label the model gives alone gets its own copy only once the model has read the page; until then the company gets its group's copy, then asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
 | `labels crosswalk`, `labels crosswalk --live` | How well the Industries tab translates Apollo's industry, NAICS codes and keyword tags into labels, measured on the companies whose label is known (your corrections, and the model's sure verdicts). It prints the translations that are mostly wrong ("naics 541613 → Marketing & Creative Agencies: 5 companies, 0% right; poor: mostly Adtech & martech"), those that place the group but not the label, and Apollo values the tab does not translate but could. `--live` also writes every row to a Crosswalk tab on the settings sheet. It asks no model and spends nothing |
-| `labels sample --live`, then `labels sample --score` | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed (`--size` for more), written to a Label sample tab with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); `--score` prints the share right with a 95% interval, how many emails would have carried a pitch that is not true, and, where the right label is known, how often our label, the rules and the model each had it. A tab that already holds a verdict is never redrawn. It asks no model and spends nothing |
-| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies approvers corrected). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
+| `labels sample --live`, then `labels sample --score` | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed (`--size` for more), added to the Label sample tab as this month's batch, under the rows already there, with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); `--score` prints the share right with a 95% interval, how many emails would have carried a pitch that is not true, and, where the right label is known, how often our label, the rules and the model each had it. Judged rows are never redrawn. It asks no model and spends nothing |
+| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies approvers corrected, `--from-sample` the companies judged on the Label sample tab, about $0.01 each). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |

@@ -145,7 +145,7 @@ def test_a_dry_run_load_of_industries_says_every_cell_it_would_change():
     [tab] = out["tabs"]
     assert out["dry_run"] is True and tab["new_columns"] == ["definition"]  # the real client's guard skips the write
     changes = tab["changes"]
-    assert tab["cells_changed"] == len(changes) == 50 + 3 + 1  # the definitions, the trims, Harry's FAQ line
+    assert tab["cells_changed"] == len(changes) == 108 + 3 + 1  # the definitions, the trims, Harry's FAQ line
     assert ("AI & deep tech: naics_prefixes: '5112; 513210; 5415; 518210; 541715; 541713' → "
             "'5112; 513210; 5415; 518210'") in changes
     assert "Games studios: naics_prefixes: '513210; 5112; 541511' → '513210; 5112'" in changes
@@ -163,7 +163,7 @@ def test_keep_holds_the_sheets_value_in_a_column_for_one_load():
     ctx = world(live_industries(), live=True)
     out = loader.load(ctx, ["Industries"], keep=["page_faqs"])
     [tab] = out["tabs"]
-    assert not any("page_faqs" in c for c in tab["changes"]) and tab["cells_changed"] == 53
+    assert not any("page_faqs" in c for c in tab["changes"]) and tab["cells_changed"] == 111
     rows = {r["industry"]: r for r in ctx.clients.sheets.written["Industries"]}
     assert "setup takes minutes" in rows["Technology & Startups"]["page_faqs"]  # Harry's line stays
     assert rows["Games studios"]["naics_prefixes"] == "513210; 5112" and rows["Fintech"]["definition"]

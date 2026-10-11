@@ -72,7 +72,8 @@ SPEC: dict[str, tuple[Col, ...]] = {
         Col("priority", parse=p.parse_int, default=Industry.priority),
         # The industry's spill.chat page, as material for its emails.
         *_cols(*(f"page_{f}" for f in PAGE_FIELDS), optional=True, since="2026-09-30"),
-        # What a company under the label is and is not, for the label check; a blank cell takes the build's line.
+        # What a company under the label is and is not, for the label check: the sheet is its one source, and a blank
+        # cell is an error (validate._industries; 11 Oct 2026).
         Col("definition", optional=True, since="2026-10-07"), NOTE,
     ),
     "States": (Col("state", key=True, parse=p.usps, required=True), Col("active", parse=p.parse_bool, required=True),

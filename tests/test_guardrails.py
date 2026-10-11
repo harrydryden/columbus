@@ -536,6 +536,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
     },
     "Sheets": {
         "read_tabs": lambda c, w: c.read_tabs(SHEET, ["General"]),
+        "tab_ids": lambda c, w: c.tab_ids(SHEET),
         "append_rows": lambda c, w: c.append_rows(SHEET, "Mailboxes", [{"address": "new@meetspill.org", "status": "Warming"}]),
         "update_cell": lambda c, w: c.update_cell(SHEET, "Mailboxes", {"address": "hannah@meetspill.org"}, "status", "Active"),
         "update_rows": lambda c, w: c.update_rows(SHEET, "Mailboxes", "address", {"hannah@meetspill.org": {"status": "Active"}}),

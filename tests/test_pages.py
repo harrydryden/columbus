@@ -696,11 +696,12 @@ def test_the_nightly_run_reads_only_the_home_page_of_a_company_the_model_was_uns
         *(_read_fact(a["account_id"], "read", when=NOW - timedelta(days=30)) for a in rows),  # not due a careers read
         _verdict("unsure", "medium"), _verdict("sure", "high"), _verdict("refuses", "low")])
     out = pages.run(ctx)
-    assert out["home_pages"] == {"accounts": 2, "said_what_they_do": 1, "said_nothing": 0, "blocked": 1, "error": 0,
+    # Every verdict asked without the page wants it (11 Oct 2026: a sure one earns the label's own copy only with it).
+    assert out["home_pages"] == {"accounts": 3, "said_what_they_do": 2, "said_nothing": 0, "blocked": 1, "error": 0,
                                  "not_reached": 0}
     assert out["candidates"] == 0  # no careers read is due
-    assert web.urls() == ["https://unsure.com/robots.txt", "https://unsure.com/", "https://refuses.com/robots.txt",
-                          "https://refuses.com/"]
+    assert web.urls() == ["https://unsure.com/robots.txt", "https://unsure.com/", "https://sure.com/robots.txt",
+                          "https://sure.com/", "https://refuses.com/robots.txt", "https://refuses.com/"]
     [page] = events(ctx, "unsure", fact="home_page")
     assert page["value"]["title"] == "Acme" and page["source_url"] == "https://unsure.com/"
     assert len(events(ctx, "unsure", fact="page_read")) == 1 and events(ctx, "unsure", fact="read_status") == []

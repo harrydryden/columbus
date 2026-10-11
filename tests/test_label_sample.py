@@ -56,21 +56,83 @@ def test_each_row_says_what_we_would_send_and_how_it_was_decided():
     assert checked["your_verdict"] == checked["right_label"] == ""
 
 
-def test_live_writes_the_tab_and_never_overwrites_verdicts():
+def test_a_batch_is_added_under_the_rows_already_there_and_never_redraws_them():
     dry = world()
     out = ls.run(dry)
     assert (out["drawn"], out["tab_written"], dry.clients.sheets.writes) == (50, False, [])
 
     live = world(live=True)
-    assert ls.run(live)["tab_written"]
+    first = ls.run(live)
+    assert first["tab_written"] and first["batch"] == "2026-10"
     assert live.clients.sheets.writes == [f"add {ls.TAB}", f"replace {ls.TAB}"]
     tab = live.clients.sheets.tabs[ls.TAB]
-    assert len(tab) == 50 and list(tab[0]) == ls.COLUMNS
+    assert len(tab) == 50 and list(tab[0]) == ls.COLUMNS and {r["batch"] for r in tab} == {"2026-10"}
 
     tab[0]["your_verdict"] = "right"
-    again = ls.run(live)
-    assert (again["tab_written"], again["verdicts_kept"]) == (False, 1)
-    assert live.clients.sheets.tabs[ls.TAB][0]["your_verdict"] == "right"
+    judged = tab[0]["domain"]
+    again = ls.run(live, 10)
+    assert (again["tab_written"], again["drawn"], again["verdicts_kept"]) == (True, 10, 1)
+    tab = live.clients.sheets.tabs[ls.TAB]
+    assert len(tab) == 60 and tab[0]["domain"] == judged and tab[0]["your_verdict"] == "right"
+    assert len({r["domain"] for r in tab}) == 60  # none drawn twice
+
+
+def test_rows_from_before_the_batch_column_are_the_first_batch():
+    live = world(live=True)
+    live.clients.sheets.tabs[ls.TAB] = [{"domain": "a001.com", "your_verdict": "Fintech"}]
+    out = ls.add_batch(live, 2, "2026-11")
+    assert [(r["batch"], r["domain"], r["your_verdict"]) for r in out["on_tab"]][0] == ("2026-10", "a001.com", "Fintech")
+    assert [r["batch"] for r in out["on_tab"][1:]] == ["2026-11", "2026-11"]
+
+
+def test_the_monthly_job_scores_last_month_adds_this_months_and_posts_a_link_to_the_tab(monkeypatch):
+    from us_outbound.base import notify
+
+    posts: list[str] = []
+    monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
+    live = world(live=True)
+    ls.run(live)  # October's 50
+    for r in live.clients.sheets.tabs[ls.TAB][:40]:
+        r["your_verdict"] = r["our_label"]  # all right
+    live.clients.sheets.gids = {ls.TAB: 1234}
+    live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
+    out = ls.monthly(live)
+    assert (out["batch"], out["drawn"], out["last_batch"]) == ("2026-11", 25, "2026-10")
+    assert (out["last"]["judged"], out["last"]["label_right"]) == (40, 40)
+    assert len(live.clients.sheets.tabs[ls.TAB]) == 75
+    [text] = posts
+    sheet = live.guard.bounds.settings_sheet_id
+    assert f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=1234|Label sample tab>" in text
+    assert "25 new companies to judge (2026-11)" in text
+    assert "Last month (2026-10): 40 of 50 judged · label right 100% · group right 100% · untrue pitch 0%" in text
+    assert "10 of last month's companies are not judged yet." in text
+    # Every row was judged right (its own label), but the model said Fintech of the tech ones: the misses get drafts.
+    assert out["suggestions"]["misses"] > 0
+
+
+def test_the_monthly_post_links_the_definition_suggestions(monkeypatch):
+    from tests.test_definition_suggestions import Writer
+    from us_outbound import labels
+    from us_outbound.base import notify
+
+    posts: list[str] = []
+    monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
+    monkeypatch.setattr(labels, "evaluate", lambda c, rows: {labels.ACCEPTABLE: 8, labels.WRONG: 2, labels.UNSAFE: 0})
+    live = world(live=True)
+    ls.run(live)
+    for r in live.clients.sheets.tabs[ls.TAB]:
+        r["your_verdict"] = r["our_label"]
+    live.clients.sheets.gids = {ls.TAB: 1, "Definition suggestions": 2}
+    live.clients.claude = Writer([{"label": TECH, "definition": "A technology company with its own product.",
+                                   "why": "the Fintech misses"}])
+    live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
+    out = ls.monthly(live)
+    assert len(out["suggestions"]["suggestions"]) == 1
+    [text] = posts
+    sheet = live.guard.bounds.settings_sheet_id
+    assert (f"1 definition change drafted for the labels the check confused (Fintech, Technology & Startups): "
+            f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=2|Definition suggestions tab>") in text
+    assert "Set decision to approve or reject" in text
 
 
 def test_the_score_counts_right_labels_groups_and_wrong_pitches():
@@ -138,3 +200,29 @@ def test_the_score_needs_the_tab_and_the_reports_print(capsys):
     text = capsys.readouterr().out
     assert "10 of 50 companies judged." in text
     assert "Label right: 10 of 10 (100%; 95% interval 72% to 100%)" in text
+
+
+def test_the_judged_companies_join_the_eval_with_their_facts_and_home_page():
+    """Harry, 11 Oct 2026: every company judged by hand is scored by `labels eval --from-sample`, so a change to the
+    prompt or the definitions is tried on them first."""
+    from us_outbound import labels
+
+    ctx = world(live=True, n=4)
+    ls.run(ctx, 4)
+    tab = ctx.clients.sheets.tabs[ls.TAB]
+    tab[0]["your_verdict"] = "Fintech"  # a000: we said Technology & Startups
+    tab[1]["your_verdict"] = "right"  # a001: we said Fintech
+    tab[2]["your_verdict"] = "outside"  # no label to expect: left out of the eval
+    ctx.store.insert("signal_events", [
+        {"event_id": "a000-d", "account_id": "a000", "source": "apollo_org", "fact": "description",
+         "value": "Payments software.", "observed_at": AT},
+        {"event_id": "a000-h", "account_id": "a000", "source": "careers_pages", "fact": "home_page",
+         "value": {"title": "Company 0", "text": "Card payments for shops."}, "observed_at": AT}])
+    judged = ls.sample_rows(ctx)
+    assert [(d, i.industry) for d, i in judged] == [("a000.com", "Fintech"), ("a001.com", "Fintech")]
+    rows = labels.judged_rows(ctx, judged)
+    assert [r["expect"]["accept"] for r in rows] == [["Fintech", TECH], ["Fintech", TECH]]
+    assert rows[0]["description"] == "Payments software." and rows[0]["home"]["text"] == "Card payments for shops."
+    events = labels.gold_events(rows[0])
+    assert {e["fact"] for e in events} == {"description", "home_page"}
+    assert labels.Material.of({"domain": "a000.com"}, events).home  # the model is shown the page
