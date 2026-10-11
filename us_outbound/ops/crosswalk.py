@@ -29,7 +29,7 @@ from us_outbound import facts, labels
 from us_outbound.context import Context
 from us_outbound.industry.material import naics_codes, texts
 from us_outbound.logs import log
-from us_outbound.ops import label_sample as sample
+from us_outbound.clients.sheets import read_tab, write_tab
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.sources import apollo_universe as universe
@@ -247,7 +247,7 @@ def run(ctx: Context) -> dict[str, Any]:
     written = False
     if ctx.live and sheet_id:  # 10 Oct 2026: the first `crosswalk --live` stopped on the missing tab's 400
         sheets = ctx.clients.sheets
-        sample.write_tab(sheets, sheet_id, TAB, COLUMNS, cells, sample.read_tab(sheets, sheet_id, TAB))
+        write_tab(sheets, sheet_id, TAB, COLUMNS, cells, read_tab(sheets, sheet_id, TAB))
         written = True
     out.update(rows=len(cells), tab_written=written)
     log("labels_crosswalk", run_id=ctx.run_id, known=out["known"], rows=len(cells), written=written)

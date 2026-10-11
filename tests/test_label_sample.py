@@ -106,6 +106,33 @@ def test_the_monthly_job_scores_last_month_adds_this_months_and_posts_a_link_to_
     assert "25 new companies to judge (2026-11)" in text
     assert "Last month (2026-10): 40 of 50 judged · label right 100% · group right 100% · untrue pitch 0%" in text
     assert "10 of last month's companies are not judged yet." in text
+    # Every row was judged right (its own label), but the model said Fintech of the tech ones: the misses get drafts.
+    assert out["suggestions"]["misses"] > 0
+
+
+def test_the_monthly_post_links_the_definition_suggestions(monkeypatch):
+    from tests.test_definition_suggestions import Writer
+    from us_outbound import labels
+    from us_outbound.base import notify
+
+    posts: list[str] = []
+    monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
+    monkeypatch.setattr(labels, "evaluate", lambda c, rows: {labels.ACCEPTABLE: 8, labels.WRONG: 2, labels.UNSAFE: 0})
+    live = world(live=True)
+    ls.run(live)
+    for r in live.clients.sheets.tabs[ls.TAB]:
+        r["your_verdict"] = r["our_label"]
+    live.clients.sheets.gids = {ls.TAB: 1, "Definition suggestions": 2}
+    live.clients.claude = Writer([{"label": TECH, "definition": "A technology company with its own product.",
+                                   "why": "the Fintech misses"}])
+    live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
+    out = ls.monthly(live)
+    assert len(out["suggestions"]["suggestions"]) == 1
+    [text] = posts
+    sheet = live.guard.bounds.settings_sheet_id
+    assert (f"1 definition change drafted for the labels the check confused (Fintech, Technology & Startups): "
+            f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=2|Definition suggestions tab>") in text
+    assert "Set decision to approve or reject" in text
 
 
 def test_the_score_counts_right_labels_groups_and_wrong_pitches():

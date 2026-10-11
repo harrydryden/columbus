@@ -423,8 +423,12 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
   email, not judged before, are added to the Label sample tab, and a Slack post links to the tab
   with last month's score (label right, group right, emails with an untrue pitch) and the score over
   every batch. Type the right label in `your_verdict` for each. Judged rows are never redrawn: they
-  are the label check's answer key (`us-outbound labels eval --from-sample`). The draft definition
-  changes for last month's misses arrive on the Definition suggestions tab the same morning.
+  are the label check's answer key (`us-outbound labels eval --from-sample`). The same run drafts
+  definition changes for the labels the check confused (the writing model), scores the answer key
+  with and without them, and puts them on the Definition suggestions tab, linked from the post. Set
+  `decision` to approve or reject; the next settings sync (02:00, or 11:30 on weekdays) writes each
+  approved line into its label's `definition` on the Industries tab and dates `applied`. A changed
+  definition sends every company back through the label check, about $0.01 each.
 
 ## Where the data is
 

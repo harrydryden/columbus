@@ -34,6 +34,7 @@ from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.logs import log
+from us_outbound.settings.definitions import apply_approved
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings import spec
 from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
@@ -288,6 +289,9 @@ def run(ctx: Context) -> dict:
     if not sheet_id:
         raise RuntimeError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID (bootstrap() creates the sheet)")
     now = ctx.now
+    # Definition changes Harry approved on the Definition suggestions tab go onto the Industries tab first, so the
+    # sheet stays their one source and this run reads them (11 Oct 2026).
+    definitions = apply_approved(ctx, sheet_id)
     sheet = read_sheet(ctx, sheet_id)
     in_force, stale = _in_force(ctx.store)
     stored = _stored(in_force)
@@ -339,6 +343,7 @@ def run(ctx: Context) -> dict:
 
     summary = {
         "sheet_id": sheet_id,
+        "definitions_applied": definitions["applied"],
         "tabs": tabs,
         "rows_opened": opened_total,
         "rows_closed": closed_total,

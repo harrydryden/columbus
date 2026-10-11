@@ -23,9 +23,10 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from us_outbound import labels
-from us_outbound.clients.http import ApiError
+from us_outbound import fmt, labels
+from us_outbound.clients.sheets import read_tab, write_tab
 from us_outbound.context import Context
+from us_outbound.learn import definition_suggestions
 from us_outbound.logs import log
 from us_outbound.settings.model import Industry, Settings
 
@@ -37,32 +38,11 @@ MONTHLY = 25
 SEED = "label-sample"  # the same accounts and batch draw the same companies
 EMAILED = ("verified", "enrolled", "engaged", "demo_requested", "demo_booked")
 RIGHT, RIGHT_GROUP, WRONG_GROUP, OUTSIDE = VERDICTS = ("right", "right group", "wrong group", "outside")
-COLUMNS = ["batch", "domain", "company", "website", "they_do", "our_label", "our_group", "copy", "decided_by", "rules_said",
-           "model_said", "your_verdict", "right_label", "note"]
+COLUMNS = ["batch", "domain", "company", "website", "they_do", "our_label", "our_group", "copy", "decided_by",
+           "rules_said", "model_said", "your_verdict", "right_label", "note"]
 # What a verdict means for the pitch: the copy a company gets is wrong when it says more than the verdict allows.
 WRONG_PITCH = {labels.LABEL_COPY: {RIGHT_GROUP, WRONG_GROUP, OUTSIDE}, labels.GROUP_COPY: {WRONG_GROUP, OUTSIDE},
                labels.GENERAL_COPY_LEVEL: set()}
-
-
-def read_tab(sheets: Any, sheet_id: str, tab: str) -> list[dict[str, str]] | None:
-    """The tab's rows, or None when the sheet has no such tab (the Sheets API answers that read with a 400)."""
-    try:
-        return sheets.read_tabs(sheet_id, [tab]).get(tab) or []
-    except ApiError as exc:
-        if exc.status != 400:
-            raise
-        return None
-
-
-def write_tab(sheets: Any, sheet_id: str, tab: str, columns: Sequence[str], cells: Sequence[Mapping[str, str]],
-              rows: list[dict[str, str]] | None) -> None:
-    """Rewrite the tab, adding it first when read_tab found none."""
-    if rows is None:
-        try:
-            sheets.add_tab(sheet_id, tab)
-        except Exception as exc:  # it is there, only empty
-            log("sample_tab_exists", tab=tab, error=str(exc)[:120])
-    sheets.replace_tab(sheet_id, tab, columns, cells)
 
 
 def batch_name(ctx: Context) -> str:
@@ -295,9 +275,22 @@ def monthly(ctx: Context) -> dict[str, Any]:
         unjudged = sum(1 for r in last_rows if not str(r.get("your_verdict") or "").strip())
         if unjudged:
             lines.append(f"• {unjudged} of last month's companies are not judged yet.")
+    judged_rows = [r for r in rows if r["batch"] != batch]
+    answer_key = labels.gold_rows() + labels.judged_rows(ctx, judged(judged_rows, ctx.settings))
+    suggested = definition_suggestions.suggest(ctx, judged_rows, answer_key, batch)
+    if suggested["suggestions"]:
+        better = "better" if suggested.get("better") else "not better, so check before approving"
+        changes = fmt.plural(len(suggested["suggestions"]), "definition change")
+        lines.append(f"• {changes} drafted for the labels the check confused ({', '.join(suggested['labels'])}):"
+                     f" <{tab_link(ctx, definition_suggestions.TAB)}|Definition "
+                     f"suggestions tab>. The answer key scores {suggested['now']} now and {suggested['later']} with "
+                     f"them ({better}). Set decision to approve or reject; approved ones go onto the Industries tab at "
+                     "the next settings sync, and every company is checked again under them.")
+    elif suggested["error"]:
+        lines.append(f"• Definition suggestions: {suggested['error']}.")
     posted = notify.alert(ctx, "\n".join(lines))
     out = {**added, "last_batch": last, "last": scored_last, "all": scored_all, "link": link,
-           "posted": posted.get("posted")}
+           "suggestions": suggested, "posted": posted.get("posted")}
     log(MONTHLY_JOB, run_id=ctx.run_id, batch=batch, drawn=added["drawn"], last_judged=scored_last["judged"],
         all_judged=scored_all["judged"], posted=posted.get("posted"))
     return out
