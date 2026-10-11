@@ -56,21 +56,56 @@ def test_each_row_says_what_we_would_send_and_how_it_was_decided():
     assert checked["your_verdict"] == checked["right_label"] == ""
 
 
-def test_live_writes_the_tab_and_never_overwrites_verdicts():
+def test_a_batch_is_added_under_the_rows_already_there_and_never_redraws_them():
     dry = world()
     out = ls.run(dry)
     assert (out["drawn"], out["tab_written"], dry.clients.sheets.writes) == (50, False, [])
 
     live = world(live=True)
-    assert ls.run(live)["tab_written"]
+    first = ls.run(live)
+    assert first["tab_written"] and first["batch"] == "2026-10"
     assert live.clients.sheets.writes == [f"add {ls.TAB}", f"replace {ls.TAB}"]
     tab = live.clients.sheets.tabs[ls.TAB]
-    assert len(tab) == 50 and list(tab[0]) == ls.COLUMNS
+    assert len(tab) == 50 and list(tab[0]) == ls.COLUMNS and {r["batch"] for r in tab} == {"2026-10"}
 
     tab[0]["your_verdict"] = "right"
-    again = ls.run(live)
-    assert (again["tab_written"], again["verdicts_kept"]) == (False, 1)
-    assert live.clients.sheets.tabs[ls.TAB][0]["your_verdict"] == "right"
+    judged = tab[0]["domain"]
+    again = ls.run(live, 10)
+    assert (again["tab_written"], again["drawn"], again["verdicts_kept"]) == (True, 10, 1)
+    tab = live.clients.sheets.tabs[ls.TAB]
+    assert len(tab) == 60 and tab[0]["domain"] == judged and tab[0]["your_verdict"] == "right"
+    assert len({r["domain"] for r in tab}) == 60  # none drawn twice
+
+
+def test_rows_from_before_the_batch_column_are_the_first_batch():
+    live = world(live=True)
+    live.clients.sheets.tabs[ls.TAB] = [{"domain": "a001.com", "your_verdict": "Fintech"}]
+    out = ls.add_batch(live, 2, "2026-11")
+    assert [(r["batch"], r["domain"], r["your_verdict"]) for r in out["on_tab"]][0] == ("2026-10", "a001.com", "Fintech")
+    assert [r["batch"] for r in out["on_tab"][1:]] == ["2026-11", "2026-11"]
+
+
+def test_the_monthly_job_scores_last_month_adds_this_months_and_posts_a_link_to_the_tab(monkeypatch):
+    from us_outbound.base import notify
+
+    posts: list[str] = []
+    monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
+    live = world(live=True)
+    ls.run(live)  # October's 50
+    for r in live.clients.sheets.tabs[ls.TAB][:40]:
+        r["your_verdict"] = r["our_label"]  # all right
+    live.clients.sheets.gids = {ls.TAB: 1234}
+    live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
+    out = ls.monthly(live)
+    assert (out["batch"], out["drawn"], out["last_batch"]) == ("2026-11", 25, "2026-10")
+    assert (out["last"]["judged"], out["last"]["label_right"]) == (40, 40)
+    assert len(live.clients.sheets.tabs[ls.TAB]) == 75
+    [text] = posts
+    sheet = live.guard.bounds.settings_sheet_id
+    assert f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=1234|Label sample tab>" in text
+    assert "25 new companies to judge (2026-11)" in text
+    assert "Last month (2026-10): 40 of 50 judged · label right 100% · group right 100% · untrue pitch 0%" in text
+    assert "10 of last month's companies are not judged yet." in text
 
 
 def test_the_score_counts_right_labels_groups_and_wrong_pitches():

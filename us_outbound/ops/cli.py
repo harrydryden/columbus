@@ -170,6 +170,8 @@ JOBS: dict[str, str] = {
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
     "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
+    # Harry, 11 Oct 2026: a batch of companies to judge by hand each month, last month's scored, to Slack.
+    "label_sample_monthly": "us_outbound.ops.label_sample:monthly",
 }
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 

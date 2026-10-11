@@ -1,15 +1,15 @@
-"""A random sample of labelled companies for Harry to judge by hand (Harry, 10 Oct 2026: "pull the 50-company
-sample"), so the labels' accuracy is measured against a person, not against the label check itself.
+"""Labelled companies judged by hand, a batch a month (Harry, 10 Oct 2026: "pull the 50-company sample"; 11 Oct:
+"the model classification can continuously improve over time"), so the labels' accuracy is measured against a person,
+not against the label check itself, and the judged companies become the label check's answer key.
 
-The crosswalk measures the rules against the companies whose label is known, and those are mostly the model's own
-sure verdicts; the gold set is 13 companies. This is the independent number:
-  * `us-outbound labels sample [--size 50] [--live]` draws the companies at random from those that are, or will be,
-    emailed (verified onwards, with a label) and, with --live, writes them to the Label sample tab: the company, its
-    site, what it does, the label and copy we would use and how it was decided, and three empty columns for Harry.
-    It never overwrites a tab that already holds a verdict.
-  * Harry fills your_verdict with the right label, or one of VERDICTS (and right_label when ours is wrong).
-  * `us-outbound labels sample --score` reads the tab back and prints the share right, with a 95% interval, and how
-    many of the emails would have carried the wrong pitch for the copy the company gets.
+  * The Label sample tab on the settings sheet holds every batch: the company, its site, what it does, the label and
+    copy we use and how it was decided, and three columns for Harry (your_verdict: the right label, or one of
+    VERDICTS; right_label; note). A batch is never redrawn: judged rows stay, as the answer key.
+  * `label_sample_monthly` (the 1st of each month, 09:15) scores last month's batch, adds a new one of MONTHLY
+    companies not on the tab yet, and posts both to Slack with a link to the tab. The draft definition changes for
+    the misses follow (learn/definition_suggestions.py).
+  * `us-outbound labels sample [--size 50] [--live]` adds a batch now; `--score` scores every batch.
+  * `us-outbound labels eval --from-sample` scores the model on every judged company (labels.judged_rows).
 
 Read-only otherwise: no model is asked, no credit spent, no company or card changed. settings_sync does not read
 the tab.
@@ -30,12 +30,14 @@ from us_outbound.logs import log
 from us_outbound.settings.model import Industry, Settings
 
 JOB = "labels_sample"
+MONTHLY_JOB = "label_sample_monthly"
 TAB = "Label sample"
-SIZE = 50
-SEED = "label-sample"  # the same accounts draw the same sample
+SIZE = 50  # the first batch (Harry judged 50 on 11 Oct 2026)
+MONTHLY = 25
+SEED = "label-sample"  # the same accounts and batch draw the same companies
 EMAILED = ("verified", "enrolled", "engaged", "demo_requested", "demo_booked")
 RIGHT, RIGHT_GROUP, WRONG_GROUP, OUTSIDE = VERDICTS = ("right", "right group", "wrong group", "outside")
-COLUMNS = ["domain", "company", "website", "they_do", "our_label", "our_group", "copy", "decided_by", "rules_said",
+COLUMNS = ["batch", "domain", "company", "website", "they_do", "our_label", "our_group", "copy", "decided_by", "rules_said",
            "model_said", "your_verdict", "right_label", "note"]
 # What a verdict means for the pitch: the copy a company gets is wrong when it says more than the verdict allows.
 WRONG_PITCH = {labels.LABEL_COPY: {RIGHT_GROUP, WRONG_GROUP, OUTSIDE}, labels.GROUP_COPY: {WRONG_GROUP, OUTSIDE},
@@ -63,11 +65,19 @@ def write_tab(sheets: Any, sheet_id: str, tab: str, columns: Sequence[str], cell
     sheets.replace_tab(sheet_id, tab, columns, cells)
 
 
-def draw(ctx: Context, size: int = SIZE, seed: str = SEED) -> list[dict[str, str]]:
-    """`size` companies at random from those emailed or to be emailed, as the tab's rows (empty verdict columns)."""
-    accounts = [a for a in ctx.store.select("accounts", {"status": list(EMAILED)}) if str(a.get("industry") or "")]
+def batch_name(ctx: Context) -> str:
+    """This month's batch, "2026-11" (UK time)."""
+    return ctx.today_uk().strftime("%Y-%m")
+
+
+def draw(ctx: Context, size: int = SIZE, seed: str = SEED, *, batch: str = "",
+         exclude: frozenset[str] = frozenset()) -> list[dict[str, str]]:
+    """`size` companies at random from those emailed or to be emailed and not in `exclude` (domains), as the tab's
+    rows (empty verdict columns)."""
+    accounts = [a for a in ctx.store.select("accounts", {"status": list(EMAILED)})
+                if str(a.get("industry") or "") and str(a.get("domain") or "") not in exclude]
     accounts.sort(key=lambda a: str(a["account_id"]))
-    chosen = random.Random(seed).sample(accounts, min(size, len(accounts)))
+    chosen = random.Random(f"{seed}:{batch}" if batch else seed).sample(accounts, min(size, len(accounts)))
     ids = [str(a["account_id"]) for a in chosen]
     checks: dict[str, list[dict]] = {}
     if ids:
@@ -81,8 +91,8 @@ def draw(ctx: Context, size: int = SIZE, seed: str = SEED) -> list[dict[str, str
         domain = str(a.get("domain") or "")
         conf = str(a.get("label_confidence") or "")
         out.append({
-            "domain": domain, "company": str(a.get("clean_name") or domain), "website": f"https://{domain}",
-            "they_do": (v.what_they_do or v.evidence) if v else "",
+            "batch": batch, "domain": domain, "company": str(a.get("clean_name") or domain),
+            "website": f"https://{domain}", "they_do": (v.what_they_do or v.evidence) if v else "",
             "our_label": str(a.get("industry") or ""), "our_group": str(a.get("industry_group") or ""),
             "copy": labels.copy_level(a),
             "decided_by": str(a.get("label_source") or "not checked") + (f" ({conf})" if conf else ""),
@@ -93,19 +103,31 @@ def draw(ctx: Context, size: int = SIZE, seed: str = SEED) -> list[dict[str, str
     return out
 
 
-def run(ctx: Context, size: int = SIZE) -> dict[str, Any]:
-    """`us-outbound labels sample`: draw, and with --live write the tab, unless it already holds verdicts."""
-    cells = draw(ctx, size)
+FIRST_BATCH = "2026-10"  # rows written before the batch column (Harry's first 50)
+
+
+def add_batch(ctx: Context, size: int, batch: str) -> dict[str, Any]:
+    """Draw `size` companies not on the tab yet and, with --live, write them under the rows already there, which are
+    kept as they are (a judged row is the answer key). Returns what was drawn and the rows now on the tab."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
-    written, kept = False, 0
-    if ctx.live and sheet_id:
-        rows = read_tab(ctx.clients.sheets, sheet_id, TAB)
-        kept = sum(1 for r in rows or [] if str(r.get("your_verdict") or "").strip())
-        if not kept:
-            write_tab(ctx.clients.sheets, sheet_id, TAB, COLUMNS, cells, rows)
-            written = True
-    log(JOB, run_id=ctx.run_id, drawn=len(cells), written=written, kept=kept)
-    return {"drawn": len(cells), "rows": cells, "tab_written": written, "verdicts_kept": kept}
+    rows = read_tab(ctx.clients.sheets, sheet_id, TAB) if sheet_id else None
+    kept = [{c: str(r.get(c) or (FIRST_BATCH if c == "batch" else "")) for c in COLUMNS} for r in rows or []
+            if str(r.get("domain") or "").strip()]
+    cells = draw(ctx, size, batch=batch, exclude=frozenset(r["domain"] for r in kept))
+    written = False
+    if ctx.live and sheet_id and cells:
+        write_tab(ctx.clients.sheets, sheet_id, TAB, COLUMNS, [*kept, *cells], rows)
+        written = True
+    log(JOB, run_id=ctx.run_id, batch=batch, drawn=len(cells), written=written, kept=len(kept))
+    return {"batch": batch, "drawn": len(cells), "rows": cells, "tab_written": written,
+            "verdicts_kept": sum(1 for r in kept if r["your_verdict"].strip()), "on_tab": [*kept, *cells]}
+
+
+def run(ctx: Context, size: int = SIZE) -> dict[str, Any]:
+    """`us-outbound labels sample`: add a batch of `size` now (this month's), with --live."""
+    out = add_batch(ctx, size, batch_name(ctx))
+    out.pop("on_tab")
+    return out
 
 
 def interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -214,3 +236,69 @@ def run_score(ctx: Context) -> dict[str, Any]:
     log(JOB + "_score", run_id=ctx.run_id, judged=out["judged"], label_right=out["label_right"],
         group_right=out["group_right"], wrong_pitch=out["wrong_pitch"])
     return out
+
+
+# -- the monthly batch (Harry, 11 Oct 2026) -----------------------------------------------------------------------
+
+
+def tab_link(ctx: Context, tab: str = TAB) -> str:
+    """The tab's web address, opening on the tab (its gid); the sheet's own when the tab's id cannot be read."""
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+    try:
+        gid = ctx.clients.sheets.tab_ids(sheet_id).get(tab)
+    except Exception as exc:  # the link still opens the sheet
+        log("sample_tab_id_failed", error=str(exc)[:160])
+        gid = None
+    return f"{base}#gid={gid}" if gid is not None else base
+
+
+def previous_batch(batch: str) -> str:
+    """The month before "2026-11": "2026-10"."""
+    year, month = (int(x) for x in batch.split("-"))
+    return f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
+
+
+def _share(k: int, n: int) -> str:
+    return f"{k / n:.0%}" if n else "-"
+
+
+def summary_line(name: str, out: Mapping[str, Any]) -> str:
+    """"October: 44 of 50 judged · label right 77% · group right 95% · untrue pitch 5%"."""
+    n = out["judged"]
+    if not n:
+        return f"{name}: none judged yet"
+    return (f"{name}: {n} of {out['rows']} judged · label right {_share(out['label_right'], n)} · group right "
+            f"{_share(out['group_right'], n)} · untrue pitch {_share(out['wrong_pitch'], n)}")
+
+
+def monthly(ctx: Context) -> dict[str, Any]:
+    """`label_sample_monthly`: score last month's batch and every batch, add this month's, and post both to Slack with
+    a link to the tab. In dry-run the batch is not written and the post goes to the dev channel."""
+    from us_outbound.base import notify
+
+    batch = batch_name(ctx)
+    last = previous_batch(batch)
+    added = add_batch(ctx, MONTHLY, batch)
+    rows = added.pop("on_tab")
+    last_rows = [r for r in rows if r["batch"] == last]
+    scored_last = score(last_rows, ctx.settings)
+    scored_all = score([r for r in rows if r["batch"] != batch], ctx.settings)
+    link = tab_link(ctx)
+    lines = [f"*Industry labels: this month's sample* · <{link}|Label sample tab>",
+             f"• {added['drawn']} new companies to judge ({batch}): type the right label in your_verdict, or right, "
+             "right group, wrong group or outside."]
+    if last_rows:
+        lines.append(f"• {summary_line(f'Last month ({last})', scored_last)}")
+    if scored_all["judged"]:
+        lines.append(f"• {summary_line('Every batch', scored_all)}")
+        unjudged = sum(1 for r in last_rows if not str(r.get("your_verdict") or "").strip())
+        if unjudged:
+            lines.append(f"• {unjudged} of last month's companies are not judged yet.")
+    posted = notify.alert(ctx, "\n".join(lines))
+    out = {**added, "last_batch": last, "last": scored_last, "all": scored_all, "link": link,
+           "posted": posted.get("posted")}
+    log(MONTHLY_JOB, run_id=ctx.run_id, batch=batch, drawn=added["drawn"], last_judged=scored_last["judged"],
+        all_judged=scored_all["judged"], posted=posted.get("posted"))
+    return out
+

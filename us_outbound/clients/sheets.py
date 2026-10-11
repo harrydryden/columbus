@@ -102,6 +102,17 @@ class Sheets(HttpClient):
         # valueRanges come back in the order requested.
         return {tab: rows_to_dicts(ranges[i].get("values", []) if i < len(ranges) else []) for i, tab in enumerate(tabs)}
 
+    def tab_ids(self, sheet_id: str) -> dict[str, int]:
+        """Each tab's numeric id (its gid, which a link opens on), by title."""
+        body = self.request(
+            "GET",
+            f"/{sheet_id}",
+            Op("spreadsheet.get", target=sheet_id, detail={"fields": "sheets.properties"}),
+            params={"fields": "sheets.properties(sheetId,title)"},
+        ) or {}
+        return {s["properties"]["title"]: int(s["properties"]["sheetId"]) for s in body.get("sheets", [])
+                if "title" in s.get("properties", {})}
+
     # -- writes ----------------------------------------------------------------
 
     def append_rows(self, sheet_id: str, tab: str, rows: Sequence[Mapping[str, str]]) -> None:
