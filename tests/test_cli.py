@@ -605,7 +605,8 @@ def test_start_goes_ahead_over_drift_held_for_leads_in_flight(capsys):
     h = held_world()
     assert h.run("start", "--live") == 0
     assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
-    assert "Campaign drift held, US Outbound – Sam Jackson: steps.1 would change 1 lead in flight." in capsys.readouterr().out
+    assert ("Sam Jackson's campaign: its settings in Instantly differ from ours (email 1's template), but "
+            "changing them now would also change the emails of 1 person part-way through.") in capsys.readouterr().out
     h.instantly.by_name(C_SAM)["open_tracking"] = True  # drift that is not held still refuses
     assert h.run("start", "--live") == 2
     assert "US Outbound – Sam Jackson: open_tracking. Fix with" in capsys.readouterr().err
@@ -614,7 +615,8 @@ def test_start_goes_ahead_over_drift_held_for_leads_in_flight(capsys):
 def test_campaigns_ensure_fix_in_flight_applies_it_to_them_and_logs_it(capsys):
     h = held_world()
     assert h.run("campaigns", "ensure", "--fix", "--live") == 0
-    assert "Campaign drift held, US Outbound – Sam Jackson: steps.1" in capsys.readouterr().out
+    assert ("Sam Jackson's campaign: its settings in Instantly differ from ours (email 1's template)"
+            in capsys.readouterr().out)
     assert h.store.tables["config_log"] == []
     assert h.run("campaigns", "ensure", "--fix", "--in-flight", "--live") == 0
     [row] = h.store.tables["config_log"]

@@ -196,9 +196,10 @@ def test_mailbox_health_sets_each_instantly_account_to_its_ramp_cap():
     assert out["ramp"][HANNAH_ADDRESS] == {"cap": 10, "sheet_cap": 30, "week": 1, "ramping": True, "start": None,
                                            "basis": ""}
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert ("hannah@meetspill.org (Hannah Spalding): Active, warmup on, score 98, ramp week 1 (no send yet)"
+    assert ("• hannah@meetspill.org (Hannah Spalding): Active, warm-up score 98, ramp week 1 (no send yet)"
             in post.json["text"])
-    assert "Set hannah@meetspill.org's Instantly daily limit from 30 to 10" in post.json["text"]
+    assert "• Set hannah@meetspill.org's daily limit in Instantly from 30 to 10" in post.json["text"]
+    assert "_The ramp: a new mailbox sends fewer emails a day in its first two weeks" in post.json["text"]
 
 
 def test_status_shows_the_ramp(capsys):

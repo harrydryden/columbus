@@ -61,6 +61,9 @@ def items(ctx, status=None):
     return [r for r in rows if status is None or r["status"] == status]
 
 
+MAILBOXES_TAB = "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Mailboxes tab>"
+
+
 def slack_posts(t):
     return [r for r in t.requests if r.url.endswith("chat.postMessage")]
 
@@ -99,11 +102,18 @@ def test_a_mailbox_over_3_percent_is_paused_through_the_registry_path():
     # Alerted in the alert channel, mentioning the approver, with the item to clear.
     [post] = slack_posts(t)
     assert post.json["channel"] == "C_ALERT"
-    assert post.json["text"] == (
-        "<@U_HARRY> 🛑 Safety stop, Tue 27 Oct 12:00 UK\n"
-        "• hannah@meetspill.org paused: 2 of its last 40 sends bounced (5.0%; the limit is 3%). Hannah's approved "
-        "leads wait; nothing else changes. To resume once fixed: set it Active on the Mailboxes tab, then "
-        f"`railway ssh -- us-outbound killrules clear {fired['item_id']} --live`.")
+    assert post.json["text"].splitlines() == [
+        "<@U_HARRY> :rotating_light: *Safety stop: Hannah's mailbox has stopped sending*",
+        "hannah@meetspill.org: 2 of its last 40 emails bounced (5.0%; the limit is 3%).",
+        "• Hannah's campaign is paused: none of Hannah's contacts get a first email or a follow-up until one of "
+        "Hannah's mailboxes is Active again.",
+        f"• To resume once the cause is fixed: set it to Active on the {MAILBOXES_TAB}, then run "
+        f"`railway ssh -- us-outbound killrules clear {fired['item_id']} --live`. The next settings sync and mailbox "
+        "check (07:00 UK) put it back on the sending list; for sooner, run `railway ssh -- us-outbound sync --live`, "
+        "then `railway ssh -- us-outbound mailbox check --live`.",
+        "*What to do:* Find out the cause, then follow the step above to resume. Until then it stays paused.",
+        "_Why it matters: too many bounces or spam complaints make mail providers treat all our email as spam._",
+    ]
     assert item["slack_ts"] == "1.1"
     # Bounced contacts are suppressed.
     assert out["suppressed"] == 2
@@ -167,11 +177,18 @@ def test_a_block_bounce_pauses_for_14_days_and_the_hold_ends_by_itself():
     assert (fired["rule"], fired["target"], fired["until"]) == ("block_bounce", SAM, "2026-11-10")
     assert "1 block bounce (5.7.1)" in fired["reason"]
     assert row(sheets, SAM)["status"] == "Paused"
-    assert "after the hold ends on Tue 10 Nov" in slack_posts(t)[0].json["text"]
+    text = slack_posts(t)[0].json["text"]
+    assert text.startswith("<@U_HARRY> :rotating_light: *Safety stop: Sam's mailbox has stopped sending for 14 days*\n"
+                           "sam@meetspill.org: a receiving mail server refused its email (1 block bounce, code 5.7.1).")
+    assert "the stop lifts by itself after Tue 10 Nov (or sooner with `railway ssh -- us-outbound killrules" in text
     # 14 days on, the hold lifts; the sheet still says Paused until Harry sets it Active.
     out = kill_rules.run(later(ctx, t, 14))
     assert [e["mailboxes"] for e in out["expired"]] == [[SAM]] and holds.held_mailboxes(ctx.store) == {}
-    assert "The 14-day pause of sam@meetspill.org (a block bounce) is over" in slack_posts(t)[-1].json["text"]
+    head, line, do = slack_posts(t)[-1].json["text"].splitlines()
+    assert head == "<@U_HARRY> :warning: *Safety stop over: a mailbox can send again*"
+    assert line == ("• Sam's mailbox sam@meetspill.org: the 14-day pause after a block bounce is over, but the Mailboxes tab "
+                    "still says Paused, so it sends nothing yet.")
+    assert do.startswith(f"*What to do:* Once you are happy the cause is fixed, set it to Active on the {MAILBOXES_TAB}.")
     assert row(sheets, SAM)["status"] == "Paused"
 
 
@@ -185,11 +202,34 @@ def test_instantly_vitals_failing_pauses_for_14_days():
     assert "Instantly reports the account as sending_error" in fired["reason"]
     assert inst.by_name(C_HARRY)["email_list"] == [HARRY]  # off the sending list; Harry's other address sends on
     [post] = slack_posts(t)
-    assert post.json["text"].splitlines()[1] == (
-        "• harry@tryspill.org paused for 14 days: Instantly reports the account as sending_error. Harry's campaign "
-        "goes on from harry@meetspill.org; nothing else changes. To resume once fixed: after the hold ends on Tue 10 "
-        f"Nov (or clear it sooner with `railway ssh -- us-outbound killrules clear {fired['item_id']} --live`), set it "
-        "Active on the Mailboxes tab.")
+    lines = post.json["text"].splitlines()
+    assert lines[0] == "<@U_HARRY> :rotating_light: *Safety stop: Harry's mailbox has stopped sending for 14 days*"
+    assert lines[1] == "harry@tryspill.org: Instantly reports the account as sending_error."
+    assert lines[2] == "• Harry's campaign carries on from harry@meetspill.org: first emails and follow-ups still go."
+    assert lines[3].startswith(
+        "• To resume once the cause is fixed: the stop lifts by itself after Tue 10 Nov (or sooner with "
+        f"`railway ssh -- us-outbound killrules clear {fired['item_id']} --live`); then set it to Active on the "
+        f"{MAILBOXES_TAB}.")
+
+
+def test_the_group_and_stop_rule_alerts_say_what_still_goes_and_how_to_resume():
+    ctx, t, inst, sheets = setup()
+    group = kill_rules.Firing("group_reply_rate", "industry_group", "Fintech", holds.STOP_GROUP, "Fintech: 1 human ...",
+                              numbers={"delivered": 400, "replied": 1, "rate": 0.0025}, item_id="g-1")
+    assert kill_rules.message(ctx, [group], []).splitlines() == [
+        "<@U_HARRY> :rotating_light: *Safety stop: no new Fintech companies are being emailed*",
+        "Why: only 1 of the 400 companies emailed in it replied (0.2%; the minimum is 0.5%).",
+        "• Companies already emailed carry on: their follow-ups still go.",
+        "• To add Fintech companies again: `railway ssh -- us-outbound killrules clear g-1 --live`.",
+        "*What to do:* Find out the cause, then follow the step above to resume. Until then it stays paused.",
+        "_Why it matters: too many bounces or spam complaints make mail providers treat all our email as spam._",
+    ]
+    stop = kill_rules.Firing("stop_rule_meetings", "enrolment", "stop_rule", holds.PAUSE_ENROLMENT, "the first ...",
+                             numbers={"accounts": 100, "meetings": 1}, item_id="s-1")
+    lines = kill_rules.message(ctx, [stop], []).splitlines()
+    assert lines[0] == "<@U_HARRY> :rotating_light: *Safety stop: no new companies are being emailed*"
+    assert lines[1].startswith("Why: the first 100 companies emailed brought 1 meeting, fewer than `stop_rule_meetings` (")
+    assert lines[2] == "• Emails already under way carry on: their follow-ups still go."
 
 
 def test_the_alert_names_each_address_once_and_cites_no_spec():
@@ -202,11 +242,22 @@ def test_the_alert_names_each_address_once_and_cites_no_spec():
     [post] = slack_posts(t)
     text = post.json["text"]
     assert "SPEC" not in text and "Harry, " not in text
-    domain = next(line for line in text.splitlines() if "their domain" in line)
-    assert domain.startswith("• hannah@meetspill.org, harry@meetspill.org paused: their domain meetspill.org: 4 of its 120 "
-                             "sends in the last 7 days bounced (3.3%; the limit is 3%).")
-    assert "Hannah's approved leads wait; Harry's campaign goes on from harry@tryspill.org; nothing else changes." in domain
-    assert "set them Active on the Mailboxes tab" in domain
+    assert text.splitlines()[0] == ("<@U_HARRY> :rotating_light: *Safety stop: 4 things paused to protect our email "
+                                    "reputation*")
+    assert ("*2 mailboxes on meetspill.org (hannah@meetspill.org for Hannah, harry@meetspill.org for Harry) have stopped "
+            "sending* because 4 of the 120 emails sent from meetspill.org in the last 7 days bounced (3.3%; the limit is "
+            "3%).") in text.splitlines()
+    assert "• Harry's campaign carries on from harry@tryspill.org: first emails and follow-ups still go." in text
+    assert f"set them to Active on the {MAILBOXES_TAB}" in text
+    # The source and stop-rule lines (a source and the stop rule fire on the same sends here).
+    assert ("*New contacts whose email address came from Apollo are no longer added to the campaign* because 4 of the "
+            "120 emails sent to these addresses in the last 7 days bounced (3.3%; the limit is 3%).") in text.splitlines()
+    assert "• Contacts already in the campaign carry on: their follow-ups still go. Contacts found by Clay are still added." \
+        in text.splitlines()
+    assert ("*No new companies are added to the campaign at all (the stop rule)* because 4 of the 120 companies first "
+            "emailed in the last 30 days bounced (3.3%; the limit, `stop_rule_bounce_rate` on the General tab, is "
+            "3.0%).") in text.splitlines()
+    assert "*What to do:* Find out the cause, then follow the steps above to resume. Until then they stay paused." in text
     for line in text.splitlines()[1:]:
         for box in (HANNAH, HARRY, SAM):
             assert line.count(box) <= 1, line
@@ -339,7 +390,10 @@ def test_dry_run_records_the_items_but_changes_neither_the_sheet_nor_instantly()
     assert row(sheets, HANNAH)["status"] == "Active" and inst.by_name(C_HANNAH)["email_list"] == [HANNAH]
     assert ctx.guard.writes("instantly", sent=True) == [] and ctx.guard.writes("sheets", sent=True) == []
     [post] = slack_posts(t)
-    assert post.json["channel"] == "C_DEV" and "dry-run: neither the sheet nor Instantly was changed" in post.json["text"]
+    assert post.json["channel"] == "C_DEV"
+    assert "*Safety stop: Hannah's mailbox would stop sending*" in post.json["text"]
+    assert "• Hannah's campaign would be paused: none of Hannah's contacts get a first email" in post.json["text"]
+    assert "• Nothing was changed in the sheet or Instantly; only the stop is recorded. To lift it: " in post.json["text"]
     assert items(ctx, "open")[0]["payload"]["dry_run"] is True
 
 

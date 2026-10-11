@@ -401,7 +401,16 @@ def test_mailbox_health_promotes_retires_and_reports():
     assert inst.by_name(C_HANNAH)["email_list"] == [HANNAH]  # created on promotion
     assert out["campaigns"]["drift"] == {}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post["channel"] == "C_ALERT" and "Promoted to Active: hannah@meetspill.org" in post["text"]
+    assert post["channel"] == "C_ALERT"
+    lines = post["text"].splitlines()
+    assert lines[:3] == [":warning: *Mailbox check, Tue 27 Oct: 1 thing to fix*", "*To fix:*",
+                         "• Hannah Spalding's campaign is ready but not started, so it sends nothing. To start it: "
+                         "`railway ssh -- us-outbound start --live`."]
+    assert lines[3] == "*Changed by itself:*"
+    assert "• Set Active (warmed up, ready to send): hannah@meetspill.org" in lines
+    assert "• Retired (no sends for 30 days): sam@meetspill.org" in lines
+    assert "• Turned warm-up back on: harry@meetspill.org" in lines
+    assert "• hannah@meetspill.org (Hannah Spalding): Active, warm-up score 98" in lines  # as it is after the change
     account_reads = [r.url for r in t.requests if "/accounts/" in r.url and r.method == "GET"
                      and "/accounts/analytics/" not in r.url]
     assert all(any(a in u for a in (HANNAH, HARRY, SAM, HARRY2)) for u in account_reads)
@@ -437,7 +446,9 @@ def test_mailbox_health_dry_run_proposes_only():
     assert out["promoted"] == [HANNAH] and row(sheets, HANNAH)["status"] == "Warming"
     assert inst.campaigns == {} and instantly_writes(t) == []
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post["channel"] == "C_DEV" and "dry-run" in post["text"]
+    assert post["channel"] == "C_DEV" and "*Would change:*" in post["text"]
+    assert "• Would set Active (warmed up, ready to send): hannah@meetspill.org" in post["text"]
+    assert "• hannah@meetspill.org (Hannah Spalding): Warming" in post["text"]  # nothing was changed
 
 
 # -- campaigns started, drift put right, and a post only when something happened (mailbox_health) ---------
@@ -469,8 +480,9 @@ def test_after_go_live_a_campaign_created_for_a_promoted_mailbox_is_started():
     assert inst.by_name(C_HANNAH)["status"] == 1 and out["campaign_start"]["started"] == [C_HANNAH]
     assert inst.by_name(C_HARRY)["status"] == 1  # already sending: left alone
     [post] = posts(t)
-    assert "Created (paused until started): US Outbound – Hannah Spalding" in post["text"]
-    assert "Started US Outbound – Hannah Spalding: its owner has an Active mailbox and sending is live." in post["text"]
+    assert post["text"].startswith(":bar_chart: *Mailbox check, Tue 27 Oct: nothing to do*\n")
+    assert "• Created (paused until started): Hannah Spalding's campaign" in post["text"]
+    assert "• Started Hannah Spalding's campaign: its owner has an Active mailbox and sending is live" in post["text"]
 
 
 @pytest.mark.parametrize("stopped", [False, True])
@@ -483,7 +495,9 @@ def test_before_go_live_or_after_a_stop_a_new_campaign_is_only_ready(stopped):
     assert inst.by_name(C_HANNAH)["status"] == 0 and not [r for r in t.requests if r.url.endswith("/activate")]
     assert out["campaign_start"]["ready"] == ["Hannah Spalding"] and out["campaign_start"]["went_live"] is None
     [post] = posts(t)
-    assert "Hannah Spalding's campaign is ready: run `us-outbound start --live` to start it." in post["text"]
+    assert post["text"].startswith(":warning: *Mailbox check, Tue 27 Oct: 1 thing to fix*\n*To fix:*\n")
+    assert ("• Hannah Spalding's campaign is ready but not started, so it sends nothing. To start it: "
+            "`railway ssh -- us-outbound start --live`.") in post["text"]
     assert "Harry Dryden's campaign is ready" not in post["text"]  # not new: `start` starts it
 
 
@@ -501,8 +515,8 @@ def test_a_campaign_a_kill_rule_emptied_starts_again_once_its_mailbox_is_active(
     assert out["campaign_start"]["paused"] == ["Sam Jackson"] and inst.by_name(C_SAM)["status"] == 2
     assert ctx.store.get("hitl_items", item_id="k-1")["payload"]["campaign_restarted"] == NOW.isoformat()
     [post] = posts(t)
-    assert ("US Outbound – Sam Jackson is paused, though Sam Jackson has an Active mailbox: run "
-            "`us-outbound start --live` to start it.") in post["text"]
+    assert ("• Sam Jackson's campaign is paused in Instantly although Sam Jackson has an Active mailbox, so it sends "
+            "nothing. If nobody paused it on purpose: `railway ssh -- us-outbound start --live`.") in post["text"]
     # Paused again later (by hand, say): that kill rule's pause has been used, so it stays paused.
     inst.by_name(C_HANNAH)["status"] = 2
     assert reg.mailbox_health(ctx)["campaign_start"]["paused"] == ["Hannah Spalding", "Sam Jackson"]
@@ -518,7 +532,10 @@ def test_a_campaign_with_drift_left_is_not_started():
     assert out["campaign_start"]["started"] == [] and out["campaign_start"]["ready"] == ["Hannah Spalding"]
     assert inst.by_name(C_HANNAH)["status"] == 0
     [post] = posts(t)
-    assert "Campaign drift, US Outbound – Hannah Spalding: link_tracking" in post["text"]
+    assert ("• Hannah Spalding's campaign: its settings in Instantly differ from ours (link tracking). Fix: "
+            "`railway ssh -- us-outbound campaigns ensure --fix --live`.") in post["text"]
+    assert ("• Hannah Spalding's campaign is ready to start once its settings are fixed (above): then run "
+            "`railway ssh -- us-outbound start --live`.") in post["text"]
 
 
 def test_a_held_mailbox_keeps_its_campaign_paused():
@@ -540,7 +557,8 @@ def test_a_dry_run_after_go_live_says_what_it_would_start():
     out = reg.mailbox_health(ctx)
     assert sorted(out["campaign_start"]["would_start"]) == [C_HANNAH, C_HARRY] and instantly_writes(t) == []
     [post] = posts(t)
-    assert "Would start US Outbound – Harry Dryden" in post["text"] and "Would create" in post["text"]
+    assert "• Would start Harry Dryden's campaign: its owner has an Active mailbox" in post["text"]
+    assert "• Would create (paused until started): Hannah Spalding's campaign" in post["text"]
 
 
 def test_the_daily_limit_and_sending_list_follow_the_sheet_and_other_drift_is_reported():
@@ -553,10 +571,11 @@ def test_the_daily_limit_and_sending_list_follow_the_sheet_and_other_drift_is_re
     assert out["campaigns"]["fixed_fields"] == {C_HARRY: ["daily_limit", "email_list"]}
     assert inst.by_name(C_HANNAH)["open_tracking"] is True  # reported, not changed
     [post] = posts(t)
-    assert ("Updated US Outbound – Harry Dryden: daily limit 30 → 60 (the ramp); sending list → harry@meetspill.org, "
-            "harry@tryspill.org (the Active mailboxes)") in post["text"]
-    assert "Campaign drift, US Outbound – Hannah Spalding: open_tracking. Fix with" in post["text"]
-    assert "Campaign drift, US Outbound – Harry Dryden" not in post["text"]
+    assert ("• Updated Harry Dryden's campaign: daily limit 30 → 60 (its Active mailboxes' caps today); sending list → "
+            "harry@meetspill.org, harry@tryspill.org (the Active mailboxes)") in post["text"]
+    assert ("• Hannah Spalding's campaign: its settings in Instantly differ from ours (open tracking). Fix: "
+            "`railway ssh -- us-outbound campaigns ensure --fix --live`.") in post["text"]
+    assert "Harry Dryden's campaign: its settings" not in post["text"]
     assert reg.ensure_campaigns(ctx)["drift"] == {C_HANNAH: {"open_tracking": [False, True]}}
 
 
@@ -596,7 +615,8 @@ def test_mailbox_health_sets_instantly_limits_to_the_sheet_caps():
     [patch] = [r for r in t.requests if r.method == "PATCH" and "/accounts/" in r.url]
     assert patch.json == {"daily_limit": 30}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert "Set hannah@meetspill.org's Instantly daily limit from 50 to 30" in post["text"]
+    assert ("• Set hannah@meetspill.org's daily limit in Instantly from 50 to 30 (its `daily_cap` on the Mailboxes tab, "
+            "or the ramp's when lower)") in post["text"]
 
 
 def test_mailbox_health_in_dry_run_only_reports_a_limit_it_would_set():
@@ -606,7 +626,7 @@ def test_mailbox_health_in_dry_run_only_reports_a_limit_it_would_set():
     out = reg.mailbox_health(ctx)
     assert out["limit_set"] == {SAM: {"from": 20, "to": 30}} and accounts[SAM]["daily_limit"] == 20
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert "Would set sam@meetspill.org's Instantly daily limit from 20 to 30" in post["text"]
+    assert "• Would set sam@meetspill.org's daily limit in Instantly from 20 to 30" in post["text"]
 
 
 # -- the sender name prospects see (Harry, 5 Oct 2026) --------------------------------------------------
@@ -638,8 +658,11 @@ def test_mailbox_health_reports_a_sender_name_that_is_not_the_owner_s_full_name(
     assert out["names_set"] == [] and account_patches(t) == []
     assert "name_drift" in out["post_reasons"]
     [post] = posts(t)
-    assert ('Sender name of hannah@meetspill.org (first / last) is "Hannah" / "at Spill", not its owner\'s full name '
-            '"Hannah" / "Spalding". Fix with `us-outbound mailbox check --fix --live`.') in post["text"]
+    assert post["text"].startswith(":warning: *Mailbox check, Tue 27 Oct: 3 things to fix*\n*To fix:*\n")
+    assert ("• Hannah Spalding's, Harry Dryden's and Sam Jackson's campaigns are ready but not started, so they send "
+            "nothing. To start them: `railway ssh -- us-outbound start --live`.") in post["text"]
+    assert ('• hannah@meetspill.org shows prospects the sender name "Hannah at Spill", not its owner\'s full name '
+            '"Hannah Spalding". Fix: `railway ssh -- us-outbound mailbox check --fix --live`.') in post["text"]
 
 
 def test_fix_names_sets_only_first_and_last_name_and_only_where_they_differ():
@@ -658,8 +681,8 @@ def test_fix_names_sets_only_first_and_last_name_and_only_where_they_differ():
     assert [c.action for c in ctx.guard.writes("instantly") if c.action.startswith("account.")] == [
         "account.update_name", "account.update_name"]  # no warmup or daily-limit write
     [post] = posts(t)
-    assert ('Set hannah@meetspill.org\'s sender name (first / last) from "Hannah" / "at Spill" to "Hannah" / '
-            '"Spalding", its owner\'s full name') in post["text"]
+    assert '• Set hannah@meetspill.org\'s sender name to "Hannah Spalding" (was "Hannah at Spill")' in post["text"]
+    assert "shows prospects the sender name" not in post["text"]
     again = reg.mailbox_health(ctx, fix_names=True)
     assert again["name_drift"] == {} and len(account_patches(t)) == 2
 
@@ -673,8 +696,7 @@ def test_fix_names_in_dry_run_sends_nothing():
     names = [c for c in ctx.guard.writes("instantly") if c.action == "account.update_name"]
     assert len(names) == 2 and not any(c.sent for c in names)
     [post] = posts(t)
-    assert ('Would set sam@meetspill.org\'s sender name (first / last) from "Sam from Spill" / "" to "Sam" / '
-            '"Jackson"') in post["text"]
+    assert '• Would set sam@meetspill.org\'s sender name to "Sam Jackson" (was "Sam from Spill")' in post["text"]
 
 
 def test_names_already_right_cause_no_write():
@@ -709,7 +731,8 @@ def test_mailbox_health_records_sends_and_why_a_campaign_is_held_back():
     assert out["campaign_status"]["Harry Dryden"] == {"code": 3, "meaning": "the campaign reached its daily limit",
                                                       "at_limit": True}
     [post] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert "Instantly says US Outbound – Harry Dryden is held back: the campaign reached its daily limit" in post["text"]
+    assert ("• Harry Dryden's campaign: the campaign reached its daily limit (`railway ssh -- us-outbound status` shows "
+            "whether companies are waiting)") in post["text"]
 
 
 def test_every_step_ends_with_instantly_s_unsubscribe_link():
@@ -793,8 +816,10 @@ def test_ensure_holds_in_flight_keys_while_leads_are_in_flight():
     assert out["held"] == {C_HANNAH: {"keys": ["steps.1"], "leads": 1}}
     assert sequence_patches(t) == [] and ctx.store.tables["config_log"] == []  # the daily limit is not logged
     assert reg.held_words(C_HANNAH, out["held"][C_HANNAH]) == (
-        "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight. Apply to them with "
-        "`us-outbound campaigns ensure --fix --in-flight --live`, or wait until `us-outbound cohorts in-flight` shows 0.")
+        "Hannah Spalding's campaign: its settings in Instantly differ from ours (email 1's template), but changing them "
+        "now would also change the emails of 1 person part-way through. Apply it to them too with `us-outbound "
+        "campaigns ensure --fix --in-flight --live`, or wait until `us-outbound cohorts in-flight` shows 0 for it, then "
+        "run `us-outbound campaigns ensure --fix --live`.")
     out = reg.ensure_campaigns(ctx, fix=True, in_flight=True)
     assert out["fixed_fields"] == {C_HANNAH: ["steps.1"]} and out["held"] == {} and len(sequence_patches(t)) == 1
     [row] = ctx.store.tables["config_log"]
@@ -844,8 +869,11 @@ def test_mailbox_health_says_what_is_held_and_starts_the_campaign_anyway():
     assert out["campaigns"]["held"] == {C_HANNAH: {"keys": ["steps.1"], "leads": 1}}
     assert out["campaign_start"]["started"] == [C_HANNAH]  # consistent for the leads in flight
     [post] = posts(t)
-    assert "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight." in post["text"]
-    assert "Campaign drift, US Outbound – Hannah Spalding" not in post["text"]
+    assert ("• Hannah Spalding's campaign: its settings in Instantly differ from ours (email 1's template), but "
+            "changing them now would also change the emails of 1 person part-way through. Apply it to them too with "
+            "`railway ssh -- us-outbound campaigns ensure --fix --in-flight --live`, or wait until "
+            "`railway ssh -- us-outbound cohorts in-flight` shows 0 for it") in post["text"]
+    assert post["text"].count("its settings in Instantly differ") == 1
 
 
 def test_a_sender_name_set_is_logged_with_the_leads_in_flight():

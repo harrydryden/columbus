@@ -65,12 +65,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound import fmt, suppression
-from us_outbound.base import holds, notify
+from us_outbound.base import holds, notify, say
 from us_outbound.base.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
-from us_outbound.context import UK, ConfigError, Context
+from us_outbound.context import ConfigError, Context
 from us_outbound.logs import log
 from us_outbound.replies import kinds
 from us_outbound.settings.model import Settings
@@ -460,7 +460,7 @@ def _pause(ctx: Context, settings: Settings, address: str) -> tuple[str, str]:
         try:
             action = reg._sync_campaign(ctx, reg._with(settings, dataclasses.replace(m, status=reg.PAUSED)), m.owner_name)
         except (ApiError, LookupError, ValueError, ConfigError) as exc2:
-            return f"NOT PAUSED: {exc}; {exc2}. Pause it by hand: `us-outbound mailbox pause {address} --live`", ""
+            return f"NOT PAUSED: {exc}; {exc2}. Pause it by hand: {say.command(f'mailbox pause {address} --live')}", ""
         name = reg.campaign_name(m.owner_name)
         return f"the Mailboxes tab was not changed ({exc}); {name}: {action}", name if action == reg.PAUSED_EMPTY else ""
 
@@ -491,14 +491,17 @@ def expire(ctx: Context) -> list[dict]:
     return out
 
 
-# The alert (Slack, read by Harry): plain words, each address once, and how to resume in one sentence.
+# The alert (Slack, base/say.py): what stopped and why in plain words, who it affects, whether first emails and
+# follow-ups still go, and the exact steps to resume. Each address once a line.
 RULE_WORDS = {"block_bounce": "a block bounce", "spam_complaint": "a spam complaint",
-              "seed_spam": "a seed inbox found its email in spam", "vitals": "Instantly's account checks"}
+              "seed_spam": "a test inbox found its email in spam", "vitals": "Instantly's account checks"}
 PAUSED_OK = "Paused on the Mailboxes tab"  # _pause's outcome when the registry path worked
+SOURCE_NAMES = {"apollo": "Apollo", "clay": "Clay"}
+WHY_IT_MATTERS = "too many bounces or spam complaints make mail providers treat all our email as spam."
 
 
 def _clear(f: Firing) -> str:
-    return f"`railway ssh -- us-outbound killrules clear {f.item_id} --live`"
+    return say.command(f"killrules clear {f.item_id} --live")
 
 
 def _why(f: Firing) -> str:
@@ -509,51 +512,185 @@ def _why(f: Firing) -> str:
     return f.reason
 
 
-def _who_waits(settings: Settings, mailboxes: list[str]) -> str:
-    """Per owner of these mailboxes: their approved leads wait, or their campaign goes on from another Active mailbox."""
+def _first(owner: str) -> str:
+    return (owner.split() or ["Its owner"])[0]
+
+
+def _owner_of(settings: Settings, address: str) -> str:
+    return next((m.owner_name for m in settings.mailboxes if m.address.lower() == address.lower()), "")
+
+
+def _s(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def _plain_why(f: Firing, settings: Settings) -> str:
+    """Why it fired, in words a newcomer follows (f.reason, kept on the item, stays as it is)."""
+    n, g = f.numbers, settings.general
+    rate = fmt.share(float(n.get("rate") or 0))
+    limit = f"the limit is {BOUNCE_RATE:.0%}"
+    if f.rule == "mailbox_bounce_rate":
+        return f"{n['bounced']} of its last {n['sends']} emails bounced ({rate}; {limit})"
+    if f.rule == "domain_bounce_rate":
+        return (f"{n['bounced']} of the {n['sends']} emails sent from {f.target} in the last {WINDOW_DAYS} days bounced "
+                f"({rate}; {limit})")
+    if f.rule == "block_bounce":
+        code = BLOCK_CODE.search(f.reason)
+        return (f"a receiving mail server refused its email ({_s(int(n.get('block_bounces') or 1), 'block bounce')}"
+                + (f", code {code.group(0)}" if code else "") + ")")
+    if f.rule == "spam_complaint":
+        k = int(n.get("complaints") or 1)
+        return f"{'a recipient' if k == 1 else f'{k} recipients'} marked its email as spam"
+    if f.rule == "seed_spam":
+        return "one of our test inboxes found its email in the spam folder"
+    if f.rule == "source_bounce_rate":
+        return (f"{n['bounced']} of the {n['sends']} emails sent to these addresses in the last {WINDOW_DAYS} days bounced "
+                f"({rate}; {limit})")
+    if f.rule == "group_reply_rate":
+        return (f"only {n['replied']} of the {n['delivered']} companies emailed in it replied ({rate}; the minimum is "
+                f"{GROUP_REPLY_FLOOR:.1%})")
+    if f.rule == "stop_rule_meetings":
+        return (f"the first {n['accounts']} companies emailed brought {_s(int(n['meetings']), 'meeting')}, fewer than "
+                f"`stop_rule_meetings` ({g.stop_rule_meetings}) on the General tab")
+    if f.rule == "stop_rule_bounce_rate":
+        return (f"{n['bounced']} of the {n['accounts']} companies first emailed in the last {STOP_WINDOW_DAYS} days "
+                f"bounced ({fmt.pct(n['bounced'], n['accounts'])}; the limit, `stop_rule_bounce_rate` on the General "
+                f"tab, is {fmt.share(g.stop_rule_bounce_rate)})")
+    if f.rule == "stop_rule_complaint_rate":
+        return (f"{n['complained']} of the {n['accounts']} companies first emailed in the last {STOP_WINDOW_DAYS} days "
+                f"marked our email as spam ({fmt.pct(n['complained'], n['accounts'])}; the limit, "
+                f"`stop_rule_complaint_rate` on the General tab, is {fmt.share(g.stop_rule_complaint_rate)})")
+    return _why(f)  # vitals: "Instantly reports the account as sending_error"
+
+
+def _boxes(settings: Settings, f: Firing, *, short: bool = False) -> str:
+    """"Sam's mailbox (sam@…)"; "2 mailboxes on meetspill.org (hannah@… for Hannah, harry@… for Harry)".
+    short: without the addresses, for a headline."""
+    if len(f.mailboxes) == 1:
+        first = _first(_owner_of(settings, f.mailboxes[0]))
+        return f"{first}'s mailbox" + ("" if short else f" ({f.mailboxes[0]})")
+    where = f" on {f.target}" if f.scope == "domain" else ""
+    each = ", ".join(f"{a} for {_first(_owner_of(settings, a))}" for a in f.mailboxes)
+    return f"{len(f.mailboxes)} mailboxes{where}" + ("" if short else f" ({each})")
+
+
+def _what(ctx: Context, f: Firing, settings: Settings, *, short: bool = False) -> str:
+    """What the safety stop did, as a sentence without its reason ("would" in a dry run, for a mailbox)."""
+    if f.action == PAUSE_MAILBOX:
+        many = len(f.mailboxes) > 1
+        for_days = f" for {BLOCK_PAUSE_DAYS} days" if f.until else ""
+        verb = "would stop sending" if ctx.dry_run else f"{'have' if many else 'has'} stopped sending"
+        return f"{_boxes(settings, f, short=short)} {verb}{for_days}"
+    if f.action == PAUSE_SOURCE:
+        src = SOURCE_NAMES.get(f.target, f.target)
+        return (f"email addresses from {src} are no longer used" if short else
+                f"New contacts whose email address came from {src} are no longer added to the campaign")
+    if f.action == STOP_GROUP:
+        return (f"no new {f.target} companies are being emailed" if short else
+                f"No new companies in the {f.target} industry group are added to the campaign")
+    return ("no new companies are being emailed" if short else
+            "No new companies are added to the campaign at all (the stop rule)")
+
+
+def _who_waits(settings: Settings, mailboxes: list[str], dry: bool) -> list[str]:
+    """Per owner of these mailboxes: their campaign goes on from another Active mailbox, or it is paused."""
     paused = {a.lower() for a in mailboxes}
     owners = dict.fromkeys(m.owner_name for m in settings.mailboxes if m.address.lower() in paused)
-    parts = []
+    out = []
     for owner in owners:
-        first = (owner.split() or ["Its owner"])[0]
+        first = _first(owner)
         others = [m.address.lower() for m in settings.mailboxes_for(owner, ACTIVE) if m.address.lower() not in paused]
-        parts.append(f"{first}'s campaign goes on from {', '.join(others)}" if others else f"{first}'s approved leads wait")
-    return "; ".join(parts) or "Its approved leads wait"
+        if others:
+            out.append(f"• {first}'s campaign {'would carry' if dry else 'carries'} on from {', '.join(others)}: first "
+                       "emails and follow-ups still go.")
+        else:
+            out.append(f"• {first}'s campaign {'would be' if dry else 'is'} paused: none of {first}'s contacts get a "
+                       f"first email or a follow-up until one of {first}'s mailboxes is Active again.")
+    return out
 
 
-def _line(f: Firing, settings: Settings) -> str:
-    if f.action == PAUSE_MAILBOX:
-        boxes, it = ", ".join(f.mailboxes), "them" if len(f.mailboxes) > 1 else "it"
-        what = f"paused for {BLOCK_PAUSE_DAYS} days" if f.until else "paused"
-        why = f"their domain {f.target}: {_why(f)}" if f.scope == "domain" else _why(f)
-        line = f"• {boxes} {what}: {why}. {_who_waits(settings, f.mailboxes)}; nothing else changes."
-        if f.outcome and not f.outcome.startswith((PAUSED_OK, "dry-run")):
-            line += f" Note: {f.outcome}."  # the pause did not go through as it should
-        if f.until:
-            return line + (f" To resume once fixed: after the hold ends on {f.until:%a %d %b} (or clear it sooner with "
-                           f"{_clear(f)}), set {it} Active on the Mailboxes tab.")
-        return line + f" To resume once fixed: set {it} Active on the Mailboxes tab, then {_clear(f)}."
+def _back_on(it: str = "it") -> str:
+    """How a mailbox set Active again gets back on its campaign's sending list: settings_sync reads the sheet, then
+    mailbox_health (07:00 UK) puts it on the list and starts a campaign the pause left empty."""
+    return (f"The next settings sync and mailbox check (07:00 UK) put {it} back on the sending list; for sooner, run "
+            f"{say.command('sync --live')}, then {say.command('mailbox check --live')}")
+
+
+def _effects(ctx: Context, f: Firing, settings: Settings) -> list[str]:
+    """Who it affects, whether first emails and follow-ups still go, and how to resume."""
     if f.action == PAUSE_SOURCE:
-        return (f"• Emails found by {f.target} paused: {_why(f)}. Contacts it found are not enrolled; nothing else "
-                f"changes. To resume once checked: {_clear(f)}.")
+        src = SOURCE_NAMES.get(f.target, f.target)
+        other = " and ".join(SOURCE_NAMES.get(s, s) for s in SOURCES if s != f.target)
+        return ["• Contacts already in the campaign carry on: their follow-ups still go."
+                + (f" Contacts found by {other} are still added." if other else ""),
+                f"• To use {src} addresses again once they are checked: {_clear(f)}."]
     if f.action == STOP_GROUP:
-        return (f"• {f.target} no longer enrolled: {_why(f)}. Accounts already emailed carry on; nothing else changes. "
-                f"To resume: {_clear(f)}.")
-    return (f"• New enrollment paused (the stop rule): {_why(f)}. Sequences already running carry on. To resume after "
-            f"the profile and copy review: {_clear(f)}.")
+        return ["• Companies already emailed carry on: their follow-ups still go.",
+                f"• To add {f.target} companies again: {_clear(f)}."]
+    if f.action != PAUSE_MAILBOX:
+        return ["• Emails already under way carry on: their follow-ups still go.",
+                f"• To start adding companies again after a review of who we target and the email copy: {_clear(f)}."]
+    it = "them" if len(f.mailboxes) > 1 else "it"
+    lines = _who_waits(settings, f.mailboxes, ctx.dry_run)
+    if f.outcome and not f.outcome.startswith((PAUSED_OK, "dry-run")):
+        lines.append(f"• :warning: The pause did not fully go through: {f.outcome}.")  # see _pause
+    if ctx.dry_run:
+        lifts = f"It lifts by itself after {f.until:%a %d %b}, or sooner with" if f.until else "To lift it:"
+        lines.append(f"• Nothing was changed in the sheet or Instantly; only the stop is recorded. {lifts} {_clear(f)}.")
+        return lines
+    tab = say.sheet_link(ctx, "Mailboxes")
+    if f.until:
+        lines.append(f"• To resume once the cause is fixed: the stop lifts by itself after {f.until:%a %d %b} (or "
+                     f"sooner with {_clear(f)}); then set {it} to Active on the {tab}. {_back_on(it)}.")
+    else:
+        lines.append(f"• To resume once the cause is fixed: set {it} to Active on the {tab}, then run {_clear(f)}. "
+                     f"{_back_on(it)}.")
+    return lines
+
+
+def _lines(ctx: Context, f: Firing, settings: Settings, *, alone: bool) -> list[str]:
+    """One firing. alone: the headline already says what stopped, so the first line gives the reason only."""
+    why = _plain_why(f, settings)
+    if alone:
+        first = f"{', '.join(f.mailboxes)}: {why}." if f.action == PAUSE_MAILBOX else f"Why: {why}."
+    else:
+        first = f"*{_what(ctx, f, settings)}* because {why}."
+    return [first, *_effects(ctx, f, settings)]
+
+
+def _headline(ctx: Context, fired: list[Firing], settings: Settings) -> str:
+    if len(fired) > 1:
+        return f"Safety stop: {len(fired)} things paused to protect our email reputation"
+    return f"Safety stop: {_what(ctx, fired[0], settings, short=True)}"
+
+
+def _expired_line(e: Mapping[str, Any], settings: Settings) -> str:
+    boxes = list(e["mailboxes"])
+    who = ", ".join(f"{_first(_owner_of(settings, a))}'s mailbox {a}" for a in boxes)
+    return (f"• {who}: the {BLOCK_PAUSE_DAYS}-day pause after {RULE_WORDS.get(e['rule'], e['rule'])} is over, but the "
+            f"Mailboxes tab still says Paused, so {'they send' if len(boxes) > 1 else 'it sends'} nothing yet.")
 
 
 def message(ctx: Context, fired: list[Firing], expired: list[dict]) -> str:
     settings = holds.with_holds(ctx.store, ctx.settings)  # the holds just recorded count as Paused
-    head = "🛑 Safety stop" if fired else "Safety stop over"
-    lines = [f"{notify.mention(ctx)}{head}, {ctx.now.astimezone(UK):%a %d %b %H:%M} UK"
-             + (" (dry-run: neither the sheet nor Instantly was changed)" if ctx.dry_run else "")]
-    lines += [_line(f, settings) for f in fired]
-    for e in expired:
-        boxes = list(e["mailboxes"])
-        lines.append(f"• The {BLOCK_PAUSE_DAYS}-day pause of {', '.join(boxes)} ({RULE_WORDS.get(e['rule'], e['rule'])}) "
-                     f"is over. To resume: set {'them' if len(boxes) > 1 else 'it'} Active on the Mailboxes tab.")
-    return "\n".join(lines)
+    over = [_expired_line(e, settings) for e in expired]
+    n_over = sum(len(e["mailboxes"]) for e in expired)
+    it = "it" if n_over == 1 else "them"
+    set_active = (f"Once you are happy the cause is fixed, set {it} to Active on the "
+                  f"{say.sheet_link(ctx, 'Mailboxes')}. {_back_on(it)}.")
+    if not fired:
+        head = "Safety stop over: " + ("a mailbox" if n_over == 1 else f"{n_over} mailboxes") + " can send again"
+        return notify.mention(ctx) + say.compose(say.ACTION, head, over, do=set_active)
+    facts: list[str] = []
+    for f in fired:
+        facts += _lines(ctx, f, settings, alone=len(fired) == 1)
+    if over:
+        facts += [f"*Also, a {BLOCK_PAUSE_DAYS}-day pause is over:*", *over, f"• {set_active}"]
+    one = len(fired) == 1
+    do = (f"Find out the cause, then follow the step{'' if one else 's'} above to resume. Until then "
+          f"{'it stays' if one else 'they stay'} paused.")
+    return notify.mention(ctx) + say.compose(say.URGENT, _headline(ctx, fired, settings), facts, do=do,
+                                             why=WHY_IT_MATTERS)
 
 
 def run(ctx: Context) -> dict:
