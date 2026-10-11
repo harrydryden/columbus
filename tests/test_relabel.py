@@ -88,7 +88,7 @@ def test_a_public_body_is_disqualified_but_no_rules_label_is_left_for_the_label_
     assert (a3["status"], a3["tier"], a3["tier_reason"]) == ("disqualified", "Excluded", "a public body, never prospected")
     assert (a1["status"], a1["industry"]) == ("verified", "Advertising agencies")  # untouched: the label check decides
     assert out["cards_withdrawn"] == ["Loop Studio"]
-    assert any("Loop Studio will not be emailed" in blocks_text(u) for u in sl.updates)
+    assert any("Loop Studio won't be emailed" in blocks_text(u) for u in sl.updates)
 
 
 def test_a_company_an_earlier_relabel_disqualified_on_the_rules_alone_is_put_back_for_the_label_check():

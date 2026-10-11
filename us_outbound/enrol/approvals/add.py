@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from us_outbound import labels
+from us_outbound.base import say
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
@@ -28,6 +29,7 @@ from us_outbound.enrol.approvals.model import (
     WAITING,
     Item,
     _cas,
+    _day,
     _esc,
     _save,
     _text,
@@ -40,6 +42,7 @@ from us_outbound.enrol.approvals.relabel import label_unfit
 from us_outbound.enrol.approvals.thread import _seed, _thread
 from us_outbound.enrol.approvals.transitions import _close, _hold, transition, withdraw
 from us_outbound.logs import log
+from us_outbound.timeparse import iso_date
 
 
 def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
@@ -84,8 +87,9 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
             return result
         reasons = "; ".join(check.blocks)
         closed = _close(ctx, item, BLOCKED, by, slack, reason=reasons, via=via, status=f"⛔ Not sent: {_esc(reasons)}",
-                        note=f"⛔ Not added ({_who(by)}): {_esc(reasons)}. Closed: nothing was sent, and "
-                             f"{_esc(item.company)} goes back to the queue if it can still be emailed.")
+                        note=f"⛔ Not added (approved {_who(by)}, but the last check before adding stopped it): "
+                             f"{_esc(reasons)}. Nothing was sent and nothing is needed: the card is closed, and "
+                             f"{_esc(item.company)} goes back in the queue if it can still be emailed.")
         if closed and check.exclude:  # HubSpot excludes it now: kept out at the next rescore too
             enrol.mark_excluded(ctx, {"account_id": item.account_id}, *check.exclude)
         return result
@@ -116,9 +120,10 @@ def send(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> d
         if instantly_client.plan_full_error(exc):  # the whole add refused for want of room: held, not failed
             return {**result, **_plan_full(ctx, item, by=by, via=via, slack=slack, alert=plan.full_alert(ctx))}
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
-        note = _thread(slack, item, f"Not added: Instantly refused: {_esc(str(exc)[:200])}. Check {_esc(campaign)} in "
-                                    f"Instantly for {_esc(item.email)} before you approve it again: ✅ this message, or "
-                                    "reply \"send\".")
+        note = _thread(slack, item, f"⚠️ Not added: Instantly refused it ({_esc(str(exc)[:200])}). Nothing was sent.\n"
+                                    f"*What to do:* check {_esc(campaign)} in Instantly for {_esc(item.email)}, then ✅ "
+                                    "this message or reply \"send\" to try again. Otherwise the card expires at the "
+                                    f"end of {_day(iso_date(p.get('expires_on')))} (UK).")
         _seed(slack, item.channel, note, SEED_APPROVE[:1])
         p.update(approve_ts=note, failed={**p.pop("sending", {}), "error": why})
         transition(ctx, item, WAITING)
@@ -171,16 +176,17 @@ def _added(ctx: Context, item: Item, lead_id: str, *, by: str, via: str, slack: 
             log("campaign_resumed", campaign=campaign, item_id=item.id)
     except (ApiError, LookupError, ConfigError) as exc:
         log("campaign_resume_failed", campaign=campaign, item_id=item.id, error=str(exc)[:200])
-        resume = (f" ⚠️ {_esc(campaign)} is completed in Instantly and could not be resumed, so it won't send until "
-                  "someone runs `us-outbound start --live`.")
+        resume = (f"\n⚠️ But {_esc(campaign)} is marked completed in Instantly and could not be restarted, so nothing "
+                  f"sends yet.\n*What to do:* run {say.command('start --live')}.")
     at = _uk_time(ctx)
     p["added"] = {"lead_id": lead_id, "at": ctx.now.isoformat(), "by": by, "campaign": campaign}
     first = _esc((p.get("contact") or {}).get("first_name") or "they")
     days = ", ".join(str(d) for d in FOLLOW_UP_DAYS[:-1]) + f" and {FOLLOW_UP_DAYS[-1]}"
     _close(ctx, item, outcome, by, slack, via=via,
            status=f"✅ Approved{' (edited)' if edited else ''} {_who(by)} at {at} UK · added to {_esc(campaign)}",
-           note=f"Added to {_esc(campaign)} at {at} UK{' (edited)' if edited else ''}, approved {_who(by)}. Email 1 goes "
-                f"out in the next send window, and the follow-ups on days {days} unless {first} replies.{resume}")
+           note=f"✅ Added to {_esc(campaign)} in Instantly at {at} UK{' (edited)' if edited else ''}, approved "
+                f"{_who(by)}. Email 1 goes out in the next send window, then the follow-ups on days {days} unless "
+                f"{first} replies." + (resume or " Nothing more to do."))
     return {"added": True, "outcome": outcome, "campaign": campaign, "at": f"{at} UK"}
 
 
@@ -190,9 +196,10 @@ def _refused(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> dict
     pick_contacts finds the next person and a later enrol proposes them."""
     why = enrol.NOT_ADDED
     company = _esc(item.company)
-    if _close(ctx, item, BLOCKED, by, slack, reason=why, via=via, status=f"⛔ Not sent: {why}",
-              note=f"⛔ Instantly did not add {_esc(item.email)} (in its blocklist, or already in another campaign). "
-                   f"Closed: nothing was sent. {_esc(item.person)} won't be proposed again; you'll get a card for the "
-                   f"next person at {company}."):
+    if _close(ctx, item, BLOCKED, by, slack, reason=why, via=via,
+              status="⛔ Not sent: Instantly did not take this address (on its blocklist, or already in another campaign)",
+              note=f"⛔ Instantly did not add {_esc(item.email)} (it is on Instantly's blocklist, or already in another "
+                   f"campaign). Nothing was sent and nothing is needed: {_esc(item.person)} won't be proposed again, "
+                   f"and you'll get a card for the next person at {company}."):
         enrol.mark_not_added(ctx, item.contact_id)
     return {"added": False, "outcome": BLOCKED, "why": [why]}

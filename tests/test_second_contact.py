@@ -344,10 +344,11 @@ def test_the_card_says_it_is_the_second_contact_and_who_the_first_was():
     assert (p["contact_slot"], p["first_contact"]["contact_id"], p["owner"]) == (2, "nw-jane", "Hannah Spalding")
     [card] = sl.cards()
     text = blocks_text(card)
-    assert text.startswith("Send approval · second contact · *Northwind*")
+    assert text.startswith(":raised_hand: *Approve 4 emails to Omar Reyes, a second contact at Northwind*")
     assert ("*Second contact* at Northwind: the first was Jane Doe, Head of People (People leader), email 1 on "
             "Fri 23 Oct. Same sender; both people's emails stop when either replies.") in text
-    assert card["text"].startswith("Send approval (second contact): Northwind · Omar Reyes · from Hannah Spalding")
+    assert card["text"].startswith("Approve 4 emails to Omar Reyes, a second contact at Northwind, from Hannah "
+                                   "Spalding: “")
     sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
     assert poll(ctx)["outcomes"] == {"approved": 1}
     [add] = instantly_posts(t)
@@ -377,7 +378,8 @@ def test_the_drop_company_choice_says_the_first_s_emails_carry_on():
     p = {"company": "Northwind", "contact": {"first_name": "Omar"}, "expires_on": "2026-10-28", "contact_slot": 2}
     assert "🚫 *company*: drop Northwind: no second contact there (the first person's emails carry on)" in \
         approvals.choices_text(p, "U_HARRY")
-    assert "🚫 *company*: drop Northwind\n" in approvals.choices_text({**p, "contact_slot": 1}, "U_HARRY")
+    assert "🚫 *company*: drop Northwind: it is never emailed\n" in approvals.choices_text({**p, "contact_slot": 1},
+                                                                                         "U_HARRY")
 
 
 # -- pick_contacts ------------------------------------------------------------------------------------------------------

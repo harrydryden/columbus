@@ -266,9 +266,11 @@ def test_a_hold_posts_one_note_per_reason_and_the_tick_goes_through_once_every_h
     out = poll(ctx)
     assert out["outcomes"] == {} and out["held"][0]["item"] == row["item_id"][:8] and instantly_posts(t) == []
     [note] = _held_notes(sl, row)
-    assert note.startswith("⏸ Approved by <@U_HARRY>, but not added yet: enrollment is stopped by an operator")
-    assert note.endswith("It goes through by itself once that clears, until the card expires at the end of "
-                         "Wed 28 Oct (UK). ❌ still stops it.")
+    assert note == ("⏸ Approved by <@U_HARRY>, but not added yet: new emails are stopped: someone ran the emergency "
+                    "stop (Tue 27 Oct 11:00 UK).\n"
+                    "*What to do:* when it is safe to send again, run `railway ssh -- us-outbound start --live`.\n"
+                    "Your ✅ stands: it goes through by itself once this clears, until the card expires at the end of "
+                    "Wed 28 Oct (UK). ❌ on the card still stops it.")
     for _ in range(3):  # every 5 minutes: no note again
         poll(ctx)
     assert len(_held_notes(sl, row)) == 1
@@ -279,6 +281,8 @@ def test_a_hold_posts_one_note_per_reason_and_the_tick_goes_through_once_every_h
     poll(ctx)
     notes = _held_notes(sl, row)
     assert len(notes) == 2 and "new emails wait while 1 positive reply has waited over 24 hours" in notes[1]
+    assert ("*What to do:* approve or skip the positive replies waiting in Slack; this one then goes through."
+            in notes[1])
     p = item_for(ctx, "acc-1")["payload"]
     assert p["held"]["noted"] == ["operator_stop", "reply_pause"] and p["held"]["by"] == "U_HARRY"
     assert (item_for(ctx, "acc-1")["status"], p["state"], p["outcome"]) == ("open", "waiting", "")
@@ -339,7 +343,10 @@ def test_a_held_card_that_never_clears_expires_and_says_so():
     out = poll(ctx)  # Thu 00:00 UK
     assert out["outcomes"] == {"expired": 3}
     reason = item_for(ctx, "acc-1")["payload"]["reason"]
-    assert reason.startswith("approved, but still held at the end of Wed 28 Oct (UK): enrollment is stopped by an operator")
+    assert reason.startswith("approved, but still held at the end of Wed 28 Oct (UK): new emails are stopped: someone "
+                             "ran the emergency stop")
+    assert any(x.startswith("⌛ Expired: approved, but still held") and "Nothing was sent and nothing is needed: "
+               "Acme Creative goes back in the queue and may get a new card later." in x for x in sl.texts())
     assert item_for(ctx, "acc-2")["payload"]["reason"] == "not approved by the end of Wed 28 Oct (UK)"
 
 
@@ -352,18 +359,24 @@ def test_holds_from_instantly_the_campaign_and_the_opt_out_test():
     ctx, t, sl, row = _approved()
     ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, optout_tested=False))
     poll(ctx)
-    assert _held_notes(sl, row)[-1].startswith("⏸ Approved by <@U_HARRY>, but not added yet: optout_tested is no")
+    note = _held_notes(sl, row)[-1]
+    assert note.startswith("⏸ Approved by <@U_HARRY>, but not added yet: the test of Instantly's unsubscribe link is "
+                           "not done yet (`optout_tested` = no on the General tab).")
+    assert ("*What to do:* once the seed-inbox test of Instantly's unsubscribe link is done, set `optout_tested` to "
+            "yes on the ") in note and "General tab>." in note
     ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, optout_tested=True))
     t.route("GET", "/campaigns", {"error": "down"}, status=503)
     poll(ctx)
-    assert "Instantly could not be read (ApiError" in _held_notes(sl, row)[-1]
+    assert "Instantly did not answer (ApiError" in _held_notes(sl, row)[-1]
+    assert "*What to do:* nothing for now: it is tried again every 5 minutes." in _held_notes(sl, row)[-1]
     harry_paused = [dict(c, status=2) if c["id"] == "c-harry" else c for c in CAMPAIGNS["items"]]
     t.route("GET", "/campaigns", {"items": harry_paused})
     poll(ctx)
     assert _held_notes(sl, row)[-1].endswith(
-        "not added yet: Harry Dryden's campaign is not active in Instantly (paused): run `us-outbound start --live`. "
-        "It goes through by itself once that clears, until the card expires at the end of Wed 28 Oct (UK). "
-        "❌ still stops it.")
+        "not added yet: Harry Dryden's campaign is not active in Instantly (paused): run "
+        "`railway ssh -- us-outbound start --live`.\n*What to do:* fix the campaign as above; this then goes through.\n"
+        "Your ✅ stands: it goes through by itself once this clears, until the card expires at the end of Wed 28 Oct "
+        "(UK). ❌ on the card still stops it.")
     assert item_for(ctx, "acc-1")["payload"]["held"]["noted"] == ["optout_tested", "instantly", "campaign"]
     assert instantly_posts(t) == [] and item_for(ctx, "acc-1")["status"] == "open"
     t.route("GET", "/campaigns", CAMPAIGNS)
@@ -390,8 +403,8 @@ def test_a_blackout_on_instantlys_next_send_day_holds_but_a_weekend_does_not():
     ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
                                                                                   blackout_dates=blackout))
     held = approvals.recheck(ctx, item).holds
-    assert held == {"blackout": "Mon 2 Nov is a blackout date, and Instantly (which does not know our blackout dates) "
-                                "would send email 1 then"}
+    assert held == {"blackout": "Instantly would send email 1 on Mon 2 Nov, one of our blackout dates (Instantly does "
+                                "not know them)"}
 
 
 def test_blocks_still_close_the_card_while_holds_keep_it_open():
@@ -404,7 +417,7 @@ def test_blocks_still_close_the_card_while_holds_keep_it_open():
     assert out["outcomes"] == {"blocked": 1}
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["payload"]["outcome"]) == ("handled", "blocked")
-    assert row["payload"]["reason"] == "Acme Creative is Held now (Held: no HQ state)"
+    assert row["payload"]["reason"] == "Acme Creative is no longer in the queue to email (it is now Held: no HQ state)"
 
 
 # -- A5: HubSpot at the ✅ ------------------------------------------------------------------------------------------
@@ -436,7 +449,7 @@ def test_a_hubspot_error_at_the_tick_holds():
     t.route("POST", "/crm/v3/objects/contacts/search", {"message": "boom"}, status=500)
     out = poll(ctx)
     assert out["outcomes"] == {} and instantly_posts(t) == []
-    assert "HubSpot could not be read for the re-check" in _held_notes(sl, row)[0]
+    assert "HubSpot did not answer for the last check" in _held_notes(sl, row)[0]
     assert item_for(ctx, "acc-1")["payload"]["held"]["noted"] == ["hubspot"]
     t.route("POST", "/crm/v3/objects/contacts/search", {"results": []})
     assert poll(ctx)["outcomes"] == {"approved": 1}
@@ -452,7 +465,8 @@ def test_a_dry_cli_approval_reports_the_holds_and_changes_nothing():
 
     ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, live_sending=False))
     out = approvals.approve(ctx, before["item_id"])
-    assert out["dry_run"] is True and out["added"] is False and out["held"] == ["live_sending is no"]
+    assert out["dry_run"] is True and out["added"] is False and out["held"] == [
+        "sending is switched off on the General tab (`live_sending` = no)"]
     assert item_for(ctx, "acc-1") == before
 
 

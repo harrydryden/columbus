@@ -430,13 +430,14 @@ def test_the_card_names_the_test_and_the_arm_and_shows_the_arm_s_email():
                                                                                         "warm intro", "")
     text = card_for(ctx, sl, "acc-3")
     facts = text.split("\n")[1]  # the context line under the head
-    assert facts.startswith("Control · score 5 · General · ")
-    assert facts.endswith(" · Test: warm-intro · warm intro")
+    assert facts.startswith("*Why this company:* Comparison group (score 5, a lower-scoring company, emailed to "
+                            "check the scoring works) · pitch: the general one · ")
+    assert facts.endswith(" · Copy test: warm-intro · version: warm intro")
     assert f"> Hi Lee,\n> \n> {WARM}\n> \n> {GENERAL_OPENER}" in text
     assert loop["steps"][0]["source"].startswith(f"Hi Lee,\n\n{WARM}\n\n{GENERAL_OPENER}")  # an edit starts here
     assert WARM in loop["lead"]["custom_variables"]["s1_body"]
     acme = item_for(ctx, "acc-1")["payload"]
-    assert "Test: warm-intro · no intro" in card_for(ctx, sl, "acc-1") and WARM not in acme["steps"][0]["source"]
+    assert "Copy test: warm-intro · version: no intro" in card_for(ctx, sl, "acc-1") and WARM not in acme["steps"][0]["source"]
     assert acme["test_arm"] == "b" and acme["test_name"] == "no intro"
 
 
@@ -447,11 +448,11 @@ def test_the_card_says_when_the_account_is_not_in_the_test():
     ctx, t, sl, _ = proposed(tests=(swap,), copy=(make_settings().copy[0], general))
     p = item_for(ctx, "acc-2")["payload"]
     assert (p["test_id"], p["test_arm"]) == ("", "")
-    assert ("Test: warm-intro · not in the test (its email 1 (general-v1) does not have the text the test replaces)"
-            in card_for(ctx, sl, "acc-2"))
+    assert ("Copy test: warm-intro · not in the test (its email 1 (general-v1) does not have the text the test "
+            "replaces)" in card_for(ctx, sl, "acc-2"))
     assert approvals.test_label({"test_id": "", "test_note": ""}) == ""  # no copy test running
-    assert approvals.test_label({"test_id": "t1-agencies", "copy_version": "agencies-v2"}) == "Test: t1-agencies · " \
-                                                                                              "agencies-v2"
+    assert approvals.test_label({"test_id": "t1-agencies", "copy_version": "agencies-v2"}) == (
+        "Copy test: t1-agencies · version: agencies-v2")
 
 
 def test_an_edited_card_keeps_its_arm_and_is_recorded_as_edited():
