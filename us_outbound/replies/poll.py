@@ -101,6 +101,7 @@ from collections.abc import Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from us_outbound.base import say
 from us_outbound.budget import is_send_day
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError
@@ -119,11 +120,10 @@ KIND = "reply"  # hitl_items.kind for a reply waiting for a person (the reply de
 OOO_KIND = "out_of_office"  # hitl_items.kind for an out-of-office record (status handled)
 OPEN, HANDLED = "open", "handled"
 REPLY_SOURCE = "reply"  # suppression.source for an opt-out by reply
-LABELS = {
-    "positive": "Positive", "referral": "Referral", "objection": "Objection", "not_now": "Not now",
-    "negative": "Negative", "out_of_office": "Out of office", "wrong_person": "Wrong person",
-    "unsubscribe": "Unsubscribe", "other": "Other",
-}
+LABELS = {cls: label for cls, (label, _) in desk.CLASS_WORDS.items()}  # "Interested", "Not now", "Wrong person"
+# Each tier in plain words (scoring/tiers.py), for the alert's "Who" line.
+TIER_WORDS = {"Priority": "top fit (Priority)", "Standard": "good fit (Standard)",
+              "Control": "comparison group (Control)"}
 EXCERPT_CHARS = 500  # the payload's reply_excerpt (the contract)
 SLACK_EXCERPT_CHARS = 300
 STORED_TEXT_CHARS = 5000  # events.reply_text
@@ -137,9 +137,20 @@ NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply 
 OOO_RESUME_SEND_DAYS = 2  # set going again two send days after the return date (gtm-review 03 §6)
 INTERESTED_CLASSES = frozenset({"positive"})  # marked "Interested" in Instantly (not referral: see the docstring)
 INTERESTED = "interested"  # the payload's instantly_interest once it is set
-FOOTER = ('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: <new text>" to change it, '
-          'then ✅ the new version · "send: <text>" sends your text now')
-NO_DRAFT_FOOTER = '❌ skips it (you\'ll answer yourself) · "send: <text>" sends your text now'
+# The alert's last section: what each reaction or thread reply does (replies/desk.py reads them; the words themselves
+# never change). Already Slack-escaped.
+FOOTER = "\n".join([
+    "*What to do* (only an approver's reaction or reply counts; nothing goes out until one approves):",
+    "• ✅ on this message, or reply `send` in the thread: sends the draft as it is",
+    "• reply `edit: &lt;new text&gt;`: replaces the draft; the new one is posted in the thread for your ✅",
+    "• reply `send: &lt;your text&gt;`: sends your own text instead, straight away",
+    "• ❌, or reply `skip`: sends nothing and closes it (you answer them yourself, or it needs no answer)",
+])
+NO_DRAFT_FOOTER = "\n".join([
+    "*What to do* (only an approver's reaction or reply counts):",
+    "• reply `send: &lt;your text&gt;` in the thread: sends your text from the mailbox they wrote to",
+    "• ❌, or reply `skip`: sends nothing and closes it (you answer them yourself, or it needs no answer)",
+])
 
 
 def _lower(v: Any) -> str:
@@ -367,6 +378,23 @@ def _opt_out_addresses(email: Mapping[str, Any], m: Match) -> list[str]:
     return [a for a in out if a]
 
 
+def opt_out_note(info: Mapping[str, Any], *, from_is_contact: bool, by_rule: bool, result: str) -> str:
+    """The note in the alert channel when a reply asks to stop (information: the opt-out is done, or retried)."""
+    company = _esc(info.get("company") or "their company")
+    who = _esc(info.get("contact_name") or "The contact") if from_is_contact else f"Someone else at {company}"
+    at = "" if not from_is_contact else f" at {company}"
+    spotted = "the stop-word check" if by_rule else "Claude"
+    if result == optout.PENDING:
+        done = ("On our do-not-contact list now. Instantly's blocklist or HubSpot's opt-out did not take it yet; "
+                "the next check for replies (every 15 minutes) tries again.")
+    else:
+        done = "No more emails: on our do-not-contact list, Instantly's blocklist and HubSpot's opt-out (if HubSpot has them)."
+    return say.compose(say.DONE if result != optout.PENDING else say.INFO,
+                       f"{who}{at} asked us to stop emailing, so they are opted out",
+                       [f"{done} Read as a stop request by {spotted}; they wrote to {_esc(info.get('mailbox'))}. "
+                        "Nothing to do."])
+
+
 def _note(ctx: Context, text: str) -> None:
     """A one-line note in the alert channel (live; nothing when Slack is not set up)."""
     slack = _slack(ctx)
@@ -425,10 +453,8 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
             account_id=info["account_id"], mailbox=mailbox, occurred_at=received, source=REPLY_SOURCE, done=done,
         )
         out["opted_out"][result] += 1
-        who = info["contact_name"] if m.from_is_contact else f"someone else at {info['company']}"
-        _note(ctx, f"Opted out · {_esc(info['company'])} · {_esc(who or 'the contact')} asked to stop "
-                   f"({'stop rule' if verdict.source == 'rule' else 'Claude'}); suppressed, blocklisted, HubSpot opt-out "
-                   f"where they exist ({result}).")
+        _note(ctx, opt_out_note(info, from_is_contact=m.from_is_contact, by_rule=verdict.source == "rule",
+                                result=result))
     elif cls == "out_of_office":
         _record_ooo(ctx, verdict, info, text, out)
         ctx.store.upsert("events", [event])
@@ -521,64 +547,84 @@ def _slack(ctx: Context):
 
 
 def _notes(p: Mapping[str, Any]) -> list[str]:
+    """The alert's "Worth knowing" lines: what the reply and the account add, and anything to check."""
     notes = []
     if p.get("why"):
-        notes.append(f"Why this account: {_esc(p['why'])}")
+        notes.append(f"Why we emailed them: {_esc(p['why'])}")
     if p.get("demo_requested"):
-        notes.append("Asked for a demo.")
+        notes.append("They asked for a demo.")
     if p.get("reply_class") == "objection" and p.get("objection") not in (None, "", "none"):
-        notes.append(f"Objection: {_esc(str(p['objection']).replace('_', ' '))}")
+        notes.append(f"Their objection: {_esc(str(p['objection']).replace('_', ' '))}")
     if p.get("competitor_named"):
-        notes.append(f"Competitor named: {_esc(p['competitor_named'])}")
+        notes.append(f"They named a competitor: {_esc(p['competitor_named'])}")
     ref = p.get("referral") or {}
     if ref:
-        notes.append("Referral: " + _esc(", ".join(v for v in (ref.get("name"), ref.get("title"), ref.get("email")) if v)))
+        notes.append("They pointed us to: "
+                     + _esc(", ".join(v for v in (ref.get("name"), ref.get("title"), ref.get("email")) if v)))
     if p.get("follow_up_date"):
         d = iso_date(p["follow_up_date"])
         when = f"{d:%a %d %b %Y}" if d else str(p["follow_up_date"])
-        notes.append(f"Follow up on {when}" + (" (the date they gave)." if p.get("follow_up_source") == "reply"
-                                               else " (no date given; the draft asks when)."))
+        notes.append(f"Date to follow up: {when}" + (" (the date they gave)." if p.get("follow_up_source") == "reply"
+                                                     else " (they gave none; the draft asks them when)."))
     if p.get("classified_by") == "fallback":
-        notes.append(f"Not classified ({_esc(p.get('classification_error'))}): read the reply yourself.")
+        notes.append(f"Not sorted automatically ({_esc(p.get('classification_error'))}): read the reply yourself.")
     elif p.get("reply_class") == "other" and p.get("model_class") not in (None, "", "other"):
-        notes.append(f"Claude was not sure: it read this as {_esc(p['model_class'])} at {float(p.get('confidence') or 0):.0%}.")
+        notes.append(f"Claude was not sure: it read this as {_esc(desk.class_label(p['model_class']))} at "
+                     f"{float(p.get('confidence') or 0):.0%}, too unsure to count, so it is marked Unclear.")
     if p.get("sequence_may_continue"):
-        notes.append("Instantly may not have stopped this lead's sequence (it took the reply for an auto-reply, or tied "
-                     "it to no lead): " + ("the job paused the lead." if p.get("sequence_paused")
-                                           else "pause the lead in Instantly."))
+        notes.append("Instantly may still send them the rest of the email sequence (it took this for an automatic "
+                     "reply, or could not match it to the lead): "
+                     + ("the system has paused them there." if p.get("sequence_paused")
+                        else "*pause this person in their Instantly campaign* so the follow-ups stop."))
     return notes
 
 
 def alert(payload: Mapping[str, Any], settings: Settings) -> tuple[str, list[dict]]:
-    """The SPEC 11 Slack alert for one item: (notification text, Block Kit blocks)."""
+    """The SPEC 11 Slack alert for one item: (notification text, Block Kit blocks).
+
+    It reads on its own for someone new (Harry, 12 Oct 2026): who replied, what they said, what the system takes it
+    for, the draft, and what each reaction or reply does."""
     p = payload
     cls = str(p.get("reply_class") or "other")
-    where = f"{p.get('company')} ({p['place']})" if p.get("place") else str(p.get("company") or "")
-    head = " · ".join(x for x in (f"{LABELS.get(cls, cls)} reply", where, p.get("industry"), p.get("tier")) if x)
+    company = str(p.get("company") or "")
+    label, meaning = desk.class_label(cls), desk.class_meaning(cls)
+    contact = ", ".join(x for x in (p.get("contact_name"), p.get("title")) if x) or "the contact"
+    if p.get("from_is_contact"):
+        name = str(p.get("contact_name") or "The contact")
+        replier = f"{name} at {company}" if company else name
+        who = contact
+    else:
+        replier = f"Someone else at {company or 'the company'}"
+        who = f"someone else at {company or 'the company'}, not the person we emailed ({contact})"
+    where = f"{company} ({p['place']})" if p.get("place") else company
+    account = " · ".join(str(x) for x in (where, p.get("industry"), TIER_WORDS.get(str(p.get("tier")), p.get("tier")))
+                         if x)
     mention = " ".join(f"<@{u}>" for u in settings.general.approver_slack_ids) if cls in WARM_REPLY_CLASSES else ""
-    who = ", ".join(x for x in (p.get("contact_name"), p.get("title")) if x) or "the contact"
-    if not p.get("from_is_contact"):
-        who = f"someone else at {p.get('company') or 'the account'} (the contact is {who})"
     excerpt = str(p.get("reply_excerpt") or "")[:SLACK_EXCERPT_CHARS]
-    sections = [
-        "\n".join([f"*{_esc(head)}*" + (f" {mention}" if mention else ""),
-                   f"From: {_esc(who)} → {_esc(p.get('mailbox'))}",
-                   f"\"{_esc(excerpt)}\""]),
+    owner = str(p.get("owner") or "")
+    icon = say.DECIDE if p.get("draft") else say.ACTION
+    first = [
+        f"{icon} *{_esc(replier)} replied: {_esc(label)}*" + (f" {mention}" if mention else ""),
+        f"*Who:* {_esc(who)}" + (f" · {_esc(account)}" if account else ""),
+        f"*They wrote to:* {_esc(p.get('mailbox'))}" + (f" ({_esc(owner)}'s mailbox)" if owner else ""),
+        "*What they said:*",
+        "\n".join(f"> {_esc(line)}" for line in (excerpt or "(no text)").split("\n")),
+        f"*What the system thinks it is:* {_esc(label)}" + (f": {_esc(meaning)}." if meaning else "."),
     ]
+    sections = ["\n".join(first)]
     notes = _notes(p)
     if notes:
-        sections.append("\n".join(notes))
-    owner = str(p.get("owner") or "")
+        sections.append("\n".join(["*Worth knowing:*", *(f"• {n}" for n in notes)]))
     if p.get("draft"):
-        handoff = "; hands the demo to Harry" if cls == "positive" and owner != settings.general.demo_host else ""
-        sections.append(f"Draft reply (signed {_esc(owner)}{handoff}):\n"
+        handoff = "; it hands the demo to Harry" if cls == "positive" and owner != settings.general.demo_host else ""
+        sections.append(f"*The draft answer* (from {_esc(p.get('mailbox'))}, signed {_esc(owner)}{handoff}):\n"
                         + "\n".join(f"> {_esc(line)}" for line in str(p["draft"]).split("\n")))
     else:
-        why = "; ".join(str(x) for x in (p.get("draft_problems") or [])[:3]) or "none written"
-        sections.append(f"No draft ({_esc(why)}). Reply \"send: &lt;your text&gt;\" to answer, or \"skip\".")
-    sections.append(_esc(FOOTER if p.get("draft") else NO_DRAFT_FOOTER))
+        why = "; ".join(re.sub(r"^no draft:\s*", "", str(x)) for x in (p.get("draft_problems") or [])[:3]) or "none was written"
+        sections.append(f"*No draft* ({_esc(why)}): the answer has to be written by hand.")
+    sections.append(FOOTER if p.get("draft") else NO_DRAFT_FOOTER)
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": s[:SLACK_SECTION_CHARS]}} for s in sections]
-    return _esc(f"{head}: \"{excerpt[:150]}\""), blocks
+    return _esc(f"{replier} replied: {label}. \"{excerpt[:150]}\""), blocks
 
 
 def _post_pending(ctx: Context, out: dict) -> None:

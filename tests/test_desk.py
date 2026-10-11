@@ -140,8 +140,11 @@ def test_send_in_the_thread_sends_the_draft_from_the_mailbox_written_to(settings
     assert (event["type"], event["approval"], event["approved_by"], event["mailbox"]) == (
         "reply_sent", "approved", HARRY_ID, HANNAH)
     assert event["step"] is None and ctx.store.select("events", {"type": "sent"}) == []  # no campaign send
-    assert any(t_.startswith("Sent from hannah@meetspill.org at 16:00 UK") for t_ in sl.texts())  # SPEC 11's words
-    assert any(t_.startswith("HubSpot: https://app.hubspot.com/contacts/8481055/record/0-2/") for t_ in sl.texts())
+    assert any(t_.startswith(":white_check_mark: *Sent* from hannah@meetspill.org at 16:00 UK, approved by <@U_HARRY>. "
+                             "Nothing more to do.") for t_ in sl.texts())  # SPEC 11's words
+    assert any(t_.startswith(":link: *Added to HubSpot* (the company, the contact and this reply): "
+                             "<https://app.hubspot.com/contacts/8481055/record/0-2/") and
+               t_.endswith("|open the company in HubSpot>") for t_ in sl.texts())
     assert crm.objects["companies"] and out["sent"][0]["approval"] == "approved"
     # Idempotent: the next run sends nothing more.
     poll(ctx)
@@ -181,14 +184,15 @@ def test_edit_replaces_the_draft_and_needs_a_fresh_approval(settings):
     assert inst.replies == []  # the ✅ was on the draft before the edit
     row = row_of(ctx)
     assert row["payload"]["draft"] == new and row["payload"]["draft_original"] == original
-    repost = next(p for p in sl.posts if p["text"].startswith("Draft changed by <@U_HANNAH>"))
+    repost = next(p for p in sl.posts if p["text"].startswith(":pencil2: *Draft changed by <@U_HANNAH>.* To send this version: ✅ on this message, or "
+                                                        "reply `send`. To send nothing: ❌ or `skip`."))
     assert row["payload"]["desk"]["approve_ts"] == repost["ts"]
     sl.react("white_check_mark", HARRY_ID, ts=repost["ts"])
     poll(ctx)
     [sent] = inst.replies
     assert sent["body"]["text"] == new
     assert ctx.store.get("events", event_id="sent-1")["approval"] == "edited"
-    assert any("(edited)" in x for x in sl.texts())
+    assert any("(the edited version)" in x for x in sl.texts())
 
 
 def test_send_colon_sends_that_text(settings):
@@ -214,7 +218,8 @@ def test_skip_marks_it_handled_and_sends_nothing(settings, how):
     assert row_of(ctx)["status"] == "handled"
     replied = ctx.store.get("events", event_id="em-1")
     assert (replied["approval"], replied["approved_by"]) == ("skipped", HARRY_ID)
-    assert any(x.startswith("Skipped by <@U_HARRY>") for x in sl.texts())
+    assert any(x == ":white_check_mark: *Closed without sending* (skipped by <@U_HARRY>). If they need an answer, "
+                    "reply to them yourself from hannah@meetspill.org." for x in sl.texts())
 
 
 def test_the_copy_rules_block_a_send(settings):
@@ -223,9 +228,11 @@ def test_the_copy_rules_block_a_send(settings):
     out = poll(ctx)
     assert inst.replies == [] and row_of(ctx)["status"] == "open"
     assert out["not_sent"] and any("therap" in w for w in out["not_sent"][0]["why"])
-    assert any(x.startswith("Not sent:") for x in sl.texts())
+    [note] = [x for x in sl.texts() if x.startswith(":warning: *Not sent:* ")]
+    assert "therap" in note and note.endswith("\n*What to do:* reply `edit: &lt;fixed text&gt;` and then `send`, or "
+                                              "`send: &lt;fixed text&gt;` to send your version straight away.")
     poll(ctx)  # not retried: the "send" was read, and no ✅ counts any more
-    assert inst.replies == [] and sum(x.startswith("Not sent:") for x in sl.texts()) == 1
+    assert inst.replies == [] and sum(x.startswith(":warning: *Not sent:*") for x in sl.texts()) == 1
 
 
 def test_a_failed_send_is_never_retried_without_a_person(settings):
@@ -236,6 +243,10 @@ def test_a_failed_send_is_never_retried_without_a_person(settings):
     row = row_of(ctx)
     assert row["status"] == "open" and "500" in row["payload"]["desk"]["failed"]["error"]
     assert "sending" not in row["payload"]["desk"]
+    [note] = [x for x in sl.texts() if "Instantly answered" in x]
+    assert note.startswith(":warning: *Probably not sent: Instantly answered with an error* (")
+    assert note.endswith("*What to do:* look in the Sent folder of hannah@meetspill.org. Not there: reply `send` to try "
+                         "again. There: reply `skip` to close this.")
     inst.reply_status = 200
     poll(ctx)  # the ✅ is still on the alert, but it no longer counts
     assert inst.replies == []
@@ -253,6 +264,10 @@ def test_a_reply_outside_a_us_outbound_thread_is_refused_once(settings):
     with pytest.raises(GuardViolation, match="US Outbound"):
         poll(ctx)
     assert row_of(ctx)["status"] == "open" and inst.replies == []
+    [note] = [x for x in sl.texts() if "safety rule" in x]
+    assert note.startswith(":warning: *Not sent: a safety rule stopped it* (")
+    assert note.endswith("*What to do:* answer them yourself from hannah@meetspill.org, then reply `skip` here to close "
+                         "this.")
     poll(ctx)  # the refusal is not retried every five minutes
     assert inst.replies == []
 
@@ -274,7 +289,9 @@ def test_an_item_left_sending_goes_back_to_a_person(settings):
     out = poll(ctx)
     assert out["unsure"] == [ITEM[:8]] and inst.replies == []
     assert row_of(ctx)["status"] == "open" and row_of(ctx)["payload"]["desk"]["unsure"]["by"] == HARRY_ID
-    assert any("can't tell whether the reply went out" in x for x in sl.texts())
+    assert (":warning: *Not sure the answer went out:* the run sending it stopped part-way.\n*What to do:* look in the "
+            "Sent folder of hannah@meetspill.org. Not there: reply `send` to send it. There: reply `skip` to close this."
+            in sl.texts())
     poll(ctx)
     assert inst.replies == []  # the old ✅ does not resend it
 
@@ -309,8 +326,14 @@ def test_repost_after_two_hours_between_13_and_23_uk(settings, uk_hour, minutes_
     posts = [p for p in sl.posts if p.get("reply_broadcast")]
     assert bool(posts) is reposted
     if reposted:
-        assert posts[0]["thread_ts"] == ALERT_TS and posts[0]["text"].startswith("<@U_HANNAH> <@U_HARRY> Still waiting")
-        assert "replies approve item-000" in posts[0]["text"]
+        text = posts[0]["text"]
+        hours = minutes_old // 60
+        assert posts[0]["thread_ts"] == ALERT_TS and text.startswith(
+            f"<@U_HANNAH> <@U_HARRY> :raised_hand: *Still waiting after {hours} hours: a reply from Jane Doe at Acme "
+            "Creative (Interested)*\nThey wrote to hannah@meetspill.org. Nobody has sent or skipped the answer yet.")
+        assert "*What to do:* in this thread, ✅ on the draft (or reply `send`) sends it" in text
+        assert "`railway ssh -- us-outbound replies approve item-000 --live`" in text
+        assert text.endswith("If nobody acts, it goes to harry@spill.chat once it has waited 24 hours.")
         assert row_of(ctx)["reposted_at"] == now
         poll(ctx)
         assert len([p for p in sl.posts if p.get("reply_broadcast")]) == 1  # once
@@ -337,7 +360,8 @@ def test_after_24_hours_a_reply_is_forwarded_to_harry(settings):
     row = row_of(ctx)
     assert (row["status"], row["escalated_at"]) == ("escalated", NOW) and out["escalated"][0]["how"] == "forwarded"
     assert ctx.store.get("events", event_id=f"escalated:{ITEM}")["type"] == "escalated"
-    assert any(x.startswith("Escalated to harry@spill.chat after 24 hours") for x in sl.texts())
+    assert (":outbox_tray: *Escalated to harry@spill.chat* after 24 hours with no answer, by email (the reply "
+            "forwarded to them). You can still send or skip it here." in sl.texts())
     poll(ctx)
     assert len(inst.forwards) == 1  # once
     sl.say(HARRY_ID, "send")  # an escalated item can still be approved
@@ -353,7 +377,19 @@ def test_without_the_forward_endpoint_a_hubspot_task_and_a_dm(settings):
     due_now = [task for task in crm.objects["tasks"].values() if task["hs_timestamp"].startswith("2026-10-05T15:00")]
     assert len(due_now) == 1 and due_now[0]["hubspot_owner_id"] == "owner-harry"
     [dm] = [p for p in sl.posts if p["channel"] == HARRY_ID]
-    assert "has waited over 24 hours" in dm["text"]
+    text = dm["text"]
+    # It stands alone for someone who has not seen the thread: who, what, the draft, the link and every way to act.
+    assert text.startswith(":rotating_light: *A prospect's reply has waited over 24 hours for an answer*\n"
+                           "*Who:* Jane Doe at Acme Creative, writing to hannah@meetspill.org on ")
+    assert "*What the system thinks it is:* Interested: they want to talk or hear more." in text
+    assert "*What they said:*\n> " in text
+    assert "*Draft answer* (signed Hannah Spalding):\n> Hi Jane," in text
+    assert "1. In the Slack thread (<https://spill.slack.com/archives/C_ALERT/p100.000100|open the alert in Slack>)" in text
+    assert "2. In a terminal: `railway ssh -- us-outbound replies approve item-000 --live` sends the draft." in text
+    assert text.endswith("3. Answer them yourself from hannah@meetspill.org, then reply `skip` in the thread to close "
+                         "it. Never answer from harry@spill.chat.")
+    assert any(x.startswith(":outbox_tray: *Escalated to harry@spill.chat* after 24 hours with no answer, by a HubSpot "
+                            "task (HubSpot emails it) and a Slack message to the approvers.") for x in sl.texts())
     assert row_of(ctx)["status"] == "escalated"
 
 
@@ -384,6 +420,11 @@ def test_other_items_escalate_by_task_and_keep_their_status(settings):
     assert hc["status"] == "open" and hc["escalated_at"] == NOW  # the hand-check's own job still finds it
     [task] = [x for x in crm.objects["tasks"].values() if "hand check" in x["hs_task_subject"]]
     assert task["hs_task_subject"] == "US Outbound: a hand check item has waited 24 hours"
+    [dm] = [p["text"] for p in sl.posts if p["channel"] == HARRY_ID]
+    assert dm == (":rotating_light: *Waiting over 24 hours for someone: this week's hand-check (a sample of companies "
+                  "to check before they are emailed)*\nThis week's hand-check.\nIt is in #us-outbound.\n"
+                  "*What to do:* check the companies listed (`railway ssh -- us-outbound handcheck show` shows them), "
+                  "then approve with `railway ssh -- us-outbound handcheck approve --live`.")
     assert task["hs_timestamp"].startswith("2026-10-05T15:00")  # due now
     assert inst.forwards == []
 
@@ -412,11 +453,24 @@ def test_the_bots_own_reactions_neither_decide_nor_count_as_ignored(settings):
     assert len([r for r in t.requests if r.url.endswith("auth.test")]) == 1  # asked once a run
 
 
+def test_two_hubspot_companies_for_the_website_are_flagged_in_the_thread_once(settings):
+    ctx, t, crm, sl, inst = desk_world(settings)
+    a = crm.add("companies", {"name": "Acme", "domain": "acmecreative.com"})
+    b = crm.add("companies", {"name": "Acme Creative", "domain": "acmecreative.com"})
+    poll(ctx)
+    poll(ctx)
+    [note] = [x for x in sl.texts() if "Not added to HubSpot" in x]
+    assert note.startswith(":warning: *Not added to HubSpot: it has more than one company for this website* (<https://")
+    assert f"|company {a}>" in note and f"|company {b}>" in note
+    assert note.endswith("*What to do:* merge them into one in HubSpot; the reply is added within 5 minutes after. "
+                         "Answering the reply does not wait for this.")
+
+
 def test_a_changed_draft_gets_the_bots_tick_and_cross(settings):
     ctx, t, crm, sl, inst = desk_world(settings)
     sl.say(HARRY_ID, "edit: Hi Jane,\n\nWould Tuesday work?\n\nBest wishes,\nHannah")
     poll(ctx)
-    repost = next(p for p in sl.posts if p["text"].startswith("Draft changed by"))
+    repost = next(p for p in sl.posts if p["text"].startswith(":pencil2: *Draft changed by <@U_HARRY>.*"))
     assert [(r["name"], r["users"]) for r in sl.reactions[repost["ts"]]] == [("white_check_mark", [BOT_ID]),
                                                                             ("x", [BOT_ID])]
     assert poll(ctx)["ignored_non_approvers"] == 0 and inst.replies == []
@@ -428,7 +482,7 @@ def test_without_slack_approvals_wait_and_escalation_still_reaches_harry(setting
     out = poll(ctx)
     assert out["slack"] is False and inst.replies == []
     assert [r for r in t.requests if "slack.com" in r.url] == []
-    assert len(inst.forwards) == 1 and "Slack: the alert's thread in #us-outbound" in inst.forwards[0]["body"]["text"]
+    assert len(inst.forwards) == 1 and "Slack: the alert in #us-outbound" in inst.forwards[0]["body"]["text"]
     assert '"event": "slack_not_configured"' in capsys.readouterr().out
     assert crm.objects["companies"]  # the HubSpot writes do not need Slack
 
