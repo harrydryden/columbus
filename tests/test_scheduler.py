@@ -103,11 +103,11 @@ class Launcher:
         return [t for n, t in self.started if n == name]
 
 
-def drive(table, start: datetime, until: datetime, *, seconds=30, max_parallel=2, jump=None):
+def drive(table, start: datetime, until: datetime, *, seconds=30, max_parallel=2, jump=None, at_start=()):
     """Run the real loop on a fake clock from start until `until`; jump=(at, by) stalls the loop once."""
     clock = FakeClock(start)
     launcher = Launcher(clock, seconds)
-    s = sch.Scheduler(table, max_parallel=max_parallel, clock=clock, launch=launcher)
+    s = sch.Scheduler(table, max_parallel=max_parallel, clock=clock, launch=launcher, at_start=at_start)
     jumped = []
 
     def sleep(seconds_: float) -> None:
@@ -382,6 +382,24 @@ def test_missed_minutes_are_not_backfilled_and_the_start_minute_is_not_run(capsy
     minutes = [t.replace(second=0) for t in launcher.starts("every")]
     assert minutes == [start + MIN, start + 2 * MIN, start + 6 * MIN, start + 7 * MIN]
     assert "scheduler_minutes_missed" in capsys.readouterr().out
+
+
+def test_the_at_start_jobs_run_once_as_the_scheduler_starts_then_on_their_schedule():
+    start = utc(2026, 10, 11, 20, 49, 30)  # a deploy: the stored settings are stale until the sheet is synced
+    table = [job("settings_sync", cron="0 1 * * *"), job("every")]
+    s, launcher = drive(table, start, start + 3 * MIN, at_start=("settings_sync",))
+    assert launcher.starts("settings_sync") == [start]
+    assert [t.replace(second=0) for t in launcher.starts("every")] == [start.replace(second=0) + MIN,
+                                                                      start.replace(second=0) + 2 * MIN,
+                                                                      start.replace(second=0) + 3 * MIN]
+
+
+def test_at_start_names_only_jobs_the_table_runs():
+    with pytest.raises(ValueError, match="nope"):
+        sch.Scheduler([job("every")], at_start=("nope",))
+    names = {j.name for j in SCHEDULE if j.enabled and j.cron}
+    assert set(sch.AT_START) <= names
+    sch.Scheduler(at_start=sch.AT_START)  # the worker's own call (ops/cli.py)
 
 
 # -- SIGTERM and SIGINT -------------------------------------------------------------------------------

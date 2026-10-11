@@ -414,3 +414,21 @@ def test_a_roles_tab_in_the_spec5_layout_still_syncs_with_a_notice(ctx, sheet):
     assert "roles_notice" not in summary and summary["tabs"]["Roles"]["status"] == "synced"
     settings, _ = sync.load_current(ctx.store)
     assert next(r for r in settings.roles if r.role == "HR manager").order == {"50-249": 4}
+
+
+def test_a_version_in_force_that_newer_rules_reject_is_replaced_by_the_next_sync(ctx, sheet):
+    # 11 Oct 2026: Industries was synced in the morning with blank definitions; that evening's deploy made a blank one an
+    # error, so the version in force went unusable while the sheet itself was already fixed. The next sync (the
+    # scheduler runs one as it starts, ops/scheduler.AT_START) brings the sheet in and the settings are usable again.
+    sync.run(ctx)
+    label = sheet["Industries"][0]["industry"]
+    for row in ctx.store.select("settings", {"tab": "Industries", "key": label, "effective_to": None}):
+        ctx.store.update("settings", {"tab": "Industries", "key": label, "effective_to": None},
+                         {"values": {**row["values"], "definition": ""}})
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is None and errors["Industries"]
+    ctx.now = T2
+    summary = sync.run(ctx)
+    assert summary["unusable"] == [] and summary["rejected"] == []
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and settings.industry(label).definition
