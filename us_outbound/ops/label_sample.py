@@ -7,7 +7,7 @@ sure verdicts; the gold set is 13 companies. This is the independent number:
     emailed (verified onwards, with a label) and, with --live, writes them to the Label sample tab: the company, its
     site, what it does, the label and copy we would use and how it was decided, and three empty columns for Harry.
     It never overwrites a tab that already holds a verdict.
-  * Harry fills your_verdict with one of VERDICTS (and right_label when ours is wrong).
+  * Harry fills your_verdict with the right label, or one of VERDICTS (and right_label when ours is wrong).
   * `us-outbound labels sample --score` reads the tab back and prints the share right, with a 95% interval, and how
     many of the emails would have carried the wrong pitch for the copy the company gets.
 
@@ -27,6 +27,7 @@ from us_outbound import labels
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.logs import log
+from us_outbound.settings.model import Industry, Settings
 
 JOB = "labels_sample"
 TAB = "Label sample"
@@ -117,27 +118,76 @@ def interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return max(0.0, mid - half), min(1.0, mid + half)
 
 
-def score(rows: Sequence[Mapping[str, str]]) -> dict[str, Any]:
-    """Harry's verdicts counted: label right, group right, and emails whose copy says more than the verdict allows."""
+def _named(text: Any) -> str:
+    """A label as the tab writes it, without the confidence after it ("Edtech (medium)" is Edtech)."""
+    return str(text or "").split(" (")[0].strip()
+
+
+def _against(truth: Industry | str, said: Any, settings: Settings) -> str | None:
+    """How a label stands against the right one: RIGHT, RIGHT_GROUP, WRONG_GROUP, or None when none was given."""
+    ind = settings.label(_named(said))
+    if ind is None:
+        return None if not _named(said) or _named(said) in ("no label", "not asked") else WRONG_GROUP
+    if truth == OUTSIDE:
+        return WRONG_GROUP
+    if ind.industry == truth.industry:
+        return RIGHT
+    return RIGHT_GROUP if ind.industry_group == truth.industry_group else WRONG_GROUP
+
+
+def score(rows: Sequence[Mapping[str, str]], settings: Settings) -> dict[str, Any]:
+    """Harry's verdicts counted: label right, group right, and emails whose copy says more than the verdict allows.
+
+    A verdict is one of VERDICTS, or the right label itself (Harry, 11 Oct 2026, wrote labels in the column), in any
+    case. Where the right label is known (written, "right", or right_label beside a verdict), the rules' and the
+    model's labels are scored against it too: which of the three opinions the sheet should trust."""
     judged, unreadable = [], []
     for r in rows:
-        said = " ".join(str(r.get("your_verdict") or "").lower().split())
-        if said in VERDICTS:
-            judged.append((r, said))
+        said = " ".join(str(r.get("your_verdict") or "").split())
+        word = said.lower()
+        truth: Industry | str | None = None
+        if word in VERDICTS:
+            verdict = word
+            if word == RIGHT:
+                truth = settings.label(_named(r.get("our_label")))
+            elif word == OUTSIDE:
+                truth = OUTSIDE
+            else:
+                truth = settings.label(r.get("right_label"), fuzzy=True)
+        elif said and (truth := settings.label(said, fuzzy=True)) is not None:
+            verdict = _against(truth, r.get("our_label"), settings) or WRONG_GROUP
         elif said:
             unreadable.append(str(r.get("domain") or ""))
+            continue
+        else:
+            continue
+        judged.append((r, verdict, truth))
     n = len(judged)
-    verdicts = Counter(s for _, s in judged)
-    wrong_pitch = [r for r, s in judged if s in WRONG_PITCH.get(str(r.get("copy") or ""), set())]
+    verdicts = Counter(v for _, v, _ in judged)
+    wrong_pitch = [r for r, v, _ in judged if v in WRONG_PITCH.get(str(r.get("copy") or ""), set())]
     label_right, group_right = verdicts[RIGHT], verdicts[RIGHT] + verdicts[RIGHT_GROUP]
+    opinions: dict[str, dict[str, int]] = {}
+    for name, column in (("ours", "our_label"), ("rules", "rules_said"), ("model", "model_said")):
+        c: Counter[str] = Counter()
+        for r, _, truth in judged:
+            if truth is None:
+                continue
+            got = _against(truth, r.get(column), settings)
+            c["judged"] += 1
+            c["gave_none"] += got is None
+            c["label_right"] += got == RIGHT
+            c["group_right"] += got in (RIGHT, RIGHT_GROUP)
+        opinions[name] = {k: c[k] for k in ("judged", "gave_none", "label_right", "group_right")}
     return {
         "rows": len(rows), "judged": n, "unreadable": unreadable, "verdicts": dict(verdicts),
         "label_right": label_right, "group_right": group_right, "wrong_pitch": len(wrong_pitch),
         "intervals": {"label_right": interval(label_right, n), "group_right": interval(group_right, n),
                       "wrong_pitch": interval(len(wrong_pitch), n)},
+        "opinions": opinions,
         "wrong": [{"domain": str(r.get("domain") or ""), "ours": str(r.get("our_label") or ""),
-                   "copy": str(r.get("copy") or ""), "verdict": s, "right_label": str(r.get("right_label") or "")}
-                  for r, s in judged if s != RIGHT],
+                   "copy": str(r.get("copy") or ""), "verdict": v,
+                   "right_label": (truth.industry if isinstance(truth, Industry) else str(r.get("right_label") or ""))}
+                  for r, v, truth in judged if v != RIGHT],
     }
 
 
@@ -147,7 +197,7 @@ def run_score(ctx: Context) -> dict[str, Any]:
     rows = read_tab(ctx.clients.sheets, sheet_id, TAB) if sheet_id else None
     if rows is None:
         raise LookupError(f"the settings sheet has no {TAB} tab: run `us-outbound labels sample --live` first")
-    out = score(rows)
+    out = score(rows, ctx.settings)
     log(JOB + "_score", run_id=ctx.run_id, judged=out["judged"], label_right=out["label_right"],
         group_right=out["group_right"], wrong_pitch=out["wrong_pitch"])
     return out

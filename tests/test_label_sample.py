@@ -83,12 +83,38 @@ def test_the_score_counts_right_labels_groups_and_wrong_pitches():
         {"domain": "f.com", "copy": "label", "your_verdict": ""},  # not judged yet
         {"domain": "g.com", "copy": "label", "your_verdict": "maybe"},  # not a verdict
     ]
-    out = ls.score(rows)
+    out = ls.score(rows, DEFAULT)
     assert (out["judged"], out["unreadable"]) == (5, ["g.com"])
     assert (out["label_right"], out["group_right"], out["wrong_pitch"]) == (1, 3, 2)
     assert [w["domain"] for w in out["wrong"]] == ["b.com", "c.com", "d.com", "e.com"]
     lo, hi = out["intervals"]["group_right"]
     assert lo < 3 / 5 < hi
+
+
+def test_the_right_label_written_in_the_verdict_scores_each_opinion():
+    """Harry, 11 Oct 2026: he wrote the right label itself, so the rules, the model and our label are each scored."""
+    rows = [  # as he filled the tab
+        {"domain": "ablyworks.com", "our_label": TECH, "copy": "group", "rules_said": "", "model_said": "not asked",
+         "your_verdict": TECH},
+        {"domain": "assimasolutions.com", "our_label": "Education", "copy": "general", "rules_said": "Education",
+         "model_said": "Edtech (medium)", "your_verdict": "EdTech"},
+        {"domain": "bectran.com", "our_label": TECH, "copy": "label", "rules_said": "no label",
+         "model_said": f"{TECH} (high)", "your_verdict": "Fintech"},
+        {"domain": "bittersoutherner.com", "our_label": "Publishers", "copy": "label",
+         "rules_said": "Marketing & Creative Agencies", "model_said": "Publishers (high)", "your_verdict": "Publishers"},
+        {"domain": "x.com", "our_label": "Fintech", "copy": "label", "rules_said": "Fintech",
+         "model_said": "Fintech (high)", "your_verdict": "right"},
+    ]
+    out = ls.score(rows, DEFAULT)
+    assert out["judged"] == 5 and out["unreadable"] == []
+    # Ours: ablyworks, Bitter Southerner and x right; Bectran in the right group (Fintech is a tech label); Assima
+    # Education against Edtech, another group, but with General copy, which says nothing untrue.
+    assert (out["label_right"], out["group_right"], out["wrong_pitch"]) == (3, 4, 1)
+    assert out["opinions"]["ours"] == {"judged": 5, "gave_none": 0, "label_right": 3, "group_right": 4}
+    assert out["opinions"]["model"] == {"judged": 5, "gave_none": 1, "label_right": 3, "group_right": 4}
+    assert out["opinions"]["rules"] == {"judged": 5, "gave_none": 2, "label_right": 1, "group_right": 2}
+    assert {w["domain"]: w["right_label"] for w in out["wrong"]} == {"assimasolutions.com": "Edtech",
+                                                                      "bectran.com": "Fintech"}
 
 
 @pytest.mark.parametrize("k, n, lo, hi", [(45, 50, 0.79, 0.96), (50, 50, 0.92, 1.0), (0, 0, 0.0, 0.0)])

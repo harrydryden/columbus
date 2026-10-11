@@ -1089,7 +1089,7 @@ def _sample_report(out: dict, live: bool) -> None:
         print(f"The {label_sample.TAB} tab already holds {out['verdicts_kept']} verdict(s), so it was not rewritten; "
               "score it with `labels sample --score`, or clear the your_verdict column to draw again.")
     elif out["tab_written"]:
-        print(f"Written to the {label_sample.TAB} tab. Fill your_verdict with one of: "
+        print(f"Written to the {label_sample.TAB} tab. Fill your_verdict with the right label, or one of: "
               f"{', '.join(label_sample.VERDICTS)} (and right_label when ours is wrong), then run "
               "`us-outbound labels sample --score`.")
 
@@ -1104,6 +1104,13 @@ def _score_report(out: dict) -> None:
                        ("wrong_pitch", "Email copy saying more than is true")):
         lo, hi = out["intervals"][key]
         print(f"  {title}: {out[key]} of {n} ({out[key] / n:.0%}; 95% interval {lo:.0%} to {hi:.0%})")
+    names = {"ours": "Our label (what the email uses)", "rules": "The rules (Apollo's codes and keywords)",
+             "model": "The label check (the model)"}
+    for key, o in out.get("opinions", {}).items():
+        if o["judged"]:
+            none = f", gave no label for {o['gave_none']}" if o["gave_none"] else ""
+            print(f"  {names[key]}: label right {o['label_right']} of {o['judged']} ({o['label_right'] / o['judged']:.0%}), "
+                  f"group right {o['group_right']} ({o['group_right'] / o['judged']:.0%}){none}")
     if out["wrong"]:
         print("Not right:")
         for w in out["wrong"]:
