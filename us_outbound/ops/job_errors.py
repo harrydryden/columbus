@@ -22,8 +22,10 @@ Clay lookups), and is left out. Each finding quotes its first error, shortened (
 logs.redact.
 A failure that says a service rejected its key (HTTP 401 or 403 from a client, Slack's invalid_auth, not_authed,
 token_revoked or account_inactive, Google's 401 or 403 or a service-account key refused, Anthropic's
-authentication_error or permission_error) is told apart: "<System> refused our key or this request: if the key was revoked, replace <variable> in Railway
-(Variables), then redeploy", the variable from context.SECRET_NAMES (and ops/bootstrap.GOOGLE_KEY_VAR).
+authentication_error or permission_error) is told apart: "<System> turned down our key", then what to do: put a new one
+in <variable> under Variables in Railway and redeploy, the variable from context.SECRET_NAMES (and
+ops/bootstrap.GOOGLE_KEY_VAR). Unusable settings link each failing tab and show its first errors (heartbeat.settings_fault),
+and point to settings_sync's own message of every row error when its latest run posted one.
 Each (job, kind) is posted at most once for each UK day a run of it began, and each rejected key once a day whichever
 jobs met it (notify.post_once keeps what was sent in events): a run that failed on Thursday is told on Thursday and
 not again on Friday while it is still the latest. A dead Slack token cannot post any of this: the outside
@@ -38,13 +40,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound.base import notify
+from us_outbound import fmt
+from us_outbound.base import notify, say
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import SECRET_NAMES, UK, Context
 from us_outbound.logs import clip, log, redact
 from us_outbound.ops.bootstrap import GOOGLE_KEY_VAR
-from us_outbound.ops.heartbeat import DAILY, EXPECTED
+from us_outbound.ops.heartbeat import DAILY, EXPECTED, and_list, settings_fault
 from us_outbound.ops.watchdog import JOB as SELF  # heartbeat_check: its own detail holds what it found
+from us_outbound.settings import sync
 from us_outbound.settings.validate import CLAUDE_CAP_USD
 from us_outbound.timeparse import utc
 
@@ -57,9 +61,27 @@ LATEST_SQL = (
     " ORDER BY job, started_at DESC, run_id DESC"
 )
 FAILED, ERRORS, CLAUDE_CAP, SLACK_POST, UNUSABLE = "failed", "errors", "claude_cap", "slack_post", "unusable"
-HEAD = "Errors the jobs met:"
-FOOT = ("Each job tries again on its next run. `us-outbound status` lists the jobs that failed; the worker's logs in "
-        "Railway have the rest.")
+# The post (Harry, 12 Oct 2026: clear to a newcomer; base/say.py): a headline, one bullet per finding with the job in
+# plain words (say.job_name), what to do where someone must act, and where to look for more.
+HEAD = f"{say.ACTION} *Some automatic jobs ran into problems*"
+# A text under a key ending "_error", in plain words (the key itself, spaced, when it is not here).
+ERROR_WORDS = {
+    "vitals_error": "could not read the mailboxes' health from Instantly",
+    "claude_error": "could not ask Claude about a reply",
+    "interest_error": "could not check a reply's interest",
+    "alert_error": "could not post its alert",
+    "capacity_error": "could not check the sending capacity ahead",
+    "customers_error": "could not read Spill's customers from HubSpot",
+}
+COUNT_WORDS = {"slack_errors": "Slack posts failed"}  # a count under a key ending "_errors"
+
+
+def foot(stopped: bool = False) -> str:
+    """The post's last line: when it fixes itself, and where the rest is (read at post time: logs_link reads env).
+    stopped: the settings are unusable, so the jobs do not try again until they are fixed (its own steps say so)."""
+    again = "" if stopped else "Each job tries again at its next run. "
+    return f"_{again}More detail: {say.logs_link()}, or {say.command('status')} for each job's last run._"
+
 
 # system -> (who Harry knows it as, the Railway variable holding its key)
 KEYS = {
@@ -97,6 +119,7 @@ class Finding:
     texts: list[str] = field(default_factory=list)  # the errors, first first
     count: int = 0  # for a counted failure (slack_errors) or the cap
     at: datetime | None = None
+    note: str = ""  # unusable: where the settings sync's own message listed every error
 
 
 def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
@@ -136,8 +159,7 @@ def findings(job: str, run: Mapping[str, Any]) -> list[Finding]:
     detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
     if run.get("status") == "error":
         if "unusable" in detail:
-            tabs = ", ".join(map(str, detail.get("unusable") or ())) or "unknown"
-            return [Finding("settings", UNUSABLE, [tabs], at=at)]
+            return [Finding("settings", UNUSABLE, [str(t) for t in detail.get("unusable") or ()], at=at)]
         error = str(run.get("error") or "no error text")
         if EXPECTED.get(job, 0) < DAILY and not rejected_key(error):
             return []  # tried again within minutes; missed (with this error) if it keeps failing
@@ -169,26 +191,55 @@ def _when(at: datetime | None) -> str:
     return f"{at.astimezone(UK):%a %H:%M} UK" if at else "recently"
 
 
-def describe(f: Finding) -> str:
-    """One line for a finding that is not a rejected key."""
+def _job(job: str) -> str:
+    """The job in plain words, capitalised to open a line: "Checking for replies"."""
+    name = say.job_name(job)
+    return name[:1].upper() + name[1:]
+
+
+def _unusable(f: Finding, ctx: Context) -> str:
+    """The settings are unusable: the tabs linked, their first errors, and the steps (heartbeat.settings_fault)."""
+    facts, steps = settings_fault(ctx, f.texts)
+    out = [f"• {say.URGENT} *The jobs have stopped (since {_when(f.at)})*. {facts[0]}",
+           *(f"   {x.strip()}" if x.startswith("   ◦") else f"   {x}" for x in facts[1:])]
+    if f.note:
+        out.append(f"   {f.note}")
+    out.append("   *What to do:*")
+    out += [f"   {i}. {s}" for i, s in enumerate(steps, 1)]
+    return "\n".join(out)
+
+
+def describe(f: Finding, ctx: Context) -> str:
+    """One bullet for a finding that is not a rejected key."""
     if f.kind == UNUSABLE:
-        return (f"• The settings are unusable ({f.texts[0]}): every job refuses to run until the sheet is fixed. Fix "
-                "it, then run `us-outbound sync`.")
+        return _unusable(f, ctx)
+    when = _when(f.at)
     if f.kind == CLAUDE_CAP:
-        return (f'• {f.job} ({_when(f.at)}): Claude\'s monthly cap is used up, so {f.count} replies were classified '
-                f'"other" with no draft. Raise claude_monthly_cap_usd on the General tab (up to ${CLAUDE_CAP_USD:,.0f}) '
-                "and the Anthropic Console spend limit.")
+        now = ctx.settings.general.claude_monthly_cap_usd
+        return (f"• *Replies are going without draft answers* ({say.job_name(f.job)}, {when}): Claude's monthly "
+                f"spending cap is used up, so {fmt.plural(f.count, 'reply', 'replies')} were filed as “other” with no "
+                f"draft.\n   *What to do:* raise `claude_monthly_cap_usd` (now ${now:,.0f}, at most "
+                f"${CLAUDE_CAP_USD:,.0f}) on the {say.sheet_link(ctx, 'General')}, and the spend limit in the Anthropic "
+                "Console to match.")
     if f.kind == FAILED:
-        return f"• {f.job} failed ({_when(f.at)}): {_quote(f.texts[0])}"
+        return f"• *{_job(f.job)}* failed ({when}): {_quote(f.texts[0])}"
     if f.kind == SLACK_POST:
-        return f"• {f.job} ({_when(f.at)}) could not post to Slack: {_quote(f.texts[0])}"
+        return f"• *{_job(f.job)}* ({when}) could not post its message to Slack: {_quote(f.texts[0])}"
     if f.kind == ERRORS:
         n = len(f.texts)
-        errors = "1 error" if n == 1 else f"{n} errors"
-        return f"• {f.job} ({_when(f.at)}) carried on past {errors}; the first: {_quote(f.texts[0])}"
+        return (f"• *{_job(f.job)}* ({when}) finished, but skipped past {fmt.plural(n, 'error', 'errors')}. "
+                f"The first: {_quote(f.texts[0])}")
     if not f.texts:  # a count: slack_errors
-        return f"• {f.job} ({_when(f.at)}): {f.count} {f.kind.replace('_', ' ')}"
-    return f"• {f.job} ({_when(f.at)}): {f.kind.replace('_', ' ')}: {_quote(f.texts[0])}"
+        return f"• *{_job(f.job)}* ({when}): {f.count} {COUNT_WORDS.get(f.kind, f.kind.replace('_', ' '))}"
+    return f"• *{_job(f.job)}* ({when}) {ERROR_WORDS.get(f.kind, f.kind.replace('_', ' '))}: {_quote(f.texts[0])}"
+
+
+def _key_rejected(system: str, jobs: list[str], first: str) -> str:
+    name, var = KEYS[system]
+    return (f"• {say.URGENT} *{name} turned down our key* ({and_list(say.job_name(j) for j in jobs)}): "
+            f"{_quote(first)}\n   *What to do:* if the key was revoked or has expired, put a new one in `{var}` "
+            f"under Variables in Railway, then redeploy. If the key is current, our {name} plan may not allow this "
+            "request.")
 
 
 def _run_day(at: datetime | None, day: str) -> str:
@@ -196,7 +247,7 @@ def _run_day(at: datetime | None, day: str) -> str:
     return at.astimezone(UK).date().isoformat() if at else day
 
 
-def lines(found: Iterable[Finding], day: str) -> list[tuple[str, str]]:
+def lines(found: Iterable[Finding], day: str, ctx: Context) -> list[tuple[str, str]]:
     """(key, line) per finding, a rejected key told as such (once a day per system, naming every job that met it).
     A key carries the UK day its run began, not today: a daily job's failed run stays its latest until the next run,
     and keyed on today it was told again just after midnight (read_pages, Thu 8 Oct 2026, told again at 00:05 Fri)."""
@@ -213,15 +264,21 @@ def lines(found: Iterable[Finding], day: str) -> list[tuple[str, str]]:
         if f.texts and not others:
             continue  # every error of it is a rejected key, told below
         f.texts = others
-        out.append((f"job_error:{f.job}:{f.kind}:{_run_day(f.at, day)}", describe(f)))
+        out.append((f"job_error:{f.job}:{f.kind}:{_run_day(f.at, day)}", describe(f, ctx)))
     for system, hits in keys.items():
-        name, var = KEYS[system]
-        jobs = ", ".join(dict.fromkeys(j for j, _, _ in hits))
-        out.insert(0, (f"key_rejected:{system}:{max(d for _, _, d in hits)}",
-                       f"• {name} refused our key or this request: if the key was revoked, replace {var} in Railway "
-                       f"(Variables), then redeploy; if it is current, the {name} plan may not allow this. "
-                       f"({jobs}: {_quote(hits[0][1])})"))
+        jobs = list(dict.fromkeys(j for j, _, _ in hits))
+        out.insert(0, (f"key_rejected:{system}:{max(d for _, _, d in hits)}", _key_rejected(system, jobs, hits[0][1])))
     return out
+
+
+def _sync_post(run: Mapping[str, Any] | None) -> str:
+    """Where settings_sync's own message listed every row error (settings/sync.format_errors), if its latest run
+    posted one; "" otherwise (a version saved earlier that a newer check rejects gets no such message)."""
+    detail = (run or {}).get("detail")
+    if not isinstance(detail, Mapping) or not (detail.get("rejected") and detail.get("alerted")):
+        return ""
+    return (f"Every error on the sheet is listed in the settings sync's message of {_when(utc(run.get('started_at')))}"
+            f" (“{sync.HEADLINE}…”).")
 
 
 def check(ctx: Context, jobs: Iterable[str]) -> dict[str, Any]:
@@ -231,8 +288,10 @@ def check(ctx: Context, jobs: Iterable[str]) -> dict[str, Any]:
         found = [f for job, run in sorted(runs.items()) for f in findings(job, run)]
         unusable = [f for f in found if f.kind == UNUSABLE]
         found = [f for f in found if f.kind != UNUSABLE] + unusable[:1]  # one line for all the jobs it stops
-        pairs = lines(found, ctx.today_uk().isoformat())
-        sent = notify.post_once(ctx, pairs, head=HEAD, foot=FOOT) if pairs else {"posted": False, "keys": []}
+        if unusable:
+            found[-1].note = _sync_post(runs.get("settings_sync"))
+        pairs = lines(found, ctx.today_uk().isoformat(), ctx)
+        sent = notify.post_once(ctx, pairs, head=HEAD, foot=foot(bool(unusable))) if pairs else {"posted": False, "keys": []}
     except GuardViolation:
         raise
     except Exception as exc:  # the database, say: the watchdog ping must still go

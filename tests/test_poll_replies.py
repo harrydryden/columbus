@@ -71,11 +71,22 @@ def test_a_positive_reply_becomes_an_item_with_a_draft_and_an_alert(world):
     [post] = world.slack_posts
     assert post["channel"] == "C_ALERT"
     text = "\n".join(b["text"]["text"] for b in post["blocks"])
-    assert "*Positive reply · Acme Creative (Chicago, IL) · Marketing agencies · Priority* <@U_HARRY>" in text
-    assert "From: Jane Doe, Head of People → hannah@meetspill.org" in text
-    assert "Draft reply (signed Hannah Spalding; hands the demo to Harry):\n> Hi Jane," in text
-    assert text.endswith('✅ sends this draft · ❌ skips it (you\'ll answer yourself) · reply "edit: &lt;new text&gt;" '
-                         'to change it, then ✅ the new version · "send: &lt;text&gt;" sends your text now')
+    # Harry, 12 Oct 2026: a newcomer sees who replied, what they said, what it is, the draft and what each
+    # reaction or reply does.
+    assert text.startswith(":raised_hand: *Jane Doe at Acme Creative replied: Interested* <@U_HARRY>\n")
+    assert ("*Who:* Jane Doe, Head of People · Acme Creative (Chicago, IL) · Marketing agencies · top fit (Priority)"
+            in text)
+    assert "*They wrote to:* hannah@meetspill.org (Hannah Spalding's mailbox)" in text
+    assert "*What they said:*\n> Sounds good" in text
+    assert "*What the system thinks it is:* Interested: they want to talk or hear more." in text
+    assert "• They asked for a demo." in text
+    assert ("*The draft answer* (from hannah@meetspill.org, signed Hannah Spalding; it hands the demo to Harry):\n"
+            "> Hi Jane," in text)
+    assert text.endswith(poll.FOOTER)
+    for words in ("✅ on this message, or reply `send`", "reply `edit: &lt;new text&gt;`", "reply `send: &lt;your text&gt;`",
+                  "❌, or reply `skip`"):
+        assert words in poll.FOOTER
+    assert post["text"].startswith("Jane Doe at Acme Creative replied: Interested. \"Sounds good")
     assert item["slack_channel"] == p["slack_channel"] == "#us-outbound"
     assert item["slack_ts"] == p["slack_ts"] == "1700000001.0001"
     # The bot's ✅ and ❌ on the alert, so deciding is one click.
@@ -200,7 +211,7 @@ def test_each_class_gets_an_item_with_its_own_draft(world, cls, extra, guidance)
     [post] = world.slack_posts
     first = post["blocks"][0]["text"]["text"]
     assert ("<@U_HARRY>" in first) is (cls == "referral")
-    assert first.startswith(f"*{poll.LABELS[cls]} reply · Acme Creative")
+    assert first.startswith(f":raised_hand: *Jane Doe at Acme Creative replied: {poll.LABELS[cls]}*")
 
 
 def test_a_referral_carries_the_person_named(world):
@@ -211,7 +222,7 @@ def test_a_referral_carries_the_person_named(world):
     p = only_item(world)["payload"]
     assert p["referral"] == {"name": "Ann Lee", "title": "HR Director", "email": "ann.lee@acmecreative.com"}
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
-    assert "Referral: Ann Lee, HR Director, ann.lee@acmecreative.com" in text
+    assert "• They pointed us to: Ann Lee, HR Director, ann.lee@acmecreative.com" in text
 
 
 def test_not_now_records_the_date_given_or_a_default(world):
@@ -237,7 +248,8 @@ def test_a_low_confidence_answer_is_other(world):
     p = only_item(world)["payload"]
     assert (p["reply_class"], p["model_class"]) == ("other", "positive")
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
-    assert "Claude was not sure: it read this as positive at 55%" in text
+    assert "replied: Unclear*" in text
+    assert "• Claude was not sure: it read this as Interested at 55%, too unsure to count, so it is marked Unclear." in text
 
 
 # -- opt-outs ------------------------------------------------------------------------------------------------
@@ -258,7 +270,9 @@ def test_an_unsubscribe_reply_is_opted_out_everywhere(world):
     assert world.events("replied")[0]["reply_class"] == "unsubscribe"
     assert out["opted_out"] == {"done": 1}
     [note] = world.slack_posts
-    assert note["text"].startswith("Opted out · Acme Creative · Jane Doe asked to stop (Claude)")
+    assert note["text"].startswith(":white_check_mark: *Jane Doe at Acme Creative asked us to stop emailing, so they "
+                                   "are opted out*\nNo more emails: on our do-not-contact list, Instantly's blocklist")
+    assert "Read as a stop request by Claude; they wrote to hannah@meetspill.org. Nothing to do." in note["text"]
 
 
 def test_hubspot_opt_out_only_when_hubspot_has_the_contact(world):
@@ -365,7 +379,8 @@ def test_a_human_reply_instantly_took_for_an_auto_reply_is_flagged(world):
     p = only_item(world)["payload"]
     assert p["sequence_may_continue"] is True and p["sequence_paused"] is False
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
-    assert "pause the lead in Instantly" in text
+    assert "Instantly may still send them the rest of the email sequence" in text
+    assert "*pause this person in their Instantly campaign* so the follow-ups stop." in text
 
 
 def test_a_flagged_lead_is_paused_once_phase0_confirms(world, monkeypatch):
@@ -393,7 +408,8 @@ def test_a_colleague_at_the_account_counts_as_the_account(world):
     assert p["contact_id"] == "k-jane" and p["from_is_contact"] is False and p["first_name"] == "Sam"
     assert p["draft"].startswith("Hi Sam,")
     text = world.slack_posts[0]["blocks"][0]["text"]["text"]
-    assert "someone else at Acme Creative (the contact is Jane Doe, Head of People)" in text
+    assert text.startswith(":raised_hand: *Someone else at Acme Creative replied: Interested*")
+    assert "*Who:* someone else at Acme Creative, not the person we emailed (Jane Doe, Head of People)" in text
 
 
 @pytest.mark.parametrize("frm", ["random@elsewhere.com", "mailer-daemon@acmecreative.com", HARRY,
@@ -476,9 +492,12 @@ def test_the_cap_refuses_the_call_and_the_reply_still_reaches_a_person(world):
     assert p["draft"] == "" and "cap" in p["draft_problems"][0]
     assert item["status"] == "open" and out["claude_cap_reached"] == 1
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
-    assert "No draft" in text and "read the reply yourself" in text
+    assert text.startswith(":warning: *Jane Doe at Acme Creative replied: Unclear*")
+    assert "• Not sorted automatically (" in text and "read the reply yourself." in text
+    assert "*No draft* (Claude's monthly cap is used up): the answer has to be written by hand." in text
     # With no draft there is nothing for ✅ to send: only ❌ is offered and seeded.
-    assert "✅" not in text and text.endswith('❌ skips it (you\'ll answer yourself) · "send: &lt;text&gt;" sends your text now')
+    assert "✅" not in text and text.endswith(poll.NO_DRAFT_FOOTER)
+    assert "reply `send: &lt;your text&gt;` in the thread" in text and "❌, or reply `skip`" in text
     assert [r["name"] for r in world.slack_reactions] == ["x"]
 
 
@@ -621,7 +640,7 @@ def test_excerpts_are_capped_at_500_characters(world):
     run(world)
     assert len(only_item(world)["payload"]["reply_excerpt"]) == 500
     text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
-    assert len(re.search(r'"(Interested[^"]*)"', text).group(1)) == poll.SLACK_EXCERPT_CHARS
+    assert len(re.search(r"\n> (Interested[^\n]*)\n", text).group(1)) == poll.SLACK_EXCERPT_CHARS
 
 
 def test_an_unexpected_ue_type_never_drops_a_reply(world):
@@ -630,3 +649,51 @@ def test_an_unexpected_ue_type_never_drops_a_reply(world):
     world.reply("E2", ue_type=3)  # one of ours, sent by hand
     run(world)
     assert [i["event_id"] for i in world.items()] == ["E1"]
+
+
+# -- the alert's words (Harry, 12 Oct 2026: clear to someone new) ------------------------------------------------
+
+
+def _alert_text(settings, **payload):
+    base = {"reply_class": "not_now", "company": "Acme Creative", "place": "Chicago, IL", "industry": "Marketing agencies",
+            "tier": "Standard", "contact_name": "Jane Doe", "title": "Head of People", "from_is_contact": True,
+            "mailbox": HANNAH, "owner": "Hannah Spalding", "reply_excerpt": "Busy now.\nTry me in January?",
+            "draft": "Hi Jane,\n\nWill do.\n\nBest wishes,\nHannah"}
+    text, blocks = poll.alert({**base, **payload}, settings)
+    assert all(len(b["text"]["text"]) <= 3000 for b in blocks)
+    return text, "\n".join(b["text"]["text"] for b in blocks)
+
+
+def test_the_alert_says_what_each_note_means(default_settings):
+    _, text = _alert_text(default_settings, why="3 open HR roles", reply_class="objection", objection="has_eap",
+                          competitor_named="Lyra", follow_up_date="2027-01-11", follow_up_source="reply",
+                          sequence_may_continue=True, sequence_paused=True)
+    assert text.startswith(":raised_hand: *Jane Doe at Acme Creative replied: Objection*\n")  # no mention: not warm
+    assert "· good fit (Standard)" in text
+    assert "*What they said:*\n> Busy now.\n> Try me in January?" in text
+    assert "*What the system thinks it is:* Objection: they gave a reason not to go ahead." in text
+    assert "*Worth knowing:*\n• Why we emailed them: 3 open HR roles\n• Their objection: has eap" in text
+    assert "• They named a competitor: Lyra" in text
+    assert "• Date to follow up: Mon 11 Jan 2027 (the date they gave)." in text
+    assert "(it took this for an automatic reply, or could not match it to the lead): the system has paused them there." in text
+    assert "*The draft answer* (from hannah@meetspill.org, signed Hannah Spalding):\n> Hi Jane," in text
+
+
+def test_the_alert_without_a_draft_says_why_and_offers_only_what_works(default_settings):
+    note, text = _alert_text(default_settings, reply_class="wrong_person", draft="", follow_up_date="2027-01-11",
+                             draft_problems=["the draft named a price"])
+    assert text.startswith(":warning: *Jane Doe at Acme Creative replied: Wrong person*")
+    assert "*What the system thinks it is:* Wrong person: they are not the one to talk to." in text
+    assert "*No draft* (the draft named a price): the answer has to be written by hand." in text
+    assert "(they gave none; the draft asks them when)" in text
+    assert text.endswith(poll.NO_DRAFT_FOOTER) and "✅" not in text
+    assert note == "Jane Doe at Acme Creative replied: Wrong person. \"Busy now.\nTry me in January?\""
+
+
+def test_an_opt_out_still_waiting_on_instantly_or_hubspot_says_it_is_retried():
+    info = {"company": "Acme Creative", "contact_name": "Jane Doe", "mailbox": HANNAH}
+    text = poll.opt_out_note(info, from_is_contact=False, by_rule=True, result="pending")
+    assert text == (":bar_chart: *Someone else at Acme Creative asked us to stop emailing, so they are opted out*\n"
+                    "On our do-not-contact list now. Instantly's blocklist or HubSpot's opt-out did not take it yet; the "
+                    "next check for replies (every 15 minutes) tries again. Read as a stop request by the stop-word "
+                    "check; they wrote to hannah@meetspill.org. Nothing to do.")

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from us_outbound.base import notify, say
 from us_outbound.clients.db import new_id
 from us_outbound.context import UK, Context
 from us_outbound.facts import history, latest_by_fact, newest, newest_by
@@ -447,17 +448,47 @@ def tier_share(accounts: Iterable[Mapping[str, Any]], today: date) -> dict[str, 
     return {"accounts": len(queue), "shares": shares, "off": off}
 
 
+# The tiers in plain words, for the alert (Harry, 12 Oct 2026: messages a newcomer can follow).
+TIER_WORDS = {tiers.PRIORITY: "Top fit (Priority)", tiers.STANDARD: "Good fit (Standard)",
+              tiers.CONTROL: "Comparison group (Control)"}
+
+
+def _share_fixes(ctx: Context, off: Mapping[str, float]) -> list[str]:
+    """What to change for the tiers outside the range: the two score thresholds on the General tab decide them."""
+    g = ctx.settings.general
+    fixes = []
+    if tiers.PRIORITY in off:
+        way = "lower" if off[tiers.PRIORITY] < SHARE_MIN else "raise"
+        fixes.append(f"{way.capitalize()} `priority_threshold` (now {g.priority_threshold}), the score a company needs "
+                     "to count as top fit.")
+    if tiers.CONTROL in off:
+        way = "lower" if off[tiers.CONTROL] > SHARE_MAX else "raise"
+        fixes.append(f"{way.capitalize()} `standard_threshold` (now {g.standard_threshold}); companies scoring below "
+                     "it go to the comparison group.")
+    if not fixes:  # only Standard is off: it sits between the two thresholds
+        way = "Move them closer together" if off[tiers.STANDARD] > SHARE_MAX else "Move them further apart"
+        fixes.append(f"{way}: `priority_threshold` (now {g.priority_threshold}) and `standard_threshold` "
+                     f"(now {g.standard_threshold}).")
+    return fixes
+
+
 def _share_alert(ctx: Context, check: dict[str, Any], today: date) -> None:
-    mix = ", ".join(f"{t} {s:.0%}" for t, s in check["shares"].items())
-    off = ", ".join(
-        f"{t} is {'under 5%' if s < SHARE_MIN else 'over 40%'}" for t, s in check["off"].items()
+    """Once a week at most while the mix stays off (the score job runs several times a day)."""
+    off = check["off"]
+    rows = [f"• {TIER_WORDS[t]}: {s:.0%}" + (f"  ← {'below 5%' if s < SHARE_MIN else 'above 40%'}" if t in off else "")
+            for t, s in check["shares"].items()]
+    fixes = _share_fixes(ctx, off)
+    text = say.compose(
+        say.ACTION, f"{today:%B}'s list of companies to email is unbalanced",
+        [f"{check['accounts']} companies were added to the queue this month. How they split by score:", *rows,
+         "Each group should be 5–40% of the queue."],
+        do=[f"Open the {say.sheet_link(ctx, 'General')} of the settings sheet.", *fixes,
+            "Wait for the next settings sync (02:00 and 11:30 UK); the companies are then scored again."],
+        why="the comparison group shows whether scoring finds better companies; if one group swamps the others, the "
+            "comparison means little.",
     )
-    text = (
-        f"Tier mix check: this month's queue ({today:%B %Y}, {check['accounts']} accounts) is {mix}. "
-        f"Each tier should be 5–40% of the queue; {off}. "
-        "Review the thresholds and signal weights in the settings sheet."
-    )
-    ctx.clients.slack.post(ctx.settings.general.alert_channel, text)
+    head, _, body = text.partition("\n")
+    notify.post_once(ctx, [(notify.once_key(ctx, "tier_mix", per="week", on=today), body)], head=head)
 
 
 def rescore(ctx: Context) -> dict:

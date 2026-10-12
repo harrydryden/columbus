@@ -23,6 +23,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from us_outbound import fmt
+from us_outbound.base import say
 from us_outbound.context import Context
 from us_outbound.learn import signal_review
 
@@ -105,8 +106,25 @@ def table_lines(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
     return out
 
 
-def headline(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
-    """The Monday readout's lines: the signals that can be read, else the ones closest to it, and how to see all."""
+def readout_line(row: Mapping[str, Any]) -> str:
+    """One readable signal in the Monday readout: its reply rate against the rate without it, then the verdict."""
+    d, wd = _n(row, "accounts_delivered"), _n(row, "without_delivered")
+    replied, without = _n(row, "accounts_replied"), _n(row, "without_replied")
+    p = p_value(row)
+    tail = f"{verdict(row)} (p = {p:.2f})" if p is not None else verdict(row)
+    return (f"{row.get('signal')}: {fmt.pct(replied, d)} of {d:,} replied, against {fmt.pct(without, wd)} of {wd:,} "
+            f"without · {_n(row, 'accounts_positive')} positive, {_n(row, 'accounts_meeting')} meetings: {tail}")
+
+
+def flagged(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
+    """The emailed signals SPEC 12 flags: replying below the Control tier after 200 accounts."""
+    return [str(r.get("signal")) for r in table or [] if _n(r, "accounts_sent") and r.get("below_control")]
+
+
+def headline(table: Sequence[Mapping[str, Any]] | None, *, signals_tab: str = "Signals tab") -> list[str]:
+    """The Monday readout's lines: the signals that can be read, else the ones closest to it, and the flagged ones
+    with what to do (`us-outbound signals value` has the whole table). signals_tab: a link to the tab
+    (say.sheet_link), or its name."""
     if table is None:
         return ["  The signal table needs the database's views (v_signal_value), which this store does not have."]
     seen = [r for r in table if _n(r, "accounts_sent")]
@@ -117,7 +135,7 @@ def headline(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
     if readable:
         order = {MORE: 0, LESS: 1, KEEP: 2}
         for r in sorted(readable, key=lambda r: (order[verdict(r)], -_n(r, "accounts_delivered")))[:HEADLINE_SIGNALS]:
-            out.append(f"  {line(r)}")
+            out.append(f"  {readout_line(r)}")
     few = [r for r in seen if verdict(r) == TOO_FEW]
     if few:
         names = ", ".join(f"{r.get('signal')} ({_n(r, 'accounts_delivered')})"
@@ -126,8 +144,10 @@ def headline(table: Sequence[Mapping[str, Any]] | None) -> list[str]:
         more = f" and {len(few) - HEADLINE_SIGNALS} more" if len(few) > HEADLINE_SIGNALS else ""
         out.append(f"  {TOO_FEW.capitalize()} (under {MIN_TO_READ} companies emailed with or without it): "
                    f"{names}{more}.")
-    flagged = [str(r.get("signal")) for r in seen if r.get("below_control")]
-    if flagged:
-        out.append(f"  Replying below the Control tier after 200 companies: {', '.join(flagged)}.")
-    out.append("  `us-outbound signals value` has the whole table.")
+    weights = {str(r.get("signal")): r.get("weight") for r in seen}
+    for name in flagged(seen):
+        now = f" (now {weights[name]})" if weights[name] is not None else ""
+        out.append(f"  {name} replies less than the comparison group (Control) after 200 companies")
+        out.append(f"    *What to do:* decide whether to lower its weight{now} on the {signals_tab}; it applies at the "
+                   f"next settings sync, or now with {say.command('sync')}")
     return out

@@ -44,6 +44,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from us_outbound import config_version, fmt
+from us_outbound.base import say
 from us_outbound.context import UK, Context
 from us_outbound.enrol import capacity
 from us_outbound.enrol.enrol import iso_week
@@ -658,25 +659,26 @@ def readout_lines(ctx: Context, start: datetime, end: datetime) -> tuple[list[st
     """The readout's section: the last four cohorts in a line each, the insights, and last week's changes."""
     found = companies(ctx)
     cohorts = rows(ctx, "all", READOUT_WEEKS, found)
-    out = ["", "*Cohorts* (companies by enrolment week, at the latest age reached after email 1; "
-               "`us-outbound cohorts` has the table)"]
-    if not cohorts:
-        out.append("  No contact has been enrolled yet.")
+    head = "*Cohorts* (companies grouped by the week they were enrolled, each at the latest age reached after email 1)"
+    out = ["", head if cohorts else f"{head}: no one enrolled yet."]
     for c in reversed(cohorts):
         at = c.latest_age()
         a = c.ages[at] if at else None
-        tail = (f"; at {at} days {a.replied} of {a.matured} replied ({rate(a.replied, a.matured)}), "
-                f"{fmt.plural(a.meetings, 'meeting')}; {fmt.plural(a.bounced, 'bounce')} of {fmt.plural(a.sends, 'send')}") if a else \
-            "; no company has reached 7 days yet"
-        out.append(f"  {c.label} ({week_days(c.week_start)}): {c.enrolled:,} enrolled, {c.emailed:,} emailed{tail}")
+        tail = (f" · at {at} days {a.replied} of {a.matured} replied ({rate(a.replied, a.matured)}) · "
+                f"{fmt.plural(a.meetings, 'meeting')} · {a.bounced:,} of {fmt.plural(a.sends, 'send')} bounced") if a \
+            else " · under 7 days since email 1"
+        emailed = (f"{c.emailed:,} emailed" if c.emailed == c.enrolled
+                   else f"{c.enrolled:,} enrolled, {c.emailed:,} emailed")
+        out.append(f"  {c.label} ({week_days(c.week_start)}): {emailed}{tail}")
     out += [f"  {x}" for x in insights(ctx, cohorts, found, latest_only=True)]  # the CLI has every pair
     changed = week_changes(ctx, start, end)
-    out += ["", "*Settings changes* (last week)"]
     if not changed:
-        out.append("  None recorded.")
+        out += ["", "*Changes last week* (settings, copy, campaign and code): none recorded."]
+    else:
+        out += ["", "*Changes last week* (settings, copy, campaign and code)"]
     out += [f"  {x}" for x in changed[:READOUT_CHANGES]]
     if len(changed) > READOUT_CHANGES:
-        out.append(f"  and {len(changed) - READOUT_CHANGES} more: `us-outbound cohorts changes`")
+        out.append(f"  and {len(changed) - READOUT_CHANGES} more: {say.command('cohorts changes')}")
     nums = {c.week: {"enrolled": c.enrolled, "emailed": c.emailed, "delivered": c.delivered,
                      "replied": {a: [c.ages[a].replied, c.ages[a].matured] for a in AGES if c.ages[a].emailed}}
             for c in cohorts}

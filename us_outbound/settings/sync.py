@@ -53,6 +53,9 @@ from us_outbound.timeparse import utc_strict
 
 TABLE = "settings"
 SLACK_ERROR_LINES = 20
+HEADLINE = "The settings sheet has errors"  # format_errors' headline opens with it (ops/job_errors quotes it)
+# When the worker reads the sheet by itself (ops/schedule.py: 02:00 daily, 11:30 weekdays; ops/scheduler.AT_START).
+SYNC_TIMES = "each time the worker starts, and at 02:00 UK daily and 11:30 UK on weekdays"
 # Tabs whose rows name rows on another tab. If one of these has to keep its previous
 # version, the version of the tab it names that is now on the sheet may not fit it.
 DEPENDS_ON: dict[str, tuple[str, ...]] = spec.depends_on()  # from the refs in settings/spec.py
@@ -234,18 +237,37 @@ def _slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def format_errors(report: Mapping[str, list[RowError]], unusable: list[str]) -> str:
-    """One Slack message: what was rejected, then up to SLACK_ERROR_LINES errors."""
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}" if items else ""
+
+
+def format_errors(report: Mapping[str, list[RowError]], unusable: list[str], ctx: Context | None = None) -> str:
+    """One Slack message (Harry, 12 Oct 2026: clear to a newcomer; base/say.py): what was not applied and what that
+    stops, up to SLACK_ERROR_LINES row errors, and the fix. With ctx each tab links to itself on the sheet.
+    ops/job_errors points to this message (HEADLINE) when the jobs refuse to start on unusable settings."""
+    from us_outbound.base import say
+
+    def tab(t: str) -> str:
+        return say.sheet_link(ctx, t) if ctx is not None else f"{t} tab"
+
     tabs = [t for t in TABS if report.get(t)]
-    noun = "tab" if len(tabs) == 1 else "tabs"
-    lines = [f"Settings sync rejected the {', '.join(tabs)} {noun}. The previous version stays in force."]
-    for t in unusable:
-        lines.append(f"{t} has no valid version in force, so settings are unusable until it is fixed.")
+    kept = [t for t in tabs if t not in unusable]
+    head = f"{HEADLINE}, so " + ("the jobs have stopped" if unusable else "some edits were not applied")
+    facts = []
+    if kept:
+        facts.append(f"Not applied: the {_and([tab(t) for t in kept])}. The version read before stays in use "
+                     "until the errors are fixed.")
+    if unusable:
+        facts.append(f"The {_and([tab(t) for t in unusable])} {'has' if len(unusable) == 1 else 'have'} no earlier "
+                     "good version to fall back on, so every job except the hourly health check refuses to start "
+                     "until the errors are fixed.")
     errors = [e for t in tabs for e in report[t]]
-    lines += [f"• {e}" for e in errors[:SLACK_ERROR_LINES]]
+    facts += [f"• {_slack_escape(str(e))}" for e in errors[:SLACK_ERROR_LINES]]
     if len(errors) > SLACK_ERROR_LINES:
-        lines.append(f"…and {len(errors) - SLACK_ERROR_LINES} more in the settings_sync log.")
-    return _slack_escape("\n".join(lines))
+        facts.append(f"…and {len(errors) - SLACK_ERROR_LINES} more in {say.logs_link('the settings sync log in Railway')}.")
+    do = (f"correct {'this' if len(errors) == 1 else 'these'} on the sheet, then run {say.command('sync')} to read it "
+          f"now. Otherwise it is read {SYNC_TIMES}.")
+    return say.compose(say.URGENT if unusable else say.ACTION, head, facts, do=do)
 
 
 def _named(ctx: Context) -> dict:
@@ -323,7 +345,7 @@ def run(ctx: Context) -> dict:
     alerted, alert_error = False, None
     if report:
         try:
-            ctx.clients.slack.post(ctx.settings.general.alert_channel, format_errors(report, unusable))
+            ctx.clients.slack.post(ctx.settings.general.alert_channel, format_errors(report, unusable, ctx))
             alerted = True
         except GuardViolation:
             raise

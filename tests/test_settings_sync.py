@@ -201,7 +201,10 @@ def test_bad_tab_keeps_previous_version_and_posts_one_message(ctx, sheet, fake_s
     (post,) = ctx.clients.slack.posts
     channel, text = post
     assert channel == ctx.settings.general.alert_channel  # the client redirects to the dev channel in dry-run
-    assert "rejected the Signals tab" in text and "previous version stays in force" in text
+    assert text.startswith(":warning: *The settings sheet has errors, so some edits were not applied*")
+    assert "Not applied: the <https://docs.google.com/spreadsheets/d/" in text and "|Signals tab>." in text
+    assert "The version read before stays in use until the errors are fixed." in text
+    assert "*What to do:* correct this on the sheet, then run `railway ssh -- us-outbound sync` to read it now." in text
     assert f"Signals row {n} (Layoffs), action: must be one of Score, Hold, Exclude, Suppress, not 'Maybe'" in text
     assert summary["alerted"] is True
 
@@ -225,7 +228,10 @@ def test_bad_tab_with_no_version_in_force_is_unusable(ctx, sheet, fake_score):
     assert _rows(ctx, tab="Signals") == []
     assert _rows(ctx, tab="General")  # the valid tabs are still stored
     (post,) = ctx.clients.slack.posts
-    assert "Signals has no valid version in force, so settings are unusable" in post[1]
+    assert post[1].startswith(":rotating_light: *The settings sheet has errors, so the jobs have stopped*")
+    assert ("|Signals tab> has no earlier good version to fall back on, so every job except the hourly health check "
+            "refuses to start until the errors are fixed.") in post[1]
+    assert "Not applied" not in post[1]  # nothing earlier to keep
     assert summary["rescored"] is False and fake_score.calls == []
     settings, errors = sync.load_current(ctx.store)
     assert settings is None and errors["Signals"]
@@ -380,9 +386,12 @@ def test_format_errors_caps_the_lines_and_escapes():
     report = {"Signals": [RowError("Signals", i + 2, "looks_for", "x <= y & z", f"s{i}") for i in range(25)]}
     text = sync.format_errors(report, [])
     lines = text.splitlines()
-    assert len(lines) == 1 + sync.SLACK_ERROR_LINES + 1
-    assert lines[-1] == "…and 5 more in the settings_sync log."
-    assert "&lt;=" in text and "&amp;" in text and "<" not in text
+    assert len(lines) == 2 + sync.SLACK_ERROR_LINES + 2  # headline, what was kept, the errors, how many more, the fix
+    assert lines[1] == "Not applied: the Signals tab. The version read before stays in use until the errors are fixed."
+    assert lines[-2] == "…and 5 more in the settings sync log in Railway."
+    assert lines[-1].startswith("*What to do:* correct these on the sheet, then run `railway ssh -- us-outbound sync`")
+    assert "each time the worker starts, and at 02:00 UK daily and 11:30 UK on weekdays" in lines[-1]
+    assert "&lt;=" in text and "&amp;" in text and "<" not in text  # no ctx: the tabs are named, not linked
 
 
 def test_bootstrap(ctx):

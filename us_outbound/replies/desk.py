@@ -65,6 +65,8 @@ from dataclasses import dataclass, field
 from datetime import time, timedelta
 from typing import Any
 
+from us_outbound import fmt
+from us_outbound.base import say
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
@@ -102,6 +104,59 @@ ESCALATED_EVENT = "escalated:"  # events.event_id of an escalation: the item's i
 SENT_EVENT = "reply-sent:"  # events.event_id of a sent reply when Instantly returns no id
 LIST_LIMIT = 50  # per-list entries kept in the summary
 EXCERPT_CHARS = 200  # SPEC 1.7: at most 200 characters of any email body leave the database
+
+# Each reply class in plain words, for a reader new to the system (Harry, 12 Oct 2026): (label, what it means).
+# The alert (replies/poll.py), the thread notes and the escalation DM all use it.
+CLASS_WORDS: dict[str, tuple[str, str]] = {
+    "positive": ("Interested", "they want to talk or hear more"),
+    "referral": ("Referral", "they point us to someone else"),
+    "objection": ("Objection", "they gave a reason not to go ahead"),
+    "not_now": ("Not now", "maybe later, but not now"),
+    "negative": ("Not interested", "they said no"),
+    "wrong_person": ("Wrong person", "they are not the one to talk to"),
+    "out_of_office": ("Out of office", "an automatic away message"),
+    "unsubscribe": ("Asked to stop", "they want no more emails"),
+    "other": ("Unclear", "the system could not tell what they want: read it yourself"),
+}
+# How an item reached escalation_email, in words (escalate's `how`: "forwarded", "task", "dm", joined by "+").
+HOW_WORDS = {"forwarded": "email (the reply forwarded to them)", "task": "a HubSpot task (HubSpot emails it)",
+             "dm": "a Slack message to the approvers"}
+# The other kinds of item escalation covers, in words, and what to do about each (the DM; {id} is the item id).
+KIND_WORDS: dict[str, tuple[str, str]] = {
+    HAND_CHECK_KIND: ("this week's hand-check (a sample of companies to check before they are emailed)",
+                      "check the companies listed (" + say.command("handcheck show") + " shows them), then "
+                      "approve with " + say.command("handcheck approve --live") + "."),
+    "kill_rule": ("a safety stop (a bounce or complaint limit was hit, so some sending is held back)",
+                  "find the cause, then lift it with " + say.command("killrules clear {id} --live")
+                  + " (" + say.command("killrules show") + " lists the stops)."),
+    "manual_merge": ("a HubSpot duplicate (more than one company for one website)",
+                     "merge the companies into one in HubSpot; the system carries on by itself after."),
+}
+
+
+def class_label(reply_class: Any) -> str:
+    """The class as a reader says it: "Interested", "Not now", "Wrong person"."""
+    cls = str(reply_class or "").strip().lower()
+    return CLASS_WORDS.get(cls, (cls.replace("_", " ").capitalize() or "Unclear", ""))[0]
+
+
+def class_meaning(reply_class: Any) -> str:
+    return CLASS_WORDS.get(str(reply_class or "").strip().lower(), ("", ""))[1]
+
+
+def _esc(text: Any) -> str:
+    """Slack mrkdwn escaping, for text a prospect or an approver wrote."""
+    return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _quote(text: Any) -> str:
+    """Text as a Slack quote, line by line."""
+    return "\n".join(f"> {_esc(line)}" for line in str(text or "").split("\n"))
+
+
+# What each reaction or reply does on a reply alert, for the notes that repeat it (the words are desk's commands).
+HOW_TO_ANSWER = ("✅ on the draft (or reply `send`) sends it · `edit: &lt;new text&gt;` changes it first · "
+                 "❌ or `skip` sends nothing (you answer yourself)")
 
 
 # -- Slack text -----------------------------------------------------------------------------------
@@ -319,7 +374,8 @@ def _names(ctx: Context, item: ReplyItem) -> tuple[dict, dict]:
 def copy_problems(ctx: Context, item: ReplyItem, text: str) -> list[str]:
     """SPEC 1.9: the copy rules' word and line checks on the text about to be sent."""
     if not text.strip():
-        return ["there is no draft to send; reply \"send: <text>\" (or `replies approve --edit`)"]
+        return ["there is no draft to send: write one with \"send: <text>\" in the Slack thread, or "
+                + say.command(f'replies approve {item.short_id} --text "<text>" --live')]
     g = ctx.settings.general
     account, contact = _names(ctx, item)
     owner = item.owner or next((m.owner_name for m in ctx.settings.mailboxes if m.address.lower() == item.mailbox), "")
@@ -354,8 +410,9 @@ def send_reply(ctx: Context, item: ReplyItem, text: str, *, by: str, edited: boo
     if problems:
         result.update(sent=False, why=problems)
         if ctx.live:
-            note = _thread(slack, item, "Not sent: " + "; ".join(problems)
-                           + ". Fix it with \"edit: <text>\" and then \"send\", or \"send: <text>\".")
+            note = _thread(slack, item, f"{say.ACTION} *Not sent:* {_esc('; '.join(problems))}.\n"
+                                        "*What to do:* reply `edit: &lt;fixed text&gt;` and then `send`, or "
+                                        "`send: &lt;fixed text&gt;` to send your version straight away.")
             save_payload(ctx.store, item.id, desk={**item.desk, "approve_ts": note, "blocked": problems[:5]})
         log("desk_blocked", item_id=item.id, problems=problems[:5])
         return result
@@ -373,16 +430,18 @@ def send_reply(ctx: Context, item: ReplyItem, text: str, *, by: str, edited: boo
     except GuardViolation as exc:
         # Refused (SPEC 1): back to its status for a person, and this approval spent, so the next run
         # does not try it again (the violation surfaces once, in this run's heartbeat).
-        note = _thread(slack, item, f"Not sent: blocked by a guardrail ({str(exc)[:160]}). Answer it from "
-                                    f"{item.mailbox} yourself, or \"skip\".")
+        note = _thread(slack, item, f"{say.ACTION} *Not sent: a safety rule stopped it* ({_esc(str(exc)[:160])}).\n"
+                                    f"*What to do:* answer them yourself from {item.mailbox}, then reply `skip` here "
+                                    "to close this.")
         save_payload(ctx.store, item.id, {"status": item.status},
                      desk={**_reload(ctx, item).desk, "approve_ts": note, "sending": None,
                            "failed": {**started, "error": "guardrail"}})
         raise
     except Exception as exc:  # the reply did not go, or Instantly did not say: never resent without a person
         why = f"{type(exc).__name__}: {str(exc)[:200]}"
-        note = _thread(slack, item, f"Not sent: Instantly answered {why}. Check the Sent folder of {item.mailbox} "
-                                    "before you approve it again (\"send\").")
+        note = _thread(slack, item, f"{say.ACTION} *Probably not sent: Instantly answered with an error* "
+                                    f"({_esc(why)}).\n*What to do:* look in the Sent folder of {item.mailbox}. "
+                                    "Not there: reply `send` to try again. There: reply `skip` to close this.")
         desk = {**_reload(ctx, item).desk, "approve_ts": note, "failed": {**started, "error": why}}
         desk.pop("sending", None)
         save_payload(ctx.store, item.id, {"status": item.status}, desk=desk)
@@ -400,7 +459,8 @@ def send_reply(ctx: Context, item: ReplyItem, text: str, *, by: str, edited: boo
         "account_id": item.account_id or None, "contact_id": item.contact_id or None,
         "approval": approval, "approved_by": by, "occurred_at": ctx.now,
     }])
-    _thread(slack, item, f"Sent from {item.mailbox} at {uk_time} UK{' (edited)' if edited else ''}, approved {_who(by)}.")
+    _thread(slack, item, f"{say.DONE} *Sent* from {item.mailbox} at {uk_time} UK"
+                         f"{' (the edited version)' if edited else ''}, approved {_who(by)}. Nothing more to do.")
     log("desk_sent", item_id=item.id, account_id=item.account_id, mailbox=item.mailbox, approval=approval, by=by)
     result.update(sent=True, approval=approval, mailbox=item.mailbox, at=f"{uk_time} UK")
     return result
@@ -418,8 +478,8 @@ def skip_item(ctx: Context, item: ReplyItem, *, by: str, via: str, slack: Any = 
     save_payload(ctx.store, item.id, {"handled_at": ctx.now, "handled_by": by},
                  desk={**item.desk, "skipped": {"at": ctx.now.isoformat(), "by": by, "via": via}})
     _record_skip_event(ctx, item, by)
-    _thread(slack, item, f"Skipped {_who(by)}: marked handled, and nothing was sent. "
-                         f"Reply to the prospect from {item.mailbox or 'its mailbox'} if it needs an answer.")
+    _thread(slack, item, f"{say.DONE} *Closed without sending* (skipped {_who(by)}). If they need an answer, "
+                         f"reply to them yourself from {item.mailbox or 'the mailbox they wrote to'}.")
     log("desk_skipped", item_id=item.id, account_id=item.account_id, by=by)
     result.update(skipped=True)
     return result
@@ -437,12 +497,16 @@ def _hubspot(ctx: Context, item: ReplyItem, slack: Any, out: Counter[str], error
     out[res.get("status", "?")] += 1
     item = _reload(ctx, item)
     if ctx.live and res.get("status") == "written" and res.get("link") and not item.desk.get("hubspot_posted"):
-        _thread(slack, item, f"HubSpot: {res['link']}")
+        _thread(slack, item, f":link: *Added to HubSpot* (the company, the contact and this reply): "
+                             f"<{res['link']}|open the company in HubSpot>")
         save_payload(ctx.store, item.id, desk={**item.desk, "hubspot_posted": True})
         item = _reload(ctx, item)
     elif ctx.live and res.get("status") == "merge_needed" and not item.desk.get("merge_posted"):
-        _thread(slack, item, "HubSpot has more than one company for this domain, so nothing was written there. "
-                             "Merge them in HubSpot; the next run carries on.")
+        dupes = [f"<{hw.record_link('companies', str(c))}|company {c}>" for c in (res.get("merge_ids") or ())][:5]
+        _thread(slack, item, f"{say.ACTION} *Not added to HubSpot: it has more than one company for this website*"
+                             + (f" ({', '.join(dupes)})" if dupes else "") + ".\n"
+                             "*What to do:* merge them into one in HubSpot; the reply is added within 5 minutes "
+                             "after. Answering the reply does not wait for this.")
         save_payload(ctx.store, item.id, desk={**item.desk, "merge_posted": True})
         item = _reload(ctx, item)
     return item
@@ -459,8 +523,10 @@ def _apply_reading(ctx: Context, item: ReplyItem, d: Decision, slack: Any) -> Re
         extra = {"draft": d.draft, **({} if item.draft_edited else {"draft_original": item.draft})}
         desk["edited_by"] = user
         if not d.action:  # posted again so the new draft can get its ✅
-            desk["approve_ts"] = _thread(slack, item, f"Draft changed by <@{user}>. React ✅ to this message or reply "
-                                                      f"\"send\" to send it; ❌ or \"skip\" to leave it:\n>>> {d.draft}")
+            desk["approve_ts"] = _thread(slack, item, f":pencil2: *Draft changed by <@{user}>.* To send this version: "
+                                                      "✅ on this message, or reply `send`. To send nothing: ❌ or "
+                                                      "`skip`. To change it again: `edit: &lt;new text&gt;`.\n"
+                                                      f">>> {_esc(d.draft)}")
             seed(slack, item.slack_channel, desk["approve_ts"])
     save_payload(ctx.store, item.id, desk=desk, **extra)
     return _reload(ctx, item)
@@ -475,17 +541,24 @@ def _repost_due(ctx: Context, item: ReplyItem) -> bool:
 
 
 def _describe(ctx: Context, item: ReplyItem) -> str:
+    """"a reply from Jane Doe at Acme Creative (Interested)": the prospect is not named in a link or mention."""
     account, contact = _names(ctx, item)
     who = " ".join(str(contact.get(k) or "") for k in ("first_name", "last_name")).strip() or "a contact"
-    company = account.get("clean_name") or account.get("domain") or "an account"
-    return f"{item.reply_class.replace('_', ' ') or 'a'} reply from {who} at {company} → {item.mailbox}"
+    company = account.get("clean_name") or account.get("domain") or "a company"
+    return f"a reply from {who} at {company} ({class_label(item.reply_class)})"
 
 
 def _repost(ctx: Context, item: ReplyItem, slack: Any) -> bool:
     hours = int((ctx.now - item.created_at).total_seconds() // 3600) if item.created_at else 2
-    text = (f"{_mentions(approvers_for(ctx.settings, item.mailbox))} Still waiting after {hours} hours: "
-            f"{_describe(ctx, item)}. React ✅ to the draft or reply \"send\"; \"edit: <text>\" changes it; "
-            f"❌ or \"skip\" if you will answer it yourself. Or `us-outbound replies approve {item.short_id} --live`.")
+    g = ctx.settings.general
+    text = "\n".join([
+        f"{_mentions(approvers_for(ctx.settings, item.mailbox))} {say.DECIDE} *Still waiting after {hours} hours: "
+        f"{_esc(_describe(ctx, item))}*",
+        f"They wrote to {item.mailbox}. Nobody has sent or skipped the answer yet.",
+        f"*What to do:* in this thread, {HOW_TO_ANSWER}. Or in a terminal: "
+        + say.command(f"replies approve {item.short_id} --live") + ".",
+        f"If nobody acts, it goes to {g.escalation_email} once it has waited {g.escalation_hours} hours.",
+    ])
     if not _thread(slack, item, text, broadcast=True):
         return False
     ctx.store.update(TABLE, {"item_id": item.id}, {"reposted_at": ctx.now})
@@ -521,8 +594,9 @@ def _stuck(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
     run.add("stuck", item.short_id)
     if ctx.dry_run:
         return
-    note = _thread(slack, item, f"I can't tell whether the reply went out (the run sending it stopped). Check the Sent "
-                                f"folder of {item.mailbox}, then reply \"send\" to send it, or \"skip\".")
+    note = _thread(slack, item, f"{say.ACTION} *Not sure the answer went out:* the run sending it stopped part-way.\n"
+                                f"*What to do:* look in the Sent folder of {item.mailbox}. Not there: reply `send` to "
+                                "send it. There: reply `skip` to close this.")
     desk = {**item.desk, "approve_ts": note, "unsure": item.desk.get("sending")}
     desk.pop("sending", None)
     previous = ESCALATED if item.row.get("escalated_at") else OPEN
@@ -570,21 +644,52 @@ def _permalink(slack: Any, channel: str, slack_ts: str) -> str:
         return ""
 
 
-def escalation_note(ctx: Context, item: ReplyItem, slack: Any) -> str:
-    """What harry@spill.chat gets with the forwarded thread: the draft, the links and how to act (SPEC 11)."""
+def escalation_note(ctx: Context, item: ReplyItem, slack: Any, *, for_slack: bool = False) -> str:
+    """What escalation_email gets with the forwarded reply (plain text), or the approvers' DM (for_slack): who
+    replied, what they said, the draft, the links and how to act (SPEC 11). It stands alone: the reader may not
+    have seen the alert."""
     g = ctx.settings.general
-    link = _permalink(slack, item.slack_channel, item.slack_ts) or "the alert's thread in #us-outbound"
-    hubspot = item.hubspot.get("link") or ("not yet in HubSpot" if item.is_warm else
-                                           "not in HubSpot (only positive and referral replies go there)")
-    draft = item.draft or "(no draft: write your own)"
-    return (
-        f"This {_describe(ctx, item)} has waited over {g.escalation_hours} hours for approval.\n\n"
-        f"Draft reply (signed {item.owner or 'by its owner'}):\n{draft}\n\n"
-        f"Slack: {link}\nHubSpot: {hubspot}\n\n"
-        f"To send the draft, react ✅ to it or reply \"send\" in the Slack thread (\"edit: <text>\" changes it), "
-        f"or run `us-outbound replies approve {item.short_id} --live`. Or reply to the prospect yourself from "
-        f"{item.mailbox}. Never reply to the prospect from {g.escalation_email}."
-    )
+    link = _permalink(slack, item.slack_channel, item.slack_ts)
+    hubspot = item.hubspot.get("link") or ""
+    received = fmt.uk_time(item.received_at or item.created_at, missing="")
+    meaning = class_meaning(item.reply_class)
+    approve = say.command(f"replies approve {item.short_id} --live")
+    said = clip(" ".join(item.excerpt.split()), EXCERPT_CHARS)
+    if not for_slack:
+        return (
+            f"This is {_describe(ctx, item)}, sent to {item.mailbox}"
+            + (f" on {received}" if received else "") + f". It has waited over {g.escalation_hours} hours for "
+            "someone to approve the answer.\n\n"
+            f"Draft answer (signed {item.owner or 'by the mailbox owner'}):\n{item.draft or '(no draft: write your own)'}"
+            f"\n\nSlack: {link or 'the alert in #us-outbound'}\n"
+            f"HubSpot: {hubspot or ('not yet in HubSpot' if item.is_warm else 'not in HubSpot (only Interested and Referral replies go there)')}"
+            "\n\nTo send the draft: react ✅ to it in the Slack thread, or reply \"send\" there (\"edit: <new text>\" "
+            f"changes it first). Or in a terminal: {approve}. Or answer the prospect yourself from {item.mailbox}, "
+            f"then reply \"skip\" in the thread. Never reply to the prospect from {g.escalation_email}."
+        )
+    thread = f"<{link}|open the alert in Slack>" if link else "the alert in #us-outbound"
+    account, contact = _names(ctx, item)
+    who = " ".join(str(contact.get(k) or "") for k in ("first_name", "last_name")).strip() or "A contact"
+    company = account.get("clean_name") or account.get("domain") or ""
+    lines = [
+        f"{say.URGENT} *A prospect's reply has waited over {g.escalation_hours} hours for an answer*",
+        f"*Who:* {_esc(who)}" + (f" at {_esc(company)}" if company else "")
+        + f", writing to {item.mailbox}" + (f" on {received}" if received else "") + ".",
+        f"*What the system thinks it is:* {class_label(item.reply_class)}" + (f": {meaning}." if meaning else "."),
+    ]
+    if said:
+        lines += ["*What they said:*", _quote(said)]
+    lines += ([f"*Draft answer* (signed {_esc(item.owner or 'by the mailbox owner')}):", _quote(item.draft)]
+              if item.draft else ["*No draft:* the answer has to be written by hand."])
+    if hubspot:
+        lines.append(f"*HubSpot:* <{hubspot}|the company record>")
+    lines += ["*What to do* (any one of these):",
+              f"1. In the Slack thread ({thread}): ✅ on the draft or reply `send` sends it; `edit: &lt;new text&gt;` "
+              "changes it first; `send: &lt;your text&gt;` sends your own text instead.",
+              f"2. In a terminal: {approve} sends the draft.",
+              f"3. Answer them yourself from {item.mailbox}, then reply `skip` in the thread to close it. "
+              f"Never answer from {g.escalation_email}."]
+    return "\n".join(lines)
 
 
 def _task_now(ctx: Context, subject: str, body: str, records: list[tuple[str, str]]) -> bool:
@@ -629,9 +734,10 @@ def _escalate_reply(ctx: Context, item: ReplyItem, slack: Any) -> str:
     else:  # nothing about a prospect who is not a warm lead goes into HubSpot (SPEC 1.2)
         records = []
         subject = f"US Outbound: a {item.reply_class or 'reply'} item has waited {g.escalation_hours} hours"
-        body = (f"Reply item {item.short_id} needs you: see the #us-outbound thread, or run `us-outbound replies list` "
-                f"and `us-outbound replies approve {item.short_id} --live`.")
-    how = [x for x, ok in (("task", _task_now(ctx, subject, body, records)), ("dm", _dm(ctx, slack, note))) if ok]
+        body = (f"Reply item {item.short_id} needs you: see the #us-outbound thread, or run "
+                f"{say.command('replies list')} and {say.command(f'replies approve {item.short_id} --live')}.")
+    dm = escalation_note(ctx, item, slack, for_slack=True)
+    how = [x for x, ok in (("task", _task_now(ctx, subject, body, records)), ("dm", _dm(ctx, slack, dm))) if ok]
     return "+".join(how)
 
 
@@ -641,12 +747,17 @@ def _escalate_other(ctx: Context, row: Mapping[str, Any], slack: Any) -> str:
     payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
     kind = str(row.get("kind") or "item").replace("_", " ")
     link = _permalink(slack, str(row.get("slack_channel") or ""), str(row.get("slack_ts") or ""))
-    body = (f"{clip(str(payload.get('summary') or ''), 300)} It has waited over {g.escalation_hours} hours. "
-            + (f"Slack: {link}" if link else "See #us-outbound or `us-outbound status`.")).strip()
+    summary = clip(str(payload.get('summary') or ''), 300)
+    body = (f"{summary} It has waited over {g.escalation_hours} hours. "
+            + (f"Slack: {link}" if link else f"See #us-outbound or {say.command('status')}.")).strip()
     records = [("companies", str(c)) for c in payload.get("hubspot_company_ids") or ()][:5]
     subject = f"US Outbound: a {kind} item has waited {g.escalation_hours} hours"
-    how = [x for x, ok in (("task", _task_now(ctx, subject, body, records)), ("dm", _dm(ctx, slack, f"{subject}. {body}")))
-           if ok]
+    what, todo = KIND_WORDS.get(str(row.get("kind") or ""),
+                                (f"a {kind} item", "see what it needs with " + say.command("status") + "."))
+    dm = say.compose(say.URGENT, f"Waiting over {g.escalation_hours} hours for someone: {what}",
+                     [_esc(summary), f"<{link}|Open it in Slack>" if link else "It is in #us-outbound."],
+                     do=todo.replace("{id}", str(row.get("item_id") or "ITEM_ID")))
+    how = [x for x, ok in (("task", _task_now(ctx, subject, body, records)), ("dm", _dm(ctx, slack, dm))) if ok]
     return "+".join(how)
 
 
@@ -689,8 +800,9 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
             "mailbox": item.mailbox or None, "reply_class": item.reply_class or None, "occurred_at": ctx.now,
         }])
         if reply:
-            _thread(slack, item, f"Escalated to {g.escalation_email} after {g.escalation_hours} hours ({how}). "
-                                 "It can still be approved here.")
+            ways = " and ".join(HOW_WORDS.get(x, x) for x in how.split("+"))
+            _thread(slack, item, f":outbox_tray: *Escalated to {g.escalation_email}* after {g.escalation_hours} hours "
+                                 f"with no answer, by {ways}. You can still send or skip it here.")
         log("escalated", item_id=row["item_id"], kind=row.get("kind"), how=how)
         run.add("escalated", {"item": str(row["item_id"])[:8], "kind": row.get("kind"), "how": how})
 

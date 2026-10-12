@@ -25,7 +25,7 @@ from datetime import timedelta
 from typing import Any
 
 from us_outbound import fmt
-from us_outbound.base import notify
+from us_outbound.base import notify, say
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.enrol import capacity
@@ -37,7 +37,7 @@ from us_outbound.registry.mailboxes import MAX_CAP
 WARMUP_WEEKS = 3  # a new mailbox's warmup (registry/mailboxes.py: Active after 21 days of warmup)
 SUPPLY_DAYS = 14  # the recent supply: accounts verified over these days, as a weekly rate
 ACTIVE, WARMING = "Active", "Warming"
-HEAD = "Mailboxes, three weeks ahead:"
+HEAD = f"{say.ACTION} *Sending mailboxes: add more now, as a new one takes {WARMUP_WEEKS} weeks to warm up*"
 
 
 @dataclass(frozen=True)
@@ -92,17 +92,21 @@ def plan(ctx: Context, ready: int) -> Ahead:
 
 
 def line(a: Ahead) -> str:
-    """The ask, as Harry reads it."""
+    """The ask, as anyone reads it: how many to add, the numbers behind it, the steps, and what happens without."""
     takes = "takes" if a.active == 1 else "take"
-    text = (f"Add {fmt.plural(a.add, 'mailbox', 'mailboxes')} now: a new mailbox takes about {WARMUP_WEEKS} weeks to warm up. "
-            f"At full ramp your {fmt.plural(a.active, 'Active mailbox', 'Active mailboxes')} {takes} about {a.weekly} new "
-            f"companies a week; weekly_enrol_cap is {a.cap} and {a.ready} companies are ready")
+    text = (f"*Add {fmt.plural(a.add, 'mailbox', 'mailboxes')} now.* Fully warmed up, your "
+            f"{fmt.plural(a.active, 'sending mailbox', 'sending mailboxes')} {takes} about {a.weekly} new companies a "
+            f"week; the weekly target (`weekly_enrol_cap`) is {a.cap}, and {a.ready} companies are ready")
     weeks = a.weeks_ready
-    text += f" ({weeks:.1f} weeks)." if weeks is not None else "."
+    text += f" ({weeks:.1f} weeks' worth)." if weeks is not None else "."
     if a.warming:
-        text += f" {fmt.plural(a.warming, 'mailbox is', 'mailboxes are')} warming already, counted in."
-    return text + (' `us-outbound mailbox add ADDRESS --owner "NAME" --live` adds one; it warms for 21 days, then '
-                   "starts its sending ramp.")
+        text += f" {fmt.plural(a.warming, 'mailbox is', 'mailboxes are')} already warming up, counted in."
+    add = say.command('mailbox add ADDRESS --owner "NAME" --live')
+    return text + (
+        "\n*What to do:*\n1. Set up each new mailbox and connect it in Instantly.\n"
+        f"2. Add it here: {add} (NAME: the person named on the "
+        "address). It warms up for 21 days, then its sending builds up week by week.\n"
+        f"_Without them, sending stays at about {a.weekly} new companies a week._")
 
 
 def check(ctx: Context, ready: int) -> dict[str, Any]:

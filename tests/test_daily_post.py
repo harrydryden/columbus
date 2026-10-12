@@ -8,6 +8,9 @@ from datetime import UTC, datetime, timedelta
 from tests.test_registry import HANNAH, SAM, setup
 from us_outbound.context import Secrets
 from us_outbound.learn import daily_post
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK (GMT), Tue 27 Oct
 MON = datetime(2026, 10, 26, 15, 0, tzinfo=UTC)  # Monday, inside the send window
@@ -62,43 +65,40 @@ def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
 
 
 def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_what_to_watch():
-    """Harry, 9 Oct 2026: "a more readable pithier version of the daily report". The 09:00 job posts this; the
-    full post is `us-outbound daily --full`."""
+    """Harry, 9 Oct 2026: "a more readable pithier version of the daily report"; 12 Oct 2026: clear to anyone, even
+    new to the system. The 09:00 job posts this; the full post is `us-outbound daily --full`."""
     ctx, t = world()
     out = daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
     assert post.json["text"].splitlines() == [
-        "*Daily post · Tue 27 Oct* · covers Mon 26 Oct",
+        ":warning: *Daily summary, Tue 27 Oct: 3 things need you*",
+        "1. Answer 1 prospect reply (waiting 30 hours): ✅ or `edit: <text>` in its thread in #us-outbound",
+        "2. 1 safety pause on (bounce or complaint limit hit): `railway ssh -- us-outbound killrules show`",
+        "3. Weekly hand-check (a random sample of companies): `railway ssh -- us-outbound handcheck show`",
         "",
-        "*Needs you*",
-        "• Answer 1 reply (waited 30 hours)",
-        "• 1 kill-rule hold in force: `us-outbound killrules show`",
-        "• This week's hand-check: `us-outbound handcheck show`",
-        "",
-        "*Yesterday*",
-        "Sent 8 (step 1 5, step 2 3) · 3 replies (1 positive) · 1 bounce · 1 unsubscribe · 1 demo booked",
+        "*Yesterday (Mon 26 Oct)*",
+        "Sent 8 emails (5 first, 3 follow-ups) · 3 replies (1 interested) · 1 bounce · 1 unsubscribe · 1 demo booked",
         "Found 0 companies and 0 contacts",
-        "Positive: Acme Creative (positive, hannah@meetspill.org)",
+        "Interested: Acme Creative (positive reply to hannah@meetspill.org)",
         "• Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”",
         "Visited the US site after we emailed: Brightfin",
         "",
-        "*Today: no new contacts*",
-        "Enrolment waits: optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so "
+        "*Today: no new people added to the emails*",
+        "Why: optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so "
         "nothing is sent; once it is, set optout_tested = yes on the General tab.",
-        "Senders: Hannah 3 · Harry 5 · Sam 3",
-        "This week: 0 of 150, 4 send days left",
-        "Running dry: live_sending is no, so enrol reaches nobody.",
+        "This week: 0 of 150 added, 4 send days left",
+        "Test mode: `live_sending` is no, so no prospect is emailed.",
         "",
         "*Pipeline*",
-        "Ready: 0",
-        "Behind it: 0 need a contact · 0 need verifying",
+        "Ready to email: 0",
+        "Being prepared: 0 need a contact · 0 need their facts checked",
         "",
         next(x for x in post.json["text"].splitlines() if x.startswith("Spend: ")),
         "",
-        "*Watch*",
-        "• Kill rule fired: emails found by clay: 4 of 100 sends bounced",
+        "*Worth a look*",
+        "• Safety pause set off: emails found by clay: 4 of 100 sends bounced",
         "",
-        "Nothing else to flag: mailboxes and campaigns are fine. Full detail: `us-outbound daily --full`.",
+        "Fine: mailboxes and campaigns. Full report: `railway ssh -- us-outbound daily --full`",
     ]
     assert (out["sent"], out["replies"], out["positive"]) == (8, 3, 1)  # the summary keeps the same numbers (human replies)
 
@@ -108,10 +108,42 @@ def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_to_sunday_on_mond
     day = daily_post.gather(ctx)
     day.mailboxes.append(("sam@meetspill.org", 0, 40, 2))
     lines = daily_post.compact(ctx, day)
-    assert lines[0] == "*Daily post · Mon 26 Oct* · covers Fri 23 to Sun 25 Oct"
-    assert "*Since Fri 23 Oct*" in lines
-    assert "• sam@meetspill.org bounced 2 of its last 40 sends (5%)" in lines
-    assert lines[-1] == "Nothing else to flag: campaigns are fine. Full detail: `us-outbound daily --full`."
+    assert lines[0] == ":warning: *Daily summary, Mon 26 Oct: 3 things need you*"
+    assert "*Fri 23 to Sun 25 Oct*" in lines
+    assert ("• sam@meetspill.org: 2 of its last 40 emails bounced (5%); over 3% of 100 it is paused automatically"
+            in lines)
+    assert lines[-1] == "Fine: campaigns. Full report: `railway ssh -- us-outbound daily --full`"
+
+
+def test_the_short_post_with_nothing_waiting_says_so_first_and_shows_today_s_number():
+    ctx, _ = world()
+    ctx.store.delete("hitl_items", {"kind": ["reply_approval", "hand_check", "kill_rule"]})
+    with_general(ctx, live_sending=True, optout_tested=True)
+    lines = daily_post.compact(ctx, daily_post.gather(ctx))
+    assert lines[0] == ":bar_chart: *Daily summary, Tue 27 Oct: nothing needs you today*"
+    assert lines[1] == ""  # no numbered asks
+    today = lines.index(next(x for x in lines if x.startswith("*Today: ")))
+    assert lines[today] == "*Today: up to 0 new people added to the emails*"
+    assert lines[today + 1] == "Held to that by the companies ready to email"
+    assert lines[today + 2].startswith("Room per sender: Hannah 3 · ")
+    assert not any(x.startswith("Test mode") for x in lines)
+
+
+def test_the_needs_lines_say_where_to_act_for_cards_and_the_doubtful_only_hand_check():
+    ctx, _ = world()
+    ctx.store.delete("hitl_items", {"kind": ["reply_approval", "kill_rule"]})
+    ctx.store.update("hitl_items", {"item_id": "h1"}, {"payload": {"iso_week": "2026-W44", "per_group": 0,
+                                                                    "doubtful": [{"account_id": "a1"}, {"account_id": "a2"}]}})
+    ctx.store.insert("hitl_items", [
+        {"item_id": "s1", "kind": "send_approval", "status": "open", "account_id": "a9", "created_at": TUE_9 - timedelta(hours=5),
+         "payload": {"state": "waiting", "owner": "Hannah Spalding", "send_day": "2026-10-27", "expires_on": "2026-10-28"}},
+    ])
+    lines = daily_post.compact(ctx, daily_post.gather(ctx))
+    assert lines[:3] == [
+        ":warning: *Daily summary, Tue 27 Oct: 2 things need you*",
+        "1. Approve 1 email (waiting 5 hours; a card lapses after its next send day): ✅ or ❌ on each card in #us-outbound",
+        "2. Weekly hand-check of 2 companies with doubtful facts: `railway ssh -- us-outbound handcheck show`",
+    ]
 
 
 def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approvals():
@@ -158,12 +190,12 @@ def test_the_post_has_one_retention_line_when_today_s_run_deleted_anything():
     """ops/retention.py (SPEC 6, 13): counts only, and nothing when the run changed nothing."""
     ctx, _ = world()
     lines, nums = daily_post.build(ctx)
-    assert not any(x.startswith("Retention") for x in lines) and nums["retention"] == {}
+    assert not any(x.startswith("Old personal data") for x in lines) and nums["retention"] == {}
     ctx.store.insert("heartbeats", [{"run_id": "ret", "job": "retention", "status": "ok", "dry_run": False,
                                      "started_at": TUE_9 - timedelta(hours=8), "finished_at": TUE_9,
                                      "detail": {"dry_run": False, "leads": {"deleted": 5}}}])
     lines, nums = daily_post.build(ctx)
-    assert lines[-1] == "Retention deleted 5 Instantly leads (31 days after their last step)."
+    assert lines[-1] == "Old personal data deleted today (our retention rule): 5 Instantly leads (31 days after their last step)."
     assert nums["retention"]["leads"] == 5
 
 
@@ -180,14 +212,14 @@ def test_with_no_slack_token_the_post_goes_to_the_log(capsys):
     assert out["alert"]["posted"] is False and out["alert"]["error"] == "no Slack token: posted to the log"
     logged = [line for line in capsys.readouterr().out.splitlines() if '"event": "slack_off"' in line]
     assert len(logged) == 1  # the whole post, line by line, not clipped to 200 characters
-    assert "Answer 1 reply" in logged[0] and "hannah@meetspill.org" not in logged[0]  # emails hashed
+    assert "Answer 1 prospect reply" in logged[0] and "hannah@meetspill.org" not in logged[0]  # emails hashed
 
 
 def test_dry_run_posts_to_the_dev_channel():
     ctx, t = world(live=False)
     daily_post.run(ctx)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
-    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith("[dry-run → #us-outbound] *Daily post")
+    assert post.json["channel"] == "C_DEV" and post.json["text"].startswith(DRY + ":warning: *Daily summary")
 
 
 def test_daily_post_runs_as_a_job_from_the_cli():
@@ -266,7 +298,7 @@ def test_the_daily_command_prints_the_short_or_the_full_post_and_posts_nothing(c
     h = Harness()
     assert h.run("daily") == 0
     out = capsys.readouterr().out
-    assert "*Daily post · " in out and "*Needs you*" in out and "*Sources*" not in out
+    assert "*Daily summary, " in out and "*Pipeline*" in out and "*Sources*" not in out
     assert h.run("daily", "--full") == 0
     out = capsys.readouterr().out
     assert "*Daily post, " in out and "*Sources*" in out

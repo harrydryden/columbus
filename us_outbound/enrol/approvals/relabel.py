@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from us_outbound import config_version, labels
+from us_outbound.base import say
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import CLI_APPROVER
 from us_outbound.clients.http import ApiError
@@ -71,7 +72,8 @@ def repropose(ctx: Context, old: Item, p: enrol.Prepared, slack: Any, why: str) 
     if slack is not None:
         try:
             if post_card(ctx, slack, item):
-                _thread(slack, item, f"🏷️ This card replaces the earlier one for {_esc(item.company)}: {why}.")
+                _thread(slack, item, f"🏷️ This card replaces the earlier one for {_esc(item.company)} ({why}). "
+                                     "Approve this one.")
         except (ApiError, LookupError) as exc:
             log("send_approval_slack_failed", item_id=item.id, error=str(exc)[:200])
     log("send_approval_reproposed", item_id=item.id, replaces=old.id, account_id=item.account_id)
@@ -88,33 +90,37 @@ def set_industry(ctx: Context, item: Item, text: str, *, by: str, via: str, slac
     ind = labels.resolve(text, s)
     wanted = _esc(_text(text)[:60])
     if ind is None:
-        _thread(slack, item, f"No Industries label called “{wanted}”. The labels are:\n{_esc(labels.active_list(s))}\n"
-                             "Reply `industry: <label>` with one of them (any label on the Industries tab will do).")
+        _thread(slack, item, f"No Industries label called “{wanted}”, so nothing changed.\n*What to do:* reply "
+                             "`industry: <label>` with one of these (or any label on the "
+                             f"{say.sheet_link(ctx, 'Industries')}):\n{_esc(labels.active_list(s))}")
         return {"done": False, "why": f"no Industries label called {text!r}"}
     old = _text(item.payload.get("industry"))
     if ind.industry.casefold() == old.casefold():
-        _thread(slack, item, f"The card already has {_esc(ind.industry)}.")
+        _thread(slack, item, f"The card already has the industry {_esc(ind.industry)}, so nothing changed.")
         return {"done": False, "why": f"the card already has {ind.industry}"}
     account = ctx.store.get("accounts", account_id=item.account_id) if item.account_id else None
     if account is None:
-        _thread(slack, item, "The company is no longer on file, so its industry cannot be set.")
+        _thread(slack, item, f"{_esc(item.company)} is no longer in our records, so its industry can't be set. "
+                             "Nothing to do.")
         return {"done": False, "why": "the account is no longer on file"}
     who = _who(by)
     got = labels.correct(ctx, account, ind, by=by, via=via, item_id=item.id, card_label=old,
                          who="at the command line" if by == CLI_APPROVER else f"by {by} in Slack")
-    sheet = {"updated": "recorded on the Overrides tab", "added": "added to the Overrides tab"}.get(got["sheet"], got["sheet"])
+    overrides = say.sheet_link(ctx, labels.OVERRIDES_TAB)
+    sheet = {"updated": f"recorded on the {overrides}", "added": f"added to the {overrides}"}.get(got["sheet"],
+                                                                                              _esc(got["sheet"]))
     company, new = _esc(item.company), _esc(ind.industry)
     p = reprepare(ctx, item) if ind.active else None
     if p is not None:
-        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and a new "
-                 f"card for {company} with the {new} emails is posted in the channel. Approve that one.")
+        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn (nothing was sent). A new "
+                 f"card for {company} with the {new} emails is posted in the channel: approve that one.")
     elif ind.active:
-        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn: nothing was sent, and the "
-                 f"next enrol (12:00 UK on a send day) proposes {company} again with the {new} emails.")
+        after = (f"This card was written for {_esc(old) or 'no label'}, so it is withdrawn (nothing was sent). Nothing "
+                 f"to do: a new card for {company} with the {new} emails comes at 12:00 UK on the next send day.")
     else:
-        after = (f"This card is withdrawn: nothing was sent. {new} is switched off on the Industries tab, so {company} "
-                 "will not be emailed unless it is switched on.")
-    note = f"🏷️ Industry set to {new} ({who}); {_esc(sheet)}. {after}"
+        after = (f"This card is withdrawn (nothing was sent). {new} is switched off on the "
+                 f"{say.sheet_link(ctx, 'Industries')}, so {company} won't be emailed unless it is switched on there.")
+    note = f"🏷️ Industry set to {new} ({who}); {sheet}. {after}"
     reason = f"its industry is {ind.industry} now, set {who}"
     if not withdraw(ctx, item, slack, reason, back_to_queue=ind.active, via="industry", note=note):
         return {"done": False, "why": "another run closed the card first"}
@@ -145,7 +151,8 @@ def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Setting
     if status == labels.DISQUALIFIED:
         return f"{company} is left out: {_text(account.get('tier_reason')) or 'disqualified'}", False
     if status in ("new", "queued"):
-        return "the label check doubts its industry, so it waits for the weekly hand-check", True
+        return ("the AI industry check is unsure of its industry, so a person checks it at the weekly hand-check "
+                "first"), True
     if status != "verified":
         return None
     old, new = _text(p.get("industry")), _text(account.get("industry"))
@@ -154,8 +161,9 @@ def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Setting
     used, allowed = card_copy_level(p, settings), labels.copy_level(account)
     if labels.more_specific(used, allowed):
         group = _text(account.get("industry_group")) or _text(p.get("industry_group"))
-        now = f"{group}'s copy" if allowed == labels.GROUP_COPY else "General copy"
-        return f"its emails were written for {new}, and the label check allows {now} now", True
+        now = f"the emails for the whole {group} group" if allowed == labels.GROUP_COPY else "the general emails"
+        return (f"its emails were written for {new}, but the AI industry check is now only sure enough for {now}",
+                True)
     return None
 
 

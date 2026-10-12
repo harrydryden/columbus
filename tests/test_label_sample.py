@@ -102,8 +102,12 @@ def test_the_monthly_job_scores_last_month_adds_this_months_and_posts_a_link_to_
     assert len(live.clients.sheets.tabs[ls.TAB]) == 75
     [text] = posts
     sheet = live.guard.bounds.settings_sheet_id
-    assert f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=1234|Label sample tab>" in text
-    assert "25 new companies to judge (2026-11)" in text
+    tab = f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=1234|Label sample tab>"
+    assert text.startswith(":raised_hand: *25 companies to check: is our industry label right?*")
+    assert f"25 new companies to judge (2026-11) are on the {tab}." in text
+    assert (f"On the {tab}, fill `your_verdict` for each new row: the right label, or right, right "
+            "group, wrong group or outside.") in text
+    assert "Untrue pitch: the email said more about the company than the verdict allows." in text  # the terms explained
     assert "Last month (2026-10): 40 of 50 judged · label right 100% · group right 100% · untrue pitch 0%" in text
     assert "10 of last month's companies are not judged yet." in text
     # Every row was judged right (its own label), but the model said Fintech of the tech ones: the misses get drafts.
@@ -132,7 +136,8 @@ def test_the_monthly_post_links_the_definition_suggestions(monkeypatch):
     sheet = live.guard.bounds.settings_sheet_id
     assert (f"1 definition change drafted for the labels the check confused (Fintech, Technology & Startups): "
             f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=2|Definition suggestions tab>") in text
-    assert "Set decision to approve or reject" in text
+    assert (f"2. On the <https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=2|Definition suggestions tab>, set "
+            "`decision` to approve or reject. Approved ones go onto the Industries tab at the next settings sync") in text
 
 
 def test_the_score_counts_right_labels_groups_and_wrong_pitches():

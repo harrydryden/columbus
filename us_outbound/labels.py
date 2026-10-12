@@ -1073,68 +1073,91 @@ def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
 
 def asks(ctx: Context) -> list[tuple[str, str]]:
     """The daily post's label asks (learn/spend.asks posts them, each key once): many corrections, low agreement,
-    and checks that could not run."""
+    and checks that could not run. Each says what happened in plain words, then what to do and where."""
+    from us_outbound.base import say
     from us_outbound.learn.daily_post import period
 
     start, end, _ = period(ctx)
     t, run, day = tally(ctx, start, end), last_verify(ctx), ctx.today_uk().isoformat()
     out: list[tuple[str, str]] = []
+    def tab() -> str:
+        return say.sheet_link(ctx, "Industries")
+
+    ai = "the AI check (Claude)"
     n = len(t.corrections)
     if n >= ASK_CORRECTIONS or (t.cards >= ASK_MIN_CARDS and n >= ASK_SHARE * t.cards and n):
         out.append((f"labels_corrections:{day}",
-                    f"labels: {n} industry correction{'' if n == 1 else 's'} since the last send day ({n} of "
-                    f"{t.cards} cards). Check the Industries tab's definitions and keywords for {_moves(t.corrections)}; "
-                    "`us-outbound labels audit --live` checks the queue again."))
+                    f"{say.ACTION} *Industry labels: approvers corrected the industry on {n} of {t.cards} "
+                    "email cards since the last send day.*\n"
+                    f"Corrections: {_moves(t.corrections)}.\n"
+                    f"*What to do:* check those industries' definitions and keywords on the {tab()}; then "
+                    f"{say.command('labels audit --live')} checks the queued companies again."))
     share = t.share_same_group()
     if t.labelled >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
         worst, k = max(t.disagreed_groups.items(), key=lambda kv: kv[1]) if t.disagreed_groups else ("the groups", 0)
         moved = t.labelled - t.same_group
         out.append((f"labels_agreement:{day}",
-                    f"labels: the model put {moved} of the {t.labelled} companies the rules labelled ({1 - share:.0%}) "
-                    f"in another group or outside our labels; most were under {worst} ({k}). `us-outbound labels "
-                    "crosswalk` shows which NAICS codes and keywords bring them in."))
+                    f"{say.ACTION} *Industry labels: {ai} disagreed with our rules on {moved} of {t.labelled} "
+                    f"companies ({1 - share:.0%}).*\n"
+                    f"It put them in another group or outside our industries; most were under {worst} ({k}).\n"
+                    f"*What to do:* run {say.command('labels crosswalk')} to see which NAICS codes (US industry codes) "
+                    f"and keywords bring them in, then fix those on the {tab()}."))
     gaps = len(t.no_rules)
     if gaps >= ASK_MIN_CHECKS and gaps >= ASK_NO_RULES * t.checked:
         said = Counter(label for label in t.no_rules.values() if label != NONE).most_common(GAP_CODES)
         codes, uncoded = gap_codes(ctx, t.no_rules)
-        text = (f"labels: the rules gave no label to {gaps} of {t.checked} companies checked ({gaps / t.checked:.0%})"
-                + (f"; the model most often said {', '.join(f'{x} ({k})' for x, k in said)}" if said else "") + ".")
+        text = (f"{say.ACTION} *Industry labels: our rules gave no industry to {gaps} of {t.checked} companies checked "
+                f"({gaps / t.checked:.0%}).*"
+                + (f"\n{ai[0].upper()}{ai[1:]} most often said {', '.join(f'{x} ({k})' for x, k in said)}." if said else ""))
         if codes:
-            text += (" Their commonest NAICS codes: " + ", ".join(f"{c} → {x} ({k})" for c, x, k in codes)
-                     + ". Add each to that label's naics_prefixes on the Industries tab, then `us-outbound sync` and "
-                     "`us-outbound relabel --live`.")
+            text += ("\nTheir commonest NAICS codes (US industry codes): "
+                     + ", ".join(f"{c} → {x} ({k})" for c, x, k in codes) + ".")
         if uncoded:
-            text += f" {uncoded} have no NAICS code from Apollo, so only apollo_keywords can label them."
+            text += f" {uncoded} have no NAICS code from Apollo, so only `apollo_keywords` can label them."
+        if codes:
+            text += (f"\n*What to do:*\n1. Add each code to that industry's `naics_prefixes` on the {tab()}.\n"
+                     f"2. Run {say.command('sync')}, then {say.command('relabel --live')}.")
+        else:
+            text += f"\n*What to do:* add keywords for them to `apollo_keywords` on the {tab()}."
         out.append((f"labels_no_rules:{day}", text))
     waiting = int(run.get("unchecked") or 0)
     if run.get("unavailable_reason") and waiting:
+        companies = f"{waiting} new compan{'y waits' if waiting == 1 else 'ies wait'}"
+        held = (" While `label_check` is `required` (General tab), a company is not emailed until it is checked."
+                if ctx.settings.general.label_check == LABEL_CHECK_REQUIRED else "")
         out.append((f"labels_unavailable:{day}",
-                    f"The label check did not run ({run['unavailable_reason']}); {waiting} compan"
-                    f"{'y waits' if waiting == 1 else 'ies wait'} unverified (General label_check = required). "
-                    "Companies already verified carry on with their group's copy."))
+                    f"{say.URGENT} *Industry labels: {ai} could not run, so {companies} unchecked.*\n"
+                    f"Why: {run['unavailable_reason']}.{held} Companies already checked carry on as before.\n"
+                    "*What to do:* fix the cause above; the next company check (weekdays 04:30 UK) tries again."))
     return out
 
 
 def readout_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
-    """The Monday readout's Industry labels block: last week's cards right against the 95% target (a rate from
-    MIN_CARDS cards), the corrections, the agreement, the held and disqualified; and the same so far."""
+    """The Monday readout's Industry labels block, for a reader who may be new: the cards with the right industry
+    last week and so far against the 95% target (a rate from MIN_CARDS cards), last week's corrections, and last
+    week's label check (the rules and the model agreeing, the held and disqualified). Information only: the daily
+    post asks for a look when corrections pile up (asks)."""
 
     def right(t: Tally) -> str:
         ok = t.cards - len(t.corrections)
         if t.cards < MIN_CARDS:
-            return f"{ok} of {t.cards} cards had the right industry (too few to read)"
+            return f"{ok} of {t.cards} (too few to read)"
         rate = ok / t.cards
-        return (f"{ok} of {t.cards} cards had the right industry ({rate:.0%}): "
-                f"{'met' if rate >= TARGET_RIGHT else 'not met'}")
+        return f"{ok} of {t.cards} ({rate:.0%}, {'met' if rate >= TARGET_RIGHT else 'not met'})"
 
     week, ever = tally(ctx, start, end), tally(ctx, None, end)
-    lines = ["", f"*Industry labels* (the label check; target: {TARGET_RIGHT:.0%} of cards with the right industry)"]
-    for name, t in (("Last week", week), ("So far", ever)):
-        d = t.decisions
-        lines.append(f"{name}: {right(t)}. {t.checked} checked, the rules and the model agreeing on the group for "
-                     f"{_pct(t.same_group, t.labelled)}" + (f" of the {t.labelled} the rules labelled "
-                     f"({len(t.no_rules)} had no rules label)" if t.no_rules else "") + f"; held {d.get('held', 0)}, "
-                     f"disqualified {d.get('disqualified', 0)}.")
-        if t.corrections:
-            lines.append(f"  Corrections: {_moves(t.corrections, 10)}")
+    head = (f"*Industry labels* (how often the industry on a send card was right, going by the approvers' "
+            f"corrections; target {TARGET_RIGHT:.0%})")
+    if not ever.cards and not week.checked:
+        return ["", f"{head}: no card decided and no company checked yet."]
+    lines = ["", head]
+    lines.append(f"  Right: last week {right(week)} · so far {right(ever)}")
+    if week.corrections:
+        lines.append(f"  Corrected last week: {_moves(week.corrections, 10)}")
+    if week.checked:
+        d = week.decisions
+        no_rules = f" ({len(week.no_rules)} had no rules label)" if week.no_rules else ""
+        lines.append(f"  Checked last week by the AI model against our industry-code rules: {week.checked} · agreeing "
+                     f"on the group for {_pct(week.same_group, week.labelled)}{no_rules} · held for the hand-check "
+                     f"{d.get('held', 0)} · disqualified {d.get('disqualified', 0)}")
     return lines

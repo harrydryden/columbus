@@ -6,6 +6,9 @@ from tests.fakes import FakeTransport
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.slack import Slack
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 CHANNELS = [
     {"id": "C_GENERAL", "name": "general"},
@@ -59,8 +62,8 @@ def test_dry_run_post_redirects_to_dev_with_prefix():
     assert out["channel"] == "#us-outbound-dev"
     [post] = t.writes()
     assert post.json["channel"] == "C_DEV"
-    assert post.json["text"] == "[dry-run → #us-outbound] Positive reply"
-    assert post.json["blocks"][0] == {"type": "context", "elements": [{"type": "mrkdwn", "text": "[dry-run → #us-outbound]"}]}
+    assert post.json["text"] == DRY + "Positive reply"
+    assert post.json["blocks"][0] == {"type": "context", "elements": [{"type": "mrkdwn", "text": dry_run_note("#us-outbound")}]}
     assert post.json["blocks"][1:] == blocks
     assert [(r.target, r.sent) for r in guard.writes("slack")] == [("#us-outbound", False), ("#us-outbound-dev", True)]
 
@@ -265,7 +268,7 @@ def test_dm_in_dry_run_goes_to_the_dev_channel():
     guard.configure(live=False)
     slack.dm("U_HARRY", "Waiting 24 hours")
     [post] = t.writes()
-    assert (post.json["channel"], post.json["text"]) == ("C_DEV", "[dry-run → DM @U_HARRY] Waiting 24 hours")
+    assert (post.json["channel"], post.json["text"]) == ("C_DEV", dry_run_note("a direct message to <@U_HARRY>") + "\nWaiting 24 hours")
     assert [(r.target, r.sent) for r in guard.writes("slack")] == [("@U_HARRY", False), ("#us-outbound-dev", True)]
     with pytest.raises(GuardViolation):
         slack.dm("U_SAM", "hello")

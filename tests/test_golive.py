@@ -352,5 +352,6 @@ def test_drift_held_while_leads_are_in_flight_warns_rather_than_fails(monkeypatc
     assert lines_of(out)["Campaigns"] == (
         "WARN  Campaigns: 2 exist and match; 1 with drift held while leads are in flight: `us-outbound campaigns ensure "
         "--fix --in-flight --live` applies it to them, or it waits until `us-outbound cohorts in-flight` shows 0")
-    assert "Campaign drift held, US Outbound – Hannah Spalding: steps.1 would change 1 lead in flight." in out
+    assert ("Hannah Spalding's campaign: its settings in Instantly differ from ours (email 1's template), but "
+            "changing them now would also change the emails of 1 person part-way through.") in out
     assert len(f.ctx.guard.writes()) == before  # read-only still

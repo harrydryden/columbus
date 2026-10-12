@@ -12,8 +12,9 @@ from tests.test_registry import SETTINGS, mailbox, slack_routes
 from us_outbound.learn import capacity_ahead, daily_post
 
 MON_9 = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)  # Monday 09:00 UK (GMT), ISO week 2026-W44
-ASK = ("Add 3 mailboxes now: a new mailbox takes about 3 weeks to warm up. At full ramp your 4 Active mailboxes take "
-       "about 155 new companies a week; weekly_enrol_cap is 300 and 600 companies are ready (3.9 weeks).")
+HEAD = ":warning: *Sending mailboxes: add more now, as a new one takes 3 weeks to warm up*"
+ASK = ("*Add 3 mailboxes now.* Fully warmed up, your 4 sending mailboxes take about 155 new companies a week; the weekly "
+       "target (`weekly_enrol_cap`) is 300, and 600 companies are ready (3.9 weeks' worth).")
 
 
 def world(now=MON_9, *, verified=140, mailboxes=None, **general):
@@ -45,9 +46,11 @@ def test_on_monday_it_asks_for_mailboxes_with_the_approvers_mentioned_once_that_
     ctx = world(weekly_enrol_cap=300)
     out = capacity_ahead.check(ctx, ready=600)
     [text] = posts(ctx)
-    assert text.startswith(f"<@U_HARRY> Mailboxes, three weeks ahead:\n{ASK} ")
-    assert text.endswith('`us-outbound mailbox add ADDRESS --owner "NAME" --live` adds one; it warms for 21 days, then '
-                         "starts its sending ramp.")
+    assert text == (
+        f"<@U_HARRY> {HEAD}\n{ASK}\n*What to do:*\n1. Set up each new mailbox and connect it in Instantly.\n"
+        '2. Add it here: `railway ssh -- us-outbound mailbox add ADDRESS --owner "NAME" --live` (NAME: the person '
+        "named on the address). It warms up for 21 days, then its sending builds up week by week.\n"
+        "_Without them, sending stays at about 155 new companies a week._")
     assert out["add"] == 3 and out["alert"]["keys"] == ["mailboxes:2026-W44"]
     capacity_ahead.check(ctx, ready=600)  # a rerun that Monday
     assert len(posts(ctx)) == 1
@@ -58,7 +61,7 @@ def test_mailboxes_already_warming_count_towards_the_ask():
     ctx = world(weekly_enrol_cap=300, mailboxes=boxes)
     capacity_ahead.check(ctx, ready=600)
     [text] = posts(ctx)
-    assert "Add 2 mailboxes now:" in text and "1 mailbox is warming already, counted in." in text
+    assert "*Add 2 mailboxes now.*" in text and "1 mailbox is already warming up, counted in." in text
 
 
 def test_nothing_is_posted_when_no_mailbox_is_needed():
@@ -74,8 +77,8 @@ def test_with_no_active_mailbox_it_says_so():
     ctx = world(weekly_enrol_cap=150, mailboxes=())
     capacity_ahead.check(ctx, ready=300)
     [text] = posts(ctx)
-    assert ("Add 4 mailboxes now: a new mailbox takes about 3 weeks to warm up. At full ramp your 0 Active mailboxes "
-            "take about 0 new companies a week; weekly_enrol_cap is 150 and 300 companies are ready.") in text
+    assert ("*Add 4 mailboxes now.* Fully warmed up, your 0 sending mailboxes take about 0 new companies a week; the "
+            "weekly target (`weekly_enrol_cap`) is 150, and 300 companies are ready.\n") in text
 
 
 def test_the_monday_daily_post_runs_the_check():

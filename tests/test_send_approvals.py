@@ -25,6 +25,9 @@ from us_outbound.ops import bootstrap, cli
 from us_outbound.replies import desk
 from us_outbound.scoring import score, tiers
 from us_outbound.settings.model import State
+from us_outbound.clients.slack import dry_run_note
+
+DRY = dry_run_note("#us-outbound") + "\n"
 
 HARRY_ID, BOT, SOMEONE = "U_HARRY", "U_BOT", "U_SOMEONE"
 HARRY_CAMPAIGN = "US Outbound – Harry Dryden"
@@ -246,7 +249,7 @@ def test_dry_run_writes_no_item_and_previews_five_cards_in_the_dev_channel():
     assert out["dry_run"] is True and (sa["would_post"], sa["previews"], sa["posted"]) == (7, 5, 0)
     assert sum(out["by_owner"].values()) == 7 and items(ctx) == [] and instantly_posts(t) == []
     assert sl.cards() == [] and len(sl.cards("C_DEV")) == 5
-    assert all(c["text"].startswith("[dry-run → #us-outbound] Send approval: Agency") for c in sl.cards("C_DEV"))
+    assert all(c["text"].startswith(DRY + "Approve 4 emails to Jane Doe at Agency") for c in sl.cards("C_DEV"))
     assert all("approvals approve" not in blocks_text(c) for c in sl.cards("C_DEV"))  # a preview has no item
     assert all(r["channel"] == "C_DEV" for r in sl.reacted) and len(sl.reacted) == 10
     assert all(len(sl.thread(c["ts"])) == 1 for c in sl.cards("C_DEV"))  # emails 2 to 4, in the preview's thread
@@ -270,12 +273,16 @@ def test_the_card_shows_what_harry_asked_for():
     enrol.run(ctx)
     card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
     text = blocks_text(card)
-    assert "Send approval · *Acme Creative* · <https://acmecreative.com|acmecreative.com>" in text  # name and domain
-    assert ("Priority · score 60 · Upgrade the EAP · opener from the signal EAP named · Advertising agencies "
-            "(Marketing &amp; Creative Agencies)") in text
+    # The headline says who and what is approved; the domain links the company's site.
+    assert text.startswith(":raised_hand: *Approve 4 emails to Jane Doe at Acme Creative* · "
+                           "<https://acmecreative.com|acmecreative.com>")
+    # Why this company, in plain words (Harry, 12 Oct 2026): the tier and score, the pitch and the opening line.
+    assert ("*Why this company:* Top fit (score 60) · pitch: Upgrade the EAP · opening line: from the signal “EAP "
+            "named”") in text
+    assert "Priority" not in text and "opener" not in text  # no internal names
     assert ("*To:* Jane Doe, Head of People (People leader) · jane@acmecreative.com · "
-            "<https://app.apollo.io/#/people/p-123|Apollo> · email from Clay") in text
-    assert "*From:* Harry Dryden · harry@meetspill.org or harry@tryspill.org (Instantly picks)" in text
+            "found on <https://app.apollo.io/#/people/p-123|Apollo> · email from Clay") in text
+    assert "*From:* Harry Dryden · harry@meetspill.org or harry@tryspill.org (Instantly picks one)" in text
     assert "*Subject:* Support for the Acme Creative team" in text
     assert "> Hi Jane," in text and "> I saw your team already has an employee assistance program." in text
     # The signature's one line (Harry, 5 Oct 2026): email 1 links the industry page, so never the website line;
@@ -283,16 +290,22 @@ def test_the_card_shows_what_harry_asked_for():
     assert "> Harry Dryden\n> Read our Trustpilot reviews (https://uk.trustpilot.com/review/spill.chat) from employees" \
         in text and "on-demand counseling for your team" not in text
     assert "Where we got your details" not in text  # no data notice (Harry, 5 Oct 2026)
-    assert "*Emails:* Email 1 of 4 · follow-ups on days 7, 14 and 21 (in the thread)" in text
-    assert "*Before:* no email to Acme Creative from us before" in text
-    assert "*Harry today:* card 1 of 15" in text
-    # The label check (labels.py; Harry, 7 Oct 2026): not checked yet, so the group's copy, and the card says so.
-    assert ("*Industry:* ⚠️ Advertising agencies (Marketing &amp; Creative Agencies) · not checked by the model · "
-            "the group's copy") in text and "*They do:*" not in text
-    assert "✅ send · ❌ don't send. Or reply \"send\" or \"skip\" in the thread." in text
+    assert ("*You're approving:* all 4 emails: email 1 above, then 3 follow-ups on days 7, 14 and 21 unless Jane "
+            "replies (they're in the thread)") in text
+    assert "*Emailed before:* no, Acme Creative has had no email from us" in text
+    assert "*Harry's cards today:* this is 1 of 15" in text
+    # The label check (labels.py; Harry, 7 Oct 2026): not checked yet, so the group's emails, and the card says so.
+    assert ("*Industry:* ⚠️ Advertising agencies (Marketing &amp; Creative Agencies) · from our keyword rules, not yet "
+            "checked by the AI · emails written for the whole Marketing &amp; Creative Agencies group") in text
+    assert "*What they do:*" not in text
+    # What each reaction does.
+    assert ("✅ send all four emails · ❌ don't send (you then choose: edit it, another person, or drop the company). "
+            "Or reply \"send\" or \"skip\" in the thread.") in text
     assert "us-outbound" not in text  # no command line hint on a card
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
-    assert card["text"].startswith("Send approval: Acme Creative · Jane Doe · from Harry Dryden:")
+    # The notification: who, where, from whom, and email 1's subject.
+    assert card["text"] == ("Approve 4 emails to Jane Doe at Acme Creative, from Harry Dryden: “Support for the Acme "
+                            "Creative team”")
     # Without an Apollo id, the source's name and no link.
     hannah = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-2")["slack_ts"])
     assert "omar@brightfin.com · source not recorded" in blocks_text(hannah)
@@ -365,7 +378,9 @@ def test_a_tick_adds_the_lead_and_records_the_enrolment_once(how):
     approved = f"✅ Approved by <@{HARRY_ID}> at 11:05 UK · added to {HARRY_CAMPAIGN}"
     assert update["text"].startswith(approved) and blocks_text(update).startswith(approved)
     assert blocks_text(update).endswith(approved)  # and in place of the footer
-    assert any(x.startswith(f"Added to {HARRY_CAMPAIGN} at 11:05 UK") for x in sl.texts())
+    assert any(x.startswith(f"✅ Added to {HARRY_CAMPAIGN} in Instantly at 11:05 UK, approved by <@{HARRY_ID}>. "
+                            "Email 1 goes out in the next send window, then the follow-ups on days 7, 14 and 21 "
+                            "unless Jane replies. Nothing more to do.") for x in sl.texts())
     # Never twice: the ✅ is still there, the next run adds nothing.
     poll(ctx)
     assert len(instantly_posts(t)) == 1 and len(ctx.store.select("events", {"type": "send_approval"})) == 1
@@ -422,7 +437,7 @@ def test_a_recheck_holds_while_enrolment_is_stopped():
     out = poll(ctx)
     row = item_for(ctx, "acc-1")
     assert instantly_posts(t) == [] and (row["status"], row["payload"]["outcome"]) == ("open", "")
-    assert "stopped by an operator" in out["held"][0]["why"][0]
+    assert "someone ran the emergency stop" in out["held"][0]["why"][0]
     ctx.store.insert("heartbeats", [{**hb, "run_id": "s-2", "job": "operator_start", "started_at": ctx.now}])
     assert poll(ctx)["outcomes"] == {"approved": 1} and len(instantly_posts(t)) == 1
 
@@ -437,7 +452,10 @@ def test_a_failed_add_waits_for_a_fresh_approval():
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["payload"]["state"]) == ("open", "waiting") and "500" in row["payload"]["failed"]["error"]
     note = row["payload"]["approve_ts"]
-    assert note != row["slack_ts"] and any(x.startswith("Not added: Instantly refused: ") for x in sl.texts())
+    assert note != row["slack_ts"]
+    [refused] = [x for x in sl.texts() if x.startswith("⚠️ Not added: Instantly refused it (")]
+    assert ("*What to do:* check US Outbound – Harry Dryden in Instantly for jane@acmecreative.com, then ✅ this "
+            "message or reply \"send\" to try again. Otherwise the card expires at the end of Wed 28 Oct (UK).") in refused
     from tests.test_enrol import added
 
     t.route("POST", "/leads/add", fn=added)
@@ -460,7 +478,8 @@ def test_an_add_left_sending_and_not_in_the_campaign_goes_back_to_a_person():
     assert [r.url.rsplit("/", 1)[1] for r in instantly_posts(t)] == ["list"]  # looked up, not added
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["payload"]["state"]) == ("open", "waiting")
-    assert any(x.startswith("jane@acmecreative.com is not in US Outbound – Harry Dryden: the run adding it stopped")
+    assert any(x.startswith("⚠️ jane@acmecreative.com was not added to US Outbound – Harry Dryden: the run adding it "
+                            "stopped") and "*What to do:* ✅ this message or reply \"send\" to add it." in x
                for x in sl.texts())
     poll(ctx)
     assert not [r for r in instantly_posts(t) if r.url.endswith("/leads/add")]  # the old ✅ does not add it
@@ -497,10 +516,12 @@ def test_a_cross_offers_three_choices_with_their_reactions_seeded():
     row = _rejected(ctx, sl)
     choices = row["payload"]["choices_ts"]
     [post] = [p for p in sl.posts if p["ts"] == choices]
-    assert post["text"].startswith(f"❌ Not sent (by <@{HARRY_ID}>). What next?")
+    assert post["text"].startswith(f"❌ *Not sent* (by <@{HARRY_ID}>). What next?")
     assert "✏️ *edit*" in post["text"] and "🚫 *company*" in post["text"]
     assert "👤 *contact*: not Jane Doe; you'll get a card for the next person at Acme Creative" in post["text"]
-    assert "expires at the end of Wed 28 Oct (UK)" in post["text"]
+    assert "🚫 *company*: drop Acme Creative: it is never emailed\n" in post["text"]
+    assert ("If you choose nothing, the card expires at the end of Wed 28 Oct (UK) and Acme Creative goes back in the "
+            "queue for a later card.") in post["text"]
     assert sorted(r["name"] for r in sl.reacted if r["timestamp"] == choices) == ["bust_in_silhouette", "no_entry_sign",
                                                                                  "pencil2"]
     assert instantly_posts(t) == []
@@ -519,8 +540,10 @@ def _editing(ctx, sl):
     row = item_for(ctx, "acc-1")
     assert row["payload"]["state"] == "editing"
     [help_] = [p for p in sl.posts if p["ts"] == row["payload"]["edit_ts"]]
-    assert "Reply in this thread with the new email 1" in help_["text"] and "`Email 2:`" in help_["text"]
-    assert "no interactive endpoint" in help_["text"]
+    assert help_["text"].startswith(f"✏️ *Editing* (by <@{HARRY_ID}>). Reply in this thread with the new version:")
+    assert "• email 1: an optional first line `Subject: …`, then the body" in help_["text"]
+    assert "`Email 2:`" in help_["text"] and "The signature is added for you." in help_["text"]
+    assert "interactive endpoint" not in help_["text"]  # no jargon
     assert "Subject: Support for the Acme Creative team\nHi Jane," in help_["text"]
     assert "[how Spill works for agencies](https://www.spill.chat/us/industry/agencies)" in help_["text"]
     return row
@@ -575,8 +598,9 @@ def test_an_edit_that_breaks_a_copy_rule_is_refused_and_waits():
     assert out["edits"] == {"refused": 1}
     row = item_for(ctx, "acc-1")
     assert row["payload"]["state"] == "editing" and row["payload"]["edited"] is False
-    [refusal] = [x for x in sl.texts() if x.startswith("That version of email 1 breaks the copy rules")]
-    assert "licensed" in refusal and "therapists" in refusal and "Reply with another version" in refusal
+    [refusal] = [x for x in sl.texts() if x.startswith("⚠️ That version of email 1 breaks the copy rules")]
+    assert "licensed" in refusal and "therapists" in refusal
+    assert refusal.endswith("*What to do:* reply with another version; the card is unchanged until then.")
     assert "{{" not in refusal.split("so it is not used:")[1]  # the rules name Jane and Harry, not variables
 
 
@@ -588,7 +612,7 @@ def test_a_follow_up_can_be_edited_too():
     p = item_for(ctx, "acc-1")["payload"]
     assert p["lead"]["custom_variables"]["s3_subject"] == "Will anyone at Acme Creative know who's using it?"
     assert p["lead"]["custom_variables"]["s3_body"] == p["original"]["s3_body"]
-    assert any(x.startswith("New version of email 3") for x in sl.texts())
+    assert any(x == "New version of email 3 for Acme Creative: approve it in the thread" for x in sl.texts())
 
 
 def test_a_cross_on_the_new_version_offers_the_choices_again():
@@ -616,7 +640,10 @@ def test_contact_declines_the_person_and_the_account_can_be_picked_again():
     row = item_for(ctx, "acc-1")
     assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", HARRY_ID, "contact_rejected")
     assert ctx.store.get("events", event_id=f"send-approval:{row['item_id']}")["approval"] == "contact_rejected"
-    assert any("pick_contacts looks for the next-ranked person at 05:30" in x for x in sl.texts())
+    assert (f"👤 Declined (by <@{HARRY_ID}>): Jane Doe won't be emailed. Nothing more to do: the next best person at "
+            "Acme Creative is chosen at 05:30 UK on the next send day and gets a new card here at 12:00 UK."
+            ) in sl.texts()
+    assert "pick_contacts" not in " ".join(sl.texts())  # no job names
     need, _ = pick.waiting(ctx)
     assert "acc-1" in [a["account_id"] for a in need]  # pick_contacts finds the next person at 05:30
     assert instantly_posts(t) == []
@@ -912,8 +939,8 @@ def test_dry_run_enrol_through_the_cli_previews_the_card_in_the_dev_channel():
     posts = [r for r in e["requests"] if r.url.startswith(SLACK) and r.method == "POST"]
     assert posts and {r.json["channel"] for r in posts} == {"C_DEV"}
     card = next(r for r in posts if r.url.endswith("chat.postMessage") and not r.json.get("thread_ts"))
-    assert card.json["text"].startswith("[dry-run → #us-outbound] Send approval: Acme Creative · Jane Doe")
-    assert re.search(r"\*\w+ today:\* card 1 of \d+", blocks_text(card.json))
+    assert card.json["text"].startswith(DRY + "Approve 4 emails to Jane Doe at Acme Creative")
+    assert re.search(r"\*\w+'s cards today:\* this is 1 of \d+", blocks_text(card.json))
 
 
 def test_an_approved_card_keeps_the_version_it_was_rendered_under():
@@ -992,7 +1019,8 @@ def test_a_card_with_a_labels_pitch_is_withdrawn_when_the_label_now_earns_only_g
     acme = ctx.store.get("accounts", account_id="acc-1")
     assert approvals.card_copy_level(row["payload"], ctx.settings) == "group"  # agencies-v1 is the group's row
     assert approvals.label_unfit(item, acme, ctx.settings) == (
-        "its emails were written for Advertising agencies, and the label check allows General copy now", True)
+        "its emails were written for Advertising agencies, but the AI industry check is now only sure enough for "
+        "the general emails", True)
     labels.apply(ctx, acme, labels.Decision("Advertising agencies", acme["industry_group"], "umbrella", "medium",
                                             "group", "verify"))
     assert approvals.label_unfit(item, ctx.store.get("accounts", account_id="acc-1"), ctx.settings) is None
@@ -1027,22 +1055,26 @@ def lc(source, rules, model, confidence="high", evidence="", what=""):
 @pytest.mark.parametrize("payload, line", [
     ({"industry": "Fintech", "label_source": "rules+model", "copy_industry": "Fintech",
       "label_check": lc("rules+model", "Fintech", "Fintech")},
-     "*Industry:* Fintech (Technology &amp; Startups) · rules and model agree · Fintech copy"),
+     "*Industry:* Fintech (Technology &amp; Startups) · our keyword rules and the AI check agree · emails written for "
+     "Fintech"),
     ({"industry": "Technology & Startups", "label_source": "model", "copy_industry": "Technology & Startups",
       "label_check": lc("model", "Games studios", "Technology & Startups")},
-     "*Industry:* Technology &amp; Startups · the label check says Technology &amp; Startups (high) · "
-     "Technology &amp; Startups copy"),
+     "*Industry:* Technology &amp; Startups · the AI check says Technology &amp; Startups (high confidence) · "
+     "emails written for Technology &amp; Startups"),
     ({"industry": "Technology & Startups", "label_source": "umbrella", "copy_industry": "Technology & Startups",
       "label_check": lc("umbrella", "Adtech & martech", "Fintech", "medium")},
-     "*Industry:* Technology &amp; Startups · the label check says Fintech (medium): Technology &amp; Startups copy"),
+     "*Industry:* Technology &amp; Startups · the AI check says Fintech (medium confidence), so emails written for "
+     "Technology &amp; Startups"),
     ({"industry": "Games studios", "label_source": "disputed", "copy_industry": "General",
       "label_check": lc("disputed", "Games studios", "Logistics", "medium")},
-     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · the rules say Games studios, the model says Logistics "
-     "(medium) · General copy"),
+     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · our keyword rules say Games studios, the AI check says "
+     "Logistics (medium confidence), so the general emails (not industry-specific)"),
     ({"industry": "Games studios", "copy_industry": "Technology & Startups"},  # a card posted before the check
-     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · not checked by the model · the group's copy"),
+     "*Industry:* ⚠️ Games studios (Technology &amp; Startups) · from our keyword rules, not yet checked by the AI · "
+     "emails written for the whole Technology &amp; Startups group"),
     ({"industry": "Fintech", "label_source": "override", "copy_industry": "Fintech"},
-     "*Industry:* Fintech (Technology &amp; Startups) · set on the Overrides tab · Fintech copy"),
+     "*Industry:* Fintech (Technology &amp; Startups) · set by hand on the Overrides tab · emails written for "
+     "Fintech"),
 ])
 def test_the_industry_line(payload, line):
     p = {"industry_group": "Technology & Startups", **payload}
@@ -1054,7 +1086,7 @@ def test_they_do_and_the_quote_are_escaped_and_left_out_when_empty():
          "copy_industry": "Fintech", "label_check": lc("rules+model", "Fintech", "Fintech", evidence=(
              "Brightline <makes> payroll & tax software"), what="payroll software for restaurants")}
     assert approvals.industry_lines(p)[1] == (
-        "*They do:* payroll software for restaurants · “Brightline &lt;makes&gt; payroll &amp; tax software”")
+        "*What they do:* payroll software for restaurants · “Brightline &lt;makes&gt; payroll &amp; tax software”")
     p["label_check"] = lc("rules+model", "Fintech", "Fintech")
     assert len(approvals.industry_lines(p)) == 1
 
@@ -1074,9 +1106,9 @@ def test_a_checked_account_s_card_carries_its_verdict_and_stays_under_slacks_lim
     assert p["label_check"]["model"] == "Advertising agencies" and p["label_check"]["evidence"] == "x" * 160
     card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
     text = blocks_text(card)
-    assert ("*Industry:* Advertising agencies (Marketing &amp; Creative Agencies) · the label check says Advertising "
-            "agencies (high) · the group's copy") in text
-    assert f"*They do:* advertising for consumer brands · “{'x' * 160}”" in text
+    assert ("*Industry:* Advertising agencies (Marketing &amp; Creative Agencies) · the AI check says Advertising "
+            "agencies (high confidence) · emails written for the whole Marketing &amp; Creative Agencies group") in text
+    assert f"*What they do:* advertising for consumer brands · “{'x' * 160}”" in text
     assert all(len(b["text"]["text"]) <= 3000 for b in card["blocks"] if b.get("text"))
 
 
@@ -1137,9 +1169,10 @@ def test_an_approvers_industry_reply_sets_the_label_records_it_and_withdraws_the
     done = next(r for r in items(ctx) if r["item_id"] == row["item_id"])
     assert (done["status"], done["payload"]["outcome"]) == ("handled", "expired") and instantly_posts(t) == []
     assert done["payload"]["reason"] == f"withdrawn: its industry is Fintech now, set by <@{HARRY_ID}>"
-    assert (f"🏷️ Industry set to Fintech (by <@{HARRY_ID}>); added to the Overrides tab. This card was written for "
-            "Advertising agencies, so it is withdrawn: nothing was sent, and a new card for Acme Creative with the "
-            "Fintech emails is posted in the channel. Approve that one.") in sl.texts()
+    [note] = [x for x in sl.texts() if x.startswith(f"🏷️ Industry set to Fintech (by <@{HARRY_ID}>); added to the ")]
+    assert note.endswith("|Overrides tab>. This card was written for Advertising agencies, so it is withdrawn (nothing "
+                         "was sent). A new card for Acme Creative with the Fintech emails is posted in the channel: "
+                         "approve that one.")
     # The new card, at once (design §7 v2): the same contact and sender, in the old card's slot, the new label.
     p = new["payload"]
     assert (new["contact_id"], p["owner"], p["slot"], p["replaces"]) == ("con-1", "Harry Dryden", 1, row["item_id"])
@@ -1148,9 +1181,10 @@ def test_an_approvers_industry_reply_sets_the_label_records_it_and_withdraws_the
     assert p["copy_version"] == "general-v1"  # no Fintech or tech row in this world: General, never the agencies' pitch
     assert p["config_version"] and new["slack_ts"]
     assert sl.thread(new["slack_ts"])[-1]["text"] == (
-        f"🏷️ This card replaces the earlier one for Acme Creative: written for Advertising agencies, its industry is "
-        f"Fintech now, set by <@{HARRY_ID}>.")
-    assert "*Industry:* Fintech (Technology &amp; Startups) · set by an approver · General copy" in blocks_text(
+        f"🏷️ This card replaces the earlier one for Acme Creative (written for Advertising agencies, its industry is "
+        f"Fintech now, set by <@{HARRY_ID}>). Approve this one.")
+    assert ("*Industry:* Fintech (Technology &amp; Startups) · set by an approver · the general emails (not "
+            "industry-specific)") in blocks_text(
         next(c for c in sl.cards() if c["ts"] == new["slack_ts"]))
     # It is waiting, so the next enrol does not propose the company again.
     at(ctx, datetime(2026, 10, 28, 11, 0, tzinfo=UTC), job="enrol")
@@ -1166,8 +1200,8 @@ def test_when_the_company_cannot_be_made_ready_again_the_next_enrol_proposes_it(
     out = poll(ctx)
     assert out["relabelled"][0]["new_card"] == ""
     assert not [r for r in items(ctx, "open") if r["account_id"] == "acc-1"]
-    assert any("the next enrol (12:00 UK on a send day) proposes Acme Creative again with the Fintech emails" in x
-               for x in sl.texts())
+    assert any("Nothing to do: a new card for Acme Creative with the Fintech emails comes at 12:00 UK on the next "
+               "send day." in x for x in sl.texts())
 
 
 def test_an_overrides_row_the_domain_has_is_updated_never_duplicated():
@@ -1175,7 +1209,7 @@ def test_an_overrides_row_the_domain_has_is_updated_never_duplicated():
     ctx, t, sl, sheet, row, out = corrected(rows=rows)
     assert sheet.appended == [] and [r["value"] for r in sheet.rows] == ["Fintech"] and sheet.rows[0]["note"] == "Harry's"
     assert out["relabelled"][0]["sheet"] == "updated"
-    assert any("recorded on the Overrides tab" in x for x in sl.texts())
+    assert any("recorded on the " in x and "Overrides tab" in x for x in sl.texts())
 
 
 def test_a_sheet_that_cannot_be_written_is_said_and_the_database_keeps_the_label():
@@ -1190,14 +1224,17 @@ def test_an_unknown_label_lists_the_labels_and_changes_nothing():
     assert item_for(ctx, "acc-1")["status"] == "open" and out["relabelled"] == []
     assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Advertising agencies"
     [reply] = [x for x in sl.texts() if x.startswith("No Industries label called")]
-    assert reply.startswith("No Industries label called “crypto”. The labels are:\nMarketing &amp; Creative Agencies: "
-                            "Marketing &amp; Creative Agencies, Advertising agencies\nTechnology &amp; Startups: ")
+    assert reply.startswith("No Industries label called “crypto”, so nothing changed.\n*What to do:* reply "
+                            "`industry: <label>` with one of these (or any label on the ")
+    assert ("|Industries tab>):\nMarketing &amp; Creative Agencies: Marketing &amp; Creative Agencies, Advertising "
+            "agencies\nTechnology &amp; Startups: ") in reply
     assert sheet.appended == []
 
 
 def test_the_cards_own_label_and_a_non_approver_change_nothing():
     ctx, t, sl, sheet, row, out = corrected("Industry: advertising agencies")
-    assert item_for(ctx, "acc-1")["status"] == "open" and "The card already has Advertising agencies." in sl.texts()
+    assert item_for(ctx, "acc-1")["status"] == "open"
+    assert "The card already has the industry Advertising agencies, so nothing changed." in sl.texts()
     ctx, t, sl, sheet, row, out = corrected(user=SOMEONE)
     assert item_for(ctx, "acc-1")["status"] == "open" and out["ignored_non_approvers"] >= 1
     assert ctx.store.select("signal_events", {"fact": "label_corrected"}) == []
@@ -1206,8 +1243,8 @@ def test_the_cards_own_label_and_a_non_approver_change_nothing():
 def test_a_label_switched_off_means_the_company_is_not_emailed():
     ctx, t, sl, sheet, row, out = corrected("label = Staffing agencies.")
     assert ctx.store.get("accounts", account_id="acc-1")["industry"] == "Staffing agencies"
-    assert any("Staffing agencies is switched off on the Industries tab, so Acme Creative will not be emailed unless "
-               "it is switched on." in x for x in sl.texts())
+    assert any("Staffing agencies is switched off on the " in x and "|Industries tab>, so Acme Creative won't be "
+               "emailed unless it is switched on there." in x for x in sl.texts())
 
 
 def test_it_works_after_a_cross_too():
@@ -1246,8 +1283,85 @@ def test_the_command_line_twin(capsys):
 def test_the_footer_says_how_to_fix_an_industry():
     ctx, t, sl, _ = proposed()
     card = next(c for c in sl.cards() if c["ts"] == item_for(ctx, "acc-1")["slack_ts"])
-    assert blocks_text(card).endswith("Wrong industry? Reply \"industry: <label>\".")
+    assert blocks_text(card).endswith("Wrong industry? Reply \"industry: <label>\" in the thread.")
     assert approvals.parse_command("industry: Fintech") == approvals.Command("industry", "Fintech")
     assert approvals.parse_command("Label=Games studios!") == approvals.Command("industry", "Games studios")
     assert approvals.parse_command("industry: Fintech", approvals.EDITING) == approvals.Command("industry", "Fintech")
     assert approvals.parse_command("industry is wrong") is None
+
+
+# -- the thread's words (Harry, 12 Oct 2026: clear to a newcomer, and say what happens next) ------------------------
+
+
+def test_the_follow_ups_note_says_when_they_go_and_that_the_card_approves_all_four():
+    ctx, t, sl, _ = proposed()
+    [follow] = sl.thread(item_for(ctx, "acc-1")["slack_ts"])
+    assert follow["text"] == "Follow-ups for Acme Creative: emails 2 to 4"
+    assert blocks_text(follow).startswith(
+        "*Follow-ups: emails 2 to 4*, sent on days 7, 14 and 21 unless Jane replies. The ✅ on the card approves all "
+        "4. To change one, ❌ the card, then ✏️ edit.")
+
+
+def test_an_edit_reply_with_nothing_in_it_says_how_to_give_one():
+    ctx, t, sl, _ = proposed()
+    row = _editing(ctx, sl)
+    sl.say(HARRY_ID, "Email 2:", row["slack_ts"])
+    assert poll(ctx)["edits"] == {"refused": 1}
+    assert ("I couldn't find a new email 2 in that reply, so nothing changed. Reply again with `Subject: …` on the "
+            "first line and/or the new body below it.") in sl.texts()
+
+
+def test_dropping_the_company_says_it_is_left_out_for_good():
+    ctx, t, sl, _ = proposed()
+    row = _rejected(ctx, sl)
+    sl.react("no_entry_sign", HARRY_ID, ts=row["payload"]["choices_ts"])
+    assert poll(ctx)["outcomes"] == {"company_rejected": 1}
+    assert (f"🚫 Dropped (by <@{HARRY_ID}>): Acme Creative is left out for good and won't get another card. Nothing "
+            "more to do.") in sl.texts()
+    assert any(u["text"].startswith(f"🚫 Acme Creative dropped (by <@{HARRY_ID}>): never emailed") for u in sl.updates)
+
+
+def test_a_lead_instantly_will_not_take_closes_the_card_and_says_nothing_is_needed():
+    from tests.test_enrol import added
+
+    def none_created(req):
+        return {**added(req), "created_leads": []}
+
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    t.route("POST", "/leads/add", fn=none_created)
+    t.route("POST", "/leads/list", {"items": [], "next_starting_after": None})
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"blocked": 1}
+    assert ("⛔ Instantly did not add jane@acmecreative.com (it is on Instantly's blocklist, or already in another "
+            "campaign). Nothing was sent and nothing is needed: Jane Doe won't be proposed again, and you'll get a card "
+            "for the next person at Acme Creative.") in sl.texts()
+    assert item_for(ctx, "acc-1")["payload"]["reason"] == enrol.NOT_ADDED  # the data keeps its reason
+
+
+def test_a_blocked_tick_says_the_card_is_closed_and_nothing_is_needed():
+    ctx, t, sl, _ = proposed()
+    row = item_for(ctx, "acc-1")
+    suppression.add(ctx.store, email="jane@acmecreative.com", domain="acmecreative.com", reason="unsubscribe",
+                    source="test", now=NOW)
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    poll(ctx)
+    [note] = [x for x in sl.texts() if x.startswith("⛔ Not added (")]
+    assert note.startswith(f"⛔ Not added (approved by <@{HARRY_ID}>, but the last check before adding stopped it): "
+                           "Jane Doe: contact suppressed")
+    assert note.endswith("Nothing was sent and nothing is needed: the card is closed, and Acme Creative goes back in "
+                         "the queue if it can still be emailed.")
+
+
+def test_sending_switched_off_holds_with_the_setting_and_a_link_to_its_tab():
+    ctx, t, sl, _ = proposed()
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
+                                                                                  live_sending=False))
+    row = item_for(ctx, "acc-1")
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    poll(ctx)
+    [note] = [x for x in sl.texts() if x.startswith("⏸")]
+    assert note.startswith(f"⏸ Approved by <@{HARRY_ID}>, but not added yet: sending is switched off on the General "
+                           "tab (`live_sending` = no).\n*What to do:* nothing, if sending is meant to be off. It goes "
+                           "through once Harry sets `live_sending` to yes on the <https://docs.google.com/spreadsheets/")
+    assert "|General tab>." in note and instantly_posts(t) == []

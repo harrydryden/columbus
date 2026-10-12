@@ -70,12 +70,12 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections import Counter
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound import config_version, parse
-from us_outbound.base import holds
+from us_outbound.base import holds, say
 from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
@@ -236,14 +236,6 @@ def _opt_out_lost(drift: Mapping[str, Any]) -> bool:
             if UNSUBSCRIBE_TAG not in str(got.get("body") or "") and UNSUBSCRIBE_TAG not in (got.get("links") or ()):
                 return True
     return False
-
-
-def held_words(name: str, held: Mapping[str, Any]) -> str:
-    """The plain-words line for drift held while leads are in flight (mailbox_health, start, golive, the CLI)."""
-    n = int(held.get("leads") or 0)
-    return (f"Campaign drift held, {name}: {', '.join(held.get('keys') or ())} would change {n} "
-            f"lead{'' if n == 1 else 's'} in flight. Apply to them with `us-outbound campaigns ensure --fix --in-flight "
-            "--live`, or wait until `us-outbound cohorts in-flight` shows 0.")
 
 
 def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
@@ -630,89 +622,198 @@ def _fixed_words(name: str, fields: list[str], drift: Mapping[str, Any]) -> str:
     parts = []
     if "daily_limit" in fields:
         want, got = drift.get("daily_limit") or [None, None]
-        parts.append(f"daily limit {got} → {want} (the ramp)")
+        parts.append(f"daily limit {got} → {want} (its Active mailboxes' caps today)")
     if "email_list" in fields:
         want, _ = drift.get("email_list") or [[], None]
         parts.append(f"sending list → {', '.join(want or []) or 'none'} (the Active mailboxes)")
-    return f"{name}: " + "; ".join(parts)
+    return f"{_whose(name)}: " + "; ".join(parts)
 
 
-def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str:
-    today = ctx.today_uk()
-    lines = [f"Mailbox health, {today:%a %d %b}" + (" (dry-run: nothing changed)" if ctx.dry_run else "")]
-    for r in rows:
-        score = r.get("warmup_score")
-        warm = "warmup on" if r.get("warmup_enabled") else "warmup OFF"
-        lines.append(
-            f"• {r['address']} ({r['owner']}): {r['status']}, {warm}"
-            + (f", score {score}" if score is not None else "")
-            + ("" if r.get("found") else ", not found in Instantly")
-            + (f", Instantly limits it to {r['instantly_daily_limit']} a day (sheet cap {r['daily_cap']}; the lower is used)"
-               if _lower_limit(r) else "")
-            + (f", {r['ramp']}" if r.get("ramp") else "")
-        )
-    for address, change in (out.get("limit_set") or {}).items():
-        verb = "Would set" if ctx.dry_run else "Set"
-        lines.append(f"{verb} {address}'s Instantly daily limit from {change['from']} to {change['to']} "
-                     "(the Mailboxes tab's daily_cap, or the ramp's when lower)")
-    for address, change in (out.get("name_drift") or {}).items():
-        have, want = (" / ".join(f'"{x}"' for x in change[k]) for k in ("from", "to"))
-        if address in (out.get("names_set") or ()):
-            lines.append(f"{'Would set' if ctx.dry_run else 'Set'} {address}'s sender name (first / last) from {have} "
-                         f"to {want}, its owner's full name")
+# The mailbox health post (base/say.py): a headline that says whether anything needs doing, the things to fix first,
+# each with its fix, then the routine changes, then the mailboxes in one short line each.
+DRIFT_WORDS = {
+    "stop_on_reply": "stop on reply", "stop_for_company": "stop for the whole company on a reply",
+    "stop_on_auto_reply": "stop on an auto-reply", "open_tracking": "open tracking", "link_tracking": "link tracking",
+    "insert_unsubscribe_header": "the unsubscribe header", "first_email_text_only": "email 1 as plain text",
+    "allow_risky_contacts": "risky contacts allowed", "is_evergreen": "open to new leads", "text_only": "plain text",
+    "steps.delays": "the days between emails", "steps.variants": "one version of each email",
+    "email_list": "the sending list", "daily_limit": "the daily limit",
+}
+
+
+def _drift_words(keys: Collection[str]) -> str:
+    """The drifted settings in plain words, each once: "open tracking, the sending schedule, email 1's template"."""
+    words = []
+    for k in sorted(keys):
+        if k.startswith("schedule."):
+            w = "the sending schedule"
+        elif k.startswith("steps.") and k[len("steps."):].isdigit():
+            w = f"email {k[len('steps.'):]}'s template"
         else:
-            lines.append(f"Sender name of {address} (first / last) is {have}, not its owner's full name {want}. "
-                         "Fix with `us-outbound mailbox check --fix --live`.")
+            w = DRIFT_WORDS.get(k, k)
+        words.append(w)
+    return ", ".join(dict.fromkeys(words))
+
+
+def _whose(name: str) -> str:
+    """"US Outbound – Hannah Spalding" -> "Hannah Spalding's campaign"; any other name as it is."""
+    owner = name[len(US_CAMPAIGN_PREFIX):] if name.startswith(US_CAMPAIGN_PREFIX) else ""
+    return f"{owner}'s campaign" if owner else name
+
+
+def _cli(cmd: str) -> str:
+    return f"`us-outbound {cmd}`"
+
+
+def held_words(name: str, held: Mapping[str, Any], command: Callable[[str], str] = _cli) -> str:
+    """The plain-words line for drift held while leads are in flight (mailbox_health, start, golive, the CLI).
+    command: how a command is written (the CLI's `us-outbound …`; Slack's say.command)."""
+    n = int(held.get("leads") or 0)
+    return (f"{_whose(name)}: its settings in Instantly differ from ours ({_drift_words(held.get('keys') or ())}), "
+            f"but changing them now would also change the emails of {n} {'person' if n == 1 else 'people'} part-way "
+            f"through. Apply it to them too with {command('campaigns ensure --fix --in-flight --live')}, or wait until "
+            f"{command('cohorts in-flight')} shows 0 for it, then run {command('campaigns ensure --fix --live')}.")
+
+
+def _list(items: Collection[str]) -> str:
+    return ", ".join(items)
+
+
+def _todo(ctx: Context, out: Mapping[str, Any]) -> list[str]:
+    """What someone must fix, each with its fix."""
+    tab = say.sheet_link(ctx, TAB)
+    lines = []
+    for address, change in (out.get("name_drift") or {}).items():
+        if address not in (out.get("names_set") or ()):
+            have, want = (" ".join(x for x in change[k] if x) for k in ("from", "to"))
+            lines.append(f"• {address} shows prospects the sender name \"{have}\", not its owner's full name "
+                         f"\"{want}\". Fix: {say.command('mailbox check --fix --live')}.")
     for owner, st in (out.get("campaign_status") or {}).items():
-        if st.get("code") is not None:
-            lines.append(f"Instantly says {campaign_name(owner)} is held back: {st['meaning']}"
-                         + (". The sender is at capacity; see `us-outbound status` for whether accounts are waiting." if st.get("at_limit") else "."))
-    for key, label in (
-        ("promoted", "Promoted to Active"),
-        ("retired", "Retired"),
-        ("warmup_turned_on", "Warmup turned back on"),
-        ("waiting_to_retire", "Waiting to retire (sent in the last 30 days)"),
-        ("not_found", "Not found in Instantly"),
-        ("no_sheet_row", "Not changed: no row with that address on the Mailboxes tab"),
-    ):
-        if out.get(key):
-            lines.append(f"{label}: {', '.join(out[key])}")
+        if st.get("code") is not None and not st.get("at_limit"):
+            lines.append(f"• Instantly is holding back {owner}'s campaign: {st['meaning']}. Look at the campaign in "
+                         "Instantly.")
+    if out.get("not_found"):
+        one = out["not_found"][0] if len(out["not_found"]) == 1 else "ADDRESS"
+        lines.append(f"• Not found in Instantly: {_list(out['not_found'])}. Connect it in Instantly, or retire it with "
+                     f"{say.command(f'mailbox retire {one} --live')}.")
+    if out.get("no_sheet_row"):
+        lines.append(f"• No row on the {tab} has the address {_list(out['no_sheet_row'])}, so its status was not "
+                     "changed. Check the address there.")
     campaigns = out.get("campaigns") or {}
-    made = list(dict.fromkeys([*(n for n, a in (out.get("campaign_actions") or {}).items() if a == CREATED),
-                               *(campaigns.get("created") or [])]))
-    if made:
-        lines.append(f"{'Would create' if ctx.dry_run else 'Created'} (paused until started): {', '.join(made)}")
-    fixed = campaigns.get("fixed_fields") or {}
-    for name, fields in fixed.items():
-        lines.append(f"{'Would update' if ctx.dry_run else 'Updated'} "
-                     + _fixed_words(name, fields, (campaigns.get("drift") or {}).get(name) or {}))
-    held = campaigns.get("held") or {}
+    fixed, held = campaigns.get("fixed_fields") or {}, campaigns.get("held") or {}
+    drifted = set()
     for name, drift in (campaigns.get("drift") or {}).items():
         hold = set((held.get(name) or {}).get("keys") or ())
         rest = sorted(k for k in drift if k not in fixed.get(name, ()) and k not in hold)
         if rest:
-            lines.append(f"Campaign drift, {name}: {', '.join(rest)}. Fix with `us-outbound campaigns ensure --fix --live`.")
+            drifted.add(name)
+            lines.append(f"• {_whose(name)}: its settings in Instantly differ from ours ({_drift_words(rest)}). Fix: "
+                         f"{say.command('campaigns ensure --fix --live')}.")
         if hold:
-            lines.append(held_words(name, held[name]))
+            lines.append(f"• {held_words(name, held[name], say.command)}")
+    starting = out.get("campaign_start") or {}
+    for err in starting.get("errors") or ():
+        lines.append(f"• Instantly would not start {err}.")
+    start = say.command("start --live")
+    ready = [o for o in starting.get("ready") or () if campaign_name(o) not in drifted]
+    for owner in starting.get("ready") or ():
+        if campaign_name(owner) in drifted:
+            lines.append(f"• {owner}'s campaign is ready to start once its settings are fixed (above): then run {start}.")
+    if len(ready) == 1:
+        lines.append(f"• {ready[0]}'s campaign is ready but not started, so it sends nothing. To start it: {start}.")
+    elif ready:
+        whose = ", ".join(f"{o}'s" for o in ready[:-1]) + f" and {ready[-1]}'s"
+        lines.append(f"• {whose} campaigns are ready but not started, so they send nothing. To start them: {start}.")
+    for owner in starting.get("paused") or ():
+        lines.append(f"• {owner}'s campaign is paused in Instantly although {owner} has an Active mailbox, so it sends "
+                     f"nothing. If nobody paused it on purpose: {start}.")
+    return lines
+
+
+def _routine(ctx: Context, out: Mapping[str, Any]) -> list[str]:
+    """What changed, or would change in a dry run, by itself: nothing to do."""
+    dry = ctx.dry_run
+
+    def verb(would: str, did: str) -> str:
+        return would if dry else did
+
+    lines = []
+    for key, would, did in (
+        ("promoted", "Would set Active", "Set Active"),
+        ("retired", "Would retire", "Retired"),
+        ("warmup_turned_on", "Would turn warm-up back on", "Turned warm-up back on"),
+    ):
+        if out.get(key):
+            why = {"promoted": " (warmed up, ready to send)", "retired": " (no sends for 30 days)"}.get(key, "")
+            lines.append(f"• {verb(would, did)}{why}: {_list(out[key])}")
+    if out.get("waiting_to_retire"):
+        lines.append(f"• Waiting to retire (sent in the last {RETIRE_WAIT_DAYS} days): {_list(out['waiting_to_retire'])}")
+    for address, change in (out.get("limit_set") or {}).items():
+        lines.append(f"• {verb('Would set', 'Set')} {address}'s daily limit in Instantly from {change['from']} to "
+                     f"{change['to']} (its `daily_cap` on the Mailboxes tab, or the ramp's when lower)")
+    for address in out.get("names_set") or ():
+        change = (out.get("name_drift") or {}).get(address) or {}
+        have, want = (" ".join(x for x in change.get(k) or () if x) for k in ("from", "to"))
+        lines.append(f"• {verb('Would set', 'Set')} {address}'s sender name to \"{want}\" (was \"{have}\")")
+    for owner, st in (out.get("campaign_status") or {}).items():
+        if st.get("code") is not None and st.get("at_limit"):
+            lines.append(f"• {owner}'s campaign: {st['meaning']} ({say.command('status')} shows whether companies are "
+                         "waiting)")
+    campaigns = out.get("campaigns") or {}
+    made = list(dict.fromkeys([*(n for n, a in (out.get("campaign_actions") or {}).items() if a == CREATED),
+                               *(campaigns.get("created") or [])]))
+    if made:
+        lines.append(f"• {verb('Would create', 'Created')} (paused until started): {_list(_whose(n) for n in made)}")
+    for name, fields in (campaigns.get("fixed_fields") or {}).items():
+        lines.append(f"• {verb('Would update', 'Updated')} "
+                     + _fixed_words(name, fields, (campaigns.get("drift") or {}).get(name) or {}))
     starting = out.get("campaign_start") or {}
     for name in starting.get("started") or ():
-        lines.append(f"Started {name}: its owner has an Active mailbox and sending is live.")
+        lines.append(f"• Started {_whose(name)}: its owner has an Active mailbox and sending is live")
     for name in starting.get("would_start") or ():
-        lines.append(f"Would start {name}: its owner has an Active mailbox and sending is live.")
-    for err in starting.get("errors") or ():
-        lines.append(f"Instantly would not start {err}")
-    for owner in starting.get("ready") or ():
-        lines.append(f"{owner}'s campaign is ready: run `us-outbound start --live` to start it.")
-    for owner in starting.get("paused") or ():
-        lines.append(f"{campaign_name(owner)} is paused, though {owner} has an Active mailbox: run "
-                     "`us-outbound start --live` to start it.")
+        lines.append(f"• Would start {_whose(name)}: its owner has an Active mailbox and sending is live")
     for owner, why in (starting.get("blackout") or {}).items():  # never a reason to post on its own
-        lines.append(f"{campaign_name(owner)}: {why}.")
+        lines.append(f"• {owner}'s campaign: {why}")
     if campaigns.get("pending"):
-        lines.append(f"Campaigns waiting for an Active mailbox: {', '.join(campaigns['pending'])}")
+        lines.append(f"• Waiting for an Active mailbox: {_list(_whose(n) for n in campaigns['pending'])}")
     if campaigns.get("unknown"):
-        lines.append(f"Unknown US Outbound campaigns (not touched): {', '.join(campaigns['unknown'])}")
-    return "\n".join(lines)
+        lines.append(f"• Left alone (no owner on the Mailboxes tab): {_list(campaigns['unknown'])}")
+    return lines
+
+
+def _mailbox_line(r: Mapping[str, Any]) -> str:
+    score = r.get("warmup_score")
+    return (f"• {r['address']} ({r['owner']}): {r['status']}"
+            + ("" if r.get("found") else ", not found in Instantly")
+            + ("" if r.get("warmup_enabled") or not r.get("found") else ", warm-up OFF")
+            + (f", warm-up score {score}" if score is not None else "")
+            + (f", Instantly limits it to {r['instantly_daily_limit']} a day (its cap is {r.get('cap_today')})"
+               if _lower_limit(r) else "")
+            + (f", {r['ramp']}" if r.get("ramp") else ""))
+
+
+def _summary_text(ctx: Context, rows: list[dict], out: Mapping[str, Any]) -> str:
+    today = ctx.today_uk()
+    todo, routine = _todo(ctx, out), _routine(ctx, out)
+    n = len(todo)
+    if n:
+        head = f"Mailbox check, {today:%a %d %b}: {n} thing{'' if n == 1 else 's'} to fix"
+    else:
+        head = f"Mailbox check, {today:%a %d %b}: nothing to do"
+    facts = []
+    if todo:
+        facts += ["*To fix:*", *todo]
+    if routine:
+        facts += [f"*{'Would change' if ctx.dry_run else 'Changed by itself'}:*", *routine]
+    # Each mailbox's status after today's changes (a dry run changed nothing).
+    now = {} if ctx.dry_run else {**dict.fromkeys(out.get("promoted") or (), ACTIVE),
+                                  **dict.fromkeys(out.get("retired") or (), RETIRED)}
+    facts += [f"*The mailboxes ({say.sheet_link(ctx, TAB)}):*",
+              *(_mailbox_line({**r, "status": now.get(r["address"], r["status"])}) for r in rows)]
+    if any(r.get("ramp") for r in rows):
+        facts.append("_The ramp: a new mailbox sends fewer emails a day in its first two weeks, to build its "
+                     "reputation._")
+    return say.compose(say.ACTION if todo else say.INFO, head, facts)
 
 
 def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:

@@ -180,9 +180,13 @@ def test_before_a_blackout_it_pauses_what_sends_and_records_each_pause():
     assert by[C_HANNAH]["changed_by"] == "blackout"
     [post] = posts(t)
     assert post["channel"] == "C_ALERT"
-    assert ("Paused 2 US Outbound campaigns for the blackout (US Outbound – Hannah Spalding, US Outbound – Sam "
-            "Jackson), so no follow-up goes out on a blackout date. They start again by themselves for Mon 30 Nov, "
-            "when Instantly sends the follow-ups that fell due.") in post["text"]
+    head, paused, again = post["text"].splitlines()
+    assert head == "<@U_HARRY> :bar_chart: *Emails paused over the blackout dates*"
+    assert paused == ("Paused Hannah Spalding's and Sam Jackson's campaigns for the blackout dates (`blackout_dates` on "
+                      "the <https://docs.google.com/spreadsheets/d/sheet-test/edit|General tab>: days we send nothing), "
+                      "so no email goes out on one.")
+    assert again == ("They start again by themselves on Mon 30 Nov, when Instantly sends the follow-ups that fell due. "
+                     "Nothing to do.")
     # The next runs find them paused: nothing to do, nothing posted again.
     out = blackout.run(at(ctx, DURING))
     assert out["paused"] == [] and out["still_paused"] == [C_HANNAH, C_SAM] and out["left_alone"] == [C_HARRY]
@@ -207,8 +211,10 @@ def test_after_it_exactly_the_campaigns_it_paused_start_again():
     resumed = rows(ctx, config_version.BLACKOUT_RESUME)
     assert {r["campaign"]: r["detail"]["outcome"] for r in resumed} == {C_HANNAH: "resumed", C_SAM: "resumed"}
     assert blackout.paused(ctx.store) == {}
-    assert "Started 2 US Outbound campaigns again after the blackout (US Outbound – Hannah Spalding, US Outbound – " \
-           "Sam Jackson): Instantly sends the follow-ups that fell due from Mon 30 Nov." in posts(t)[-1]["text"]
+    assert posts(t)[-1]["text"] == (
+        "<@U_HARRY> :white_check_mark: *Emails started again after the blackout dates*\n"
+        "Started Hannah Spalding's and Sam Jackson's campaigns again. Instantly sends the follow-ups that fell due "
+        "from Mon 30 Nov.")
     t.requests.clear()
     assert blackout.run(at(ctx, AFTER + timedelta(hours=1)))["paused_by_blackout"] == []  # once
     assert not [r for r in t.requests if "instantly" in r.url]
@@ -224,7 +230,11 @@ def test_an_operator_stop_over_the_blackout_keeps_them_paused_and_says_so():
     assert out["left_paused"][C_HANNAH] == ("an operator stop is in force since Tue 24 Nov 15:40 UK: "
                                             "`us-outbound start --live` starts it")
     assert statuses(inst)[C_HANNAH] == 2 and blackout.paused(ctx.store) == {}  # settled: `start` is the way now
-    assert "Left paused: US Outbound – Hannah Spalding (an operator stop is in force" in posts(t)[-1]["text"]
+    text = posts(t)[-1]["text"]
+    assert text.startswith("<@U_HARRY> :warning: *Blackout dates over, but 2 campaigns stay paused*\n"
+                           "Nothing goes out from them until they are started:\n")
+    assert ("• Hannah Spalding's campaign: someone paused all sending with the emergency stop since Tue 24 Nov 15:40 "
+            "UK. To start sending again: `railway ssh -- us-outbound start --live`.") in text.splitlines()
     assert not [r for r in instantly_writes(t) if r.url.endswith("/activate")]
 
 
@@ -239,12 +249,20 @@ def test_a_kill_rule_pause_or_an_empty_sending_list_since_keeps_one_paused():
     assert out["left_paused"] == {C_HANNAH: "a kill rule paused it since (6% bounced): it starts again once its "
                                             "mailbox is Active"}
     assert statuses(inst) == {C_HANNAH: 2, C_SAM: 1, C_HARRY: 2}
+    text = posts(t)[-1]["text"]
+    assert text.startswith("<@U_HARRY> :warning: *Blackout dates over, but 1 campaign stays paused*\n"
+                           "Started Sam Jackson's campaign again. Instantly sends the follow-ups that fell due from ")
+    assert ("• Hannah Spalding's campaign: the safety stop paused its mailbox during the blackout (6% bounced). It "
+            "starts again by itself once that mailbox is Active again on the ") in text
 
     no_sam = dataclasses.replace(LIVE, mailboxes=(mailbox(HANNAH, "Hannah Spalding"), mailbox(SAM, "Sam Jackson", "Paused"),
                                                   mailbox(HARRY, "Harry Dryden")))
     ctx, t, inst = world(EVE, settings=no_sam)
     blackout.run(ctx)
     assert blackout.run(at(ctx, AFTER))["left_paused"] == {C_SAM: "its owner has no Active mailbox now"}
+    assert ("• Sam Jackson's campaign: Sam has no Active mailbox now, so it cannot send. Once one is Active on "
+            "the ") in posts(t)[-1]["text"]
+    assert "start it with `railway ssh -- us-outbound start --live`." in posts(t)[-1]["text"]
 
 
 def test_one_instantly_shows_completed_or_active_needs_nothing():
@@ -276,8 +294,10 @@ def test_a_dry_run_says_what_it_would_do_and_changes_nothing():
     assert out["would_pause"] == [C_HANNAH, C_SAM] and "paused" not in out
     assert statuses(inst) == {C_HANNAH: 1, C_SAM: 3, C_HARRY: 2} and instantly_writes(t) == [] and rows(ctx) == []
     [post] = posts(t)
-    assert post["channel"] == "C_DEV" and "Would pause 2 US Outbound campaigns" in post["text"]
-    assert "Running dry, so nothing was paused: `us-outbound stop --live` pauses them by hand." in post["text"]
+    assert post["channel"] == "C_DEV" and "*Emails would be paused over the blackout dates*" in post["text"]
+    assert "Would pause Hannah Spalding's and Sam Jackson's campaigns for the blackout dates" in post["text"]
+    assert "Nothing was paused.\nTo pause sending by hand: `railway ssh -- us-outbound stop --live`." in post["text"]
+    assert post["text"].count("Test run") == 1  # the dry-run note only
 
 
 def test_the_job_is_hourly_live_and_its_heartbeat_is_expected():

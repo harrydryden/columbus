@@ -16,9 +16,13 @@ from us_outbound.clients import instantly
 from us_outbound.clients.http import ApiError
 from us_outbound.enrol import enrol, plan
 
-FULL_ALERT = ("<@U_HARRY> Instantly's plan:\nInstantly's plan has no room for new leads, so nothing new is being sent. "
-              "Upgrade the Instantly plan, or delete leads that finished their sequence. Contacts are kept and will be "
-              "added when there is room.")
+FULL_ALERT = ("<@U_HARRY> :rotating_light: *Instantly's plan is full: nobody new is being emailed*\n"
+              "Instantly's plan holds only so many people (leads) at once, and it has no room left.\n"
+              "People already in the campaign still get their follow-ups. The new ones are kept, not dropped, and wait "
+              "for room.\n"
+              "*What to do:* Make room: upgrade the plan in Instantly, or delete leads there that have finished all "
+              "their emails. Nothing else is needed: adding people to the email campaign and the approved send cards "
+              "try again by themselves.")
 
 
 # -- what Instantly's answer says -------------------------------------------------------------------------------
@@ -107,10 +111,13 @@ def test_little_room_left_warns_once_a_week():
     ctx, t = enrol_world(low)
     out = enrol.run(ctx)
     assert out["enrolled"] == 3 and out["instantly_plan"]["full"] is False
-    assert posts(t) == [
-        "<@U_HARRY> Instantly's plan:\nInstantly's plan has room for 200 more leads, under 2 weeks at weekly_enrol_cap "
-        "(150 a week). Upgrade the Instantly plan, or delete leads that finished their sequence, before it fills: then "
-        "nothing new is sent."]
+    [low] = posts(t)
+    head, facts, do = low.splitlines()
+    assert head == "<@U_HARRY> :warning: *Instantly's plan is nearly full: room for 200 more people*"
+    assert facts.startswith("That is under 2 weeks at the current pace: `weekly_enrol_cap` (people added a week) is "
+                            "150 on the ") and "General tab" in facts
+    assert do == ("*What to do:* Before it fills, upgrade the plan in Instantly, or delete leads there that have "
+                  "finished all their emails. Once it is full, nobody new is emailed until there is room.")
     ctx.now += timedelta(days=1)
     enrol.plan.after_add(ctx, {"remaining_in_plan": 150})
     assert len(posts(t)) == 1  # the same week
@@ -148,7 +155,7 @@ def test_an_approval_the_full_plan_stops_is_held_and_goes_through_once_there_is_
         assert row["payload"]["held"]["reasons"] == {"instantly_plan": plan.HOLD}
     assert not any(c.get("suppressed") for c in ctx.store.select("contacts"))  # kept, never _refused
     assert sum(x.startswith("⏸ Approved") and "Instantly's plan has no room for new leads" in x for x in sl.texts()) == 2
-    assert [x for x in sl.texts() if x.startswith("<@U_HARRY> Instantly's plan:")] == [FULL_ALERT]
+    assert [x for x in sl.texts() if x.startswith("<@U_HARRY> :rotating_light: *Instantly's plan")] == [FULL_ALERT]
     poll(ctx)  # still full: tried again, no new thread note, no second alert today
     assert sum(x.startswith("⏸ Approved") for x in sl.texts()) == 2 and len(adds(t)) == 2
     state["full"] = False  # Harry upgraded the plan

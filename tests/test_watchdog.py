@@ -115,7 +115,7 @@ def test_a_missed_job_pings_fail_after_the_slack_alert():
     out = hb.run(ctx)
     assert out["missed"] == ["poll_replies"] and pings(t) == [PING + "/fail"]
     assert out["watchdog"]["reasons"] == ["missed: poll_replies"]
-    assert "poll_replies" in posts(t)[0]["text"]
+    assert "*Checking for replies has stopped running*" in posts(t)[0]["text"]
 
 
 def test_a_daily_job_whose_latest_run_failed_pings_fail_but_a_poll_that_failed_once_does_not():
@@ -247,8 +247,9 @@ def test_heartbeat_check_runs_on_the_defaults_when_the_settings_are_unusable_and
     # The real clock: in the 09:00 UK hour the missed-heartbeat reminder posts too (heartbeat.REMINDER_HOUR_UK).
     sent = posts(t)
     assert sent and {p["channel"] for p in sent} == {"C_ALERT"}  # live on the defaults: not the dev channel
-    [post] = [p for p in sent if "Errors the jobs met:" in p["text"]]
-    assert "The settings are unusable (General): every job refuses to run until the sheet is fixed" in post["text"]
+    [post] = [p for p in sent if "Some automatic jobs ran into problems" in p["text"]]
+    assert "*The jobs have stopped (since " in post["text"]
+    assert "General tab" in post["text"] and "every job except the hourly health check refuses to start" in post["text"]
     assert pings(t) == [PING + "/fail"]
     [row] = [r for r in store.select("heartbeats") if r["job"] == "heartbeat_check"]
     assert row["status"] == "ok" and row["dry_run"] is False and row["detail"]["failed"] == ["settings_sync"]

@@ -325,12 +325,12 @@ def test_the_hand_check_lists_doubts_and_approving_it_clears_them_so_the_next_ru
     assert item is None and hand_check.has_work(payload)  # show never writes; approve records the week itself
     assert [d["account_id"] for d in payload["doubtful"]] == ["a1", "a2", "a3"]
     words = hand_check.text(payload)
-    assert "3 accounts have doubtful Apollo facts, so they won't get a card until you look." in words
+    assert "3 companies have doubtful facts from Apollo, so they get no email until you look*" in words
     assert "(a1co.com) · HQ NY · 20-49 (49 staff) · Apollo's estimate of 49 staff is within 2 of the 50-staff edge" in words
     out = hand_check.approve(live, ["a3co.com"], "harry")
     assert out["doubts_cleared"] == ["a1"] and out["pulled_account_ids"] == ["a3"]
     assert out["still_missing_a_fact"] == ["a2"]  # approving cannot supply an HQ state (Harry, 6 Oct 2026)
-    assert "The account missing a fact (HQ state, size or industry) stays on the check" in out["message"]
+    assert "The company missing a fact (HQ state, size or industry) stays on the check" in out["message"]
     live.guard.configure(live=False)
     again = verify.run(ctx)
     assert status(ctx, "a1") == "verified"  # checked by Harry: verified on its facts

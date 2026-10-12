@@ -450,16 +450,17 @@ def _declines(ctx: Context, rows: Rows, since: datetime, early: list[str]) -> li
             if bad:
                 top = min(bad, key=lambda v: (-bad[v], -bad[v] / total[v], v))
                 parts.append(f"{label}{top} {bad[top]} of {total[top]}")
-        where = f", most in {', '.join(parts)}: check targeting and scoring there" if parts else ""
-        out.append(f"  ❌ {len(declined)} of {len(events)} send approvals declined{where}.")
+        where = (f", most in {', '.join(parts)}. *What to do:* check who we aim at and how we score them there "
+                 "(Industries, Roles and Signals tabs)") if parts else ""
+        out.append(f"  Declined at approval (❌): {len(declined)} of {len(events)} emails{where}.")
     approved = [e for e in events if e.get("approval") in (APPROVED, EDITED)]
     total = Counter(_segment(e, "copy_version", index, rows, ctx.settings) for e in approved)
     edits = Counter(_segment(e, "copy_version", index, rows, ctx.settings) for e in approved if e.get("approval") == EDITED)
     edits.pop("", None)
     most = [(v, n) for v, n in sorted(edits.items(), key=lambda kv: (-kv[1], kv[0])) if n >= MIN_EDITS][:TOP]
     if most:
-        out.append("  Edited before approval: " + ", ".join(f"{v} {n} of {total[v]}" for v, n in most)
-                   + ": fix the template on the Copy tab.")
+        out.append("  Edited before approval: " + ", ".join(f"copy {v} {n} of {total[v]} times" for v, n in most)
+                   + ". *What to do:* fix that copy on the Copy tab.")
     return out
 
 
@@ -488,24 +489,24 @@ def _arms(m: _Emailed, rows: Rows, key: str, a: str, b: str, label: str, early: 
     if arm[a] >= MIN_PER_ARM and arm[b] >= MIN_PER_ARM:
         return [f"  Replies, {label}: {back[a]} of {arm[a]} ({fmt.pct(back[a], arm[a])}) "
                 f"vs {back[b]} of {arm[b]} ({fmt.pct(back[b], arm[b])}); "
-                f"positive {warm[a]} vs {warm[b]}. Counts, not conclusions."]
+                f"interested {warm[a]} vs {warm[b]}. Early counts, not proof."]
     early.append(f"{label}, {arm[a]} and {arm[b]} of {MIN_PER_ARM} emailed each")
     return []
 
 
 def _replies(m: _Emailed, rows: Rows, early: list[str]) -> tuple[list[str], list[str]]:
     """(opener against holdout and the personal subject against the Copy row's, by angle and copy version)."""
-    first = _arms(m, rows, "opener_arm", OPENER, HOLDOUT, "opener vs holdout", early)
+    first = _arms(m, rows, "opener_arm", OPENER, HOLDOUT, "personal opening line vs none (the holdout)", early)
     # Harry, 5 Oct 2026: email 1's personal subject (General email1_subject) against the Copy row's s1_subject.
-    first += _arms(m, rows, "subject_arm", PERSONAL_SUBJECT, COPY_SUBJECT, "personal vs Copy-row subject", early)
+    first += _arms(m, rows, "subject_arm", PERSONAL_SUBJECT, COPY_SUBJECT, "personal subject vs the Copy tab's", early)
     parts = []
-    for key, label in (("angle", "angle"), ("copy_version", "copy version")):
+    for key, label in (("angle", "angle"), ("copy_version", "Copy tab version")):
         cut = _cut(m, rows, key)
         if len(cut) >= 2:
             parts.append(f"by {label}: " + ", ".join(f"{v} {r} of {n}" for v, n, r in cut[:TOP]))
     if parts:
         return first, ["  Replies " + "; ".join(parts) + "."]
-    early.append(f"angles and copy versions, {MIN_PER_ARM} emailed each, two at least")
+    early.append(f"angles and Copy tab versions, {MIN_PER_ARM} emailed each, two at least")
     return first, []
 
 
@@ -518,12 +519,14 @@ def _bounces(m: _Emailed, rows: Rows, early: list[str]) -> list[str]:
         bounced[src] += s.bounced
     big = [src for src in kill_rules.SOURCES if sent[src] >= MIN_PER_ARM]
     if not big:
-        early.append(f"bounces by source, {max(sent[src] for src in kill_rules.SOURCES)} of {MIN_PER_ARM} emailed")
+        early.append(f"bounces by where the address came from, {max(sent[src] for src in kill_rules.SOURCES)} of "
+                     f"{MIN_PER_ARM} emailed")
         return []
-    parts = [f"{src} {bounced[src]} of {sent[src]} ({fmt.pct(bounced[src], sent[src])})" for src in big]
-    parts += [f"{src} {sent[src]} emailed, too few" for src in kill_rules.SOURCES if 0 < sent[src] < MIN_PER_ARM]
-    return [f"  Bounces by email source: {', '.join(parts)}; the kill rule pauses a source over "
-            f"{kill_rules.BOUNCE_RATE:.0%}."]
+    parts = [f"{src.capitalize()} {bounced[src]} of {sent[src]} ({fmt.pct(bounced[src], sent[src])})" for src in big]
+    parts += [f"{src.capitalize()} {sent[src]} emailed, too few to judge" for src in kill_rules.SOURCES
+              if 0 < sent[src] < MIN_PER_ARM]
+    return [f"  Bounces by where the address came from: {', '.join(parts)}; a source over "
+            f"{kill_rules.BOUNCE_RATE:.0%} is paused automatically."]
 
 
 def _gaps(rows: Rows) -> list[str]:
@@ -535,14 +538,15 @@ def _gaps(rows: Rows) -> list[str]:
     nobody = Counter(reason(r) for aid, r in rows.no_contact.items() if aid in ids)
     parts = []
     if no_band_v or no_band_w:
-        parts.append(f"no size band at {no_band_v} of {len(verified)} verified accounts ({fmt.pct(no_band_v, len(verified))})"
-                     f" and {no_band_w} of {len(waiting)} waiting for verification")
+        parts.append(f"no company size at {no_band_v} of {len(verified)} companies cleared to email "
+                     f"({fmt.pct(no_band_v, len(verified))}) and {no_band_w} of {len(waiting)} still being checked")
     if nobody:
         top, n = min(nobody.items(), key=lambda kv: (-kv[1], kv[0]))
-        parts.append(f"nobody suitable at {fmt.plural(sum(nobody.values()), 'verified account')}, mostly {top} ({n})")
+        parts.append(f"no one suitable to email at {fmt.plural(sum(nobody.values()), 'cleared company', 'cleared companies')}"
+                     f", mostly {top} ({n})")
     if not parts:
         return []
-    return ["  Data gaps: " + "; ".join(parts) + "." + SOURCES_POINTER]
+    return ["  Missing data: " + "; ".join(parts) + "." + SOURCES_POINTER]
 
 
 def _review_ready(ctx: Context) -> list[str]:
@@ -559,9 +563,11 @@ def _tier_mix(ctx: Context, rows: Rows) -> list[str]:
     check = score.tier_share(rows.accounts, ctx.today_uk())
     if not check or not check["off"]:
         return []
-    mix = ", ".join(f"{t} {s:.0%}" for t, s in check["shares"].items())
-    return [f"  Tier mix of this month's queue ({check['accounts']} accounts): {mix}; each should be "
-            f"{score.SHARE_MIN:.0%} to {score.SHARE_MAX:.0%}: review the thresholds and signal weights."]
+    # The score job's alert in short (scoring/score.py _share_alert): the same words for the groups, the same fix.
+    mix = ", ".join(f"{score.TIER_WORDS[t]} {s:.0%}" for t, s in check["shares"].items())
+    fixes = " ".join(score._share_fixes(ctx, check["off"]))
+    return [f"  This month's list of companies to email is unbalanced ({check['accounts']} companies): {mix}; each "
+            f"group should be {score.SHARE_MIN * 100:.0f}–{score.SHARE_MAX:.0%}. *What to do,* on the General tab: {fixes}"]
 
 
 def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:

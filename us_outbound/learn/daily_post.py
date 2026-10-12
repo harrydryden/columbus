@@ -1,9 +1,11 @@
 """daily_post, 09:00 UK (SPEC 9, 11 "Daily post"): one message on yesterday's outbound and what waits for Harry.
 
 Since 9 Oct 2026 (Harry: "a more readable pithier version of the daily report") the job posts the short post
-(compact): Needs you as bullets, yesterday in two lines, today's number with what limits it and each sender's
-share, the pipeline, the one-line spend summary, and a Watch block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill
-rule, a campaign not sending, the To improve lines), ending with the areas checked that are fine. Every number is
+(compact). Since 12 Oct 2026 (Harry: clear to anyone, even new to the system) its first line says whether anything
+needs you today; the asks follow, numbered, each with where to go or the command to paste; then yesterday in a few
+lines, today's number with what limits it and each sender's room, the pipeline, the one-line spend summary, and a
+"Worth a look" block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill rule, a campaign
+not sending, the To improve lines), ending with the areas checked that are fine. Every number is
 gathered once (gather) and the full post below is kept as it was, for `us-outbound daily --full`; the summary
 numbers in the heartbeat are the same either way. What follows describes the full post.
 
@@ -71,7 +73,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, fmt, labels, limits
-from us_outbound.base import holds, notify
+from us_outbound.base import holds, notify, say
 from us_outbound.clients.db import Range
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, focus, second, today
@@ -202,7 +204,7 @@ class Day:
     waiting_on: ForYou
     lim: limits.Limits
     why: str | None = None
-    warm: list[str] = field(default_factory=list)  # "Acme Creative (positive, hannah@…)"
+    warm: list[str] = field(default_factory=list)  # "Acme Creative (positive reply to hannah@…)"
     objections: list[str] = field(default_factory=list)  # the full post's quoted lines
     visited: list[str] = field(default_factory=list)  # enrolled accounts that visited the US site
     groups: str = ""  # ready accounts by Focus share or industry group
@@ -390,7 +392,7 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     if line:
         lines += ["", line]
     nums.update(retention=done)
-    warm_lines = [f"{who(e)} ({e.get('reply_class')}, {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT]]
+    warm_lines = [f"{who(e)} ({e.get('reply_class')} reply to {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT]]
     return Day(start, end, label, lines, nums, waiting_on, lim, why=why, warm=warm_lines, objections=objections,
                visited=visited, groups=daily_report.ready_groups(ready, ctx.settings) if ready else "",
                improve=improve, mailboxes=boxes, ramping=ramping,
@@ -399,9 +401,16 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
 
 
 # -- the short post (Harry, 9 Oct 2026: "a more readable pithier version of the daily report") -------------------
+# Harry, 12 Oct 2026: clear to anyone, even new to the system. The first line says whether anything needs you today;
+# the asks come first, numbered, each with where to go or the command to paste; then yesterday and today in a few
+# lines of plain numbers, with every internal name translated or explained (base/say.py).
 
 BOUNCE_WATCH = 0.03  # a mailbox's bounces over its last 100 sends, from MIN_WATCH_SENDS sends, that the post flags
 MIN_WATCH_SENDS = 20
+# What holds today's number down (limits.LABELS), for a reader who does not know the terms.
+LIMIT_WORDS = {"weekly_target": "this week's target (`weekly_enrol_cap`)",
+               "sending_capacity": "how much the mailboxes can send",
+               "ready_accounts": "the companies ready to email"}
 
 
 def _span(day: Day) -> str:
@@ -419,39 +428,65 @@ def _short_names(owners: Sequence[str]) -> dict[str, str]:
             for o in owners if o.split()}
 
 
+def _waited(ctx: Context, items: Sequence[Mapping[str, Any]]) -> str:
+    """"waiting 30 hours" / "the oldest waiting 30 hours", or ""."""
+    oldest = min((t for i in items if (t := utc(i.get("created_at"))) is not None), default=None)
+    if oldest is None:
+        return ""
+    return ("waiting " if len(items) == 1 else "the oldest waiting ") + fmt.hours(ctx.now - oldest)
+
+
 def _needs(ctx: Context, w: ForYou) -> list[str]:
+    """The asks, numbered: what to do, and where (the channel, or the command to paste)."""
+    channel = ctx.settings.general.alert_channel
     out = []
     if w.send_approvals:
-        age = _oldest(ctx, w.send_approvals)
-        out.append(f"• Approve {fmt.plural(len(w.send_approvals), 'email')} in Slack ({age + '; ' if age else ''}a card "
-                   "lapses at the end of the next send day)")
+        age = _waited(ctx, w.send_approvals)
+        out.append(f"Approve {fmt.plural(len(w.send_approvals), 'email')} ({age + '; ' if age else ''}a card lapses after "
+                   f"its next send day): ✅ or ❌ on each card in {channel}")
     if w.replies:
-        age = _oldest(ctx, w.replies)
-        out.append(f"• Answer {fmt.plural(len(w.replies), 'reply', 'replies')}" + (f" ({age})" if age else ""))
+        age = _waited(ctx, w.replies)
+        n = len(w.replies)
+        out.append(f"Answer {fmt.plural(n, 'prospect reply', 'prospect replies')}{f' ({age})' if age else ''}: ✅ or "
+                   f"`edit: <text>` in {'its' if n == 1 else 'each'} thread in {channel}")
     if w.holds:
-        out.append(f"• {fmt.plural(len(w.holds), 'kill-rule hold')} in force: `us-outbound killrules show`")
+        out.append(f"{fmt.plural(len(w.holds), 'safety pause')} on (bounce or complaint limit hit): "
+                   f"{say.command('killrules show')}")
     if w.hand_checks:
-        out.append("• This week's hand-check: `us-outbound handcheck show`")
-    return out or ["Nothing needs you today."]
+        p = (w.hand_checks[0].get("payload") or {}) if isinstance(w.hand_checks[0].get("payload"), Mapping) else {}
+        k = len(p.get("doubtful") or ())
+        if enrol.has_sample(p):
+            what = "Weekly hand-check (a random sample of companies)"
+            then = "; new leads wait for it" if ctx.settings.general.auto_send else ""
+        else:
+            what = f"Weekly hand-check of {fmt.plural(k, 'company', 'companies')} with doubtful facts" if k else \
+                "Weekly hand-check"
+            then = ""
+        out.append(f"{what}: {say.command('handcheck show')}{then}")
+    return [f"{i}. {x}" for i, x in enumerate(out, 1)]
 
 
 def _yesterday(day: Day) -> list[str]:
     n = day.nums
     if n.get("sent") or n.get("replies"):
-        steps = ", ".join(f"step {k} {v}" for k, v in sorted(n.get("by_step", {}).items()))
-        parts = [f"Sent {n.get('sent', 0)}" + (f" ({steps})" if steps else ""),
-                 f"{fmt.plural(n.get('replies', 0), 'reply', 'replies')} ({n.get('positive', 0)} positive)"]
+        steps = n.get("by_step", {})
+        first = int(steps.get("1", 0))
+        later = sum(int(v) for k, v in steps.items() if k != "1")
+        kinds_ = ", ".join(x for x in (f"{first} first" if first else "", f"{later} follow-up{'s' if later != 1 else ''}"
+                                       if later else "") if x)
+        parts = [f"Sent {n.get('sent', 0)} emails" + (f" ({kinds_})" if kinds_ else ""),
+                 f"{fmt.plural(n.get('replies', 0), 'reply', 'replies')} ({n.get('positive', 0)} interested)"]
     else:
-        parts = ["Nothing sent"]
+        parts = ["No emails sent"]
     parts += [fmt.plural(n[k], word) for k, word in (("bounced", "bounce"), ("unsubscribed", "unsubscribe"))
               if n.get(k)]
     if n.get("demos_booked"):
         parts.append(f"{fmt.plural(n['demos_booked'], 'demo')} booked")
-    cards = [(n.get("approved", 0), "approved"), (n.get("contact_declined", 0) + n.get("company_dropped", 0), "declined"),
-             (n.get("approvals_expired", 0), "lapsed unapproved")]
-    if any(k for k, _ in cards):
-        parts.append("cards " + ", ".join(f"{k} {word}" for k, word in cards if k))
     out = [" · ".join(parts)]
+    cards = [(n.get("approved", 0), "approved"), (n.get("contact_declined", 0) + n.get("company_dropped", 0), "declined"),
+             (n.get("approvals_expired", 0), "lapsed with no answer")]
+    if any(k for k, _ in cards):
+        out.append("Email cards: " + ", ".join(f"{k} {word}" for k, word in cards if k))
     found = f"Found {fmt.plural(n.get('found_companies', 0), 'company', 'companies')}"
     sources = n.get("found_by_source") or {}
     if len(sources) == 1:
@@ -460,9 +495,9 @@ def _yesterday(day: Day) -> list[str]:
         found += " (" + ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in sorted(sources.items(), key=lambda kv: -kv[1])) + ")"
     found += f" and {fmt.plural(n.get('found_contacts', 0), 'contact')}"
     if n.get("verified_in_period"):
-        found += f" · {n['verified_in_period']} verified"
+        found += f" · {n['verified_in_period']} passed the company check"
     out.append(found)
-    out += [f"Positive: {x}" for x in day.warm]
+    out += [f"Interested: {x}" for x in day.warm]
     out += [f"• {x}" for x in day.objections]
     if day.visited:
         out.append("Visited the US site after we emailed: " + ", ".join(day.visited))
@@ -472,50 +507,51 @@ def _yesterday(day: Day) -> list[str]:
 def _today(ctx: Context, day: Day) -> list[str]:
     lim, t = day.lim, day.lim.terms
     if day.why:
-        out = ["*Today: no new contacts*", f"Enrolment waits: {day.why}."]
+        out = ["*Today: no new people added to the emails*", f"Why: {day.why}."]
     else:
-        out = [f"*Today: up to {fmt.plural(lim.number, 'new contact')}*"]
-        limit = limits.LABELS.get(str(t.get("binding")), str(t.get("binding")))
-        if t.get("binding") == "sending_capacity" and day.ramping:
+        out = [f"*Today: up to {fmt.plural(lim.number, 'new person', 'new people')} added to the emails*"]
+        binding = str(t.get("binding"))
+        limit = LIMIT_WORDS.get(binding, limits.LABELS.get(binding, binding))
+        if binding == "sending_capacity" and day.ramping:
             limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
-        out.append(f"Limit: {limit}")
+        out.append(f"Held to that by {limit}")
     names = _short_names(list(lim.senders))
     senders = []
-    for owner, c in lim.senders.items():
+    for owner, c in ({} if day.why else lim.senders).items():  # no room to show on a day nobody is added
         part = f"{names.get(owner, owner)} {c.free}"
         if c.pending:
-            part += f" (+{c.pending} awaiting ✅)"
+            part += f" (+{c.pending} waiting for ✅)"
         if c.not_sending:
             part += " (not sending)"
         senders.append(part)
     if senders:
-        out.append("Senders: " + " · ".join(senders))
-    week = (f"This week: {t.get('enrolled_this_week', 0)} of {t.get('weekly_enrol_cap', 0)}, "
+        out.append("Room per sender: " + " · ".join(senders))
+    week = (f"This week: {t.get('enrolled_this_week', 0)} of {t.get('weekly_enrol_cap', 0)} added, "
             f"{fmt.plural(int(t.get('send_days_left_in_week') or 0), 'send day')} left")
     q = focus.today(ctx, int(t.get("send_days_left_in_week") or 0))
     if q.active:
         week += " · " + " · ".join(f"{k} {q.done[k]}/{q.targets[k]}" for k in q.targets)
     out.append(week)
     if not ctx.settings.general.live_sending:
-        out.append("Running dry: live_sending is no, so enrol reaches nobody.")
+        out.append("Test mode: `live_sending` is no, so no prospect is emailed.")
     return out
 
 
 def _pipeline(day: Day) -> list[str]:
     n = day.nums
     ready = n.get("ready_to_send", 0)
-    line = f"Ready: {ready:,}"
+    line = f"Ready to email: {ready:,}"
     if n.get("supply_days") is not None:
-        line += f", {n['supply_days']} days' supply"
+        line += f", about {n['supply_days']} send days' worth"
     if day.groups:
         line += f" ({day.groups})"
     behind = [f"{n.get('waiting_for_contact', 0):,} need a contact",
-              f"{n.get('waiting_for_verification', 0):,} need verifying"
-              + (f" ({n['doubtful_facts']} in the hand-check)" if n.get("doubtful_facts") else "")]
-    out = [line, "Behind it: " + " · ".join(behind)]
+              f"{n.get('waiting_for_verification', 0):,} need their facts checked"
+              + (f" ({n['doubtful_facts']} in the weekly hand-check)" if n.get("doubtful_facts") else "")]
+    out = [line, "Being prepared: " + " · ".join(behind)]
     if n.get("in_sequence") or n.get("finished") or n.get("stopped"):
-        out.append(f"In sequence: {n.get('in_sequence', 0)} · finished {n.get('finished', 0)} · stopped "
-                   f"{n.get('stopped', 0)}")
+        out.append(f"Emailed: {n.get('in_sequence', 0)} with follow-ups to come · {n.get('finished', 0)} finished · "
+                   f"{n.get('stopped', 0)} stopped (replied, bounced or unsubscribed)")
     return out
 
 
@@ -524,12 +560,13 @@ def _watch(day: Day) -> tuple[list[str], list[str]]:
     out = [f"• {x.removesuffix(daily_report.SOURCES_POINTER)}" for x in day.improve]
     fine = []
     loud = [(a, b, n) for a, _, n, b in day.mailboxes if n >= MIN_WATCH_SENDS and b / n >= BOUNCE_WATCH]
-    out += [f"• {a} bounced {b} of its last {n} sends ({b / n:.0%})" for a, b, n in loud]
+    out += [f"• {a}: {b} of its last {n} emails bounced ({b / n:.0%}); over {kill_rules.BOUNCE_RATE:.0%} of 100 it "
+            "is paused automatically" for a, b, n in loud]
     if not loud:
         fine.append("mailboxes")
-    out += [f"• Kill rule fired: {x}" for x in day.fired]
+    out += [f"• Safety pause set off: {x}" for x in day.fired]
     if not day.fired and not day.holds:
-        fine.append("kill rules")
+        fine.append("safety limits")
     stopped = [c for c in day.lim.senders.values() if c.not_sending]
     out += [f"• {c.owner}: {c.not_sending}" for c in stopped]
     if not stopped:
@@ -538,21 +575,27 @@ def _watch(day: Day) -> tuple[list[str], list[str]]:
 
 
 def compact(ctx: Context, day: Day) -> list[str]:
-    """The short post: what needs Harry, yesterday in two lines, today's number, the pipeline, and only what needs a
+    """The short post: whether anything needs you, the asks, yesterday, today, the pipeline, and only what needs a
     look; the rest is in `us-outbound daily --full` and the Monday readout."""
-    title = f"*Daily post · {ctx.now.astimezone(UK):%a %-d %b}* · covers {_span(day)}" + (" (dry-run)" if ctx.dry_run else "")
-    lines = [title, "", "*Needs you*", *_needs(ctx, day.waiting_on), "", f"*{day.label.split(',')[0]}*", *_yesterday(day),
-             "", *_today(ctx, day), "", "*Pipeline*", *_pipeline(day)]
+    needs = _needs(ctx, day.waiting_on)
+    date = f"{ctx.now.astimezone(UK):%a %-d %b}"
+    if needs:
+        head = f"{say.ACTION} *Daily summary, {date}: {fmt.plural(len(needs), 'thing needs', 'things need')} you*"
+    else:
+        head = f"{say.INFO} *Daily summary, {date}: nothing needs you today*"
+    span = _span(day)
+    period_ = f"Yesterday ({span})" if day.label.startswith("Yesterday") else span
+    lines = [head, *needs, "", f"*{period_}*", *_yesterday(day), "", *_today(ctx, day), "",
+             "*Pipeline*", *_pipeline(day)]
     if day.spend:
-        lines += ["", f"{day.spend}."]
+        lines += ["", day.spend]
     watch, fine = _watch(day)
     if watch:
-        lines += ["", "*Watch*", *watch]
+        lines += ["", "*Worth a look*", *watch]
     if day.retention:
         lines += ["", day.retention]
     listed = " and ".join([", ".join(fine[:-1]), fine[-1]] if len(fine) > 1 else fine)
-    lines += ["", (f"Nothing else to flag: {listed} are fine. " if fine else "")
-              + "Full detail: `us-outbound daily --full`."]
+    lines += ["", (f"Fine: {listed}. " if fine else "") + f"Full report: {say.command('daily --full')}"]
     return lines
 
 

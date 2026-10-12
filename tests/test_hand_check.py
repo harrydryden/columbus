@@ -14,6 +14,7 @@ from us_outbound import suppression
 from us_outbound.enrol import enrol, hand_check
 
 NOW = datetime(2026, 10, 26, 7, 0, tzinfo=UTC)  # Monday 08:00 UK (GMT+0 after 25 Oct), ISO week 2026-W44
+OVERRIDES = "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Overrides tab>"
 WEEK = "2026-W44"
 EAP_LINE = "I saw {company} already offers its team an employee assistance program."
 # auto_send = yes: the weekly sample is enrol's gate. With auto_send = no (Harry, 2 Oct 2026) only the
@@ -80,12 +81,17 @@ def test_the_job_records_this_week_s_sample_and_posts_it():
     [post] = posts(t)
     assert post.json["channel"] == "C_ALERT"
     text = post.json["text"]
-    assert text.startswith("<@U_HARRY> Week 44 check: 17 accounts drawn at random from the queue. Is each one right: "
-                           "the name, HQ state, size band, the contact's role and title, and what the opener rests on?")
+    assert text.startswith(
+        "<@U_HARRY> :warning: *Weekly hand-check: please check 17 companies before this week's new emails go out*\n"
+        "Week 44: 17 companies picked at random from those queued to email. Is each one right: the name, HQ state, "
+        "size, the contact's role and title, and the evidence its opening line rests on?\n")
     d = p['accounts'][0]['domain']
-    assert text.endswith("All fine: `railway ssh -- us-outbound handcheck approve --live`. Any wrong: add "
-                         f"`--pull {d}`, or fix it on the Overrides tab (a wrong industry: `railway ssh -- us-outbound "
-                         f"labels set {d} \"<label>\" --live`). Until then no new leads go to Instantly this week.")
+    assert text.endswith(
+        "*What to do:*\n1. All fine: run `railway ssh -- us-outbound handcheck approve --live`.\n"
+        f"2. Any wrong: add `--pull {d}` to that command for each one to leave it out, or correct the fact on the "
+        f"{OVERRIDES} (a wrong industry: `railway ssh -- us-outbound labels set {d} \"<label>\" --live`).\n"
+        "_Until it is approved, no new leads go to Instantly this week._")
+    assert "· no contact yet (one is chosen before the first email) ·" in text
     assert "SPEC" not in text and "2026" not in text
     assert item["slack_ts"] == "1.1"
     # Enrollment waits for it.
@@ -168,9 +174,9 @@ def test_handcheck_show_prints_the_sample_and_never_records_it(capsys):
     h = harness()
     assert h.run("handcheck", "show") == 0
     out = capsys.readouterr().out
-    assert "Week 44 check: 17 accounts drawn at random from the queue" in out
+    assert "Week 44: 17 companies picked at random from those queued to email" in out
     assert "Marketing & Creative Agencies (10):" in out and "Contact: " in out and "Evidence: " in out
-    assert "All fine: `us-outbound handcheck approve --live`." in out
+    assert "1. All fine: run `us-outbound handcheck approve --live`." in out
     assert h.run("handcheck", "show", "--live") == 0
     assert h.store.select("hitl_items", {"kind": "hand_check"}) == []
     shown = hand_check.show(h.last)[1]["groups"]
@@ -233,12 +239,15 @@ def test_with_auto_send_off_the_doubtful_accounts_still_go_to_a_person():
     assert out["status"] == "recorded" and out["accounts"] == 0 and out["doubtful"] == 1 and out["groups"] == {}
     [post] = posts(t)
     text = post.json["text"]
-    assert text.startswith("<@U_HARRY> Week 44 check: 1 account has doubtful Apollo facts, so it won't get a card "
-                           "until you look.\n  1. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70\n")
-    assert text.endswith("All fine: `railway ssh -- us-outbound handcheck approve --live`. Any wrong: add "
-                         "`--pull mar70.com`, or fix it on the Overrides tab (a wrong industry: `railway ssh -- "
-                         "us-outbound labels set mar70.com \"<label>\" --live`). Ignoring this is safe: only these "
-                         "accounts wait.")
+    assert text.startswith(
+        "<@U_HARRY> :warning: *Weekly hand-check: 1 company has doubtful facts from Apollo, so it gets no email until "
+        "you look*\nWeek 44. Is each one right: the name, HQ state and size? The reason for the doubt is on each line.\n"
+        "  1. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70\n")
+    assert text.endswith(
+        "*What to do:*\n1. All fine: run `railway ssh -- us-outbound handcheck approve --live`.\n"
+        "2. Any wrong: add `--pull mar70.com` to that command for each one to leave it out, or correct the fact on the "
+        f"{OVERRIDES} (a wrong industry: `railway ssh -- us-outbound labels set mar70.com \"<label>\" --live`).\n"
+        "_If you leave it, only these companies wait; nothing else is held up._")
     assert "SPEC" not in text and "Harry, 2 Oct" not in text
 
 
@@ -277,7 +286,7 @@ def test_a_doubtful_only_week_does_not_pass_the_gate_once_auto_send_is_yes():
     item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
     assert (item["status"], item["handled_by"], item["payload"]["per_group"]) == ("open", None, 10)
     assert item["payload"]["pulled_account_ids"] == ["mar-70"]
-    assert posts(t)[-1].json["text"].startswith("<@U_HARRY> Week 44 check: 17 accounts drawn at random")
+    assert "Week 44: 17 companies picked at random" in posts(t)[-1].json["text"]
     assert enrol.hand_check(ctx, ctx.now_et().date()) == (f"this week's hand-check ({WEEK}) is not approved yet",
                                                           frozenset({"mar-70"}))
     hand_check.approve(ctx, [], "harry")
@@ -316,17 +325,36 @@ def test_the_confirmation_says_what_happens_next_in_plain_words():
     ctx, t = world()
     _doubtful_week(ctx)
     out = hand_check.approve(ctx, [], "harry")  # its HQ state and size are missing: approving cannot supply them
-    assert out["message"] == ("Week 44 check approved by harry. The account missing a fact (HQ state, size or "
-                              "industry) stays on the check until an Overrides row fills it in.")
+    assert out["message"] == (":white_check_mark: *Weekly hand-check approved by harry* (Week 44)\n"
+                              "The company missing a fact (HQ state, size or industry) stays on the check until a row "
+                              "on the Overrides tab fills it in.")
     assert posts(t)[-1].json["text"].endswith(out["message"])  # the item was posted, so the channel hears it
     friday = make_context(ctx.settings, live=True, transport=t, now=NOW + timedelta(days=4), store=ctx.store)
     assert hand_check.confirmation(friday, WEEK, "harry", [], 2) == (
-        "Week 44 check approved by harry. The 2 accounts with doubtful facts are verified again at 04:30 on Monday.")
+        ":white_check_mark: *Weekly hand-check approved by harry* (Week 44)\n"
+        "The 2 companies with doubtful facts are checked again at 04:30 on Monday, then cleared to email if their facts "
+        "hold.")
     monday = make_context(ctx.settings, live=True, transport=t, now=NOW, store=ctx.store)
-    assert hand_check.confirmation(monday, WEEK, "harry", [], 1, 2) == (
-        "Week 44 check approved by harry. The account with doubtful facts is verified again at 04:30 tomorrow. "
-        "The 2 accounts missing a fact (HQ state, size or industry) stay on the check until an Overrides row fills it in.")
+    assert hand_check.confirmation(monday, WEEK, "harry", [], 1, 2).splitlines()[1:] == [
+        "The company with doubtful facts is checked again at 04:30 tomorrow, then cleared to email if its facts hold.",
+        "The 2 companies missing a fact (HQ state, size or industry) stay on the check until a row on the Overrides tab "
+        "fills it in."]
     _auto_send_on(ctx)
     assert hand_check.confirmation(ctx, WEEK, "harry", ["tec-01"], 0) == (
-        "Week 44 check approved by harry; pulled: tec-01. New leads can go to Instantly this week.")
+        ":white_check_mark: *Weekly hand-check approved by harry* (Week 44)\nPulled, so left out: tec-01\n"
+        "New leads can go to Instantly this week.")
     assert "SPEC" not in out["message"]
+
+
+def test_a_sample_week_lists_the_doubtful_companies_under_their_own_line():
+    payload = {"iso_week": WEEK, "per_group": 10, "groups": {AGENCIES: ["mar-00"]},
+               "accounts": [{"account_id": "mar-00", "clean_name": "Mar Co 0", "domain": "mar0.com"}],
+               "doubtful": [{"account_id": "mar-70", "clean_name": "Mar Co 70", "domain": "mar70.com",
+                             "reasons": ["no HQ state"]}]}
+    lines = hand_check.text(payload, detailed=False).splitlines()
+    assert lines[0] == ":warning: *Weekly hand-check: please check 2 companies before this week's new emails go out*"
+    assert lines[1].startswith("Week 44: 1 company picked at random from those queued to email, plus 1 company with "
+                               "doubtful facts from Apollo.")
+    assert "Doubtful facts from Apollo (1): not cleared to email until you look." in lines
+    assert "  2. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70" in lines
+    assert lines[-1] == "_Until it is approved, no new leads go to Instantly this week._"

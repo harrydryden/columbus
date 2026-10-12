@@ -1,8 +1,11 @@
 """monday_readout, Mondays 08:30 UK (SPEC 9, 12 "Monday readout"; Harry, 6 Oct 2026: "push ahead with building").
 
 One message to the alert channel (#us-outbound; the dev channel in dry-run, base/notify.py), after the weekly
-hand-check (08:00) and before the daily post (09:00), about the week before (Monday to Sunday, UK time). In plain
-words, top to bottom:
+hand-check (08:00) and before the daily post (09:00), about the week before (Monday to Sunday, UK time), written for
+a reader who may be new (Harry, 12 Oct 2026; base/say.py). It opens with a short summary: a headline that says how
+many things need someone, last week's numbers, the rates so far against the targets, and what needs action. Each
+section then says in a few words what it measures, and anything that needs action says what to do and where. Top
+to bottom:
   * Last week: emails sent, replies (human: every class but out-of-office) and positive replies (positive or
     referral), meetings booked (companies with a meeting_booked event: crm/readback.py, a meeting on Harry's
     calendar or a Spill 3.0 deal at Demo requested or later), bounces and unsubscribes, from the events table;
@@ -45,24 +48,29 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import budget, fmt, labels
-from us_outbound.base import notify
+from us_outbound.base import notify, say
 from us_outbound.context import UK, Context
 from us_outbound.learn import cohorts, looks, signal_value
 from us_outbound.learn.kill_rules import COMPLAINT
 from us_outbound.logs import log
 from us_outbound.replies import kinds
+from us_outbound.scoring.score import TIER_WORDS
 from us_outbound.timeparse import iso_date, utc
 
 JOB = "monday_readout"
 MIN_COMPANIES = signal_value.MIN_TO_READ  # 30: a rate on fewer companies is "too few to read"
 MIN_SENDS = 100  # a bounce rate on fewer sends moves a lot with one bounce (kill_rules reads a domain from 100)
 BOUNCE_LIMIT = 0.02  # exit criteria to scale (docs/roadmap.md §3): bounce rate under 2%
-# SPEC 12's working assumption for the funnel.
-REPLY_ASSUMED, POSITIVE_ASSUMED, MEETING_ASSUMED = "3 to 5%", "about 1%", "0.5 to 1%"
+# SPEC 12's working assumption for the funnel: (the companies-so-far column, what it is called, the low end of the
+# assumption, the assumption as written). A rate at or over its low end is "on track".
+TARGETS = (("accounts_replied", "replies", 0.03, "3–5%"), ("accounts_positive", "positive", 0.01, "about 1%"),
+           ("accounts_meeting", "meetings", 0.005, "0.5–1%"))
 UNCLASSIFIED_AFTER = timedelta(hours=1)  # poll_replies classifies a reply within 15 minutes
 WEEKLY_SQL = "SELECT * FROM {schema}.v_readout_weekly"
-CUTS = (("tier", "By tier"), ("angle", "By angle"), ("industry_group", "By industry group"), ("sender", "By sender"),
-        ("step", "By step"))
+# Each cut, and what it splits by in a few words for a reader who has not seen it.
+CUTS = (("tier", "By tier", "how well the company fits our profile"), ("angle", "By angle", "the pitch of the copy"),
+        ("industry_group", "By industry group", ""), ("sender", "By sender", "whose mailbox sent it"),
+        ("step", "By step", "which email of the sequence"))
 CUT_LIMIT = 8  # values listed per cut, the busiest first
 REPLY_ITEM, OOO_ITEM, OPT_OUT = "reply:", "out_of_office:", "unsubscribed:"  # poll_replies' and optout's ids
 POSITIVE = kinds.WARM
@@ -109,37 +117,84 @@ def week_numbers(ev: _Events, start: datetime, end: datetime) -> dict[str, int]:
     }
 
 
-def week_line(n: Mapping[str, int], label: str) -> str:
-    return (f"*Last week* ({label}, UK): {fmt.plural(n['sent'], 'email')} sent · {fmt.plural(n['replies'], 'reply', 'replies')}, "
-            f"{n['positive']:,} positive · {fmt.plural(n['meetings'], 'meeting')} booked · {fmt.plural(n['bounces'], 'bounce')} · "
-            f"{fmt.plural(n['unsubscribes'], 'unsubscribe')}")
+def week_line(n: Mapping[str, int]) -> str:
+    """"Last week: 40 emails sent · 3 replies (1 positive) · 1 meeting booked · 1 bounce · 0 unsubscribes"."""
+    return (f"*Last week:* {fmt.plural(n['sent'], 'email')} sent · {fmt.plural(n['replies'], 'reply', 'replies')} "
+            f"({n['positive']:,} positive) · {fmt.plural(n['meetings'], 'meeting')} booked · "
+            f"{fmt.plural(n['bounces'], 'bounce')} · {fmt.plural(n['unsubscribes'], 'unsubscribe')}")
+
+
+def target_line(total: Mapping[str, int] | None) -> str:
+    """The summary's line on the rates so far against SPEC 12's working assumption, with the 28-day reply window
+    said in plain words while some windows are still open."""
+    if total is None:
+        return "*So far:* the rates need the database's views (v_readout_weekly), which this store does not have."
+    emailed, d, closed = total["accounts_enrolled"], total["accounts_delivered"], total["accounts_window_closed"]
+    if not emailed:
+        return "*So far:* no company emailed yet."
+    if d < MIN_COMPANIES:
+        return (f"*So far:* {fmt.plural(d, 'company', 'companies')} emailed: too few to read a rate (it takes "
+                f"{MIN_COMPANIES}).")
+    parts = []
+    for col, name, low, target in TARGETS:
+        parts.append(f"{name} {fmt.pct(total[col], d)} ({target}: {'on track' if total[col] / d >= low else 'below'})")
+    still = (f". Only {closed:,} of {d:,} companies have had the full 28 days after email 1 to reply, so these still "
+             "rise") if closed < d else ""
+    return f"*So far, against the targets:* {' · '.join(parts)}{still}."
+
+
+def targets(ctx: Context, total: Mapping[str, int] | None, enrolled_last_week: int) -> list[str]:
+    """The counts behind the summary's rates, last week's enrolment against its limit, and the stop rule."""
+    g = ctx.settings.general
+    out = [f"  Enrolled last week: {fmt.plural(enrolled_last_week, 'person', 'people')}, of the "
+           f"{g.weekly_enrol_cap:,} allowed a week (`weekly_enrol_cap`)"]
+    if total is None or not total["accounts_enrolled"]:
+        return out
+    d, meetings = total["accounts_delivered"], total["accounts_meeting"]
+    out.append(f"  Companies emailed so far: {total['accounts_enrolled']:,} ({d:,} delivered) · "
+               f"{total['accounts_replied']:,} replied · {total['accounts_positive']:,} positive · "
+               f"{fmt.plural(meetings, 'meeting')}")
+    out.append(f"  Stop rule: {fmt.plural(meetings, 'meeting')} from the first {fmt.plural(d, 'company', 'companies')}; "
+               f"enrolment pauses by itself if the first {g.stop_rule_accounts:,} bring fewer than "
+               f"{g.stop_rule_meetings}")
+    return out
 
 
 # -- the exit criteria to scale (docs/roadmap.md §3) ---------------------------------------------------------------
 
 
-def criterion(ok: bool, name: str, detail: str) -> str:
-    """"  Met: bounces under 2%: 1 of 150 sends so far (0.7%)."."""
-    return f"  {'Met' if ok else 'Not met'}: {name}: {detail}."
+def criteria_lines(checks: Sequence[tuple[bool, str, str, str]]) -> list[str]:
+    """The met criteria on one line, then each one not met on its own, with a What to do line when it has one:
+    "  Met: bounces under 2% (1 of 150 sends, 0.7%) · no spam complaints"."""
+    met = [f"{name} ({detail})" if detail else name for ok, name, detail, _ in checks if ok]
+    out = [f"  Met: {' · '.join(met)}"] if met else []
+    for ok, name, detail, do in checks:
+        if not ok:
+            out += [f"  *Not met:* {name}: {detail}", *([f"    *What to do:* {do}"] if do else [])]
+    return out
 
 
-def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime) -> tuple[list[str], dict[str, bool]]:
-    out: list[str] = []
+def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime
+                  ) -> tuple[list[str], dict[str, bool], list[str]]:
+    """(the section's lines, met by criterion, what needs someone in a few words each, for the summary)."""
+    checks: list[tuple[bool, str, str, str]] = []  # (met, name, its numbers, what to do)
     met: dict[str, bool] = {}
+    todo: list[str] = []
+    general = say.sheet_link(ctx, "General")
 
     sends, bounces = len(ev.by_type["sent"]), len(ev.by_type["bounced"])
     met["bounces"] = bool(sends) and bounces / sends < BOUNCE_LIMIT
     if not sends:
-        out.append(criterion(False, "bounces under 2%", "no email sent yet"))
+        checks.append((False, "bounces under 2%", "no email sent yet", ""))
     else:
-        caution = f"; on under {MIN_SENDS} sends one bounce moves it a lot" if sends < MIN_SENDS else ""
-        out.append(criterion(met["bounces"], "bounces under 2%",
-                             f"{bounces:,} of {fmt.plural(sends, 'send')} so far ({fmt.pct(bounces, sends)}{caution})"))
+        caution = f"; under {MIN_SENDS} sends, one bounce moves it a lot" if sends < MIN_SENDS else ""
+        checks.append((met["bounces"], "bounces under 2%",
+                       f"{bounces:,} of {fmt.plural(sends, 'send')}, {fmt.pct(bounces, sends)}{caution}", ""))
 
     complaints = len(ev.by_type[COMPLAINT])
     met["complaints"] = complaints == 0
-    out.append(criterion(met["complaints"], "no complaints",
-                         "none recorded" if not complaints else f"{fmt.plural(complaints, 'spam complaint')} recorded"))
+    checks.append((met["complaints"], "no spam complaints", fmt.plural(complaints, "complaint") if complaints else "",
+                   ""))
 
     # An opt-out is recorded everywhere (suppression, Instantly's blocklist, HubSpot) once its unsubscribed event
     # exists (replies/optout.py); a contact suppressed for unsubscribe without one is still pending.
@@ -148,18 +203,21 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime) -> 
                if str(c.get("contact_id")) not in done]
     tested = ctx.settings.general.optout_tested
     met["unsubscribes"] = tested and not pending
-    why = []
+    why, do = [], ""
     if not tested:
-        why.append("optout_tested is no on the General tab, until the seed-inbox test passes (`us-outbound seed send`, "
-                   "then `seed check`)")
+        why.append("the unsubscribe-link test has not passed (`optout_tested` is no)")
+        do = (f"{say.command('seed send ADDRESS --owner NAME --live')} to an inbox of ours, click the email's "
+              f"unsubscribe link, then {say.command('seed check')}; at PASS, set `optout_tested` to yes on the "
+              f"{general}")
+        todo.append("test the unsubscribe link")
     if pending:
-        why.append(f"{fmt.plural(len(pending), 'opt-out')} not yet recorded in Instantly's blocklist and HubSpot; the next "
-                   "live sync_outcomes or poll_replies run tries again")
+        why.append(f"{fmt.plural(len(pending), 'opt-out')} not yet in Instantly's blocklist and HubSpot (retried by "
+                   f"the next live run of {say.job_name('sync_outcomes')} or {say.job_name('poll_replies')})")
     n_unsub = len(ev.by_type["unsubscribed"])
-    recorded = (f"{fmt.plural(n_unsub, 'opt-out')} so far, each recorded in suppression, Instantly's blocklist and HubSpot"
+    recorded = (f"{fmt.plural(n_unsub, 'opt-out')} so far, each in suppression, Instantly's blocklist and HubSpot"
                 if n_unsub else "no opt-out so far")
-    out.append(criterion(met["unsubscribes"], "unsubscribes confirmed end to end",
-                         "; ".join(why) if why else f"the seed test passed; {recorded}"))
+    checks.append((met["unsubscribes"], "unsubscribes work end to end",
+                   "; ".join(why) if why else f"link tested; {recorded}", do))
 
     replies = ev.by_type["replied"]
     items = {str(i.get("item_id")) for i in ctx.store.select("hitl_items", {"kind": ["reply", "out_of_office"]})}
@@ -171,13 +229,14 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime) -> 
                 and f"{OPT_OUT}{e['event_id']}" not in opted]
     met["replies"] = not unclassified and not unrouted
     if met["replies"]:
-        out.append(criterion(True, "every reply classified and routed",
-                             f"{fmt.plural(len(replies), 'reply', 'replies')} so far"))
+        checks.append((True, "every reply sorted and routed", f"{len(replies):,} so far", ""))
     else:
-        why = ([f"{len(unclassified)} not classified after an hour"] if unclassified else []) + (
-            [f"{len(unrouted)} with no reply card, out-of-office record or opt-out"] if unrouted else [])
-        out.append(criterion(False, "every reply classified and routed",
-                             f"{'; '.join(why)} (`us-outbound replies list`)"))
+        why = ([f"{len(unclassified)} not sorted (positive, objection, …) after an hour"] if unclassified else []) + (
+            [f"{len(unrouted)} with no reply card in Slack, out-of-office record or opt-out"] if unrouted else [])
+        stuck = len(unclassified) + len(unrouted)
+        checks.append((False, "every reply sorted and routed", "; ".join(why),
+                       f"look at them with {say.command('replies list')}"))
+        todo.append(f"check {fmt.plural(stuck, 'reply', 'replies')}")
 
     week = [h for h in ctx.store.select("heartbeats", {"status": "error"})
             if (t := utc(h.get("started_at"))) is not None and start <= t < end]
@@ -187,16 +246,25 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime) -> 
         t, d = utc(h.get("started_at")), h.get("detail")
         if t is not None and start <= t < end and isinstance(d, Mapping) and isinstance(d.get("skipped"), Mapping):
             blocked += int(d["skipped"].get("copy blocked") or 0)
-    held = (f"; {fmt.plural(blocked, 'email')} held back by the copy rules, each with its reason in enrol's run summary"
-            if blocked else "")
+    held = f"{fmt.plural(blocked, 'email')} held back by the copy rules, each with its reason" if blocked else ""
     met["refusals"] = not refusals
+    name = "no unexplained safety-check refusal"
     if refusals:
-        jobs = ", ".join(sorted({str(h.get("job")) for h in refusals}))
-        out.append(criterion(False, "no unexplained refusal", f"{fmt.plural(len(refusals), 'guard refusal')} last week, in "
-                             f"{jobs}, each with its error in `us-outbound status`{held}"))
+        jobs = ", ".join(sorted({say.job_name(str(h.get("job"))) for h in refusals}))
+        checks.append((False, name, f"{fmt.plural(len(refusals), 'refusal')} last week, in {jobs}"
+                       + (f"; {held}" if held else ""),
+                       f"read each error with {say.command('status')} or in {say.logs_link()}"))
+        todo.append(f"explain {fmt.plural(len(refusals), 'refusal')}")
     else:
-        out.append(criterion(True, "no unexplained refusal", f"no guard refusal last week{held}"))
-    return out, met
+        checks.append((True, name, held, ""))
+
+    out = criteria_lines(checks)
+    if all(met.values()):
+        out.append(f"  *What to do:* all {len(met)} are met, so sending can grow: raise `weekly_enrol_cap` (now "
+                   f"{ctx.settings.general.weekly_enrol_cap:,}) on the {general} in step with the mailbox ramp "
+                   "(docs/roadmap.md, Scaling)")
+        todo.append("decide whether to raise the weekly limit")
+    return out, met, todo
 
 
 # -- the readout views ---------------------------------------------------------------------------------------------
@@ -233,53 +301,34 @@ def in_week(rows: Iterable[Mapping[str, Any]], start: datetime, cut: str) -> dic
     return out
 
 
-def so_far_line(total: Mapping[str, int]) -> str:
-    emailed, delivered = total["accounts_enrolled"], total["accounts_delivered"]
-    closed = total["accounts_window_closed"]
-    if not emailed:
-        return "So far: no company emailed yet."
-    still = "" if closed >= delivered else ", so the rates still rise as replies come in"
-    return (f"So far: {fmt.plural(emailed, 'company', 'companies')} emailed, {delivered:,} delivered; {closed:,} of their "
-            f"28-day reply windows have closed{still}.")
-
-
-def targets(ctx: Context, total: Mapping[str, int] | None, enrolled_last_week: int) -> list[str]:
-    g = ctx.settings.general
-    out = [f"  Enrolled last week: {fmt.plural(enrolled_last_week, 'company', 'companies')}, against weekly_enrol_cap "
-           f"{g.weekly_enrol_cap:,}."]
-    if total is None:
-        return out + ["  The rates so far need the database's views (v_readout_weekly)."]
-    d = total["accounts_delivered"]
-    replied, positive, meetings = total["accounts_replied"], total["accounts_positive"], total["accounts_meeting"]
-    out.append(f"  Replied so far: {replied:,} of {fmt.plural(d, 'company', 'companies')} emailed ({rate(replied, d)}; "
-               f"the working assumption is {REPLY_ASSUMED}).")
-    out.append(f"  Positive: {positive:,} ({rate(positive, d)}; {POSITIVE_ASSUMED} assumed). Meetings: {meetings:,} "
-               f"({rate(meetings, d)}; {MEETING_ASSUMED} assumed).")
-    out.append(f"  Stop rule: {fmt.plural(meetings, 'meeting')} from the first {fmt.plural(d, 'company', 'companies')} emailed; "
-               f"enrolment pauses if the first {g.stop_rule_accounts:,} bring fewer than {g.stop_rule_meetings}.")
+def activity(w: Mapping[str, int]) -> str:
+    """Last week's activity in a cut: "30 sent, 2 replies (1 positive), 1 meeting, 1 bounce"; zeros left out."""
+    out = f"{w['sends']:,} sent"
+    if w["replies"]:
+        out += f", {fmt.plural(w['replies'], 'reply', 'replies')}" + (
+            f" ({w['positive_replies']:,} positive)" if w["positive_replies"] else "")
+    if w["meetings_booked"]:
+        out += f", {fmt.plural(w['meetings_booked'], 'meeting')}"
+    if w["bounces"]:
+        out += f", {fmt.plural(w['bounces'], 'bounce')}"
     return out
 
 
-def cut_lines(rows: Sequence[Mapping[str, Any]], cut: str, title: str, start: datetime) -> list[str]:
+def cut_lines(rows: Sequence[Mapping[str, Any]], cut: str, title: str, about: str, start: datetime) -> list[str]:
     week, total = in_week(rows, start, cut), so_far(rows, cut)
     values = [v for v in set(week) | set(total) if any(week[v].values()) or total[v]["accounts_enrolled"]]
     if not values:
         return []
     values.sort(key=lambda v: (-week[v]["sends"], -total[v]["accounts_enrolled"], v))
+    out = [f"_{title}_" + (f" ({about})" if about else "")]
     if cut == "step":
-        out = ["", f"*{title}* (last week)"]
-        for v in sorted(values):
-            w = week[v]
-            out.append(f"  {v}: {w['sends']:,} sent, {fmt.plural(w['replies'], 'reply', 'replies')} "
-                       f"({w['positive_replies']:,} positive), {fmt.plural(w['bounces'], 'bounce')}")
-        return out
-    out = ["", f"*{title}* (last week · so far)"]
+        return out + [f"  {v}: {activity(week[v])}" for v in sorted(values)]
     for v in values[:CUT_LIMIT]:
-        w, t = week[v], total[v]
+        t = total[v]
         d, k = t["accounts_delivered"], t["accounts_replied"]
-        out.append(f"  {v}: {w['sends']:,} sent, {fmt.plural(w['replies'], 'reply', 'replies')} ({w['positive_replies']:,} "
-                   f"positive), {fmt.plural(w['meetings_booked'], 'meeting')}, {fmt.plural(w['bounces'], 'bounce')} · "
-                   f"{fmt.plural(t['accounts_enrolled'], 'company', 'companies')} emailed, {k:,} replied ({rate(k, d)})")
+        name = TIER_WORDS.get(v, v) if cut == "tier" else v
+        out.append(f"  {name}: {activity(week[v])} · {t['accounts_enrolled']:,} emailed so far, {k:,} replied "
+                   f"({rate(k, d)})")
     if len(values) > CUT_LIMIT:
         out.append(f"  and {len(values) - CUT_LIMIT} more")
     return out
@@ -291,7 +340,6 @@ def cut_lines(rows: Sequence[Mapping[str, Any]], cut: str, title: str, start: da
 def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     """(the message lines, the numbers for the summary)."""
     start, end = last_week(ctx)
-    label = f"Mon {start.astimezone(UK):%d %b} to Sun {(end - timedelta(days=1)).astimezone(UK):%d %b}"
     ev = _Events(ctx)
     week = week_numbers(ev, start, end)
     rows = weekly_rows(ctx)
@@ -299,29 +347,41 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     enrolled = [c for c in ctx.store.select("contacts") if c.get("enrolled_at")]
     enrolled_last_week = budget.enrolled_this_week(enrolled, start + timedelta(days=3))
 
-    lines = [f"*Monday readout, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else ""),
-             week_line(week, label)]
-    lines.append(so_far_line(total) if total is not None
-                 else "So far, by cut and the signal table: these need the database's views, which this store does "
-                      "not have.")
-    lines += ["", "*Against the targets*", *targets(ctx, total, enrolled_last_week)]
-    criteria, met = exit_criteria(ctx, ev, start, end)
-    lines += ["", "*Exit criteria to scale*", *criteria]
+    criteria, met, todo = exit_criteria(ctx, ev, start, end)
+    body = ["", "*Against the targets*", *targets(ctx, total, enrolled_last_week),
+            "", f"*Exit criteria to scale* (all {len(met)} must be met before sending grows): "
+                f"{sum(met.values())} of {len(met)} met", *criteria]
     if rows is not None:
-        for cut, title in CUTS:
-            lines += cut_lines(rows, cut, title, start)
+        cut_block = [line for cut, title, about in CUTS for line in cut_lines(rows, cut, title, about, start)]
+        if cut_block:
+            body += ["", "*Cuts* (the numbers split several ways: last week · companies emailed so far)", *cut_block]
     section, by_cohort = cohorts.readout_lines(ctx, start, end)
-    lines += section
-    lines += labels.readout_lines(ctx, start, end)  # the industry label check (labels.py; Harry, 7 Oct 2026)
+    body += section
+    body += labels.readout_lines(ctx, start, end)  # the industry label check (labels.py; Harry, 7 Oct 2026)
     table = signal_value.rows(ctx)
-    lines += ["", "*Signal value* (companies with the signal at enrolment, against those without)",
-              *signal_value.headline(table)]
+    flagged = signal_value.flagged(table)
+    body += ["", "*Signal value* (reply rate with each buying signal at enrolment, against without; p: the chance the "
+                 "gap is luck)",
+             *signal_value.headline(table, signals_tab=say.sheet_link(ctx, "Signals"))]
+    todo += [f"review the weight of {name}" for name in flagged]
     tests, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=7))
-    lines += ["", "*Tests*", *tests]
+    body += ["", "*Tests* (copy tests, each read only at points fixed in advance on the Tests tab, called looks)",
+             *tests]
+    todo += [f"decide on test {t}" for t in at_look]
+
+    days = cohorts.week_days(start.astimezone(UK).date())
+    if todo:
+        head = say.compose(say.ACTION, f"Monday readout, {days}: {fmt.plural(len(todo), 'thing')} to act on")
+    else:
+        head = say.compose(say.INFO, f"Monday readout, {days}: nothing to act on")
+    lines = [head, week_line(week), target_line(total)]
+    if todo:
+        lines.append(f"*Needs action:* {' · '.join(todo)} (details below)")
+    lines += body
     nums: dict[str, Any] = {
         "week_start": start.astimezone(UK).date().isoformat(), "last_week": week,
         "enrolled_last_week": enrolled_last_week, "so_far": dict(total) if total is not None else None,
-        "exit_criteria": met, "views": rows is not None,
+        "exit_criteria": met, "views": rows is not None, "to_act_on": todo,
         "signals_readable": sum(signal_value.verdict(r) != signal_value.TOO_FEW for r in table or []
                                 if int(r.get("accounts_sent") or 0)),
         "tests_at_a_look": at_look,

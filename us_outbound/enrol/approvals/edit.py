@@ -82,15 +82,17 @@ def apply_edit(ctx: Context, item: Item, text: str, *, by: str, slack: Any) -> b
     step, subject, body = parse_edit(text)
     edits = list(p.get("edits") or [])
     if subject is None and body is None:
-        _thread(slack, item, f"I couldn't find a new email {step} in that reply: give `Subject: …` and/or the body.")
+        _thread(slack, item, f"I couldn't find a new email {step} in that reply, so nothing changed. Reply again with "
+                             "`Subject: …` on the first line and/or the new body below it.")
         return False
     r, problems, source = render_edit(ctx, p, step, subject, body)
     if problems:
         edits.append({"step": step, "by": by, "at": ctx.now.isoformat(), "accepted": False, "problems": problems[:5]})
         p["edits"] = edits
         _save(ctx, item)
-        _thread(slack, item, f"That version of email {step} breaks the copy rules, so it is not used: "
-                             + _esc("; ".join(problems[:8])) + ". Reply with another version.")
+        _thread(slack, item, f"⚠️ That version of email {step} breaks the copy rules, so it is not used: "
+                             + _esc("; ".join(problems[:8])) + ".\n*What to do:* reply with another version; the card "
+                             "is unchanged until then.")
         return False
     lead = dict(p.get("lead") or {})
     variables = dict(lead.get("custom_variables") or {})
@@ -109,5 +111,5 @@ def apply_edit(ctx: Context, item: Item, text: str, *, by: str, slack: Any) -> b
     _seed(slack, item.channel, note, SEED_APPROVE)
     p["approve_ts"] = note
     transition(ctx, item, WAITING)
-    _update_card(ctx, slack, item, f"✏️ Edited ({_who(by)}): approve the new version in the thread")
+    _update_card(ctx, slack, item, f"✏️ Edited ({_who(by)}): ✅ the new version in the thread to send it")
     return True

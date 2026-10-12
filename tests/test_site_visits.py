@@ -342,7 +342,7 @@ def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_chec
     _, payload = hand_check.show(ctx)
     words = hand_check.text(payload)
     assert "(nostate.com) · visited the US site · HQ ? · 20-49 (35 staff) · Apollo gives no HQ state" in words
-    assert "A missing fact needs an Overrides row" in words
+    assert "A missing fact needs a row on the Overrides tab" in words
 
 
 def test_an_overrides_row_fills_a_visitor_s_missing_fact_so_it_comes_in_unheld():

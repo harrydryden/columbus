@@ -61,7 +61,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from us_outbound import budget, config_version
-from us_outbound.base import holds, notify
+from us_outbound.base import holds, notify, say
 from us_outbound.base.heartbeats import enrolment_paused
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS
@@ -75,7 +75,6 @@ PAUSE, RESUME = config_version.BLACKOUT_PAUSE, config_version.BLACKOUT_RESUME  #
 DRAFT, ACTIVE, PAUSED, COMPLETED = 0, 1, 2, 3  # Instantly's campaign status (clients/instantly.CAMPAIGN_STATUS)
 SENDING = frozenset({ACTIVE, COMPLETED, 4})  # what a blackout pauses: active, completed, running subsequences
 RESUMED, LEFT_PAUSED, NOT_NEEDED = "resumed", "left_paused", "not_needed"  # a blackout_resume row's outcome
-HEAD = "Blackout dates:"
 
 
 def _day(d: date | None) -> str:
@@ -201,6 +200,65 @@ def defer(ctx: Context, name: str, status: Any, h: Hold) -> None:
                 {"from": CAMPAIGN_STATUS.get(status, status), "resumes_on": _iso(h.until), "deferred": True})
 
 
+# -- the Slack posts (base/say.py) ---------------------------------------------------------------------------
+
+
+def _whose(name: str) -> str:
+    """"US Outbound – Hannah Spalding" -> "Hannah Spalding's campaign"; any other name as it is."""
+    owner = _owner(name)
+    return f"{owner}'s campaign" if owner else name
+
+
+def _campaigns(names: list[str]) -> str:
+    """"Hannah Spalding's campaign"; "Hannah Spalding's and Sam Jackson's campaigns"."""
+    if len(names) == 1:
+        return _whose(names[0])
+    whose = [f"{o}'s" if (o := _owner(n)) else n for n in names]
+    return f"{', '.join(whose[:-1])} and {whose[-1]} campaigns"
+
+
+def _post(ctx: Context, key: str, text: str) -> dict:
+    """The say.compose headline is post_once's head (the approvers mentioned in front of it); the rest goes under it."""
+    head, _, body = text.partition("\n")
+    return notify.post_once(ctx, [(key, body)], head=head)
+
+
+def _what(ctx: Context) -> str:
+    return f"the blackout dates (`blackout_dates` on the {say.sheet_link(ctx, 'General')}: days we send nothing)"
+
+
+def _pause_text(ctx: Context, h: Hold, names: list[str]) -> str:
+    """Information only: what was paused and when it starts again by itself."""
+    many = len(names) > 1
+    if ctx.dry_run:
+        return say.compose(
+            say.INFO, "Emails would be paused over the blackout dates",
+            [f"Would pause {_campaigns(names)} for {_what(ctx)}. Nothing was paused.",
+             f"To pause sending by hand: {say.command('stop --live')}."])
+    return say.compose(
+        say.INFO, "Emails paused over the blackout dates",
+        [f"Paused {_campaigns(names)} for {_what(ctx)}, so no email goes out on one.",
+         f"{'They start' if many else 'It starts'} again by {'themselves' if many else 'itself'} on {_day(h.until)}, "
+         "when Instantly sends the follow-ups that fell due. Nothing to do."])
+
+
+def _resume_text(ctx: Context, resumed: list[str], left: list[str], day: date | None) -> str:
+    """Information when everything started again; a call to act for each campaign left paused."""
+    facts = []
+    if resumed:
+        facts.append(f"{'Would start' if ctx.dry_run else 'Started'} {_campaigns(resumed)} again"
+                     + (" (nothing was started)" if ctx.dry_run else "")
+                     + f". Instantly sends the follow-ups that fell due from {_day(day)}.")
+    if not left:
+        return say.compose(say.DONE, "Emails "
+                           + ("would start again" if ctx.dry_run else "started again") + " after the blackout dates",
+                           facts)
+    n = len(left)
+    still = "1 campaign stays paused" if n == 1 else f"{n} campaigns stay paused"
+    facts.append("Nothing goes out from " + ("it until it is started:" if n == 1 else "them until they are started:"))
+    return say.compose(say.ACTION, f"Blackout dates over, but {still}", [*facts, *left])
+
+
 # -- the job -------------------------------------------------------------------------------------------------
 
 
@@ -224,41 +282,44 @@ def _pause(ctx: Context, h: Hold, open_: Mapping[str, dict]) -> dict:
                 {"from": CAMPAIGN_STATUS.get(status, status), "resumes_on": _iso(h.until)})
         out["paused"].append(name)
     if out["paused"]:
-        n = len(out["paused"])
-        line = (f"{'Would pause' if ctx.dry_run else 'Paused'} {n} US Outbound campaign{'' if n == 1 else 's'} for the "
-                f"blackout ({', '.join(out['paused'])}), so no follow-up goes out on a blackout date. "
-                f"{'They start' if n > 1 else 'It starts'} again by {'themselves' if n > 1 else 'itself'} for "
-                f"{_day(h.until)}, when Instantly sends the follow-ups that fell due.")
-        if ctx.dry_run:
-            line += " Running dry, so nothing was paused: `us-outbound stop --live` pauses them by hand."
-        out["slack"] = notify.post_once(ctx, [(f"{PAUSE}:{_iso(h.until)}", line)], head=HEAD)
+        out["slack"] = _post(ctx, f"{PAUSE}:{_iso(h.until)}", _pause_text(ctx, h, out["paused"]))
     if ctx.dry_run:
         out["would_pause"] = out.pop("paused")
     return out
 
 
-def _blocker(name: str, campaign: Mapping[str, Any] | None, row: Mapping[str, Any], stop: Mapping[str, Any] | None,
-             kill: Mapping[str, list[dict]], settings: Settings) -> tuple[str, str] | None:
-    """(outcome, why) when the campaign is not to be started again; None to start it. settings: with the kill rules'
-    mailbox holds applied."""
+def _blocker(ctx: Context, name: str, campaign: Mapping[str, Any] | None, row: Mapping[str, Any],
+             stop: Mapping[str, Any] | None, kill: Mapping[str, list[dict]],
+             settings: Settings) -> tuple[str, str, str] | None:
+    """(outcome, why, the Slack line) when the campaign is not to be started again; None to start it. settings: with
+    the kill rules' mailbox holds applied. why is what the config_log row keeps; the Slack line says what to do."""
     from us_outbound.registry import mailboxes as reg
 
     if campaign is None:
-        return NOT_NEEDED, "it is no longer in Instantly"
+        return NOT_NEEDED, "it is no longer in Instantly", ""
     status = _status(campaign)
     if status not in (PAUSED, DRAFT):
-        return NOT_NEEDED, f"Instantly shows it {CAMPAIGN_STATUS.get(status, status)}"
+        return NOT_NEEDED, f"Instantly shows it {CAMPAIGN_STATUS.get(status, status)}", ""
+    whose = _whose(name)
     if stop is not None:
         since = utc(stop.get("started_at"))
         when = f" since {since.astimezone(UK):%a %d %b %H:%M} UK" if since else ""
-        return LEFT_PAUSED, f"an operator stop is in force{when}: `us-outbound start --live` starts it"
+        return (LEFT_PAUSED, f"an operator stop is in force{when}: `us-outbound start --live` starts it",
+                f"• {whose}: someone paused all sending with the emergency stop{when}. To start sending again: "
+                f"{say.command('start --live')}.")
     paused_at = utc(row.get("changed_at"))
     killed = [i for i in kill.get(name, ()) if paused_at is None or (utc(i.get("created_at")) or paused_at) > paused_at]
     if killed:
         why = (killed[0].get("payload") or {}).get("reason") or "a kill rule"
-        return LEFT_PAUSED, f"a kill rule paused it since ({why}): it starts again once its mailbox is Active"
+        return (LEFT_PAUSED, f"a kill rule paused it since ({why}): it starts again once its mailbox is Active",
+                f"• {whose}: the safety stop paused its mailbox during the blackout ({why}). It starts again by itself "
+                f"once that mailbox is Active again on the {say.sheet_link(ctx, 'Mailboxes')} (the safety-stop "
+                "message has the steps).")
     if not reg.sending_list(settings, _owner(name)):
-        return LEFT_PAUSED, "its owner has no Active mailbox now"
+        first = (_owner(name).split() or ["its owner"])[0]
+        return (LEFT_PAUSED, "its owner has no Active mailbox now",
+                f"• {whose}: {first} has no Active mailbox now, so it cannot send. Once one is "
+                f"Active on the {say.sheet_link(ctx, 'Mailboxes')}, start it with {say.command('start --live')}.")
     return None
 
 
@@ -276,11 +337,14 @@ def _resume(ctx: Context, open_: Mapping[str, dict]) -> dict:
     found = {str(c.get("name")): c for c in inst.list_campaigns()}
     flying = _InFlight(ctx)
     out: dict[str, Any] = {"resumed": [], "left_paused": {}, "not_needed": {}, "errors": []}
+    left: list[str] = []  # the Slack line for each campaign left paused
     for name, row in sorted(open_.items()):
-        blocked = _blocker(name, found.get(name), row, stop, kill, settings)
+        blocked = _blocker(ctx, name, found.get(name), row, stop, kill, settings)
         if blocked is not None:
-            outcome, why = blocked
+            outcome, why, line = blocked
             out[outcome][name] = why
+            if outcome == LEFT_PAUSED:
+                left.append(line)
             _record(ctx, flying, RESUME, name, [], {"outcome": outcome, "why": why})  # settles the pause
             continue
         if not ctx.dry_run:
@@ -292,18 +356,10 @@ def _resume(ctx: Context, open_: Mapping[str, dict]) -> dict:
         _record(ctx, flying, RESUME, name, ["status"], {"outcome": RESUMED, "from": "paused", "to": "active"})
         out["resumed"].append(name)
     day = next_send_day(ctx.now_et().date(), ctx.settings)
-    parts = []
-    if out["resumed"]:
-        n = len(out["resumed"])
-        parts.append(f"{'Would start' if ctx.dry_run else 'Started'} {n} US Outbound campaign{'' if n == 1 else 's'} "
-                     f"again after the blackout ({', '.join(out['resumed'])}): Instantly sends the follow-ups that "
-                     f"fell due from {_day(day)}.")
-    if out["left_paused"]:
-        parts.append("Left paused: " + "; ".join(f"{c} ({why})" for c, why in out["left_paused"].items()) + ".")
-    if parts:
+    if out["resumed"] or left:
         until = min((d for r in open_.values() if (d := iso_date((r.get("detail") or {}).get("resumes_on")))),
                     default=day)
-        out["slack"] = notify.post_once(ctx, [(f"{RESUME}:{_iso(until)}", " ".join(parts))], head=HEAD)
+        out["slack"] = _post(ctx, f"{RESUME}:{_iso(until)}", _resume_text(ctx, out["resumed"], left, day))
     if ctx.dry_run:
         out["would_resume"] = out.pop("resumed")
     return out

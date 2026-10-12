@@ -15,6 +15,7 @@ from us_outbound.clients.guard import CLI_APPROVER
 from us_outbound.context import Context
 from us_outbound.enrol import enrol
 from us_outbound.enrol.approvals.cards import choices_text
+from us_outbound.enrol.approvals.checks import hold_help, hold_reason
 from us_outbound.enrol.approvals.model import (
     ADDING,
     COMPANY_REJECTED,
@@ -116,10 +117,22 @@ def _hold(ctx: Context, item: Item, why: Mapping[str, str], *, by: str, via: str
                  "reasons": dict(why), "noted": noted + new}
     _save(ctx, item)
     if new:
-        _thread(slack, item, f"⏸ Approved {_who(by)}, but not added yet: {_esc('; '.join(why[k] for k in new))}. "
-                             "It goes through by itself once that clears, until the card expires at the end of "
-                             f"{_day(iso_date(p.get('expires_on')))} (UK). ❌ still stops it.")
+        _thread(slack, item, hold_note(ctx, item, {k: why[k] for k in new}, by))
     log("send_approval_held", item_id=item.id, holds=list(why), noted=new)
+
+
+def hold_note(ctx: Context, item: Item, why: Mapping[str, str], by: str) -> str:
+    """The thread's note for new hold reasons: what holds it, what to do (or that nothing is needed), and until when
+    the approval stands."""
+    lines = [f"⏸ Approved {_who(by)}, but not added yet: {_esc('; '.join(hold_reason(k, v) for k, v in why.items()))}."]
+    helps = [hold_help(ctx, k, v) for k, v in why.items()]
+    if len(helps) == 1:
+        lines.append(f"*What to do:* {helps[0]}")
+    else:
+        lines += ["*What to do:*", *(f"• {h}" for h in helps)]
+    lines.append(f"Your ✅ stands: it goes through by itself once this clears, until the card expires at the end of "
+                 f"{_day(iso_date(item.payload.get('expires_on')))} (UK). ❌ on the card still stops it.")
+    return "\n".join(lines)
 
 
 def reject(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> None:
@@ -131,7 +144,8 @@ def reject(ctx: Context, item: Item, *, by: str, via: str, slack: Any) -> None:
     _seed(slack, item.channel, note, SEED_CHOICES)
     p["choices_ts"] = note
     transition(ctx, item, REJECTED)
-    _update_card(ctx, slack, item, f"❌ Not sent ({_who(by)}): ✏️ edit, 👤 another contact or 🚫 drop the company, in the thread")
+    _update_card(ctx, slack, item, f"❌ Not sent ({_who(by)}): choose in the thread: ✏️ edit, 👤 another person or "
+                                   "🚫 drop the company")
 
 
 def drop_contact(ctx: Context, item: Item, *, by: str, via: str, slack: Any = None) -> dict:
@@ -144,10 +158,10 @@ def drop_contact(ctx: Context, item: Item, *, by: str, via: str, slack: Any = No
     reason = f"declined {where} at a send approval ({ctx.today_uk():%-d %b %Y})"
     company = _esc(item.company)
     if not _close(ctx, item, CONTACT_REJECTED, by, slack, via=via,
-                  status=f"👤 {_esc(item.person)} declined ({_who(by)}): {company} stays in the queue",
-                  note=f"👤 Declined ({_who(by)}): {_esc(item.person)} won't be emailed. {company} stays in the queue: "
-                       "pick_contacts looks for the next-ranked person at 05:30 on a send day, and the next enrol "
-                       "after that proposes them here."):
+                  status=f"👤 Not {_esc(item.person)} ({_who(by)}): {company} stays in the queue",
+                  note=f"👤 Declined ({_who(by)}): {_esc(item.person)} won't be emailed. Nothing more to do: the next "
+                       f"best person at {company} is chosen at 05:30 UK on the next send day and gets a new card here "
+                       "at 12:00 UK."):
         return {**result, "done": False, "why": ["another run is handling this item"]}
     if item.contact_id:
         ctx.store.update("contacts", {"contact_id": item.contact_id}, {"suppressed": True, "suppressed_reason": reason})
@@ -163,8 +177,9 @@ def drop_company(ctx: Context, item: Item, *, by: str, via: str, slack: Any = No
     where = "at the command line" if by == CLI_APPROVER else f"in Slack by {by}"
     company = _esc(item.company)
     if not _close(ctx, item, COMPANY_REJECTED, by, slack, via=via,
-                  status=f"🚫 {company} dropped ({_who(by)}): excluded",
-                  note=f"🚫 Dropped ({_who(by)}): {company} is excluded and won't be proposed again."):
+                  status=f"🚫 {company} dropped ({_who(by)}): never emailed",
+                  note=f"🚫 Dropped ({_who(by)}): {company} is left out for good and won't get another card. "
+                       "Nothing more to do."):
         return {**result, "done": False, "why": ["another run is handling this item"]}
     enrol.mark_excluded(ctx, {"account_id": item.account_id}, DECLINED_IN_SLACK,
                         f"dropped {where} at a send approval ({ctx.today_uk():%-d %b %Y})", source=KIND)
@@ -180,8 +195,9 @@ def expire(ctx: Context, item: Item, slack: Any) -> bool:
         reason = f"approved, but still held at the end of {_day(last)} (UK): {'; '.join(held.values())}"
     company = _esc(item.company)
     return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=reason, via="expiry",
-                  status=f"⌛ Expired: {reason}; nothing was added and {company} goes back to the queue",
-                  note=f"⌛ Expired: {reason}. Nothing was added; {company} goes back to the queue.")
+                  status=f"⌛ Expired: {_esc(reason)}. Nothing was sent; {company} goes back in the queue",
+                  note=f"⌛ Expired: {_esc(reason)}. Nothing was sent and nothing is needed: {company} goes back in the "
+                       "queue and may get a new card later.")
 
 
 def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue: bool = True,
@@ -191,7 +207,8 @@ def withdraw(ctx: Context, item: Item, slack: Any, reason: str, *, back_to_queue
     back to the queue for a card with the right copy, or, when it may not be emailed at all, does not. note: the
     thread's words, when not the plain ones (an approver's correction says what happens next)."""
     company = _esc(item.company)
-    after = f"{company} goes back to the queue for a new card" if back_to_queue else f"{company} will not be emailed"
+    after = (f"{company} goes back in the queue for a new card" if back_to_queue
+             else f"{company} won't be emailed")
     return _close(ctx, item, EXPIRED, SYSTEM, slack, reason=f"withdrawn: {reason}", via=via,
-                  status=f"↩️ Withdrawn: {_esc(reason)}; nothing was added and {after}",
-                  note=note or f"↩️ Withdrawn: {_esc(reason)}. Nothing was added; {after}.")
+                  status=f"↩️ Withdrawn: {_esc(reason)}. Nothing was sent; {after}",
+                  note=note or f"↩️ Withdrawn: {_esc(reason)}. Nothing was sent and nothing is needed: {after}.")

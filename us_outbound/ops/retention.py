@@ -604,12 +604,14 @@ def post_line(ctx: Context) -> tuple[str, dict[str, Any]]:
     if live:
         counts = {k: sum(_done(r["detail"])[k] for r in live) for k in _done({})}
         text = describe(counts)
-        return (f"Retention deleted {text}." if text else ""), ({**counts, "dry_run": False} if text else {})
+        line = f"Old personal data deleted today (our retention rule): {text}." if text else ""
+        return line, ({**counts, "dry_run": False} if text else {})
     if runs:
         counts = _done(runs[-1]["detail"])
         text = describe(counts)
         if text:
-            return f"Retention would delete {text} (dry-run: nothing changed).", {**counts, "dry_run": True}
+            return (f"Old personal data due for deletion (a test run, so nothing was deleted): {text}.",
+                    {**counts, "dry_run": True})
     return "", {}
 
 

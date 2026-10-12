@@ -6,7 +6,7 @@ not against the label check itself, and the judged companies become the label ch
     copy we use and how it was decided, and three columns for Harry (your_verdict: the right label, or one of
     VERDICTS; right_label; note). A batch is never redrawn: judged rows stay, as the answer key.
   * `label_sample_monthly` (the 1st of each month, 09:15) scores last month's batch, adds a new one of MONTHLY
-    companies not on the tab yet, and posts both to Slack with a link to the tab. The draft definition changes for
+    companies not on the tab yet, and posts both to Slack with a link to the tab (say.sheet_link) and what to fill in. The draft definition changes for
     the misses follow (learn/definition_suggestions.py).
   * `us-outbound labels sample [--size 50] [--live]` adds a batch now; `--score` scores every batch.
   * `us-outbound labels eval --from-sample` scores the model on every judged company (labels.judged_rows).
@@ -24,6 +24,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from us_outbound import fmt, labels
+from us_outbound.base import say
 from us_outbound.clients.sheets import read_tab, write_tab
 from us_outbound.context import Context
 from us_outbound.learn import definition_suggestions
@@ -221,18 +222,6 @@ def run_score(ctx: Context) -> dict[str, Any]:
 # -- the monthly batch (Harry, 11 Oct 2026) -----------------------------------------------------------------------
 
 
-def tab_link(ctx: Context, tab: str = TAB) -> str:
-    """The tab's web address, opening on the tab (its gid); the sheet's own when the tab's id cannot be read."""
-    sheet_id = ctx.guard.bounds.settings_sheet_id
-    base = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
-    try:
-        gid = ctx.clients.sheets.tab_ids(sheet_id).get(tab)
-    except Exception as exc:  # the link still opens the sheet
-        log("sample_tab_id_failed", error=str(exc)[:160])
-        gid = None
-    return f"{base}#gid={gid}" if gid is not None else base
-
-
 def previous_batch(batch: str) -> str:
     """The month before "2026-11": "2026-10"."""
     year, month = (int(x) for x in batch.split("-"))
@@ -264,30 +253,37 @@ def monthly(ctx: Context) -> dict[str, Any]:
     last_rows = [r for r in rows if r["batch"] == last]
     scored_last = score(last_rows, ctx.settings)
     scored_all = score([r for r in rows if r["batch"] != batch], ctx.settings)
-    link = tab_link(ctx)
-    lines = [f"*Industry labels: this month's sample* · <{link}|Label sample tab>",
-             f"• {added['drawn']} new companies to judge ({batch}): type the right label in your_verdict, or right, "
-             "right group, wrong group or outside."]
+    link = say.sheet_link(ctx, TAB)
+    head = f"{fmt.plural(added['drawn'], 'company', 'companies')} to check: is our industry label right?"
+    facts = [f"Each month a person checks the industry we gave some of the companies we email. This month's "
+             f"{added['drawn']} new companies to judge ({batch}) are on the {link}."]
+    do = [f"On the {link}, fill `your_verdict` for each new row: the right label, or right, right group, wrong group "
+          "or outside."]
     if last_rows:
-        lines.append(f"• {summary_line(f'Last month ({last})', scored_last)}")
+        facts.append(f"• {summary_line(f'Last month ({last})', scored_last)}")
     if scored_all["judged"]:
-        lines.append(f"• {summary_line('Every batch', scored_all)}")
+        facts.append(f"• {summary_line('Every batch', scored_all)}")
         unjudged = sum(1 for r in last_rows if not str(r.get("your_verdict") or "").strip())
         if unjudged:
-            lines.append(f"• {unjudged} of last month's companies are not judged yet.")
+            facts.append(f"• {unjudged} of last month's companies are not judged yet.")
+    if last_rows or scored_all["judged"]:
+        facts.append("_Label right: the exact industry. Group right: at least its wider group. Untrue pitch: the "
+                     "email said more about the company than the verdict allows._")
     judged_rows = [r for r in rows if r["batch"] != batch]
     answer_key = labels.gold_rows() + labels.judged_rows(ctx, judged(judged_rows, ctx.settings))
     suggested = definition_suggestions.suggest(ctx, judged_rows, answer_key, batch)
     if suggested["suggestions"]:
-        better = "better" if suggested.get("better") else "not better, so check before approving"
+        better = "no worse" if suggested.get("better") else "worse, so check them before approving"
         changes = fmt.plural(len(suggested["suggestions"]), "definition change")
-        lines.append(f"• {changes} drafted for the labels the check confused ({', '.join(suggested['labels'])}):"
-                     f" <{tab_link(ctx, definition_suggestions.TAB)}|Definition "
-                     f"suggestions tab>. The answer key scores {suggested['now']} now and {suggested['later']} with "
-                     f"them ({better}). Set decision to approve or reject; approved ones go onto the Industries tab at "
-                     "the next settings sync, and every company is checked again under them.")
+        suggestions = say.sheet_link(ctx, definition_suggestions.TAB)
+        facts.append(f"• {changes} drafted for the labels the check confused ({', '.join(suggested['labels'])}):"
+                     f" {suggestions}. Tried on the companies whose right label we know: now {suggested['now']}; "
+                     f"with the changes {suggested['later']} ({better}).")
+        do.append(f"On the {suggestions}, set `decision` to approve or reject. Approved ones go onto the Industries "
+                  "tab at the next settings sync, and every company is checked again under them.")
     elif suggested["error"]:
-        lines.append(f"• Definition suggestions: {suggested['error']}.")
+        facts.append(f"• No definition changes drafted: {suggested['error']}.")
+    lines = [say.compose(say.DECIDE, head, facts, do=do)]
     posted = notify.alert(ctx, "\n".join(lines))
     out = {**added, "last_batch": last, "last": scored_last, "all": scored_all, "link": link,
            "suggestions": suggested, "posted": posted.get("posted")}

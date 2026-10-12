@@ -247,13 +247,13 @@ def _stuck(ctx: Context, item: Item, slack: Any, run: _Run) -> None:
         return
     if found is None:
         run.add("unsure", item.short_id)
-        text = (f"I can't tell whether {_esc(item.email)} was added to {_esc(campaign)} (the run adding it stopped, "
-                "and Instantly could not be read). Check the campaign in Instantly; if the lead is not there, ✅ this "
-                "message or reply \"send\" to add it.")
+        text = (f"⚠️ I can't tell whether {_esc(item.email)} was added to {_esc(campaign)}: the run adding it stopped, "
+                "and Instantly could not be read.\n*What to do:* look for the lead in that campaign in Instantly. If it "
+                "is not there, ✅ this message or reply \"send\" to add it; if it is, nothing more is needed.")
     else:
         run.add("not_added", {"item": item.short_id, "why": ["the run adding it stopped before Instantly had it"]})
-        text = (f"{_esc(item.email)} is not in {_esc(campaign)}: the run adding it stopped before Instantly had it, so "
-                "nothing was sent. ✅ this message or reply \"send\" to add it.")
+        text = (f"⚠️ {_esc(item.email)} was not added to {_esc(campaign)}: the run adding it stopped before Instantly "
+                "had it, so nothing was sent.\n*What to do:* ✅ this message or reply \"send\" to add it.")
     note = _thread(slack, item, text)
     _seed(slack, item.channel, note, SEED_APPROVE[:1])
     p.update(approve_ts=note, unsure=p.pop("sending", None))

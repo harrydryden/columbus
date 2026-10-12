@@ -232,8 +232,11 @@ def test_the_readout_lists_a_test_at_a_look_and_otherwise_its_progress():
     emailed(ctx, 0, "eap-v1", T0, reply="positive")
     emailed(ctx, 1, "general-v1", T0)
     lines, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=7))
-    assert at_look == ["t1"] and lines[0].startswith("  t1 (ab) reached look 1: 1 accounts per arm")
+    assert at_look == ["t1"] and lines[0].startswith("  t1 (A/B copy test) reached look 1: 1 accounts per arm")
     assert "eap-v1 1 of 1 replied (100.0%); general-v1 0 of 1 replied (0.0%)" in lines[0]
+    assert lines[1].startswith("    *What to do:* apply its decision rule")
+    assert "Tests tab>; if it does not decide yet, the test runs on to look 2 (the read date)" in lines[1]
+    assert lines[1].endswith("`railway ssh -- us-outbound test read t1` has the full read.")
     lines, at_look = looks.readout_lines(ctx, ctx.now)  # nothing new since
     assert at_look == [] and "no look reached this week" in lines[0] and "next look 2 (the read date)" in lines[0]
     assert "replied" not in lines[0] and "%" not in lines[0]

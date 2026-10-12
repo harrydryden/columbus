@@ -2,7 +2,8 @@
 
 Writes go only to the alert channel (#us-outbound) and the dev channel
 (#us-outbound-dev). In dry-run (SPEC 0.3) a post meant for another channel goes to the
-dev channel instead, its text prefixed "[dry-run → {channel}] ". Ops carry the channel
+dev channel instead, its text headed by dry_run_note(channel) ("_:test_tube: Test run: this would have gone to
+#us-outbound. Nothing was sent to prospects._", Harry, 12 Oct 2026: a newcomer must see what a dry run is). Ops carry the channel
 NAME, since that is what the guard checks; request bodies carry the resolved id.
 Slack answers errors with HTTP 200 and ok: false, which raises ApiError here.
 
@@ -35,6 +36,11 @@ from us_outbound.logs import log
 LIST_PAGE = 200  # Slack recommends no more than 200 per page
 REACTIONS_FRESH = 60.0  # seconds a thread read's reactions answer reactions() for its messages
 
+
+
+def dry_run_note(where: str) -> str:
+    """The line over a dry-run post in the dev channel: where it would have gone, and that it went nowhere else."""
+    return f"_:test_tube: Test run: this would have gone to {where}. Nothing was sent to prospects._"
 
 class SlackLike(Protocol):
     """What the jobs use of Slack: the client (Slack) or its stand-in without a token (SlackOff). connected says which,
@@ -214,8 +220,8 @@ class Slack(HttpClient):
         # The guard refuses a channel outside the pair before any request (even the id lookup).
         if not self.guard.refuse_unless_allowed(self.system, op):  # dry-run: a post for the alert channel
             self.guard.authorize(self.system, op)  # recorded as not sent; it goes to the dev channel instead
-            note = f"[dry-run → {channel}]"
-            text = f"{note} {text}"
+            note = dry_run_note(channel)
+            text = f"{note}\n{text}"
             if blocks:
                 blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": note}]}, *blocks]
             channel = dev
@@ -242,14 +248,14 @@ class Slack(HttpClient):
 
         chat.postMessage with the user id as channel, which posts in the app's Messages tab.
         PHASE0-CONFIRM: that the installed app has that tab on and may post there (im:write).
-        Dry-run posts it to the dev channel instead, prefixed "[dry-run → DM @user]".
+        Dry-run posts it to the dev channel instead, headed by dry_run_note("a direct message to @user").
         """
         user = str(user_id or "").strip()
         op = Op("chat.postMessage", target=f"@{user}", write=True, detail={"dm": True})
         if not self.guard.refuse_unless_allowed(self.system, op):  # a non-approver is refused before any request
             self.guard.authorize(self.system, op)  # dry-run: recorded as not sent, and posted to the dev channel
             dev = self.guard.bounds.dev_channel
-            return self.post(dev, f"[dry-run → DM @{user}] {text}")
+            return self.post(dev, f"{dry_run_note(f'a direct message to <@{user}>')}\n{text}")
         payload = {"channel": user, "text": text, "unfurl_links": False, "unfurl_media": False}
         body = self._api("POST", "chat.postMessage", op, json=payload)
         if body is None:

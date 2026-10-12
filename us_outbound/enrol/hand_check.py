@@ -60,7 +60,7 @@ from datetime import timedelta
 from typing import Any
 
 from us_outbound import accounts, labels, verify
-from us_outbound.base import notify
+from us_outbound.base import notify, say
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, openers, queue, render
 from us_outbound.logs import log
@@ -146,7 +146,7 @@ def _person(ctx: Context, account_id: str, domains: set[str], hashes: set[str]) 
     if contacts:
         first = sorted(contacts, key=lambda c: (str(c.get("created_at") or ""), str(c.get("contact_id"))))[0]
         return dict(first), f"not sendable yet: {why}"
-    return {}, "no contact yet (pick_contacts finds one before enrollment)"
+    return {}, "no contact yet (one is chosen before the first email)"
 
 
 def opener_for(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, Any],
@@ -217,7 +217,9 @@ def _where(a: Mapping[str, Any]) -> str:
 
 def _who(a: Mapping[str, Any]) -> str:
     c = a.get("contact") or {}
-    who = ", ".join(x for x in (c.get("role"), c.get("title")) if x) or "no contact"
+    who = ", ".join(x for x in (c.get("role"), c.get("title")) if x)
+    if not who:
+        return c.get("note") or "no contact"
     return who + (f" ({c['note']})" if c.get("note") else "")
 
 
@@ -260,25 +262,31 @@ def week_label(week: Any) -> str:
 
 
 def _accounts(n: int) -> str:
-    return f"{n} account{'' if n == 1 else 's'}"
+    return f"{n} compan{'y' if n == 1 else 'ies'}"
 
 
-def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
+CHECK_WHAT = ("Is each one right: the name, HQ state, size, the contact's role and title, and the evidence its opening "
+              "line rests on?")
+
+
+def text(payload: Mapping[str, Any], *, detailed: bool = True, overrides: str = "Overrides tab") -> str:
     """The week's check as Harry reads it: in Slack (compact) or from `handcheck show` (detailed). Plain words:
-    what to look at, how to approve, and what waits meanwhile."""
+    what to look at, how to approve, and what waits meanwhile. overrides: the Overrides tab, as a link in Slack."""
     by_id = {a["account_id"]: a for a in payload.get("accounts") or ()}
     doubtful = payload.get("doubtful") or []
     sample = enrol.has_sample(payload)
     week = week_label(payload.get("iso_week"))
     if not sample:  # auto_send = no: only the accounts held for doubtful facts
         k = len(doubtful)
-        lines = [f"{week} check: {_accounts(k)} {'has' if k == 1 else 'have'} doubtful Apollo facts, so "
-                 f"{'it' if k == 1 else 'they'} won't get a card until you look."]
+        lines = [f"{say.ACTION} *Weekly hand-check: {_accounts(k)} {'has' if k == 1 else 'have'} doubtful facts from "
+                 f"Apollo, so {'it gets' if k == 1 else 'they get'} no email until you look*",
+                 f"{week}. Is each one right: the name, HQ state and size? The reason for the doubt is on each line."]
     else:
         drawn = sum(len(ids) for ids in (payload.get("groups") or {}).values())
-        also = f", and {_accounts(len(doubtful))} with doubtful Apollo facts" if doubtful else ""
-        lines = [f"{week} check: {_accounts(drawn)} drawn at random from the queue{also}. Is each one right: the name, "
-                 "HQ state, size band, the contact's role and title, and what the opener rests on?"]
+        also = f", plus {_accounts(len(doubtful))} with doubtful facts from Apollo" if doubtful else ""
+        lines = [f"{say.ACTION} *Weekly hand-check: please check {_accounts(drawn + len(doubtful))} before this week's "
+                 "new emails go out*",
+                 f"{week}: {_accounts(drawn)} picked at random from those queued to email{also}. {CHECK_WHAT}"]
     n = 0
     for group, ids in (payload.get("groups") or {}).items():
         lines.append(f"{group} ({len(ids)}):")
@@ -299,7 +307,7 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
                              f"{a.get('size_band') or '?'} · {_who(a)} · {_evidence(a)} · id {aid}")
     if doubtful:
         if sample:
-            lines.append(f"Doubtful Apollo facts ({len(doubtful)}): not verified until you look.")
+            lines.append(f"Doubtful facts from Apollo ({len(doubtful)}): not cleared to email until you look.")
         for d in doubtful:
             n += 1
             visited = " · visited the US site" if d.get("source") == accounts.SITE_VISIT else ""
@@ -307,19 +315,23 @@ def text(payload: Mapping[str, Any], *, detailed: bool = True) -> str:
                          f"HQ {d.get('hq_state') or '?'} · {_size(d)} · {'; '.join(d.get('reasons') or ())} · "
                          f"id {d.get('account_id')}")
         if any(verify.MISSING & set(d.get("reasons") or ()) for d in doubtful):
-            lines.append("A missing fact needs an Overrides row (hq_state, employees or industry): approving alone "
-                         "keeps the account on this check.")
+            lines.append(f"A missing fact needs a row on the {overrides} (hq_state, employees or industry): approving "
+                         "alone keeps the company on this check.")
     pulled = payload.get("pulled_account_ids") or []
     if pulled:
-        lines.append(f"Pulled: {', '.join(pulled)}")
+        lines.append(f"Pulled (not emailed): {', '.join(pulled)}")
     example = next((str(a.get("domain")) for a in [*doubtful, *(payload.get("accounts") or ())] if a.get("domain")),
                    "acme.com")
-    command = "us-outbound handcheck approve --live" if detailed else "railway ssh -- us-outbound handcheck approve --live"
-    meanwhile = ("Until then no new leads go to Instantly this week." if sample
-                 else "Ignoring this is safe: only these accounts wait.")
-    relabel = f"{'' if detailed else 'railway ssh -- '}us-outbound labels set {example} \"<label>\" --live"
-    lines.append(f"All fine: `{command}`. Any wrong: add `--pull {example}`, or fix it on the Overrides tab (a wrong "
-                 f"industry: `{relabel}`). {meanwhile}")
+    prefix = "" if detailed else "railway ssh -- "
+    command = f"{prefix}us-outbound handcheck approve --live"
+    relabel = f"{prefix}us-outbound labels set {example} \"<label>\" --live"
+    meanwhile = ("Until it is approved, no new leads go to Instantly this week." if sample
+                 else "If you leave it, only these companies wait; nothing else is held up.")
+    lines += ["*What to do:*",
+              f"1. All fine: run `{command}`.",
+              f"2. Any wrong: add `--pull {example}` to that command for each one to leave it out, or "
+              f"correct the fact on the {overrides} (a wrong industry: `{relabel}`).",
+              f"_{meanwhile}_"]
     return "\n".join(lines)
 
 
@@ -361,7 +373,8 @@ def _with_sample(ctx: Context, week: str, before: Mapping[str, Any] | None) -> d
 
 def _post(ctx: Context, item: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(item.get("payload") or {})
-    sent = notify.alert(ctx, notify.mention(ctx) + text(payload, detailed=False))
+    sent = notify.alert(ctx, notify.mention(ctx) + text(payload, detailed=False,
+                                                       overrides=say.sheet_link(ctx, "Overrides")))
     payload["posted"] = bool(sent.get("posted")) and ctx.live
     update: dict[str, Any] = {"item_id": item["item_id"], "payload": payload}
     if sent.get("ts"):
@@ -494,16 +507,21 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
 def confirmation(ctx: Context, week: str, by: str, pulled: Sequence[str], cleared: int, missing: int = 0) -> str:
     """What approving says in the channel, in plain words: what happens next, in the mode auto_send is in.
     cleared: the accounts verify_accounts checks again; missing: those still missing a fact, which stay."""
-    head = f"{week_label(week)} check approved by {by}" + (f"; pulled: {', '.join(pulled)}" if pulled else "")
+    lines = [f"{say.DONE} *Weekly hand-check approved by {by}* ({week_label(week)})"]
+    if pulled:
+        lines.append(f"Pulled, so left out: {', '.join(pulled)}")
+    if ctx.settings.general.auto_send:
+        lines.append("New leads can go to Instantly this week.")
     tomorrow = ctx.today_uk() + timedelta(days=1)
     when = "tomorrow" if tomorrow.weekday() < 5 else "on Monday"  # verify_accounts runs weekdays at 04:30 UK
-    doubts = ("the account with doubtful facts is" if cleared == 1 else f"the {cleared} accounts with doubtful facts are")
-    doubts = f"{doubts} verified again at 04:30 {when}" if cleared else ""
-    stays = ("" if not missing else
-             ("The account" if missing == 1 else f"The {missing} accounts") + " missing a fact (HQ state, size or "
-             f"industry) {'stays' if missing == 1 else 'stay'} on the check until an Overrides row fills it in.")
-    if not ctx.settings.general.auto_send:
-        said = " ".join(x for x in ((f"{doubts[:1].upper()}{doubts[1:]}." if doubts else ""), stays) if x)
-        return f"{head}. " + (said or "Nothing else waits on it.")
-    return (f"{head}. New leads can go to Instantly this week" + (f"; {doubts}." if doubts else ".")
-            + (f" {stays}" if stays else ""))
+    if cleared:
+        lines.append(("The company with doubtful facts is" if cleared == 1 else f"The {cleared} companies with doubtful "
+                      "facts are") + f" checked again at 04:30 {when}, then cleared to email if "
+                     f"{'its' if cleared == 1 else 'their'} facts hold.")
+    if missing:
+        lines.append(("The company" if missing == 1 else f"The {missing} companies") + " missing a fact (HQ state, size "
+                     f"or industry) {'stays' if missing == 1 else 'stay'} on the check until a row on the Overrides tab "
+                     "fills it in.")
+    if len(lines) == 1:
+        lines.append("Nothing else waits on it.")
+    return "\n".join(lines)
