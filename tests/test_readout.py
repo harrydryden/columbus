@@ -94,15 +94,29 @@ def test_the_summary_opens_with_what_needs_action_or_says_nothing_does():
     lines, nums = readout.build(ctx)
     assert lines[0] == ":bar_chart: *Monday readout, 5–11 Oct: nothing to act on*"
     assert not lines[3] and nums["to_act_on"] == [] and "*What to do:*" not in "\n".join(lines)
-    assert "  *Not met:* bounces under 2%: 1 of 10 sends, 10.0%; under 100 sends, one bounce moves it a lot" in lines
+    assert ("  *Not met:* bounces under 2%: too early to tell: 1 of 10 sends so far; it is judged from 100 sends"
+            in lines)
 
-    # All five met: the readout asks whether to raise the weekly limit.
+    # Too few sends: no criterion reads as met on them, so nothing says to grow (12 Oct 2026: 13 sends did).
     ctx, _ = world(LIVE, weekly=[])
     ctx.store.insert("events", [ev(i, "sent", step=1, account_id=f"a{i}") for i in range(10)])
     lines, nums = readout.build(ctx)
-    assert nums["to_act_on"] == ["decide whether to raise the weekly limit"]
-    assert ("  *What to do:* all 5 are met, so sending can grow: raise `weekly_enrol_cap` (now 150) on the "
-            f"{say.sheet_link(ctx, 'General')} in step with the mailbox ramp (docs/roadmap.md, Scaling)") in lines
+    assert nums["to_act_on"] == [] and "weekly_enrol_cap` (now" not in "\n".join(lines)
+
+    # All five met on 100 sends, but the weekly limit was far off: the mailboxes hold sending back, not the limit.
+    ctx, _ = world(LIVE, weekly=[])
+    ctx.store.insert("events", [ev(i, "sent", step=1, account_id=f"a{i}") for i in range(100)])
+    lines, nums = readout.build(ctx)
+    assert nums["to_act_on"] == []
+    assert ("  All 5 are met. The weekly limit is not what holds sending back (0 of 150 last week): the mailboxes' "
+            "warm-up is, and it rises by itself.") in lines
+
+    # ... and when last week reached the limit, the readout asks whether to raise it.
+    start, end = readout.last_week(ctx)
+    out, met, todo = readout.exit_criteria(ctx, readout._Events(ctx), start, end, 150)
+    assert todo[-1] == "decide whether to raise the weekly limit"
+    assert ("  *What to do:* all 5 are met and last week reached the weekly limit, so sending can grow: raise "
+            f"`weekly_enrol_cap` (now 150) on the {say.sheet_link(ctx, 'General')} in step with the mailbox ramp") in out
 
 
 # -- last week and the cuts -----------------------------------------------------------------------------------------
@@ -206,7 +220,8 @@ def test_exit_criteria_not_met_say_why():
     out = "\n".join(lines)
     assert not any(nums["exit_criteria"].values())
     assert "): 0 of 5 met" in out and "  Met:" not in out
-    assert "  *Not met:* bounces under 2%: 1 of 40 sends, 2.5%; under 100 sends, one bounce moves it a lot" in lines
+    assert ("  *Not met:* bounces under 2%: too early to tell: 1 of 40 sends so far; it is judged from 100 sends"
+            in lines)
     assert "  *Not met:* no spam complaints: 1 complaint" in lines
     assert ("  *Not met:* unsubscribes work end to end: the unsubscribe-link test has not passed (`optout_tested` is "
             "no); 1 opt-out not yet in Instantly's blocklist and HubSpot (retried by the next live run of recording "

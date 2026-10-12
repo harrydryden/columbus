@@ -81,17 +81,14 @@ def test_the_job_records_this_week_s_sample_and_posts_it():
     [post] = posts(t)
     assert post.json["channel"] == "C_ALERT"
     text = post.json["text"]
-    assert text.startswith(
-        "<@U_HARRY> :warning: *Weekly hand-check: please check 17 companies before this week's new emails go out*\n"
-        "Week 44: 17 companies picked at random from those queued to email. Is each one right: the name, HQ state, "
-        "size, the contact's role and title, and the evidence its opening line rests on?\n")
-    d = p['accounts'][0]['domain']
-    assert text.endswith(
-        "*What to do:*\n1. All fine: run `railway ssh -- us-outbound handcheck approve --live`.\n"
-        f"2. Any wrong: add `--pull {d}` to that command for each one to leave it out, or correct the fact on the "
-        f"{OVERRIDES} (a wrong industry: `railway ssh -- us-outbound labels set {d} \"<label>\" --live`).\n"
-        "_Until it is approved, no new leads go to Instantly this week._")
-    assert "· no contact yet (one is chosen before the first email) ·" in text
+    lines = text.splitlines()
+    assert lines[:2] == ["<@U_HARRY> :warning: *Weekly hand-check: 17 companies to look at before this week's new "
+                         "emails go out*", "Week 44: 17 picked at random."]
+    assert lines[2:4] == ["*What to do:*", "1. Open the <https://docs.google.com/spreadsheets/d/sheet-test/edit|"
+                                           "Hand-check tab>: one row per company, with the reason it is there."]
+    assert "*fine*, *leave out* (never email it), or *wrong industry*" in lines[4]
+    assert lines[-1] == "_Why it matters: until every row has a decision, no new leads go to Instantly this week._"
+    assert "railway ssh" not in text and "id tec-" not in text  # no command and no list: the tab has both
     assert "SPEC" not in text and "2026" not in text
     assert item["slack_ts"] == "1.1"
     # Enrollment waits for it.
@@ -239,15 +236,9 @@ def test_with_auto_send_off_the_doubtful_accounts_still_go_to_a_person():
     assert out["status"] == "recorded" and out["accounts"] == 0 and out["doubtful"] == 1 and out["groups"] == {}
     [post] = posts(t)
     text = post.json["text"]
-    assert text.startswith(
-        "<@U_HARRY> :warning: *Weekly hand-check: 1 company has doubtful facts from Apollo, so it gets no email until "
-        "you look*\nWeek 44. Is each one right: the name, HQ state and size? The reason for the doubt is on each line.\n"
-        "  1. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70\n")
-    assert text.endswith(
-        "*What to do:*\n1. All fine: run `railway ssh -- us-outbound handcheck approve --live`.\n"
-        "2. Any wrong: add `--pull mar70.com` to that command for each one to leave it out, or correct the fact on the "
-        f"{OVERRIDES} (a wrong industry: `railway ssh -- us-outbound labels set mar70.com \"<label>\" --live`).\n"
-        "_If you leave it, only these companies wait; nothing else is held up._")
+    assert text.startswith("<@U_HARRY> :warning: *Weekly hand-check: 1 company to look at before it can be emailed*\n"
+                           "Week 44: 1 with other doubtful facts.\n")
+    assert text.endswith("_Why it matters: a company with no decision waits; nothing else is held up._")
     assert "SPEC" not in text and "Harry, 2 Oct" not in text
 
 
@@ -286,7 +277,7 @@ def test_a_doubtful_only_week_does_not_pass_the_gate_once_auto_send_is_yes():
     item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
     assert (item["status"], item["handled_by"], item["payload"]["per_group"]) == ("open", None, 10)
     assert item["payload"]["pulled_account_ids"] == ["mar-70"]
-    assert "Week 44: 17 companies picked at random" in posts(t)[-1].json["text"]
+    assert "Week 44: 17 picked at random, 1 with other doubtful facts." in posts(t)[-1].json["text"]
     assert enrol.hand_check(ctx, ctx.now_et().date()) == (f"this week's hand-check ({WEEK}) is not approved yet",
                                                           frozenset({"mar-70"}))
     hand_check.approve(ctx, [], "harry")

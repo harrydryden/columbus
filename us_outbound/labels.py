@@ -54,7 +54,6 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -1075,8 +1074,8 @@ def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
 
 
 def asks(ctx: Context) -> list[tuple[str, str]]:
-    """The daily post's label asks (learn/spend.asks posts them, each key once): many corrections, low agreement,
-    and checks that could not run. Each says what happened in plain words, then what to do and where."""
+    """The daily post's label asks (learn/spend.asks posts them, each key once): many corrections, and checks that
+    could not run. Each says what happened in plain words, then what to do and where."""
     from us_outbound.base import say
     from us_outbound.learn.daily_post import period
 
@@ -1093,36 +1092,12 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
                     f"{say.ACTION} *Industry labels: approvers corrected the industry on {n} of {t.cards} "
                     "email cards since the last send day.*\n"
                     f"Corrections: {_moves(t.corrections)}.\n"
-                    f"*What to do:* check those industries' definitions and keywords on the {tab()}; then "
-                    f"{say.command('labels audit --live')} checks the queued companies again."))
-    share = t.share_same_group()
-    if t.labelled >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
-        worst, k = max(t.disagreed_groups.items(), key=lambda kv: kv[1]) if t.disagreed_groups else ("the groups", 0)
-        moved = t.labelled - t.same_group
-        out.append((f"labels_agreement:{day}",
-                    f"{say.ACTION} *Industry labels: {ai} disagreed with our rules on {moved} of {t.labelled} "
-                    f"companies ({1 - share:.0%}).*\n"
-                    f"It put them in another group or outside our industries; most were under {worst} ({k}).\n"
-                    f"*What to do:* run {say.command('labels crosswalk')} to see which NAICS codes (US industry codes) "
-                    f"and keywords bring them in, then fix those on the {tab()}."))
-    gaps = len(t.no_rules)
-    if gaps >= ASK_MIN_CHECKS and gaps >= ASK_NO_RULES * t.checked:
-        said = Counter(label for label in t.no_rules.values() if label != NONE).most_common(GAP_CODES)
-        codes, uncoded = gap_codes(ctx, t.no_rules)
-        text = (f"{say.ACTION} *Industry labels: our rules gave no industry to {gaps} of {t.checked} companies checked "
-                f"({gaps / t.checked:.0%}).*"
-                + (f"\n{ai[0].upper()}{ai[1:]} most often said {', '.join(f'{x} ({k})' for x, k in said)}." if said else ""))
-        if codes:
-            text += ("\nTheir commonest NAICS codes (US industry codes): "
-                     + ", ".join(f"{c} → {x} ({k})" for c, x, k in codes) + ".")
-        if uncoded:
-            text += f" {uncoded} have no NAICS code from Apollo, so only `apollo_keywords` can label them."
-        if codes:
-            text += (f"\n*What to do:*\n1. Add each code to that industry's `naics_prefixes` on the {tab()}.\n"
-                     f"2. Run {say.command('sync')}, then {say.command('relabel --live')}.")
-        else:
-            text += f"\n*What to do:* add keywords for them to `apollo_keywords` on the {tab()}."
-        out.append((f"labels_no_rules:{day}", text))
+                    f"*What to do:* check those industries' definitions on the {tab()}: a sharper line fixes the "
+                    "next ones. A changed definition has every company checked again by itself; nothing to run."))
+    # The rules' disagreement with the model, and the companies they gave no label, are not asked about any more
+    # (Harry, 12 Oct 2026): the model's label decides the email and the rules only source companies, so there is
+    # nothing for a person to do about them day to day. The Monday readout still reports the agreement, and
+    # `labels crosswalk` says which codes to trim when sourcing brings in too many companies we leave out.
     waiting = int(run.get("unchecked") or 0)
     if run.get("unavailable_reason") and waiting:
         companies = f"{waiting} new compan{'y waits' if waiting == 1 else 'ies wait'}"

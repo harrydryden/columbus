@@ -149,7 +149,7 @@ def test_approvals_from_the_contract():
     # Right under the headline: what needs Harry now.
     assert lines[2] == ("*Needs you:* 2 send approvals (the oldest has waited 5 hours; a card lapses at the end of the "
                         "next send day) · 1 reply (waited 30 hours) · 1 kill-rule hold (`us-outbound killrules show`) · "
-                        "this week's hand-check (`us-outbound handcheck show`)")
+                        "this week's hand-check (the Hand-check tab on the settings sheet)")
     assert nums["needs_you"] == {"send_approvals": 2, "replies": 1, "kill_rule_holds": 1, "hand_checks": 1}
 
 

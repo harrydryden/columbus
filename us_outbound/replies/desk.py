@@ -827,12 +827,15 @@ def poll_approvals(ctx: Context) -> dict:
             run.errors.append(f"{item.short_id}: {type(exc).__name__}: {str(exc)[:160]}")
     escalate(ctx, slack, run)
     sends = approvals.poll(ctx, slack)
+    from us_outbound.enrol import hand_check_tab  # the weekly hand-check's decisions on the sheet (12 Oct 2026)
+
+    checked = hand_check_tab.apply(ctx)
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "slack": slack is not None, "items": len(items),
         "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited,
         "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck,
         "hubspot": dict(run.hubspot), "ignored_non_approvers": sum(run.ignored.values()), "errors": run.errors,
-        "send_approvals": sends,
+        "send_approvals": sends, "hand_check": checked,
     }
     if ctx.dry_run:
         summary["would"] = run.would

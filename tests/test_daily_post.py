@@ -49,7 +49,7 @@ def world(now=TUE_9, live=True, drafts=(), **kw):
     ctx.store.insert("hitl_items", [
         {"item_id": "r1", "kind": "reply_approval", "status": "open", "created_at": now - timedelta(hours=30)},
         {"item_id": "h1", "kind": "hand_check", "status": "open", "created_at": now - timedelta(hours=1),
-         "payload": {"iso_week": "2026-W44"}},
+         "payload": {"iso_week": "2026-W44", "accounts": [{"account_id": "x1"}, {"account_id": "x2"}]}},
         {"item_id": "k1", "kind": "kill_rule", "status": "open", "created_at": MON,
          "payload": {"action": "pause_source", "target": "clay", "reason": "emails found by clay: 4 of 100 sends bounced"}},
     ])
@@ -74,7 +74,8 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         ":warning: *Daily summary, Tue 27 Oct: 3 things need you*",
         "1. Answer 1 prospect reply (waiting 30 hours): ✅ or `edit: <text>` in its thread in #us-outbound",
         "2. 1 safety pause on (bounce or complaint limit hit): `railway ssh -- us-outbound killrules show`",
-        "3. Weekly hand-check (a random sample of companies): `railway ssh -- us-outbound handcheck show`",
+        "3. Weekly hand-check: 2 companies still need a decision on the "
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
         "",
         "*Yesterday (Mon 26 Oct)*",
         "Sent 8 emails (5 first, 3 follow-ups) · 3 replies (1 interested) · 1 bounce · 1 unsubscribe · 1 demo booked",
@@ -142,7 +143,8 @@ def test_the_needs_lines_say_where_to_act_for_cards_and_the_doubtful_only_hand_c
     assert lines[:3] == [
         ":warning: *Daily summary, Tue 27 Oct: 2 things need you*",
         "1. Approve 1 email (waiting 5 hours; a card lapses after its next send day): ✅ or ❌ on each card in #us-outbound",
-        "2. Weekly hand-check of 2 companies with doubtful facts: `railway ssh -- us-outbound handcheck show`",
+        "2. Weekly hand-check: 2 companies still need a decision on the "
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
     ]
 
 
@@ -155,7 +157,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
     assert lines[1] == ("Yesterday: 8 sent · 3 replies (1 positive) · 1 unsubscribe · 0 companies, 0 contacts found"
                         " · 0 ready to send")
     assert lines[2] == ("*Needs you:* 1 reply (waited 30 hours) · 1 kill-rule hold (`us-outbound killrules show`) · "
-                        "this week's hand-check (`us-outbound handcheck show`)")
+                        "this week's hand-check (the Hand-check tab on the settings sheet)")
     assert "*Sent and outcomes* · Yesterday, Mon 26 Oct (UK)" in lines
     assert "  Sent: 8 (step 1 5, step 2 3)" in lines  # Sunday's send is not yesterday's
     assert "  Replies: 3 (not classified 1, objection 1, positive 1) · out of office 1" in lines
