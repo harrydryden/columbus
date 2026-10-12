@@ -20,8 +20,10 @@ label's own pitch:
   * the model unavailable (the cap, an error, no key): with General label_check = required, a new company waits
     unverified; with skip, the rules' label with the group's copy (source rules);
   * a public body is left out; a membership body or society, a company no label fits or one whose industry is
-    switched off is left out when the model is sure, and held for the weekly hand-check when it is not; a company
-    the model cannot place is held;
+    switched off is left out when the model is sure or fairly sure (high or medium), and held for the weekly
+    hand-check only when it is unsure (low); a company the model cannot place is held (Harry, 12 Oct 2026: 98
+    companies on one week's hand-check were mostly medium calls into switched-off groups or membership bodies,
+    and "the model's label decides" means those are not emailed);
   * otherwise the model's label decides (Harry, 11 Oct 2026: on 50 companies he judged by hand the model had the
     right group for 42 of 44, the rules for 34 of 50, so the rules only source companies now): the label's own copy
     when the model is sure and read the company's home page (model); its group's own label and copy when it is not
@@ -489,14 +491,15 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
     if verdict.entity == PUBLIC_BODY:
         quote = f": “{verdict.evidence}”" if verdict.evidence else ""
         return leave_out(f"a public body, never prospected (the label check{quote})")
+    sure = c in (HIGH, MEDIUM)  # enough to leave a company out; only an unsure call waits for a person
     if verdict.entity == ASSOCIATION:
-        if c == HIGH:
+        if sure:
             return leave_out("a membership body or society, not an employer we prospect (the label check)")
         return hold(f"the model thinks this is a membership body or society ({c})")
     if verdict.entity == OTHER:
         return hold(f"the model cannot tell what this company is ({c})")
     if verdict.label == NONE:
-        if c == HIGH:
+        if sure:
             return leave_out(f"no Industries label fits ({verdict.what_they_do or 'the label check'})")
         return hold(f"the model finds no Industries label that fits ({c})")
     model = settings.industry(verdict.label)
@@ -504,7 +507,7 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
         group = model.industry_group if model else verdict.label
         umbrella = settings.umbrella(group)
         if umbrella is None or not umbrella.active:
-            if c == HIGH:
+            if sure:
                 return leave_out(f"its industry ({group}) is switched off on the Industries tab (the label check)")
             return hold(f"the model says {verdict.label}, switched off on the Industries tab ({c})")
         model = umbrella  # a switched-off label in a group we prospect: the group's own label

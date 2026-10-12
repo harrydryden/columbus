@@ -186,9 +186,12 @@ HOLD_KEEPS = "; approving keeps Fintech"
     ("Fintech", verdict("none", "high", "association"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify",
        "a membership body or society, not an employer we prospect (the label check)")),
-    ("Fintech", verdict("Fintech", "medium", "association"), "required",
-     D("Fintech", TECH, "disputed", "medium", "general", "hold",
-       "industry uncertain: the model thinks this is a membership body or society (medium)" + HOLD_KEEPS)),
+    ("Fintech", verdict("Fintech", "medium", "association"), "required",  # fairly sure is enough (12 Oct 2026)
+     D("Fintech", TECH, "disputed", "medium", "general", "disqualify",
+       "a membership body or society, not an employer we prospect (the label check)")),
+    ("Fintech", verdict("Fintech", "low", "association"), "required",
+     D("Fintech", TECH, "disputed", "low", "general", "hold",
+       "industry uncertain: the model thinks this is a membership body or society (low)" + HOLD_KEEPS)),
     # 6: the model cannot tell.
     ("Fintech", verdict("Fintech", "high", "other"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "hold",
@@ -197,15 +200,20 @@ HOLD_KEEPS = "; approving keeps Fintech"
     ("Fintech", verdict("none", "high", what="crop insurance"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify", "no Industries label fits (crop insurance)")),
     ("Fintech", verdict("none", "medium"), "required",
-     D("Fintech", TECH, "disputed", "medium", "general", "hold",
-       "industry uncertain: the model finds no Industries label that fits (medium)" + HOLD_KEEPS)),
+     D("Fintech", TECH, "disputed", "medium", "general", "disqualify", "no Industries label fits (the label check)")),
+    ("Fintech", verdict("none", "low"), "required",
+     D("Fintech", TECH, "disputed", "low", "general", "hold",
+       "industry uncertain: the model finds no Industries label that fits (low)" + HOLD_KEEPS)),
     # 8: a switched-off label, or a group not prospected.
     ("Fintech", verdict("Physician practices", "high"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify",
        "its industry (Healthcare) is switched off on the Industries tab (the label check)")),
     ("Fintech", verdict("Professional Services", "medium"), "required",
-     D("Fintech", TECH, "disputed", "medium", "general", "hold",
-       "industry uncertain: the model says Professional Services, switched off on the Industries tab (medium)"
+     D("Fintech", TECH, "disputed", "medium", "general", "disqualify",
+       "its industry (Professional Services) is switched off on the Industries tab (the label check)")),
+    ("Fintech", verdict("Professional Services", "low"), "required",
+     D("Fintech", TECH, "disputed", "low", "general", "hold",
+       "industry uncertain: the model says Professional Services, switched off on the Industries tab (low)"
        + HOLD_KEEPS)),
     # ... but a switched-off label in a group with its own label on is that group's label.
     (TECH, verdict("Remote & hybrid teams", "low"), "required",
@@ -248,8 +256,8 @@ def test_within_a_group_whose_own_label_is_off_a_doubt_gets_general_copy():
 
 
 def test_a_hold_reads_the_same_whatever_the_quote_so_a_cleared_hand_check_stays_cleared():
-    a = labels.decide(ind("Fintech"), verdict("none", "medium", evidence="one quote", what="payroll"), DEFAULT)
-    b = labels.decide(ind("Fintech"), verdict("none", "medium", evidence="another", what="lending"), DEFAULT)
+    a = labels.decide(ind("Fintech"), verdict("none", "low", evidence="one quote", what="payroll"), DEFAULT)
+    b = labels.decide(ind("Fintech"), verdict("none", "low", evidence="another", what="lending"), DEFAULT)
     assert a.action == "hold" and a.reason == b.reason
 
 
