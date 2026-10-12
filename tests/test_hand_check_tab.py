@@ -53,7 +53,7 @@ def test_the_post_writes_one_row_per_company_with_the_reason_and_how_to_fill_it(
     rows = sheet_rows(ctx)
     assert [r["domain"] for r in rows] == ["mar70.com", "mar71.com", "mar72.com"]
     assert rows[0]["id"] == f"{WEEK}:mar70.com" and rows[0]["check"] == tab.DOUBT
-    assert rows[0]["why"].startswith(verify.NO_STATE) and "right_hq_state" in rows[0]["why"]
+    assert rows[0]["why"] == f"{verify.NO_STATE} (type it in right_hq_state, then pick fine)"
     assert all(r["decision"] == "" for r in rows)
     [post] = posts(t)
     assert "Hand-check tab" in post.json["text"] and "railway ssh" not in post.json["text"]
@@ -118,3 +118,16 @@ def test_a_wrong_industry_with_no_label_says_so_on_the_row():
     decide(ctx, "mar70.com", "wrong industry")
     tab.apply(ctx)
     assert sheet_rows(ctx)[0]["applied"] == "not done: pick the right industry in right_label"
+
+
+def test_a_missing_industry_points_to_the_industry_dropdown():
+    ctx, _ = world()
+    _approving(ctx)
+    ctx.clients.sheets = Sheet(ctx.guard, {})
+    held = acct(80, AGENCIES, "queued", industry="", employees=None, size_band="")
+    ctx.store.insert("accounts", [held])
+    ctx.store.insert("signal_events", [verify.doubt_fact(ctx, held, [verify.NO_INDUSTRY, verify.NO_SIZE])])
+    hand_check.post(ctx)
+    assert sheet_rows(ctx)[0]["why"] == (f"{verify.NO_INDUSTRY}; {verify.NO_SIZE} (type it in right_employees, then "
+                                         "pick fine; for the industry, pick wrong industry and the right one in "
+                                         "right_label)")

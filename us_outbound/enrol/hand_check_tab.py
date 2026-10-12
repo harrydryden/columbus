@@ -68,8 +68,13 @@ def rows(ctx: Context, payload: Mapping[str, Any]) -> list[dict[str, str]]:
             continue
         missing = verify.MISSING & set(d.get("reasons") or ())
         why = "; ".join(d.get("reasons") or ())
-        if missing:
-            why += " (type it in right_hq_state or right_employees, then pick fine)"
+        columns = [c for m, c in ((verify.NO_STATE, "right_hq_state"), (verify.NO_SIZE, "right_employees"))
+                   if m in missing]
+        hints = [f"type it in {' and '.join(columns)}, then pick fine"] if columns else []
+        if verify.NO_INDUSTRY in missing:
+            hints.append("for the industry, pick wrong industry and the right one in right_label")
+        if hints:
+            why += f" ({'; '.join(hints)})"
         out.append({"id": row_id(week, d.get("domain") or d["account_id"]), "week": week,
                     "company": d.get("clean_name") or "", "domain": d.get("domain") or "", "check": DOUBT,
                     "why": why, "hq_state": d.get("hq_state") or "", "size": _size(d),
