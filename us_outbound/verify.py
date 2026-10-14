@@ -21,25 +21,18 @@ The checks, cheapest first. An account that fails one keeps its status and is ch
      or hard-bounced (SPEC 9 hard exclusions). A HubSpot exclusion is kept as a hubspot fact with the
      account tiered Excluded (enrol.mark_excluded), so the rescore keeps it out and it is not looked up
      again. A HubSpot error leaves the account for the next run.
-Doubtful Apollo facts (Harry, 2 Oct 2026): an account whose HQ state or size Apollo leaves in
-doubt is not verified silently, nor dropped silently. It goes to the weekly hand-check
-(enrol/hand_check.py) with the reason, as a doubtful_facts fact, and waits:
-  * Apollo gives no HQ state, no employee count and no size band, or no industry (MISSING);
-  * the employee count and the size band disagree;
-  * Apollo's count (an estimate) is within EDGE_MARGIN of an edge where what we do changes
-    (size_edges): the floor (min_employees, 10 by default), 50 (the Roles order, so whom we write
-    to) and one past the ceiling (max_employees + 1, 250 by default).
-When Harry approves the hand-check without pulling it, its doubts are cleared (a doubt_cleared
-fact) and the checks above decide as usual; an Overrides row corrects a fact that was wrong.
-A missing fact is the exception (Harry, 6 Oct 2026): approving cannot supply it, and the checks
-would then fail the account unseen, so it stays on the hand-check, week after week, until an
-Overrides row (hq_state, employees or size_band, industry) fills it in or Harry pulls it.
+Incomplete Apollo facts (Harry, 14 Oct 2026: "for any company where we have incomplete information, filter out";
+this replaces the weekly hand-check of doubtful facts, 2 Oct 2026). A company whose HQ state, size (no employee count
+and no size band) or industry is missing (MISSING), after any Overrides row and Clay's cross-check, is disqualified
+and tiered Excluded with tier_reason "incomplete information: ...", and is not checked again. A fact that is there but
+borderline (Apollo's count within EDGE_MARGIN of a size edge, size_edges; a count and band that disagree) is taken
+as Apollo gives it, and the checks above decide on it. An Overrides row (hq_state, employees or size_band, industry)
+filled in before the run keeps a company in.
 Clay's cross-check (Harry, 6 Oct 2026; us_outbound/clay_cross_check.py), while General clay_cross_check
-is yes: before the checks, the run's accounts with an HQ-state or size doubt go to Clay's "US Outbound –
-Accounts" function once, in one batch, within the Clay budget, and a missing HQ state or size is filled
-in from its answer. cross_check() then drops a doubt Clay settles, and restates one Clay disagrees with
-("Clay says 62 staff, Apollo says 49"), so the hand-check shows both. With the switch off (the default),
-or no answer, every doubt goes to the hand-check as before.
+is yes: before the checks, the run's accounts missing their HQ state or size go to Clay's "US Outbound – Accounts"
+function once, in one batch, within the Clay budget, and the missing fact is filled in from its answer. A company
+Clay has not answered yet (an error, or no budget today) waits for the next run (CLAY_PENDING) rather than being
+left out. With the switch off (the default), a missing fact leaves the company out straight away.
 Overrides win over the account's columns, as in scoring. Then the score job runs (SPEC 9: score
 runs after the sources), so the new accounts and the sources' new facts have a tier and an angle
 before pick_contacts at 05:30.
@@ -55,7 +48,7 @@ General's) and whether it goes on:
     its group's copy (labels.copy_level);
   * a public body is disqualified, as are a membership body or society, a company no label fits, one whose
     industry is switched off and one the model cannot place, at any confidence (Harry, 14 Oct 2026: filter the
-    ambiguous ones out; the weekly hand-check is for doubtful facts only);
+    ambiguous ones out);
   * otherwise the account goes on to HubSpot with the label the rule gives.
 The run also checks accounts already verified that have no fresh verdict, so the queue converges with no command
 run; their decisions are written the same way (a held one goes back to queued and to the hand-check). Both kinds
@@ -113,7 +106,8 @@ DOUBT_SOURCE = JOB  # signal_events.source of the doubt facts; not a SPEC 7 sour
 DOUBT_FACT, CLEARED_FACT = "doubtful_facts", "doubt_cleared"
 ROLES_EDGE = 50  # the Roles tab's 10-49 and 50-249 orders: whom we write to changes here
 EDGE_MARGIN = 2  # Apollo's count is an estimate: this close to an edge it could be either side
-DOUBTFUL = "doubtful Apollo facts, waiting for the weekly hand-check"
+INCOMPLETE = "incomplete information: "  # tier_reason of a company left out for a missing fact (revive() reads it)
+CLAY_PENDING = "incomplete information, waiting for Clay's cross-check"
 # check() reasons a doubt can stand behind: the hand-check sees the account rather than it failing unseen.
 DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "no Industries label"})
 NO_STATE = "Apollo gives no HQ state"
@@ -423,10 +417,27 @@ def _rescore(ctx: Context) -> dict:
     return score.rescore(ctx)
 
 
+def revive(ctx: Context) -> list[str]:
+    """Accounts left out for incomplete information that an Overrides row now completes go back to new, so this run
+    checks them again (docs/daily.md: add the fact on the Overrides tab to keep a company). Returns their ids."""
+    s = ctx.settings
+    domains = sorted({o.domain for o in s.overrides if o.domain})
+    if not domains:
+        return []
+    back = [a for a in ctx.store.select("accounts", {"status": labels.DISQUALIFIED, "domain": domains})
+            if str(a.get("tier_reason") or "").startswith(INCOMPLETE)
+            and not MISSING & set(doubts(with_overrides(a, s), s))]
+    if back:
+        ctx.store.upsert("accounts", [{"account_id": a["account_id"], "status": "new", "tier": None, "tier_reason": None}
+                                      for a in back])
+    return [a["account_id"] for a in back]
+
+
 def run(ctx: Context) -> dict:
     """The verify_accounts job (JOB CONTRACT: run(ctx) -> summary)."""
     s = ctx.settings
     summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "clay_verification": s.general.clay_verification}
+    summary["completed_by_overrides"] = revive(ctx)
     waiting = ctx.store.select("accounts", {"status": list(WAITING_STATUSES)})
     if s.general.clay_verification == CLAY_REQUIRED:
         log("verify_waiting_for_clay", run_id=ctx.run_id, accounts=len(waiting), reason=CLAY_NOT_BUILT)
@@ -449,15 +460,16 @@ def run(ctx: Context) -> dict:
     errors: list[str] = []
     verified: list[str] = []
     pending: list[dict] = []
-    doubtful: list[dict] = []
+    incomplete: list[dict] = []
 
     def fail(account: Mapping[str, Any], why: str) -> None:
         failed[why] += 1
         if len(examples) < LIST_LIMIT:
             examples.append({"account_id": account["account_id"], "domain": account.get("domain"), "reason": why})
 
-    recorded, cleared = doubt_history(ctx, [a["account_id"] for a in [*todo, *verified_open]])
+    _, cleared = doubt_history(ctx, [a["account_id"] for a in [*todo, *verified_open]])
     summary["clay_cross_check"] = clay_pre_pass(ctx, todo, facts, suppressed, partners, cleared)
+    clay_pending: set[str] = summary["clay_cross_check"].pop("unanswered", set())
     # The label check (labels.py): the model is asked first about the candidates, new and verified alike: those with
     # a card waiting in Slack first, then Focus groups, then queue order, so the run's share goes where it matters.
     lab = LabelRun(labels.Checker(ctx))
@@ -495,13 +507,21 @@ def run(ctx: Context) -> dict:
             label_doubt = d.reason if d.action == labels.HOLD else ""
             why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
         if doubtable(why, s):
+            # Harry, 14 Oct 2026: "for any company where we have incomplete information, filter out". A missing fact
+            # (no HQ state, size or industry, after any Overrides row and Clay's cross-check) leaves the company out;
+            # a fact that is there but borderline (an estimate near a size edge, a count and band that disagree) is
+            # taken as Apollo gives it, and the checks below decide on it. Nothing waits for a hand-check.
             found = [*cross_check(ctx, acct, doubts(acct, s)), *([label_doubt] if label_doubt else [])]
-            still = standing(found, cleared.get(a["account_id"], set()))
-            if still:
-                if (recorded.get(a["account_id"]) or {}).get("reasons") != still:
-                    doubt_rows.append(doubt_fact(ctx, acct, still))
-                fail(a, DOUBTFUL)
-                doubtful.append({"account_id": a["account_id"], "domain": a.get("domain"), "reasons": still})
+            missing = [d for d in standing(found, cleared.get(a["account_id"], set())) if d in MISSING]
+            if missing and a["account_id"] in clay_pending:
+                fail(a, CLAY_PENDING)  # a Clay error or no budget today: asked again next run, not left out yet
+                continue
+            if missing:
+                reason = f"{INCOMPLETE}{'; '.join(missing)}"
+                ctx.store.upsert("accounts", [{"account_id": a["account_id"], "status": labels.DISQUALIFIED,
+                                               "tier": labels.EXCLUDED, "tier_reason": reason}])
+                fail(a, f"disqualified: {reason}")
+                incomplete.append({"account_id": a["account_id"], "domain": a.get("domain"), "missing": missing})
                 continue
         if why:
             fail(a, why)
@@ -532,7 +552,7 @@ def run(ctx: Context) -> dict:
     summary["labels"] = lab.summary()
     summary.update(
         status="ok", waiting=len(waiting), checked=len(todo), verified=len(verified), excluded=excluded[:LIST_LIMIT],
-        to_hand_check=len(doubtful), to_hand_check_accounts=doubtful[:LIST_LIMIT],
+        incomplete=len(incomplete), incomplete_accounts=incomplete[:LIST_LIMIT],
         not_verified=dict(failed), not_verified_accounts=examples, errors=errors[:20],
         left_for_next_run=max(0, len(waiting) - len(todo)), rescore=scored,
     )

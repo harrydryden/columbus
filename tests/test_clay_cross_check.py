@@ -1,7 +1,8 @@
 """Clay's cross-check of doubtful HQ state and size (us_outbound/clay_cross_check.py, verify.cross_check; Harry,
 6 Oct 2026). Behind General clay_cross_check (default no): verify_accounts asks the "US Outbound – Accounts"
-function about its doubtful accounts once, in one batch, fills missing facts, drops the doubts Clay settles and
-restates those it disagrees with for the hand-check. Clay and HubSpot answer on a FakeTransport.
+function about accounts missing their HQ state or size once, in one batch, and fills the missing facts, so a company
+Clay can complete is not left out (Harry, 14 Oct 2026). Borderline facts are not asked about. Clay and HubSpot
+answer on a FakeTransport.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from us_outbound.settings.validate import validate_all
 
 FN = "t_us_accounts"
 CLAY = "https://api.clay.com/public/v0"
-NEAR = "Apollo's estimate of 49 staff is within 2 of the 50-staff edge"
+PENDING = verify.CLAY_PENDING
 
 
 def on(**kw):
@@ -59,16 +60,15 @@ def clay_facts(ctx):
 # -- the switch -------------------------------------------------------------------------------------------
 
 
-def test_off_by_default_clay_is_never_asked_and_every_doubt_goes_to_the_hand_check():
+def test_off_by_default_clay_is_never_asked_and_an_incomplete_company_is_left_out():
     assert General().clay_cross_check is False
     [row] = [r for r in default_tabs()["General"] if r["key"] == "clay_cross_check"]
     assert row["value"] == "no" and "Harry, 6 Oct 2026" in row["note"] and "docs/pipeline.md" in row["note"]
-    ctx, t = make([account(employees=49, size_band="20-49")],
-                  settings=settings_with(clay_accounts_function_id=FN))
+    ctx, t = make([account(hq_state=None)], settings=settings_with(clay_accounts_function_id=FN))
     clay(t, {"a1": answer()})
     out = verify.run(ctx)
     assert out["clay_cross_check"] == {"off": "clay_cross_check is no"} and runs(t) == []
-    assert out["to_hand_check"] == 1 and clay_facts(ctx) == []
+    assert out["incomplete"] == 1 and status(ctx) == "disqualified" and clay_facts(ctx) == []
 
 
 def test_the_switch_needs_the_function_id():
@@ -87,19 +87,20 @@ def test_the_switch_needs_the_function_id():
 # -- settle and restate ------------------------------------------------------------------------------------
 
 
-def test_a_size_doubt_clay_settles_is_dropped_and_the_account_verifies_the_same_day():
-    ctx, t = make([account(employees=49, size_band="20-49"), account("a2")], settings=on())
+def test_a_missing_size_clay_supplies_is_filled_and_the_account_verifies_the_same_day():
+    ctx, t = make([account(employees=None, size_band=None), account("a2", employees=49, size_band="20-49")],
+                  settings=on())
     clay(t, {"a1": answer(employees=45, credits_used=1.5)})
     out = verify.run(ctx)
-    assert status(ctx) == "verified" and out["to_hand_check"] == 0
+    assert status(ctx) == status(ctx, "a2") == "verified" and out["incomplete"] == 0
     [post] = runs(t)
     assert post.url == f"{CLAY}/routines/function:{FN}/run"
-    assert post.json == {"items": [{"id": "a1", "inputs": {"domain": "a1co.com"}}]}  # a2 has no doubt: not asked
+    assert post.json == {"items": [{"id": "a1", "inputs": {"domain": "a1co.com"}}]}  # a2 is borderline: not asked
     [fact] = clay_facts(ctx)
     assert fact["quote"] == "LinkedIn company page: 45 employees; HQ New York" and fact["account_id"] == "a1"
     assert {k: fact["value"][k] for k in ("hq_state", "employees", "credits", "apollo", "doubts")} == {
         "hq_state": "NY", "employees": 45, "credits": 1.5,
-        "apollo": {"hq_state": "NY", "employees": 49, "size_band": "20-49"}, "doubts": [NEAR]}
+        "apollo": {"hq_state": "NY", "employees": None, "size_band": None}, "doubts": [verify.NO_SIZE]}
     [entry] = ctx.store.select("credit_ledger", {"system": "clay"})
     assert (entry["credits"], entry["job"], entry["account_id"], entry["note"]) == (
         1.5, verify.JOB, "a1", cc.LEDGER_NOTE)
@@ -109,35 +110,15 @@ def test_a_size_doubt_clay_settles_is_dropped_and_the_account_verifies_the_same_
     assert report["budget"].startswith("Clay: 1.5 of 2,000 credits used this month")
 
 
-@pytest.mark.parametrize("apollo, clay_n, reasons", [
-    ({"employees": 49, "size_band": "20-49"}, 62, ["Clay says 62 staff, Apollo says 49"]),
-    ({"employees": 51}, 48, ["Clay says 48 staff, Apollo says 51"]),
-    ({"employees": 49, "size_band": "20-49"}, 49, []),  # the same count, on the same side: settled
-    ({"employees": 64, "size_band": "20-49"}, 62, []),  # count and band disagree; Clay sides with the count
-    ({"employees": 64, "size_band": "20-49"}, 30, ["Clay says 30 staff, Apollo says 64"]),
-    ({"employees": 248, "size_band": "100-249"}, 260, ["Clay says 260 staff, Apollo says 248"]),
-    ({"employees": 11, "size_band": "10-19"}, 14, []),
+@pytest.mark.parametrize("apollo", [
+    {"employees": 49, "size_band": "20-49"}, {"employees": 51}, {"employees": 64, "size_band": "20-49"},
+    {"employees": 248, "size_band": "100-249"}, {"employees": 11, "size_band": "10-19"},
 ])
-def test_where_clay_disagrees_on_size_the_doubt_stands_with_both_counts(apollo, clay_n, reasons):
+def test_a_borderline_size_is_not_asked_about_and_goes_ahead_on_apollo_s_count(apollo):
     ctx, t = make([account(**apollo)], settings=on())
-    clay(t, {"a1": answer(employees=clay_n)})
-    out = verify.run(ctx)
-    assert out["to_hand_check_accounts"] == ([{"account_id": "a1", "domain": "a1co.com", "reasons": reasons}]
-                                             if reasons else [])
-    assert status(ctx) == ("new" if reasons else "verified")
-    if reasons:
-        [doubt] = ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE, "fact": verify.DOUBT_FACT})
-        assert doubt["value"]["reasons"] == reasons  # what the hand-check shows Harry
-
-
-def test_approving_the_hand_check_clears_clay_s_reason_so_the_next_run_verifies():
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=on())
     clay(t, {"a1": answer(employees=62)})
-    verify.run(ctx)
-    [held] = verify.open_doubts(ctx)
-    assert held["reasons"] == ["Clay says 62 staff, Apollo says 49"]
-    verify.clear_doubts(ctx, [held], "harry", "2026-W41")
-    assert verify.run(ctx)["verified"] == 1 and status(ctx) == "verified" and len(runs(t)) == 1
+    out = verify.run(ctx)
+    assert runs(t) == [] and out["clay_cross_check"]["doubtful"] == 0 and status(ctx) == "verified"
 
 
 def test_a_missing_hq_state_is_filled_from_clay_so_the_account_verifies_today():
@@ -148,25 +129,24 @@ def test_a_missing_hq_state_is_filled_from_clay_so_the_account_verifies_today():
     assert ctx.store.get("accounts", account_id="a1")["hq_state"] == "IL"
 
 
-def test_a_missing_size_is_filled_and_a_clay_count_near_an_edge_says_apollo_gives_none():
+def test_a_missing_size_is_filled_and_a_clay_count_near_an_edge_goes_ahead():
     ctx, t = make([account(employees=None, size_band=None), account("a2", employees=None, size_band=None)],
                   settings=on())
     clay(t, {"a1": answer(employees=49), "a2": answer(employees=120)})
     out = verify.run(ctx)
-    assert out["to_hand_check_accounts"] == [
-        {"account_id": "a1", "domain": "a1co.com", "reasons": ["Clay says 49 staff, Apollo gives none"]}]
+    assert out["incomplete"] == 0 and status(ctx, "a1") == "verified"
     a1, a2 = (ctx.store.get("accounts", account_id=a) for a in ("a1", "a2"))
     assert (a1["employees"], a1["size_band"], a2["employees"], a2["size_band"]) == (49, "20-49", 120, "100-249")
     assert status(ctx, "a2") == "verified" and out["clay_cross_check"]["filled"] == {"hq_state": 0, "size": 2}
 
 
-def test_a_missing_fact_clay_cannot_supply_stays_word_for_word_and_industry_is_not_clay_s():
+def test_a_missing_fact_clay_cannot_supply_leaves_the_company_out_and_industry_is_not_clay_s():
     ctx, t = make([account(hq_state=None, employees=None, size_band=None, industry=None, industry_group=None)],
                   settings=on())
     clay(t, {"a1": answer(hq_state="Ontario", employees=None)})  # not a US state, no count
     out = verify.run(ctx)
-    [held] = out["to_hand_check_accounts"]
-    assert held["reasons"] == [verify.NO_STATE, verify.NO_INDUSTRY, verify.NO_SIZE]
+    [left] = out["incomplete_accounts"]
+    assert left["missing"] == [verify.NO_STATE, verify.NO_INDUSTRY, verify.NO_SIZE] and status(ctx) == "disqualified"
     [fact] = clay_facts(ctx)
     assert (fact["value"]["hq_state"], fact["value"]["hq_state_given"]) == (None, "Ontario")
     ctx, t = make([account(industry=None, industry_group=None)], settings=on())
@@ -174,35 +154,37 @@ def test_a_missing_fact_clay_cannot_supply_stays_word_for_word_and_industry_is_n
     assert verify.run(ctx)["clay_cross_check"]["doubtful"] == 0 and runs(t) == []  # an industry doubt alone
 
 
-def test_clay_s_state_is_read_against_apollo_s_when_it_was_asked_anyway():
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=on())
+def test_clay_s_state_does_not_overrule_apollo_s_when_it_was_asked_about_the_size():
+    ctx, t = make([account(employees=None, size_band=None)], settings=on())
     clay(t, {"a1": answer(hq_state="CA", employees=47)})
     out = verify.run(ctx)
-    assert out["to_hand_check_accounts"][0]["reasons"] == ["Clay says CA, Apollo says NY"]  # the size doubt settled
+    assert out["incomplete"] == 0 and status(ctx) == "verified"  # Apollo's NY stands; the size is filled
 
 
 # -- once per account, and errors ------------------------------------------------------------------------------
 
 
 def test_an_account_is_asked_once_and_its_answer_is_used_again():
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=on())
+    ctx, t = make([account(employees=None, size_band=None)], settings=on())
     clay(t, {"a1": answer(employees=62)})
     verify.run(ctx)
+    assert status(ctx) == "verified"
+    # a later Apollo sweep blanks the size: the stored answer fills it again, with no second call
+    ctx.store.update("accounts", {"account_id": "a1"}, {"status": "new", "employees": None, "size_band": None})
     again = verify.run(ctx)
-    assert len(runs(t)) == 1 and again["clay_cross_check"]["asked_before"] == 1
-    assert again["to_hand_check_accounts"][0]["reasons"] == ["Clay says 62 staff, Apollo says 49"]
-    assert len(ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE})) == 1  # the same doubt, once
+    assert len(runs(t)) == 1 and again["clay_cross_check"]["asked_before"] == 1 and status(ctx) == "verified"
 
 
-def test_a_clay_error_is_reported_the_doubt_stands_and_the_account_is_asked_again_next_run():
-    ctx, t = make([account(employees=49, size_band="20-49"), account("a2", hq_state=None)], settings=on())
+def test_a_clay_error_is_reported_and_the_account_waits_to_be_asked_again_next_run():
+    ctx, t = make([account(employees=None, size_band=None), account("a2", hq_state=None)], settings=on())
     clay(t, {"a1": ClayError("processing_failed"), "a2": {"hq_state": "IL"}})  # a2's output lacks two keys
     out = verify.run(ctx)
     report = out["clay_cross_check"]
     assert (report["asked"], report["answered"], report["failed"], report["credits"]) == (2, 0, 2, 2 * cc.RESERVE)
-    assert report["errors"][0].startswith("a1co.com: Clay item a1 failed")
-    assert report["errors"][1] == "a2co.com: employees, source are missing"
-    assert out["to_hand_check"] == 2 and clay_facts(ctx) == []
+    errors = sorted(report["errors"])
+    assert errors[0].startswith("a1co.com: Clay item a1 failed") and errors[1] == "a2co.com: employees, source are missing"
+    assert out["not_verified"] == {PENDING: 2} and out["incomplete"] == 0 and clay_facts(ctx) == []
+    assert status(ctx, "a1") == status(ctx, "a2") == "new"  # not left out on Clay's error
     assert {r["note"] for r in ctx.store.select("credit_ledger")} == {
         f"{cc.LEDGER_NOTE} failed; counted in case Clay charged it"}
     clay(t, {"a1": answer(employees=45), "a2": answer(hq_state="IL")})
@@ -210,14 +192,14 @@ def test_a_clay_error_is_reported_the_doubt_stands_and_the_account_is_asked_agai
     assert again["clay_cross_check"]["answered"] == 2 and status(ctx, "a1") == status(ctx, "a2") == "verified"
 
 
-def test_a_failed_run_is_one_error_and_every_doubt_stands():
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=on())
+def test_a_failed_run_is_one_error_and_the_account_waits():
+    ctx, t = make([account(employees=None, size_band=None)], settings=on())
     clay(t, {"a1": answer()}, status=403)
     out = verify.run(ctx)
     assert out["clay_cross_check"]["errors"] == [
         f"the Clay run failed (AuthError): clay HTTP 403 for /public/v0/routines/function:{FN}/run: "
         "{'routine_run_id': 'run-x'}"]
-    assert out["to_hand_check_accounts"][0]["reasons"] == [NEAR]
+    assert out["not_verified"] == {PENDING: 1} and status(ctx) == "new"
 
 
 # -- what is asked, and when not -------------------------------------------------------------------------------
@@ -228,15 +210,13 @@ def test_overrides_are_harry_s_word_clay_neither_fills_nor_argues():
     ctx, t = make([account(employees=None, size_band=None)], settings=s)
     clay(t, {"a1": answer(employees=62)})
     out = verify.run(ctx)
-    assert runs(t) == [] and out["clay_cross_check"]["doubtful"] == 0
-    assert out["to_hand_check_accounts"][0]["reasons"] == [NEAR]
+    assert runs(t) == [] and out["clay_cross_check"]["doubtful"] == 0 and status(ctx) == "verified"
     assert ctx.store.get("accounts", account_id="a1")["employees"] is None
 
 
-def test_accounts_that_fail_on_something_else_or_whose_doubts_were_cleared_are_not_asked():
-    ctx, t = make([account(hq_state="CA", employees=49), account("a2", employees=49, size_band="20-49")],
+def test_accounts_that_fail_on_something_else_or_are_only_borderline_are_not_asked():
+    ctx, t = make([account(hq_state="CA", employees=None, size_band=None), account("a2", employees=49, size_band="20-49")],
                   settings=on())
-    verify.clear_doubts(ctx, [{"account_id": "a2", "reasons": [NEAR]}], "harry", "2026-W41")
     clay(t, {})
     out = verify.run(ctx)
     assert runs(t) == [] and out["clay_cross_check"]["doubtful"] == 0 and status(ctx, "a2") == "verified"
@@ -249,15 +229,15 @@ def test_accounts_that_fail_on_something_else_or_whose_doubts_were_cleared_are_n
 ])
 def test_without_budget_or_a_function_clay_is_not_asked(kw, why):
     settings = settings_with(**{"clay_cross_check": True, "clay_accounts_function_id": FN, **kw})
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=settings)
+    ctx, t = make([account(employees=None, size_band=None)], settings=settings)
     clay(t, {"a1": answer()})
     out = verify.run(ctx)
     assert runs(t) == [] and out["clay_cross_check"]["not_asked"] == why
-    assert out["clay_cross_check"]["left_for_next_run"] == 1 and out["to_hand_check"] == 1
+    assert out["clay_cross_check"]["left_for_next_run"] == 1 and out["not_verified"] == {PENDING: 1}
 
 
 def test_a_kill_rule_pausing_the_clay_source_stops_the_asking():
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=on())
+    ctx, t = make([account(employees=None, size_band=None)], settings=on())
     ctx.store.insert("hitl_items", [{"item_id": "k1", "kind": holds.KIND, "status": "open",
                                      "payload": {"action": holds.PAUSE_SOURCE, "target": "clay", "reason": "4% bounced"}}])
     clay(t, {"a1": answer()})
@@ -266,7 +246,7 @@ def test_a_kill_rule_pausing_the_clay_source_stops_the_asking():
 
 
 def test_one_batch_of_at_most_run_items_max_within_the_budget(monkeypatch):
-    accounts = [account(f"a{i}", employees=49, size_band="20-49") for i in range(1, 5)]
+    accounts = [account(f"a{i}", employees=None, size_band=None) for i in range(1, 5)]
     monkeypatch.setattr(cc, "RUN_ITEMS_MAX", 2)
     ctx, t = make(copy.deepcopy(accounts), settings=on())
     clay(t, {f"a{i}": answer() for i in range(1, 5)})
@@ -325,7 +305,7 @@ def test_parse_cross_check_output_refuses_what_is_not_the_spec(raw):
 
 
 def test_dry_run_asks_clay_too_and_writes_only_the_database():
-    ctx, t = make([account(employees=49, size_band="20-49")], settings=on())
+    ctx, t = make([account(employees=None, size_band=None)], settings=on())
     clay(t, {"a1": answer()})
     verify.run(ctx)
     assert ctx.dry_run and len(runs(t)) == 1
