@@ -42,7 +42,7 @@ def test_errors_a_job_carried_on_past_are_posted_once_a_day_with_the_first_quote
     body = text(t)
     assert body.startswith("<@U_HARRY> :warning: *Some automatic jobs ran into problems*")  # approvers mentioned
     assert ("• *Adding people to the email campaign* (Mon 11:00 UK) finished, but skipped past 3 errors. The first: "
-            "“US Outbound – Hannah Spalding: instantly HTTP 502 for /api/v2/leads/add: bad gateway email:") in body
+            "Instantly's server had an error (HTTP 502), a problem on their side that usually clears by itself") in body
     assert "jane@acme.com" not in body  # passed through logs.redact
     assert body.endswith("_Each job tries again at its next run. More detail: the worker's logs in Railway, or "
                          "`railway ssh -- us-outbound status` for each job's last run._")
@@ -105,13 +105,13 @@ def test_a_rejected_key_is_told_once_a_day_whichever_jobs_met_it():
     ctx, t = world()
     beat(ctx.store, "hubspot_readback", at(30), detail={"errors": ["deals: hubspot HTTP 401 for /crm: x"]})
     beat(ctx.store, "poll_approvals", at(10), detail={"errors": ["ab12: HubSpot: hubspot HTTP 401 for /crm: x",
-                                                               "cd34: instantly HTTP 502 for /api: busy"]})
+                                                               "cd34: instantly HTTP 404 for /api: no such lead"]})
     out = check(ctx)
     body = text(t)
     assert body.count("HubSpot turned down our key") == 1
     assert "*HubSpot turned down our key* (updating HubSpot and checking the approvals in Slack): “" in body
     assert ("• *Checking the approvals in Slack* (Mon 11:50 UK) finished, but skipped past 1 error. The first: “cd34: "
-            "instantly HTTP 502") in body
+            "instantly HTTP 404") in body
     assert out["posted"] == ["key_rejected:hubspot:2026-10-26", "job_error:poll_approvals:errors:2026-10-26"]
 
 
@@ -129,8 +129,7 @@ def test_the_failure_flags_the_jobs_record():
             f"<{SHEET}|General tab>, and the spend limit in the Anthropic Console to match.") in body
     assert "• *Checking for replies* (Mon 11:40 UK): 3 Slack posts failed" in body
     assert "• *Adding people to the email campaign* failed (Mon 11:20 UK): “KeyError: 'owner'”" in body
-    assert ("• *Checking bounce and complaint limits* (Mon 11:55 UK) could not read the mailboxes' health from "
-            "Instantly: “instantly HTTP 504 for /accounts: timeout”") in body
+    assert "Checking bounce and complaint limits" not in body  # an hourly job's one outage: its next run tries again
     assert "posted to the log" not in body  # no token is not a Slack failure: the log has the post
 
 
@@ -211,3 +210,22 @@ def test_a_post_a_job_could_not_make_is_told_with_its_slack_error():
     check(ctx)
     assert ("• *The daily summary* (Mon 11:30 UK) could not post its message to Slack: “channel_not_found”"
             in text(t))
+
+
+def test_an_outage_a_frequent_job_meets_twice_running_is_posted_in_plain_words():
+    """14 Oct 2026: one Instantly 502 in the hourly kill_rules run reached Slack, quoting the error page's HTML."""
+    page = "ApiError: instantly HTTP 502 for /api/v2/accounts/warmup-analytics: <!DOCTYPE html> <html lang=\"en\">"
+    ctx, t = world()
+    beat(ctx.store, "kill_rules", at(65), detail={"vitals_error": page}, run_id="before")
+    beat(ctx.store, "kill_rules", at(5), detail={"vitals_error": page})
+    check(ctx)
+    body = text(t)
+    assert ("• *Checking bounce and complaint limits* (Mon 11:55 UK) could not read the mailboxes' health from "
+            "Instantly: Instantly's server had an error (HTTP 502), a problem on their side that usually clears by "
+            "itself") in body
+    assert "DOCTYPE" not in body
+
+    ctx, t = world()  # the run before went through: nothing to post
+    beat(ctx.store, "kill_rules", at(65), detail={"vitals_error": None}, run_id="before")
+    beat(ctx.store, "kill_rules", at(5), detail={"vitals_error": page})
+    assert check(ctx)["posted"] == [] and not t.requests

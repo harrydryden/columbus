@@ -120,6 +120,7 @@ QUEUE_OUT_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})  # not in the queue (s
 NOT_SCORED = "not scored yet"
 IN_SEQUENCE, FINISHED, STOPPED = "in_sequence", "finished", "stopped"
 _TOP_REVEALS = re.compile(r"^no sendable email among the top \d+ \(.*\)$")
+GAP_MIN_WAITING = 5  # companies still being checked with no size: fewer is the hand-check's to settle, not news
 SOURCES_POINTER = " The page reader's coverage is under Sources."  # the full post's; the short post has no Sources
 
 
@@ -536,17 +537,19 @@ def _gaps(rows: Rows) -> list[str]:
     no_band_w = sum(1 for a in waiting if not a.get("size_band"))
     ids = {str(a.get("account_id")) for a in verified}
     nobody = Counter(reason(r) for aid, r in rows.no_contact.items() if aid in ids)
-    parts = []
-    if no_band_v or no_band_w:
-        parts.append(f"no company size at {no_band_v} of {len(verified)} companies cleared to email "
-                     f"({fmt.pct(no_band_v, len(verified))}) and {no_band_w} of {len(waiting)} still being checked")
+    out = []
+    # Only gaps that change what is emailed (Harry, 14 Oct 2026: "no company size at 0 of 414" was noise).
+    if no_band_v or no_band_w >= GAP_MIN_WAITING:
+        out.append(f"  No company size from Apollo: {no_band_v} of {len(verified)} companies ready to email and "
+                   f"{no_band_w} still being checked. A size missing on a ready company means its contact is chosen "
+                   "without it; type it on the Overrides tab (field employees) if it matters.")
     if nobody:
         top, n = min(nobody.items(), key=lambda kv: (-kv[1], kv[0]))
-        parts.append(f"no one suitable to email at {fmt.plural(sum(nobody.values()), 'cleared company', 'cleared companies')}"
-                     f", mostly {top} ({n})")
-    if not parts:
-        return []
-    return ["  Missing data: " + "; ".join(parts) + "." + SOURCES_POINTER]
+        k = sum(nobody.values())
+        out.append(f"  {fmt.plural(k, 'company', 'companies')} ready to email {'has' if k == 1 else 'have'} nobody we "
+                   f"can write to, so {'it is' if k == 1 else 'they are'} skipped (most often: {top}, {n}). Nothing to "
+                   "do unless this grows: to widen the search, add job titles on the Roles tab.")
+    return out
 
 
 def _review_ready(ctx: Context) -> list[str]:

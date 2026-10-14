@@ -55,11 +55,18 @@ from us_outbound.timeparse import utc
 LOOKBACK = timedelta(hours=26)  # a daily job's latest run is always this recent
 QUOTE = 160  # characters of the first error quoted
 DEPTH = 4  # how deep in a job's detail errors are looked for
-LATEST_SQL = (
-    "SELECT DISTINCT ON (job) job, run_id, status, started_at, finished_at, detail, error"
-    " FROM {schema}.heartbeats WHERE started_at >= %(since)s AND status <> 'running'"
+LATEST_SQL = (  # each job's two latest finished runs: the latest, and the one before (transient errors, below)
+    "SELECT job, run_id, status, started_at, finished_at, detail, error FROM ("
+    "SELECT *, ROW_NUMBER() OVER (PARTITION BY job ORDER BY started_at DESC, run_id DESC) AS n"
+    " FROM {schema}.heartbeats WHERE started_at >= %(since)s AND status <> 'running') t WHERE n <= 2"
     " ORDER BY job, started_at DESC, run_id DESC"
 )
+# A service's own outage (HTTP 5xx or 429, a timeout, a dropped connection): a job that runs hourly or more often
+# meets one now and then and the next run goes through (Harry, 14 Oct 2026: one Instantly 502 reached Slack). It is
+# posted only when the run before met it too.
+TRANSIENT = re.compile(r"HTTP (?:5\d\d|429)\b|timed out|timeout|ConnectionError|RemoteDisconnected|"
+                       r"Connection (?:reset|aborted)", re.IGNORECASE)
+SERVER_ERROR = re.compile(r"\b(\w+) HTTP (\d{3})\b")
 FAILED, ERRORS, CLAUDE_CAP, SLACK_POST, UNUSABLE = "failed", "errors", "claude_cap", "slack_post", "unusable"
 # The post (Harry, 12 Oct 2026: clear to a newcomer; base/say.py): a headline, one bullet per finding with the job in
 # plain words (say.job_name), what to do where someone must act, and where to look for more.
@@ -124,6 +131,11 @@ class Finding:
 
 def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
     """job -> its latest finished run that started in the last LOOKBACK, with its detail (one query)."""
+    return two_latest(ctx, jobs)[0]
+
+
+def two_latest(ctx: Context, jobs: Iterable[str]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """(job -> its latest finished run, job -> the run before it), of runs started in the last LOOKBACK."""
     wanted = set(jobs)
     since = ctx.now - LOOKBACK
     try:
@@ -135,12 +147,30 @@ def latest_finished(ctx: Context, jobs: Iterable[str]) -> dict[str, dict]:
             if r.get("status") != "running" and started is not None and started >= since:
                 rows.append(r)
         rows.sort(key=lambda r: (utc(r.get("started_at")), str(r.get("run_id"))), reverse=True)
-    out: dict[str, dict] = {}
+    latest: dict[str, dict] = {}
+    before: dict[str, dict] = {}
     for r in rows:
         job = str(r.get("job") or "")
-        if job in wanted and job not in out:
-            out[job] = dict(r)
-    return out
+        if job not in wanted:
+            continue
+        if job not in latest:
+            latest[job] = dict(r)
+        elif job not in before:
+            before[job] = dict(r)
+    return latest, before
+
+
+def transient(f: Finding) -> bool:
+    """Whether every error of the finding is a service's own outage (TRANSIENT)."""
+    return bool(f.texts) and all(TRANSIENT.search(str(t)) for t in f.texts)
+
+
+def passing(job: str, found: list[Finding], before: Mapping[str, Any] | None) -> list[Finding]:
+    """The findings worth a post: an outage a frequent job met once is left out until the run before met it too."""
+    if EXPECTED.get(job, 0) >= DAILY:
+        return found
+    earlier = {f.kind for f in findings(job, before)} if before else set()
+    return [f for f in found if not transient(f) or f.kind in earlier]
 
 
 def _walk(detail: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
@@ -184,7 +214,13 @@ def findings(job: str, run: Mapping[str, Any]) -> list[Finding]:
 
 
 def _quote(text: str) -> str:
-    return "“" + clip(" ".join(str(redact(text)).split()), QUOTE) + "”"
+    """The error in a few words: a service's error page is named, not quoted (14 Oct 2026: a 502 quoted its HTML)."""
+    text = str(redact(text))
+    hit = SERVER_ERROR.search(text)
+    if hit and (int(hit.group(2)) >= 500 or "<html" in text.lower() or "<!doctype" in text.lower()):
+        return (f"{hit.group(1).capitalize()}'s server had an error (HTTP {hit.group(2)}), a problem on their side "
+                "that usually clears by itself")
+    return "“" + clip(" ".join(text.split()), QUOTE) + "”"
 
 
 def _when(at: datetime | None) -> str:
@@ -284,8 +320,8 @@ def _sync_post(run: Mapping[str, Any] | None) -> str:
 def check(ctx: Context, jobs: Iterable[str]) -> dict[str, Any]:
     """Read, then post what was not posted today. Never raises (but a GuardViolation): heartbeat_check goes on."""
     try:
-        runs = latest_finished(ctx, [j for j in jobs if j != SELF])
-        found = [f for job, run in sorted(runs.items()) for f in findings(job, run)]
+        runs, before = two_latest(ctx, [j for j in jobs if j != SELF])
+        found = [f for job, run in sorted(runs.items()) for f in passing(job, findings(job, run), before.get(job))]
         unusable = [f for f in found if f.kind == UNUSABLE]
         found = [f for f in found if f.kind != UNUSABLE] + unusable[:1]  # one line for all the jobs it stops
         if unusable:
