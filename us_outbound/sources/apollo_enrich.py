@@ -204,6 +204,7 @@ class _Run:
     kept: Counter[str] = field(default_factory=Counter)  # why an account's row kept its own size
     waiting: int = 0  # accounts a bulk call left unanswered with no credit left for a single call
     errors: list[str] = field(default_factory=list)
+    fallback: str = ""  # why bulk calls were turned off for the run (no error: single calls carry on)
 
 
 def _failed(paid: ledger.Charge, exc: ApiError, note: dict, what: str, r: _Run, room: credits.Room) -> None:
@@ -247,9 +248,12 @@ def ask_bulk(ctx: Context, batch: Sequence[Mapping[str, Any]], r: _Run, room: cr
             out.setdefault(d, org)
     r.unmatched += unmatched
     if unmatched or reported > len(orgs):
+        # Handled, not an error (Harry, 14 Oct 2026: it reached Slack as one): the rest of the run asks one domain at a
+        # time, which is how a mismatch is kept from being paid for twice. The summary and the log keep it.
         r.bulk = False
-        r.errors.append(f"bulk_enrich carried {len(orgs)} records, {unmatched} matching no domain asked, and reported "
-                        f"{reported:.0f} found: single calls from here")
+        r.fallback = (f"bulk_enrich carried {len(orgs)} records, {unmatched} matching no domain asked, and reported "
+                      f"{reported:.0f} found: single calls from here")
+        log("apollo_enrich_bulk_off", run_id=ctx.run_id, reason=r.fallback)
     return out
 
 
@@ -419,6 +423,6 @@ def run(ctx: Context) -> dict:
         size_kept=dict(r.kept), back_to_verify=r.back_to_verify, left_for_next_run=len(todo) - t.accounts,
         bulk_calls=r.bulk_calls, single_calls=r.single_calls, bulk_unmatched=r.unmatched, credits=r.credits,
         credits_per_account=round(r.credits / max(1, t.accounts), 3), facts=r.facts, budget=room.as_dict(),
-        errors=r.errors[:20],
+        errors=r.errors[:20], bulk_off=r.fallback or None,
     )
     return _done(ctx, summary)

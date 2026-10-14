@@ -186,9 +186,12 @@ HOLD_KEEPS = "; approving keeps Fintech"
     ("Fintech", verdict("none", "high", "association"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify",
        "a membership body or society, not an employer we prospect (the label check)")),
-    ("Fintech", verdict("Fintech", "medium", "association"), "required",
-     D("Fintech", TECH, "disputed", "medium", "general", "hold",
-       "industry uncertain: the model thinks this is a membership body or society (medium)" + HOLD_KEEPS)),
+    ("Fintech", verdict("Fintech", "medium", "association"), "required",  # fairly sure is enough (12 Oct 2026)
+     D("Fintech", TECH, "disputed", "medium", "general", "disqualify",
+       "a membership body or society, not an employer we prospect (the label check)")),
+    ("Fintech", verdict("Fintech", "low", "association"), "required",
+     D("Fintech", TECH, "disputed", "low", "general", "hold",
+       "industry uncertain: the model thinks this is a membership body or society (low)" + HOLD_KEEPS)),
     # 6: the model cannot tell.
     ("Fintech", verdict("Fintech", "high", "other"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "hold",
@@ -197,15 +200,20 @@ HOLD_KEEPS = "; approving keeps Fintech"
     ("Fintech", verdict("none", "high", what="crop insurance"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify", "no Industries label fits (crop insurance)")),
     ("Fintech", verdict("none", "medium"), "required",
-     D("Fintech", TECH, "disputed", "medium", "general", "hold",
-       "industry uncertain: the model finds no Industries label that fits (medium)" + HOLD_KEEPS)),
+     D("Fintech", TECH, "disputed", "medium", "general", "disqualify", "no Industries label fits (the label check)")),
+    ("Fintech", verdict("none", "low"), "required",
+     D("Fintech", TECH, "disputed", "low", "general", "hold",
+       "industry uncertain: the model finds no Industries label that fits (low)" + HOLD_KEEPS)),
     # 8: a switched-off label, or a group not prospected.
     ("Fintech", verdict("Physician practices", "high"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify",
        "its industry (Healthcare) is switched off on the Industries tab (the label check)")),
     ("Fintech", verdict("Professional Services", "medium"), "required",
-     D("Fintech", TECH, "disputed", "medium", "general", "hold",
-       "industry uncertain: the model says Professional Services, switched off on the Industries tab (medium)"
+     D("Fintech", TECH, "disputed", "medium", "general", "disqualify",
+       "its industry (Professional Services) is switched off on the Industries tab (the label check)")),
+    ("Fintech", verdict("Professional Services", "low"), "required",
+     D("Fintech", TECH, "disputed", "low", "general", "hold",
+       "industry uncertain: the model says Professional Services, switched off on the Industries tab (low)"
        + HOLD_KEEPS)),
     # ... but a switched-off label in a group with its own label on is that group's label.
     (TECH, verdict("Remote & hybrid teams", "low"), "required",
@@ -248,8 +256,8 @@ def test_within_a_group_whose_own_label_is_off_a_doubt_gets_general_copy():
 
 
 def test_a_hold_reads_the_same_whatever_the_quote_so_a_cleared_hand_check_stays_cleared():
-    a = labels.decide(ind("Fintech"), verdict("none", "medium", evidence="one quote", what="payroll"), DEFAULT)
-    b = labels.decide(ind("Fintech"), verdict("none", "medium", evidence="another", what="lending"), DEFAULT)
+    a = labels.decide(ind("Fintech"), verdict("none", "low", evidence="one quote", what="payroll"), DEFAULT)
+    b = labels.decide(ind("Fintech"), verdict("none", "low", evidence="another", what="lending"), DEFAULT)
     assert a.action == "hold" and a.reason == b.reason
 
 
@@ -642,7 +650,7 @@ def test_the_daily_post_carries_the_block():
                                    "and the group for 0, n/a;") and lines.index("*Mailboxes*") > i
 
 
-def test_the_asks_trip_once_a_day_on_corrections_agreement_and_an_unavailable_check():
+def test_the_asks_trip_once_a_day_on_corrections_and_an_unavailable_check():
     facts_ = [*(correction(i, "Adtech & martech", "Fintech") for i in range(3)),
               *(checked_fact(10 + i, "rules+model") for i in range(10)),
               *(checked_fact(30 + i, "model", rules="Adtech & martech", model="Marketing agencies") for i in range(12)),
@@ -653,14 +661,10 @@ def test_the_asks_trip_once_a_day_on_corrections_agreement_and_an_unavailable_ch
     assert got["labels_corrections:2026-10-27"] == (
         ":warning: *Industry labels: approvers corrected the industry on 3 of 23 email cards since the last send day.*\n"
         "Corrections: Adtech & martech → Fintech (3).\n"
-        f"*What to do:* check those industries' definitions and keywords on the {tab}; then "
-        "`railway ssh -- us-outbound labels audit --live` checks the queued companies again.")
-    assert got["labels_agreement:2026-10-27"] == (
-        ":warning: *Industry labels: the AI check (Claude) disagreed with our rules on 12 of 25 companies (48%).*\n"
-        "It put them in another group or outside our industries; most were under Technology & Startups (12).\n"
-        "*What to do:* run `railway ssh -- us-outbound labels crosswalk` to see which NAICS codes (US industry codes) "
-        f"and keywords bring them in, then fix those on the {tab}.")
-    assert "labels_no_rules:2026-10-27" not in got
+        f"*What to do:* check those industries' definitions on the {tab}: a sharper line fixes the next ones. A "
+        "changed definition has every company checked again by itself; nothing to run.")
+    # The rules' disagreement with the model is no ask any more (12 Oct 2026): the model's label decides the email.
+    assert "labels_agreement:2026-10-27" not in got and "labels_no_rules:2026-10-27" not in got
     assert got["labels_unavailable:2026-10-27"].startswith(
         ":rotating_light: *Industry labels: the AI check (Claude) could not run, so 4 new companies wait unchecked.*\n"
         "Why: Claude did not answer. While `label_check` is `required` (General tab), a company is not emailed")
@@ -676,9 +680,8 @@ def test_a_company_asked_twice_counts_once_by_its_latest_check():
     assert (t.checked, t.labelled, t.agreed, t.decisions) == (1, 1, 1, {"rules+model": 1})
 
 
-def test_no_rules_label_is_its_own_ask_naming_the_codes_to_add():
-    """A company the rules gave no label cannot agree with the model: it is a gap in the Industries tab's codes,
-    told with the model's labels and the companies' Apollo NAICS codes, not as disagreement."""
+def test_no_rules_label_is_counted_apart_from_disagreement():
+    """A company the rules gave no label cannot agree with the model: the tally keeps it apart, and it is no ask."""
     facts_ = [*(checked_fact(i, "rules+model") for i in range(20)),
               *(checked_fact(100 + i, "disputed", action="hold", rules=None, group=None, model="Fintech")
                 for i in range(15)),
@@ -689,17 +692,7 @@ def test_no_rules_label_is_its_own_ask_naming_the_codes_to_add():
     naics += [{"event_id": f"n{i}", "account_id": f"a{i}", "source": "apollo_org", "fact": "naics",
                "value": ["611710", "541990"], "observed_at": MON - timedelta(days=5)} for i in range(200, 206)]
     ctx = measured([*facts_, *naics], [decided(i) for i in range(5)])
-    got = dict(labels.asks(ctx))
-    assert "labels_agreement:2026-10-27" not in got  # the 20 the rules labelled all agree
-    assert got["labels_no_rules:2026-10-27"] == (
-        ":warning: *Industry labels: our rules gave no industry to 22 of 42 companies checked (52%).*\n"
-        "The AI check (Claude) most often said Fintech (15), Edtech (6).\n"
-        "Their commonest NAICS codes (US industry codes): 522320 → Fintech (12), 541990 → Edtech (6), "
-        "611710 → Edtech (6). 3 have no NAICS code from Apollo, so only `apollo_keywords` can label them.\n"
-        "*What to do:*\n"
-        "1. Add each code to that industry's `naics_prefixes` on the "
-        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Industries tab>.\n"
-        "2. Run `railway ssh -- us-outbound sync`, then `railway ssh -- us-outbound relabel --live`.")
+    assert dict(labels.asks(ctx)) == {}  # a gap in the rules is no ask (12 Oct 2026): the model labels them
     t = labels.tally(ctx, *period(ctx)[:2])
     assert (t.checked, t.labelled, t.share_agreed()) == (42, 20, 1.0)
 

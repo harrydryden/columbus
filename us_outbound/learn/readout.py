@@ -59,6 +59,7 @@ from us_outbound.timeparse import iso_date, utc
 
 JOB = "monday_readout"
 MIN_COMPANIES = signal_value.MIN_TO_READ  # 30: a rate on fewer companies is "too few to read"
+CAP_BINDING = 0.9  # last week's enrolments at 90% of weekly_enrol_cap or more: the limit held sending back
 MIN_SENDS = 100  # a bounce rate on fewer sends moves a lot with one bounce (kill_rules reads a domain from 100)
 BOUNCE_LIMIT = 0.02  # exit criteria to scale (docs/roadmap.md §3): bounce rate under 2%
 # SPEC 12's working assumption for the funnel: (the companies-so-far column, what it is called, the low end of the
@@ -174,7 +175,7 @@ def criteria_lines(checks: Sequence[tuple[bool, str, str, str]]) -> list[str]:
     return out
 
 
-def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime
+def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime, enrolled_last_week: int = 0
                   ) -> tuple[list[str], dict[str, bool], list[str]]:
     """(the section's lines, met by criterion, what needs someone in a few words each, for the summary)."""
     checks: list[tuple[bool, str, str, str]] = []  # (met, name, its numbers, what to do)
@@ -183,13 +184,17 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime
     general = say.sheet_link(ctx, "General")
 
     sends, bounces = len(ev.by_type["sent"]), len(ev.by_type["bounced"])
-    met["bounces"] = bool(sends) and bounces / sends < BOUNCE_LIMIT
+    # Met only on enough sends to judge (Harry, 12 Oct 2026: 0 bounces in 13 sends read as "met", and the readout
+    # then said to raise the weekly limit).
+    met["bounces"] = sends >= MIN_SENDS and bounces / sends < BOUNCE_LIMIT
     if not sends:
         checks.append((False, "bounces under 2%", "no email sent yet", ""))
+    elif sends < MIN_SENDS:
+        checks.append((False, "bounces under 2%", f"too early to tell: {bounces:,} of {fmt.plural(sends, 'send')} so "
+                                                  f"far; it is judged from {MIN_SENDS} sends", ""))
     else:
-        caution = f"; under {MIN_SENDS} sends, one bounce moves it a lot" if sends < MIN_SENDS else ""
         checks.append((met["bounces"], "bounces under 2%",
-                       f"{bounces:,} of {fmt.plural(sends, 'send')}, {fmt.pct(bounces, sends)}{caution}", ""))
+                       f"{bounces:,} of {fmt.plural(sends, 'send')}, {fmt.pct(bounces, sends)}", ""))
 
     complaints = len(ev.by_type[COMPLAINT])
     met["complaints"] = complaints == 0
@@ -259,11 +264,14 @@ def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime
         checks.append((True, name, held, ""))
 
     out = criteria_lines(checks)
-    if all(met.values()):
-        out.append(f"  *What to do:* all {len(met)} are met, so sending can grow: raise `weekly_enrol_cap` (now "
-                   f"{ctx.settings.general.weekly_enrol_cap:,}) on the {general} in step with the mailbox ramp "
-                   "(docs/roadmap.md, Scaling)")
+    cap = ctx.settings.general.weekly_enrol_cap
+    if all(met.values()) and enrolled_last_week >= cap * CAP_BINDING:  # the limit held sending back: raising it helps
+        out.append(f"  *What to do:* all {len(met)} are met and last week reached the weekly limit, so sending can "
+                   f"grow: raise `weekly_enrol_cap` (now {cap:,}) on the {general} in step with the mailbox ramp")
         todo.append("decide whether to raise the weekly limit")
+    elif all(met.values()):
+        out.append(f"  All {len(met)} are met. The weekly limit is not what holds sending back ({enrolled_last_week:,} "
+                   f"of {cap:,} last week): the mailboxes' warm-up is, and it rises by itself.")
     return out, met, todo
 
 
@@ -347,7 +355,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     enrolled = [c for c in ctx.store.select("contacts") if c.get("enrolled_at")]
     enrolled_last_week = budget.enrolled_this_week(enrolled, start + timedelta(days=3))
 
-    criteria, met, todo = exit_criteria(ctx, ev, start, end)
+    criteria, met, todo = exit_criteria(ctx, ev, start, end, enrolled_last_week)
     body = ["", "*Against the targets*", *targets(ctx, total, enrolled_last_week),
             "", f"*Exit criteria to scale* (all {len(met)} must be met before sending grows): "
                 f"{sum(met.values())} of {len(met)} met", *criteria]

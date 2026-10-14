@@ -187,7 +187,7 @@ def needs_you(ctx: Context, w: ForYou) -> str:
     if w.holds:
         parts.append(f"{fmt.plural(len(w.holds), 'kill-rule hold')} (`us-outbound killrules show`)")
     if w.hand_checks:
-        parts.append("this week's hand-check (`us-outbound handcheck show`)")
+        parts.append("this week's hand-check (the Hand-check tab on the settings sheet)")
     return "*Needs you:* " + (" · ".join(parts) if parts else "nothing")
 
 
@@ -452,17 +452,18 @@ def _needs(ctx: Context, w: ForYou) -> list[str]:
     if w.holds:
         out.append(f"{fmt.plural(len(w.holds), 'safety pause')} on (bounce or complaint limit hit): "
                    f"{say.command('killrules show')}")
-    if w.hand_checks:
-        p = (w.hand_checks[0].get("payload") or {}) if isinstance(w.hand_checks[0].get("payload"), Mapping) else {}
-        k = len(p.get("doubtful") or ())
-        if enrol.has_sample(p):
-            what = "Weekly hand-check (a random sample of companies)"
-            then = "; new leads wait for it" if ctx.settings.general.auto_send else ""
-        else:
-            what = f"Weekly hand-check of {fmt.plural(k, 'company', 'companies')} with doubtful facts" if k else \
-                "Weekly hand-check"
-            then = ""
-        out.append(f"{what}: {say.command('handcheck show')}{then}")
+    from us_outbound.enrol import hand_check, hand_check_tab
+
+    week = hand_check.this_week(ctx)  # an earlier week's item still open is superseded by this week's (12 Oct 2026)
+    item = next((i for i in w.hand_checks if enrol._item_week(i) == week), None)
+    if item is not None:
+        left = hand_check_tab.undecided(ctx, week)
+        p = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
+        n = left if left is not None else len(p.get("accounts") or ()) + len(p.get("doubtful") or ())
+        then = "; new leads wait for it" if enrol.has_sample(p) and ctx.settings.general.auto_send else ""
+        if n:
+            out.append(f"Weekly hand-check: {fmt.plural(n, 'company', 'companies')} still need a decision on the "
+                       f"{say.sheet_link(ctx, hand_check_tab.TAB)}{then}")
     return [f"{i}. {x}" for i, x in enumerate(out, 1)]
 
 
@@ -509,12 +510,17 @@ def _today(ctx: Context, day: Day) -> list[str]:
     if day.why:
         out = ["*Today: no new people added to the emails*", f"Why: {day.why}."]
     else:
-        out = [f"*Today: up to {fmt.plural(lim.number, 'new person', 'new people')} added to the emails*"]
-        binding = str(t.get("binding"))
-        limit = LIMIT_WORDS.get(binding, limits.LABELS.get(binding, binding))
-        if binding == "sending_capacity" and day.ramping:
-            limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
-        out.append(f"Held to that by {limit}")
+        pending = sum(c.pending for c in lim.senders.values())
+        if not lim.number and pending:  # every sender's room is taken by cards waiting (12 Oct 2026: "up to 0")
+            out = ["*Today: no new people until the waiting emails are approved*",
+                   f"Each sender's room for today is taken by the {fmt.plural(pending, 'email')} waiting for your ✅."]
+        else:
+            out = [f"*Today: up to {fmt.plural(lim.number, 'new person', 'new people')} added to the emails*"]
+            binding = str(t.get("binding"))
+            limit = LIMIT_WORDS.get(binding, limits.LABELS.get(binding, binding))
+            if binding == "sending_capacity" and day.ramping:
+                limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
+            out.append(f"Held to that by {limit}")
     names = _short_names(list(lim.senders))
     senders = []
     for owner, c in ({} if day.why else lim.senders).items():  # no room to show on a day nobody is added

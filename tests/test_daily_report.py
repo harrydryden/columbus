@@ -149,7 +149,7 @@ def test_approvals_from_the_contract():
     # Right under the headline: what needs Harry now.
     assert lines[2] == ("*Needs you:* 2 send approvals (the oldest has waited 5 hours; a card lapses at the end of the "
                         "next send day) · 1 reply (waited 30 hours) · 1 kill-rule hold (`us-outbound killrules show`) · "
-                        "this week's hand-check (`us-outbound handcheck show`)")
+                        "this week's hand-check (the Hand-check tab on the settings sheet)")
     assert nums["needs_you"] == {"send_approvals": 2, "replies": 1, "kill_rule_holds": 1, "hand_checks": 1}
 
 
@@ -370,9 +370,11 @@ def test_to_improve_before_any_send():
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")
     assert body[-1] == "  Too early to compare: no email sent in the last 90 days."
-    assert body[1].startswith("  Missing data: no company size at 1 of 6 companies cleared to email (16.7%) and 2 of 5 "
-                              "still being checked; no one suitable to email at 1 cleared company, mostly company size "
-                              "unknown (1).")
+    assert body[1].startswith("  No company size from Apollo: 1 of 6 companies ready to email and 2 still being "
+                              "checked.")
+    assert body[2] == ("  1 company ready to email has nobody we can write to, so it is skipped (most often: company "
+                       "size unknown, 1). Nothing to do unless this grows: to widen the search, add job titles on the "
+                       "Roles tab.")
 
 
 def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
@@ -383,8 +385,7 @@ def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")[1:]
     assert len(body) == daily_report.MAX_IMPROVE
-    assert body[4] == ("  Missing data: no company size at 1 of 1 companies cleared to email (100.0%) and 0 of 20 still "
-                       "being checked. The page reader's coverage is under Sources.")
+    assert body[4].startswith("  No company size from Apollo: 1 of 1 companies ready to email and 0 still being checked.")
     # In the words of the score job's tier mix alert (scoring/score.py), with the same fix.
     assert body[5] == ("  This month's list of companies to email is unbalanced (21 companies): Top fit (Priority) 0%, "
                        "Good fit (Standard) 0%, Comparison group (Control) 100%; each group should be 5–40%. *What to "

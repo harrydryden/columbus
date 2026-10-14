@@ -492,10 +492,10 @@ def test_an_unsure_answer_is_verified_under_the_models_group_whatever_the_rules_
 def test_a_doubt_whether_it_is_an_employer_goes_to_the_hand_check_and_approving_verifies_it():
     from us_outbound.enrol import hand_check
 
-    ctx, sdk = labelled([account()], {"a1co.com": {"label": "Fintech", "confidence": "medium",
+    ctx, sdk = labelled([account()], {"a1co.com": {"label": "Fintech", "confidence": "low",
                                                    "entity": "association", "evidence": "Payments software"}})
     out = verify.run(ctx)
-    reason = ("industry uncertain: the model thinks this is a membership body or society (medium); approving keeps "
+    reason = ("industry uncertain: the model thinks this is a membership body or society (low); approving keeps "
               "Fintech")
     assert out["not_verified"] == {verify.DOUBTFUL: 1} and out["labels"]["held"] == 1 and status(ctx) == "new"
     assert out["to_hand_check_accounts"] == [{"account_id": "a1", "domain": "a1co.com", "reasons": [reason]}]
@@ -623,8 +623,8 @@ def test_a_verified_account_with_no_verdict_is_checked_and_its_label_put_right()
 def test_a_verified_account_the_model_doubts_goes_back_to_the_hand_check_and_one_it_rules_out_leaves():
     accounts = [account("a1", status="verified"), account("a2", status="verified")]
     ctx, _ = labelled(accounts, {
-        "a1co.com": {"label": "none", "confidence": "medium", "evidence": "Payments software"},
-        "a2co.com": {"label": "none", "confidence": "high", "entity": "association", "evidence": "Payments software"}})
+        "a1co.com": {"label": "none", "confidence": "low", "evidence": "Payments software"},
+        "a2co.com": {"label": "none", "confidence": "medium", "entity": "association", "evidence": "Payments software"}})
     out = verify.run(ctx)
     assert status(ctx, "a1") == "queued" and [d["account_id"] for d in verify.open_doubts(ctx)] == ["a1"]
     assert (status(ctx, "a2"), acc(ctx, "a2")["tier"]) == ("disqualified", "Excluded")

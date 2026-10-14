@@ -371,10 +371,45 @@ def _with_sample(ctx: Context, week: str, before: Mapping[str, Any] | None) -> d
     return payload
 
 
+def slack_text(ctx: Context, payload: Mapping[str, Any], tab_rows: Sequence[Mapping[str, Any]]) -> str:
+    """The Slack post (Harry, 12 Oct 2026): what the check is, how many and why, and a link to the Hand-check tab where
+    each company gets a decision from a dropdown. No list of companies and no command: the tab has both."""
+    from us_outbound.enrol import hand_check_tab as tab
+
+    sample = enrol.has_sample(payload)
+    week = week_label(payload.get("iso_week"))
+    doubts = [r for r in tab_rows if r.get("check") == tab.DOUBT]
+    drawn = len(tab_rows) - len(doubts)
+    kinds = {"an uncertain industry": 0, "a missing HQ state, size or industry": 0, "other doubtful facts": 0}
+    for r in doubts:
+        why = str(r.get("why") or "")
+        if why.startswith(labels.UNCERTAIN):
+            kinds["an uncertain industry"] += 1
+        elif any(m in why for m in verify.MISSING):
+            kinds["a missing HQ state, size or industry"] += 1
+        else:
+            kinds["other doubtful facts"] += 1
+    parts = ([f"{drawn} picked at random"] if drawn else []) + [f"{n} with {k}" for k, n in kinds.items() if n]
+    n = len(tab_rows)
+    head = (f"Weekly hand-check: {_accounts(n)} to look at before this week's new emails go out" if sample
+            else f"Weekly hand-check: {_accounts(n)} to look at before {'it' if n == 1 else 'they'} can be emailed")
+    return say.compose(
+        say.ACTION, head, [f"{week}: {', '.join(parts)}."],
+        do=[f"Open the {say.sheet_link(ctx, tab.TAB)}: one row per company, with the reason it is there.",
+            "Pick a `decision` on each row: *fine*, *leave out* (never email it), or *wrong industry* (then pick the "
+            "right one in `right_label`). For a missing HQ state or size, type it in `right_hq_state` or "
+            "`right_employees`, then pick *fine*.",
+            "That's all: each choice is applied within 5 minutes, and the check closes once every row has one."],
+        why=("until every row has a decision, no new leads go to Instantly this week." if sample
+             else "a company with no decision waits; nothing else is held up."))
+
+
 def _post(ctx: Context, item: Mapping[str, Any]) -> dict[str, Any]:
+    from us_outbound.enrol import hand_check_tab as tab
+
     payload = dict(item.get("payload") or {})
-    sent = notify.alert(ctx, notify.mention(ctx) + text(payload, detailed=False,
-                                                       overrides=say.sheet_link(ctx, "Overrides")))
+    tab.write(ctx, payload)
+    sent = notify.alert(ctx, notify.mention(ctx) + slack_text(ctx, payload, tab.rows(ctx, payload)))
     payload["posted"] = bool(sent.get("posted")) and ctx.live
     update: dict[str, Any] = {"item_id": item["item_id"], "payload": payload}
     if sent.get("ts"):
@@ -452,8 +487,9 @@ def _resolve(payload: Mapping[str, Any], wanted: Iterable[str], known: set[str])
     return list(dict.fromkeys(ids)), unknown
 
 
-def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
+def approve(ctx: Context, pulled: Sequence[str], by: str, *, clear: bool = True) -> dict:
     """Mark this week's hand-check handled, with the pulled accounts. Live only; dry-run says what it would do.
+    clear=False: the doubts were cleared row by row already (the Hand-check tab, enrol/hand_check_tab.py).
 
     Every hand_check item of the week is marked (enrol waits for all of them); the pulled ids go
     on each, merged with any pulled before. A pull is an account id or a domain, in the sample or not.
@@ -493,7 +529,8 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
              "payload": {**dict(r.get("payload") or {}), "pulled_account_ids": all_pulled}}
             for r in rows
         ])
-        verify.clear_doubts(ctx, cleared, by, week)  # the next verify_accounts run decides on their facts
+        if clear:
+            verify.clear_doubts(ctx, cleared, by, week)  # the next verify_accounts run decides on their facts
         if item.get("slack_ts"):
             notify.alert(ctx, message)
     return {"dry_run": ctx.dry_run, "iso_week": week, "item_id": item["item_id"], "approved": ctx.live,

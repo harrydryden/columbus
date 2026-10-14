@@ -20,8 +20,10 @@ label's own pitch:
   * the model unavailable (the cap, an error, no key): with General label_check = required, a new company waits
     unverified; with skip, the rules' label with the group's copy (source rules);
   * a public body is left out; a membership body or society, a company no label fits or one whose industry is
-    switched off is left out when the model is sure, and held for the weekly hand-check when it is not; a company
-    the model cannot place is held;
+    switched off is left out when the model is sure or fairly sure (high or medium), and held for the weekly
+    hand-check only when it is unsure (low); a company the model cannot place is held (Harry, 12 Oct 2026: 98
+    companies on one week's hand-check were mostly medium calls into switched-off groups or membership bodies,
+    and "the model's label decides" means those are not emailed);
   * otherwise the model's label decides (Harry, 11 Oct 2026: on 50 companies he judged by hand the model had the
     right group for 42 of 44, the rules for 34 of 50, so the rules only source companies now): the label's own copy
     when the model is sure and read the company's home page (model); its group's own label and copy when it is not
@@ -52,7 +54,6 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -489,14 +490,15 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
     if verdict.entity == PUBLIC_BODY:
         quote = f": “{verdict.evidence}”" if verdict.evidence else ""
         return leave_out(f"a public body, never prospected (the label check{quote})")
+    sure = c in (HIGH, MEDIUM)  # enough to leave a company out; only an unsure call waits for a person
     if verdict.entity == ASSOCIATION:
-        if c == HIGH:
+        if sure:
             return leave_out("a membership body or society, not an employer we prospect (the label check)")
         return hold(f"the model thinks this is a membership body or society ({c})")
     if verdict.entity == OTHER:
         return hold(f"the model cannot tell what this company is ({c})")
     if verdict.label == NONE:
-        if c == HIGH:
+        if sure:
             return leave_out(f"no Industries label fits ({verdict.what_they_do or 'the label check'})")
         return hold(f"the model finds no Industries label that fits ({c})")
     model = settings.industry(verdict.label)
@@ -504,7 +506,7 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
         group = model.industry_group if model else verdict.label
         umbrella = settings.umbrella(group)
         if umbrella is None or not umbrella.active:
-            if c == HIGH:
+            if sure:
                 return leave_out(f"its industry ({group}) is switched off on the Industries tab (the label check)")
             return hold(f"the model says {verdict.label}, switched off on the Industries tab ({c})")
         model = umbrella  # a switched-off label in a group we prospect: the group's own label
@@ -1072,8 +1074,8 @@ def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
 
 
 def asks(ctx: Context) -> list[tuple[str, str]]:
-    """The daily post's label asks (learn/spend.asks posts them, each key once): many corrections, low agreement,
-    and checks that could not run. Each says what happened in plain words, then what to do and where."""
+    """The daily post's label asks (learn/spend.asks posts them, each key once): many corrections, and checks that
+    could not run. Each says what happened in plain words, then what to do and where."""
     from us_outbound.base import say
     from us_outbound.learn.daily_post import period
 
@@ -1090,36 +1092,12 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
                     f"{say.ACTION} *Industry labels: approvers corrected the industry on {n} of {t.cards} "
                     "email cards since the last send day.*\n"
                     f"Corrections: {_moves(t.corrections)}.\n"
-                    f"*What to do:* check those industries' definitions and keywords on the {tab()}; then "
-                    f"{say.command('labels audit --live')} checks the queued companies again."))
-    share = t.share_same_group()
-    if t.labelled >= ASK_MIN_CHECKS and share is not None and share < ASK_AGREEMENT:
-        worst, k = max(t.disagreed_groups.items(), key=lambda kv: kv[1]) if t.disagreed_groups else ("the groups", 0)
-        moved = t.labelled - t.same_group
-        out.append((f"labels_agreement:{day}",
-                    f"{say.ACTION} *Industry labels: {ai} disagreed with our rules on {moved} of {t.labelled} "
-                    f"companies ({1 - share:.0%}).*\n"
-                    f"It put them in another group or outside our industries; most were under {worst} ({k}).\n"
-                    f"*What to do:* run {say.command('labels crosswalk')} to see which NAICS codes (US industry codes) "
-                    f"and keywords bring them in, then fix those on the {tab()}."))
-    gaps = len(t.no_rules)
-    if gaps >= ASK_MIN_CHECKS and gaps >= ASK_NO_RULES * t.checked:
-        said = Counter(label for label in t.no_rules.values() if label != NONE).most_common(GAP_CODES)
-        codes, uncoded = gap_codes(ctx, t.no_rules)
-        text = (f"{say.ACTION} *Industry labels: our rules gave no industry to {gaps} of {t.checked} companies checked "
-                f"({gaps / t.checked:.0%}).*"
-                + (f"\n{ai[0].upper()}{ai[1:]} most often said {', '.join(f'{x} ({k})' for x, k in said)}." if said else ""))
-        if codes:
-            text += ("\nTheir commonest NAICS codes (US industry codes): "
-                     + ", ".join(f"{c} → {x} ({k})" for c, x, k in codes) + ".")
-        if uncoded:
-            text += f" {uncoded} have no NAICS code from Apollo, so only `apollo_keywords` can label them."
-        if codes:
-            text += (f"\n*What to do:*\n1. Add each code to that industry's `naics_prefixes` on the {tab()}.\n"
-                     f"2. Run {say.command('sync')}, then {say.command('relabel --live')}.")
-        else:
-            text += f"\n*What to do:* add keywords for them to `apollo_keywords` on the {tab()}."
-        out.append((f"labels_no_rules:{day}", text))
+                    f"*What to do:* check those industries' definitions on the {tab()}: a sharper line fixes the "
+                    "next ones. A changed definition has every company checked again by itself; nothing to run."))
+    # The rules' disagreement with the model, and the companies they gave no label, are not asked about any more
+    # (Harry, 12 Oct 2026): the model's label decides the email and the rules only source companies, so there is
+    # nothing for a person to do about them day to day. The Monday readout still reports the agreement, and
+    # `labels crosswalk` says which codes to trim when sourcing brings in too many companies we leave out.
     waiting = int(run.get("unchecked") or 0)
     if run.get("unavailable_reason") and waiting:
         companies = f"{waiting} new compan{'y waits' if waiting == 1 else 'ies wait'}"

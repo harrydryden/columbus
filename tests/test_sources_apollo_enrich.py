@@ -350,6 +350,8 @@ def test_a_company_apollo_files_under_another_domain_is_asked_once_more():
     assert fake.single_asked == ["acmehq.com"] and facts_of(ctx, "acme")[enrich.MARKER]["value"]["via"] == "single"
     assert facts_of(ctx, "acme")["employees"]["value"] == 64 and out["bulk_unmatched"] == 1
     assert out["credits"] == 3.0  # Apollo charged the bulk record it filed elsewhere, and the single call
+    # Handled, so no error for heartbeat_check to post (14 Oct 2026): the summary says why bulk calls stopped.
+    assert out["errors"] == [] and out["bulk_off"].startswith("bulk_enrich carried 2 records, 1 matching no domain")
 
 
 def test_the_401_of_a_wrong_key_stops_the_job():
