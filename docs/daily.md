@@ -65,7 +65,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | When | What arrives | What to do |
 | :- | :- | :- |
 | 07:00 | Mailbox check, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
-| Monday 08:00 | The weekly hand-check, only if some accounts have doubtful facts (no HQ state, size or industry, a size near a band edge), site visitors included. With `clay_cross_check` = yes, only the doubts Clay couldn't settle, with both values ("Clay says 62 staff, Apollo says 49") | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed), or *wrong industry* with the right one in `right_label`. For a missing HQ state or size, type it in `right_hq_state` or `right_employees` and pick *fine* (it goes onto the Overrides tab). Each choice is applied within 5 minutes; the check closes when every row has one. Since 12 Oct only the AI's unsure calls come here: a fairly sure call into a switched-off group, a membership body or no label is left out by itself (`handcheck approve` still works from a terminal) |
+| Monday 08:00 | The weekly hand-check: with `auto_send` = yes, a sample of the companies about to be emailed. Since 14 Oct nothing is held here for doubtful facts or an unclear industry: a company missing its HQ state, size or industry is left out by itself ("incomplete information"), as is one the AI cannot place in our industries, and a borderline size (near a band edge) goes ahead on Apollo's count. With `auto_send` = no there is usually no hand-check | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed), or *wrong industry* with the right one in `right_label`. Each choice is applied within 5 minutes; the check closes when every row has one (`handcheck approve` still works from a terminal). To keep a company that was left out for missing information, add its fact on the **Overrides** tab |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
 | 09:00 | The daily post, short since 9 Oct 2026: **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
@@ -368,8 +368,7 @@ in the last 30 days. A visit lifts that company's score before the 12:00 enrol (
 +35, "Viewed US pricing or demo page" +25, so both make Priority). A new visitor is looked up in
 Apollo: one in the US (in any state: a visitor is never excluded on its state) within the General size
 range joins the queue, and one Apollo can't place (no HQ state or country,
-no size, no industry, a size near an edge) comes in held for Monday's hand-check rather than being
-left out. It costs about 3 Apollo credits a day, plus 1 for each new visitor looked up. The daily
+no size, no industry) is left out for incomplete information (Harry, 14 Oct 2026). It costs about 3 Apollo credits a day, plus 1 for each new visitor looked up. The daily
 post's Sources section has one line on it. The emails never mention a visit.
 
 **If the daily post says "No website-visitor data from Apollo for spill.chat",** check the tracker.
@@ -417,7 +416,7 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
 - **The 1st, 02:50 UK: lookalike leads** (`lookalike_leads`). Apollo looks for US companies like
   Spill's active customers, UK customers included, in the Focus tab's industries and the same size
   band, and the new ones join the queue. They still go through the usual checks (HQ state, size,
-  HubSpot, the hand-check if a fact is doubtful), and they score the "Found as a lookalike of a
+  HubSpot; left out if a fact is missing), and they score the "Found as a lookalike of a
   customer" signal (+10). Nothing arrives in Slack on its own: that morning's daily post says what
   it found under **Sources**, with how the UK customers' searches did beside the US customers'.
   It spends at most 60 Apollo credits. `us-outbound run lookalike_leads` runs it by hand; a second

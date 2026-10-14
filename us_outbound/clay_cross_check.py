@@ -1,16 +1,18 @@
 """Clay's cross-check of the HQ state and size Apollo leaves in doubt (verify.cross_check; Harry, 6 Oct 2026).
 
-verify_accounts holds an account whose Apollo facts are doubtful for the weekly hand-check (verify.py): no
-HQ state, no size, a count and band that disagree, or a count near a size edge. With the General switch
-clay_cross_check = yes (default no), Clay is asked first, so Harry sees only what Clay could not settle.
+verify_accounts leaves out a company whose Apollo facts are incomplete (verify.py; Harry, 14 Oct 2026: "for any
+company where we have incomplete information, filter out"): no HQ state, or no size. With the General switch
+clay_cross_check = yes (default no), Clay is asked first, so a company Clay can complete is kept. Borderline facts
+(a count near a size edge, a count and band that disagree) are no longer held, so Clay is not asked about them;
+the settle rules below still word what an answer already stored says.
 
-  1. Ask (the pre-pass, before verify's checks): the run's accounts with a standing HQ-state or size doubt
-     that no hand-check has cleared, that no Overrides row answers, and that no other check would fail first,
+  1. Ask (the pre-pass, before verify's checks): the run's accounts missing their HQ state or size, that no
+     Overrides row answers, and that no other check would fail first,
      go to Clay's "US Outbound – Accounts" function (General clay_accounts_function_id; its spec is in
      docs/pipeline.md) in one batch of up to RUN_ITEMS_MAX, in verify's order. Once per account: each answer
      is a signal_events fact (source clay, fact FACT, Clay's source note as the quote), and an account with
      one is not asked again. A Clay error is not stored, so that account is asked again next run; the job
-     summary reports it and the doubt stands for the hand-check. Not while a kill rule pauses the clay source
+     summary reports it and the missing fact stands, so the company is left out. Not while a kill rule pauses the clay source
      (base/holds.paused_sources), and only within today's share of clay_monthly_credits (budget.py): RESERVE
      is written to credit_ledger for each account before the call and settled after it at what Clay reports.
   2. Fill: a missing HQ state, or a missing size (no count and no band), is filled in on the account from
@@ -62,6 +64,7 @@ NO_FUNCTION = ("clay_accounts_function_id is blank: build the \"US Outbound – 
                "(docs/pipeline.md) and paste its id on the General tab")
 SIZE_FIELDS = frozenset({"employees", "size_band"})
 ERROR_LIMIT = 20
+UNANSWERED = "unanswered"  # account ids missing a fact that Clay has not answered yet (an error, or no budget)
 
 
 # -- telling doubts apart ----------------------------------------------------------------------------------
@@ -149,6 +152,9 @@ def wanted(ctx: Context, todo: Sequence[Mapping[str, Any]], facts: Mapping[str, 
         state, size = kinds(acct, found, s)
         ov = overridden(s, a)
         bears = ([] if "hq_state" in ov else state) + ([] if ov & SIZE_FIELDS else size)
+        # Since 14 Oct only a missing fact matters (verify.run leaves the company out without it); a borderline
+        # one is taken as Apollo gives it, so Clay is not paid to second-guess it.
+        bears = [d for d in bears if d in verify.MISSING]
         if bears:
             out.append((a, bears))
     return out
@@ -260,8 +266,10 @@ def ask(ctx: Context, todo: Sequence[dict], facts: Mapping[str, Mapping[str, Any
         if month is not None:
             report["budget"] = budget.monthly(ctx.store, ctx.settings, "clay", ctx.now).describe()
     fill(ctx, [a for a, _ in want], have, report)
-    log("clay_cross_check", run_id=ctx.run_id, **{k: v for k, v in report.items() if k != "errors"},
-        errors=len(report["errors"]))
+    # verify.run keeps these waiting rather than leave them out: Clay may yet complete them (popped from the summary)
+    report[UNANSWERED] = {a["account_id"] for a, _ in want if a["account_id"] not in have}
+    log("clay_cross_check", run_id=ctx.run_id, **{k: v for k, v in report.items() if k not in ("errors", UNANSWERED)},
+        errors=len(report["errors"]), unanswered=len(report[UNANSWERED]))
     return report
 
 

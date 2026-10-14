@@ -81,13 +81,11 @@ def test_an_account_that_passes_every_check_is_verified_and_scored():
 @pytest.mark.parametrize("change, reason", [
     ({"domain": None}, "no domain"),
     ({"domain": "gmail.com"}, "a personal email domain"),
-    ({"hq_state": None}, verify.DOUBTFUL),  # Harry, 2 Oct 2026: to the hand-check, not dropped unseen
     ({"hq_state": "CA"}, "HQ in CA or WA"),
     ({"hq_state": "Washington"}, "HQ in CA or WA"),
     ({"hq_state": "OH"}, "HQ state not active"),
     ({"employees": 300, "size_band": None}, "outside 10 to 249 employees"),
     ({"employees": 6}, "outside 10 to 249 employees"),
-    ({"employees": None, "size_band": None}, verify.DOUBTFUL),
     ({"industry": "Staffing agencies"}, "industry switched off"),
     ({"industry": "Underwater basket weaving"}, "no Industries label"),
     ({"naics": "561330"}, "a partner, never prospected"),  # a PEO
@@ -297,58 +295,68 @@ def test_what_counts_as_a_doubtful_apollo_fact(change, reasons):
     assert verify.doubts(account(**change)) == reasons
 
 
-def test_a_doubtful_account_goes_to_the_hand_check_once_instead_of_being_verified():
-    ctx, t = make([account(employees=49, size_band="20-49"), account("a2")])
+INCOMPLETE = "disqualified: incomplete information: "
+
+
+@pytest.mark.parametrize("change, missing", [
+    ({"hq_state": None}, [verify.NO_STATE]),
+    ({"employees": None, "size_band": None}, [verify.NO_SIZE]),
+    ({"industry": None, "industry_group": None}, [verify.NO_INDUSTRY]),
+    ({"hq_state": "", "employees": None, "size_band": None}, [verify.NO_STATE, verify.NO_SIZE]),
+])
+def test_a_company_with_incomplete_information_is_left_out(change, missing):
+    # Harry, 14 Oct 2026: "for any company where we have incomplete information, filter out"
+    ctx, t = make([account(**change), account("a2")])
     out = verify.run(ctx)
-    assert (out["verified"], out["to_hand_check"]) == (1, 1)
-    assert out["not_verified"] == {verify.DOUBTFUL: 1} and status(ctx) == "new" and status(ctx, "a2") == "verified"
-    assert out["to_hand_check_accounts"] == [
-        {"account_id": "a1", "domain": "a1co.com", "reasons": ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"]}]
-    assert [r for r in hubspot_requests(t) if "a1co.com" in str(r.json)] == []  # nothing asked about it meanwhile
-    [fact] = ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE, "fact": verify.DOUBT_FACT})
-    assert fact["value"] == {"reasons": ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"],
-                             "facts": {"hq_state": "NY", "employees": 49, "size_band": "20-49"}}
-    verify.run(ctx)  # the same doubt is not recorded twice
-    assert len(ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE})) == 1
-    assert [d["account_id"] for d in verify.open_doubts(ctx)] == ["a1"]
+    reason = "; ".join(missing)
+    assert out["not_verified"] == {INCOMPLETE + reason: 1} and status(ctx, "a2") == "verified"
+    a1 = ctx.store.get("accounts", account_id="a1")
+    assert (a1["status"], a1["tier"], a1["tier_reason"]) == ("disqualified", "Excluded", f"incomplete information: {reason}")
+    assert out["incomplete_accounts"] == [{"account_id": "a1", "domain": "a1co.com", "missing": missing}]
+    assert [r for r in hubspot_requests(t) if "a1co.com" in str(r.json)] == []
+    assert ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE}) == []  # nothing for a hand-check
+    assert verify.run(ctx)["checked"] == 0  # left out for good: not checked again
 
 
-def test_the_hand_check_lists_doubts_and_approving_it_clears_them_so_the_next_run_verifies():
-    from us_outbound.enrol import hand_check
+@pytest.mark.parametrize("change", [
+    {"employees": 49, "size_band": "20-49"},  # near the 50-staff edge
+    {"employees": 51},
+    {"employees": 11, "size_band": "10-19"},
+    {"employees": 248, "size_band": "100-249"},
+])
+def test_a_borderline_size_is_taken_as_apollo_gives_it(change):
+    ctx, _ = make([account(**change)])
+    out = verify.run(ctx)
+    assert out["verified"] == 1 and out["incomplete"] == 0 and status(ctx) == "verified"
+    assert ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE}) == []
 
-    accounts = [account(employees=49, size_band="20-49"), account("a2", hq_state=None), account("a3", employees=50)]
-    ctx, _ = make(accounts)
+
+def test_a_count_and_band_that_disagree_are_checked_on_the_count():
+    ctx, _ = make([account(employees=64, size_band="20-49"), account("a2", employees=300, size_band="100-249")])
+    out = verify.run(ctx)
+    assert status(ctx, "a1") == "verified" and status(ctx, "a2") == "new"
+    assert out["not_verified"] == {"outside 10 to 249 employees": 1}
+
+
+def test_an_overrides_row_completes_a_company_so_it_is_not_left_out():
+    s = settings_with(overrides=(Override("a1co.com", "hq_state", "NY"),))
+    ctx, _ = make([account(hq_state=None)], settings=s)
+    assert verify.run(ctx)["verified"] == 1 and status(ctx) == "verified"
+
+
+def test_an_overrides_row_added_later_brings_a_left_out_company_back():
+    ctx, _ = make([account(hq_state=None), account("a2", employees=None, size_band=None)])
     verify.run(ctx)
-    live = dataclasses.replace(ctx, job="handcheck_show")
-    live.guard.configure(live=True)
-    item, payload = hand_check.show(live)
-    assert item is None and hand_check.has_work(payload)  # show never writes; approve records the week itself
-    assert [d["account_id"] for d in payload["doubtful"]] == ["a1", "a2", "a3"]
-    words = hand_check.text(payload)
-    assert "3 companies have doubtful facts from Apollo, so they get no email until you look*" in words
-    assert "(a1co.com) · HQ NY · 20-49 (49 staff) · Apollo's estimate of 49 staff is within 2 of the 50-staff edge" in words
-    out = hand_check.approve(live, ["a3co.com"], "harry")
-    assert out["doubts_cleared"] == ["a1"] and out["pulled_account_ids"] == ["a3"]
-    assert out["still_missing_a_fact"] == ["a2"]  # approving cannot supply an HQ state (Harry, 6 Oct 2026)
-    assert "The company missing a fact (HQ state, size or industry) stays on the check" in out["message"]
-    live.guard.configure(live=False)
-    again = verify.run(ctx)
-    assert status(ctx, "a1") == "verified"  # checked by Harry: verified on its facts
-    assert status(ctx, "a2") == "new" and "HQ state unknown" not in again["not_verified"]  # never failed unseen
-    assert status(ctx, "a3") == "new" and again["to_hand_check"] == 2  # a2 still missing its state; a3 pulled
-    assert [d["account_id"] for d in verify.open_doubts(ctx)] == ["a2", "a3"]
-    filled = dataclasses.replace(ctx, settings=settings_with(overrides=(Override("a2co.com", "hq_state", "NY"),)))
-    assert [d["account_id"] for d in verify.open_doubts(filled)] == ["a3"]  # the Overrides row settles it
-    verify.run(filled)
-    assert status(ctx, "a2") == "verified"
+    assert status(ctx, "a1") == status(ctx, "a2") == "disqualified"
+    s = settings_with(overrides=(Override("a1co.com", "hq_state", "NY"), Override("a2co.com", "industry", "Fintech")))
+    out = verify.run(dataclasses.replace(ctx, settings=s))
+    assert out["completed_by_overrides"] == ["a1"]  # a2's row does not supply its missing size
+    assert status(ctx, "a1") == "verified" and status(ctx, "a2") == "disqualified"
 
 
-def test_an_account_with_no_industry_goes_to_the_hand_check():
-    ctx, _ = make([account(industry=None, industry_group=None)])
-    out = verify.run(ctx)
-    assert out["to_hand_check_accounts"] == [{"account_id": "a1", "domain": "a1co.com", "reasons": [verify.NO_INDUSTRY]}]
-    ctx, _ = make([account(industry="Not a label")])  # a label the Industries tab lacks is no doubt: it fails as before
-    assert verify.run(ctx)["not_verified"] == {"no Industries label": 1}
+def test_a_label_the_industries_tab_lacks_is_not_missing_information():
+    ctx, _ = make([account(industry="Not a label")])
+    assert verify.run(ctx)["not_verified"] == {"no Industries label": 1} and status(ctx) == "new"
 
 
 def test_an_overrides_row_settles_a_doubt():
@@ -489,25 +497,15 @@ def test_an_unsure_answer_is_verified_under_the_models_group_whatever_the_rules_
     assert fact["value"]["decision"]["reason"] == "the model says Advertising agencies (medium): the group's copy"
 
 
-def test_a_doubt_whether_it_is_an_employer_goes_to_the_hand_check_and_approving_verifies_it():
-    from us_outbound.enrol import hand_check
-
+def test_a_doubt_whether_it_is_an_employer_leaves_it_out_with_no_hand_check():
+    """14 Oct 2026: a company the model cannot place in our industries is filtered out, not held for a person."""
     ctx, sdk = labelled([account()], {"a1co.com": {"label": "Fintech", "confidence": "low",
                                                    "entity": "association", "evidence": "Payments software"}})
     out = verify.run(ctx)
-    reason = ("industry uncertain: the model thinks this is a membership body or society (low); approving keeps "
-              "Fintech")
-    assert out["not_verified"] == {verify.DOUBTFUL: 1} and out["labels"]["held"] == 1 and status(ctx) == "new"
-    assert out["to_hand_check_accounts"] == [{"account_id": "a1", "domain": "a1co.com", "reasons": [reason]}]
-    [d] = verify.open_doubts(ctx)
-    assert d["reasons"] == [reason]
-    live = dataclasses.replace(ctx, job="handcheck_show")
-    live.guard.configure(live=True)
-    assert hand_check.approve(live, [], "harry")["doubts_cleared"] == ["a1"]
-    live.guard.configure(live=False)
-    again = verify.run(ctx)
-    assert again["verified"] == 1 and status(ctx) == "verified" and len(sdk.calls) == 1
-    assert acc(ctx)["label_source"] == "disputed"  # approved: General copy, as the doubt stays a doubt
+    assert out["labels"]["disqualified"] == 1 and out["labels"].get("held", 0) == 0
+    assert (status(ctx), acc(ctx)["tier"]) == ("disqualified", "Excluded")
+    assert acc(ctx)["tier_reason"] == "probably a membership body or society (the label check, low)"
+    assert verify.open_doubts(ctx) == [] and len(sdk.calls) == 1
 
 
 def test_a_company_held_on_thin_facts_is_asked_again_once_its_home_page_is_read_and_verified():
@@ -620,15 +618,14 @@ def test_a_verified_account_with_no_verdict_is_checked_and_its_label_put_right()
     assert len(sdk.calls) == 1
 
 
-def test_a_verified_account_the_model_doubts_goes_back_to_the_hand_check_and_one_it_rules_out_leaves():
+def test_a_verified_account_the_model_cannot_place_leaves():
     accounts = [account("a1", status="verified"), account("a2", status="verified")]
     ctx, _ = labelled(accounts, {
         "a1co.com": {"label": "none", "confidence": "low", "evidence": "Payments software"},
         "a2co.com": {"label": "none", "confidence": "medium", "entity": "association", "evidence": "Payments software"}})
     out = verify.run(ctx)
-    assert status(ctx, "a1") == "queued" and [d["account_id"] for d in verify.open_doubts(ctx)] == ["a1"]
-    assert (status(ctx, "a2"), acc(ctx, "a2")["tier"]) == ("disqualified", "Excluded")
-    assert (out["labels"]["held"], out["labels"]["disqualified"]) == (1, 1)
+    assert [status(ctx, a) for a in ("a1", "a2")] == ["disqualified", "disqualified"]
+    assert verify.open_doubts(ctx) == [] and out["labels"]["disqualified"] == 2
 
 
 def test_required_never_unverifies_a_verified_account_when_the_model_is_unavailable():
