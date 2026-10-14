@@ -171,7 +171,6 @@ def D(label, group, source, confidence, copy, action="verify", reason=""):
     return labels.Decision(label, group, source, confidence, copy, action, reason)
 
 
-HOLD_KEEPS = "; approving keeps Fintech"
 
 
 @pytest.mark.parametrize("rules, v, mode, want", [
@@ -189,21 +188,21 @@ HOLD_KEEPS = "; approving keeps Fintech"
     ("Fintech", verdict("Fintech", "medium", "association"), "required",  # fairly sure is enough (12 Oct 2026)
      D("Fintech", TECH, "disputed", "medium", "general", "disqualify",
        "a membership body or society, not an employer we prospect (the label check)")),
-    ("Fintech", verdict("Fintech", "low", "association"), "required",
-     D("Fintech", TECH, "disputed", "low", "general", "hold",
-       "industry uncertain: the model thinks this is a membership body or society (low)" + HOLD_KEEPS)),
+    ("Fintech", verdict("Fintech", "low", "association"), "required",  # unsure too (14 Oct 2026): filtered out
+     D("Fintech", TECH, "disputed", "low", "general", "disqualify",
+       "probably a membership body or society (the label check, low)")),
     # 6: the model cannot tell.
     ("Fintech", verdict("Fintech", "high", "other"), "required",
-     D("Fintech", TECH, "disputed", "high", "general", "hold",
-       "industry uncertain: the model cannot tell what this company is (high)" + HOLD_KEEPS)),
+     D("Fintech", TECH, "disputed", "high", "general", "disqualify",
+       "the label check cannot tell what this company is (high)")),
     # 7: no label fits.
     ("Fintech", verdict("none", "high", what="crop insurance"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify", "no Industries label fits (crop insurance)")),
     ("Fintech", verdict("none", "medium"), "required",
      D("Fintech", TECH, "disputed", "medium", "general", "disqualify", "no Industries label fits (the label check)")),
     ("Fintech", verdict("none", "low"), "required",
-     D("Fintech", TECH, "disputed", "low", "general", "hold",
-       "industry uncertain: the model finds no Industries label that fits (low)" + HOLD_KEEPS)),
+     D("Fintech", TECH, "disputed", "low", "general", "disqualify",
+       "no Industries label clearly fits (the label check, low)")),
     # 8: a switched-off label, or a group not prospected.
     ("Fintech", verdict("Physician practices", "high"), "required",
      D("Fintech", TECH, "disputed", "high", "general", "disqualify",
@@ -212,9 +211,8 @@ HOLD_KEEPS = "; approving keeps Fintech"
      D("Fintech", TECH, "disputed", "medium", "general", "disqualify",
        "its industry (Professional Services) is switched off on the Industries tab (the label check)")),
     ("Fintech", verdict("Professional Services", "low"), "required",
-     D("Fintech", TECH, "disputed", "low", "general", "hold",
-       "industry uncertain: the model says Professional Services, switched off on the Industries tab (low)"
-       + HOLD_KEEPS)),
+     D("Fintech", TECH, "disputed", "low", "general", "disqualify",
+       "its industry (Professional Services) is switched off on the Industries tab (the label check, low)")),
     # ... but a switched-off label in a group with its own label on is that group's label.
     (TECH, verdict("Remote & hybrid teams", "low"), "required",
      D(TECH, TECH, "umbrella", "low", "group", reason=f"the model says {TECH} (low): the group's copy")),
@@ -255,10 +253,11 @@ def test_within_a_group_whose_own_label_is_off_a_doubt_gets_general_copy():
     assert (d.label, d.source, d.copy, d.action) == ("Hospitals", "disputed", "general", "verify")
 
 
-def test_a_hold_reads_the_same_whatever_the_quote_so_a_cleared_hand_check_stays_cleared():
-    a = labels.decide(ind("Fintech"), verdict("none", "low", evidence="one quote", what="payroll"), DEFAULT)
-    b = labels.decide(ind("Fintech"), verdict("none", "low", evidence="another", what="lending"), DEFAULT)
-    assert a.action == "hold" and a.reason == b.reason
+def test_no_industry_doubt_is_held_for_a_person():
+    """14 Oct 2026: a company the model cannot place in our industries is left out, whatever its confidence."""
+    for v in (verdict("none", "low", evidence="one quote"), verdict("Fintech", "low", "association"),
+              verdict("Fintech", "low", "other"), verdict("Professional Services", "low")):
+        assert labels.decide(ind("Fintech"), v, DEFAULT).action == "disqualify"
 
 
 @pytest.mark.parametrize("source, level", [

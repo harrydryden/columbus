@@ -53,9 +53,9 @@ General's) and whether it goes on:
     not checked: why") and the next run asks again; label_check = skip decides on the rules alone, with the group's
     copy. Accounts already verified are never un-verified for it: they keep their label, and an unchecked one gets
     its group's copy (labels.copy_level);
-  * a public body is disqualified, as are a membership body or society, a company no label fits or one whose
-    industry is switched off when the model is sure; when it is not, the doubt ("industry uncertain: ...") joins
-    the account's doubts for the weekly hand-check, and approving it verifies the account with General copy;
+  * a public body is disqualified, as are a membership body or society, a company no label fits, one whose
+    industry is switched off and one the model cannot place, at any confidence (Harry, 14 Oct 2026: filter the
+    ambiguous ones out; the weekly hand-check is for doubtful facts only);
   * otherwise the account goes on to HubSpot with the label the rule gives.
 The run also checks accounts already verified that have no fresh verdict, so the queue converges with no command
 run; their decisions are written the same way (a held one goes back to queued and to the hand-check). Both kinds

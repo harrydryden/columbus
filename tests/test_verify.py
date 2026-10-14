@@ -489,25 +489,15 @@ def test_an_unsure_answer_is_verified_under_the_models_group_whatever_the_rules_
     assert fact["value"]["decision"]["reason"] == "the model says Advertising agencies (medium): the group's copy"
 
 
-def test_a_doubt_whether_it_is_an_employer_goes_to_the_hand_check_and_approving_verifies_it():
-    from us_outbound.enrol import hand_check
-
+def test_a_doubt_whether_it_is_an_employer_leaves_it_out_with_no_hand_check():
+    """14 Oct 2026: a company the model cannot place in our industries is filtered out, not held for a person."""
     ctx, sdk = labelled([account()], {"a1co.com": {"label": "Fintech", "confidence": "low",
                                                    "entity": "association", "evidence": "Payments software"}})
     out = verify.run(ctx)
-    reason = ("industry uncertain: the model thinks this is a membership body or society (low); approving keeps "
-              "Fintech")
-    assert out["not_verified"] == {verify.DOUBTFUL: 1} and out["labels"]["held"] == 1 and status(ctx) == "new"
-    assert out["to_hand_check_accounts"] == [{"account_id": "a1", "domain": "a1co.com", "reasons": [reason]}]
-    [d] = verify.open_doubts(ctx)
-    assert d["reasons"] == [reason]
-    live = dataclasses.replace(ctx, job="handcheck_show")
-    live.guard.configure(live=True)
-    assert hand_check.approve(live, [], "harry")["doubts_cleared"] == ["a1"]
-    live.guard.configure(live=False)
-    again = verify.run(ctx)
-    assert again["verified"] == 1 and status(ctx) == "verified" and len(sdk.calls) == 1
-    assert acc(ctx)["label_source"] == "disputed"  # approved: General copy, as the doubt stays a doubt
+    assert out["labels"]["disqualified"] == 1 and out["labels"].get("held", 0) == 0
+    assert (status(ctx), acc(ctx)["tier"]) == ("disqualified", "Excluded")
+    assert acc(ctx)["tier_reason"] == "probably a membership body or society (the label check, low)"
+    assert verify.open_doubts(ctx) == [] and len(sdk.calls) == 1
 
 
 def test_a_company_held_on_thin_facts_is_asked_again_once_its_home_page_is_read_and_verified():
@@ -620,15 +610,14 @@ def test_a_verified_account_with_no_verdict_is_checked_and_its_label_put_right()
     assert len(sdk.calls) == 1
 
 
-def test_a_verified_account_the_model_doubts_goes_back_to_the_hand_check_and_one_it_rules_out_leaves():
+def test_a_verified_account_the_model_cannot_place_leaves():
     accounts = [account("a1", status="verified"), account("a2", status="verified")]
     ctx, _ = labelled(accounts, {
         "a1co.com": {"label": "none", "confidence": "low", "evidence": "Payments software"},
         "a2co.com": {"label": "none", "confidence": "medium", "entity": "association", "evidence": "Payments software"}})
     out = verify.run(ctx)
-    assert status(ctx, "a1") == "queued" and [d["account_id"] for d in verify.open_doubts(ctx)] == ["a1"]
-    assert (status(ctx, "a2"), acc(ctx, "a2")["tier"]) == ("disqualified", "Excluded")
-    assert (out["labels"]["held"], out["labels"]["disqualified"]) == (1, 1)
+    assert [status(ctx, a) for a in ("a1", "a2")] == ["disqualified", "disqualified"]
+    assert verify.open_doubts(ctx) == [] and out["labels"]["disqualified"] == 2
 
 
 def test_required_never_unverifies_a_verified_account_when_the_model_is_unavailable():
