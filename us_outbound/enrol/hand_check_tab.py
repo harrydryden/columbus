@@ -201,6 +201,10 @@ def apply(ctx: Context) -> dict[str, Any]:
     sheet_id = ctx.guard.bounds.settings_sheet_id
     week = hand_check.this_week(ctx)
     item = hand_check.current(ctx, week)
+    if ctx.live and ctx.settings.general.auto_send and (item is None or hand_check.needs_sample(ctx, item)):
+        # auto_send switched on mid-week: enrol waits for the week's sample, so post it now rather than on Monday
+        out["posted"] = hand_check.post(ctx).get("status")
+        item = hand_check.current(ctx, week)
     if not sheet_id or item is None or item.get("status") == "handled":
         return out
     try:
