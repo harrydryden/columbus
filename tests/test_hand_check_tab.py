@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from tests.fakes import make_context
 from tests.test_copy_desk import MemorySheet
 from tests.test_hand_check import AGENCIES, WEEK, _approving, acct, posts, world
@@ -131,3 +133,25 @@ def test_a_missing_industry_points_to_the_industry_dropdown():
     assert sheet_rows(ctx)[0]["why"] == (f"{verify.NO_INDUSTRY}; {verify.NO_SIZE} (type it in right_employees, then "
                                          "pick fine; for the industry, pick wrong industry and the right one in "
                                          "right_label)")
+
+
+def test_switching_auto_send_on_mid_week_posts_the_sample_at_the_next_poll():
+    ctx, t = doubtful_week(1)  # recorded while auto_send was no: no sample, so enrol would wait for Monday
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general, auto_send=True))
+    assert hand_check.needs_sample(ctx, hand_check.current(ctx))
+    out = tab.apply(ctx)
+    assert out["posted"] == "recorded again with the sample (auto_send is yes now)"
+    assert not hand_check.needs_sample(ctx, hand_check.current(ctx)) and len(posts(t)) == 2
+    assert len(sheet_rows(ctx)) > 1 and "posted" not in tab.apply(ctx)  # once
+
+
+def test_a_left_out_company_the_rebuilt_week_no_longer_holds_still_closes_the_week():
+    ctx, _ = doubtful_week(2)
+    decide(ctx, "mar70.com", "leave out")
+    decide(ctx, "mar71.com", "leave out")
+    item = hand_check.current(ctx)
+    payload = dict(item["payload"], doubtful=[])  # rebuilt since: the left-out companies are no longer in it
+    ctx.store.upsert("hitl_items", [dict(item, payload=payload)])
+    out = tab.apply(ctx)
+    assert out["closed"] is True and "error" not in out
+    assert sorted(hand_check.current(ctx)["payload"]["pulled_account_ids"]) == ["mar-70", "mar-71"]

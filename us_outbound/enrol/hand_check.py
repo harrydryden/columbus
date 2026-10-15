@@ -473,10 +473,12 @@ def show(ctx: Context) -> tuple[dict | None, dict]:
     return None, _with_sample(ctx, week, item)
 
 
-def _resolve(payload: Mapping[str, Any], wanted: Iterable[str], known: set[str]) -> tuple[list[str], list[str]]:
-    """(account ids for these ids or domains, the values matching no account)."""
-    by_domain = {str(a.get("domain") or "").lower(): a["account_id"]
-                 for a in [*(payload.get("accounts") or ()), *(payload.get("doubtful") or ())]}
+def _resolve(payload: Mapping[str, Any], wanted: Iterable[str], known: set[str],
+             on_file: Mapping[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """(account ids for these ids or domains, the values matching no account). on_file: domain -> account id for
+    accounts outside the payload (a company the tab left out that a rebuilt payload no longer holds)."""
+    by_domain = {**(on_file or {}), **{str(a.get("domain") or "").lower(): a["account_id"]
+                                       for a in [*(payload.get("accounts") or ()), *(payload.get("doubtful") or ())]}}
     ids, unknown = [], []
     for w in wanted:
         v = str(w).strip()
@@ -512,7 +514,10 @@ def approve(ctx: Context, pulled: Sequence[str], by: str, *, clear: bool = True)
     sample = {a["account_id"] for a in [*(payload.get("accounts") or ()), *(payload.get("doubtful") or ())]}
     wanted = [str(p).strip() for p in pulled if str(p).strip()]
     on_file = {str(a["account_id"]) for a in ctx.store.select("accounts", {"account_id": wanted})} if wanted else set()
-    ids, unknown = _resolve(payload, wanted, sample | on_file)
+    domains = [w.lower() for w in wanted if "." in w]
+    by_domain = {str(a.get("domain") or "").lower(): str(a["account_id"])
+                 for a in (ctx.store.select("accounts", {"domain": domains}) if domains else ())}
+    ids, unknown = _resolve(payload, wanted, sample | on_file, by_domain)
     if unknown:
         raise ValueError(f"no account with id or domain {', '.join(unknown)}")
     rows = [r for r in ctx.store.select("hitl_items", {"kind": KIND})
