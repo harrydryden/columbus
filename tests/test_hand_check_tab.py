@@ -143,3 +143,15 @@ def test_switching_auto_send_on_mid_week_posts_the_sample_at_the_next_poll():
     assert out["posted"] == "recorded again with the sample (auto_send is yes now)"
     assert not hand_check.needs_sample(ctx, hand_check.current(ctx)) and len(posts(t)) == 2
     assert len(sheet_rows(ctx)) > 1 and "posted" not in tab.apply(ctx)  # once
+
+
+def test_a_left_out_company_the_rebuilt_week_no_longer_holds_still_closes_the_week():
+    ctx, _ = doubtful_week(2)
+    decide(ctx, "mar70.com", "leave out")
+    decide(ctx, "mar71.com", "leave out")
+    item = hand_check.current(ctx)
+    payload = dict(item["payload"], doubtful=[])  # rebuilt since: the left-out companies are no longer in it
+    ctx.store.upsert("hitl_items", [dict(item, payload=payload)])
+    out = tab.apply(ctx)
+    assert out["closed"] is True and "error" not in out
+    assert sorted(hand_check.current(ctx)["payload"]["pulled_account_ids"]) == ["mar-70", "mar-71"]
