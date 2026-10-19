@@ -185,7 +185,8 @@ An account also needs at least one candidate contact: a person matching the Role
     19 Oct 2026) and comes back to `new` from its stored verdict, with no call, once the industry is switched on; an
     Overrides `industry` row or an approver's correction stands, and nothing is asked. One company's answer the model
     cannot finish (a refusal, max_tokens, not JSON) skips that company, not the run: it goes last next run and is
-    parked (`label_failed`) after 3 such answers under one label list.
+    parked (`label_failed`) after 3 such answers under one label list. It comes back to `new` when the label list
+    or prompt changes, or at once, with no call, when an Overrides `industry` row or an approver's label names it.
   - Every failed check writes its code to `accounts.status_reason` (`verify.REASON_CODES`): terminal codes (size,
     state, partner, a customer, an opt-out, a bounce …) leave the company out for good; an open HubSpot deal or
     another owner is looked up again after 30 days (`recheck_after`, D22); no label call left this run, a HubSpot

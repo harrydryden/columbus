@@ -497,16 +497,18 @@ def revive(ctx: Context) -> list[str]:
 def still_parked(account: Mapping[str, Any], events: Sequence[Mapping[str, Any]], settings: Settings,
                  labels_hash: str) -> bool:
     """Whether a parked account stays out, decided from what is stored, with no model call:
+      * an Overrides row or an approver's label stands (labels.judge), so it comes back, whatever parked it: it is
+        asked first because it is the documented remedy for both parked codes (docs/pipeline.md), and a company
+        parked label_failed would otherwise wait for a new hash that may never come (W1-4 review, 19 Oct 2026);
       * parked for its label check failing (label_failed): until the label list or prompt changes (a new hash);
-      * an Overrides row or an approver's label stands (labels.judge), so it comes back;
       * with a stored verdict under today's hash: labels.decide on it, with page= as production passes it
         (labels.judge), still a disqualification;
       * a verdict under another hash comes back, and the label check asks again within the run's share;
       * parked by check() with no verdict (label_check skip): its label still switched off on the Industries tab."""
-    if account.get("status_reason") == labels.FAILED_CODE:
-        return labels.failed_hash(events) == labels_hash
     if labels.override_for(account, settings)[0]:
         return False
+    if account.get("status_reason") == labels.FAILED_CODE:
+        return labels.failed_hash(events) == labels_hash
     stored = labels.latest_verdict(events)
     if stored is None or settings.general.label_check == labels.SKIP:
         ind = settings.industry(str(account.get("industry") or ""))

@@ -415,8 +415,8 @@ class LabelSDK:
     """The task model's answers by the company's domain (FakeSDK's shape); a domain with none raises an API error
     (a 500: the service is down), and one answered MAX_TOKENS stops before the JSON is finished (that answer alone)."""
 
-    def __init__(self, answers: dict[str, dict], *, fail: bool = False):
-        self.answers, self.fail, self.calls = answers, fail, []
+    def __init__(self, answers: dict[str, dict], *, fail: bool = False, status: int = 500):
+        self.answers, self.fail, self.status, self.calls = answers, fail, status, []
         self.messages = self
 
     def create(self, **kwargs):
@@ -428,7 +428,8 @@ class LabelSDK:
         domain = next(line.split(": ", 1)[1] for line in kwargs["messages"][0]["content"].splitlines()
                       if line.startswith("Domain: "))
         if self.fail or domain not in self.answers:
-            raise sdk_error(anthropic.InternalServerError, 500)
+            raise sdk_error(anthropic.AuthenticationError if self.status in (401, 403) else anthropic.InternalServerError,
+                            self.status)
         if self.answers[domain] == MAX_TOKENS:
             return FakeSDK(text='{"label": "Fin', stop_reason="max_tokens", input_tokens=3900,
                            output_tokens=700).create(**kwargs)
@@ -816,13 +817,17 @@ def test_one_company_the_model_cannot_finish_is_skipped_not_the_run_and_parked_a
 
 @pytest.mark.parametrize("trouble, calls, why", [
     # The service, not the company: nothing more is asked this run and nobody is failed or parked. A 500 is the one
-    # call that failed; no key refuses before any call.
+    # call that failed; no key refuses before any call; a 401 (clients/claude raises it as ClaudeError(status=401),
+    # never http.AuthError) is the one call that failed, and it says the key was refused, not that Claude was down.
     ("outage", 1, "Claude did not answer"),
     ("no_key", 0, "no Claude API key"),
+    ("refused_key", 1, "Claude refused the key"),
 ])
 def test_an_outage_still_stops_the_asking_and_fails_no_company(trouble, calls, why):
     accounts = [account("a1", score=90), account("a2", score=50), account("a3", score=10)]
-    ctx, sdk = labelled(accounts, {"a2co.com": FINTECH, "a3co.com": FINTECH} if trouble == "outage" else {})
+    ctx, sdk = labelled(accounts, {"a2co.com": FINTECH, "a3co.com": FINTECH} if trouble != "no_key" else {})
+    if trouble == "refused_key":
+        sdk.fail, sdk.status = True, 401
     if trouble == "no_key":
         ctx.clients.claude_sdk = None
         ctx.clients.secrets = Secrets(ctx.guard, fetch=lambda name: "")
@@ -925,6 +930,62 @@ def test_a_group_switched_on_changes_the_label_list_so_its_parked_companies_are_
     out = verify.run(dataclasses.replace(ctx, settings=on))
     assert out["parked"]["back_to_new"] == 1 and len(sdk.calls) == 2 and out["verified"] == 1
     assert (acc(ctx)["industry"], acc(ctx)["label_source"]) == ("Professional Services", "umbrella")
+
+
+def parked_label_failed():
+    """a1 alone, its answer stopping at max_tokens on three runs a weekday apart: 1 call a run, 3 label_failed facts
+    under today's labels_hash, and the third parks it (labels.FAILED_AFTER)."""
+    ctx, sdk = labelled([account("a1", score=90)], {"a1co.com": MAX_TOKENS})
+    for day in range(3):
+        ctx.now = NOW + timedelta(days=day)
+        verify.run(ctx)
+    a = acc(ctx)
+    assert (a["status"], a["status_reason"], len(sdk.calls), len(failed_facts(ctx))) == ("parked", "label_failed", 3, 3)
+    ctx.now = NOW + timedelta(days=3)
+    return ctx, sdk
+
+
+@pytest.mark.parametrize("remedy", ["override", "approver"])
+def test_an_overrides_row_or_an_approvers_label_brings_back_a_company_parked_for_failed_answers(remedy):
+    """W1-4 review (19 Oct 2026): still_parked asked about label_failed before it asked about an Overrides row, so a
+    company parked after 3 unusable answers stayed parked under Harry's own row until the label list changed, which
+    may never happen. The documented remedy (docs/pipeline.md) is an Overrides industry row or `labels set` (an
+    approver's label): either stands and asks nothing (labels.judge), so it comes back and is verified on the label
+    given. Derivation: the labels_hash is unchanged (neither an Overrides row nor label_source is in the label list),
+    so without the fix the run reads {"parked": 1, "back_to_new": 0}; with it, 1 back to new, verified on Fintech
+    (active on the default tab), and no call: still the 3 of the failed runs."""
+    ctx, sdk = parked_label_failed()
+    h = labels.labels_hash(ctx.settings)
+    if remedy == "override":
+        ctx.settings = dataclasses.replace(ctx.settings, overrides=(Override("a1co.com", "industry", "Fintech"),))
+    else:
+        ctx.store.upsert("accounts", [{"account_id": "a1", "industry": "Fintech", "label_source": labels.APPROVER}])
+    assert labels.labels_hash(ctx.settings) == h  # the remedy, not a new label list, brings it back
+    out = verify.run(ctx)
+    a = acc(ctx)
+    assert out["parked"] == {"parked": 1, "back_to_new": 1, "back_accounts": ["a1co.com"]}
+    assert out["verified"] == 1 and len(sdk.calls) == 3
+    assert (a["status"], a.get("status_reason"), a["industry"], a["label_source"]) == (
+        "verified", None, "Fintech", remedy)
+
+
+def test_an_overrides_row_naming_an_active_label_brings_back_a_company_parked_for_its_industry():
+    """The same remedy for industry_off: a1 is parked as Physician practices (off), and Harry's Overrides row files it
+    under Digital health (on, the group's prospected label). redecide_parked alone sends it back to new with its tier
+    cleared (the end-of-run rescore would re-tier it anyway, so the clearing is asserted here, straight after
+    redecide_parked); the run then verifies it on the row's label with no call (still 1, the parking run's)."""
+    ctx, sdk = labelled([physicians("a1")], {"a1co.com": PHYSICIANS}, facts={"a1": physician_facts("a1")})
+    verify.run(ctx)
+    assert (status(ctx), acc(ctx)["status_reason"], len(sdk.calls)) == ("parked", "industry_off", 1)
+    ctx.settings = dataclasses.replace(ctx.settings, overrides=(Override("a1co.com", "industry", "Digital health"),))
+    assert verify.redecide_parked(ctx) == {"parked": 1, "back_to_new": 1, "back_accounts": ["a1co.com"]}
+    a = acc(ctx)
+    assert (a["status"], a.get("status_reason"), a.get("tier"), a.get("tier_reason")) == ("new", None, None, None)
+    out = verify.run(ctx)
+    a = acc(ctx)
+    assert out["verified"] == 1 and len(sdk.calls) == 1
+    assert (a["status"], a.get("status_reason"), a["industry"], a["label_source"]) == (
+        "verified", None, "Digital health", "override")
 
 
 def thirteen_oct(ctx, aid: str, *, tier_reason: str | None = None, status_reason: str | None = None,

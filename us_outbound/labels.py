@@ -66,7 +66,6 @@ from typing import Any
 from us_outbound import facts, fmt
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError, UnusableAnswer, estimate_call_usd
 from us_outbound.clients.db import new_id
-from us_outbound.clients.http import AuthError
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol.openers import validate_focus
 from us_outbound.industry.material import RulesInput, naics_codes, texts
@@ -698,10 +697,11 @@ class Checker:
             self.unavailable = f"the monthly Claude cap is reached ({exc})"
         except ConfigError as exc:
             self.unavailable = f"no Claude API key ({exc})"
-        except AuthError as exc:
-            self.unavailable = f"Claude refused the key ({exc})"
-        except ClaudeError as exc:  # a connection error, a 429 or a 5xx after the SDK's retries: the service is down
-            self.unavailable = f"Claude did not answer ({exc})"
+        except ClaudeError as exc:  # a refused key, a connection error, a 429 or a 5xx after the SDK's retries
+            # clients/claude raises a 401 or 403 as a ClaudeError with its status, never as http.AuthError, so the
+            # wrong key is told from an outage here (W1-4 review, 19 Oct 2026: an AuthError handler never fired).
+            self.unavailable = (f"Claude refused the key ({exc})" if exc.status in (401, 403)
+                                else f"Claude did not answer ({exc})")
         else:
             return v, "", True
         log("label_check_unavailable", run_id=self.ctx.run_id, account_id=account.get("account_id"),
