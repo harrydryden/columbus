@@ -2,7 +2,8 @@
 -- SPEC 9, daily enrollment: "Of that number, control_share comes from the Control tier.
 -- The rest comes from Priority, then Standard, ordered by score, then by size band
 -- (20 to 99 first), then by industry priority."
---   in the queue:  status verified or queued, tier Priority, Standard or Control.
+--   in the queue:  status verified or queued, tier Priority, Standard or Control. Never new (not checked yet),
+--                  disqualified (left out) or parked (out while its industry is switched off: W1-4).
 --   left out:      a domain suppressed now (directly or through an alias), a partner
 --                  domain (never prospected, SPEC 9), or an industry switched off on the
 --                  Industries tab. An industry label not on the tab is kept.

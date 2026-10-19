@@ -44,6 +44,8 @@ Pipeline, now:
   * waiting for verification: accounts new or queued and not Excluded or Held (the sourcing job's
     queue rule), and of those, the ones whose doubtful Apollo facts wait for the hand-check
     (verify.open_doubts);
+  * parked: accounts out of the queue only while a setting keeps them out (their industry switched off, or the
+    label check failing under one label list; W1-4), never in the waiting counts: their own line, when there are any;
   * in sequence: per account, an enrolled contact with a step still to come (capacity.step_days,
     the send forecast's own dates); finished, all four sent; stopped, by a reply, bounce or
     unsubscribe, or the account no longer enrolled (capacity.stopped_contacts).
@@ -80,7 +82,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from us_outbound import fmt, verify
+from us_outbound import fmt, labels, verify
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import WARM_REPLY_CLASSES
 from us_outbound.contacts import pick
@@ -334,6 +336,17 @@ def _groups(ready: Sequence[Candidate], settings: Settings) -> str:
     return "By group: " + top + (f", others {rest}" if rest > 0 else "")
 
 
+def parked_line(parked: Mapping[str, int]) -> str:
+    """"Parked (industry off): 4" or "Parked: 5 (industry off 4, label check failing 1)"."""
+    off, failing = parked.get(labels.INDUSTRY_OFF, 0), parked.get(labels.FAILED_CODE, 0)
+    total = sum(parked.values())
+    if total == off:
+        return f"Parked (industry off): {total:,}"
+    parts = [f"industry off {off:,}" if off else "", f"label check failing {failing:,}" if failing else "",
+             f"other {total - off - failing:,}" if total - off - failing else ""]
+    return f"Parked: {total:,} ({', '.join(p for p in parts if p)})"
+
+
 def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set[str],
              lim: Limits) -> tuple[list[str], dict[str, Any]]:
     """The Pipeline section: what is ready to send now, and what stands behind it."""
@@ -362,12 +375,17 @@ def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set
     if s.general.clay_verification == CLAY_REQUIRED:
         notes.append("clay_verification is required, so they wait for Clay")
     lines.append(f"  Waiting for verification: {len(unverified)}" + (f" ({'; '.join(notes)})" if notes else ""))
+    parked = Counter(str(a.get("status_reason") or labels.INDUSTRY_OFF) for a in rows.accounts
+                     if a.get("status") == labels.PARKED)
+    if parked:
+        lines.append(f"  {parked_line(parked)}")
     seq = sequence_states(ctx, rows.contacts)
     lines.append(f"  In sequence: {fmt.plural(seq[IN_SEQUENCE], 'account')} with follow-ups to come · finished {seq[FINISHED]}"
                  f" · stopped {seq[STOPPED]} (reply, bounce or unsubscribe)")
     nums = {"ready_to_send": len(ready), "ready_by_tier": dict(tiers_), "awaiting_approval": len(awaiting),
             "supply_days": supply, "supply_pace": pace, "waiting_for_contact": len(need), "no_suitable_contact": stuck,
             "waiting_for_verification": len(unverified), "doubtful_facts": doubtful, "in_sequence": seq[IN_SEQUENCE],
+            "parked": sum(parked.values()), "parked_by_reason": dict(parked),
             "finished": seq[FINISHED], "stopped": seq[STOPPED]}
     return lines, nums
 

@@ -697,6 +697,23 @@ def cmd_relabel(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_verify(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound verify migrate-parked [--live]` (W1-4, 19 Oct 2026; RS P0-3), once after the deploy: the companies
+    the label check left out for good while their industry was switched off (~50 on 13 Oct) are parked, so the next
+    verify_accounts brings back those whose industry is on (verify.migrate_parked). A database write that reaches no
+    prospect: --live alone."""
+    from us_outbound import verify
+
+    ctx = factory("verify_migrate_parked", args.live, operator=True)
+    out = run_job(ctx, verify.migrate_parked)
+    print(f"{'Parked' if ctx.live else 'Would park'} {out['to_park']} of {out['disqualified']} disqualified companies: "
+          "left out by the label check while their industry was switched off.")
+    if out["domains"]:
+        print("  " + ", ".join(out["domains"]))
+    _dry_note(ctx, "no company was moved.")
+    return 0
+
+
 def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.ops.erase import erase
 
@@ -1670,7 +1687,7 @@ HELP = ("Spill's US Outbound engine. Dry-run by default. `--live` makes a comman
         "synced settings.")
 # Build and duplicate commands (4 Oct 2026): each still works as before, but `--help` lists only what Harry uses.
 HIDDEN = frozenset({"unenrol", "rescore", "dry-run", "db", "hubspot", "suppression", "lookalikes", "pages",
-                    "data", "scheduler"})
+                    "data", "scheduler", "verify"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1702,7 +1719,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "cards (a domain or a web address)")
     ac.add_argument("--status", action="append", metavar="STATUS",
                     help="only companies with this status (repeat it, or a comma list): new, queued, verified, "
-                         "enrolled, engaged, demo_requested, demo_booked or disqualified")
+                         "enrolled, engaged, demo_requested, demo_booked, disqualified or parked")
     ac.add_argument("--tier", action="append", metavar="TIER",
                     help="only this tier (repeat it, or a comma list): Priority, Standard, Control, Held or Excluded")
     ac.add_argument("--industry", metavar="TEXT",
@@ -1889,6 +1906,9 @@ def build_parser() -> argparse.ArgumentParser:
     # Hidden: build and duplicate commands, unchanged.
     un = command("unenrol", "remove a month's leads from their campaigns", cmd_unenrol, takes_live=True)
     un.add_argument("--month", required=True, help="YYYY-MM")
+    vf = command("verify", "one-off: park the companies left out while their industry was switched off (W1-4)",
+                 cmd_verify, takes_live=True)
+    vf.add_argument("action", choices=["migrate-parked"])
     command("rescore", "run the score job", cmd_rescore, takes_live=True)
     dr = command("dry-run", "run a job in dry-run", cmd_dry_run)
     dr.add_argument("job")

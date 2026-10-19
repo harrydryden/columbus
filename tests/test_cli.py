@@ -92,6 +92,8 @@ class Harness:
         (["schedule"], {"command": "schedule"}),
         (["scheduler"], {"command": "scheduler", "list": False}),
         (["scheduler", "--list"], {"command": "scheduler", "list": True}),
+        (["verify", "migrate-parked"], {"command": "verify", "action": "migrate-parked", "live": False}),
+        (["verify", "migrate-parked", "--live"], {"action": "migrate-parked", "live": True}),
     ],
 )
 def test_every_command_parses(argv, expected):

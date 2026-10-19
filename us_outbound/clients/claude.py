@@ -77,6 +77,15 @@ class BudgetExceeded(ClaudeError):
     """The call would take the month's Claude spend past claude_monthly_cap_usd."""
 
 
+class UnusableAnswer(ClaudeError):
+    """The model answered, and the call was billed, but the answer cannot be used: a refusal, max_tokens before the
+    JSON was finished, no text, or text that is not a JSON object. It is about this one request (its material), not
+    the service, so a caller working through many companies can skip this one and ask about the next (W1-4, 19 Oct
+    2026: labels.Checker took one such answer for an outage and refused every later company; code-verify-labels B1).
+    Every other ClaudeError (the cap, a price missing, a status error, a connection error) still says the service
+    cannot be asked."""
+
+
 def _check_schema(schema: Any, path: str = "$") -> None:
     """Structured outputs need additionalProperties false and a required list on every object."""
     if not isinstance(schema, dict):
@@ -265,16 +274,16 @@ class Claude:
             cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", None))
 
         if stop == "refusal":
-            raise ClaudeError("Claude declined the request (stop_reason refusal)")
+            raise UnusableAnswer("Claude declined the request (stop_reason refusal)")
         if stop == "max_tokens":
-            raise ClaudeError(f"Claude hit max_tokens={max_tokens} before finishing the JSON")
+            raise UnusableAnswer(f"Claude hit max_tokens={max_tokens} before finishing the JSON")
         text = next((b.text for b in response.content if getattr(b, "type", None) == "text"), None)
         if text is None:
-            raise ClaudeError("Claude returned no text block")
+            raise UnusableAnswer("Claude returned no text block")
         try:
             data = jsonlib.loads(text)
         except ValueError as exc:
-            raise ClaudeError("Claude returned text that is not JSON") from exc
+            raise UnusableAnswer("Claude returned text that is not JSON") from exc
         if not isinstance(data, dict):
-            raise ClaudeError("Claude returned JSON that is not an object")
+            raise UnusableAnswer("Claude returned JSON that is not an object")
         return data

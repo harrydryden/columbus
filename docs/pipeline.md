@@ -180,9 +180,18 @@ An account also needs at least one candidate contact: a person matching the Role
   - they agree: the label's own copy (`label_source` rules+model);
   - they disagree: the model's label when it is sure (model); otherwise, within one group, the group's own label and
     copy (umbrella); across groups, the rules' label with General copy, flagged on the card (disputed);
-  - a public body is disqualified; a society or membership body, a company no label fits, or one whose industry is
-    switched off is disqualified when the model is sure and held for the weekly hand-check ("industry uncertain: …")
-    when it is not; an Overrides `industry` row or an approver's correction stands, and nothing is asked.
+  - a public body, a society or membership body, a company no label fits and one the model cannot place are
+    disqualified for good, at any confidence (14 Oct 2026); one whose industry is switched off is **parked** (W1-4,
+    19 Oct 2026) and comes back to `new` from its stored verdict, with no call, once the industry is switched on; an
+    Overrides `industry` row or an approver's correction stands, and nothing is asked. One company's answer the model
+    cannot finish (a refusal, max_tokens, not JSON) skips that company, not the run: it goes last next run and is
+    parked (`label_failed`) after 3 such answers under one label list.
+  - Every failed check writes its code to `accounts.status_reason` (`verify.REASON_CODES`): terminal codes (size,
+    state, partner, a customer, an opt-out, a bounce …) leave the company out for good; an open HubSpot deal or
+    another owner is looked up again after 30 days (`recheck_after`, D22); no label call left this run, a HubSpot
+    error or Clay's answer not in yet change nothing. `us-outbound verify migrate-parked --live`, run once after
+    W1-4 deploys, parks the companies the label check left out while their industry was off before `parked` existed
+    (~50 on 13 Oct; dry-run first says how many).
   - The verdict is kept (a `label_verdict` fact) and asked again when the label list, a definition, keywords or
     the prompt change (`labels_hash`), or once when the model was not sure and the company's home page has been read
     since (`labels.second_look`). The first audit (7 Oct 2026) held 204 of 409 companies, the model unsure on Apollo's

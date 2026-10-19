@@ -130,6 +130,7 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("accounts", "source"): {"apollo", "irs", "site_visit", "named", "lookalike"},  # lookalike: sources/lookalike_leads.py
     ("accounts", "status"): {
         "new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
+        "parked",  # W1-4: out while its industry is switched off (verify.redecide_parked)
     },
     # The label check (us_outbound/labels.py; Harry, 7 Oct 2026).
     ("accounts", "label_source"): {"override", "approver", "rules+model", "model", "umbrella", "disputed", "rules"},

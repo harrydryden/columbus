@@ -84,7 +84,8 @@ sign of it (every nightly rescore moves it), and neither are the facts the syste
 (DERIVED_SOURCES: scoring's matches, the lookalike fit, verify's doubts, the opener's focus phrase). So an account is
 deleted, with its signal_events, when it was first seen more than UNIVERSE_MONTHS ago and no source has observed it
 since, and only when nothing else holds it: no contact, no event and no hitl_items row names it, it was never
-enrolled (status enrolled, engaged, demo_requested or demo_booked) or disqualified, it did not come from the Named
+enrolled (status enrolled, engaged, demo_requested or demo_booked), disqualified or parked (W1-4: a parked company is
+held out by a setting, and comes back when it changes), it did not come from the Named
 accounts tab, and no person's decision is kept on it (an approver's 🚫 at a send approval, declined_in_slack; Harry
 naming it, named). Domain aliases, partners, suppression and the credit ledger stay. A company found again later
 comes in by the front door as a new account. These are companies, not people, so the rule leans to keeping.
@@ -156,7 +157,7 @@ PURGED = "reply_text_purged_at"  # set on a card's payload once its text is gone
 NOT_A_REPLY = frozenset({OUT_OF_OFFICE, "unsubscribe"})
 WARM_EVENTS = ("meeting_booked", "demo_held", "deal_created")  # a company with one keeps its people
 # Account statuses whose rows are never deleted as universe rows: our history with the company, or a decision.
-KEPT_STATUSES = ("enrolled", "engaged", "demo_requested", "demo_booked", "disqualified")
+KEPT_STATUSES = ("enrolled", "engaged", "demo_requested", "demo_booked", "disqualified", "parked")
 # Facts the system derives from what it already holds: they are no sign a source saw the company again.
 DERIVED_SOURCES = (SCORING_SOURCE, LOOKALIKE_SOURCE, DOUBT_SOURCE, FOCUS_SOURCE)
 # A person's decision kept on the account: an approver's 🚫 at a send approval, or Harry naming it.

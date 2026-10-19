@@ -56,6 +56,28 @@ def world(now=TUE_9, live=True, drafts=(), **kw):
     return ctx, t
 
 
+def test_parked_companies_have_their_own_line_and_are_not_waiting_for_verification():
+    """W1-4: a parked company is out of the queue while a setting keeps it out, so it is not "being prepared"; the
+    pipeline gives it its own line by why: 2 for an industry off, 1 for the label check failing. 1 new account
+    (Standard) is the one that needs its facts checked."""
+    ctx, t = world()
+    ctx.store.insert("accounts", [
+        {"account_id": "p1", "status": "parked", "status_reason": "industry_off", "tier": "Excluded"},
+        {"account_id": "p2", "status": "parked", "status_reason": "industry_off", "tier": "Excluded"},
+        {"account_id": "p3", "status": "parked", "status_reason": "label_failed", "tier": "Excluded"},
+        {"account_id": "n1", "status": "new", "tier": "Standard"},
+    ])
+    daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    text = post.json["text"].splitlines()
+    i = text.index("*Pipeline*")
+    assert text[i + 2] == "Being prepared: 0 need a contact · 1 need their facts checked"
+    assert text[i + 3] == "Parked: 3 (industry off 2, label check failing 1)"
+    lines, nums = daily_post.build(ctx)
+    assert "  Parked: 3 (industry off 2, label check failing 1)" in lines
+    assert (nums["waiting_for_verification"], nums["parked"]) == (1, 3)
+
+
 def test_a_campaign_that_is_not_active_has_no_capacity_and_the_post_says_why():
     ctx, _ = world(drafts=("Hannah Spalding",))
     lines, _ = daily_post.build(ctx)
