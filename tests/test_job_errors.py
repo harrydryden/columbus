@@ -239,6 +239,7 @@ def test_an_outage_a_frequent_job_meets_twice_running_is_posted_in_plain_words()
     ({"candidates": 25, "failures": {"HubSpot check failed": 25}}, True),
     ({"candidates": 25, "failures": {"HubSpot check failed": 2}}, False),  # under FAILURES_MIN (3)
     ({"candidates": 4, "failures": {"x": 3}}, True),  # 3 >= 3 and 3 >= 0.5 x 4 = 2
+    ({"candidates": 6, "failures": {"x": 3}}, True),  # exactly half: 3 >= 0.5 x 6 = 3 (at least half, not more)
     ({"candidates": 25, "failures": {"x": 12}}, False),  # 12 < 0.5 x 25 = 12.5
     ({"candidates": 25, "failures": {"x": 13}}, True),
 ])
@@ -293,6 +294,22 @@ def test_a_frequent_job_failing_3_of_its_last_12_runs_is_posted_once_a_day():
     ctx2, t2 = world()
     _readback_runs(ctx2.store, (1, 5))
     assert check(ctx2)["posted"] == [] and not posts(t2)
+
+
+def test_a_daily_job_is_not_held_to_the_failure_rate_rule():
+    """The rule is for frequent jobs (EXPECTED under a day): mailbox_health runs once a day and is told on its first
+    failure instead (failed). Here it was run 12 times in the last 24 hours (by hand, every 2 hours, all inside
+    LOOKBACK's 26), 3 of them errors: a frequent job with that record is a finding (3 >= RATE_ERRORS in 12 runs);
+    this daily one is not."""
+    from us_outbound.ops.job_errors import DAILY, EXPECTED
+
+    assert EXPECTED["mailbox_health"] >= DAILY
+    ctx, _ = world()
+    for i in range(12):
+        beat(ctx.store, "mailbox_health", at(120 * i + 30), status="error" if i in (1, 5, 9) else "ok",
+             error="ApiError: instantly HTTP 502" if i in (1, 5, 9) else None, run_id=f"mh-{i}")
+    assert job_errors.failure_rates(ctx, ["mailbox_health"]) == []
+    assert job_errors.failure_rates(ctx, JOBS) == []
 
 
 def test_unusable_settings_are_not_told_again_as_each_job_s_failure_rate():

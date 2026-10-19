@@ -798,6 +798,54 @@ def test_the_w1_1_reads_and_writes_run_on_postgres(store):
                                                         {"state": "TX", "active": "yes"}]]
 
 
+def test_the_scheduler_heartbeat_store_writes_the_error_row_and_cannot_hang_the_loop(store, dsn):
+    """scheduler.heartbeat_store, as `us-outbound scheduler` opens it after a failed run: DATABASE_URL, a 5 s connect
+    timeout and a 5 s statement timeout (the loop is one thread). The row is written (no row of that start: one new,
+    status error, dry_run unknown), the session carries statement_timeout 5s, and a row locked by another transaction
+    makes the write fail after about 5 s instead of waiting for ever."""
+    import threading
+    import time
+
+    from us_outbound.ops import scheduler as sch
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    hb = sch.heartbeat_store({"DATABASE_URL": dsn})
+    try:
+        assert hb._connection().execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "5s"
+        assert sch.record_failed_run(hb, "enrol", now - timedelta(seconds=60), now, 1, "error", 60.0) == "written"
+    finally:
+        hb.close()
+    [row] = store.select("heartbeats", {"job": "enrol"})
+    assert (row["status"], row["error"], row["dry_run"]) == ("error", "exited 1 (error)", None)
+    assert row["detail"] == {"exit_code": 1, "seconds": 60.0}
+
+    # A transaction elsewhere holds the heartbeats row of a run still "running"; the loop's update of it must give up.
+    start = now - timedelta(minutes=2)
+    store.insert("heartbeats", [{"run_id": "locked", "job": "mailbox_health", "status": "running",
+                                 "started_at": start + timedelta(seconds=1), "dry_run": False}])
+    held, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with psycopg.connect(dsn) as conn, conn.transaction():
+            conn.execute("SELECT 1 FROM us_outbound.heartbeats WHERE run_id = 'locked' FOR UPDATE")
+            held.set()
+            release.wait(30)
+
+    locker = threading.Thread(target=hold_lock)
+    locker.start()
+    try:
+        assert held.wait(10)
+        hb = sch.heartbeat_store({"DATABASE_URL": dsn})
+        began = time.monotonic()
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            sch.record_failed_run(hb, "mailbox_health", start, now, -9, "timeout", 120.0)
+        assert 4.0 <= time.monotonic() - began < 15.0  # about STATEMENT_TIMEOUT_MS, not for ever
+        hb.close()
+    finally:
+        release.set()
+        locker.join(30)
+
+
 # -- DB-free: the store's rules hold before any SQL ---------------------------------------------
 
 

@@ -401,20 +401,23 @@ class PostgresStore(Store):
     """
 
     def __init__(self, guard: Guard, dsn: str, *, connect: Callable[[], Any] | None = None,
-                 connect_timeout: int | None = None):
+                 connect_timeout: int | None = None, options: str | None = None):
         """connect: a zero-argument callable returning a psycopg connection, used instead of
         psycopg.connect(dsn) (tests). connect_timeout: seconds to wait for the server (the scheduler's
-        heartbeat write after a failed run, ops/scheduler.py); None waits as libpq does. The dsn carries the
-        password: never log it."""
+        heartbeat write after a failed run, ops/scheduler.py); None waits as libpq does. options: libpq's
+        options string, such as "-c statement_timeout=5000" (the same store). The dsn carries the password: never
+        log it."""
         super().__init__(guard)
         self.dsn = dsn
         self._connect = connect
-        self._timeout = {"connect_timeout": connect_timeout} if connect_timeout else {}
+        self._connect_kwargs: dict[str, Any] = {"connect_timeout": connect_timeout} if connect_timeout else {}
+        if options:
+            self._connect_kwargs["options"] = options
         self._conn: Any = None
 
     def _connection(self) -> Any:
         if self._conn is None or self._conn.closed:
-            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn, **self._timeout)
+            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn, **self._connect_kwargs)
             conn.autocommit = True
             conn.row_factory = dict_row
             conn.execute("SET TIME ZONE 'UTC'")  # timestamptz values load as UTC datetimes

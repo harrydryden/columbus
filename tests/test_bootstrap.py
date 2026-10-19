@@ -401,3 +401,149 @@ def test_the_fallback_never_takes_live_sending_from_the_defaults():
     _new_version(store, "General", "live_sending", datetime(2026, 10, 22, 2, 0, tzinfo=UTC), value="no")
     assert sync.load_fallback(store).general.live_sending is False
     assert sync.load_fallback(MemoryStore(Guard())) is None  # nothing stored: no fallback at all
+
+
+def test_the_fallback_looks_back_past_a_bad_earlier_version_to_a_good_one():
+    """weekly_enrol_cap: 150 at T0 (good), -5 at T1 and -6 at T2 (both rejected). In force (T2) fails; the version
+    just before it (T1) fails too; the one before that (T0) validates, so the fallback is "earlier versions" with 150,
+    not the General defaults. (A search that took the first earlier version whatever it held would land on T1, find
+    nothing that validates and fall to the defaults.)"""
+    from us_outbound.settings import sync
+
+    store = MemoryStore(Guard())
+    _store_version(store, _live_tabs(), T0)
+    _new_version(store, "General", "weekly_enrol_cap", T1, value="-5")
+    _new_version(store, "General", "weekly_enrol_cap", datetime(2026, 10, 22, 2, 0, tzinfo=UTC), value="-6")
+    assert len(sync.earlier_versions(store, "General")) == 2  # T1's rows, then T0's
+    fb = sync.load_fallback(store)
+    assert fb.fallback_tabs == {"General"} and fb.fallback_mode == "earlier versions"
+    assert fb.general.weekly_enrol_cap == 150 and fb.general.live_sending is True
+
+
+def test_a_failing_fallback_search_never_stops_the_watchdog():
+    """load_fallback raising (a store error, a row it cannot read) must not stop the context build: heartbeat_check
+    builds on General's defaults as it did before the fallback existed (DEFAULTS_OK), and a safety job outside
+    DEFAULTS_OK refuses with SettingsUnusable as before, not with the fallback's own error."""
+    store, t, inst, sheets = _fallback_world(both_copy_versions_bad=False)
+
+    def broken(_store):
+        raise RuntimeError("the versions table could not be read")
+
+    def build(job):
+        return bootstrap.build_context(job, True, env=ENV, store=store, transport=t, load_fallback=broken,
+                                       secrets=Secrets(Guard(), fetch=lambda name: f"test-{name}"),
+                                       google_credentials=object())
+
+    ctx = build("heartbeat_check")
+    assert not ctx.protective_only and not ctx.settings.fallback_tabs
+    with pytest.raises(bootstrap.SettingsUnusable):
+        build("kill_rules")
+
+
+def _mailboxes_fallback_world(*, harry_cap: str = "30"):
+    """In force (T1): Harry has paused harry@tryspill.org (HARRY2) and the campaign holds harry@meetspill.org (HARRY)
+    alone, and the same sync stored a Mailboxes row this code rejects (Sam's daily_cap "thirty"), so the Mailboxes tab
+    in force fails and the fallback takes the earlier version (T0), in which HARRY2 is still Active. harry_cap: HARRY's
+    daily_cap in force (the earlier version has 30), and the campaign's limit."""
+    from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2, SAM, FakeInstantly, StubSheets
+    from tests.test_registry import slack_routes
+
+    store = MemoryStore(Guard())
+    _store_version(store, _live_tabs(), T0)
+    _new_version(store, "Mailboxes", HARRY2, T1, status="Paused")
+    _new_version(store, "Mailboxes", SAM, T1, daily_cap="thirty")
+    if harry_cap != "30":
+        _new_version(store, "Mailboxes", HARRY, T1, daily_cap=harry_cap)
+    t = slack_routes(FakeTransport())
+    inst = FakeInstantly(t)
+    inst.standard(C_HANNAH, [HANNAH], 30)
+    inst.standard(C_SAM, [SAM], 30)
+    inst.standard(C_HARRY, [HARRY], int(harry_cap), status=1)  # sending, from HARRY alone (HARRY2 taken off)
+    in_force = [{**r, "status": "Paused"} if r["address"] == HARRY2 else
+                {**r, "daily_cap": harry_cap} if r["address"] == HARRY else r for r in _live_tabs()["Mailboxes"]]
+    sheets = StubSheets(Guard(live=True), {"Mailboxes": in_force})
+    return store, t, inst, sheets
+
+
+def _campaign_patches(t) -> list[dict]:
+    """Every campaign PATCH body that went to the Instantly fake."""
+    return [dict(r.json or {}) for r in t.requests if r.method == "PATCH" and "/campaigns/" in r.url]
+
+
+def test_a_kill_rule_pause_on_an_earlier_mailboxes_version_never_puts_a_paused_mailbox_back():
+    """The W1-1 review's blocking case. The fallback's Mailboxes tab is the earlier version, with HARRY2 Active; a kill
+    rule pauses HARRY (2 bounces in 40 sends: 5.0% > 3%, and 2 >= MIN_BOUNCES). Rebuilding Harry's sending list from
+    that version gives [HARRY2], which before the fix went to Instantly as a campaign.update and started HARRY2 sending
+    again. Protective-only, the list keeps only what the campaign has ([HARRY] without HARRY = []), so the campaign is
+    paused (emptied) and HARRY2 is in no campaign PATCH."""
+    from tests.test_kill_rules import sends
+    from tests.test_ramp import past_ramp
+    from tests.test_registry import C_HARRY, HARRY, HARRY2, NOW, row
+    from us_outbound.learn import kill_rules
+    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.registry import mailboxes as reg
+    from us_outbound.settings import sync
+
+    store, t, inst, sheets = _mailboxes_fallback_world()
+    assert sync.load_current(store)[0] is None
+    past_ramp(store, SETTINGS.mailboxes, NOW)
+    ctx = _factory(store, t, sheets, NOW)("kill_rules")
+    assert ctx.protective_only and ctx.live and ctx.settings.fallback_tabs == {"Mailboxes"}
+    assert {m.address: m.status for m in ctx.settings.mailboxes}[HARRY2] == "Active"  # the earlier version
+    sends(ctx, HARRY, 40, bounced=2)
+    out = run_job(ctx, kill_rules.run)
+    [fired] = out["fired"]
+    assert (fired["rule"], fired["target"]) == ("mailbox_bounce_rate", HARRY)
+    assert reg.PAUSED_EMPTY in out["paused"][HARRY]
+    harry = inst.by_name(C_HARRY)
+    assert harry["status"] == 2 and harry["email_list"] == [HARRY]  # paused (emptied); its list untouched
+    assert not any(HARRY2 in (p.get("email_list") or ()) for p in _campaign_patches(t))
+    assert _campaign_patches(t) == []  # the pause alone: no list was replaced
+    assert row(sheets, HARRY)["status"] == "Paused" and row(sheets, HARRY2)["status"] == "Paused"
+    assert not [c for c in ctx.guard.calls if c.action in {"campaign.create", "campaign.activate", "campaign.update"}]
+
+
+def test_a_kill_rule_pause_on_an_earlier_mailboxes_version_never_raises_the_campaign_limit():
+    """In force Harry lowered HARRY's daily_cap to 15 and paused HARRY2; the campaign is [HARRY] at 15. The earlier
+    Mailboxes version has HARRY at 30 and HARRY2 Active. A kill rule pauses HARRY2 (its own 40 sends, 2 bounced): the
+    fallback's list is then [HARRY] at 30 (its cap there). Before the fix that went out as daily_limit 30, a rise;
+    protective-only the limit is min(30, 15) = 15 and [HARRY] is what the campaign has, so nothing changes."""
+    from tests.test_kill_rules import sends
+    from tests.test_ramp import past_ramp
+    from tests.test_registry import C_HARRY, HARRY, HARRY2, NOW
+    from us_outbound.learn import kill_rules
+    from us_outbound.ops.heartbeat import run_job
+
+    store, t, inst, sheets = _mailboxes_fallback_world(harry_cap="15")
+    past_ramp(store, SETTINGS.mailboxes, NOW)
+    ctx = _factory(store, t, sheets, NOW)("kill_rules")
+    assert ctx.protective_only and {m.address: m.daily_cap for m in ctx.settings.mailboxes}[HARRY] == 30
+    sends(ctx, HARRY2, 40, bounced=2)
+    out = run_job(ctx, kill_rules.run)
+    assert [(f["rule"], f["target"]) for f in out["fired"]] == [("mailbox_bounce_rate", HARRY2)]
+    harry = inst.by_name(C_HARRY)
+    assert harry["daily_limit"] == 15 and harry["email_list"] == [HARRY] and harry["status"] == 1
+    assert _campaign_patches(t) == []
+
+
+def test_sync_campaign_protective_only_shrinks_and_never_creates():
+    """_sync_campaign on a protective-only context. A campaign holding [HARRY, an address no longer on the tab] at 25,
+    and the fallback's Active list [HARRY, HARRY2]: the new list keeps only what the campaign has ([HARRY]), and the
+    limit is the kept mailboxes' caps (HARRY's 30, the ramp behind it) capped at the campaign's own: min(30, 25) = 25.
+    A missing campaign is not created."""
+    from tests.test_ramp import past_ramp
+    from tests.test_registry import C_HARRY, HARRY, HARRY2, NOW
+    from us_outbound.registry import mailboxes as reg
+
+    store, t, inst, sheets = _mailboxes_fallback_world()
+    past_ramp(store, SETTINGS.mailboxes, NOW)
+    ctx = _factory(store, t, sheets, NOW)("kill_rules")
+    inst.by_name(C_HARRY).update(email_list=[HARRY, "old@tryspill.org"], daily_limit=25)
+    assert reg._sync_campaign(ctx, ctx.settings, "Harry Dryden") == "sending list updated"
+    assert _campaign_patches(t) == [{"daily_limit": 25, "email_list": [HARRY]}]  # HARRY2 not added
+    assert inst.by_name(C_HARRY)["email_list"] == [HARRY]
+    assert reg.sending_list(ctx.settings, "Harry Dryden") == [HARRY, HARRY2]  # what the fallback alone would send to
+    inst.campaigns = {k: c for k, c in inst.campaigns.items() if c["name"] != C_HARRY}
+    ctx.clients.instantly._ids.pop(C_HARRY, None)
+    assert reg._sync_campaign(ctx, ctx.settings, "Harry Dryden") == reg.PENDING_PROTECTIVE
+    assert not [r for r in t.requests if r.method == "POST" and r.url.endswith("/campaigns")]

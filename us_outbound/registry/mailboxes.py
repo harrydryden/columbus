@@ -111,6 +111,7 @@ AUTO_FIX = frozenset({"daily_limit", "email_list"})  # drift mailbox_health puts
 IN_FLIGHT_KEYS = frozenset({"text_only", "first_email_text_only", "steps.delays", "steps.variants",
                             *(f"steps.{i}" for i in range(1, len(STEP_DAYS) + 1))})
 CREATED = "created (paused)"  # _sync_campaign's outcomes
+PENDING_PROTECTIVE = "pending: no campaign is created on the last-good settings (protective-only)"
 PAUSED_EMPTY = "paused: no Active mailbox left"
 DRAFT, PAUSED_CAMPAIGN = 0, 2  # Instantly campaign status (clients/instantly.CAMPAIGN_STATUS)
 
@@ -239,12 +240,23 @@ def _opt_out_lost(drift: Mapping[str, Any]) -> bool:
 
 
 def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
-    """Make the owner's campaign carry their Active addresses; returns what was done."""
+    """Make the owner's campaign carry their Active addresses; returns what was done.
+
+    Protective-only (a safety job on the last-good settings, ops/bootstrap.py): the campaign may only shrink. Those
+    settings can hold an earlier Mailboxes version, in which a mailbox paused since (and taken off the campaign then)
+    is still Active, or has a higher daily_cap; rebuilding the list from it when a kill rule pauses another mailbox
+    would start the paused one sending again (W1-1 review, 19 Oct 2026). So the new list keeps only addresses the
+    campaign already has, the limit is never above the campaign's own, a list left empty pauses the campaign, and no
+    campaign is created. The guard refuses anything else (clients/guard.py), as a second lock.
+    """
     inst = ctx.clients.instantly
     name = campaign_name(owner)
     settings = holds.with_holds(ctx.store, settings)
-    accounts, limit = sending_list(settings, owner), daily_limit(settings, owner, _caps(ctx, settings))
+    caps = _caps(ctx, settings)
+    accounts, limit = sending_list(settings, owner), daily_limit(settings, owner, caps)
     campaign = inst.get_campaign(name)
+    if campaign is None and ctx.protective_only:
+        return PENDING_PROTECTIVE
     if campaign is None:
         if not accounts:
             return "pending: no Active mailbox yet"
@@ -257,13 +269,21 @@ def _sync_campaign(ctx: Context, settings: Settings, owner: str) -> str:
             text_only=text_only(settings),
         )
         return CREATED
+    have = sorted(str(a).strip().lower() for a in campaign.get("email_list") or [])
+    fields: dict[str, Any] = {"daily_limit": limit}
+    if ctx.protective_only:  # shrink only (the docstring)
+        accounts = [a for a in accounts if a in have]
+        current = campaign.get("daily_limit")
+        mine = sum(caps.get(m.address.lower(), m.daily_cap) for m in settings.mailboxes_for(owner, ACTIVE)
+                   if m.address.lower() in accounts)
+        limit = min(mine, current) if isinstance(current, int) else current
+        fields = {"daily_limit": limit} if isinstance(limit, int) else {}
     if not accounts:
         inst.pause_campaign(name)
         return PAUSED_EMPTY
-    have = sorted(str(a).strip().lower() for a in campaign.get("email_list") or [])
     if have == sorted(accounts) and campaign.get("daily_limit") == limit:
         return "unchanged"
-    inst.update_campaign(name, {"daily_limit": limit}, accounts=accounts)
+    inst.update_campaign(name, fields, accounts=accounts, previous=campaign)
     return "sending list updated"
 
 
@@ -337,7 +357,8 @@ def ensure_campaigns(
                 inst.pause_campaign(name)
             else:
                 inst.update_campaign(
-                    name, _fix_fields(todo, settings, owner, caps), accounts=accounts if "email_list" in todo else None
+                    name, _fix_fields(todo, settings, owner, caps), accounts=accounts if "email_list" in todo else None,
+                    previous=campaign,
                 )
                 if shared and ctx.live:
                     flying = leads_in_flight(ctx, settings) if flying is None else flying

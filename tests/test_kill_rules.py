@@ -6,6 +6,8 @@ from __future__ import annotations
 import dataclasses
 from datetime import timedelta
 
+import pytest
+
 from tests.test_registry import (
     C_HANNAH,
     C_HARRY,
@@ -19,7 +21,7 @@ from tests.test_registry import (
     row,
     setup,
 )
-from us_outbound.base import holds
+from us_outbound.base import holds, notify
 from us_outbound.context import Secrets
 from us_outbound.enrol import capacity, enrol
 from us_outbound.learn import kill_rules
@@ -472,6 +474,9 @@ def test_the_outbox_skips_dry_run_items_old_items_and_backs_off_after_three_trie
         # written before the outbox existed (no outbox key): never posted again.
         {"item_id": "before", "kind": "kill_rule", "status": "open", "created_at": ctx.now - timedelta(hours=3),
          "payload": {k: v for k, v in base.items() if k != "outbox"}},
+        # its alert went to the log for want of a Slack token: trying again would only log it again.
+        {"item_id": "no-token", "kind": "kill_rule", "status": "open", "created_at": ctx.now - timedelta(hours=3),
+         "payload": {**base, "alert_attempts": 1, "alert_error": notify.NO_TOKEN}},
     ])
     assert [r["item_id"] for r in kill_rules.unsent(live)] == []  # 13:00 UK: none is due
     nine = later(ctx, t, 20 / 24)  # Wed 28 Oct 08:00 UTC = 08:00 UK (GMT)
@@ -479,6 +484,37 @@ def test_the_outbox_skips_dry_run_items_old_items_and_backs_off_after_three_trie
     nine.guard.configure(live=True)
     assert [r["item_id"] for r in kill_rules.unsent(nine)] == ["tried"]
     assert kill_rules.post_unsent(ctx) == {}  # a dry run posts nothing again
+
+
+def test_an_outbox_item_that_cannot_be_read_never_stops_a_new_pause():
+    """The outbox runs first in kill_rules.run; an item whose payload was edited by hand (numbers "see Slack", which
+    _firing cannot make a mapping of) used to abort the run before any new firing. Now the run goes on: Hannah's 2
+    bounces in 40 (5.0% > 3%) still pause her mailbox, and the summary names the outbox's error."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    ctx.store.upsert("hitl_items", [{"item_id": "edited", "kind": "kill_rule", "status": "open",
+                                     "created_at": ctx.now - timedelta(hours=2), "payload": {
+        "rule": "vitals", "scope": "mailbox", "target": SAM, "action": "pause_mailbox", "reason": "sending_error",
+        "mailboxes": [SAM], "until": None, "numbers": "see Slack", "dry_run": False, "outbox": True}}])
+    assert [r["item_id"] for r in kill_rules.unsent(ctx)] == ["edited"]
+    sends(ctx, HANNAH, 40, bounced=2)
+    out = kill_rules.run(ctx)
+    assert [f["rule"] for f in out["fired"]] == ["mailbox_bounce_rate"]
+    assert row(sheets, HANNAH)["status"] == "Paused" and inst.by_name(C_HANNAH)["status"] == 2
+    assert out["reposted"] is None and out["reposted_error"].startswith("ValueError")
+
+
+def test_a_guard_refusal_in_the_outbox_is_not_swallowed(monkeypatch):
+    from us_outbound.clients.guard import GuardViolation
+
+    ctx, t, inst, sheets = setup()
+
+    def refused(_ctx):
+        raise GuardViolation("not allowed")
+
+    monkeypatch.setattr(kill_rules, "post_unsent", refused)
+    with pytest.raises(GuardViolation):
+        kill_rules.run(ctx)
 
 
 def test_a_held_mailbox_never_goes_back_on_a_sending_list_before_the_sheet_syncs():

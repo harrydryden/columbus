@@ -414,7 +414,7 @@ def test_a_run_that_dies_before_its_row_and_one_killed_at_its_timeout_both_leave
 
     [died] = _beats(store, "enrol")  # exactly one row, written by the loop
     assert died["status"] == "error" and died["detail"]["exit_code"] == 1 and died["error"] == "exited 1 (error)"
-    assert died["started_at"] == utc(2026, 10, 6, 9, 0) and died["dry_run"] is True
+    assert died["started_at"] == utc(2026, 10, 6, 9, 0) and died["dry_run"] is None  # unknown: it died before it said
     [killed] = _beats(store, "mailbox_health")  # its own row, updated, not a second one
     assert killed["run_id"] == "mh-1" and killed["status"] == "error"
     assert killed["detail"]["exit_code"] == -signal.SIGKILL and killed["error"] == f"exited {-signal.SIGKILL} (timeout)"

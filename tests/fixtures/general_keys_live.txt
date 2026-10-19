@@ -2,6 +2,10 @@
 # compared with its code default, 12 changed and 54 at default). The live sheet's General tab must always validate:
 # every name here is known to settings/model.General, retired (RETIRED_GENERAL) or renamed (RENAMED_GENERAL).
 # A package that deletes a key moves it into RETIRED_GENERAL in the same commit and leaves this list alone (W1-1).
+# Provenance (W1-1 review, 19 Oct 2026): the review read the live tab and compared all 66 keys with the code defaults
+# (12 changed, 54 at default), but did not list the names, so these names were taken from the build's General rows
+# (settings/defaults.default_tabs), which then had 66 keys. It is not yet an independent copy of the sheet: someone
+# with read access should diff the live General tab's key column against this file once and correct it here.
 live_sending
 auto_send
 weekly_enrol_cap

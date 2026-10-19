@@ -28,9 +28,11 @@ health check, stop and unenrol) build from the last-good settings instead (setti
 tab's latest earlier version that validates, or General's defaults with the Mailboxes and States tabs. Before, every
 job but the repair ones refused (11 Oct 2026), and a plain fallback to the defaults would have run the brakes dry,
 since live_sending defaults to no: so live_sending is read raw from the General row in force, and the guard runs
-protective-only (clients/guard.py: pauses, stops, blocklists and posts, never an activation, a lead added, a reply or
-a forward). poll_approvals is not a safety job: it sends replies. Every other job refuses as before, and enrol never
-runs on fallback content. The context says so: settings.fallback_tabs, and guard.protective_only.
+protective-only (clients/guard.py: pauses, stops, blocklists and posts, never an activation, a lead added, a reply,
+a forward, a campaign created, or a sending list or daily limit widened). poll_approvals is not a safety job: it sends replies. Every other job refuses as before, and enrol never
+runs on fallback content. The context says so: settings.fallback_tabs, and guard.protective_only. A fallback search
+that fails (settings_fallback_failed in the log) is as if there were none: heartbeat_check, stop and unenrol build on
+General's defaults (DEFAULTS_OK) as before, and the other safety jobs refuse.
 
 Live (SPEC 0.3) needs the --live flag and live_sending = yes. Operator commands that
 never reach a prospect (setup, pause, erase; see ops/cli.py) pass operator=True and are
@@ -207,7 +209,11 @@ def build_context(
     settings, errors = (load_settings or _load_settings)(store)
     protective = False
     if settings is None and job in SAFETY_JOBS:
-        settings = (load_fallback or _load_fallback)(store)
+        try:
+            settings = (load_fallback or _load_fallback)(store)
+        except Exception as exc:  # the search must never stop a brake: the path below is as before the fallback
+            log("settings_fallback_failed", job=job, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+            settings = None
         if settings is not None:
             protective = True
             operator = operator or job in ALERTS_ON_DEFAULTS

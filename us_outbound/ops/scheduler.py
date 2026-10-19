@@ -79,6 +79,7 @@ POLL_SECONDS = 1.0  # between checks for finished runs, timeouts and free slots
 HORIZON = timedelta(days=366)  # how far next_run looks ahead
 EXIT_MEANING = {0: "ok", 1: "error", 2: "refused", 3: "blocked", 143: "terminated"}
 CONNECT_TIMEOUT_SECONDS = 5  # the heartbeat write after a failed run waits no longer than this for Postgres
+STATEMENT_TIMEOUT_MS = 5000  # nor this long for a statement: a lock on heartbeats must not hold the loop
 AT_START = ("settings_sync",)  # run once when the worker starts (module docstring)
 
 # -- cron -------------------------------------------------------------------------------
@@ -208,14 +209,17 @@ def launch(job: ScheduledJob) -> Process:
 
 
 def heartbeat_store(env: Mapping[str, str] | None = None) -> Any:
-    """A store for one heartbeat write from the loop: DATABASE_URL, a CONNECT_TIMEOUT_SECONDS connect timeout, closed
-    by the caller after the write. Dry-run guard: database writes are allowed in every mode (clients/guard.py)."""
+    """A store for one heartbeat write from the loop: DATABASE_URL, a CONNECT_TIMEOUT_SECONDS connect timeout and a
+    STATEMENT_TIMEOUT_MS statement timeout (the loop is one thread: a row locked by a stuck job's transaction would
+    otherwise hold every other job), closed by the caller after the write. Dry-run guard: database writes are allowed
+    in every mode (clients/guard.py)."""
     from us_outbound.clients.db import PostgresStore
     from us_outbound.clients.guard import Guard
     from us_outbound.ops.bootstrap import database_url
 
     dsn = database_url(os.environ if env is None else env)
-    return PostgresStore(Guard(live=False, job="scheduler"), dsn, connect_timeout=CONNECT_TIMEOUT_SECONDS)
+    return PostgresStore(Guard(live=False, job="scheduler"), dsn, connect_timeout=CONNECT_TIMEOUT_SECONDS,
+                         options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
 
 
 def record_failed_run(store: Any, name: str, started: datetime, now: datetime, code: int, status: str,
@@ -233,7 +237,9 @@ def record_failed_run(store: Any, name: str, started: datetime, now: datetime, c
     rows.sort(key=lambda r: (utc_strict_or_none(r.get("started_at")) or started, str(r.get("run_id"))))
     if rows and rows[-1].get("status") != RUNNING:
         return "left"
-    row = rows[-1] if rows else {"run_id": new_id(), "job": name, "started_at": started, "dry_run": True}
+    # dry_run unknown on a row written here: the run decided live or dry itself (--live and live_sending), and died
+    # before it said which. None claims neither; readers that want a live run test `is False`.
+    row = rows[-1] if rows else {"run_id": new_id(), "job": name, "started_at": started, "dry_run": None}
     store.upsert(TABLE, [{**row, "finished_at": now, "status": ERROR, "error": error, "detail": detail}])
     return "updated" if rows else "written"
 

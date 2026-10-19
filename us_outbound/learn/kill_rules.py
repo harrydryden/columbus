@@ -55,7 +55,10 @@ a post went, and its attempts in its payload (alert_attempts). Before it looks f
 run posts again, in one message, the open live items written by this code (payload outbox) whose alert
 never went and that are under OUTBOX_DAYS old; an item tried OUTBOX_TRIES times waits for the run at
 OUTBOX_HOUR_UK, once a day. A dry-run item is never posted again, and nothing is posted again from a
-dry run; an alert that went to the log for want of a token is not tried again.
+dry run; an alert that went to the log for want of a token is not tried again. A post that timed out may
+have reached Slack after all, so the repost says it may be a repeat. The outbox can never stop the brake:
+an error in it (a payload edited by hand, a store error) is logged and named in the summary
+(reposted_error), and the run goes on to the new firings.
 
 Not here: a human-in-the-loop item left for 24 hours (the reply desk escalates it; enrol already
 pauses while a positive reply waits, enrol.reply_pause); the credit rules (budget.py and the
@@ -76,6 +79,7 @@ from us_outbound import fmt, suppression
 from us_outbound.base import holds, notify, say
 from us_outbound.base.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_SOURCE, STOP_GROUP, WAITING
 from us_outbound.clients.db import new_id
+from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, ConfigError, Context
@@ -529,8 +533,8 @@ def post_unsent(ctx: Context) -> dict:
         return {}
     fired = [_firing(r) for r in items]
     first = min(utc(r.get("created_at")) for r in items)
-    text = (message(ctx, fired, []) + f"\n_Posted again: Slack did not take this alert when it was first sent "
-            f"({first.astimezone(UK):%a %d %b %H:%M} UK)._")
+    text = (message(ctx, fired, []) + f"\n_Posted again: this alert may not have reached Slack when it was first "
+            f"sent ({first.astimezone(UK):%a %d %b %H:%M} UK), so it may be a repeat._")
     sent = notify.alert(ctx, text)
     for r in items:
         _attempted(ctx, r["item_id"], r.get("payload") or {}, sent)
@@ -763,7 +767,16 @@ def message(ctx: Context, fired: list[Firing], expired: list[dict]) -> str:
 
 def run(ctx: Context) -> dict:
     """The kill_rules job (JOB CONTRACT: run(ctx) -> summary)."""
-    reposted = post_unsent(ctx)  # first: an earlier run's pause whose alert never went
+    # First: an earlier run's pause whose alert never went. Nothing in the outbox may stop the brake below (a payload
+    # edited by hand, a store error): it is logged and named in the summary, and the run goes on.
+    reposted_error = None
+    try:
+        reposted = post_unsent(ctx)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        reposted, reposted_error = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+        log("kill_rules_repost_failed", run_id=ctx.run_id, error=reposted_error)
     settings = holds.with_holds(ctx.store, ctx.settings)
     ev = _Events(ctx.store, ctx.now)
     fired_before = _Fired(ctx.store)
@@ -812,6 +825,7 @@ def run(ctx: Context) -> dict:
         "vitals_error": vitals_error or None,
         "alert": alert or None,
         "reposted": reposted or None,
+        "reposted_error": reposted_error,
     }
     log("kill_rules_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "fired"},
         fired=[f.rule for f in firing])
