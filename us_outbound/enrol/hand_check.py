@@ -2,9 +2,9 @@
 random sample of the queue before that week's enrollment, and enrol waits until he has.
 
 hand_check_post, Mondays 08:00 UK and on demand (`us-outbound run hand_check_post`):
-  1. picks PER_GROUP (10, SPEC 11) random queued or verified accounts from each active
-     industry group (a group with an active industry on the Industries tab), verified ones
-     first since they are the next to be emailed. Accounts enrol would never take are left out:
+  1. picks WEEKLY_SAMPLE (10 in all; Harry, 19 Oct 2026) random queued or verified accounts, shared
+     across the active industry groups (a group with an active industry on the Industries tab) in
+     turn, up to PER_GROUP from each, verified ones first since they are the next to be emailed. Accounts enrol would never take are left out:
      Held or Excluded tiers, suppressed or partner domains, industries switched off. The draw
      is seeded with the ISO week, so it is the same draw however often it runs that week;
   2. records the week's item in hitl_items (kind hand_check, item_id "hand_check-{iso_week}",
@@ -48,8 +48,8 @@ Without Slack (Harry, 1 Oct 2026; operator commands, live with --live alone):
                                            one `show` printed, as the draw is seeded with the week
 enrol.hand_check reads the item: enrollment waits until every hand_check item of the ISO week
 (US Eastern date, as enrol counts it) is handled.
-docs/gtm-review/README.md §4.1 B4 suggests 5 accounts a group to fit Harry's hours; PER_GROUP
-is SPEC 11's 10 until Harry decides.
+Sample size: SPEC 11 asked for 10 a group (30 a week with three groups); Harry, 19 Oct 2026: "reduce the
+handcheck random samples to 10 per week", so WEEKLY_SAMPLE caps the whole draw at 10.
 """
 
 from __future__ import annotations
@@ -69,7 +69,8 @@ from us_outbound.settings.model import Settings
 
 JOB = "hand_check_post"
 KIND = "hand_check"
-PER_GROUP = 10  # SPEC 11: ten random queued accounts per active industry group
+PER_GROUP = 10  # SPEC 11: ten random queued accounts per active industry group, at most
+WEEKLY_SAMPLE = 10  # Harry, 19 Oct 2026: 10 a week in all, shared across the groups in turn
 STATUSES = ("verified", "queued")  # verified first: they are the next to be emailed
 EVIDENCE_LIMIT = 3
 QUOTE_LIMIT = 160
@@ -134,7 +135,22 @@ def draw(ctx: Context, week: str, per_group: int = PER_GROUP) -> dict[str, list[
                 picked += rng.sample(these, min(room, len(these)))
         if picked:
             out[group] = picked
-    return out
+    return _cap(out, week)
+
+
+def _cap(sample: dict[str, list[dict]], week: str, total: int = WEEKLY_SAMPLE) -> dict[str, list[dict]]:
+    """The draw cut to total accounts in all, taken from the groups in turn (a week-seeded order of groups), so
+    each group gets its share and one with fewer accounts leaves the rest to the others."""
+    order = sorted(sample)
+    random.Random(f"{week}:groups").shuffle(order)
+    kept: dict[str, list[dict]] = {g: [] for g in order}
+    n = 0
+    while n < total and any(len(kept[g]) < len(sample[g]) for g in order):
+        for g in order:
+            if n < total and len(kept[g]) < len(sample[g]):
+                kept[g].append(sample[g][len(kept[g])])
+                n += 1
+    return {g: accts for g, accts in kept.items() if accts}
 
 
 def _person(ctx: Context, account_id: str, domains: set[str], hashes: set[str]) -> tuple[dict, str]:

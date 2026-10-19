@@ -64,26 +64,28 @@ def test_the_job_records_this_week_s_sample_and_posts_it():
     ctx, t = world()
     out = hand_check.post(ctx)
     assert out["status"] == "recorded" and out["iso_week"] == WEEK
-    assert out["groups"] == {AGENCIES: 10, TECH: 7}  # 10 per group; Tech has 7 to take
+    assert out["groups"] == {AGENCIES: 5, TECH: 5}  # 10 a week in all (Harry, 19 Oct 2026), the groups in turn
     item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
     assert item["kind"] == "hand_check" and item["status"] == "open"
     p = item["payload"]
     assert p["iso_week"] == WEEK and p["per_group"] == 10 and p["posted"] is True
     agencies = p["groups"][AGENCIES]
     assert all(a.startswith("mar-0") or a.startswith("mar-1") for a in agencies)  # verified first: 12 of them
-    assert set(p["groups"][TECH]) == {"tec-00", "tec-01", "tec-10", "tec-11", "tec-12", "tec-13", "tec-14"}
+    assert {"tec-00", "tec-01"} <= set(p["groups"][TECH])  # verified first
+    assert set(p["groups"][TECH]) <= {"tec-00", "tec-01", "tec-10", "tec-11", "tec-12", "tec-13", "tec-14"}
     left_out = {"mar-90", "mar-91", "mar-92", "tec-93"}
     assert not left_out & {a for ids in p["groups"].values() for a in ids}
     facts = {a["account_id"]: a for a in p["accounts"]}
     assert set(facts) == {a for ids in p["groups"].values() for a in ids}
-    assert facts["tec-10"]["contact"]["note"].startswith("no contact yet")
+    queued_tech = next(a for a in p["groups"][TECH] if a.startswith("tec-1"))
+    assert facts[queued_tech]["contact"]["note"].startswith("no contact yet")
     # Posted to the alert channel, mentioning Harry, with how to approve without Slack.
     [post] = posts(t)
     assert post.json["channel"] == "C_ALERT"
     text = post.json["text"]
     lines = text.splitlines()
-    assert lines[:2] == ["<@U_HARRY> :warning: *Weekly hand-check: 17 companies to look at before this week's new "
-                         "emails go out*", "Week 44: 17 picked at random."]
+    assert lines[:2] == ["<@U_HARRY> :warning: *Weekly hand-check: 10 companies to look at before this week's new "
+                         "emails go out*", "Week 44: 10 picked at random."]
     assert lines[2:4] == ["*What to do:*", "1. Open the <https://docs.google.com/spreadsheets/d/sheet-test/edit|"
                                            "Hand-check tab>: one row per company, with the reason it is there."]
     assert "*fine*, *leave out* (never email it), or *wrong industry*" in lines[4]
@@ -171,8 +173,8 @@ def test_handcheck_show_prints_the_sample_and_never_records_it(capsys):
     h = harness()
     assert h.run("handcheck", "show") == 0
     out = capsys.readouterr().out
-    assert "Week 44: 17 companies picked at random from those queued to email" in out
-    assert "Marketing & Creative Agencies (10):" in out and "Contact: " in out and "Evidence: " in out
+    assert "Week 44: 10 companies picked at random from those queued to email" in out
+    assert "Marketing & Creative Agencies (5):" in out and "Contact: " in out and "Evidence: " in out
     assert "1. All fine: run `us-outbound handcheck approve --live`." in out
     assert h.run("handcheck", "show", "--live") == 0
     assert h.store.select("hitl_items", {"kind": "hand_check"}) == []
@@ -273,11 +275,11 @@ def test_a_doubtful_only_week_does_not_pass_the_gate_once_auto_send_is_yes():
     assert pulled == frozenset({"mar-70"})  # a pull counts whatever the item's status (9 Oct 2026)
     # hand_check_post records it again with the sample, the pull kept, open until it is approved.
     out = hand_check.post(ctx)
-    assert out["status"] == "recorded again with the sample (auto_send is yes now)" and out["accounts"] == 17
+    assert out["status"] == "recorded again with the sample (auto_send is yes now)" and out["accounts"] == 10
     item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
     assert (item["status"], item["handled_by"], item["payload"]["per_group"]) == ("open", None, 10)
     assert item["payload"]["pulled_account_ids"] == ["mar-70"]
-    assert "Week 44: 17 picked at random, 1 with other doubtful facts." in posts(t)[-1].json["text"]
+    assert "Week 44: 10 picked at random, 1 with other doubtful facts." in posts(t)[-1].json["text"]
     assert enrol.hand_check(ctx, ctx.now_et().date()) == (f"this week's hand-check ({WEEK}) is not approved yet",
                                                           frozenset({"mar-70"}))
     hand_check.approve(ctx, [], "harry")
@@ -291,7 +293,7 @@ def test_approve_records_the_sample_itself_when_the_week_has_none():
     hand_check.approve(ctx, [], "harry")
     _auto_send_on(ctx)
     item, payload = hand_check.show(ctx)  # what approve will record; nothing is written
-    assert item is None and payload["per_group"] == 10 and len(payload["accounts"]) == 17
+    assert item is None and payload["per_group"] == 10 and len(payload["accounts"]) == 10
     assert ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")["payload"]["per_group"] == 0
     dry = make_context(ctx.settings, live=False, transport=t, now=ctx.now, store=ctx.store)
     out = hand_check.approve(dry, [], "harry")
@@ -349,3 +351,13 @@ def test_a_sample_week_lists_the_doubtful_companies_under_their_own_line():
     assert "Doubtful facts from Apollo (1): not cleared to email until you look." in lines
     assert "  2. Mar Co 70 (mar70.com) · HQ ? · size unknown · no HQ state · id mar-70" in lines
     assert lines[-1] == "_Until it is approved, no new leads go to Instantly this week._"
+
+
+def test_the_weekly_sample_is_ten_in_all_and_a_small_group_leaves_its_share_to_the_others():
+    a = [{"account_id": f"a{i}"} for i in range(9)]
+    b = [{"account_id": "b0"}]
+    capped = hand_check._cap({AGENCIES: a, TECH: b}, WEEK)
+    assert {g: len(x) for g, x in capped.items()} == {AGENCIES: 9, TECH: 1}
+    capped = hand_check._cap({AGENCIES: a * 2, TECH: a * 2}, WEEK)
+    assert {g: len(x) for g, x in capped.items()} == {AGENCIES: 5, TECH: 5}
+    assert capped == hand_check._cap({AGENCIES: a * 2, TECH: a * 2}, WEEK)  # the same draw all week
