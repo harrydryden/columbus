@@ -201,6 +201,8 @@ class General:
     control_share: float = 0.15
     priority_threshold: int = 50
     standard_threshold: int = 20
+    # (build) Harry, 19 Oct 2026: the two thresholds follow the queue each day (scoring/balance.py); no: as typed
+    auto_thresholds: bool = True
     score_cap: int = 100
     clay_monthly_credits: float = 2000.0  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week); 0 = no Clay calls
     apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)

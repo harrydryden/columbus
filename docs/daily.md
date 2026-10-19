@@ -9,6 +9,7 @@ worker: `railway ssh -- us-outbound <command>`. Nothing changes without `--live`
 | :- | :- | :- |
 | `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry, and enrol posts a few preview cards to #us-outbound-dev | Emails go out. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
 | `auto_send` | The pilot: every email waits for an approver's ✅ on its card in #us-outbound | Emails go straight to Instantly once the weekly hand-check is approved |
+| `auto_thresholds` | `priority_threshold` and `standard_threshold` are used as typed; an alert says when top fit is under 5% or a group over 60% | The default (Harry, 19 Oct 2026). Each day the thresholds follow the queue: top fit is its best fifth (30 points at least), and the good-fit pool is kept big enough for two weeks of sending at `weekly_enrol_cap`, the rest being the comparison group (about 30%). The daily post's *Pipeline* shows the day's values; an alert comes only when the queue is too small for two weeks |
 
 **Company size (General `min_employees`, `max_employees`; 10 and 249 by default).** To contact companies of 5
 to 500, set 5 and 500. From the next sync every search covers the new range (new size bands are searched

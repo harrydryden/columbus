@@ -88,9 +88,14 @@ def database_url(env: Mapping[str, str]) -> str:
 def _load_settings(store: Store) -> tuple[Settings | None, Mapping[str, list[Any]]]:
     from us_outbound.settings.sync import load_current  # built alongside; imported when used
 
+    from us_outbound.scoring import balance
+
     settings, errors = load_current(store)
-    # A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py).
-    return (with_holds(store, settings) if settings is not None else None), errors
+    if settings is None:
+        return None, errors
+    # A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py); and the day's
+    # automatic thresholds stand in for the sheet's while auto_thresholds is yes (scoring/balance.py).
+    return balance.applied(store, with_holds(store, settings)), errors
 
 
 def sheets_credentials(env: Mapping[str, str]) -> Any:

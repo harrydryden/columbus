@@ -45,8 +45,17 @@ _GENERAL: list[tuple[str, str, str]] = [
     ),
     ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company, and a second contact (second_contact) counts too. Each send day takes what is left of it ÷ the send days left in the week."),
     ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
-    ("priority_threshold", "50", "Score at or above this is Priority."),
-    ("standard_threshold", "20", "Score at or above this is Standard; below it is Control."),
+    ("priority_threshold", "50", "Score at or above this is Priority. Used only while auto_thresholds is no."),
+    ("standard_threshold", "20", "Score at or above this is Standard; below it is Control. Used only while "
+     "auto_thresholds is no."),
+    (
+        "auto_thresholds",
+        "yes",
+        "yes: the two thresholds above follow the queue each day: top fit is the best fifth (30 points at least), "
+        "and the good-fit pool is kept big enough for two weeks of sending at weekly_enrol_cap, with the rest the "
+        "comparison group (about 30%). The daily post shows the day's values. no: the two values above, as typed. "
+        "Harry, 19 Oct 2026. Added by the build.",
+    ),
     ("score_cap", "100", "Cap on an account's total score."),
     (
         "clay_monthly_credits",

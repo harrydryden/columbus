@@ -64,8 +64,9 @@ data to say something, and as counts, not conclusions:
   * data gaps: verified accounts with no size band, accounts waiting for verification with none,
     the main reason pick_contacts found nobody suitable, and a pointer to the page reader's own
     section rather than its numbers again;
-  * the tier mix of this month's queue when a tier is outside 5 to 40% (score.tier_share, the
-    score job's own check), as after the first live sourcing run (2 Oct 2026: 425 of 432 Control).
+  * the tier mix of this month's queue when top fit is under 5% or a group over 60% (score.tier_share, the
+    score job's own check), as after the first live sourcing run (2 Oct 2026: 425 of 432 Control). Only while
+    auto_thresholds is no: with yes the thresholds keep the mix (scoring/balance.py).
 What cannot be compared yet goes in one last line, with how many it needs.
 """
 
@@ -563,14 +564,17 @@ def _review_ready(ctx: Context) -> list[str]:
 
 
 def _tier_mix(ctx: Context, rows: Rows) -> list[str]:
+    if ctx.settings.general.auto_thresholds:
+        return []
     check = score.tier_share(rows.accounts, ctx.today_uk())
     if not check or not check["off"]:
         return []
     # The score job's alert in short (scoring/score.py _share_alert): the same words for the groups, the same fix.
     mix = ", ".join(f"{score.TIER_WORDS[t]} {s:.0%}" for t, s in check["shares"].items())
-    fixes = " ".join(score._share_fixes(ctx, check["off"]))
-    return [f"  This month's list of companies to email is unbalanced ({check['accounts']} companies): {mix}; each "
-            f"group should be {score.SHARE_MIN * 100:.0f}–{score.SHARE_MAX:.0%}. *What to do,* on the General tab: {fixes}"]
+    fixes = " ".join(score._share_fixes(ctx.settings, check["off"]))
+    return [f"  This month's list of companies to email is unbalanced ({check['accounts']} companies): {mix}; top "
+            f"fit should be at least {score.SHARE_MIN:.0%} and no group over {score.SHARE_MAX:.0%}. *What to do,* on "
+            f"the General tab: {fixes}"]
 
 
 def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:

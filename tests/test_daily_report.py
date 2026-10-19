@@ -379,6 +379,8 @@ def test_to_improve_before_any_send():
 
 def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
     ctx, _ = learning()
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
+                                                                                 auto_thresholds=False))
     month = TUE_9 - timedelta(days=2)
     ctx.store.insert("accounts", [acct(f"q{i}", tier="Control", status="queued", size_band="20-49", first_seen=month)
                                   for i in range(20)] + [acct("v0", tier="Control", status="verified")])
@@ -388,10 +390,11 @@ def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
     assert body[4].startswith("  No company size from Apollo: 1 of 1 companies ready to email and 0 still being checked.")
     # In the words of the score job's tier mix alert (scoring/score.py), with the same fix.
     assert body[5] == ("  This month's list of companies to email is unbalanced (21 companies): Top fit (Priority) 0%, "
-                       "Good fit (Standard) 0%, Comparison group (Control) 100%; each group should be 5–40%. *What to "
-                       "do,* on the General tab: Lower `priority_threshold` (now 50), the score a company needs to count "
-                       "as top fit. Lower `standard_threshold` (now 20); companies scoring below it go to the comparison "
-                       "group.")
+                       "Good fit (Standard) 0%, Comparison group (Control) 100%; top fit should be at least 5% and no "
+                       "group over 60%. *What to do,* on the General tab: Lower `priority_threshold` (now 50), the score "
+                       "a company needs to count as top fit. Lower `standard_threshold` (now 20); companies scoring "
+                       "below it go to the comparison group. Or set `auto_thresholds` to yes, and the thresholds follow "
+                       "the queue each day.")
     assert not any(line.startswith("  Replies by angle") for line in body)  # last in line, so the first left out
 
 

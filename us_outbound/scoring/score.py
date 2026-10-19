@@ -57,7 +57,10 @@ SCORED_STATUSES = ("new", "queued", "verified", "enrolled", "engaged")
 ANGLE_FIXED_STATUSES = frozenset({"enrolled", "engaged"})  # the angle is fixed at enrollment
 QUEUE_STATUSES = frozenset({"queued", "verified"})
 SHARE_TIERS = (tiers.PRIORITY, tiers.STANDARD, tiers.CONTROL)
-SHARE_MIN, SHARE_MAX = 0.05, 0.40  # each tier is 5-40% of the month's queue
+# Harry, 19 Oct 2026: alert only when the mix matters: too few top-fit companies, or one group swamping the rest
+# (it was 5-40% for every group, which three groups can only meet at 20% or more each).
+SHARE_MIN, SHARE_MAX = 0.05, 0.60
+POOL_STATUSES = ("new", "queued", "verified")  # the open queue the automatic thresholds are set from (balance.py)
 SHARE_MIN_ACCOUNTS = 20  # too few accounts to judge the mix below this
 ID_CHUNK = 1000
 
@@ -453,9 +456,9 @@ TIER_WORDS = {tiers.PRIORITY: "Top fit (Priority)", tiers.STANDARD: "Good fit (S
               tiers.CONTROL: "Comparison group (Control)"}
 
 
-def _share_fixes(ctx: Context, off: Mapping[str, float]) -> list[str]:
+def _share_fixes(settings: Settings, off: Mapping[str, float]) -> list[str]:
     """What to change for the tiers outside the range: the two score thresholds on the General tab decide them."""
-    g = ctx.settings.general
+    g = settings.general
     fixes = []
     if tiers.PRIORITY in off:
         way = "lower" if off[tiers.PRIORITY] < SHARE_MIN else "raise"
@@ -469,19 +472,22 @@ def _share_fixes(ctx: Context, off: Mapping[str, float]) -> list[str]:
         way = "Move them closer together" if off[tiers.STANDARD] > SHARE_MAX else "Move them further apart"
         fixes.append(f"{way}: `priority_threshold` (now {g.priority_threshold}) and `standard_threshold` "
                      f"(now {g.standard_threshold}).")
-    return fixes
+    return [*fixes, "Or set `auto_thresholds` to yes, and the thresholds follow the queue each day."]
 
 
-def _share_alert(ctx: Context, check: dict[str, Any], today: date) -> None:
-    """Once a week at most while the mix stays off (the score job runs several times a day)."""
+def _share_alert(ctx: Context, check: dict[str, Any], today: date, settings: Settings) -> None:
+    """Once a week at most while the mix stays off (the score job runs several times a day). Only while
+    auto_thresholds is no: with yes, the thresholds keep the mix (balance.py)."""
     off = check["off"]
-    rows = [f"• {TIER_WORDS[t]}: {s:.0%}" + (f"  ← {'below 5%' if s < SHARE_MIN else 'above 40%'}" if t in off else "")
+    rows = [f"• {TIER_WORDS[t]}: {s:.0%}"
+            + (f"  ← {'below' if s < SHARE_MIN else 'above'} {SHARE_MIN if s < SHARE_MIN else SHARE_MAX:.0%}"
+               if t in off else "")
             for t, s in check["shares"].items()]
-    fixes = _share_fixes(ctx, off)
+    fixes = _share_fixes(settings, off)
     text = say.compose(
         say.ACTION, f"{today:%B}'s list of companies to email is unbalanced",
         [f"{check['accounts']} companies were added to the queue this month. How they split by score:", *rows,
-         "Each group should be 5–40% of the queue."],
+         f"Top fit should be at least {SHARE_MIN:.0%}, and no group more than {SHARE_MAX:.0%}."],
         do=[f"Open the {say.sheet_link(ctx, 'General')} of the settings sheet.", *fixes,
             "Wait for the next settings sync (02:00 and 11:30 UK); the companies are then scored again."],
         why="the comparison group shows whether scoring finds better companies; if one group swamps the others, the "
@@ -489,6 +495,50 @@ def _share_alert(ctx: Context, check: dict[str, Any], today: date) -> None:
     )
     head, _, body = text.partition("\n")
     notify.post_once(ctx, [(notify.once_key(ctx, "tier_mix", per="week", on=today), body)], head=head)
+
+
+def _balanced(ctx: Context, accounts: Sequence[Mapping[str, Any]], results: Mapping[str, ScoreResult],
+              today: date) -> tuple[Settings, dict[str, Any] | None]:
+    """(the settings to tier with, the day's automatic thresholds or None) (balance.py). The first rescore of a UK
+    day sets them from the open queue; later ones that day use what it set."""
+    from us_outbound.scoring import balance
+
+    settings = ctx.settings
+    if not settings.general.auto_thresholds:
+        return settings, None
+    fit = balance.stored(ctx.store, today)
+    if fit is None:
+        pool = [results[a["account_id"]].score for a in accounts
+                if a.get("status") in POOL_STATUSES and results[a["account_id"]].tier in SHARE_TIERS]
+        t = balance.balance(pool, settings.general)
+        if t is None:
+            return settings, None
+        fit = balance.record(ctx.store, t, today, ctx.now).value()
+        log("auto_thresholds", run_id=ctx.run_id, **fit)
+    moved = balance.with_thresholds(settings, fit)
+    same = (moved.general.priority_threshold, moved.general.standard_threshold) == (
+        settings.general.priority_threshold, settings.general.standard_threshold)
+    return (settings if same else moved), fit
+
+
+def _short_alert(ctx: Context, fit: Mapping[str, Any], today: date) -> None:
+    """Once a week at most: the queue is too small for the good-fit pool and the comparison group both."""
+    from us_outbound.scoring import balance
+
+    text = say.compose(
+        say.ACTION, "Not enough companies in the queue for the next two weeks",
+        [f"{fit['pool']:,} companies are waiting. {fit['good_fit']:,} of them are a good fit "
+         f"({fit['standard']}+ points), about {fit.get('weeks', 0)} weeks of sending at `weekly_enrol_cap`; "
+         f"{balance.COVER_WEEKS} weeks needs {fit['need']:,}.",
+         "To keep good-fit companies coming, the comparison group is smaller than it should be. Thresholds cannot "
+         "add companies."],
+        do=[f"Widen what is found: add industry groups on the {say.sheet_link(ctx, 'Focus')}, or switch on more "
+            f"industries on the {say.sheet_link(ctx, 'Industries')}.",
+            f"Or lower `weekly_enrol_cap` on the {say.sheet_link(ctx, 'General')} to what the queue can sustain."],
+        why="when the good-fit companies run out, the days that follow send weaker ones or none.",
+    )
+    head, _, body = text.partition("\n")
+    notify.post_once(ctx, [(notify.once_key(ctx, "queue_short", per="week", on=today), body)], head=head)
 
 
 def rescore(ctx: Context) -> dict:
@@ -510,9 +560,16 @@ def rescore(ctx: Context) -> dict:
     tier_counts: Counter[str] = Counter()
     changed = 0
     scored: list[dict] = []
+    results = {a["account_id"]: score_account(a, events.get(a["account_id"], []), settings, today) for a in accounts}
+    settings, fit = _balanced(ctx, accounts, results, today)
+    if settings is not ctx.settings:  # the day's thresholds moved: the accounts that change tier, again
+        for a in accounts:
+            r = results[a["account_id"]]
+            if r.tier in SHARE_TIERS and tiers.band(r.score, settings) != r.tier:
+                results[a["account_id"]] = score_account(a, events.get(a["account_id"], []), settings, today)
     for a in accounts:
         aid = a["account_id"]
-        r = score_account(a, events.get(aid, []), settings, today)
+        r = results[aid]
         tier_counts[r.tier] += 1
         new: dict[str, Any] = {"score": r.score, "tier": r.tier, "tier_reason": r.tier_reason}
         if a.get("status") not in ANGLE_FIXED_STATUSES:
@@ -547,8 +604,11 @@ def rescore(ctx: Context) -> dict:
     n_partners = _add_partners(ctx, partners)
 
     check = tier_share(scored, today)
-    if check and check["off"]:
-        _share_alert(ctx, check, today)
+    if fit is not None:  # automatic thresholds: the mix is set; what matters is whether the queue lasts
+        if fit.get("short"):
+            _short_alert(ctx, fit, today)
+    elif check and check["off"]:
+        _share_alert(ctx, check, today, settings)
 
     summary = {
         "accounts": len(accounts),
@@ -558,7 +618,10 @@ def rescore(ctx: Context) -> dict:
         "suppressed": n_suppressed,
         "partners": n_partners,
         "tier_share": None if check is None else {t: round(s, 3) for t, s in check["shares"].items()},
-        "tier_share_alert": bool(check and check["off"]),
+        "tier_share_alert": bool(fit is None and check and check["off"]),
+        "thresholds": {"auto": fit is not None, "priority": settings.general.priority_threshold,
+                       "standard": settings.general.standard_threshold, **({"short": fit.get("short"),
+                                                                           "weeks": fit.get("weeks")} if fit else {})},
     }
     log("score_done", run_id=ctx.run_id, dry_run=ctx.dry_run, **summary)
     return summary

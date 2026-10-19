@@ -5,6 +5,7 @@ Tier: the first rule that applies.
   2. Held: a Hold signal applies.
   3. Priority: score >= priority_threshold.
   4. Standard: score >= standard_threshold.
+  (Both thresholds follow the queue each day while General auto_thresholds is yes: balance.py.)
   5. Control: everything else.
 
 Hard exclusions are fixed in code, not in the settings sheet:
@@ -238,6 +239,12 @@ def score_parts(matches: Iterable[Match], score: int) -> str:
     return text
 
 
+def band(score: int, settings: Settings) -> str:
+    """Priority, Standard or Control for a score, by the two thresholds alone."""
+    g = settings.general
+    return PRIORITY if score >= g.priority_threshold else STANDARD if score >= g.standard_threshold else CONTROL
+
+
 def tier(
     score: int,
     matches: list[Match],
@@ -253,11 +260,5 @@ def tier(
     holds = [m for m in matches if m.signal.action == "Hold"]
     if holds:
         return HELD, f"{HELD}: " + ", ".join(_evidence_summary(m) for m in holds)
-    g = settings.general
-    if score >= g.priority_threshold:
-        name = PRIORITY
-    elif score >= g.standard_threshold:
-        name = STANDARD
-    else:
-        name = CONTROL
+    name = band(score, settings)
     return name, f"{name}: {score_parts(matches, score)}"

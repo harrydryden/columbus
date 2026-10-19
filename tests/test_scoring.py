@@ -509,7 +509,7 @@ def _with_slack(ctx) -> RecordingSlack:
 
 
 def test_tier_share_alert_posts_once_to_the_alert_channel():
-    ctx = make_context(make_settings((Q4,)), now=NOW)  # every account scores 10: Control
+    ctx = make_context(make_settings((Q4,), auto_thresholds=False), now=NOW)  # every account scores 10: Control
     slack = _with_slack(ctx)
     ctx.store.tables["accounts"] = [account(account_id=f"c{i}", domain=f"c{i}.com") for i in range(20)]
     summary = rescore(ctx)
@@ -522,7 +522,7 @@ def test_tier_share_alert_posts_once_to_the_alert_channel():
     assert lines[0].endswith(":warning: *October's list of companies to email is unbalanced*")
     assert "20 companies were added to the queue this month. How they split by score:" in lines
     assert "• Top fit (Priority): 0%  ← below 5%" in lines
-    assert "• Comparison group (Control): 100%  ← above 40%" in lines
+    assert "• Comparison group (Control): 100%  ← above 60%" in lines
     assert "*What to do:*" in lines and "General tab" in lines[lines.index("*What to do:*") + 1]
     assert any(line.startswith("2. Lower `priority_threshold` (now 50)") for line in lines)
     assert any(line.startswith("3. Lower `standard_threshold` (now 20)") for line in lines)
@@ -531,7 +531,7 @@ def test_tier_share_alert_posts_once_to_the_alert_channel():
 
 
 def test_tier_share_check_skips_small_queues_and_passes_a_good_mix():
-    ctx = make_context(make_settings((Q4,)), now=NOW)
+    ctx = make_context(make_settings((Q4,), auto_thresholds=False), now=NOW)
     slack = _with_slack(ctx)
     ctx.store.tables["accounts"] = [account(account_id=f"c{i}", domain=f"c{i}.com") for i in range(19)]
     assert rescore(ctx)["tier_share"] is None
@@ -539,7 +539,8 @@ def test_tier_share_check_skips_small_queues_and_passes_a_good_mix():
 
     points = sig("Points", "apollo_org", "open_roles >= 1", 1)
     big = sig("Big", "apollo_org", "open_roles >= 50", 40)
-    ctx = make_context(make_settings((points, big), priority_threshold=41, standard_threshold=1), now=NOW)
+    ctx = make_context(make_settings((points, big), priority_threshold=41, standard_threshold=1, auto_thresholds=False),
+                       now=NOW)
     slack = _with_slack(ctx)
     rows, events = [], []
     for i in range(30):
@@ -559,7 +560,7 @@ def test_tier_share_check_skips_small_queues_and_passes_a_good_mix():
 def test_tier_share_alert_in_dry_run_goes_to_the_dev_channel():
     pytest.importorskip("us_outbound.clients.slack")
     transport = _slack_routes(FakeTransport())
-    ctx = make_context(make_settings((Q4,)), now=NOW, transport=transport)
+    ctx = make_context(make_settings((Q4,), auto_thresholds=False), now=NOW, transport=transport)
     ctx.store.tables["accounts"] = [account(account_id=f"c{i}", domain=f"c{i}.com") for i in range(20)]
     rescore(ctx)
     [post] = [r for r in transport.requests if r.url.endswith("chat.postMessage")]
