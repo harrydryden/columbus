@@ -441,3 +441,69 @@ def test_a_version_in_force_that_newer_rules_reject_is_replaced_by_the_next_sync
     assert summary["unusable"] == [] and summary["rejected"] == []
     settings, errors = sync.load_current(ctx.store)
     assert settings is not None and settings.industry(label).definition
+
+
+class EditableSheets(StubSheets):
+    """StubSheets with the cell writes apply_approved makes, refusing as clients/sheets.py does: ValueError when two
+    rows match, rather than guess."""
+
+    def update_cell(self, sheet_id, tab, match, column, value):
+        hits = [r for r in self.tabs.get(tab, []) if all(str(r.get(k, "")).lower() == str(v).lower()
+                                                          for k, v in match.items())]
+        if len(hits) > 1:
+            raise ValueError(f"{len(hits)} rows on the {tab} tab match {dict(match)}")
+        for r in hits:
+            r[column] = value
+        return bool(hits)
+
+    def update_rows(self, sheet_id, tab, key, updates):
+        for value, cells in updates.items():
+            hits = [r for r in self.tabs.get(tab, []) if str(r.get(key, "")).lower() == str(value).lower()]
+            if len(hits) > 1:
+                raise ValueError(f"{len(hits)} rows on the {tab} tab have {key} {value!r}")
+            for r in hits:
+                r.update(cells)
+        return []
+
+
+@pytest.mark.parametrize("live", [True, False])
+def test_a_suggestion_row_that_cannot_be_applied_never_stops_the_sync(sheet, fake_score, live):
+    """W0, 19 Oct 2026 (code-platform-ops B8). Two approved Definition suggestions rows share an id. Before, a live
+    sync wrote both lines to the Industries tab, then marking them applied raised ValueError, so every sync stopped
+    before reading the sheet and any General edit Harry made (live_sending = no among them) never came into force.
+    Now the sync completes, with the one shared id as the one error entry, nothing written to Industries, and the
+    General change made the same morning in force."""
+    settings, errors = validate_all(default_tabs())
+    assert settings is not None, errors
+    ctx = make_context(settings, live=live, now=T1, job="settings_sync")
+    ctx.clients.sheets = EditableSheets(sheet)
+    ctx.clients.slack = StubSlack()
+    sync.run(ctx)
+    assert _in_force(ctx, "General", "weekly_enrol_cap")["values"]["value"] == "150"
+
+    label, before = sheet["Industries"][0]["industry"], sheet["Industries"][0]["definition"]
+    sheet["Definition suggestions"] = [
+        {"id": "2026-11:x", "label": label, "suggested_definition": "first line", "decision": "approve", "applied": ""},
+        {"id": "2026-11:x", "label": label, "suggested_definition": "second line", "decision": "approve",
+         "applied": ""}]
+    _row(sheet, "General", key="weekly_enrol_cap")[1]["value"] = "100"  # Harry's edit the same morning
+    ctx.now = T2
+    summary = sync.run(ctx)
+    assert summary["definitions_applied"] == []
+    assert summary["definition_apply_errors"] == [
+        {"id": "2026-11:x", "label": label, "error": "skipped: 2 rows on the tab have this id; give each its own"}]
+    assert summary["rejected"] == [] and summary["tabs"]["General"]["status"] == "synced"
+    assert _in_force(ctx, "General", "weekly_enrol_cap")["values"]["value"] == "100"
+    assert sheet["Industries"][0]["definition"] == before  # neither line was written
+    assert [r["applied"] for r in sheet["Definition suggestions"]] == ["", ""]
+
+
+def test_anything_apply_approved_did_not_foresee_is_recorded_and_the_sync_goes_on(ctx, sheet, monkeypatch):
+    def broken(c, sheet_id):
+        raise KeyError("suggested_definition")
+
+    monkeypatch.setattr(sync, "apply_approved", broken)
+    _row(sheet, "States", state="NC")[1]["active"] = "yes"
+    summary = sync.run(ctx)
+    assert summary["definition_apply_errors"] == [{"id": "", "label": "", "error": "KeyError: 'suggested_definition'"}]
+    assert _in_force(ctx, "States", "NC")["values"]["active"] == "yes"

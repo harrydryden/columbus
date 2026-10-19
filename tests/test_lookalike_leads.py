@@ -384,19 +384,23 @@ def test_once_a_month_and_the_daily_post(default_settings, monkeypatch):
     assert heartbeat.run_job(ctx4, ll.run)["status"] == "ok"
 
 
-def test_schedule_heartbeat_and_registry():
+def test_parked_off_the_schedule_and_not_expected_but_still_runnable_by_hand(default_settings):
+    """Parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for whole-US pages of
+    Apollo's search and kept only the active states. The scheduler never starts it, the heartbeat check never calls
+    it missed, and `us-outbound run lookalike_leads` still runs it (test_run_from_the_command_line)."""
     job = schedule.by_name()[ll.JOB]
-    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("50 2 1 * *", False, True, 30)
-    assert cli.JOBS[ll.JOB] == "us_outbound.sources.lookalike_leads:run" and ll.JOB in heartbeat.scheduled_jobs()
-    # The 1st at 02:50 UK, after lookalikes (Mondays 02:30): 1 Nov 2026 is GMT.
-    assert sch.next_run(sch.Cron.parse(job.cron), datetime(2026, 10, 5, 12, tzinfo=UTC)) == datetime(
-        2026, 11, 1, 2, 50, tzinfo=UTC)
-    # A monthly job is never "missed" between its runs (31 days at most), and is once it skips a month.
-    assert heartbeat.EXPECTED[ll.JOB] == 32 * 24 * 60 and ll.JOB not in heartbeat.WEEKDAY_JOBS
+    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("50 2 1 * *", False, False, 30)
+    assert ll.JOB in schedule.PARKED and ll.JOB not in schedule.enabled_names()
+    assert ll.JOB not in [j.name for j, _ in sch.Scheduler().jobs]
+    assert cli.JOBS[ll.JOB] == "us_outbound.sources.lookalike_leads:run" and ll.JOB in cli.built_jobs()
+    assert ll.JOB not in heartbeat.scheduled_jobs() and ll.JOB not in heartbeat.EXPECTED
+    # A run by hand on 1 Oct, then nothing for five weeks: a monthly job would be missed by 3 Nov (32 days of
+    # slack), a parked one is never flagged.
+    ctx = make_context(default_settings, now=datetime(2026, 11, 3, 3, 0, tzinfo=UTC))
     last = datetime(2026, 10, 1, 1, 55, tzinfo=UTC)
-    run = {"status": "ok", "started_at": last, "finished_at": last, "last_ok_at": last, "last_alive_at": last, "runs": 1}
-    assert heartbeat.overdue_minutes(ll.JOB, run, datetime(2026, 11, 1, 3, 0, tzinfo=UTC)) < 0
-    assert heartbeat.overdue_minutes(ll.JOB, run, datetime(2026, 11, 3, 3, 0, tzinfo=UTC)) > 0
+    ctx.store.insert("heartbeats", [{"run_id": "hand-1", "job": ll.JOB, "started_at": last, "finished_at": last,
+                                     "status": "ok", "dry_run": False, "detail": {}, "error": None}])
+    assert heartbeat.check_heartbeats(ctx, [ll.JOB]) == []
 
 
 def test_run_from_the_command_line(default_settings, monkeypatch, capsys):

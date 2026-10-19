@@ -14,7 +14,7 @@ from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2,
 from us_outbound.base import heartbeats
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
-from us_outbound.ops import bootstrap, cli
+from us_outbound.ops import bootstrap, cli, schedule
 from us_outbound.ops import heartbeat as hb
 from us_outbound.settings.model import General, Settings
 from us_outbound.settings.model import Test as CopyTest
@@ -135,7 +135,10 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
     assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
     assert cli.JOBS["retention"] == "us_outbound.ops.retention:run"  # SPEC 6 and 13
-    assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"}
+    # Every job but score (no schedule of its own) and the parked ones (built, off the schedule: lookalike_leads,
+    # W0, 19 Oct 2026) is expected by the heartbeat check.
+    assert schedule.PARKED == {"lookalike_leads"}
+    assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"} - schedule.PARKED
 
 
 def test_the_google_cloud_commands_are_gone():

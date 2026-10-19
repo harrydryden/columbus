@@ -62,6 +62,8 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
                                       notes) into the sheet; create the sheet
   handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
+  handcheck export [--live]           every decided Hand-check row, every week's, as a judgement fact in
+                                      the database (enrol/hand_check_tab.export); dry-run counts them
   clay check-email --first NAME       one Work Email lookup through Clay's API for a Spill colleague's own
     --last NAME --domain DOMAIN       name (never a prospect), to confirm the email fallback before
     [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
@@ -88,7 +90,7 @@ Dry-run is the default everywhere. Two kinds of live:
     sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
     test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
-    handcheck show|approve, killrules clear, replies skip, approvals contact|company|reject,
+    handcheck show|approve|export, killrules clear, replies skip, approvals contact|company|reject,
     clay check-email): --live alone, so the phase-0 setup and the kill switch work while
     live_sending is still no.
     `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
@@ -1423,6 +1425,16 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if args.pull and args.action != "approve":
         raise Refused("--pull goes with approve")
+    if args.action == "export":  # W0, 19 Oct 2026: every decided row into the database, kept whatever the tab does
+        from us_outbound.enrol import hand_check_tab
+
+        ctx, summary = _operate(factory, "handcheck_export", args.live, hand_check_tab.export, operator=True,
+                                dry_note="no judgement was written to the database.")
+        print(("Wrote " if summary["written"] else "Would write ")
+              + f"{summary['facts']} hand-check judgements ({summary['new']} new) from {summary['decided']} decided "
+              f"rows of {summary['rows']}" + (f"; {len(summary['skipped'])} skipped" if summary["skipped"] else "")
+              + ".")
+        return 0
     ctx, summary = _operate(
         factory, "handcheck_approve", args.live, lambda c: hand_check.approve(c, args.pull or [], campaigns.operator()),
         operator=True, dry_note="the hand-check was not marked approved.",
@@ -1777,8 +1789,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
 
-    hc = command("handcheck", "this week's hand-check: show it, or approve it", cmd_handcheck, takes_live=True)
-    hc.add_argument("action", choices=["show", "approve"])
+    hc = command("handcheck", "this week's hand-check: show it, or approve it; or export every decided row of the "
+                 "Hand-check tab to the database", cmd_handcheck, takes_live=True)
+    hc.add_argument("action", choices=["show", "approve", "export"])
     hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
                     help="approve: accounts to leave out (ids or domains)")
 

@@ -103,7 +103,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Harry, 5 Oct 2026: new US accounts like Spill's customers, from Apollo's lookalike search, monthly as the
     # customer base is fairly static. The 1st at 02:50, after lookalikes (02:30), so customer domains are already
     # suppressed, and before source_universe (03:00 on weekdays). HubSpot and Apollo reads and database writes only.
-    ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # Parked (W0, 19 Oct 2026; code-sources B6) before its first run on Sun 1 Nov: it pays for whole-US pages of
+    # Apollo's search and keeps only the active states. It comes back when it searches the active states alone and
+    # accounts(domain) is unique (docs/roadmap.md); `us-outbound run lookalike_leads` still runs it by hand.
+    ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=False, timeout_minutes=30, phase=1),
     # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
     ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
     # SPEC 6 and 13: Instantly leads 31 days after their last step (SPEC 9 had it in sync_outcomes), daily at a quiet
@@ -116,6 +119,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # link to the tab. It writes the sheet and posts to the alert channel, so --live; no model, no credits.
     ScheduledJob("label_sample_monthly", "15 9 1 * *", live=True, enabled=True, timeout_minutes=15, phase=2),
 )
+
+
+# Built jobs taken off the schedule (enabled=False) until their bring-back condition in docs/roadmap.md holds. Unlike
+# a job of a later phase they work, and can be run by hand; heartbeat_check does not expect them (W0, 19 Oct 2026).
+PARKED: frozenset[str] = frozenset({"lookalike_leads"})
 
 
 def by_name() -> dict[str, ScheduledJob]:

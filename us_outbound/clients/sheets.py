@@ -296,12 +296,24 @@ class Sheets(HttpClient):
 # -- whole tabs the jobs write (the crosswalk, the label sample, the definition suggestions) ---------------------
 
 
+NO_SUCH_TAB = "unable to parse range"  # the Sheets API's 400 for a range naming a tab the sheet does not have
+
+
+def no_such_tab(exc: BaseException) -> bool:
+    """Whether the error is the Sheets API saying the tab is not there (a 400 "Unable to parse range: 'Tab'"), and
+    not some other refusal. Only that one means "add the tab"; any other 400 (a bad request, an invalid payload)
+    says nothing about the tab, and a caller that took it as "no tab" would rewrite a tab that holds rows."""
+    return isinstance(exc, ApiError) and exc.status == 400 and NO_SUCH_TAB in str(exc.body).casefold()
+
+
 def read_tab(sheets: Any, sheet_id: str, tab: str) -> list[dict[str, str]] | None:
-    """The tab's rows, or None when the sheet has no such tab (the Sheets API answers that read with a 400)."""
+    """The tab's rows, or None when the sheet has no such tab (the Sheets API answers that read with a 400 "Unable to
+    parse range"). Any other error raises: a None makes the callers write the tab afresh (write_tab), so a None on
+    any 400 could replace the answer key or the hand-check's rows with this run's alone (W0, 19 Oct 2026)."""
     try:
         return sheets.read_tabs(sheet_id, [tab]).get(tab) or []
     except ApiError as exc:
-        if exc.status != 400:
+        if not no_such_tab(exc):
             raise
         return None
 

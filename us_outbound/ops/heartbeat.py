@@ -82,7 +82,7 @@ EXPECTED: dict[str, int] = {
     # Monthly jobs (build additions, Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack, so a monthly
     # job is never "missed" between its runs.
     "lookalikes": 32 * _DAY,  # the 1st at 02:30 (weekly until 5 Oct 2026)
-    "lookalike_leads": 32 * _DAY,  # the 1st at 02:50
+    # lookalike_leads is parked (W0, 19 Oct 2026: enabled=False in ops/schedule.py), so it is not expected.
     "label_sample_monthly": 32 * _DAY,  # the 1st at 09:15
     "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
     "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)

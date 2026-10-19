@@ -312,8 +312,17 @@ def run(ctx: Context) -> dict:
         raise RuntimeError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID (bootstrap() creates the sheet)")
     now = ctx.now
     # Definition changes Harry approved on the Definition suggestions tab go onto the Industries tab first, so the
-    # sheet stays their one source and this run reads them (11 Oct 2026).
-    definitions = apply_approved(ctx, sheet_id)
+    # sheet stays their one source and this run reads them (11 Oct 2026). Nothing there may stop the sync (W0, 19 Oct
+    # 2026): apply_approved records a row it cannot apply, and anything it did not foresee is recorded here, so the
+    # rest of the sheet, live_sending = no included, still comes into force this run.
+    try:
+        definitions = apply_approved(ctx, sheet_id)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("definitions_apply_failed", run_id=ctx.run_id, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        definitions = {"applied": [], "missing": [],
+                       "errors": [{"id": "", "label": "", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}]}
     sheet = read_sheet(ctx, sheet_id)
     in_force, stale = _in_force(ctx.store)
     stored = _stored(in_force)
@@ -366,6 +375,7 @@ def run(ctx: Context) -> dict:
     summary = {
         "sheet_id": sheet_id,
         "definitions_applied": definitions["applied"],
+        "definition_apply_errors": definitions.get("errors") or [],
         "tabs": tabs,
         "rows_opened": opened_total,
         "rows_closed": closed_total,
