@@ -6,18 +6,28 @@ nobody counted (code-replies-crm M3, M4; RT §1.6). This job checks the read two
 
   (a) reconcile: for every US Outbound campaign, Instantly's own analytics over the last 7 days
       (GET /campaigns/analytics: emails sent, leads that replied with automatic replies left out, leads that
-      bounced) against our events over the same window, counted in the same units: sent events (emails),
+      bounced) against our events over the same window (window(): whole UTC days from 7 days back, as the
+      analytics take dates), counted in the same units: sent events (emails),
       distinct contacts with a replied event whose class is not out_of_office, and distinct contacts with a
       bounced event. A measure drifts when abs(ours - theirs) > max(DRIFT_MIN, DRIFT_SHARE x theirs); and replied
       drifts too whenever theirs > 0 and ours == 0, the case the tolerance cannot see at today's counts (two of
       their replies against none of ours is inside max(2, 0.2)). Once ours is above 0 the tolerance is blind to
       small gaps again (theirs 3, ours 1: |3 - 1| = 2 is not more than 2): the canary covers that case.
+      The zero rule is judged on our own events alone, never on a count the canary's answer was added to: that
+      answer is an auto-reply, which reply_count_unique leaves out, so adding it would turn Instantly's one real
+      reply against none of ours into 1 against 1, and the lost reply reconcile exists to catch would read as
+      verified (W1-2 review, round 2). CANARY_ANSWER_IN_INSTANTLY_REPLIES says whether Instantly counts it.
       The plan named the steps analytics; it has no bounce count (Instantly's OpenAPI), so the campaign totals
       are read instead, which also state their unit (leads) for replies and bounces.
   (b) canary: an email to the seed inbox through the existing seed send path (ops/seed.send: the owner's own
       campaign, its step template, a Copy row), and at the next run (or `us-outbound capture check`) the
       check that a received email from the seed address came back through the same read poll_replies uses
-      (Instantly.list_emails, mode emode_all). The seed inbox answers by itself once it has an auto-reply rule
+      (Instantly.list_emails, mode emode_all), tied to that canary: Instantly's lead field is the canary's
+      address, or the email is in the thread of a send to it, and it came no earlier than the first send read
+      (any other email from the seed inbox's address, which is Harry's own, proves nothing; W1-2 review, round
+      2). A canary not sent yet is checked again at the next run, its lead kept, until CANARY_GIVE_UP; every
+      unchecked canary old enough is checked, so none is left in a campaign to get emails 2 to 4.
+      The seed inbox answers by itself once it has an auto-reply rule
       (Harry's D10 e). The seed inbox is the one of the 6 Oct seed test, found from its lead in the campaigns
       (ops/seed.SEED_COMPANY) or from the last canary; each canary is the inbox's address tagged
       "+canary-YYYYMMDD" (a new lead each week: a campaign takes an address once), and its lead is deleted
@@ -33,10 +43,11 @@ nobody counted (code-replies-crm M3, M4; RT §1.6). This job checks the read two
 A drift, a canary with no answer, or a canary that could not be sent are entries under the summary's errors (so
 heartbeat_check's ops/job_errors.py posts them) and make the week's fact capture_unverified (signal_events,
 source capture, event_id capture:{ISO week}, no account) for the readout to print on every outcome line;
-otherwise the week's fact is capture_verified. Our own counts include the last canary's send and answer when each
-fell inside the window (Instantly counts them, and we have no contact for them), judged by when each email went, not
-by when the lead was added: the lead is added at 07:30 UK and the email goes that afternoon in the US window, so a
-run that starts a few seconds more than 7 days after the add still has the send inside its window (W1-2 review).
+otherwise the week's fact is capture_verified. Our own counts include the last canary's send when it fell inside
+the window (Instantly counts it, and we have no contact for it), and its answer only if
+CANARY_ANSWER_IN_INSTANTLY_REPLIES, judged by when each email went, not by when the lead was added: the lead is
+added at 07:30 UK and the email goes that afternoon in the US window, so a run that starts a few seconds more than
+7 days after the add still has the send inside its window (W1-2 review).
 A canary already checked by `capture check` on the Tuesday, or by an earlier run the same day, is read back from its
 stored check, so the Monday run's verdict is the same whichever checked it. Instantly's analytics that cannot be
 read for a campaign make the week unverified with an error, and no drift is judged on partial totals. Dry-run reads
@@ -47,7 +58,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation
@@ -61,12 +72,22 @@ JOB = "capture"
 CHECK_JOB = "capture_check"  # `us-outbound capture check`: the canary check alone, by hand
 WINDOW = timedelta(days=7)  # what reconcile compares
 CANARY_WAIT = timedelta(hours=20)  # a canary younger than this is not checked yet (it goes out in the US window)
+# A canary not sent yet is checked again at the next run, its lead kept, until it is this old: the Tuesday check
+# (a day after the add) leaves a canary that Monday's sending window missed to go that afternoon; the Monday run a
+# week after the add (7 days) gives it up, deletes its lead and says not_sent once and for all.
+CANARY_GIVE_UP = timedelta(days=6)
 # When an email's own time is unknown, the canary's add stands in for it, with this grace before the window opens:
 # the send follows the add by hours (the US window), never by a day.
 SEND_GRACE = timedelta(days=1)
 # Harry's D10 (e): an auto-reply rule on the seed inbox. Until it is confirmed the canary is not sent, as each week's
 # check would find no answer and post an error (W1-2 review); set True once the rule is on.
 SEED_AUTO_REPLY_CONFIRMED = False
+# Whether Instantly's reply_count_unique counts the seed inbox's auto-reply (W1-2 review, round 2). Instantly says the
+# count leaves automatic replies out, and the canary's answer is one by design (D10 e), so by default it is not added
+# to our replied count. PHASE0-CONFIRM (D10 b and e): with the canary on, the first week's analytics show it. If
+# Instantly does count it, this default shows as a drift on replied each week (Instantly 1, ours 0), an error and not
+# a hidden lost reply; set True then. Either way the zero rule is judged on our own replies alone (drift()).
+CANARY_ANSWER_IN_INSTANTLY_REPLIES = False
 DRIFT_MIN, DRIFT_SHARE = 2, 0.10  # the tolerance: max(2, 10% of Instantly's count)
 MEASURES = ("sent", "replied", "bounced")
 # Instantly's campaign analytics fields for each measure, and the unit each is counted in (on both sides).
@@ -83,14 +104,31 @@ NOT_SET_UP, OFF = "not_set_up", "off"
 # -- reconcile --------------------------------------------------------------------------------------------
 
 
-def drift(theirs: Mapping[str, int], ours: Mapping[str, int]) -> list[dict]:
-    """The measures whose counts disagree beyond the tolerance (the module docstring), in MEASURES order."""
+def drift(theirs: Mapping[str, int], ours: Mapping[str, int], *, canary: Mapping[str, int] | None = None) -> list[dict]:
+    """The measures whose counts disagree beyond the tolerance (the module docstring), in MEASURES order.
+
+    ours: our own events; canary: the canary's emails Instantly counts and we have no event for (reconcile). The
+    tolerance compares Instantly with ours plus the canary, and "ours" in each entry is that sum. The zero rule on
+    replied is judged on our own replies alone, against Instantly's less the canary's: with the canary added first,
+    Instantly's one real reply against none of ours would read 1 against 1, and the lost reply would pass."""
+    extra = canary or {}
     out = []
     for m in MEASURES:
-        t, o = int(theirs.get(m) or 0), int(ours.get(m) or 0)
-        if (m == "replied" and t > 0 and o == 0) or abs(o - t) > max(DRIFT_MIN, DRIFT_SHARE * t):
-            out.append({"measure": m, "instantly": t, "ours": o})
+        t, o, c = int(theirs.get(m) or 0), int(ours.get(m) or 0), int(extra.get(m) or 0)
+        if (m == "replied" and t - c > 0 and o == 0) or abs(o + c - t) > max(DRIFT_MIN, DRIFT_SHARE * t):
+            out.append({"measure": m, "instantly": t, "ours": o + c})
     return out
+
+
+def window(now: datetime) -> tuple[datetime, datetime]:
+    """[start, end) that reconcile compares: from midnight UTC on the day WINDOW back, to now.
+
+    Instantly's analytics take dates (start_date, end_date, as step_analytics sends them), so its range is whole
+    days, and ours starts on the same midnight. PHASE0-CONFIRM (D10 b): that Instantly reads them as UTC days with
+    end_date inclusive. The run is at 06:30 UTC, before any send in the US window, so today's part on either side is
+    the night's replies; a few hours' difference there can make ours the larger, never a hidden zero."""
+    start = (now - WINDOW).astimezone(UTC)
+    return datetime(start.year, start.month, start.day, tzinfo=UTC), now
 
 
 def _in(e: Mapping[str, Any], start: datetime, end: datetime) -> bool:
@@ -117,8 +155,9 @@ def their_counts(ctx: Context, start: datetime, end: datetime) -> tuple[dict[str
     total: Counter[str] = Counter({m: 0 for m in MEASURES})
     unread: list[str] = []
     for name in names:
-        try:
-            row = inst.campaign_analytics(name, start_date=start, end_date=end)
+        try:  # as dates, the form Instantly documents (window())
+            row = inst.campaign_analytics(name, start_date=start.astimezone(UTC).date(),
+                                          end_date=end.astimezone(UTC).date())
         except (ApiError, LookupError) as exc:  # one campaign's failure is said, not raised: the canary still runs
             unread.append(f"{name}: {type(exc).__name__}: {str(exc)[:120]}")
             continue
@@ -131,18 +170,19 @@ def their_counts(ctx: Context, start: datetime, end: datetime) -> tuple[dict[str
 
 
 def reconcile(ctx: Context, *, canary: Mapping[str, Any] | None = None) -> dict:
-    """Instantly against our events over the last WINDOW (the module docstring). canary: the last canary's check
-    (check() or earlier_check()), whose send and answer are in Instantly's totals and not in our events (no contact
-    of ours) when they fell inside the window. With any campaign unread, no drift is judged (partial totals)."""
-    end = ctx.now
-    start = end - WINDOW
+    """Instantly against our events over window() (the module docstring). canary: the last canary's check (check()
+    or earlier_check()), whose send is in Instantly's totals and not in our events (no contact of ours) when it fell
+    inside the window; its answer is added only if CANARY_ANSWER_IN_INSTANTLY_REPLIES, and never before the zero rule
+    (drift()). With any campaign unread, no drift is judged (partial totals)."""
+    start, end = window(ctx.now)
     theirs, names, unread = their_counts(ctx, start, end)
     ours = our_counts(ctx, start, end)
-    extra = canary_in_window(canary or {}, start, end)
-    ours_with = {m: ours[m] + extra.get(m, 0) for m in MEASURES}
+    fell = canary_in_window(canary or {}, start, end)
+    extra = {m: n for m, n in fell.items() if m != "replied" or CANARY_ANSWER_IN_INSTANTLY_REPLIES}
     out = {"since": start.isoformat(), "until": end.isoformat(), "campaigns": len(names), "instantly": theirs,
-           "ours": ours_with, "ours_includes_canary": extra, "units": UNITS,
-           "drift": [] if unread else drift(theirs, ours_with)}
+           "ours": {m: ours[m] + extra.get(m, 0) for m in MEASURES}, "ours_own": ours,
+           "ours_includes_canary": extra, "canary_in_window": fell, "units": UNITS,
+           "drift": [] if unread else drift(theirs, ours, canary=extra)}
     if unread:
         out["unread"] = unread
     return out
@@ -191,15 +231,35 @@ def seed_inbox(ctx: Context) -> tuple[str, str] | None:
     return None
 
 
-def _emails_with(emails: Iterable[Mapping[str, Any]], base: str, *, field: str) -> list[Mapping[str, Any]]:
-    """The emails whose sender (field from) or recipient (field to) is the seed inbox, whatever "+tag" it carries."""
+def _sends_to(emails: Iterable[Mapping[str, Any]], address: str) -> list[Mapping[str, Any]]:
+    """The sent emails that went to this canary: its own tagged address is the recipient or Instantly's lead. Not the
+    seed inbox at large: its untagged address is Harry's own, and other mail goes to it."""
+    a = str(address or "").strip().lower()
+    return [e for e in emails
+            if a and a in outcomes._addresses(e.get("to_address_email_list")) + outcomes._addresses(e.get("lead"))]
+
+
+def _answers_to(emails: Iterable[Mapping[str, Any]], address: str, base: str,
+                sends: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The received emails that answer this canary (W1-2 review, round 2): from the seed inbox (whatever "+tag": its
+    auto-reply comes from its own address, inbox_of), tied to the canary by Instantly's lead field (the canary's
+    address) or by the thread of a send to it, and no earlier than the first send read. Before, any email from the
+    untagged address since the add passed, so a note Harry sent before the canary went made it ok, and its lead was
+    deleted before it was ever sent: a canary that passes without its email proves nothing about the read."""
+    a, inbox = str(address or "").strip().lower(), inbox_of(base)
+    sends = list(sends)
+    threads = {str(e["thread_id"]) for e in sends if e.get("thread_id")}
+    first = utc(_first(sends))
     out = []
-    inbox = inbox_of(base)
     for e in emails:
-        addresses = ([outcomes.from_address(e)] if field == "from"
-                     else outcomes._addresses(e.get("to_address_email_list")) + outcomes._addresses(e.get("lead")))
-        if any(inbox_of(a) == inbox for a in addresses if a):
-            out.append(e)
+        if inbox_of(outcomes.from_address(e)) != inbox:
+            continue
+        if not ((a and a in outcomes._addresses(e.get("lead"))) or str(e.get("thread_id") or "") in threads):
+            continue
+        at = outcomes.email_time(e)
+        if first is not None and (at is None or at < first):
+            continue
+        out.append(e)
     return out
 
 
@@ -242,40 +302,63 @@ def earlier_check(ctx: Context) -> dict | None:
     return None
 
 
-def check(ctx: Context) -> dict:
-    """The last canary's check (the module docstring): {status, ...}. status is ok, no_answer, not_sent (the
-    campaign never sent it), waiting (younger than CANARY_WAIT) or none (no canary left to check).
+def _added(row: Mapping[str, Any], now: datetime) -> datetime:
+    return utc((row.get("value") or {}).get("added_at")) or utc(row.get("observed_at")) or now
 
-    ok means an email from the seed inbox came back through Instantly.list_emails (mode emode_all) whatever its
-    received_reason: it proves the read, not poll_replies' filter (the seed inbox is at spill.chat, so its answer
-    is one poll_replies drops as spill_domain; reasons counts it). sent_at and answered_at are the times of the
-    first email each way, for canary_in_window."""
-    pending = [r for r in _facts(ctx, CANARY_SENT) if not (r.get("value") or {}).get("checked_at")]
-    if not pending:
-        return {"status": "none"}
-    row = pending[-1]
+
+def _check_one(ctx: Context, row: Mapping[str, Any], received: list[dict], sent_mail: list[dict],
+               registry: list[str]) -> dict:
+    """One canary's check against the emails read (check()); marks it checked and deletes its lead, except while it
+    is not sent and younger than CANARY_GIVE_UP: then its lead stays, so the email can still go, and the next run
+    checks it again."""
     v = dict(row.get("value") or {})
-    added = utc(v.get("added_at")) or utc(row.get("observed_at")) or ctx.now
-    if ctx.now - added < CANARY_WAIT:
-        return {"status": "waiting", "added_at": added.isoformat()}
+    added = _added(row, ctx.now)
     base, campaign, address = str(v.get("base") or ""), str(v.get("campaign") or ""), str(v.get("address") or "")
-    inst = ctx.clients.instantly
-    registry = sorted(ctx.guard.bounds.registry_addresses)
-    since = added - timedelta(hours=1)
-    answers = _emails_with(inst.list_emails(registry, since, email_type="received"), base, field="from")
+    sends = _sends_to(sent_mail, address)
+    answers = _answers_to(received, address, base, sends)
     reasons = Counter(outcomes.received_reason(e, outcomes._lower(e.get("eaccount")), frozenset(registry)) or "received"
                       for e in answers)
-    sends = _emails_with(inst.list_emails(registry, since, email_type="sent"), base, field="to")
-    sent = 1 if answers or sends else 0  # an answer proves the send, whether or not the sent copy was read
+    sent = 1 if answers or sends else 0  # a tied answer proves the send, whether or not the sent copy was read
     status = "ok" if answers else ("no_answer" if sent else "not_sent")
-    out = {"status": status, "added_at": added.isoformat(), "answers": len(answers), "reasons": dict(reasons),
-           "sent": sent, "sent_at": _first(sends), "answered_at": _first(answers),
-           "lead": _delete_canary_lead(ctx, campaign, address)}
-    if ctx.live:
+    final = status != "not_sent" or ctx.now - added >= CANARY_GIVE_UP
+    out = {"status": status, "address": address, "added_at": added.isoformat(), "answers": len(answers),
+           "reasons": dict(reasons), "sent": sent, "sent_at": _first(sends), "answered_at": _first(answers),
+           "lead": _delete_canary_lead(ctx, campaign, address) if final else "kept: not sent yet, checked again"}
+    if ctx.live and final:
         v.update(checked_at=ctx.now.isoformat(), status=status, answers=len(answers), sent=sent,
                  sent_at=out["sent_at"], answered_at=out["answered_at"], reasons=dict(reasons))
         ctx.store.upsert("signal_events", [{**row, "value": v}])
-    log("capture_canary_checked", run_id=ctx.run_id, status=status, answers=len(answers))
+    log("capture_canary_checked", run_id=ctx.run_id, status=status, answers=len(answers), final=final)
+    return out
+
+
+def check(ctx: Context) -> dict:
+    """The last canary's check (the module docstring): {status, ...}. status is ok, no_answer, not_sent (the
+    campaign has not sent it), waiting (younger than CANARY_WAIT) or none (no canary left to check).
+
+    ok means an email from the seed inbox, tied to the canary (_answers_to), came back through Instantly.list_emails
+    (mode emode_all) whatever its received_reason: it proves the read, not poll_replies' filter (the seed inbox is at
+    spill.chat, so its answer is one poll_replies drops as spill_domain; reasons counts it). sent_at and answered_at
+    are the times of the first email each way, for canary_in_window.
+
+    Every unchecked canary older than CANARY_WAIT is checked, not only the latest (W1-2 review, round 2): one left
+    unchecked by a failed or skipped week would keep its lead, and the seed inbox would get emails 2 to 4. The
+    verdict is the latest one's; the others are listed under "older"."""
+    pending = [r for r in _facts(ctx, CANARY_SENT) if not (r.get("value") or {}).get("checked_at")]
+    if not pending:
+        return {"status": "none"}
+    due = [r for r in pending if ctx.now - _added(r, ctx.now) >= CANARY_WAIT]
+    if not due:
+        return {"status": "waiting", "added_at": _added(pending[-1], ctx.now).isoformat()}
+    inst = ctx.clients.instantly
+    registry = sorted(ctx.guard.bounds.registry_addresses)
+    since = min(_added(r, ctx.now) for r in due) - timedelta(hours=1)
+    received = inst.list_emails(registry, since, email_type="received")
+    sent_mail = inst.list_emails(registry, since, email_type="sent")
+    results = [_check_one(ctx, r, received, sent_mail, registry) for r in due]
+    out = results[-1]
+    if len(results) > 1:
+        out["older"] = [{k: r[k] for k in ("address", "status", "lead")} for r in results[:-1]]
     return out
 
 
@@ -333,6 +416,18 @@ def canary_in_window(checked: Mapping[str, Any], start: datetime, end: datetime)
     return {m: v for m, v in out.items() if v}
 
 
+def canary_errors(checked: Mapping[str, Any]) -> list[str]:
+    """The errors line for a canary's check (run() and check_only()): none for ok, waiting or none."""
+    if checked.get("status") == "no_answer":
+        return ["capture canary: the seed inbox's answer never reached the reply read"]
+    if checked.get("status") != "not_sent":
+        return []
+    if str(checked.get("lead") or "").startswith("kept"):
+        return ["capture canary: the campaign has not sent the seed email yet (paused, or out of its window?); its "
+                "lead is kept and checked again at the next run"]
+    return ["capture canary: the campaign never sent the seed email (paused, or out of its window?)"]
+
+
 # -- the job ------------------------------------------------------------------------------------------------
 
 
@@ -356,10 +451,7 @@ def run(ctx: Context) -> dict:
     for d in rec["drift"]:
         errors.append(f"capture drift on {d['measure']}: Instantly {d['instantly']}, ours {d['ours']} "
                       f"({UNITS[d['measure']]}, last 7 days)")
-    if canary["status"] == "no_answer":
-        errors.append("capture canary: the seed inbox's answer never reached the reply read")
-    elif canary["status"] == "not_sent":
-        errors.append("capture canary: the campaign never sent the seed email (paused, or out of its window?)")
+    errors += canary_errors(canary)
     new = send_canary(ctx)
     if new["status"] == "failed":
         errors.append(f"capture canary not sent: {new['why']}")
@@ -398,6 +490,4 @@ def readout_caveat(ctx: Context) -> str | None:
 def check_only(ctx: Context) -> dict:
     """`us-outbound capture check`: the last canary's check alone (on a Tuesday, the day after it went)."""
     out = check(ctx)
-    errors = {"no_answer": ["capture canary: the seed inbox's answer never reached the reply read"],
-              "not_sent": ["capture canary: the campaign never sent the seed email"]}.get(out["status"], [])
-    return {"job": CHECK_JOB, "dry_run": ctx.dry_run, "canary_check": out, "errors": errors}
+    return {"job": CHECK_JOB, "dry_run": ctx.dry_run, "canary_check": out, "errors": canary_errors(out)}

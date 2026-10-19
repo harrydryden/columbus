@@ -37,6 +37,9 @@ CAMPAIGN_SEARCH = US_CAMPAIGN_PREFIX.strip()  # "US Outbound –": the guard req
 
 PAGE = 100  # list page size (leads/list documents a maximum of 100)
 EMAIL_MODE = "emode_all"  # GET /emails mode: the whole inbox, not only "Focused" (list_emails; OpenAPI email.yml :758)
+# A 400 that names the mode parameter itself ("querystring/mode must be ..."), as a word: not "emode_all" in a message
+# about another parameter, nor "model" or "email_mode" (W1-2 review, round 2), which are raised as before.
+MODE_REFUSED = re.compile(r"(?<![a-z0-9_])mode(?![a-z0-9_])")
 LEADS_PER_ADD = 1000  # POST /leads/add accepts up to 1000 leads
 ACCOUNTS_PER_CALL = 100  # warmup enable / analytics accept up to 100 emails
 BLOCKLIST_PER_CALL = 1000  # bulk-create accepts up to 1000 values
@@ -900,7 +903,7 @@ class Instantly(HttpClient):
             try:
                 found = list(self._every_item("GET", "/emails", op, params=self._with_mode(params)))
             except ApiError as exc:
-                if not (self._mode_ok and exc.status == 400 and "mode" in str(exc.body).lower()):
+                if not (self._mode_ok and exc.status == 400 and MODE_REFUSED.search(str(exc.body).lower())):
                     raise
                 self._mode_ok = False
                 log("instantly_mode_unsupported", action="email.list", status=exc.status, body=str(exc.body)[:200])

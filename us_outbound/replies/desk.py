@@ -540,13 +540,21 @@ def refused(ctx: Context, item: ReplyItem, exc: GuardViolation) -> dict:
 
 
 def _hubspot(ctx: Context, item: ReplyItem, slack: Any, out: Counter[str], errors: list[str]) -> ReplyItem:
-    """SPEC 11 HubSpot writes for a warm reply not yet written; its thread gets the link once."""
+    """SPEC 11 HubSpot writes for a warm reply not yet written; its thread gets the link once.
+
+    A guardrail refusing a HubSpot write is said like an API error, and the item stays open for its answer: the write
+    is tried again next run. Before (W1-2 review, round 2) it reached poll_approvals' per-item catch, which closed the
+    item "by hand", perhaps before anyone had approved it, with an alert saying a safety rule stopped the send."""
     if not item.is_warm or item.hubspot.get("status") == "written":
         return item
     try:
         res = hw.record_reply(ctx, item)
     except (ApiError, ConfigError) as exc:
         errors.append(f"{item.short_id}: HubSpot: {str(exc)[:160]}")
+        return item
+    except GuardViolation as exc:
+        errors.append(f"{item.short_id}: HubSpot: refused by a guardrail: {str(exc)[:160]}")
+        log("desk_hubspot_refused", item_id=item.id, error=str(exc)[:300])
         return item
     out[res.get("status", "?")] += 1
     item = _reload(ctx, item)

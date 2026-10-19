@@ -287,6 +287,28 @@ def test_a_reply_outside_a_us_outbound_thread_is_closed_for_a_person_and_the_run
     assert len(inst.replies) == 1 and len([x for x in sl.texts() if x.startswith(":warning: *Answer ")]) == 1
 
 
+def test_a_hubspot_write_a_guardrail_refuses_leaves_the_item_open_for_its_answer(settings, monkeypatch):
+    """W1-2 review, round 2: a GuardViolation from record_reply reached poll_approvals' per-item catch, which closed
+    the item "by hand" before anyone had approved it, with an alert saying a safety rule stopped the send. Now it is
+    a HubSpot error like an API one: the item stays open, nothing is closed or alerted, and the approval that follows
+    sends the reply."""
+    from us_outbound.clients.guard import GuardViolation
+
+    def refuse(ctx, item):
+        raise GuardViolation("hubspot deal.update is not allowed")
+
+    monkeypatch.setattr(desk.hw, "record_reply", refuse)
+    ctx, t, crm, sl, inst = desk_world(settings)
+    out = poll(ctx)  # no approval yet
+    assert row_of(ctx)["status"] == "open" and out["by_hand"] == [] and inst.replies == []
+    assert out["errors"] == [f"{ITEM[:8]}: HubSpot: refused by a guardrail: hubspot deal.update is not allowed"]
+    assert not [x for x in sl.texts() if x.startswith(":warning: *Answer ")]
+    sl.say(HARRY_ID, "send")
+    out = poll(ctx)
+    [sent] = inst.replies
+    assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["handled_by"] == HARRY_ID and out["by_hand"] == []
+
+
 def test_an_opt_out_closes_the_contacts_open_reply_items(settings):
     """M1: an item open since 15:30 UK; the contact opts out at 16:00 (a later reply, or Instantly's link). The item is
     closed without sending (approval skipped by opt_out), so a ✅ given after it sends nothing."""

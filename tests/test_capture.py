@@ -39,6 +39,25 @@ def test_the_drift_rule_on_the_plans_worked_cases():
     assert capture.drift({"bounced": 12}, {"bounced": 10}) == []
 
 
+def test_the_zero_rule_is_judged_on_our_own_replies_never_on_the_canarys_answer():
+    """W1-2 review, round 2. With the canary's answer in Instantly's count and added to ours (canary replied 1):
+    Instantly 1, ours 0 + 1 is the canary alone, no drift; Instantly 2 (the canary and a real reply), ours 0 + 1: the
+    tolerance sees |1 - 2| = 1, not more than 2, and the zero rule, 2 - 1 = 1 real reply against none of ours, does."""
+    assert capture.drift({"sent": 1, "replied": 1}, {"sent": 0, "replied": 0}, canary={"sent": 1, "replied": 1}) == []
+    assert capture.drift({"replied": 2}, {"replied": 0}, canary={"replied": 1}) == [
+        {"measure": "replied", "instantly": 2, "ours": 1}]
+    # Ours above 0: the tolerance alone, on ours + canary (|1 + 1 - 2| = 0).
+    assert capture.drift({"replied": 2}, {"replied": 1}, canary={"replied": 1}) == []
+    # The canary's send counts on sent: Instantly 49, ours 48 + 1, none; without it |48 - 49| = 1 is inside anyway.
+    assert capture.drift({"sent": 49}, {"sent": 48}, canary={"sent": 1}) == []
+
+
+def test_reconcile_compares_whole_utc_days_as_instantlys_dates_do():
+    """Mon 26 Oct 06:30 UTC less 7 days is Mon 19 Oct 06:30; the window opens at that day's midnight UTC, the first
+    moment of Instantly's start_date 2026-10-19, and closes now."""
+    assert capture.window(MON) == (datetime(2026, 10, 19, tzinfo=UTC), MON)
+
+
 # -- a world: Instantly's analytics, emails and leads, our events -------------------------------------------------
 
 
@@ -122,8 +141,12 @@ def test_reconcile_counts_both_sides_in_the_same_units(h):
     assert out["campaigns"] == 2 and out["instantly"] == {"sent": 48, "replied": 2, "bounced": 2}
     assert out["ours"] == {"sent": 48, "replied": 2, "bounced": 2} and out["drift"] == []
     assert out["units"]["replied"].startswith("leads")
+    # Dates, the form Instantly documents (step_analytics sends them so): from 19 Oct, 7 days before Mon 26 Oct, to
+    # today; ours from 19 Oct 00:00 UTC (capture.window). The review's note: the full datetimes, if refused, would
+    # have made every Monday reconcile:unread.
     [req, *_] = [r for r in h.transport.requests if "/campaigns/analytics" in r.url]
-    assert (req.params["start_date"], req.params["end_date"]) == ("2026-10-19T06:30:00Z", "2026-10-26T06:30:00Z")
+    assert (req.params["start_date"], req.params["end_date"]) == ("2026-10-19", "2026-10-26")
+    assert out["since"] == "2026-10-19T00:00:00+00:00"
 
 
 def test_a_broken_read_is_a_drift_an_error_and_an_unverified_week(h):
@@ -157,17 +180,21 @@ SENT_AT, BACK_AT = MON + timedelta(hours=8), MON + timedelta(hours=8, minutes=2)
 
 def week_one_answered(h) -> dict:
     """Week 1 run at MON (the canary added at 07:30 UK); Instantly sends it that afternoon in the US window and the
-    seed inbox's auto-reply comes back from its own address; Instantly's next 7-day totals hold both (1 sent, 1
-    replied), and we have no event for either (no contact of ours)."""
+    seed inbox's auto-reply comes back from its own address, tied by Instantly to the canary's lead and thread.
+    Instantly's next 7-day totals hold the send (1 sent) and, only if it counts automatic replies after all
+    (capture.CANARY_ANSWER_IN_INSTANTLY_REPLIES), the answer (1 replied); we have no event for either (no contact of
+    ours)."""
     seed_lead(h)  # the 6 Oct seed lead, unsubscribed since
     week1 = run_job(ctx_at(h, MON), capture.run)
     h.emails += [
         {"id": "S-c", "eaccount": "harry@meetspill.org", "from_address_email": "harry@meetspill.org",
-         "to_address_email_list": CANARY, "ue_type": 1, "_type": "sent", "timestamp_created": at(SENT_AT)},
+         "to_address_email_list": CANARY, "lead": CANARY, "thread_id": "T-c", "ue_type": 1, "_type": "sent",
+         "timestamp_created": at(SENT_AT)},
         {"id": "R-c", "eaccount": "harry@meetspill.org", "from_address_email": "harry@spill.chat",
-         "ue_type": 2, "_type": "received", "timestamp_created": at(BACK_AT)},
+         "lead": CANARY, "thread_id": "T-c", "ue_type": 2, "_type": "received", "timestamp_created": at(BACK_AT)},
     ]
-    h.analytics = {cid(h, C_HARRY): {"emails_sent_count": 1, "reply_count_unique": 1}}
+    h.analytics = {cid(h, C_HARRY): {"emails_sent_count": 1,
+                                     "reply_count_unique": 1 if capture.CANARY_ANSWER_IN_INSTANTLY_REPLIES else 0}}
     return week1
 
 
@@ -179,29 +206,59 @@ def test_the_canary_goes_to_the_seed_inbox_and_its_answer_verifies_the_week_afte
     canary = CANARY
     [lead] = [x for x in h.instantly.leads.values() if x["email"] == canary]
     assert lead["campaign"] == cid(h, C_HARRY) and lead["company_name"] == seed.SEED_COMPANY
-    # Week 2: Instantly counts the canary's send and its answer; we have no event for either (no contact of ours),
-    # so ours includes the canary: Instantly 1 sent / 1 replied, ours 0 + 1 / 0 + 1, no drift.
+    # Week 2: Instantly counts the canary's send, and not its answer (an automatic reply, which reply_count_unique
+    # leaves out); we have no event for either (no contact of ours), so ours includes the send only: Instantly 1 sent
+    # / 0 replied, ours 0 + 1 / 0, no drift.
     week2 = run_job(ctx_at(h, MON + timedelta(days=7)), capture.run)
     check = week2["canary_check"]
     assert (check["status"], check["answers"], check["sent"], check["lead"]) == ("ok", 1, 1, "deleted")
     assert check["reasons"] == {"spill_domain": 1}  # read through the same filter poll_replies uses, and named
-    assert week2["reconcile"]["ours_includes_canary"] == {"sent": 1, "replied": 1}
+    assert week2["reconcile"]["canary_in_window"] == {"sent": 1, "replied": 1}
+    assert week2["reconcile"]["ours_includes_canary"] == {"sent": 1}
     assert week2["reconcile"]["drift"] == [] and week2["verified"] is True and week2["fact"] == "capture_verified"
     assert canary not in {x["email"] for x in h.instantly.leads.values()}  # emails 2 to 4 never go
     assert week2["canary_send"]["status"] == "sent"  # the next one
     assert (check["sent_at"], check["answered_at"]) == ("2026-10-26T14:30:00+00:00", "2026-10-26T14:32:00+00:00")
 
 
-def test_a_run_that_starts_late_still_counts_the_canary_by_when_it_was_sent(h):
+@pytest.mark.parametrize("counted", [False, True])
+def test_a_run_that_starts_late_still_counts_the_canary_by_when_it_was_sent(h, monkeypatch, counted):
     """W1-2 review: the canary was counted by when its lead was added (Mon 06:30 UTC), so a run 30 seconds later than
-    7 days after the add left it out: Instantly replied 1, ours 0, a false drift and an unverified week. By when the
-    email went: the window is [Mon 26 Oct 06:30:30, Mon 2 Nov 06:30:30) UTC, and the send (14:30) and answer (14:32)
-    on 26 Oct are inside it, so ours is 0 + 1 / 0 + 1 against Instantly's 1 / 1."""
+    7 days after the add left it out. Where Instantly counts the answer (counted), that was Instantly replied 1, ours
+    0: a false drift and an unverified week. By when the email went: the window is [Mon 26 Oct 00:00, Mon 2 Nov
+    06:30:30) UTC, and the send (14:30) and answer (14:32) on 26 Oct are inside it, so ours is 0 + 1 sent, and 0 + 1
+    replied where counted, else 0, against Instantly's 1 / 1 or 1 / 0."""
+    monkeypatch.setattr(capture, "CANARY_ANSWER_IN_INSTANTLY_REPLIES", counted)
     week_one_answered(h)
     late = run_job(ctx_at(h, MON + timedelta(days=7, seconds=30)), capture.run)
-    assert late["reconcile"]["ours_includes_canary"] == {"sent": 1, "replied": 1}
+    assert late["reconcile"]["ours_includes_canary"] == ({"sent": 1, "replied": 1} if counted else {"sent": 1})
     assert late["reconcile"]["drift"] == [] and late["errors"] == []
     assert late["verified"] is True and late["fact"] == "capture_verified"
+
+
+@pytest.mark.parametrize("counted", [False, True])
+def test_a_real_reply_we_lost_is_a_drift_even_in_a_week_the_canary_answered(h, monkeypatch, counted):
+    """W1-2 review, round 2: the canary's answer was added to our replied count before the zero rule, though
+    Instantly's reply_count_unique leaves automatic replies out. A real reply Instantly saw and we never recorded
+    then read 1 against 0 + 1: no drift, capture_verified, the very loss reconcile is for hidden. Now the zero rule is
+    judged on our own replies alone. Instantly replied 1 (default: the real reply alone; the canary's answer is not in
+    it) against ours 0: 1 > 0 and ours 0, a drift. Where Instantly does count the canary (counted): Instantly 2, ours
+    0 + 1; 2 - 1 = 1 real reply against none of ours, a drift (the tolerance, |1 - 2| = 1 <= 2, would not see it)."""
+    monkeypatch.setattr(capture, "CANARY_ANSWER_IN_INSTANTLY_REPLIES", counted)
+    week_one_answered(h)
+    h.analytics[cid(h, C_HARRY)]["reply_count_unique"] += 1  # a prospect's reply our read never recorded
+    week2 = run_job(ctx_at(h, MON + timedelta(days=7)), capture.run)
+    assert week2["canary_check"]["status"] == "ok"  # the canary itself passed
+    assert week2["reconcile"]["drift"] == [{"measure": "replied", "instantly": 2 if counted else 1,
+                                            "ours": 1 if counted else 0}]
+    assert week2["verified"] is False and week2["fact"] == "capture_unverified" and "drift:replied" in week2["reasons"]
+    assert week2["errors"][0].startswith(f"capture drift on replied: Instantly {2 if counted else 1}, ours ")
+    [fact] = [r for r in h.store.tables["signal_events"] if r["event_id"] == "capture:2026-W45"]
+    assert fact["fact"] == "capture_unverified"
+
+
+def test_instantly_is_taken_not_to_count_the_canarys_answer_by_default():
+    assert capture.CANARY_ANSWER_IN_INSTANTLY_REPLIES is False  # no fixture: the module's own default (D10 b, e)
 
 
 def test_the_canary_counts_only_where_its_emails_fell():
@@ -224,10 +281,13 @@ def test_the_canary_counts_only_where_its_emails_fell():
     assert capture.canary_in_window({"status": "none"}, start, end) == {}
 
 
-def test_a_canary_checked_on_tuesday_still_verifies_the_monday_after(h):
+@pytest.mark.parametrize("counted", [False, True])
+def test_a_canary_checked_on_tuesday_still_verifies_the_monday_after(h, monkeypatch, counted):
     """W1-2 review: `capture check` on the Tuesday marked the canary checked, so the next Monday's check found
-    nothing ({"status": "none"}): the week was unverified (canary:none) and, the canary left out of reconcile, a false
-    drift on replied (Instantly 1, ours 0). The run now reads the stored check back."""
+    nothing ({"status": "none"}): the week was unverified (canary:none) and, the canary left out of reconcile where
+    Instantly counts its answer, a false drift on replied (Instantly 1, ours 0). The run now reads the stored check
+    back."""
+    monkeypatch.setattr(capture, "CANARY_ANSWER_IN_INSTANTLY_REPLIES", counted)
     week_one_answered(h)
     tue = capture.check_only(ctx_at(h, MON + timedelta(days=1), job=capture.CHECK_JOB))
     assert tue["canary_check"]["status"] == "ok" and tue["errors"] == []
@@ -235,7 +295,7 @@ def test_a_canary_checked_on_tuesday_still_verifies_the_monday_after(h):
     c = week2["canary_check"]
     assert (c["status"], c["earlier"], c["answers"], c["sent"]) == ("ok", True, 1, 1)
     assert c["checked_at"] == (MON + timedelta(days=1)).isoformat()
-    assert week2["reconcile"]["ours_includes_canary"] == {"sent": 1, "replied": 1}
+    assert week2["reconcile"]["ours_includes_canary"] == ({"sent": 1, "replied": 1} if counted else {"sent": 1})
     assert week2["reconcile"]["drift"] == [] and week2["errors"] == []
     assert week2["verified"] is True and week2["fact"] == "capture_verified"
     # Run again the same morning (a retry): the same verdict, not "waiting" on the canary it has just added.
@@ -317,11 +377,109 @@ def test_capture_check_the_next_day_and_a_young_canary_waits(h):
     early = capture.check_only(ctx_at(h, MON + timedelta(hours=4), job=capture.CHECK_JOB))
     assert early["canary_check"]["status"] == "waiting" and early["errors"] == []
     h.emails.append({"id": "R-c", "eaccount": "harry@meetspill.org", "from_address_email": "harry@spill.chat",
-                     "ue_type": 2, "_type": "received", "timestamp_created": at(MON + timedelta(hours=9))})
+                     "lead": CANARY, "ue_type": 2, "_type": "received", "timestamp_created": at(MON + timedelta(hours=9))})
     tue = capture.check_only(ctx_at(h, MON + timedelta(days=1), job=capture.CHECK_JOB))
     assert tue["canary_check"]["status"] == "ok" and tue["errors"] == []
     # Checked once: the Monday run after finds nothing left to check from it.
     assert capture.check(ctx_at(h, MON + timedelta(days=7)))["status"] == "none"
+
+
+def harrys_note(t: datetime, **extra) -> dict:
+    """An email from Harry's own address (the seed inbox's, untagged) to one of the mailboxes: not the canary's."""
+    return {"id": f"R-h{t:%H%M}", "eaccount": "harry@meetspill.org", "from_address_email": "harry@spill.chat",
+            "subject": "quick test", "ue_type": 2, "_type": "received", "timestamp_created": at(t), **extra}
+
+
+def canary_leads(h) -> list[str]:
+    return sorted(x["email"] for x in h.instantly.leads.values() if capture.CANARY_TAG in x["email"])
+
+
+def test_an_email_from_the_seed_inbox_not_tied_to_the_canary_proves_nothing(h):
+    """W1-2 review, round 2: any received email from the seed inbox's untagged address since the add passed. Harry
+    wrote "quick test" from harry@spill.chat to harry@meetspill.org at 09:30 UTC on the Monday, before any send; the
+    Tuesday check said ok, sent 1, and deleted the canary's lead before it ever went. Now an answer counts only when
+    Instantly ties it to the canary (its lead, or the thread of a send to it): not sent, and the lead is kept so the
+    email can still go (CANARY_GIVE_UP)."""
+    seed_lead(h)
+    run_job(ctx_at(h, MON), capture.run)
+    h.emails.append(harrys_note(MON + timedelta(hours=3)))
+    tue = capture.check_only(ctx_at(h, MON + timedelta(days=1), job=capture.CHECK_JOB))
+    c = tue["canary_check"]
+    assert (c["status"], c["answers"], c["sent"]) == ("not_sent", 0, 0)
+    assert c["lead"].startswith("kept") and canary_leads(h) == [CANARY]
+    assert tue["errors"] == ["capture canary: the campaign has not sent the seed email yet (paused, or out of its "
+                             "window?); its lead is kept and checked again at the next run"]
+    [fact] = [r for r in h.store.tables["signal_events"] if r["fact"] == capture.CANARY_SENT]
+    assert fact["value"]["checked_at"] is None  # still to check
+    # It went on the Tuesday afternoon and the auto-reply came back, tied to it: the Monday run finds it ok.
+    h.emails += [
+        {"id": "S-c", "eaccount": "harry@meetspill.org", "from_address_email": "harry@meetspill.org",
+         "to_address_email_list": CANARY, "thread_id": "T-c", "ue_type": 1, "_type": "sent",
+         "timestamp_created": at(SENT_AT + timedelta(days=1))},
+        {"id": "R-c", "eaccount": "harry@meetspill.org", "from_address_email": "harry@spill.chat",
+         "thread_id": "T-c", "ue_type": 2, "_type": "received",  # tied by the thread alone (no lead field)
+         "timestamp_created": at(BACK_AT + timedelta(days=1))},
+    ]
+    h.analytics = {cid(h, C_HARRY): {"emails_sent_count": 1}}
+    week2 = run_job(ctx_at(h, MON + timedelta(days=7)), capture.run)
+    c = week2["canary_check"]
+    assert (c["status"], c["answers"], c["sent"], c["lead"]) == ("ok", 1, 1, "deleted")
+    assert c["sent_at"] == "2026-10-27T14:30:00+00:00" and week2["verified"] is True
+    assert canary_leads(h) == ["harry+seed1+canary-20261102@spill.chat"]  # week 2's, just added
+
+
+def test_an_email_tied_to_the_canary_but_before_its_send_is_no_answer(h):
+    """The lead field names the canary, but the email came at 09:30 UTC, before the send read at 14:30: not an
+    answer to it. The send was read, so the canary went (sent 1) and nothing came back: no_answer, lead deleted."""
+    seed_lead(h)
+    run_job(ctx_at(h, MON), capture.run)
+    h.emails += [harrys_note(MON + timedelta(hours=3), lead=CANARY),
+                 {"id": "S-c", "eaccount": "harry@meetspill.org", "from_address_email": "harry@meetspill.org",
+                  "to_address_email_list": CANARY, "ue_type": 1, "_type": "sent", "timestamp_created": at(SENT_AT)}]
+    c = capture.check_only(ctx_at(h, MON + timedelta(days=1), job=capture.CHECK_JOB))["canary_check"]
+    assert (c["status"], c["answers"], c["sent"], c["lead"]) == ("no_answer", 0, 1, "deleted")
+
+
+def test_a_send_to_the_seed_inbox_at_large_is_not_the_canarys(h):
+    """A sent email to harry@spill.chat (Harry's own address) is not the canary going: only its tagged address is."""
+    seed_lead(h)
+    run_job(ctx_at(h, MON), capture.run)
+    h.emails.append({"id": "S-h", "eaccount": "harry@meetspill.org", "from_address_email": "harry@meetspill.org",
+                     "to_address_email_list": "harry@spill.chat", "ue_type": 3, "_type": "sent",
+                     "timestamp_created": at(SENT_AT)})
+    c = capture.check_only(ctx_at(h, MON + timedelta(days=1), job=capture.CHECK_JOB))["canary_check"]
+    assert (c["status"], c["sent"]) == ("not_sent", 0)
+
+
+def test_a_canary_never_sent_is_given_up_after_a_week_and_its_lead_deleted(h):
+    """Not sent on the Tuesday (a day old): kept. Still not sent at the Monday run, 7 days after the add, which is
+    past CANARY_GIVE_UP (6 days): not_sent once and for all, the lead deleted, the canary checked."""
+    seed_lead(h)
+    run_job(ctx_at(h, MON), capture.run)
+    capture.check_only(ctx_at(h, MON + timedelta(days=1), job=capture.CHECK_JOB))
+    week2 = run_job(ctx_at(h, MON + timedelta(days=7)), capture.run)
+    assert (week2["canary_check"]["status"], week2["canary_check"]["lead"]) == ("not_sent", "deleted")
+    assert "capture canary: the campaign never sent the seed email" in week2["errors"][0]
+    first = h.store.get("signal_events", event_id="capture:canary:20261026")
+    assert first["value"]["checked_at"] == (MON + timedelta(days=7)).isoformat()
+    assert canary_leads(h) == ["harry+seed1+canary-20261102@spill.chat"]
+
+
+def test_every_unchecked_canary_is_checked_and_its_lead_deleted(h):
+    """W1-2 review, round 2: check() looked at the latest unchecked canary only, so one left unchecked by a lost
+    week kept its lead, and the seed inbox would get emails 2 to 4. Week 1's canary (answered) was not checked: week
+    2's canary was added without a check. Week 3 checks both: week 1's ok, week 2's not sent and given up (7 days >=
+    CANARY_GIVE_UP); the verdict is the latest (week 2's), week 1's is listed under older; both leads are gone."""
+    week_one_answered(h)
+    assert capture.send_canary(ctx_at(h, MON + timedelta(days=7)))["status"] == "sent"
+    assert canary_leads(h) == [CANARY, "harry+seed1+canary-20261102@spill.chat"]
+    week3 = run_job(ctx_at(h, MON + timedelta(days=14)), capture.run)
+    c = week3["canary_check"]
+    assert (c["address"], c["status"], c["lead"]) == ("harry+seed1+canary-20261102@spill.chat", "not_sent", "deleted")
+    assert c["older"] == [{"address": CANARY, "status": "ok", "lead": "deleted"}]
+    assert canary_leads(h) == ["harry+seed1+canary-20261109@spill.chat"]  # week 3's, just added
+    assert all(r["value"]["checked_at"] for r in h.store.tables["signal_events"]
+               if r["fact"] == capture.CANARY_SENT and not r["event_id"].endswith("20261109"))
 
 
 def test_with_no_seed_lead_the_canary_is_not_set_up_and_nothing_is_sent(h):

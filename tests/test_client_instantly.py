@@ -590,6 +590,18 @@ def test_any_other_400_is_raised_as_before():
     assert len(t.requests) == 1
 
 
+@pytest.mark.parametrize("message", ["starting_after is not valid with emode_all", "email_mode is read-only",
+                                     "unknown model id"])
+def test_a_400_that_only_contains_the_letters_mode_is_raised_too(message):
+    """W1-2 review, round 2: the fallback matched the substring "mode" anywhere, so any of these would have dropped
+    the parameter for good. Only the word mode, the parameter's own name, turns it off."""
+    inst, t, _ = make()
+    t.route("GET", "/emails", body={"message": message}, status=400)
+    with pytest.raises(ApiError):
+        inst.list_emails([HANNAH], email_type="received")
+    assert len(t.requests) == 1 and inst._mode_ok is True
+
+
 def test_schedule_days_and_step_delays():
     assert step_delays() == [7, 7, 7, 0]
     weekend = instantly_schedule(SendWindow((5, 6), time(10), time(12), "America/Chicago"))["schedules"][0]
