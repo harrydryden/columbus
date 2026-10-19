@@ -17,12 +17,15 @@ the company is, a quote from the material and a short "what they do" phrase.
 One deterministic rule (decide) turns the verdict into the label and copy, so a doubtful label can never earn a
 label's own pitch:
   * an Overrides row, or an approver's correction (label_source approver), stands, and no model is asked;
-  * the model unavailable (the cap, an error, no key): with General label_check = required, a new company waits
-    unverified; with skip, the rules' label with the group's copy (source rules);
-  * a public body, a membership body or society, a company no label fits, one whose industry is switched off and
-    one the model cannot place are all left out, at any confidence (Harry, 12 and 14 Oct 2026: the ambiguous ones
-    "don't fall into our industries, which is OK; we would just filter these out"). Nothing about the industry goes
-    to the weekly hand-check any more;
+  * the model unavailable (the cap, no key, an outage): with General label_check = required, a new company waits
+    unverified; with skip, the rules' label with the group's copy (source rules). One company's answer that cannot be
+    used (a refusal, max_tokens, not JSON) is that company's alone: it waits, a label_failed fact sends it to the back
+    of the next run's order, and the run goes on to the next company (W1-4, 19 Oct 2026);
+  * a public body, a membership body or society, a company no label fits and one the model cannot place are left
+    out for good, at any confidence (Harry, 12 and 14 Oct 2026: the ambiguous ones "don't fall into our industries,
+    which is OK; we would just filter these out"); one whose industry is switched off is parked (status parked), and
+    comes back when the industry is switched on (verify.redecide_parked, W1-4). Nothing about the industry goes to
+    the weekly hand-check any more;
   * otherwise the model's label decides (Harry, 11 Oct 2026: on 50 companies he judged by hand the model had the
     right group for 42 of 44, the rules for 34 of 50, so the rules only source companies now): the label's own copy
     when the model is sure and read the company's home page (model); its group's own label and copy when it is not
@@ -61,7 +64,7 @@ from pathlib import Path
 from typing import Any
 
 from us_outbound import facts, fmt
-from us_outbound.clients.claude import BudgetExceeded, ClaudeError, estimate_call_usd
+from us_outbound.clients.claude import BudgetExceeded, ClaudeError, UnusableAnswer, estimate_call_usd
 from us_outbound.clients.db import new_id
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol.openers import validate_focus
@@ -93,6 +96,16 @@ COPY_LEVEL = {OVERRIDE: LABEL_COPY, APPROVER: LABEL_COPY, AGREED: LABEL_COPY, MO
 VERIFY, HOLD, DISQUALIFY = "verify", "hold", "disqualify"  # Decision.action
 REQUIRED, SKIP = LABEL_CHECK_MODES = (LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP)  # General label_check
 DISQUALIFIED, EXCLUDED = "disqualified", "Excluded"  # accounts.status and tier of a company left out
+# accounts.status of a company left out only while a setting keeps it out: its industry switched off (W1-4, 19 Oct
+# 2026). verify.redecide_parked looks at it again each run, from its stored verdict, with no model call.
+PARKED = "parked"
+# A disqualification's code (accounts.status_reason; verify.REASON_CODES says what each does to the account).
+PUBLIC_BODY_CODE, ASSOCIATION_CODE, OTHER_CODE, NO_LABEL_CODE, INDUSTRY_OFF = (
+    "public_body", "association", "label_other", "no_label", "industry_off")
+# One company's answer that could not be used (UnusableAnswer: a refusal, max_tokens, not JSON), kept as a fact so
+# the company goes to the back of the next run's order, and is parked after PARK_AFTER_FAILURES of them under one
+# labels_hash (verify.py). It is about that company alone: the next company is still asked (code-verify-labels B1).
+FAILED_FACT, FAILED_CODE, PARK_AFTER_FAILURES = "label_failed", "label_failed", 3
 NO_MATERIAL = "no Apollo industry, codes, keywords or description to check the label against"
 UNCERTAIN = "industry uncertain: "  # the start of every hold reason, so the hand-check reads it as such
 MATERIAL_FACTS = ("apollo_industry", "naics", "keywords", "description")
@@ -421,6 +434,19 @@ def page_read(events: Iterable[Mapping[str, Any]], *, asked_now: bool = False) -
     return asked is not None and utc_or_epoch(page.get("observed_at")) <= asked
 
 
+def failures(events: Iterable[Mapping[str, Any]], labels_hash: str) -> int:
+    """How many label_failed facts the company has under this labels_hash (a new label list or prompt starts the
+    count again)."""
+    return sum(1 for e in events if e.get("source") == JOB and e.get("fact") == FAILED_FACT
+               and isinstance(e.get("value"), Mapping) and str(e["value"].get("labels_hash") or "") == labels_hash)
+
+
+def failed_hash(events: Iterable[Mapping[str, Any]]) -> str | None:
+    """The labels_hash of the company's newest label_failed fact, or None when it has none."""
+    e = facts.newest(events, FAILED_FACT, JOB, where=lambda e: isinstance(e.get("value"), Mapping))
+    return str(e["value"].get("labels_hash") or "") if e is not None else None
+
+
 def latest_correction(events: Iterable[Mapping[str, Any]]) -> dict | None:
     """The newest label_corrected fact's value, or None."""
     e = facts.newest(events, CORRECTED_FACT, JOB)
@@ -458,6 +484,10 @@ class Decision:
     copy: str  # LABEL_COPY, GROUP_COPY or GENERAL_COPY_LEVEL: the most specific copy it may get
     action: str  # VERIFY, HOLD (the weekly hand-check) or DISQUALIFY
     reason: str = ""  # a hold's doubt, a disqualification's tier_reason, or what the card says of a disagreement
+    # A disqualification's code (accounts.status_reason): industry_off parks the company, the others leave it out for
+    # good. Outside equality and as_dict, so a decision stored before codes existed still compares equal and no
+    # verdict fact is written again for it (apply).
+    code: str = field(default="", compare=False)
 
     def as_dict(self) -> dict[str, Any]:
         return {"label": self.label, "group": self.group, "source": self.source, "copy": self.copy,
@@ -480,31 +510,31 @@ def decide(rules: Industry | None, verdict: Verdict | None, settings: Settings, 
         return None if mode == REQUIRED else Decision(*keep, RULES, "", GROUP_COPY, VERIFY)
     c = verdict.confidence
 
-    def leave_out(why: str) -> Decision:
-        return Decision(*keep, DISPUTED, c, GENERAL_COPY_LEVEL, DISQUALIFY, why)
+    def leave_out(why: str, code: str) -> Decision:
+        return Decision(*keep, DISPUTED, c, GENERAL_COPY_LEVEL, DISQUALIFY, why, code)
 
     # A company the model cannot place in one of our industries is left out at any confidence, not held for a person
     # (Harry, 14 Oct 2026: "lots of these are ambiguous and don't fall into our industries, which is OK; going forward
     # we would just filter these out"). The hand-check keeps only doubtful facts (verify.py), never the industry.
     if verdict.entity == PUBLIC_BODY:
         quote = f": “{verdict.evidence}”" if verdict.evidence else ""
-        return leave_out(f"a public body, never prospected (the label check{quote})")
+        return leave_out(f"a public body, never prospected (the label check{quote})", PUBLIC_BODY_CODE)
     sure = c in (HIGH, MEDIUM)
     if verdict.entity == ASSOCIATION:
         return leave_out("a membership body or society, not an employer we prospect (the label check)" if sure
-                         else f"probably a membership body or society (the label check, {c})")
+                         else f"probably a membership body or society (the label check, {c})", ASSOCIATION_CODE)
     if verdict.entity == OTHER:
-        return leave_out(f"the label check cannot tell what this company is ({c})")
+        return leave_out(f"the label check cannot tell what this company is ({c})", OTHER_CODE)
     if verdict.label == NONE:
         return leave_out(f"no Industries label fits ({verdict.what_they_do or 'the label check'})" if sure
-                         else f"no Industries label clearly fits (the label check, {c})")
+                         else f"no Industries label clearly fits (the label check, {c})", NO_LABEL_CODE)
     model = settings.industry(verdict.label)
     if model is None or not model.active:
         group = model.industry_group if model else verdict.label
         umbrella = settings.umbrella(group)
         if umbrella is None or not umbrella.active:
             return leave_out(f"its industry ({group}) is switched off on the Industries tab (the label check"
-                             + ("" if sure else f", {c}") + ")")
+                             + ("" if sure else f", {c}") + ")", INDUSTRY_OFF)
         model = umbrella  # a switched-off label in a group we prospect: the group's own label
     m_name = model.industry
     said = f"the model says {m_name} ({c})" + ("" if page else ", from Apollo's facts alone")
@@ -536,11 +566,17 @@ def _same(a: Any, b: Any) -> bool:
 
 
 def columns(account: Mapping[str, Any], d: Decision) -> dict[str, Any]:
-    """The account columns the decision sets, those that change only ({} when none does)."""
+    """The account columns the decision sets, those that change only ({} when none does). A disqualification with a
+    code writes it to status_reason and leads tier_reason with it ("industry_off: its industry ..."); industry_off
+    parks the company rather than leaving it out for good (W1-4, 19 Oct 2026: ~50 were lost on 13 Oct while their
+    groups were off, code-verify-labels B2)."""
     want: dict[str, Any] = {"industry": d.label, "industry_group": d.group, "label_source": d.source,
                             "label_confidence": d.confidence or None}
     if d.action == DISQUALIFY:
-        want.update(status=DISQUALIFIED, tier=EXCLUDED, tier_reason=d.reason)
+        want.update(status=PARKED if d.code == INDUSTRY_OFF else DISQUALIFIED, tier=EXCLUDED,
+                    tier_reason=f"{d.code}: {d.reason}" if d.code else d.reason)
+        if d.code:
+            want["status_reason"] = d.code
     return {k: v for k, v in want.items() if not _same(account.get(k), v)}
 
 
@@ -599,8 +635,11 @@ class Checker:
     """One run's label checks: the label list and prompt built once, the run's budget, and what it cost.
 
     spend: ask the model (verify_accounts in every mode; `labels audit --live`). Without it a stored verdict is used
-    and nothing is asked. unavailable: the first reason the model could not be asked this run (the cap, an error,
-    no key), after which nothing more is asked."""
+    and nothing is asked. unavailable: the first reason the model could not be asked this run (the cap, no key, a
+    connection or status error after the SDK's retries), after which nothing more is asked. failed: the companies
+    whose own answer could not be used this run (UnusableAnswer: a refusal, max_tokens, not JSON), each kept as a
+    label_failed fact; the run goes on to the next company (W1-4, 19 Oct 2026: one max_tokens answer refused every
+    later company, code-verify-labels B1)."""
 
     def __init__(self, ctx: Context, *, spend: bool = True, budget: Budget | None = None, purpose: str = JOB):
         self.ctx, self.settings, self.purpose = ctx, ctx.settings, purpose
@@ -613,6 +652,7 @@ class Checker:
         self.spend, self.budget = spend, budget or Budget()
         self.asked = 0
         self.unavailable = ""
+        self.failed: dict[str, str] = {}  # account_id -> why its answer could not be used this run
         self.answers: dict[str, tuple[Verdict | None, str, bool]] = {}  # account_id -> this run's verdict()
 
     def fresh(self, stored: Mapping[str, Any] | None, events: Iterable[Mapping[str, Any]] = ()) -> bool:
@@ -651,17 +691,35 @@ class Checker:
             return old, why, False
         try:
             v = self.ask(material)
+        except UnusableAnswer as exc:  # about this company's answer alone: skip it, ask about the next
+            return old, self._failed(account, exc), False
         except BudgetExceeded as exc:
             self.unavailable = f"the monthly Claude cap is reached ({exc})"
         except ConfigError as exc:
             self.unavailable = f"no Claude API key ({exc})"
-        except ClaudeError as exc:
-            self.unavailable = f"Claude did not answer ({exc})"
+        except ClaudeError as exc:  # a refused key, a connection error, a 429 or a 5xx after the SDK's retries
+            # clients/claude raises a 401 or 403 as a ClaudeError with its status, never as http.AuthError, so the
+            # wrong key is told from an outage here (W1-4 review, 19 Oct 2026: an AuthError handler never fired).
+            self.unavailable = (f"Claude refused the key ({exc})" if exc.status in (401, 403)
+                                else f"Claude did not answer ({exc})")
         else:
             return v, "", True
         log("label_check_unavailable", run_id=self.ctx.run_id, account_id=account.get("account_id"),
             reason=self.unavailable[:200])
         return old, self.unavailable, False
+
+    def _failed(self, account: Mapping[str, Any], exc: Exception) -> str:
+        """Record one company's unusable answer: a label_failed fact under this run's labels_hash (a database write,
+        so in every mode, like a verdict). Returns why, for the caller."""
+        aid = str(account.get("account_id") or "")
+        self.failed[aid] = str(exc)[:200]
+        if aid:
+            self.ctx.store.insert("signal_events", [{
+                "event_id": new_id(), "account_id": aid, "source": JOB, "fact": FAILED_FACT,
+                "value": {"reason": str(exc)[:200], "labels_hash": self.hash}, "quote": "", "source_url": "",
+                "observed_at": self.ctx.now}])
+        log("label_check_failed", run_id=self.ctx.run_id, account_id=aid, reason=str(exc)[:200])
+        return f"the label check could not use the answer for this company ({exc})"
 
     def ask(self, material: Material) -> Verdict:
         """One call (raises ClaudeError, BudgetExceeded or ConfigError to the caller)."""

@@ -267,6 +267,15 @@ def test_v_queue_on_a_fixture(store, fixture_rows):
                         "rank_in_tier", "verified", "sender", "angle"}
 
 
+def test_v_queue_leaves_out_parked_and_disqualified_accounts(store, fixture_rows):
+    """W1-4: parked (its industry switched off) and disqualified are out of the queue by status, whatever their tier
+    and score: the fixture's five rows, in the same order, and neither of the two added."""
+    store.insert("accounts", [account("parked", tier="Priority", score=99, status="parked"),
+                              account("left-out", tier="Priority", score=99, status="disqualified")])
+    rows = store.query(f"SELECT account_id FROM {SCHEMA}.v_queue")
+    assert sorted(r["account_id"] for r in rows) == ["agency", "control", "law", "noscore", "queued"]
+
+
 def test_v_budgets_on_a_fixture(store, fixture_rows):
     now = fixture_rows
     rows = {r["system"]: r for r in store.query(f"SELECT * FROM {SCHEMA}.v_budgets")}

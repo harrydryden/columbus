@@ -27,8 +27,9 @@ from us_outbound.clients.db import Store, new_id
 #   queued        waiting to be checked again: held for the hand-check, or put back for the label check
 #   verified      passed verify_accounts: enrol may take it
 #   disqualified  left out, for good or until accounts.recheck_after; accounts.status_reason says which
-#   parked        out of the queue while a setting keeps it out (its industry switched off), back to new when the
-#                 setting changes (written once W1-4 lands; every reader of status names it on purpose)
+#   parked        out of the queue while a setting keeps it out (its industry switched off, or the label check
+#                 failing under one label list), back to new when it changes (verify.redecide_parked, W1-4; every
+#                 reader of status names it on purpose)
 #   enrolled      its contact is in a sender's campaign
 #   engaged       someone there replied (replies/outcomes.mark_engaged)
 # SPEC 6 also lists demo_requested and demo_booked; nothing writes them, but readers still count them as emailed.

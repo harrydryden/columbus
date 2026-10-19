@@ -148,8 +148,8 @@ def label_unfit(item: Item, account: Mapping[str, Any] | None, settings: Setting
         return None
     p, company = item.payload, item.company
     status = _text(account.get("status"))
-    if status == labels.DISQUALIFIED:
-        return f"{company} is left out: {_text(account.get('tier_reason')) or 'disqualified'}", False
+    if status in (labels.DISQUALIFIED, labels.PARKED):  # parked: its industry switched off (W1-4), left out for now
+        return f"{company} is left out: {_text(account.get('tier_reason')) or status}", False
     if status in ("new", "queued"):
         return ("the AI industry check is unsure of its industry, so a person checks it at the weekly hand-check "
                 "first"), True

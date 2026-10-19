@@ -57,7 +57,7 @@ COMMENT ON COLUMN us_outbound.accounts.score IS 'Sum of fresh Score signal weigh
 COMMENT ON COLUMN us_outbound.accounts.tier IS 'One of: Priority, Standard, Control, Held, Excluded (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.angle IS 'Angle name from the Angles tab. Control accounts always get General (SPEC 9).';
 COMMENT ON COLUMN us_outbound.accounts.sender IS 'Mailbox owner name; set at first enrollment, never changed (SPEC 9, sender continuity).';
-COMMENT ON COLUMN us_outbound.accounts.status IS 'One of: new, queued, verified, enrolled, engaged, demo_requested, demo_booked, disqualified.';
+COMMENT ON COLUMN us_outbound.accounts.status IS 'One of: new, queued, verified, disqualified, parked, enrolled, engaged, demo_requested, demo_booked. new: admitted, not checked yet; queued: waiting to be checked again; verified: passed verify_accounts, enrol may take it; disqualified: left out, for good or (an open HubSpot deal, another owner) until recheck_after, status_reason says which; parked: out while a setting keeps it out (its industry switched off, or the label check failing under one label list), back to new when it changes (verify.redecide_parked, W1-4); enrolled: its contact is in a campaign; engaged: someone there replied. demo_requested and demo_booked: in SPEC 6, written by nothing, counted as emailed.';
 
 -- Build addition (Harry, 6 Oct 2026): Apollo's HQ country, so a website visitor with no HQ state is known to be in
 -- the US (accounts.any_us_state: a visitor is never excluded on its state).

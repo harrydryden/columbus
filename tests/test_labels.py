@@ -310,13 +310,39 @@ def test_apply_writes_the_changed_columns_and_one_fact_per_new_decision():
     # The same decision again, from the stored verdict: nothing to write.
     again = labels.apply(ctx, row, d, v, rules=ind("Adtech & martech"), stored=fact["value"])
     assert again == {} and len(ctx.store.select("signal_events", {"source": "label_check"})) == 1
-    # A disqualification excludes the company, as `us-outbound relabel` does.
+    # A disqualification excludes the company, as `us-outbound relabel` does, with its code (W1-4): a public body is
+    # left out for good, so status disqualified and status_reason public_body, the code leading tier_reason.
     out = labels.decide(ind("Fintech"), verdict("none", "high", "public_body"), DEFAULT)
     labels.apply(ctx, row, out, verdict("none", "high", "public_body"), stored=fact["value"])
     row = ctx.store.get("accounts", account_id="a1")
-    assert (row["status"], row["tier"], row["tier_reason"]) == (
-        "disqualified", "Excluded", "a public body, never prospected (the label check)")
+    assert (row["status"], row["tier"], row["status_reason"], row["tier_reason"]) == (
+        "disqualified", "Excluded", "public_body", "public_body: a public body, never prospected (the label check)")
     assert len(ctx.store.select("signal_events", {"source": "label_check"})) == 2
+
+
+def test_an_industry_switched_off_parks_the_company_and_every_other_disqualification_has_its_code():
+    """W1-4 (code-verify-labels B2; ~50 companies on 13 Oct): a company left out because its industry is switched off
+    is parked, not disqualified, so it can come back when the industry is switched on. The code is outside Decision
+    equality and as_dict, so the stored decisions written before codes existed still compare equal (no fact is
+    rewritten for them)."""
+    cases = [
+        (verdict("Physician practices", "high"), "industry_off", "parked"),
+        (verdict("Professional Services", "low"), "industry_off", "parked"),
+        (verdict("none", "low", "public_body"), "public_body", "disqualified"),
+        (verdict("Fintech", "medium", "association"), "association", "disqualified"),
+        (verdict("Fintech", "high", "other"), "label_other", "disqualified"),
+        (verdict("none", "high", what="crop insurance"), "no_label", "disqualified"),
+    ]
+    for v, code, status in cases:
+        d = labels.decide(ind("Fintech"), v, DEFAULT)
+        assert (d.action, d.code) == ("disqualify", code)
+        cols = labels.columns(acct(), d)
+        assert (cols["status"], cols["status_reason"], cols["tier"]) == (status, code, "Excluded")
+        assert cols["tier_reason"] == f"{code}: {d.reason}"
+        assert "code" not in d.as_dict() and d == dataclasses.replace(d, code="")
+    # A verdict that verifies has no code, and its columns no status.
+    d = labels.decide(ind("Fintech"), verdict("Fintech", "high"), DEFAULT)
+    assert d.code == "" and "status" not in labels.columns(acct(), d)
 
 
 # -- asking the model -----------------------------------------------------------------------------------------------
@@ -438,12 +464,20 @@ def test_a_dry_run_command_asks_nothing():
     assert ctx.clients.claude_task.client.calls == []
 
 
-@pytest.mark.parametrize("trouble, why", [
-    ("cap", "the monthly Claude cap is reached"),
-    ("error", "Claude did not answer"),
-    ("key", "no Claude API key"),
+@pytest.mark.parametrize("trouble, why, calls", [
+    # Systemic: the next company would fail the same way, so nothing more is asked this run. The cap and a missing
+    # key refuse before any call (0 calls); an outage is the one call that failed after the SDK's retries (1).
+    ("cap", "the monthly Claude cap is reached", 0),
+    ("outage", "Claude did not answer", 1),
+    ("rate_limit", "Claude did not answer", 1),
+    ("connection", "Claude did not answer", 1),
+    ("key", "no Claude API key", 0),
 ])
-def test_the_model_unavailable_says_why_once_and_asks_nothing_more(trouble, why):
+def test_the_model_unavailable_says_why_once_and_asks_nothing_more(trouble, why, calls):
+    import anthropic
+
+    from tests.test_client_claude import sdk_error
+
     sdk = FakeSDK(text=model_answer())
     ctx = make_context(DEFAULT, now=NOW, claude_sdk=None if trouble == "key" else sdk)
     if trouble == "key":
@@ -451,15 +485,43 @@ def test_the_model_unavailable_says_why_once_and_asks_nothing_more(trouble, why)
     elif trouble == "cap":
         ctx.store.insert("credit_ledger", [{"entry_id": "e1", "system": "claude", "job": "classify", "usd": 9.99,
                                             "credits": 0.0, "occurred_at": NOW}])
+    elif trouble == "outage":
+        sdk.raises = sdk_error(anthropic.InternalServerError, 503)
+    elif trouble == "rate_limit":
+        sdk.raises = sdk_error(anthropic.RateLimitError, 429)
     else:
-        sdk.stop_reason = "max_tokens"
+        sdk.raises = sdk_error(anthropic.APIConnectionError)
     ch = labels.Checker(ctx)
     v, got, asked = ch.verdict(acct(), EVENTS)
     assert (v, asked) == (None, False) and got.startswith(why) and ch.unavailable == got
     assert "US_OUTBOUND_CLAUDE_API_KEY" in got if trouble == "key" else True  # the variable, never a value
-    calls = len(sdk.calls)
+    assert len(sdk.calls) == calls and ch.failed == {}
     assert ch.verdict(acct("a2"), EVENTS)[1] == got and len(sdk.calls) == calls  # not asked again this run
+    assert ctx.store.select("signal_events") == []  # an outage is no fact about the company
     assert isinstance(BudgetExceeded("x"), Exception)
+
+
+@pytest.mark.parametrize("answer_kind", ["max_tokens", "refusal", "not_json"])
+def test_one_companys_unusable_answer_is_that_companys_alone(answer_kind):
+    """W1-4 (code-verify-labels B1). This was test_the_model_unavailable_says_why_once_and_asks_nothing_more's "error"
+    case, which pinned the defect: one max_tokens answer set unavailable and refused every later company, so a
+    company whose material the model could not finish blocked the queue every run (it sorts first again). Now the
+    call counts against the run's share, a label_failed fact is kept under the run's labels_hash, and the next
+    company is asked."""
+    sdk = FakeSDK(text="not json" if answer_kind == "not_json" else model_answer(),
+                  stop_reason=answer_kind if answer_kind != "not_json" else "end_turn")
+    ctx = make_context(DEFAULT, now=NOW, claude_sdk=sdk)
+    ch = labels.Checker(ctx)
+    v, why, asked = ch.verdict(acct(), EVENTS)
+    assert (v, asked, ch.unavailable) == (None, False, "") and why.startswith("the label check could not use")
+    assert list(ch.failed) == ["a1"] and ch.budget.made == 1  # the call was made, and billed: it counts
+    [fact] = ctx.store.select("signal_events")
+    assert (fact["account_id"], fact["source"], fact["fact"]) == ("a1", "label_check", "label_failed")
+    assert fact["value"]["labels_hash"] == ch.hash and labels.failures([fact], ch.hash) == 1
+    assert labels.failures([fact], "another") == 0 and labels.failed_hash([fact]) == ch.hash
+    sdk.stop_reason, sdk.text = "end_turn", model_answer()
+    v, why, asked = ch.verdict(acct("a2"), EVENTS)  # the next company is asked, and answered
+    assert (v.label, why, asked) == ("Fintech", "", True) and len(sdk.calls) == 2
 
 
 def test_judge_lets_an_override_stand_and_decides_an_empty_company_on_the_rules():

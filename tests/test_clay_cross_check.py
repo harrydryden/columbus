@@ -22,7 +22,7 @@ from us_outbound.settings.validate import validate_all
 
 FN = "t_us_accounts"
 CLAY = "https://api.clay.com/public/v0"
-PENDING = verify.CLAY_PENDING
+PENDING = "clay_pending"  # verify.REASON_CODES: transient, so the account waits (status new) for the next run
 
 
 def on(**kw):

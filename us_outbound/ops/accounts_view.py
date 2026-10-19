@@ -43,7 +43,8 @@ from us_outbound.settings.model import TIERS, Settings
 from us_outbound.timeparse import utc
 
 # accounts.status in lifecycle order (sql/ddl/01_accounts.sql).
-STATUSES = ("new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified")
+STATUSES = ("new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked", "disqualified",
+            "parked")  # parked: out while its industry is switched off (W1-4)
 LIST_LIMIT = 25  # the list's default length
 SIGNALS_SHOWN = 10
 EVENTS_SHOWN = 20

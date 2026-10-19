@@ -512,6 +512,9 @@ UNIVERSE = {
     "a-stale": "", "a-stale-too": "", "a-refreshed": "Apollo saw it again in September", "a-new": "first seen recently",
     "a-contact": "a contact", "a-event": "an event", "a-item": "a hitl item", "a-enrolled": "enrolled",
     "a-disqualified": "disqualified", "a-named-source": "from the Named accounts tab",
+    # W1-4: parked is held out by a setting (an industry switched off), not forgotten: kept like disqualified, though
+    # first seen 13+ months ago (OLD, 1 Oct 2026, against UNIVERSE_NOW, 20 Nov 2027) with no fresh source fact.
+    "a-parked": "parked",
     "a-named": "named by Harry", "a-declined": "dropped with a 🚫", "a-undated": "no first_seen",
 }
 
@@ -532,6 +535,7 @@ def universe_rows(store, first_seen=OLD) -> None:
                   {"event_id": f"f{i}-doubt", "account_id": aid, "source": "verify_accounts", "fact": "doubt",
                    "value": "size", "observed_at": FRESH}]
     rows = [{**r, **{"a-enrolled": {"status": "enrolled"}, "a-disqualified": {"status": "disqualified"},
+                     "a-parked": {"status": "parked"},
                      "a-named-source": {"source": "named"}}.get(r["account_id"], {})} for r in rows]
     facts += [{"event_id": "f-fresh", "account_id": "a-refreshed", "source": "apollo_org", "fact": "employees",
                "value": 41, "observed_at": FRESH},

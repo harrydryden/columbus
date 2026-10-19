@@ -591,6 +591,8 @@ def _pipeline(day: Day) -> list[str]:
               f"{n.get('waiting_for_verification', 0):,} need their facts checked"
               + (f" ({n['doubtful_facts']} in the weekly hand-check)" if n.get("doubtful_facts") else "")]
     out = [line, "Being prepared: " + " · ".join(behind), *([day.fit] if day.fit else [])]
+    if n.get("parked"):  # out of the queue while a setting keeps them out (W1-4): not being prepared
+        out.append(daily_report.parked_line(n.get("parked_by_reason") or {labels.INDUSTRY_OFF: n["parked"]}))
     if n.get("in_sequence") or n.get("finished") or n.get("stopped"):
         out.append(f"Emailed: {n.get('in_sequence', 0)} with follow-ups to come · {n.get('finished', 0)} finished · "
                    f"{n.get('stopped', 0)} stopped (replied, bounced or unsubscribed)")

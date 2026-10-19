@@ -267,6 +267,8 @@ def test_the_exact_count_supersedes_the_searched_band_and_one_outside_the_range_
         5100, "5000-9999", "disqualified", "Excluded", "size")
     assert big["tier_reason"] == "size: 5100 outside 10–249 employees"
     assert verify.REASON_CODES["size"] == verify.TERMINAL  # the code means: left out for good
+    # verify's own check names the same code (W1-4: check() returns the code and the text).
+    assert verify.check(big, {}, ctx.settings, set(), set()) == ("size", "outside 10 to 249 employees")
     # 249 is inside 10 to 249 and the row already says so: nothing written, still verified.
     assert (edge["status"], edge["employees"]) == ("verified", 249)
     assert (out["size_written"], out["sized_out"]) == (2, 1)
