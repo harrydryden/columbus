@@ -83,6 +83,22 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 
 **1. Find: `source_universe` (weekly, Proposed 9).**
 - Apollo searches the slices of active industry × active state × size band. Cost: 1 Apollo credit per 100 companies.
+- **How much (W1-3a, 19 Oct 2026; loop L1).** The queue should hold two weeks of `weekly_enrol_cap` in companies
+  enrol could actually email: *contactable supply* = ready + findable × p_c + raw × p_v × p_c. Ready: verified
+  with a sendable contact. Findable: verified, no contact yet, not waiting out `pick_contacts`' 14 days after
+  finding nobody. Raw: `new` and `queued`. p_v: the share of the companies admitted in the last 28 days whose
+  first check passed, each company once; p_c: the share of the accounts `pick_contacts` tried in the last 28 days
+  that it found a contact at. Each is measured from 20 observations, 0.60 and 0.46 by default before that, and
+  never taken below 0.20; the run's summary says which (`measured`, `default`, `floored`). Short of the target,
+  the run creates (target − contactable) ÷ (p_v × p_c) raw accounts, at most 2 × `weekly_enrol_cap` a run and
+  3 × a week (Monday to Sunday, UK). Until 19 Oct the count was every open account, 305 to 338 of which had
+  nobody to email, so sourcing created nothing for a week while ready supply fell to 1.3 days. A page the
+  ceiling cuts short is read again by the next run, so no company on it is lost for the month.
+- **In what order (code-sources B2).** Within each search and size band the active states come in turn, starting
+  from a different state each ISO week (week mod the number of states), so the pages alternate state. Read in the
+  States tab's alphabetical order, Georgia came first and the queue was 85% Georgia. Each account created carries
+  a `sourced_by` fact (source `source_universe`: the slice, group, state, band, page and run), so what becomes of
+  it can be traced back to where sourcing looked.
 - **Proposed 9:** each week covers a quarter of the slices, so every slice is refreshed every four weeks and the month's Apollo budget is spent evenly instead of in one large bill on the 1st.
 - The same front door (`accounts.admit`) serves every other way in: new site visitors, IRS BMF matches, the Named accounts tab, the monthly lookalike leads (below), and later the GPTW and B Corp lists. Each is matched to an Apollo record by domain.
 - **Lookalike leads: `lookalike_leads` (monthly, the 1st at 02:50 UK; Harry, 5 Oct 2026).** Apollo's organization search ranks US companies by likeness to up to 5 of Spill's active customers at a time (UK customers included, US ones first), one industry group and size band at a time, with the universe's filters (the US, never CA or WA, the size band, no insurers). Each row must have a US HQ in an active state before it reaches the door, and verify then checks it like any account. New accounts have source `lookalike` and the "Found as a lookalike of a customer" signal. Cost: at most 60 Apollo credits a run, about 1 for the seeds' ids and 1 or 2 per group and band.
@@ -109,23 +125,28 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   then each again after 30 days; at most 150 accounts, 300 requests and 9 minutes a run, a request
   every 1.5 seconds. `pick_contacts` still writes the People leaders its own search sees, but not
   over a full search less than 30 days old. US headcount by state and the CA/WA share are not built.
-- **apollo_jobs**: open roles and open People roles.
+- **apollo_jobs** (`apollo_signals`, weekdays 05:10, after verify_accounts and apollo_enrich; verified accounts
+  only since W1-3a, 19 Oct 2026, so no posting is paid for at a company the label check leaves out): open roles
+  and open People roles. No rescore of its own: `pick_contacts`' rescore at 05:30 scores them.
 - **read_pages** (free; weekdays 03:45, before verify_accounts' rescore): the company's own careers,
   jobs and benefits pages (up to six pages, robots.txt respected, no JavaScript), then the
   Greenhouse, Lever, Ashby or Workable board its site links to. The benefit sentences, with quote
   and URL, feed the EAP, mental-health, wellbeing-app, progressive-benefits and competitor signals.
   `us-outbound pages show` and the daily post give its coverage.
-- **apollo_enrich** (weekdays 04:10, 1 Apollo credit per company found, 0 for one Apollo doesn't know;
-  Harry, 2 Oct 2026): Apollo's organisation enrich, in bulk calls of up to 10 domains, for the queue
-  accounts in the General `apollo_enrich_groups` (Technology & Startups), never-enriched first, then
-  those enriched more than 180 days ago, in enrol's order. It writes the funding facts the funding
-  signals read (`days_since_funding`, aged to today at scoring, `funding_stage`, `funding_amount_usd`),
-  `employees` and `headcount_growth_12m`, and the description, technologies and keywords when none is
-  stored. An exact count replaces the searched size band on the account, unless an Overrides row or
-  Clay says otherwise; verify then treats a count outside the General size range as usual (a verified account that
-  count puts outside goes back to `new`, so verify sees it again). A company Apollo has no
-  record for is "not found", not "no funding", and is not asked again for 180 days. The daily post
-  counts what it found.
+- **apollo_enrich** (weekdays 05:00, after verify_accounts, 1 Apollo credit per company found, 0 for one Apollo
+  doesn't know; Harry, 2 Oct 2026; re-timed by W1-3a, 19 Oct 2026, from 04:10): Apollo's organisation enrich, in
+  bulk calls of up to 10 domains, for the **verified** accounts in the General `apollo_enrich_groups` (Technology &
+  Startups), never-enriched first, then those enriched more than 180 days ago, in enrol's order. It writes the
+  funding facts the funding signals read (`days_since_funding`, aged to today at scoring, `funding_stage`,
+  `funding_amount_usd`), `employees` and `headcount_growth_12m`, and the description, technologies and keywords
+  when none is stored. A bulk record is matched to the account by its Apollo organisation id first, then by
+  domain, so a company Apollo files under another domain is paid for once. An exact count replaces the searched
+  size band on the account, unless an Overrides row or Clay says otherwise, and is the last size check: a count
+  outside the General size range leaves the company out for good (`disqualified`, Excluded, `status_reason`
+  `size`). Until 19 Oct it went back to `new` and stayed in the queue (a 5,100-staff company reached the W43
+  hand-check). A company Apollo has no record for is "not found", not "no funding", and is not asked again for
+  180 days. No rescore of its own: `pick_contacts`' rescore at 05:30 scores what it wrote. The daily post counts
+  what it found.
 - **Site visits** (`site_visits`, daily 06:00, about 3 Apollo credits a day plus 1 per new visitor looked up; Harry, 5 Oct 2026):
   Apollo's organisation search with its website-visitor filters, read only, for the General
   `site_visit_domain` (spill.chat): who visited the `site_visit_us_paths` (`/us`) in the last day
@@ -199,6 +220,9 @@ An account also needs at least one candidate contact: a person matching the Role
 - It rescores, which sets the final tier and angle. **Status: `verified`.**
 
 **4. Contact: weekdays at 05:30, `pick_contacts`, just in time, within today's share of the month's Apollo budget.**
+- It starts with one rescore (W1-3a, 19 Oct 2026), so the morning's exact sizes and hiring facts, written after
+  verify's own rescore, order the queue it reads. A rescore that fails is reported in its summary (and so by the
+  hourly job check) and the run goes on in verify's order.
 - It takes only the accounts the next two enrolment days will use at the weekly target's pace, in enrol's queue order, not the whole verified queue.
 - It searches Apollo for free: people at the company with a Roles-tab title for its size, in the US, with a verified email.
 - It ranks them (Harry, 1 Oct 2026: "the closer to seniority and decision maker the better"): the Roles-tab rank for the size, then seniority, then how well the title matches, then the newest in role. Junior titles come last, and never as a People leader.
@@ -575,7 +599,7 @@ the website's page raises a Spill 3.0 deal itself).
 | — | The send forecast replaces "caps ÷ 4", with Instantly's reports (limits, sends, sending status) and an "add a mailbox" flag | Harry | 9 | Done |
 | — | Steps on days 0, 7, 14, 21; reply window 28 days | 150 a week instead of about 61 | 10, 12 | Done |
 | — | Focus and Named accounts tabs | Harry | 5 | Done |
-| — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
+| — | Funding and an exact headcount from Apollo organisation enrich (`apollo_enrich`, weekdays 04:10, 05:00 after verify since W1-3a, `apollo_enrich_groups`, 15% of the Apollo budget) | Harry, 2 Oct 2026: search rows carry no funding, so the funding signals never fired | 7, 9 | Done |
 | — | People leaders at every queue account (`apollo_people`, weekdays 04:20, 0 credits); "First People hire" replaced by "First People hire (likely)" (+20, 60 days), which also needs `people_search_coverage >= 0.5` | Harry, 5 Oct 2026: only 12 of 432 companies had People data, "New People leader" had fired on none, and nothing wrote a count of 0 | 5, 7, 9 | Done; `settings load --tab Signals --live` brings the new row and switches the old one off |
 | — | Website visits from Apollo's visitor filters on organisation search (`site_visits`, daily 06:00; one search per window, not SPEC 7's domain aggregates per account) | Harry, 5 Oct 2026: "the strongest intent signal" | 7, 9 | Done; the REST filters to confirm on the first run |
 | — | Copy by industry and role, four emails a row; Harry's long form as email 2; the demo page as every email's call to action; the industry page linked; HTML emails | Harry | 5, 9, 10 | Done; drafts for Harry to approve |

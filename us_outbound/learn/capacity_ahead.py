@@ -8,8 +8,11 @@ late. That line stays; this one looks ahead. On Mondays the daily post (learn/da
     receives), and the send days in a week (the send window's weekdays): X new companies a week;
   * what is needed: weekly_enrol_cap (Y), as far as there are companies to fill it in the WARMUP_WEEKS a new
     mailbox takes: the Z ready now (verified, with a sendable contact, as the daily post counts them) spread over
-    those weeks, plus the recent supply: the accounts verify_accounts verified a week over the last SUPPLY_DAYS
-    (learn/daily_report.verified_in).
+    those weeks, plus the recent supply in companies that can be emailed: the accounts verify_accounts verified a
+    week over the last SUPPLY_DAYS (learn/daily_report.verified_in) times p_c, the share pick_contacts finds a
+    contact at (sources/apollo_universe.contactable_supply; W1-3a, 19 Oct 2026). Until then every verified
+    account counted, though pick found nobody at about half of them (code-learn-reporting B11): on 19 Oct the need
+    read 148 a week while about 35 were enrolled, and after a cap raise it would have asked for idle mailboxes.
 When the need is above X, it posts once that ISO week, with the approvers mentioned (notify.post_once): "Add N
 mailboxes now: a new mailbox takes about 3 weeks to warm up. At full ramp your M Active mailboxes take about X new
 companies a week; weekly_enrol_cap is Y and Z companies are ready (W weeks)." N is how many mailboxes at the
@@ -33,6 +36,7 @@ from us_outbound.learn import daily_report
 from us_outbound.logs import log
 from us_outbound.registry import ramp
 from us_outbound.registry.mailboxes import MAX_CAP
+from us_outbound.sources import apollo_universe
 
 WARMUP_WEEKS = 3  # a new mailbox's warmup (registry/mailboxes.py: Active after 21 days of warmup)
 SUPPLY_DAYS = 14  # the recent supply: accounts verified over these days, as a weekly rate
@@ -47,10 +51,12 @@ class Ahead:
     weekly: int  # X: new companies a week at full ramp
     cap: int  # Y: weekly_enrol_cap
     ready: int  # Z: companies ready to send now
-    supply: float  # accounts verified a week, recently
+    supply: float  # accounts verified a week, recently, times p_c: the ones that will have a contact
     per_mailbox: int  # new companies a week one more mailbox takes, at full ramp
     need: float  # what the companies on hand can fill a week, up to Y
     add: int  # N: mailboxes to add now
+    p_c: float = 1.0  # the contact yield the supply is discounted by (apollo_universe.contact_yield)
+    p_c_basis: str = ""  # measured, default or floored
 
     @property
     def weeks_ready(self) -> float | None:
@@ -60,6 +66,7 @@ class Ahead:
     def as_dict(self) -> dict[str, Any]:
         return {"active": self.active, "warming": self.warming, "weekly_at_full_ramp": self.weekly,
                 "weekly_enrol_cap": self.cap, "ready": self.ready, "supply_per_week": round(self.supply, 1),
+                "p_c": round(self.p_c, 3), "p_c_basis": self.p_c_basis,
                 "per_mailbox": self.per_mailbox, "need_per_week": round(self.need, 1), "add": self.add}
 
 
@@ -80,7 +87,8 @@ def plan(ctx: Context, ready: int) -> Ahead:
     weekly = sum(capacity.steady_pace(c) for c in full.values()) * days
     per_mailbox = capacity.steady_pace(max(caps, default=MAX_CAP)) * days
     verified = daily_report.verified_in(ctx.store, ctx.now - timedelta(days=SUPPLY_DAYS), ctx.now) or 0
-    supply = verified * 7 / SUPPLY_DAYS
+    p_c = apollo_universe.contact_yield(ctx)
+    supply = verified * 7 / SUPPLY_DAYS * p_c.value
     want = s.general.weekly_enrol_cap
     need = min(float(want), ready / WARMUP_WEEKS + supply)
     warming = sum(m.status == WARMING for m in s.mailboxes)
@@ -88,7 +96,7 @@ def plan(ctx: Context, ready: int) -> Ahead:
     if need > weekly and per_mailbox > 0:
         add = max(0, math.ceil((need - weekly) / per_mailbox) - warming)
     return Ahead(active=len(caps), warming=warming, weekly=weekly, cap=want, ready=ready, supply=supply,
-                 per_mailbox=per_mailbox, need=need, add=add)
+                 p_c=p_c.value, p_c_basis=p_c.basis, per_mailbox=per_mailbox, need=need, add=add)
 
 
 def line(a: Ahead) -> str:

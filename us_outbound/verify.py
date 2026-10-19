@@ -60,8 +60,9 @@ proposes the company again with the right copy. A verdict is a paid read that re
 search page, so it is asked in dry-run too (each call is about $0.01, within the Claude cap).
 
 An account verified here has clay_checked_at empty, which is how to find them once Clay is built.
-Weekdays at 04:30 UK, after source_universe (03:00), apollo_signals (03:30), read_pages (03:45) and
-apollo_enrich (04:10), whose exact headcounts it checks like any other.
+Weekdays at 04:30 UK, after source_universe (03:00), read_pages (03:45) and apollo_people (04:20). The paid
+enrichment comes after it, for the accounts it verified (W1-3a, 19 Oct 2026): apollo_enrich at 05:00, whose
+exact headcount is the last size check, and apollo_signals at 05:10.
 
 Dry-run: the HubSpot calls are reads, so they happen. Statuses and HubSpot exclusions are database
 writes, which dry-run makes too (SPEC 0.3), as enrol does with the exclusions it finds; enrolment

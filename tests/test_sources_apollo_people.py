@@ -404,7 +404,7 @@ def test_a_signals_load_switches_the_old_row_off_and_brings_the_new_one():
 # -- the schedule, the registry and the CLI -------------------------------------------------------------------------
 
 
-def test_it_runs_weekdays_at_04_20_after_apollo_enrich_and_before_verify_accounts():
+def test_it_runs_weekdays_at_04_20_after_read_pages_and_before_verify_accounts():
     table = schedule.by_name()
     job = table["apollo_people"]
     assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("20 4 * * 1-5", False, True, 20)
@@ -413,7 +413,8 @@ def test_it_runs_weekdays_at_04_20_after_apollo_enrich_and_before_verify_account
         minute, hour = table[name].cron.split()[:2]
         return int(hour) * 60 + int(minute)
 
-    assert at("apollo_enrich") < at("apollo_people") < at("verify_accounts") < at("pick_contacts")
+    # apollo_enrich moved after verify_accounts (W1-3a, 19 Oct 2026): it enriches verified accounts only.
+    assert at("read_pages") < at("apollo_people") < at("verify_accounts") < at("apollo_enrich") < at("pick_contacts")
     assert at("apollo_people") + people.RUN_SECONDS // 60 < at("verify_accounts")  # no account starts after 04:29
     assert cli.resolve_job("apollo_people") is people.run
     assert hb.EXPECTED["apollo_people"] == 26 * 60 and "apollo_people" in hb.WEEKDAY_JOBS

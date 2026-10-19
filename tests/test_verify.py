@@ -21,7 +21,7 @@ from us_outbound.clients.guard import Boundaries, Guard
 from us_outbound.clients.hubspot import HubSpot
 from us_outbound.ops import cli
 from us_outbound.ops.heartbeat import run_job
-from us_outbound.scoring import tiers
+from us_outbound.scoring import score, tiers
 from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import CLAY_VERIFICATION_MODES, Focus, General, Override
@@ -257,8 +257,13 @@ def test_from_apollo_to_a_verified_scored_account():
                                    "evidence": "fintech", "what_they_do": "fintech"}))
     ctx = make_context(settings_with(), job="pipeline", now=NOW, transport=t, claude_sdk=sdk)
     apollo_universe.run(dataclasses.replace(ctx, job=apollo_universe.JOB))
-    apollo_jobs.run(dataclasses.replace(ctx, job=apollo_jobs.JOB))
+    # The morning's order (W1-3a, 19 Oct 2026): apollo_signals reads postings only once verify has passed a company,
+    # so before verify it has nothing to read and spends nothing.
+    assert apollo_jobs.run(dataclasses.replace(ctx, job=apollo_jobs.JOB))["candidates"] == 0
     out = verify.run(dataclasses.replace(ctx, job=verify.JOB))
+    after_verify = {e["value"]["signal"] for e in ctx.store.select("signal_events", {"source": "scoring"})}
+    apollo_jobs.run(dataclasses.replace(ctx, job=apollo_jobs.JOB))
+    score.rescore(ctx)  # pick_contacts' rescore at 05:30 scores the postings
     # Sure of Fintech, but from Apollo's facts alone (no home page read in this run): its group's copy until the page
     # is read and it is asked again (11 Oct 2026).
     assert out["verified"] == 1 and out["labels"]["checked"] == 1 and out["labels"]["umbrella"] == 1
@@ -271,6 +276,7 @@ def test_from_apollo_to_a_verified_scored_account():
     assert matched & {"Recent funding", "Funding 6–12 months ago"}
     jobs = {e["fact"]: e["value"] for e in ctx.store.select("signal_events", {"source": "apollo_jobs"})}
     assert (jobs["open_roles"], jobs["open_people_roles"]) == (3, 1)
+    assert "People role open" in matched and "People role open" not in after_verify
     assert {r["job"] for r in ctx.store.select("credit_ledger")} == {"source_universe", "apollo_signals", "label_check"}
 
 

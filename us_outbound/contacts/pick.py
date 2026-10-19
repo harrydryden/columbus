@@ -94,6 +94,7 @@ from us_outbound.clients.clay import (
     work_email_inputs,
 )
 from us_outbound.clients.db import Store, new_id
+from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol import enrol, queue, second
@@ -785,10 +786,31 @@ def _balance(ctx: Context) -> tuple[float | None, str | None]:
         return None, f"Apollo's balance could not be read (HTTP {exc.status}), so nothing is spent (SPEC 1.6)"
 
 
+def _rescore(ctx: Context) -> dict:
+    """One rescore before the queue is read (W1-3a, 19 Oct 2026), so pick takes accounts in the order the morning's
+    facts give them.
+
+    apollo_enrich (05:00) and apollo_signals (05:10) now run after verify_accounts (04:30), for verified accounts
+    only, and neither rescores (RS P0-8: overlapping rescores could lose the match rows), so their exact sizes and
+    hiring facts are scored here, once, at the end of the morning chain. A rescore that fails is reported in the
+    summary and the run goes on in the order verify's rescore left: a missed reorder costs less than a day with no
+    contacts found. Imported here, as tests replace the module."""
+    from us_outbound.scoring import score
+
+    try:
+        return score.rescore(ctx)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("pick_contacts_rescore_failed", run_id=ctx.run_id, error=str(exc)[:200])
+        return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
 def run(ctx: Context) -> dict:
     """The pick_contacts job (JOB CONTRACT: run(ctx) -> summary)."""
     s, store = ctx.settings, ctx.store
     summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run}
+    summary["rescore"] = _rescore(ctx)
     need, ready = waiting(ctx)
     past = history(store, ctx.now)
     due = [a for a in need if not past.cooling(a["account_id"], ctx.now)]

@@ -595,7 +595,8 @@ def test_the_live_gate_is_unchanged(monkeypatch, live_sending):
 
 SPEC9_CRONS = {
     # Build, 1 Oct 2026: source_universe and apollo_signals each weekday (SPEC 9: the 1st, and Mondays).
-    "settings_sync": "0 2 * * *", "source_universe": "0 3 * * 1-5", "apollo_signals": "30 3 * * 1-5",
+    "settings_sync": "0 2 * * *", "source_universe": "0 3 * * 1-5",
+    "apollo_signals": "10 5 * * 1-5",  # W1-3a, 19 Oct 2026: after verify_accounts and apollo_enrich (03:30 before)
     "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
     "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
@@ -608,9 +609,9 @@ SPEC9_CRONS = {
     "lookalikes": "30 2 1 * *",
     "lookalike_leads": "50 2 1 * *",  # Harry, 5 Oct 2026: the 1st of each month, after lookalikes (02:30)
     "hand_check_post": "0 8 * * 1",
-    "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after apollo_signals (03:30), before verify_accounts (04:30)
-    "apollo_enrich": "10 4 * * 1-5",  # Harry, 2 Oct 2026: after read_pages starts (03:45), before verify_accounts
-    "apollo_people": "20 4 * * 1-5",  # Harry, 5 Oct 2026: after apollo_enrich, before verify_accounts' rescore
+    "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after source_universe, before verify_accounts (04:30)
+    "apollo_enrich": "0 5 * * 1-5",  # W1-3a, 19 Oct 2026: after verify_accounts, for verified accounts (04:10 before)
+    "apollo_people": "20 4 * * 1-5",  # Harry, 5 Oct 2026: after read_pages, before verify_accounts' rescore
     "retention": "40 0 * * *",  # SPEC 6 and 13 (SPEC 9 had the lead deletions in sync_outcomes at 01:00)
     "label_sample_monthly": "15 9 1 * *",  # Harry, 11 Oct 2026: the labels judged by hand, a batch a month
 }
@@ -636,6 +637,28 @@ def test_the_table_matches_the_job_registry_and_spec9():
         assert j.enabled is not (cli.JOBS[j.name].startswith("not built") or j.name in schedule.PARKED), j.name
         assert 1 <= j.timeout_minutes <= hb.OVERLAP_MINUTES, j.name
     assert table["poll_approvals"].timeout_minutes < 5  # done before it is due again
+
+
+def test_the_morning_runs_source_verify_then_paid_enrichment_then_pick():
+    """W1-3a (19 Oct 2026; code-sources B4): the paid enrichment of a company comes after the free checks and the
+    label check have passed it, and before pick_contacts' rescore orders the queue. Each job starts after the one
+    before it can have finished (its timeout), except pick_contacts, whose own rescore comes first: apollo_signals
+    may still be reading postings then, and the rescore at 11:30 (settings_sync) scores what it adds before enrol."""
+    table = by_name()
+
+    def start(name):
+        minute, hour = table[name].cron.split()[:2]
+        return int(hour) * 60 + int(minute)
+
+    assert start("source_universe") < start("verify_accounts") < start("apollo_enrich") < start("apollo_signals") \
+        < start("pick_contacts") < start("enrol")
+    # verify_accounts 04:30 + 30 minutes = 05:00, apollo_enrich's start; apollo_enrich 05:00 + 20 = 05:20 < 05:30.
+    assert start("verify_accounts") + table["verify_accounts"].timeout_minutes <= start("apollo_enrich")
+    assert start("apollo_enrich") + table["apollo_enrich"].timeout_minutes <= start("pick_contacts")
+    assert {table[j].cron.split()[4] for j in ("apollo_enrich", "apollo_signals", "pick_contacts")} == {"1-5"}
+    # Re-timed jobs are registered everywhere the scheduler, heartbeat_check and its alert read (standing rule).
+    for j in ("apollo_enrich", "apollo_signals"):
+        assert cli.JOBS[j].endswith(":run") and hb.EXPECTED[j] == 26 * 60 and j in hb.WEEKDAY_JOBS and j in hb.IMPACT
 
 
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():

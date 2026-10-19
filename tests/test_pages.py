@@ -580,12 +580,14 @@ def test_the_daily_post_before_any_read(world):
 # -- the schedule and the Signals tab -----------------------------------------------------------------
 
 
-def test_scheduled_on_weekdays_between_apollo_signals_and_verify_accounts():
+def test_scheduled_on_weekdays_between_source_universe_and_verify_accounts():
+    # apollo_signals moved after verify_accounts (W1-3a, 19 Oct 2026); read_pages still reads before verify, whose
+    # label check wants the home page.
     jobs = by_name()
     j = jobs["read_pages"]
     assert (j.cron, j.enabled, j.live, j.timeout_minutes) == ("45 3 * * 1-5", True, False, 40)
     assert pages.RUN_SECONDS < j.timeout_minutes * 60 - 5 * 60  # stops starting accounts well inside it
-    assert jobs["apollo_signals"].cron == "30 3 * * 1-5" and jobs["verify_accounts"].cron == "30 4 * * 1-5"
+    assert jobs["source_universe"].cron == "0 3 * * 1-5" and jobs["verify_accounts"].cron == "30 4 * * 1-5"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
 
 
