@@ -85,7 +85,10 @@ BY = "the Hand-check tab"
 NOT_DONE = "not done: "
 NOTE_JOIN = " — "  # between Harry's note and the code's "not done: ..."
 NO_COMPANY = "no company with this domain"
-EMAILED = frozenset({"enrolled", "engaged"})  # a company already emailed: a leave out records, it changes nothing
+# A company already emailed (the statuses past verify; sources/apollo_universe.FURTHER_STATUSES): a leave out records,
+# it changes nothing.
+EMAILED = frozenset({"enrolled", "engaged", "demo_requested", "demo_booked"})
+UNKNOWN_VERSION = "unknown"  # a row with no gate_version, of a week whose item has none: never today's, stamped late
 SNAPSHOT = ("tier", "score", "industry_group", "industry", "size_band", "hq_state", "source", "label_source")
 HASH_RE = re.compile(r"·\s*([0-9a-f]{10})\s*$")
 # What the applied column said before W1-5 for each decision: such a row is adopted, not applied again.
@@ -253,18 +256,27 @@ def _account(ctx: Context, domain: str) -> dict | None:
 # -- the judgement facts ----------------------------------------------------------------------------
 
 
-def judgement(ctx: Context, r: Mapping[str, Any], a: Mapping[str, Any], week: str) -> dict[str, Any]:
-    """One row's judgement fact (W0's shape, plus the reason, the contact and opener answers and the gate version),
-    with a snapshot of the company as it stood before the decision did anything to it."""
-    from us_outbound.enrol import hand_check
+def _version(r: Mapping[str, Any], item: Mapping[str, Any] | None) -> str:
+    """The gate version the row's company passed: the row's own cell, else the one its week's item recorded at the
+    draw, else UNKNOWN_VERSION. Never the version in force when the row is applied: every W43 row, and every row
+    appended before migrate-tab, has no cell, and today's hash would date an old judgement to a gate it never passed
+    (the W1-5 review, 19 Oct 2026)."""
+    payload = (item or {}).get("payload")
+    drawn = payload.get("gate_version") if isinstance(payload, Mapping) else None
+    return str(r.get("gate_version") or "").strip() or str(drawn or "").strip() or UNKNOWN_VERSION
 
+
+def judgement(ctx: Context, r: Mapping[str, Any], a: Mapping[str, Any], week: str,
+              item: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One row's judgement fact (W0's shape, plus the reason, the contact and opener answers and the gate version,
+    _version), with a snapshot of the company as it stood before the decision did anything to it. item: the week's
+    hand_check item, for the gate version recorded at the draw."""
     reason = _reason(r)
     typed = str(r.get("reason") or "").strip()
     value = {"week": week, "row_id": str(r.get("id") or ""), "check": str(r.get("check") or ""),
              "decision": _decision(r), "reason": reason, "right_label": str(r.get("right_label") or "").strip(),
              "contact_ok": _yes_no(r.get("contact_ok")), "opener_ok": _yes_no(r.get("opener_ok")),
-             "note": _harrys(r.get("note")),
-             "gate_version": str(r.get("gate_version") or "").strip() or hand_check.gate_version(ctx),
+             "note": _harrys(r.get("note")), "gate_version": _version(r, item),
              "snapshot": {c: a.get(c) for c in SNAPSHOT}}
     if reason == "other" and typed.lower() != "other":
         value["reason_text"] = typed
@@ -275,7 +287,8 @@ def judgement(ctx: Context, r: Mapping[str, Any], a: Mapping[str, Any], week: st
 
 def _keep_first(ctx: Context, facts: Sequence[dict]) -> list[dict]:
     """The facts with the first one's snapshot and time kept, where one was written before: exporting or applying
-    again is safe, and a changed decision is the one kept."""
+    again is safe, and a changed decision is the one kept. So is the first one's gate version where this one's is
+    unknown (W0's export stamped W43's facts on 19 Oct, nearer the draw than any later pass)."""
     before = {e["event_id"]: e for e in ctx.store.select("signal_events", {"event_id": [f["event_id"] for f in facts]})} \
         if facts else {}
     for fact in facts:
@@ -283,6 +296,8 @@ def _keep_first(ctx: Context, facts: Sequence[dict]) -> list[dict]:
         if old is not None and isinstance(old.get("value"), Mapping):
             fact["value"]["snapshot"] = old["value"].get("snapshot", fact["value"]["snapshot"])
             fact["observed_at"] = old.get("observed_at") or fact["observed_at"]
+            if fact["value"].get("gate_version") == UNKNOWN_VERSION and old["value"].get("gate_version"):
+                fact["value"]["gate_version"] = old["value"]["gate_version"]
     return list(facts)
 
 
@@ -292,8 +307,10 @@ def export(ctx: Context) -> dict[str, Any]:
 
     The facts are the ones apply writes (judgement), so exporting after apply changes nothing but a decision typed
     since; the companies are not touched. A second export updates the decision cells and keeps the first snapshot and
-    time. Rows with no decision are not exported; a row whose domain has no company, or whose decision is not one of
-    DECISIONS, is skipped with the reason. Dry-run counts what it would write and writes nothing."""
+    time. Rows with no decision are not exported; a row whose domain has no company, or that apply would not apply
+    (refused: a decision not one of DECISIONS, a wrong industry with no right_label it can read), is skipped with the
+    reason, so an export never writes a judgement that apply holds back (held() would release its company, and tally
+    count it). Dry-run counts what it would write and writes nothing."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise LookupError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
@@ -304,17 +321,18 @@ def export(ctx: Context) -> dict[str, Any]:
     domains = sorted({_domain(r) for r in decided} - {""})
     found = {str(a.get("domain") or "").strip().lower(): dict(a)
              for a in (ctx.store.select("accounts", {"domain": domains}) if domains else [])}
+    by_week = _by_week(ctx)
     facts: dict[str, dict[str, Any]] = {}
     skipped: list[dict[str, str]] = []
     for r in decided:
         decision, domain, week = _decision(r), _domain(r), str(r.get("week") or "")
         a = found.get(domain)
-        why = ("the decision must be one of " + ", ".join(DECISIONS) if decision not in DECISIONS
-               else "no week on the row" if not week.strip() else NO_COMPANY if a is None else "")
+        why = (_refused(ctx, r) if decision not in DECISIONS else "no week on the row" if not week.strip()
+               else NO_COMPANY if a is None else _refused(ctx, r))
         if why:
             skipped.append({"id": str(r.get("id") or ""), "domain": domain, "why": why})
             continue
-        fact = judgement(ctx, r, found[domain], week)
+        fact = judgement(ctx, r, found[domain], week, by_week.get(week.strip()))
         facts[fact["event_id"]] = fact
     known = {e["event_id"] for e in ctx.store.select("signal_events", {"event_id": list(facts)})} if facts else set()
     _keep_first(ctx, list(facts.values()))
@@ -384,22 +402,32 @@ def _doubts(payload: Mapping[str, Any], account_id: str) -> list[dict]:
     return [d for d in payload.get("doubtful") or () if d.get("account_id") == account_id]
 
 
+def _refused(ctx: Context, r: Mapping[str, Any]) -> str:
+    """Why a decided row cannot be applied as it stands (the note says it), or "": a decision not on the list, or a
+    wrong industry with no right_label that names an industry. export skips the same rows."""
+    decision = _decision(r)
+    if decision not in DECISIONS:
+        return f"the decision must be one of {', '.join(DECISIONS)}"
+    if decision == WRONG_INDUSTRY and labels.resolve(str(r.get("right_label") or ""), ctx.settings) is None:
+        return "pick the right industry in right_label"
+    return ""
+
+
 def _apply_row(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | None) -> Outcome:
     """Do what one decided row says, and write its judgement fact."""
     from us_outbound.enrol import approvals, hand_check  # the card withdrawal, after a label change
 
     decision, domain, week = _decision(r), _domain(r), str(r.get("week") or "").strip()
     if decision not in DECISIONS:
-        return Outcome(why=f"the decision must be one of {', '.join(DECISIONS)}")
+        return Outcome(why=_refused(ctx, r))
     a = _account(ctx, domain)
     if a is None:
         return Outcome(why=NO_COMPANY, settled=True)
-    ind = None
-    if decision == WRONG_INDUSTRY:
-        ind = labels.resolve(str(r.get("right_label") or ""), ctx.settings)
-        if ind is None:
-            return Outcome(why="pick the right industry in right_label")
-    fact = _keep_first(ctx, [judgement(ctx, r, a, week)])[0]  # the snapshot before the decision changes the company
+    why = _refused(ctx, r)
+    if why:
+        return Outcome(why=why)
+    ind = labels.resolve(str(r.get("right_label") or ""), ctx.settings) if decision == WRONG_INDUSTRY else None
+    fact = _keep_first(ctx, [judgement(ctx, r, a, week, item)])[0]  # the snapshot before the decision changes it
     payload = dict((item or {}).get("payload") or {})
     reason = _reason(r)
     aid = str(a["account_id"])
@@ -428,12 +456,12 @@ def _apply_row(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | Non
     return Outcome(done=f"{ctx.today_uk().isoformat()}: {done}")
 
 
-def _adopt(ctx: Context, r: Mapping[str, Any]) -> bool:
+def _adopt(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | None) -> bool:
     """A row applied before W1-5: its judgement fact, and nothing done to the company. False when it has no company."""
     a = _account(ctx, _domain(r))
     if a is None:
         return False
-    ctx.store.upsert("signal_events", _keep_first(ctx, [judgement(ctx, r, a, str(r.get("week") or "").strip())]))
+    ctx.store.upsert("signal_events", _keep_first(ctx, [judgement(ctx, r, a, str(r.get("week") or "").strip(), item)]))
     return True
 
 
@@ -460,7 +488,7 @@ def apply(ctx: Context) -> dict[str, Any]:
     """Apply every decided row of the tab whose decision is not applied as it stands, one at a time; close the weeks
     that are done or HOLD_DAYS old; remind once about this week's. Live only (a dry run reports what it would apply).
     Never raises but a GuardViolation: poll_approvals goes on, and every failure is in hand_check_errors."""
-    from us_outbound.enrol import enrol, hand_check
+    from us_outbound.enrol import hand_check
 
     out: dict[str, Any] = {"applied": [], "not_done": [], "adopted": 0, "closed": [], "hand_check_errors": []}
     errors: list[str] = out["hand_check_errors"]
@@ -468,11 +496,7 @@ def apply(ctx: Context) -> dict[str, Any]:
     if not sheet_id:
         return out
     week = hand_check.this_week(ctx)
-    by_week: dict[str, dict] = {}
-    for it in hand_check.items(ctx):
-        w = enrol._item_week(it)
-        if w not in by_week or it.get("item_id") == hand_check.item_id(w):
-            by_week[w] = it
+    by_week = _by_week(ctx)
     try:
         tab = read_tab(ctx.clients.sheets, sheet_id, TAB) or []
         item = by_week.get(week)
@@ -500,7 +524,7 @@ def apply(ctx: Context) -> dict[str, Any]:
             continue
         try:
             if _legacy(r):
-                if _adopt(ctx, r):
+                if _adopt(ctx, r, by_week.get(str(r.get("week") or "").strip())):
                     adopted[rid] = {"applied": f"{str(r.get('applied')).strip()} · {_hash(r)}"}
                 continue
             got = _apply_row(ctx, r, by_week.get(str(r.get("week") or "").strip()))
@@ -535,7 +559,9 @@ def apply(ctx: Context) -> dict[str, Any]:
         except Exception as exc:
             errors.append(f"marking {len(adopted)} earlier rows: {type(exc).__name__}: {str(exc)[:120]}")
     try:
-        _close_and_remind(ctx, tab, by_week, week, out)
+        # The items as the rows just left them: each row's pull wrote its item, and closing from the copy read before
+        # the loop would put back a pull a later decision took off (the W1-5 review, 19 Oct 2026).
+        _close_and_remind(ctx, tab, _by_week(ctx), week, out)
     except GuardViolation:
         raise
     except Exception as exc:
@@ -544,6 +570,18 @@ def apply(ctx: Context) -> dict[str, Any]:
         log("hand_check_tab", run_id=ctx.run_id, week=week, applied=out["applied"], not_done=out["not_done"],
             adopted=out["adopted"], closed=out["closed"], errors=errors[:5])
     return out
+
+
+def _by_week(ctx: Context) -> dict[str, dict]:
+    """ISO week -> its hand_check item (the one with the week's own item id, where a week has more than one)."""
+    from us_outbound.enrol import enrol, hand_check
+
+    by_week: dict[str, dict] = {}
+    for it in hand_check.items(ctx):
+        w = enrol._item_week(it)
+        if w not in by_week or it.get("item_id") == hand_check.item_id(w):
+            by_week[w] = it
+    return by_week
 
 
 def _close_and_remind(ctx: Context, tab: Sequence[dict], by_week: Mapping[str, dict], week: str,

@@ -173,13 +173,15 @@ def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
     """(why enrollment waits, or None; the account ids it leaves out). SPEC 11 weekly hand-check; Harry's D5.
 
     The accounts left out are those listed in any of this ISO week's hand_check items' payload.pulled_account_ids,
-    whatever the item's status (a pull only ever narrows: 9 Oct 2026), and, while General hand_check_gate is no,
-    the sampled companies still waiting for a judgement (enrol/hand_check.held: drawn under 7 days ago, none applied
-    yet). With hand_check_gate = no nothing else waits: the hand-check is a measure, not a gate (D5; on 15 Oct the
-    whole-day gate cost about 21 leads, code-approvals-handcheck-copy B6).
+    whatever the item's status (a pull with `handcheck approve --pull` only ever narrows: 9 Oct 2026; a leave out on
+    the Hand-check tab is taken off again when its row's decision changes, hand_check.pull), and, while General
+    hand_check_gate is no, the sampled companies still waiting for a judgement (enrol/hand_check.held: drawn under 7
+    days ago, none applied yet). With hand_check_gate = no nothing else waits: the hand-check is a measure, not a gate
+    (D5; on 15 Oct the whole-day gate cost about 21 leads, code-approvals-handcheck-copy B6).
 
     hand_check_gate = yes (the default until the sheet says no) keeps SPEC 11 as built: this week's hand_check items
-    (payload.iso_week, else created_at) must all be handled, and a week with none has not been posted. enrol.run reads
+    (payload.iso_week, else created_at) must all be handled, and a week with none has not been posted. A week with
+    nothing to check has its item, recorded handled by the draw (hand_check.run), so it never waits. enrol.run reads
     the reason only while auto_send is yes."""
     from us_outbound.enrol import hand_check as weekly
 

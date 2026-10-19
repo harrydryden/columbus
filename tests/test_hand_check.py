@@ -130,7 +130,7 @@ def test_today_s_number_is_enrol_s_with_the_campaigns_not_read():
 @pytest.fixture
 def number(monkeypatch):
     """Today's number for the draw (enrol/today.py, tested above): 2, so the pool starts at position 3."""
-    monkeypatch.setattr(hand_check, "today_number", lambda ctx: 2)
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 2)
 
 
 def test_the_job_records_this_week_s_sample_writes_the_tab_and_posts_the_notice(number):
@@ -189,13 +189,101 @@ def test_a_dry_run_records_the_item_and_the_live_run_posts_it(number):
     assert [p.json["channel"] for p in posts(t)] == ["C_DEV", "C_ALERT"]
 
 
-def test_nothing_to_check_records_no_item(monkeypatch):
-    """Today's number 14 with 14 ready: nobody is left beyond today's, so there is nothing to draw from."""
-    monkeypatch.setattr(hand_check, "today_number", lambda ctx: 14)
-    ctx, _ = world()
+def test_a_supply_bound_monday_under_the_gate_is_checked_from_today_s_accounts_and_can_be_approved(monkeypatch):
+    """The W1-5 review's blocking case: hand_check_gate yes and auto_send yes (the live sheet), 5 ready and today's
+    number 5. The coming days' pool, positions 6 to 105, is empty; before, the draw recorded nothing, enrol said "has
+    not been posted" all week, and `handcheck approve` raised. Now, as the day waits for the check anyway, the pool
+    tops up from position 1: positions 1 to 5 + 100 = 105, of which the 5 exist, so all 5 are drawn
+    (min(hand_check_sample 10, 5)). Enrol waits for that check as the gate always did ("not approved yet", never
+    "has not been posted"); approving it lets the day go: today's number (Tuesday, 100 a week over 4 send days left =
+    25) is above the 5 ready, so all 5 are enrolled."""
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 5)
+    ctx, _, _ = enrol_world(gate=True, n=5)
     out = hand_check.run(ctx)
-    assert out["status"].startswith("nothing to check") and out["pool"] == 0
-    assert ctx.store.select("hitl_items") == []
+    assert (out["status"], out["positions"], out["pool"], out["accounts"]) == ("recorded", [1, 105], 5, 5)
+    item = hand_check.current(ctx)
+    assert sorted(hand_check.sample_ids(item)) == [f"h-{i:02d}" for i in range(5)] and item["status"] == "open"
+    skipped = enrol.run(ctx)
+    assert (skipped["status"], skipped["reason"]) == ("skipped", "this week's hand-check (2026-W44) is not approved yet")
+    done = hand_check.approve(ctx, [], "harry")
+    assert done["approved"] is True and hand_check.current(ctx)["status"] == "handled"
+    went = enrol.run(ctx)
+    assert (went["status"], went["enrolled"]) == ("ok", 5) and enrolled(ctx) == {f"h-{i:02d}" for i in range(5)}
+
+
+def test_a_supply_bound_monday_with_the_gate_off_records_nothing_to_check_and_holds_nobody(monkeypatch):
+    """hand_check_gate no, 5 ready, today's number 5: no top-up (it would hold today's own accounts), so the pool,
+    positions 6 to 105, is empty and no company waits for doubtful facts. The week is recorded handled, payload
+    nothing_to_check, by the draw: enrol holds nobody and enrols all 5 (25 > 5, as above); `handcheck approve`
+    returns rather than raising; the readout says 0 picked."""
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 5)
+    ctx, _, _ = enrol_world(gate=False, n=5)
+    out = hand_check.run(ctx)
+    assert out["status"].startswith("nothing to check") and (out["positions"], out["pool"]) == ([6, 105], 0)
+    item = ctx.store.get("hitl_items", item_id="hand_check-2026-W44")
+    assert (item["status"], item["handled_by"], item["payload"]["nothing_to_check"]) == ("handled", "hand_check_draw", True)
+    assert item["payload"]["accounts"] == [] and hand_check.held(ctx) == frozenset()
+    went = enrol.run(ctx)
+    assert (went["status"], went["enrolled"]) == ("ok", 5) and enrol.HAND_CHECK_SKIP not in went["skipped"]
+    assert hand_check.approve(ctx, [], "harry")["approved"] is True
+    monday = datetime(2026, 10, 26, 0, 0, tzinfo=UTC)
+    lines, nums = hand_check.readout_lines(ctx, monday)
+    assert lines[-1] == "  Week 44: 0 picked: no company was ready to email beyond that day's number."
+    assert (nums["drawn"], nums["nothing_to_check"]) == (0, True)
+
+
+def test_a_week_with_no_company_ready_at_all_lets_the_gated_day_go(monkeypatch):
+    """hand_check_gate yes, nothing ready (the four companies world() adds are never taken) and none held for doubtful
+    facts: even topped up, the pool is empty. A live draw records the week handled, so enrol.hand_check has no reason
+    to wait (before: "has not been posted", all week). A dry run records nothing: it never opens the gate."""
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 0)
+    dry, _ = world(0, live=False)
+    assert hand_check.run(dry)["status"].startswith("nothing to check") and dry.store.select("hitl_items") == []
+    assert enrol.hand_check(dry, dry.now_et().date())[0] == f"this week's hand-check ({WEEK}) has not been posted"
+    ctx, _ = world(0)
+    out = hand_check.run(ctx)
+    assert out["status"].startswith("nothing to check") and out["item_id"] == f"hand_check-{WEEK}"
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset())
+    assert hand_check.run(ctx)["status"].startswith("nothing to check")  # drawn again: still nothing, nothing written
+    assert len(ctx.store.select("hitl_items")) == 1
+
+
+def test_a_week_recorded_with_nothing_to_check_is_drawn_again_when_the_queue_has_grown(monkeypatch):
+    """hand_check_gate no. Monday 05:45, today's number 14 of 14 ready: nothing to check, recorded handled. Run again
+    later (on demand) with today's number 2: positions 3 to 152, 12 accounts, so 10 are drawn and the week's item is
+    open with them, keeping the pulls the empty week had."""
+    number = {"n": 14}
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: number["n"])
+    ctx, _ = world(settings=general(hand_check_gate=False))
+    assert hand_check.run(ctx)["status"].startswith("nothing to check")
+    ctx.store.update("hitl_items", {"item_id": f"hand_check-{WEEK}"},
+                     {"payload": {**hand_check.current(ctx)["payload"], "pulled_account_ids": ["mar-900"]}})
+    number["n"] = 2
+    out = hand_check.run(ctx)
+    assert (out["status"], out["accounts"], out["positions"]) == ("recorded", 10, [3, 152])
+    item = hand_check.current(ctx)
+    assert item["status"] == "open" and not item["payload"].get("nothing_to_check")
+    assert item["payload"]["pulled_account_ids"] == ["mar-900"]
+    assert len(hand_check.held(ctx)) == 10
+
+
+def test_a_failed_number_reaches_heartbeat_check(monkeypatch):
+    """today.read fails: the draw goes on at the weekly pace (150 / 5 send days = 30) and its summary carries
+    number_error, a text under a key ending _error, which heartbeat_check reports (ops/job_errors)."""
+    from us_outbound.enrol import today
+    from us_outbound.ops import job_errors
+
+    def broken(*a, **k):
+        raise RuntimeError("database gone away")
+
+    monkeypatch.setattr(today, "read", broken)
+    ctx, _ = world(3)
+    out = hand_check.run(ctx)
+    assert out["number_today"] == 30
+    assert out["number_error"] == ("today's number could not be worked out (RuntimeError: database gone away); the "
+                                   "draw used 30, the weekly pace")
+    run = {"job": hand_check.JOB, "status": "ok", "started_at": NOW, "finished_at": NOW, "detail": out}
+    assert [f.kind for f in job_errors.findings(hand_check.JOB, run)] == ["number_error"]
 
 
 def test_the_facts_harry_checks():
@@ -236,17 +324,21 @@ def drawn(ctx, week, account_ids, at, **payload):
                     **payload}}])
 
 
-def enrol_world(*, gate: bool):
-    """68 ready accounts h-00 to h-67 in queue order, weekly_enrol_cap 100, live; Tuesday 27 Oct 07:00 ET (W44)."""
+def enrol_world(*, gate: bool, n: int = 68):
+    """n ready accounts h-00 to h-(n-1) in queue order (68 by default), weekly_enrol_cap 100, auto_send yes, live;
+    Tuesday 27 Oct 07:00 ET (W44). Slack answers, so the draw can post. Their HQ state, IL, is active, so a company
+    the tab puts back (rescored) stays in a queue tier."""
     from tests.test_enrol import NOW as TUESDAY, make
     from tests.test_render import account, contact
 
     accounts = [account(account_id=f"h-{i:02d}", domain=f"h{i:02d}.com", clean_name=f"H Co {i}", score=100 - i)
-                for i in range(68)]
+                for i in range(n)]
     contacts = [contact(contact_id=f"c-{i:02d}", account_id=f"h-{i:02d}", email=f"jane@h{i:02d}.com")
-                for i in range(68)]
-    s = make_settings(live_sending=True, weekly_enrol_cap=100, hand_check_gate=gate)
-    ctx, t = make(live=True, settings=s, accounts=accounts, contacts=contacts, hand_check=None)
+                for i in range(n)]
+    s = dataclasses.replace(make_settings(live_sending=True, weekly_enrol_cap=100, hand_check_gate=gate),
+                            states=(State("IL", True),))
+    ctx, t = make(live=True, settings=s, accounts=accounts, contacts=contacts, hand_check=None,
+                  transport=slack_routes(FakeTransport()))
     return ctx, t, TUESDAY
 
 
@@ -370,7 +462,7 @@ def test_the_monday_readout_carries_the_hand_check_section():
 def harness(monkeypatch):
     from tests.test_cli import Harness
 
-    monkeypatch.setattr(hand_check, "today_number", lambda ctx: 2)
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 2)
     h = Harness(SETTINGS)
     ctx, _ = world()
     h.store.tables = ctx.store.tables  # the same accounts and contacts
@@ -411,11 +503,19 @@ def test_handcheck_approve_marks_the_week_handled_with_the_pulled_accounts(monke
     assert skipped[enrol.HAND_CHECK_SKIP] == 2
 
 
-def test_approve_with_nothing_to_check_says_so(monkeypatch):
-    monkeypatch.setattr(hand_check, "today_number", lambda ctx: 0)
+def test_approve_with_nothing_to_check_records_the_week_handled(monkeypatch):
+    """No account at all, and no draw yet: before, approve raised LookupError and a gated week could not be unblocked.
+    Now it records the week as nothing to check, handled by harry, and enrol has nothing to wait for. A dry run says
+    the same and writes nothing."""
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 0)
+    dry = make_context(SETTINGS, live=False, transport=slack_routes(FakeTransport()), now=NOW)
+    assert hand_check.approve(dry, [], "harry")["approved"] is False and dry.store.select("hitl_items") == []
     ctx = make_context(SETTINGS, live=True, transport=slack_routes(FakeTransport()), now=NOW)
-    with pytest.raises(LookupError, match=f"nothing to check for {WEEK}"):
-        hand_check.approve(ctx, [], "harry")
+    out = hand_check.approve(ctx, [], "harry")
+    assert (out["approved"], out["recorded"], out["checked"]) == (True, True, 0)
+    item = hand_check.current(ctx)
+    assert (item["status"], item["handled_by"], item["payload"]["nothing_to_check"]) == ("handled", "harry", True)
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset())
 
 
 def test_the_confirmation_says_what_happens_next_in_plain_words():

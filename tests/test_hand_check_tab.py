@@ -79,7 +79,7 @@ def facts_of(ctx, fact):
 
 def drawn_week(monkeypatch, n=14, *, settings=SETTINGS, sheet=Sheet, **kw):
     """The week's draw recorded, written to the tab and posted: today's number 2, so 10 of mar-002 to mar-013."""
-    monkeypatch.setattr(hand_check, "today_number", lambda ctx: 2)
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 2)
     ctx, t = world(n, settings=settings)
     ctx.clients.sheets = sheet(ctx.guard, {"Overrides": []}, **kw)
     assert hand_check.run(ctx)["status"] == "recorded"
@@ -264,13 +264,16 @@ def test_a_changed_reason_alone_is_applied_again(monkeypatch):
     assert fact["value"]["reason"] == "subsidiary"
 
 
-def test_a_left_out_company_already_emailed_is_not_changed(monkeypatch):
+@pytest.mark.parametrize("status", ["enrolled", "engaged", "demo_requested", "demo_booked"])
+def test_a_left_out_company_already_emailed_is_not_changed(monkeypatch, status):
+    """Every status past verify was emailed (the DDL's account statuses): a leave out records the judgement and never
+    disqualifies it (before, demo_requested and demo_booked were disqualified)."""
     ctx, _ = drawn_week(monkeypatch)
     x = sample_domains(ctx)[0]
-    ctx.store.update("accounts", {"domain": x}, {"status": "enrolled"})
+    ctx.store.update("accounts", {"domain": x}, {"status": status})
     decide(ctx, x, "leave out", reason="subsidiary")
     tab.apply(ctx)
-    assert account(ctx, x)["status"] == "enrolled"
+    assert account(ctx, x)["status"] == status
     [fact] = judgements(ctx)
     assert (fact["value"]["decision"], fact["value"]["reason"]) == ("leave out", "subsidiary")
     assert "emailed already, so only the judgement is recorded" in next(r for r in sheet_rows(ctx) if r["domain"] == x)["applied"]
@@ -355,14 +358,101 @@ def test_the_tab_keeps_two_weeks_after_two_draws_and_every_judged_row_has_a_fact
     assert Counter(f["value"]["week"] for f in facts) == {WEEK: 10, "2026-W45": 10}
 
 
+# -- one pass, many rows: each write starts from the item as stored (the W1-5 review) --------------------------------
+
+
+def ids_of(ctx, domains):
+    return [account(ctx, x)["account_id"] for x in domains]
+
+
+def pulled_now(ctx):
+    return hand_check.current(ctx)["payload"]["pulled_account_ids"]
+
+
+def test_two_leave_outs_in_one_pass_are_both_pulled(monkeypatch):
+    """Two leave outs and 8 rows undecided, so the week stays open and close() does not union the facts back in: both
+    companies are in pulled_account_ids. Before, each pull rebuilt the payload from the copy read at the start of the
+    pass, so only the last one was left."""
+    ctx, _ = drawn_week(monkeypatch)
+    d = sample_domains(ctx)
+    decide(ctx, d[0], "leave out", reason="subsidiary")
+    decide(ctx, d[1], "leave out", reason="media_publisher")
+    out = tab.apply(ctx)
+    assert sorted(out["applied"]) == sorted(tab.row_id(WEEK, x) for x in d[:2]) and out["closed"] == []
+    assert pulled_now(ctx) == ids_of(ctx, d[:2])  # in the tab's order, as the rows were applied
+
+
+def test_a_leave_out_changed_to_fine_in_the_pass_that_closes_the_week_is_emailed(monkeypatch):
+    """test_hand_check.enrol_world's 14 ready (h-00 to h-13), the gate on, drawn Tuesday with today's number 2: 10 of
+    h-02 to h-13 on the tab. Pass 1: one leave out, 8 fine, 1 undecided: pulled is that one, the week open. Pass 2: the
+    leave out changed to fine and the last row fine: the week closes, and the company is verified and in no pull
+    (before, close() wrote back the pulls it read before the pass, so enrol skipped it, held or pulled, all week).
+    Enrol then takes all 14: today's number is 25 (100 a week over 4 send days), above the 14 ready."""
+    from tests.test_hand_check import enrol_world, enrolled
+
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 2)
+    ctx, _, _ = enrol_world(gate=True, n=14)
+    ctx.clients.sheets = Sheet(ctx.guard, {"Overrides": []})
+    assert hand_check.run(ctx)["status"] == "recorded"
+    d = sample_domains(ctx)
+    [x] = ids_of(ctx, d[:1])
+    decide(ctx, d[0], "leave out", reason="subsidiary")
+    for y in d[1:9]:
+        decide(ctx, y, "fine")
+    first = tab.apply(ctx)
+    assert first["closed"] == [] and pulled_now(ctx) == [x] and account(ctx, d[0])["status"] == "disqualified"
+    decide(ctx, d[0], "fine", reason="")
+    decide(ctx, d[9], "fine")
+    second = tab.apply(ctx)
+    assert second["closed"] == [WEEK] and sorted(second["applied"]) == sorted(tab.row_id(WEEK, y) for y in (d[0], d[9]))
+    item = hand_check.current(ctx)
+    assert item["status"] == "handled" and item["payload"]["pulled_account_ids"] == []
+    assert account(ctx, d[0])["status"] == "verified"
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset())
+    went = enrol.run(ctx)
+    assert (went["status"], went["enrolled"]) == ("ok", 14) and x in enrolled(ctx)
+
+
+def test_the_wednesday_reminder_keeps_a_pull_made_in_the_same_pass(monkeypatch):
+    """Wednesday 28 Oct 09:05 UK: one leave out applied, 9 rows waiting, so the pass also posts the reminder. The
+    reminder's write keeps the pull (before, it wrote back the payload read before the row was applied)."""
+    ctx, _ = drawn_week(monkeypatch, settings=general(hand_check_gate=False))
+    d = sample_domains(ctx)
+    ctx.now = datetime(2026, 10, 28, 9, 5, tzinfo=UTC)
+    decide(ctx, d[0], "leave out")
+    out = tab.apply(ctx)
+    assert out["reminded"] == 9
+    p = hand_check.current(ctx)["payload"]
+    assert p["pulled_account_ids"] == ids_of(ctx, d[:1]) and p["reminded_at"] == ctx.now.isoformat()
+
+
+def test_a_pull_made_with_handcheck_approve_stays_whatever_the_tab_says(monkeypatch):
+    """`handcheck approve --pull` pulls d[0] (operator_pulled): a fine on its row later leaves it pulled, as that
+    pull only ever narrows. A leave out made on the tab (d[1]) is still taken off by a later fine."""
+    ctx, _ = drawn_week(monkeypatch)
+    d = sample_domains(ctx)
+    a0, a1 = ids_of(ctx, d[:2])
+    hand_check.approve(ctx, [a0], "harry")
+    assert hand_check.current(ctx)["payload"]["operator_pulled"] == [a0]
+    decide(ctx, d[0], "fine")
+    decide(ctx, d[1], "leave out")
+    tab.apply(ctx)
+    assert pulled_now(ctx) == [a0, a1]
+    decide(ctx, d[1], "fine")
+    tab.apply(ctx)
+    assert pulled_now(ctx) == [a0]
+    assert enrol.hand_check(ctx, ctx.now_et().date()) == (None, frozenset({a0}))
+
+
 # -- the companies held for doubtful facts ----------------------------------------------------------------------
 
 
 def doubtful_week(monkeypatch, n=3):
-    """No company is ready beyond today's (today's number 14 of 14), so the week's item holds only the n companies
-    verify_accounts holds for doubtful facts (no HQ state): mar-070, mar-071, ..."""
-    monkeypatch.setattr(hand_check, "today_number", lambda ctx: 14)
-    ctx, t = world()
+    """No company is ready at all (with the gate on, the pool tops up from position 1, so none must be ready for a
+    week of doubts alone), so the week's item holds only the n companies verify_accounts holds for doubtful facts (no
+    HQ state): mar-070, mar-071, ..."""
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: 0)
+    ctx, t = world(0)
     ctx.clients.sheets = Sheet(ctx.guard, {"Overrides": []})
     held = [acct(70 + i, status="queued", employees=None, size_band="", hq_state="") for i in range(n)]
     ctx.store.insert("accounts", held)
@@ -582,7 +672,9 @@ def test_the_append_goes_through_the_sheets_api_under_the_header_as_it_stands():
 def test_export_writes_one_judgement_per_decided_row_and_again_changes_nothing():
     """49 decided rows -> 49 facts. Counted from the facts, the 48 random rows are 38 fine, 8 leave out and 2 wrong
     industry (w43_decision), the W43 tally; the doubtful row is told apart by its check. A second export finds the
-    same 49 event ids, so it updates them and adds none. The facts are the ones apply writes."""
+    same 49 event ids, so it updates them and adds none. The facts are the ones apply writes. W43's rows have no
+    gate_version cell and W43 has no item recording one, so the version is unknown, not the one in force at export
+    (which would date the judgement to a gate the company never passed)."""
     dry, _ = w43_world(live=False)
     out = tab.export(dry)
     assert (out["facts"], out["new"], out["written"]) == (49, 49, False) and judgements(dry) == []
@@ -601,7 +693,7 @@ def test_export_writes_one_judgement_per_decided_row_and_again_changes_nothing()
     assert one["value"] == {"week": W43, "row_id": tab.row_id(W43, first["domain"]), "check": tab.SAMPLE,
                             "decision": tab.LEAVE_OUT, "reason": "", "right_label": "", "contact_ok": "",
                             "opener_ok": "", "note": "a law firm's marketing arm",
-                            "gate_version": hand_check.gate_version(ctx),
+                            "gate_version": tab.UNKNOWN_VERSION,
                             "snapshot": {"tier": "Priority", "score": 55, "industry_group": AGENCIES_GROUP,
                                          "industry": "Advertising agencies", "size_band": "20-49", "hq_state": "IL",
                                          "source": "apollo", "label_source": "rules+model"}}
@@ -621,11 +713,28 @@ def test_export_skips_undecided_rows_and_says_why_it_skips_others():
     rows[0]["decision"] = ""  # not judged: not exported
     rows[1]["decision"] = "maybe"  # not a decision
     rows[2]["domain"] = "gone.example"  # no company with this domain (erased since)
+    rows[46]["right_label"] = ""  # a wrong industry apply would not apply: its judgement waits for the label
     out = tab.export(ctx)
-    assert (out["decided"], out["facts"]) == (48, 46)  # 49 - 1 undecided; 48 - 2 skipped
+    assert (out["decided"], out["facts"]) == (48, 45)  # 49 - 1 undecided; 48 - 3 skipped
     assert [(s["domain"], s["why"]) for s in out["skipped"]] == [
         (companies[1]["domain"], "the decision must be one of fine, leave out, wrong industry"),
-        ("gone.example", "no company with this domain")]
+        ("gone.example", "no company with this domain"),
+        (companies[46]["domain"], "pick the right industry in right_label")]
+    assert companies[46]["account_id"] not in {f["account_id"] for f in judgements(ctx)}
+
+
+def test_the_gate_version_is_the_row_s_then_the_draw_s_never_today_s():
+    """The row's own cell first; else what the week's item recorded at the draw; else unknown. A fact written before
+    with a version keeps it when a later pass knows none."""
+    ctx, companies = w43_world()
+    item = {"item_id": "hand_check-2026-W43", "payload": {"gate_version": "drawn:legacy"}}
+    assert tab._version({"gate_version": "cell:legacy"}, item) == "cell:legacy"
+    assert tab._version({"gate_version": ""}, item) == "drawn:legacy"
+    assert tab._version({}, None) == tab.UNKNOWN_VERSION != hand_check.gate_version(ctx)
+    r, a = sheet_rows(ctx)[0], companies[0]
+    ctx.store.upsert("signal_events", [tab.judgement(ctx, r, a, W43, item)])
+    [kept] = tab._keep_first(ctx, [tab.judgement(ctx, r, a, W43)])
+    assert kept["value"]["gate_version"] == "drawn:legacy"
 
 
 def test_handcheck_export_from_the_command_line(capsys):

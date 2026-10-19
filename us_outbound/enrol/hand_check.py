@@ -8,7 +8,10 @@ hand_check_draw, Mondays 05:45 UK (after pick_contacts at 05:30, before enrol at
      queue order (queue.order_key), from position today's number + 1 to today's number + weekly_enrol_cap. Those are
      the accounts the coming send days would take, not today's, so holding them never touches Monday's own enrolment
      (RS §2 W1-5). Before, the sample was dealt across every active industry group, so 18 of W43's 48 rows came from
-     groups rarely emailed (code-approvals-handcheck-copy B5);
+     groups rarely emailed (code-approvals-handcheck-copy B5). While the hand-check holds the whole day (gates()) and
+     fewer than hand_check_sample accounts are ready beyond today's (supply binds: 30 to 60 ready against a number of
+     about 30), the pool is every ready account from position 1: the day waits for the check anyway, so a sample from
+     today's accounts holds nothing the gate does not, and the week is checked as it was before W1-5;
   2. the sample: General hand_check_sample of them (10 by default, Harry's 19 Oct number; his D5 asks for 20, set on
      the sheet), drawn with random.Random(week).sample, so a rerun the same week draws the same;
   3. records the week's item in hitl_items (kind hand_check, item_id "hand_check-{iso_week}", status open): when it was
@@ -18,7 +21,14 @@ hand_check_draw, Mondays 05:45 UK (after pick_contacts at 05:30, before enrol at
      Apollo facts (verify.open_doubts), which wait for a decision as before;
   4. writes one row per company to the Hand-check tab (hand_check_tab.write: appended under every earlier week) and
      posts the Monday notice to the alert channel, linking there. A dry run records the item and posts to the dev
-     channel; a live run posts an item a dry run recorded unposted. A week with nothing to check records no item.
+     channel; a live run posts an item a dry run recorded unposted. A week with nothing to check (no company in the
+     pool and none held for doubtful facts) is recorded live as handled, with payload nothing_to_check, so the gate
+     has nothing to wait for and the readout says 0 picked: with no item at all enrol waited the whole week for a
+     check that could never be drawn, and `handcheck approve` refused it (the W1-5 review, 19 Oct 2026). A dry run
+     records no such item, as it must never open the gate. A run later in the week (`us-outbound run
+     hand_check_draw`) draws again over a week recorded with nothing to check, as the queue may have grown since. The
+     Monday job is the only scheduled draw, so with the gate off a Monday that finds nothing beyond today's number
+     leaves that week unmeasured unless someone runs it again (a known gap).
 
 Harry decides each row on the tab; poll_approvals applies each decision within 5 minutes (hand_check_tab.apply) and
 writes one hand_check judgement fact per row (judged, tally). What waits for him is General hand_check_gate:
@@ -34,8 +44,10 @@ days after the draw (close); a week still open at Wednesday 09:00 UK posts one r
 Without Slack or the tab (operator commands, live with --live alone):
   us-outbound handcheck show                 prints this week's companies; it never writes
   us-outbound handcheck approve [--pull ID]  marks the week's item handled, with the pulled accounts (ids or domains)
-                                             in payload.pulled_account_ids, which enrol leaves out. With no item yet
-                                             it records the week's draw first.
+                                             in payload.pulled_account_ids, which enrol leaves out (and in
+                                             operator_pulled, which no later decision on the tab takes off). With
+                                             no item yet it records the week's draw first, or the week as nothing to
+                                             check.
 """
 
 from __future__ import annotations
@@ -109,12 +121,13 @@ def _clip(text: Any, n: int = QUOTE_LIMIT) -> str:
 # -- the sample ---------------------------------------------------------------------------------
 
 
-def today_number(ctx: Context) -> int:
+def today_number(ctx: Context, errors: list[str] | None = None) -> int:
     """Today's number as enrol works it out (enrol/today.py, limits.today), the owners' campaigns not read from
     Instantly: a paused campaign still counts its owner's slots here, so the number is never below enrol's and the
     sample never reaches into the accounts enrol takes today. When it cannot be worked out (a read failed), the most
     the weekly target gives a send day at its pace (weekly_enrol_cap over the send days, 30 at 150 a week), so the
-    draw still runs and still starts after any account Monday could take."""
+    draw still runs and still starts after any account Monday could take. errors: the failure is added to it, so the
+    draw's summary carries it (number_error) and heartbeat_check tells someone; the log line alone reached nobody."""
     from us_outbound.enrol import today
 
     try:
@@ -124,17 +137,33 @@ def today_number(ctx: Context) -> int:
     except Exception as exc:
         g = ctx.settings.general
         pace = math.ceil(g.weekly_enrol_cap / max(1, len(g.send_window.days)))
-        log("hand_check_number_failed", error=f"{type(exc).__name__}: {str(exc)[:160]}", used=pace)
+        error = f"{type(exc).__name__}: {str(exc)[:160]}"
+        log("hand_check_number_failed", error=error, used=pace)
+        if errors is not None:
+            errors.append(f"today's number could not be worked out ({error}); the draw used {pace}, the weekly pace")
         return pace
 
 
-def pool(ctx: Context, number: int | None = None) -> list[dict]:
-    """The accounts the coming send days would take: the ready accounts in queue order (pick.ready_accounts), from
-    position number + 1 to number + weekly_enrol_cap. number: today's number (today_number when None)."""
+def window(ctx: Context, number: int) -> tuple[int, list[dict]]:
+    """(the first queue position drawn from, the accounts there): the ready accounts in queue order
+    (pick.ready_accounts) from position number + 1 to number + weekly_enrol_cap, the ones the coming send days would
+    take. While the hand-check holds the whole day (gates()) and fewer than hand_check_sample are there, every ready
+    account from position 1 to number + weekly_enrol_cap instead: today's accounts wait for the check anyway, and a
+    pool of none would leave the week with no check for the gate to wait on (the W1-5 review, 19 Oct 2026)."""
     from us_outbound.contacts import pick
 
-    n = today_number(ctx) if number is None else max(0, number)
-    return pick.ready_accounts(ctx)[n : n + ctx.settings.general.weekly_enrol_cap]
+    g = ctx.settings.general
+    n = max(0, number)
+    ready = pick.ready_accounts(ctx)
+    ahead = ready[n : n + g.weekly_enrol_cap]
+    if gates(ctx) and len(ahead) < g.hand_check_sample:
+        return 1, ready[: n + g.weekly_enrol_cap]
+    return n + 1, ahead
+
+
+def pool(ctx: Context, number: int | None = None) -> list[dict]:
+    """The accounts the sample is drawn from (window). number: today's number (today_number when None)."""
+    return window(ctx, today_number(ctx) if number is None else number)[1]
 
 
 def sample_of(candidates: Sequence[dict], week: str, size: int) -> list[dict]:
@@ -204,17 +233,21 @@ def build(ctx: Context, week: str, number: int | None = None) -> dict[str, Any]:
     """The week's payload: the draw with each account's facts, where it was drawn from, and the accounts held for
     doubtful facts."""
     domains, hashes = enrol.suppressed(ctx)
-    n = today_number(ctx) if number is None else max(0, number)
-    candidates = pool(ctx, n)
+    errors: list[str] = []
+    n = today_number(ctx, errors=errors) if number is None else max(0, number)
+    start, candidates = window(ctx, n)
     cap = ctx.settings.general.weekly_enrol_cap
     sample = sample_of(candidates, week, ctx.settings.general.hand_check_sample)
-    return {
+    payload = {
         "iso_week": week, "drawn_at": ctx.now.isoformat(), "sample_size": ctx.settings.general.hand_check_sample,
-        "number_today": n, "positions": [n + 1, n + cap], "pool": len(candidates), "gate_version": gate_version(ctx),
+        "number_today": n, "positions": [start, n + cap], "pool": len(candidates), "gate_version": gate_version(ctx),
         "accounts": [facts(ctx, a, domains, hashes) for a in sample],
         "doubtful": verify.open_doubts(ctx),
         "pulled_account_ids": [], "dry_run": ctx.dry_run, "posted": False,
     }
+    if errors:
+        payload["number_error"] = errors[0]
+    return payload
 
 
 def has_work(payload: Mapping[str, Any]) -> bool:
@@ -332,6 +365,14 @@ def _payload(item: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(p) if isinstance(p, Mapping) else {}
 
 
+def _fresh(ctx: Context, item: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The item as stored now. pull, close and remind each write the whole payload back, so each starts from the
+    stored row, not from a copy read at the start of a pass: two leave outs in one pass both stay pulled, and a pull a
+    later decision took off is not written back when the week closes (the W1-5 review, 19 Oct 2026). An item that
+    is not stored (a dry run's approve) is itself."""
+    return ctx.store.get("hitl_items", item_id=item["item_id"]) or item
+
+
 def drawn_at(item: Mapping[str, Any]) -> datetime | None:
     """When the item's sample was drawn (an item from before 19 Oct 2026: when it was recorded)."""
     return utc(_payload(item).get("drawn_at")) or utc(item.get("created_at"))
@@ -374,6 +415,7 @@ def close(ctx: Context, item: Mapping[str, Any], by: str, *, announce: bool = Tr
     judgements left out, with any pulled before (`handcheck approve --pull`); the sampled companies with no judgement
     are listed as released. announce: post the confirmation to the alert channel when the item was posted (not when
     the week closes on its own after HOLD_DAYS: the Monday readout says so)."""
+    item = _fresh(ctx, item)
     payload = _payload(item)
     week = enrol._item_week(item)
     ids = sample_ids(item)
@@ -392,12 +434,15 @@ def close(ctx: Context, item: Mapping[str, Any], by: str, *, announce: bool = Tr
 
 def pull(ctx: Context, item: Mapping[str, Any] | None, account_id: str, *, out: bool) -> None:
     """Keep the item's pulls in step with a row's latest decision: a leave out adds the company, any other decision
-    takes it off again (a leave out changed to fine is emailed after all)."""
+    takes it off again (a leave out changed to fine is emailed after all). A company pulled with `handcheck approve
+    --pull` (operator_pulled) stays pulled whatever the tab says: that pull only ever narrows."""
     if item is None:
         return
+    item = _fresh(ctx, item)
     payload = _payload(item)
     before = [str(p) for p in payload.get("pulled_account_ids") or ()]
-    after = list(dict.fromkeys([*before, account_id])) if out else [p for p in before if p != account_id]
+    kept = {str(p) for p in payload.get("operator_pulled") or ()}
+    after = list(dict.fromkeys([*before, account_id])) if out else [p for p in before if p != account_id or p in kept]
     if after != before:
         payload["pulled_account_ids"] = after
         ctx.store.upsert("hitl_items", [{"item_id": item["item_id"], "payload": payload}])
@@ -416,6 +461,7 @@ def remind(ctx: Context, item: Mapping[str, Any], waiting: int) -> dict | None:
     and what waits on them. Live only (hand_check_tab.apply runs it only live). None when nothing was posted."""
     from us_outbound.enrol import hand_check_tab as tab
 
+    item = _fresh(ctx, item)
     payload = _payload(item)
     week = enrol._item_week(item)
     when = remind_at(week)
@@ -447,48 +493,70 @@ def _record(ctx: Context, payload: Mapping[str, Any]) -> dict:
     return row
 
 
-def _post(ctx: Context, item: Mapping[str, Any]) -> dict[str, Any]:
+def _record_nothing(ctx: Context, payload: Mapping[str, Any]) -> dict:
+    """The week's item for a week with nothing to check: handled as it is recorded, by the draw, payload
+    nothing_to_check. Live only: it lets a gated day go ahead (enrol.hand_check), which a dry run never may."""
+    row = {"item_id": item_id(payload["iso_week"]), "kind": KIND, "status": "handled", "created_at": ctx.now,
+           "handled_at": ctx.now, "handled_by": JOB, "payload": {**payload, "nothing_to_check": True}}
+    ctx.store.upsert("hitl_items", [row])
+    return row
+
+
+NOTHING = ("nothing to check: no company is ready to email beyond today's, and none is held for doubtful facts")
+
+
+def _post(ctx: Context, item: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(the Monday notice's result, the tab write's): a tab that could not be written is in the run's summary (tab);
+    the next poll_approvals writes the rows (hand_check_tab.apply)."""
     from us_outbound.enrol import hand_check_tab as tab
 
     payload = _payload(item)
-    tab.write(ctx, payload)
+    wrote = tab.write(ctx, payload)
     sent = notify.alert(ctx, notify.mention(ctx) + slack_text(ctx, payload, tab.rows(ctx, payload)))
     payload["posted"] = bool(sent.get("posted")) and ctx.live
     update: dict[str, Any] = {"item_id": item["item_id"], "payload": payload}
     if sent.get("ts"):
         update.update(slack_channel=sent.get("channel"), slack_ts=sent["ts"])
     ctx.store.upsert("hitl_items", [update])
-    return sent
+    return sent, wrote
 
 
 def run(ctx: Context) -> dict:
     """The hand_check_draw job (JOB CONTRACT: run(ctx) -> summary): this week's draw, recorded, written to the tab and
-    posted, once a week."""
+    posted, once a week. A week recorded with nothing to check is drawn again (the queue may have grown since)."""
     week = this_week(ctx)
     summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "iso_week": week}
     item = current(ctx, week)
-    if item is not None and item.get("status") == "handled":
+    nothing_before = item is not None and bool(_payload(item).get("nothing_to_check"))
+    if item is not None and item.get("status") == "handled" and not nothing_before:
         summary.update(item_id=item["item_id"], status="done already", posted=False)
         return summary
-    if item is not None:
+    if item is not None and not nothing_before:
         if ctx.live and not _payload(item).get("posted"):
-            sent = _post(ctx, item)
-            summary.update(item_id=item["item_id"], status="posted", alert=sent)
+            sent, wrote = _post(ctx, item)
+            summary.update(item_id=item["item_id"], status="posted", alert=sent, tab=wrote)
         else:
             summary.update(item_id=item["item_id"], status="posted already" if _payload(item).get("posted")
                            else "recorded; a live run posts it")
         return summary
     payload = build(ctx, week)
-    numbers = {k: payload[k] for k in ("number_today", "positions", "pool", "sample_size")}
+    numbers = {k: payload[k] for k in ("number_today", "positions", "pool", "sample_size", "number_error")
+               if k in payload}
     if not has_work(payload):
-        summary.update(status="nothing to check: no company is ready to email beyond today's, and none is held for "
-                              "doubtful facts", **numbers)
+        summary.update(status=NOTHING, **numbers)
+        if item is not None:
+            summary["item_id"] = item["item_id"]
+        elif ctx.live:
+            summary["item_id"] = _record_nothing(ctx, payload)["item_id"]
         log("hand_check_draw", **summary)
         return summary
+    if item is not None:  # a week recorded with nothing to check: this draw replaces it, open, keeping its pulls
+        before = _payload(item)
+        payload.update({k: list(before.get(k) or ()) for k in ("pulled_account_ids", "operator_pulled")})
     item = _record(ctx, payload)
-    sent = _post(ctx, item)
+    sent, wrote = _post(ctx, item)
     summary.update(item_id=item["item_id"], status="recorded", accounts=len(payload["accounts"]),
-                   doubtful=len(payload["doubtful"]), **numbers, alert=sent)
+                   doubtful=len(payload["doubtful"]), **numbers, alert=sent, tab=wrote)
     log("hand_check_draw", **{k: v for k, v in summary.items() if k != "alert"})
     return summary
 
@@ -525,11 +593,13 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
     it would do.
 
     Every hand_check item of the week is marked (enrol waits for all of them while hand_check_gate is yes); the pulled
-    ids go on each, merged with any pulled before. A pull is an account id or a domain, in the sample or not, and one
-    matching no account is refused (ValueError) before anything is written. With no item yet it records the week's
-    draw itself, the one `handcheck show` printed. Approving clears the doubts of each company held for doubtful facts
-    that was not pulled (verify_accounts then decides on its facts as usual); a missing fact stays until an Overrides
-    row fills it in.
+    ids go on each, merged with any pulled before, and on operator_pulled, so no later decision on the tab takes them
+    off (pull). A pull is an account id or a domain, in the sample or not, and one matching no account is refused
+    (ValueError) before anything is written. With no item yet it records the week's draw itself, the one `handcheck
+    show` printed; with nothing to draw it records the week as nothing to check, handled, so a gated day can go ahead
+    (refusing it left enrol waiting all week with no way out: the W1-5 review, 19 Oct 2026). Approving clears the
+    doubts of each company held for doubtful facts that was not pulled (verify_accounts then decides on its facts as
+    usual); a missing fact stays until an Overrides row fills it in.
     """
     week = this_week(ctx)
     item = current(ctx, week)
@@ -537,8 +607,7 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
     if item is None:
         payload = build(ctx, week)
         if not has_work(payload):
-            raise LookupError(f"nothing to check for {week}: no company is ready to email beyond today's, and none is "
-                              "held for doubtful facts")
+            payload["nothing_to_check"] = True
         item = _record(ctx, payload) if ctx.live else {"item_id": item_id(week), "kind": KIND, "status": "open",
                                                         "payload": payload}
         recorded = True
@@ -555,13 +624,14 @@ def approve(ctx: Context, pulled: Sequence[str], by: str) -> dict:
     rows = [r for r in items(ctx) if enrol._item_week(r) == week and r.get("item_id") != item["item_id"]] + [item]
     before = [x for r in rows for x in (_payload(r).get("pulled_account_ids") or ())]
     all_pulled = list(dict.fromkeys([*before, *ids]))
+    by_hand = list(dict.fromkeys([*(x for r in rows for x in (_payload(r).get("operator_pulled") or ())), *ids]))
     cleared = [d for r in rows for d in (_payload(r).get("doubtful") or ()) if d.get("account_id") not in all_pulled]
     missing = verify.missing_facts(ctx, [d["account_id"] for d in cleared])  # these stay on the check
     message = confirmation(ctx, week, by, all_pulled, len(cleared) - len(missing), len(missing))
     if ctx.live:
         ctx.store.upsert("hitl_items", [
             {"item_id": r["item_id"], "status": "handled", "handled_at": ctx.now, "handled_by": by,
-             "payload": {**_payload(r), "pulled_account_ids": all_pulled}}
+             "payload": {**_payload(r), "pulled_account_ids": all_pulled, "operator_pulled": by_hand}}
             for r in rows
         ])
         verify.clear_doubts(ctx, cleared, by, week)  # the next verify_accounts run decides on their facts
@@ -623,6 +693,9 @@ def readout_lines(ctx: Context, start: datetime) -> tuple[list[str], dict[str, A
     head = ["", "*Hand-check* (companies picked at random from those about to be emailed, judged by hand)"]
     if item is None:
         return [*head, f"  {week_label(week)}: no hand-check was drawn."], {"iso_week": week, "drawn": 0}
+    if _payload(item).get("nothing_to_check"):
+        return ([*head, f"  {week_label(week)}: 0 picked: no company was ready to email beyond that day's number."],
+                {"iso_week": week, "drawn": 0, "nothing_to_check": True})
     ids = sample_ids(item)
     found = judged(ctx, week, ids)
     counts = Counter(str(v.get("decision")) for v in found.values())
