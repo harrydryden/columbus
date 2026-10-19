@@ -481,7 +481,7 @@ def test_accounts_pulled_at_the_hand_check_are_not_enrolled():
     ctx.store.insert("hitl_items", [{"item_id": "hc-1", "kind": "hand_check", "status": "handled",
                                      "created_at": NOW - timedelta(hours=3), "payload": {"pulled_account_ids": ["acc-1"]}}])
     out = enrol.run(ctx)
-    assert out["prepared"] == 2 and out["skipped"]["pulled at this week's hand-check"] == 1
+    assert out["prepared"] == 2 and out["skipped"][enrol.HAND_CHECK_SKIP] == 1
 
 
 # -- the daily number -------------------------------------------------------------------------------

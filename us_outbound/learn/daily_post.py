@@ -334,7 +334,8 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     nums.update(needs_you=waiting_on.counts)
 
     # Today's number, each sender, the budgets (limits.py), and why enrollment waits: enrol's own gates, and
-    # the hand-check only while auto_send = yes (with no, every email is approved in Slack instead).
+    # the hand-check only while auto_send = yes (with no, every email is approved in Slack instead); with
+    # hand_check_gate = no it never waits (enrol.hand_check: only the sampled companies are held).
     lines += ["", "*Today's number*", lim.explanation]
     lines += [f"  {line}" for line in lim.detail]
     if not second.on(ctx.settings):  # when on, limits.py's own line says how many are ready
@@ -493,7 +494,7 @@ def _needs(ctx: Context, w: ForYou) -> list[str]:
         left = hand_check_tab.undecided(ctx, week)
         p = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
         n = left if left is not None else len(p.get("accounts") or ()) + len(p.get("doubtful") or ())
-        then = "; new leads wait for it" if enrol.has_sample(p) and ctx.settings.general.auto_send else ""
+        then = "; new leads wait for it" if hand_check.gates(ctx) else ""
         if n:
             out.append(f"Weekly hand-check: {fmt.plural(n, 'company', 'companies')} still need a decision on the "
                        f"{say.sheet_link(ctx, hand_check_tab.TAB)}{then}")

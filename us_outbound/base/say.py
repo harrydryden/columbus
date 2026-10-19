@@ -67,7 +67,7 @@ JOB_NAMES: dict[str, str] = {
     "suppression_load": "loading the do-not-contact list",
     "lookalikes": "finding companies like our customers",
     "lookalike_leads": "adding lookalike companies",
-    "hand_check_post": "the weekly hand-check",
+    "hand_check_draw": "the weekly hand-check",
     "retention": "deleting old personal data",
     "label_sample_monthly": "the monthly industry label check",
     "unenrol": "removing people from the campaign",

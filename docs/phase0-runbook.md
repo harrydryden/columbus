@@ -124,13 +124,13 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 | :- | :- | :- | :- |
 | Review | Harry | Read the diff before merging to `main` (SPEC 13: Harry reviews before each deploy) | |
 | Deploy | Railway | Merging to `main` builds the Dockerfile and redeploys the worker. The old worker gets SIGTERM and 30 s to finish (`RAILWAY_DEPLOYMENT_DRAINING_SECONDS`) | The service's Deployments tab shows the new deploy as active |
-| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_post show a next run; later-phase jobs show "disabled" |
+| Schedule | jobs | `us-outbound schedule` | settings_sync, mailbox_health, kill_rules, daily_post, heartbeat_check, suppression_load and hand_check_draw show a next run; later-phase jobs show "disabled" |
 | Heartbeats | jobs | After a day: `us-outbound status` | Every phase-0 job shows ok; `heartbeat_check` alerts `#us-outbound-dev` on a missed one |
 
 Scheduled in phase 0 (UK time): settings_sync 02:00 (and 11:30 on weekdays since 4 Oct, so morning
 sheet edits are in force for the 12:00 enrol), suppression_load 01:30, mailbox_health
 07:00, heartbeat_check hourly at :05; and, brought forward for the first sends (Harry, 1 Oct
-2026), kill_rules hourly at :00, daily_post 09:00 (Tuesday to Saturday since 19 Oct 2026) and hand_check_post Mondays 08:00. Later-phase
+2026), kill_rules hourly at :00, daily_post 09:00 (Tuesday to Saturday since 19 Oct 2026) and hand_check_draw Mondays 05:45 (hand_check_post at 08:00 until W1-5). Later-phase
 jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; turning one on is a
 reviewed code change.
 

@@ -34,8 +34,9 @@ missing key, an API error) FAILs with the reason.
                     yes WARNs, as emails are then added to Instantly without approval
   Second contact    the General switch (Harry, 6 Oct 2026; enrol/second.py), for information: off, or on
                     with its size threshold and delay; either PASSes
-  Hand-check        only while auto_send = yes: this week's hand-check approved (enrol waits for it);
-                    with auto_send = no every email is approved in Slack, so the line is left out
+  Hand-check        only while auto_send and hand_check_gate are yes: this week's hand-check approved (enrol
+                    waits for it); with auto_send = no every email is approved in Slack, and with
+                    hand_check_gate = no only the sampled companies wait, so the line is left out
   Enrollment        not stopped by an operator, the stop rule, or a positive reply waiting
   Jobs              the jobs a live send needs are built and scheduled: enrol, sync_outcomes (the
                     kill rules' data), poll_replies (replies and opt-outs), poll_approvals,
@@ -372,8 +373,9 @@ def check_second_contact(ctx: Context) -> Check:
 
 
 def check_hand_check(ctx: Context) -> Check | None:
-    """Only while auto_send = yes: with no, every email is approved in Slack and enrol does not wait for it."""
-    if not ctx.settings.general.auto_send:
+    """Only while auto_send and hand_check_gate are yes: with auto_send = no every email is approved in Slack, and with
+    hand_check_gate = no (D5) the hand-check holds only the companies it sampled, so enrol does not wait for it."""
+    if not (ctx.settings.general.auto_send and ctx.settings.general.hand_check_gate):
         return None
     week = enrol.iso_week(ctx.now_et().date())
     why, pulled = enrol.hand_check(ctx, ctx.now_et().date())

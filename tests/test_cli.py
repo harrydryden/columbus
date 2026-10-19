@@ -113,7 +113,7 @@ def test_dry_run_takes_no_live_flag():
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
-                                               "hand_check_post", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
+                                               "hand_check_draw", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
                                                "blackout", "retention", "label_sample_monthly", "capture"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
@@ -135,7 +135,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
     assert cli.JOBS["blackout"] == "us_outbound.registry.blackout:run"  # Harry, 7 Oct 2026: pause over blackouts
     assert cli.JOBS["daily_post"] == "us_outbound.learn.daily_post:run"
-    assert cli.JOBS["hand_check_post"] == "us_outbound.enrol.hand_check:post"
+    assert cli.JOBS["hand_check_draw"] == "us_outbound.enrol.hand_check:run"  # W1-5: in place of hand_check_post
     assert cli.JOBS["retention"] == "us_outbound.ops.retention:run"  # SPEC 6 and 13
     # Every job but score (no schedule of its own) and the parked ones (built, off the schedule: lookalike_leads,
     # W0, 19 Oct 2026) is expected by the heartbeat check.

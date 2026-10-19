@@ -35,8 +35,9 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      channel, mentioning the approvers, between 13:00 and 23:00 UK (D11 moved the end from 21:00,
      which is 4 pm ET). Once per item.
 Then escalation (SPEC 11), for every kind of human-in-the-loop item:
-  5. Open longer than escalation_hours (24), except the weekly hand-check while auto_send = no
-     (nothing waits for it then): a reply item is forwarded from the mailbox that
+  5. Open longer than escalation_hours (24), except the weekly hand-check while it gates no day's enrolment
+     (auto_send or hand_check_gate no: nothing but its own sample waits for it, and it reminds once on
+     Wednesday itself, enrol/hand_check.remind): a reply item is forwarded from the mailbox that
      received it to escalation_email (harry@spill.chat) through Instantly's forward endpoint, with
      the draft, the Slack link, the HubSpot link and how to act added. Anything else, or a reply
      whose forward fails (PHASE0-CONFIRM that the endpoint exists on our plan), becomes a HubSpot task
@@ -97,7 +98,7 @@ from us_outbound.timeparse import utc
 
 JOB = "poll_approvals"
 SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals/ KIND: never re-posted or escalated here
-HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while auto_send = yes
+HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while it gates the day (gates())
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
 APPROVE_REACTIONS = frozenset({"white_check_mark", "heavy_check_mark"})  # ✅ (and ✔️)
@@ -828,15 +829,17 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
     """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11).
 
     Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals/).
-    So is the weekly hand-check while auto_send = no: every email is approved in Slack then, and nothing
-    waits for the hand-check (enrol/hand_check.py), so a task and a DM every week would ask for nothing.
+    So is the weekly hand-check while it gates no day's enrolment (enrol/hand_check.gates): with auto_send = no
+    every email is approved in Slack, and with hand_check_gate = no (D5) only its sampled companies wait, for 7 days
+    at most, and it posts its own reminder on Wednesday (enrol/hand_check.remind), so a task and a DM every week
+    would ask for nothing more.
     """
     g = ctx.settings.general
     cutoff = ctx.now - timedelta(hours=g.escalation_hours)
     for row in ctx.store.select(TABLE, {"status": OPEN}):
         if row.get("escalated_at") or row.get("kind") == SEND_APPROVAL_KIND:
             continue
-        if row.get("kind") == HAND_CHECK_KIND and not g.auto_send:
+        if row.get("kind") == HAND_CHECK_KIND and not (g.auto_send and g.hand_check_gate):
             continue
         reply = is_reply(row)
         item = ReplyItem(row)

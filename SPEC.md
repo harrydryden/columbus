@@ -580,6 +580,7 @@ One message covering:
   - any kill rule that fired
 ### Weekly hand-check (Monday, before that week's enrolment)
 Ten random queued accounts per active industry group are posted, each with its rendered step-1 email and its evidence. Harry approves them or pulls individual accounts. Enrolment waits until he has.
+  - Harry's D5 (19 Oct 2026; W1-5): the hand-check is a measure, not a gate. `hand_check_draw` (Mondays 05:45 UK) draws General `hand_check_sample` accounts (10 by default; D5 asks for 20) from the ranked accounts the coming send days would take, after today's own, to the Hand-check tab, with a leave-out reason and contact and opener columns. With General `hand_check_gate` = no only the sampled accounts wait, until judged or for 7 days, then they are released and the Monday readout says so; every judgement is kept as a fact, and a changed decision is applied again. `hand_check_gate` = yes (the default until the sheet says no) keeps the gate above.
 ## 12. Learning, kill rules, readout
 ### Copy tests
   - Two versions, split 50/50 by account, running to 400 accounts per version (about six to seven weeks at starting volume).

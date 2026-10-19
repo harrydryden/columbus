@@ -121,8 +121,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Apollo's search and keeps only the active states. It comes back when it searches the active states alone and
     # accounts(domain) is unique (docs/roadmap.md); `us-outbound run lookalike_leads` still runs it by hand.
     ScheduledJob("lookalike_leads", "50 2 1 * *", live=False, enabled=False, timeout_minutes=30, phase=1),
-    # SPEC 11 weekly hand-check, Monday before that week's enrollment (enrol/hand_check.py).
-    ScheduledJob("hand_check_post", "0 8 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
+    # SPEC 11 weekly hand-check (enrol/hand_check.py; W1-5, 19 Oct 2026, in place of hand_check_post at 08:00): the
+    # draw, Mondays at 05:45, after pick_contacts (05:30) has found the morning's contacts and before enrol (12:00),
+    # from the accounts the coming send days would take. It writes the Hand-check tab and posts the Monday notice, so
+    # --live.
+    ScheduledJob("hand_check_draw", "45 5 * * 1", live=True, enabled=True, timeout_minutes=10, phase=1),
     # SPEC 6 and 13: Instantly leads 31 days after their last step (SPEC 9 had it in sync_outcomes), daily at a quiet
     # hour: after Instantly's send window (09:00 to 16:00 US Eastern) and before suppression_load (01:30). It deletes
     # leads in Instantly, so it needs --live, and like every job it stays dry until live_sending = yes

@@ -808,15 +808,26 @@ def active_list(settings: Settings) -> str:
     return "\n".join(f"{g}: {', '.join(names)}" for g, names in groups.items())
 
 
+def corrected_id(week: str, account_id: str) -> str:
+    """The label_corrected fact's event id for a hand-check week's correction: one per account and week."""
+    return f"{CORRECTED_FACT}:{week}:{account_id}"
+
+
 def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: str, via: str, item_id: str = "",
-            card_label: str = "", who: str = "") -> dict:
+            card_label: str = "", who: str = "", week: str = "") -> dict:
     """An approver's label for a company (a card's thread reply, `approvals industry` or `labels set`), live.
 
     The account takes the label as label_source approver (it earns the label's own copy, and the label check,
     relabel and the universe refresh never move it); a label_corrected fact records the change and what the rules
     and the model had said (the gold set and the accuracy numbers read it); and the Overrides tab gets the row
     (domain, industry, label), updated in place when the domain has one, so the next settings_sync keeps it too.
-    A sheet that cannot be written is said in the result; the database keeps the label either way."""
+    A sheet that cannot be written is said in the result; the database keeps the label either way.
+
+    week: the hand-check week of a correction from the Hand-check tab (enrol/hand_check_tab.py). Its fact is one per
+    account and week, upserted (W1-5, 19 Oct 2026; code-approvals-handcheck-copy B3), so a row applied again never
+    puts the same correction into the answer key twice (corrected_rows); and the first fact's "from" side (the label
+    the company went out as, and what the rules and the model said) is kept, as by then the account holds the new
+    label. Without a week every call adds a fact, as before."""
     from us_outbound.clients.guard import GuardViolation
     from us_outbound.clients.http import ApiError
 
@@ -829,9 +840,19 @@ def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: st
     value = {"from": was or None, "from_source": account.get("label_source") or None, "to": label.industry,
              "to_group": label.industry_group, "by": by, "via": via, "item_id": item_id or None,
              "rules": stored.get("rules"), "model": stored.get("model"), "confidence": stored.get("confidence")}
-    ctx.store.insert("signal_events", [{
-        "event_id": new_id(), "account_id": aid, "source": JOB, "fact": CORRECTED_FACT, "value": value,
-        "quote": f"{was or 'no label'} → {label.industry}", "source_url": "", "observed_at": ctx.now}])
+    fact = {"event_id": corrected_id(week, str(aid)) if week else new_id(), "account_id": aid, "source": JOB,
+            "fact": CORRECTED_FACT, "value": value, "quote": f"{was or 'no label'} → {label.industry}",
+            "source_url": "", "observed_at": ctx.now}
+    if week:
+        before = ctx.store.get("signal_events", event_id=fact["event_id"])
+        old = (before or {}).get("value")
+        if isinstance(old, Mapping):  # applied before: the side it went out as stands
+            value.update({k: old.get(k) for k in ("from", "from_source", "rules", "model", "confidence")})
+            fact["quote"] = f"{value['from'] or 'no label'} → {label.industry}"
+            fact["observed_at"] = before.get("observed_at") or ctx.now
+        ctx.store.upsert("signal_events", [fact])
+    else:
+        ctx.store.insert("signal_events", [fact])
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id or not domain:
         sheet = "not written to the Overrides tab (no settings sheet); the database keeps it"

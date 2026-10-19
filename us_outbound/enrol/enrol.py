@@ -6,9 +6,11 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; no positive reply waiting longer than
      escalation_hours (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while
-     the General key auto_send is yes, this week's hand-check approved (SPEC 11). With auto_send
-     = no every email is approved in Slack before it is sent, so the hand-check is not a gate
-     (Harry, 2 Oct 2026); accounts pulled at an approved hand-check are still left out.
+     the General keys auto_send and hand_check_gate are yes, this week's hand-check approved (SPEC 11).
+     With auto_send = no every email is approved in Slack before it is sent, so the hand-check is not a
+     gate (Harry, 2 Oct 2026); with hand_check_gate = no (Harry's D5, 19 Oct 2026) it holds only the
+     companies it sampled until they are judged, for 7 days at most (hand_check()). Accounts pulled at
+     the hand-check are left out either way.
   2. Today's number (queue.daily_number): the weekly target's share for today, each
      sender's free slots after the follow-ups already due (enrol/capacity.py), and the ready
      accounts. The Clay and Apollo budgets are monthly and applied where credits are spent.
@@ -164,44 +166,37 @@ def _item_week(item: Mapping[str, Any]) -> str:
     return iso_week(t.astimezone(UK).date()) if t else ""
 
 
-def has_sample(payload: Any) -> bool:
-    """Whether a hand_check item's payload holds the weekly random sample (per_group > 0). One recorded while
-    auto_send was no holds only the accounts with doubtful facts (per_group 0); an item from before per_group
-    was kept always had the sample."""
-    n = payload.get("per_group") if isinstance(payload, Mapping) else None
-    if n is None:
-        return True
-    try:
-        return int(n) > 0
-    except (TypeError, ValueError):
-        return False
+HAND_CHECK_SKIP = "held or pulled at this week's hand-check"  # account_block's reason for hand_check()'s accounts
 
 
 def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
-    """(why enrollment waits, or None; the account ids Harry pulled). SPEC 11 weekly hand-check.
+    """(why enrollment waits, or None; the account ids it leaves out). SPEC 11 weekly hand-check; Harry's D5.
 
-    This ISO week's hand_check items (payload.iso_week, else created_at) must all be handled.
-    Accounts listed in any of the week's items' payload.pulled_account_ids are not enrolled, whatever the item's
-    status: a pull only ever narrows, and an item re-opened to add the sample keeps its pulls (9 Oct 2026: they were
-    dropped while it was open, so the re-check before a ✅ let a pulled company through). While auto_send
-    is yes the week's items must hold the random sample too: one recorded while auto_send was no
-    (only the doubtful accounts) does not pass the gate until the sample is added (hand_check.py).
-    """
+    The accounts left out are those listed in any of this ISO week's hand_check items' payload.pulled_account_ids,
+    whatever the item's status (a pull with `handcheck approve --pull` only ever narrows: 9 Oct 2026; a leave out on
+    the Hand-check tab is taken off again when its row's decision changes, hand_check.pull), and, while General
+    hand_check_gate is no, the sampled companies still waiting for a judgement (enrol/hand_check.held: drawn under 7
+    days ago, none applied yet). With hand_check_gate = no nothing else waits: the hand-check is a measure, not a gate
+    (D5; on 15 Oct the whole-day gate cost about 21 leads, code-approvals-handcheck-copy B6).
+
+    hand_check_gate = yes (the default until the sheet says no) keeps SPEC 11 as built: this week's hand_check items
+    (payload.iso_week, else created_at) must all be handled, and a week with none has not been posted. A week with
+    nothing to check has its item, recorded handled by the draw (hand_check.run), so it never waits. enrol.run reads
+    the reason only while auto_send is yes."""
+    from us_outbound.enrol import hand_check as weekly
+
     week = iso_week(today)
-    items = [r for r in ctx.store.select("hitl_items", {"kind": "hand_check"}) if _item_week(r) == week]
+    items = [r for r in ctx.store.select("hitl_items", {"kind": weekly.KIND}) if _item_week(r) == week]
     pulled = frozenset(
         str(x)
         for r in items
         if isinstance(r.get("payload"), Mapping)
         for x in (r["payload"].get("pulled_account_ids") or ())
     )
+    if not ctx.settings.general.hand_check_gate:
+        return None, pulled | weekly.held(ctx)
     if not items:
         return f"this week's hand-check ({week}) has not been posted", pulled
-    if ctx.settings.general.auto_send and not any(has_sample(r.get("payload")) for r in items):
-        return (f"this week's hand-check ({week}) has no random sample: it was recorded while auto_send was no, "
-                "so it held only the accounts with doubtful facts. Run `us-outbound run hand_check_post --live` "
-                "to post the sample, or `us-outbound handcheck approve --live` once you have checked it with "
-                "`us-outbound handcheck show`"), pulled
     if any(r.get("status") != "handled" for r in items):
         return f"this week's hand-check ({week}) is not approved yet", pulled
     return None, pulled
@@ -293,7 +288,7 @@ class Gates:
     domains: Collection[str]  # suppressed domains, aliases' roots included
     hashes: Collection[str]  # suppressed email hashes
     partners: Collection[str]
-    pulled: frozenset[str] = frozenset()  # accounts pulled at this week's hand-check
+    pulled: frozenset[str] = frozenset()  # accounts held or pulled at this week's hand-check (hand_check())
     stopped: Collection[str] = frozenset()  # industry groups a kill rule stopped, casefolded (base/holds.py)
     sources: Collection[str] = frozenset()  # email sources a kill rule paused
 
@@ -321,7 +316,7 @@ def account_block(
     if domain in partners:
         return "partner domain"
     if str(account.get("account_id")) in pulled:
-        return "pulled at this week's hand-check"
+        return HAND_CHECK_SKIP
     ind = settings.industry(str(account.get("industry") or ""))
     if ind is not None and not ind.active:
         return "industry switched off"

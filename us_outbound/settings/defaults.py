@@ -60,6 +60,13 @@ _GENERAL: list[tuple[str, str, str]] = [
         "19 Oct 2026).",
     ),
     (
+        "hand_check_gate",
+        "yes",
+        "yes: no new leads go to Instantly in a week until its hand-check is done (every sampled row has a decision). "
+        "no: only the companies picked for the hand-check wait, until you decide each one or for 7 days at most; "
+        "everyone else is emailed as usual. Added by the build (Harry, 19 Oct 2026).",
+    ),
+    (
         "early_warning_pause",
         "no",
         "yes: when the early warning fires (no human reply from 100 companies whose reply window has closed), new "

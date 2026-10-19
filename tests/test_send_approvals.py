@@ -236,7 +236,7 @@ def test_the_hand_check_is_not_a_gate_but_its_pulls_still_count():
     ctx.store.insert("hitl_items", [{"item_id": "hc-1", "kind": "hand_check", "status": "handled",
                                      "created_at": NOW - timedelta(hours=3), "payload": {"pulled_account_ids": ["acc-1"]}}])
     out = enrol.run(ctx)
-    assert out["status"] == "ok" and out["skipped"]["pulled at this week's hand-check"] == 1
+    assert out["status"] == "ok" and out["skipped"][enrol.HAND_CHECK_SKIP] == 1
     assert {r["account_id"] for r in items(ctx)} == {"acc-2", "acc-3"}
 
 

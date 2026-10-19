@@ -1,7 +1,7 @@
 """monday_readout, Mondays 08:30 UK (SPEC 9, 12 "Monday readout"; Harry, 6 Oct 2026: "push ahead with building").
 
 One message to the alert channel (#us-outbound; the dev channel in dry-run, base/notify.py), after the weekly
-hand-check (08:00), about the week before (Monday to Sunday, UK time), written for a reader who may be new (Harry,
+hand-check's draw (05:45), about the week before (Monday to Sunday, UK time), written for a reader who may be new (Harry,
 12 Oct 2026; base/say.py); there is no Monday daily post from 19 Oct 2026. It opens with a short summary: a headline
 that says how many things need someone, last week's numbers, the rates so far, and what needs action. Each
 section then says in a few words what it measures, and anything that needs action says what to do and where. Top
@@ -37,6 +37,9 @@ to bottom:
   * Industry labels (Harry, 7 Oct 2026; labels.py): last week's and all cards with the right industry against the 95%
     target (a rate from 30 cards), the approvers' corrections, how often the rules and the model agreed, and the
     companies held or disqualified.
+  * Hand-check (enrol/hand_check.readout_lines; Harry's D5, 19 Oct 2026): last week's sample, how many were judged
+    and each decision counted, the reasons for leaving out, and the companies sent unjudged (released 7 days after
+    the draw) or still held. Counts only: at 10 to 20 rows a week a rate's interval would be about ±25 points.
   * The signal table's headline (v_signal_value, learn/signal_value.py), as monitoring: a signal below the Control
     tier is listed but is not a "Needs action" item (metrics-audit H5: with equal true rates it flags about 46% of
     signals), and the raise or lower advice is left out.
@@ -517,6 +520,10 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     section, by_cohort = cohorts.readout_lines(ctx, start, end)
     body += section
     body += labels.readout_lines(ctx, start, end)  # the industry label check (labels.py; Harry, 7 Oct 2026)
+    from us_outbound.enrol import hand_check  # imported when used, as mailboxes_ahead imports enrol/today
+
+    checked, by_hand = hand_check.readout_lines(ctx, start)
+    body += checked
     table = signal_value.rows(ctx)
     # Monitoring, not a decision (metrics-audit H5): below_control flags about 46% of signals by chance at these
     # numbers, so it is not a "Needs action" item and the "lower its weight" advice is left out.
@@ -554,6 +561,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "signals_readable": sum(signal_value.verdict(r) != signal_value.TOO_FEW for r in table or []
                                 if int(r.get("accounts_sent") or 0)),
         "tests_at_a_look": at_look,
+        "hand_check": by_hand,
         **by_cohort,  # the counts by enrolment week, and how many settings changes last week
     }
     return lines, nums

@@ -348,13 +348,23 @@ def missing_facts(ctx: Context, account_ids: Iterable[str]) -> set[str]:
     return out
 
 
+def cleared_id(week: str, account_id: str) -> str:
+    """The doubt_cleared fact's event id: one per account and hand-check week."""
+    return f"{CLEARED_FACT}:{week}:{account_id}"
+
+
 def clear_doubts(ctx: Context, items: Iterable[Mapping[str, Any]], by: str, week: str) -> int:
-    """Record that a hand-check cleared each item's doubts (enrol/hand_check.approve)."""
-    rows = [{"event_id": new_id(), "account_id": d["account_id"], "source": DOUBT_SOURCE, "fact": CLEARED_FACT,
-             "value": {"reasons": list(d.get("reasons") or ()), "by": by, "iso_week": week}, "quote": "",
-             "source_url": "", "observed_at": ctx.now} for d in items]
+    """Record that a hand-check cleared each item's doubts (enrol/hand_check.approve, enrol/hand_check_tab.apply).
+
+    One fact per account and week, upserted (W1-5, 19 Oct 2026; code-approvals-handcheck-copy B3): a Hand-check row
+    applied again (its decision changed, or the poll went round again after a later row failed) replaces its fact
+    instead of adding another, so 12 polls in an hour's Sheets outage leave one fact, not 12."""
+    rows = {cleared_id(week, str(d["account_id"])): {
+        "event_id": cleared_id(week, str(d["account_id"])), "account_id": d["account_id"], "source": DOUBT_SOURCE,
+        "fact": CLEARED_FACT, "value": {"reasons": list(d.get("reasons") or ()), "by": by, "iso_week": week},
+        "quote": "", "source_url": "", "observed_at": ctx.now} for d in items}
     if rows:
-        ctx.store.insert("signal_events", rows)
+        ctx.store.upsert("signal_events", list(rows.values()))
     return len(rows)
 
 
