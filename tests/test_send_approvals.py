@@ -958,6 +958,13 @@ def test_an_approved_card_keeps_the_version_it_was_rendered_under():
     jane = ctx.store.get("contacts", contact_id="con-1")
     assert (jane["copy_hash"], jane["config_version"], jane["code_sha"]) == (
         card["copy_hash"], card["config_version"], card["code_sha"])
+    # The W1-6 stamps come from the card's lead, as it was rendered: its subject and each email's hash, not the
+    # reworded row in force at the ✅.
+    import hashlib
+
+    cv = card["lead"]["custom_variables"]
+    assert jane["email1_subject"] == cv["s1_subject"] and jane["arm"] == "ranked"
+    assert jane["email_hashes"] == [hashlib.sha256(cv[f"s{n}_body"].encode()).hexdigest() for n in (1, 2, 3, 4)]
 
 
 def test_a_card_posted_before_the_stamp_leaves_the_contact_unstamped():

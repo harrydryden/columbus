@@ -414,6 +414,7 @@ It is the smallest of:
   - the same calculation for Apollo;
   - the size of the verified queue.
 Of that number, control_share comes from the Control tier. The rest comes from Priority, then Standard, ordered by score, then by size band (20 to 99 first), then by industry priority.
+  - Harry's D7 (19 Oct 2026; W1-6): the Control tier's share gives way to a random explore arm. General `explore_share` (0 by default, at most 0.25; D7 chose 0.15) of the accounts pick_contacts wants is drawn at random from the accounts due, within the Focus shares, and stamped `arm = random`; enrol takes `explore_share` of its number from them, the rest in queue order, a shortfall in either filled from the other. Each contact is stamped with its arm, an A/A sham arm, its industry, group and size band, copy level, email 1's subject and a hash of each email. While `explore_share` is 0 every account is taken in queue order.
 ### Test assignment
   - The version is hash(account_id + test_id) % 2. This is deterministic, so each account's version never changes.
   - Both contacts at an account get the same version.

@@ -22,6 +22,7 @@ from tests.test_render import (
     HARRY_T,
     SAM,
     SUBJECTS,
+    TECH,
     account,
     contact,
     copy_row,
@@ -30,6 +31,7 @@ from tests.test_render import (
 from us_outbound import suppression
 from us_outbound.enrol import enrol, openers, queue
 from us_outbound.logs import hash_email
+from us_outbound.settings.model import Focus
 
 NOW = datetime(2026, 10, 27, 11, 0, tzinfo=UTC)  # Tuesday 11:00 UK, 07:00 ET (ISO week 2026-W44)
 INSTANTLY = "https://api.instantly.ai/api/v2"
@@ -553,24 +555,20 @@ def tiers_of(posted: list[dict]) -> list[str]:
     return [lead["email"].split("@")[1].split(".")[0].rstrip("0123456789").capitalize() for lead in posted]
 
 
-def test_control_share_and_queue_order():
-    ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120)  # 30 today
+def test_queue_order_with_the_tiers_until_they_are_retired():
+    """The Control tier no longer has a share of its own (D7; the random arm replaced it): 30 Priority and 10 Control
+    accounts, 30 today (weekly 120 ÷ 4 send days left), so the 30 Priority, in queue order (tier first, until W2-2)."""
+    ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120)
     out = enrol.run(ctx)
     assert out["number"] == 30 and out["prepared"] == 30
     # In proportion to each owner's pace (cap ÷ 4, rounded up): Harry 15, Hannah 8, Sam 8.
     assert out["by_owner"] == {"Harry Dryden": 14, "Hannah Spalding": 8, "Sam Jackson": 8}
-    assert tiers_of(posted).count("Control") == 5  # 15% of 30, rounded half up
-
-
-def test_a_short_control_tier_is_filled_from_standard():
-    ctx, posted = queue_of({"Control": 1, "Standard": 40}, weekly_enrol_cap=120)
-    assert enrol.run(ctx)["prepared"] == 30
-    assert tiers_of(posted).count("Control") == 1 and len(posted) == 30
+    assert tiers_of(posted).count("Control") == 0
 
 
 def test_short_priority_and_standard_are_filled_from_control():
     ctx, posted = queue_of({"Control": 10, "Priority": 2}, weekly_enrol_cap=12)  # 12 ÷ 4 send days left
-    assert enrol.run(ctx)["prepared"] == 3  # 15% of 3 rounds to no Control, but only 2 others wait
+    assert enrol.run(ctx)["prepared"] == 3  # the 2 Priority, then the first Control in order
     assert sorted(tiers_of(posted)) == ["Control", "Priority", "Priority"]
 
 
@@ -723,12 +721,242 @@ def test_hubspot_opted_out_contact_excludes():
 
 
 def test_hubspot_error_skips_the_account_without_excluding():
+    """A HubSpot outage (500) is a per-candidate failure: each account is skipped, never excluded, and counted in the
+    summary's failures. (Before W1-6 this test sent a 403, which is the wrong key, not an outage: it now ends the run,
+    test_a_hubspot_401_or_403_ends_the_run_with_an_error.)"""
     t = FakeTransport()
     ctx, _ = make(transport=t)
-    t.route("POST", "/crm/v3/objects/companies/search", {"message": "boom"}, status=403)
+    t.route("POST", "/crm/v3/objects/companies/search", {"message": "boom"}, status=500)
     out = enrol.run(ctx)
     assert out["prepared"] == 0 and out["skipped"]["HubSpot check failed"] == 3
+    assert out["failures"] == {"HubSpot check failed": 3} and out["candidates"] == 3
     assert ctx.store.get("accounts", account_id="acc-1")["tier"] == "Priority"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_hubspot_401_or_403_ends_the_run_with_an_error(status):
+    """M2 (code-contacts-enrol; enrol.py 718-721 before W1-6): the wrong key failed every account as "HubSpot check
+    failed" and the day read as an ok run that enrolled nobody. An AuthError now ends the run before any add, so its
+    heartbeat is an error and job_errors reports it."""
+    from us_outbound.clients.http import AuthError
+    from us_outbound.ops import heartbeat
+
+    t = FakeTransport()
+    ctx, _ = make(live=True, settings=make_settings(live_sending=True), transport=t)
+    t.route("POST", "/crm/v3/objects/companies/search", {"message": "expired"}, status=status)
+    with pytest.raises(AuthError):
+        heartbeat.run_job(ctx, enrol.run)
+    [row] = ctx.store.select("heartbeats")
+    assert row["status"] == "error" and row["error"].startswith("AuthError: hubspot HTTP")
+    assert instantly_posts(t) == []  # prepare runs before any add
+    assert {a["status"] for a in ctx.store.select("accounts")} == {"verified"}
+
+
+def test_hubspot_down_for_every_candidate_is_a_job_errors_finding():
+    """25 candidates, HubSpot answering 500 to each: enrolled 0, failures {"HubSpot check failed": 25} beside
+    candidates 25, so job_errors raises a failures finding (25 >= 3 and 25 >= 50% of 25) instead of the day reading as
+    an ok run with errors == []. Today's number: weekly_enrol_cap 100 ÷ 4 send days left on Tuesday = 25."""
+    from us_outbound.ops import job_errors
+
+    ctx, posted, _ = explore_world(0, 25)
+    ctx.clients.transport.route("POST", "/crm/v3/objects/companies/search", {"message": "down"}, status=500)
+    out = enrol.run(ctx)
+    assert (out["number"], out["candidates"], out["enrolled"], out["prepared"]) == (25, 25, 0, 0)
+    assert out["failures"] == {"HubSpot check failed": 25} and out["errors"] == []
+    [finding] = job_errors.findings("enrol", {"status": "ok", "detail": out})
+    assert finding.kind == "failures" and finding.count == 25
+
+
+def test_copy_blocks_count_as_failures():
+    bodies = {**BODIES, 1: BODIES[1].replace("{{opener}}", "{{opener}} {{nickname}}")}
+    bad = make_settings(copy=(copy_row("agencies-v1", AGENCIES, bodies=bodies), COPY[1]))
+    ctx, _ = make(settings=bad, accounts=[account()], contacts=[contact()])
+    out = enrol.run(ctx)
+    assert out["failures"] == {"copy blocked": 1} and out["candidates"] == 1
+
+
+# -- an add Instantly never answers (W1-6; code-contacts-enrol M3) ------------------------------------------------
+
+
+def test_an_unanswered_add_is_looked_up_twice_and_the_leads_found_are_recorded(monkeypatch):
+    """A ReadTimeout on Harry's add (4 leads); the campaign lists none of them 30 s later and 3 of them after another
+    60 s: those 3 are recorded with today's enrolled_at, the 4th stays verified with its contact kept, one errors
+    line, two lookups; Hannah's add (2 leads) goes ahead and is recorded. Before W1-6 the OSError escaped run(), after
+    the add may have happened, and nothing of the run was recorded."""
+    import requests
+
+    waits: list[float] = []
+    monkeypatch.setattr(enrol, "_sleep", waits.append)
+    harry = [account(account_id=f"h{i}", domain=f"h{i}.com", sender="Harry Dryden") for i in range(4)]
+    hannah = [account(account_id=f"n{i}", domain=f"n{i}.com", sender="Hannah Spalding") for i in range(2)]
+    cons = [contact(contact_id=f"k-{a['account_id']}", account_id=a["account_id"], email=f"jo@{a['domain']}")
+            for a in harry + hannah]
+    t = FakeTransport()
+    ctx, _ = make(live=True, settings=make_settings(live_sending=True), transport=t, accounts=harry + hannah,
+                  contacts=cons)
+
+    def add(req):
+        if req.json["campaign_id"] == "c-harry":
+            raise requests.ReadTimeout("read timed out")
+        return added(req)
+
+    lookups: list[str] = []
+
+    def listed(req):
+        lookups.append(req.json["campaign"])
+        if req.json["campaign"] == "c-harry" and lookups.count("c-harry") >= 2:
+            return {"items": [{"id": f"lead-h{i}", "email": f"jo@h{i}.com", "campaign": "c-harry"} for i in range(3)]}
+        return {"items": []}
+
+    t.route("POST", "/leads/add", fn=add)
+    t.route("POST", "/leads/list", fn=listed)
+    out = enrol.run(ctx)
+    assert waits == [30, 60] and lookups == ["c-harry", "c-harry"]
+    assert out["enrolled"] == 5 and out["by_owner"] == {"Harry Dryden": 3, "Hannah Spalding": 2}
+    assert out["skipped"][enrol.ADD_UNKNOWN] == 1
+    [line] = out["errors"]
+    assert line.startswith("US Outbound – Harry Dryden: Instantly did not answer the add (ReadTimeout")
+    assert "3 of 4 leads found" in line
+    cons = rows(ctx, "contacts", "contact_id")
+    for i in range(3):
+        assert (cons[f"k-h{i}"]["instantly_lead_id"], cons[f"k-h{i}"]["enrolled_at"]) == (f"lead-h{i}", ctx.now)
+    assert cons["k-h3"].get("instantly_lead_id") is None and not cons["k-h3"].get("suppressed")
+    accts = rows(ctx, "accounts", "account_id")
+    assert accts["h3"]["status"] == "verified" and {accts[f"n{i}"]["status"] for i in range(2)} == {"enrolled"}
+    assert {accts[f"h{i}"]["status"] for i in range(3)} == {"enrolled"}
+
+
+def test_an_unanswered_add_found_at_the_first_lookup_is_not_looked_up_again(monkeypatch):
+    import requests
+
+    waits: list[float] = []
+    monkeypatch.setattr(enrol, "_sleep", waits.append)
+    t = FakeTransport()
+    ctx, _ = make(live=True, settings=make_settings(live_sending=True), transport=t, accounts=[account()],
+                  contacts=[contact()])
+    t.route("POST", "/leads/add", fn=lambda req: (_ for _ in ()).throw(requests.ConnectionError("reset")))
+    t.route("POST", "/leads/list", fn=lambda req: {"items": [
+        {"id": "lead-j", "email": "jane@acmecreative.com", "campaign": req.json["campaign"]}]})
+    out = enrol.run(ctx)
+    assert waits == [30] and out["enrolled"] == 1 and len(out["errors"]) == 1
+    assert ctx.store.get("contacts", contact_id="con-1")["instantly_lead_id"] == "lead-j"
+
+
+# -- the random explore arm (W1-6; Harry's D7: rank by score plus a random arm in place of the Control tier) ---------
+
+
+def explore_world(n_random: int, n_ranked: int, *, live: bool = False, **general):
+    """A queue of n_random accounts pick drew into the random arm (accounts.arm = random, low scores) and n_ranked in
+    score order (Priority, scores 60 up), each with a sendable contact. weekly_enrol_cap 100 on Tuesday, 4 send days
+    left: today's number is 25. Returns (ctx, the leads posted, the accounts in queue order)."""
+    general = {"weekly_enrol_cap": 100, **general}
+    accts = [account(account_id=f"rnd{i}", domain=f"rnd{i}.com", tier="Control", score=i, angle="General",
+                     arm=queue.RANDOM) for i in range(n_random)]
+    accts += [account(account_id=f"rank{i:02d}", domain=f"rank{i:02d}.com", score=60 + i) for i in range(n_ranked)]
+    cons = [contact(contact_id=f"k-{a['account_id']}", account_id=a["account_id"], email=f"x@{a['domain']}")
+            for a in accts]
+    s = make_settings(live_sending=live, **general)
+    ctx, _ = make(live=live, settings=s, accounts=accts, contacts=cons)
+    posted: list[dict] = []
+    add_leads = ctx.clients.instantly.add_leads
+    ctx.clients.instantly.add_leads = lambda campaign, leads: posted.extend(leads) or add_leads(campaign, leads)
+    return ctx, posted, sorted(accts, key=lambda a: queue.order_key(a, s))
+
+
+def ids_of(posted: list[dict]) -> list[str]:
+    return [lead["email"].split("@")[1].removesuffix(".com") for lead in posted]
+
+
+def test_explore_share_0_the_default_walks_today_s_queue_order():
+    """explore_share 0 (no General row): no random walk, so the 25 prepared are the first 25 in queue order, every
+    contact stamped with its account's arm. 60 ranked and 5 random-arm accounts ready (drawn while the share was above
+    0); rnd0 is Priority with the top score, so it is first in queue order and walked there, not after the ranked ones
+    (the other four, Control with scores 1-4, come last and are not reached). The Control tier's 15% (control_share)
+    is gone with D7: before W1-6, 4 of the 25 (0.15 × 25 = 3.75 → 4) were taken from the Control tier first."""
+    ctx, posted, ordered = explore_world(5, 60, live=True)
+    ctx.store.update("accounts", {"account_id": "rnd0"}, {"tier": "Priority", "score": 999})
+    ordered = sorted(ctx.store.select("accounts"), key=lambda a: queue.order_key(a, ctx.settings))
+    assert ctx.settings.general.explore_share == 0.0 and ordered[0]["account_id"] == "rnd0"
+    out = enrol.run(ctx)
+    assert (out["number"], out["prepared"], out["enrolled"]) == (25, 25, 25)
+    assert sorted(ids_of(posted)) == sorted(a["account_id"] for a in ordered[:25])
+    assert out["explore"] == {"share": 0.0, "drawn_ready": 0, "target": 0, "prepared": 1}
+    enrolled = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
+    assert len(enrolled) == 25 and enrolled.pop("rnd0") == queue.RANDOM and set(enrolled.values()) == {queue.RANKED}
+
+
+def test_the_random_arm_takes_its_share_and_the_rest_go_in_queue_order():
+    """explore_share 0.15, n = 25, 5 random-arm accounts ready and 60 ranked: n_random = explore_count(25, 0.15, 5) =
+    round(3.75) = 4, the first 4 random ones in queue order (scores 4, 3, 2, 1); the other 21 are the top 21 ranked
+    (scores 119 down to 99). Each contact carries its account's arm."""
+    ctx, posted, ordered = explore_world(5, 60, live=True, explore_share=0.15)
+    out = enrol.run(ctx)
+    assert (out["prepared"], out["enrolled"]) == (25, 25)
+    assert out["explore"] == {"share": 0.15, "drawn_ready": 5, "target": 4, "prepared": 4}
+    want = {f"rnd{i}" for i in (4, 3, 2, 1)} | {f"rank{i:02d}" for i in range(59, 38, -1)}
+    assert set(ids_of(posted)) == want
+    arms = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
+    assert sorted(a for a, arm in arms.items() if arm == queue.RANDOM) == ["rnd1", "rnd2", "rnd3", "rnd4"]
+    assert sum(arm == queue.RANKED for arm in arms.values()) == 21
+
+
+def test_no_random_arm_ready_means_every_place_goes_in_order():
+    ctx, posted, ordered = explore_world(0, 60, explore_share=0.15)
+    out = enrol.run(ctx)
+    assert out["prepared"] == 25 and out["explore"]["target"] == 0
+    assert sorted(ids_of(posted)) == sorted(a["account_id"] for a in ordered[:25])
+
+
+def test_a_short_random_arm_is_filled_from_the_ranked_and_a_short_ranked_from_the_random():
+    # 1 random-arm account and 40 ranked, n = 30 (weekly 120 ÷ 4): explore_count(30, 0.15, 1) = min(5, 1) = 1, so 1
+    # random and 29 ranked.
+    ctx, posted, _ = explore_world(1, 40, explore_share=0.15, weekly_enrol_cap=120)
+    out = enrol.run(ctx)
+    assert out["prepared"] == 30 and sum(i.startswith("rnd") for i in ids_of(posted)) == 1
+    # 10 random-arm accounts and 2 ranked, n = 3 (weekly 12 ÷ 4): explore_count(3, 0.15, 10) = 0 (0.45 rounds to 0
+    # and 3 < 4), the 2 ranked, then the shortfall of 1 from the random arm: 3 prepared.
+    ctx, posted, _ = explore_world(10, 2, explore_share=0.15, weekly_enrol_cap=12)
+    out = enrol.run(ctx)
+    assert out["prepared"] == 3 and sorted(i[:3] for i in ids_of(posted)) == ["ran", "ran", "rnd"]
+
+
+def test_the_random_walk_ignores_the_focus_quota_but_counts_against_it():
+    """Focus 100% Technology & Startups. The random-arm accounts are agencies (pick drew them within the Focus shares
+    of their day): the random walk takes 4 of them whatever the quota says, and the ranked walk then takes the Focus
+    group's 21 (rank accounts are agencies too, held by the quota, then filled at the end): 25 prepared."""
+    focus = (Focus(TECH, 1.0),)
+    ctx, posted, _ = explore_world(5, 60, explore_share=0.15, focus=focus)
+    out = enrol.run(ctx)
+    assert out["prepared"] == 25 and sum(i.startswith("rnd") for i in ids_of(posted)) == 4
+
+
+# -- what a contact was enrolled as (W1-6; code-contacts-enrol L6) ------------------------------------------------
+
+
+def test_each_contact_is_stamped_with_what_it_was_enrolled_as():
+    import hashlib
+
+    from us_outbound import labels
+
+    ctx, t = make(live=True)
+    enrol.run(ctx)
+    posts = {lead["email"]: lead for r in instantly_posts(t) for lead in r.json["leads"]}
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    cv = posts["jane@acmecreative.com"]["custom_variables"]
+    assert jane["arm"] == queue.RANKED  # accounts.arm unset (picked before the arm existed) reads as ranked
+    assert jane["sham_arm"] == queue.sham_arm("acc-1") and jane["sham_arm"] in ("a", "b")
+    assert (jane["industry_at_enrol"], jane["industry_group_at_enrol"], jane["size_band_at_enrol"]) == (
+        "Advertising agencies", AGENCIES, "50-99")
+    # No label check recorded on the account: the group's copy (labels.copy_level; the label_source comment).
+    assert jane["copy_level"] == labels.GROUP_COPY == "group"
+    assert jane["email1_subject"] == cv["s1_subject"] == "Support for the Acme Creative team"
+    want = [hashlib.sha256(cv[f"s{n}_body"].encode()).hexdigest() for n in (1, 2, 3, 4)]
+    assert jane["email_hashes"] == want and len(set(want)) == 4
+    # A relabel afterwards moves the account, never the contact's stamp.
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {"industry": "Fintech", "industry_group": TECH,
+                                                           "size_band": "100-249"})
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert (jane["industry_group_at_enrol"], jane["size_band_at_enrol"]) == (AGENCIES, "50-99")
 
 
 # -- copy ---------------------------------------------------------------------------------------------

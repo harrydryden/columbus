@@ -6,6 +6,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime, timedelta
 
+from tests.fakes import sendable_general_copy
 from tests.test_daily_post import MON, TUE_9, ev, world
 from tests.test_registry import HANNAH
 from us_outbound.learn import daily_post, daily_report
@@ -14,6 +15,13 @@ from us_outbound.settings.model import Focus
 SAT_9 = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # 09:00 UK (BST), Sat 24 Oct: the post covers Fri 23 alone
 SECTIONS = ("*Sent and outcomes*", "*Approvals*", "*Found*", "*Pipeline*", "*To improve*", "*Today's number*",
             "*Sources*", "*Mailboxes*", "*Kill rules and items waiting*")
+
+
+def default_settings_copy():
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    return validate_all(default_tabs())[0].copy
 
 
 def with_auto_send(ctx, value):
@@ -34,6 +42,8 @@ def person(cid, aid, **kw):
 def funnel(now=TUE_9, auto_send=None, approvals=True):
     """world() plus a pipeline: new, queued, verified, ready, waiting, enrolled and finished accounts."""
     ctx, t = world(now=now)
+    # The General Copy rows sendable, as on the live sheet: pick.waiting counts only accounts enrol could email (W1-6).
+    ctx.settings = dataclasses.replace(ctx.settings, copy=sendable_general_copy(default_settings_copy()))
     ctx.store.insert("accounts", [
         # Found yesterday: two from Apollo, one named; tiers as the rescore left them.
         acct("n1", source="apollo", tier="Priority", status="queued", size_band="20-49", first_seen=MON),

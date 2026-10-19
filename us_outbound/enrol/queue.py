@@ -9,10 +9,12 @@ Today's number is the smallest of (Harry, 30 Sep 2026):
 SPEC 9 also listed the Clay and Apollo budgets here. The enrol job spends neither, so they
 are applied where credits are spent (source_universe, verify_in_clay, pick_contacts); when
 they bind, it shows up here as too few ready accounts, and ops/limits.py says so.
-Of that number, control_share comes from the Control tier; the rest from Priority, then
-Standard, ordered by score, then size band (20 to 99 first), then industry priority. A
-shortfall in either is filled from the other, so capacity is never left idle while verified
-accounts wait.
+Of that number, explore_share comes from the random explore arm (Harry's D7, 19 Oct 2026, in place of the Control
+tier's control_share): the accounts pick_contacts drew at random from the eligible queue, within the Focus shares
+(split), and stamped accounts.arm = random. The rest are taken in order: tier (until the tiers are retired), score,
+size band (20 to 99 first), then industry priority. A shortfall in either is filled from the other, so capacity is
+never left idle while verified accounts wait. explore_share is 0 until Harry sets it on the General tab, and while
+it is 0 there is no random arm: every account is taken in order.
 
 SPEC 9 "Test assignment": the version is hash(account_id + test_id) % 2, so an account's
 version never changes and both contacts at an account get the same one.
@@ -25,17 +27,26 @@ sender's accounts wait rather than move to someone else.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+import random
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from us_outbound import parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
+from us_outbound.enrol import focus
 from us_outbound.settings.model import Settings
 
-MIN_N_FOR_CONTROL = 4  # from 4 a day, at least one Control account when there are any
+MIN_N_FOR_EXPLORE = 4  # from 4 a day, at least one random-arm account while the share is above 0 and there are any
 QUEUE_TIERS = ("Priority", "Standard", "Control")
 CONTROL = "Control"
+# accounts.arm and contacts.arm (the W1-C columns): drawn at random from the eligible queue, or taken in score order.
+# NULL (picked or enrolled before the arm existed) reads as ranked.
+RANDOM, RANKED = "random", "ranked"
+# The A/A label's key (RT §4.3): fresh, and hashed with a prefix no other split uses (test_version, the opener holdout
+# and the subject arm each hash the account id with their own), so the sham arms cut across every real split.
+SHAM_PREFIX, SHAM_KEY = "sham:", "2026-10-19"
 TIER_RANK = {"Priority": 0, "Standard": 1, "Control": 2}
 # SPEC 9: size band 20 to 99 first; then 100-249, then 10-19 (as v_queue orders them).
 SIZE_BAND_RANK = {"20-49": 0, "50-99": 0, "100-249": 1, "10-19": 2}
@@ -75,14 +86,71 @@ def order_key(row: Mapping[str, Any], settings: Settings) -> tuple:
     )
 
 
-def control_count(n: int, settings: Settings, control_available: int) -> int:
-    """control_share of n, rounded half up; at least 1 once n >= 4; never more than there are."""
-    if n <= 0 or control_available <= 0:
+def explore_count(n: int, settings: Settings, available: int) -> int:
+    """explore_share of n, rounded half up; at least 1 once n >= 4 while the share is above 0; never more than are
+    available, nor more than n; 0 while the share is 0 (the default: no random arm).
+
+    The Control tier's count, on the new key: a new key with default 0, not a rename of control_share, which is
+    retired, so a sheet without the row (or a rollback) changes nothing (RS P0-2)."""
+    share = Decimal(str(settings.general.explore_share))
+    if n <= 0 or available <= 0 or share <= 0:
         return 0
-    want = int((Decimal(str(settings.general.control_share)) * n).quantize(Decimal(1), rounding=ROUND_HALF_UP))
-    if n >= MIN_N_FOR_CONTROL:
+    want = int((share * n).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    if n >= MIN_N_FOR_EXPLORE:
         want = max(want, 1)
-    return min(want, control_available, n)
+    return min(want, available, n)
+
+
+def apportion(k: int, shares: Mapping[str, float]) -> dict[str, int]:
+    """k places shared out in proportion to shares by largest remainder: each group the whole part of k × its share,
+    then one more each to the largest fractions until k are given (ties to the larger share, then the order given).
+
+    Focus 50/30/20 and k = 9: 4.5, 2.7 and 1.8 give 4, 2 and 1 (7 places), and the 2 left go to the two largest
+    fractions, 0.8 and 0.7: 4, 3 and 2. The shares are normalised first, so they need not sum to 1."""
+    total = sum(v for v in shares.values() if v > 0)
+    if k <= 0 or total <= 0:
+        return {g: 0 for g in shares}
+    order = list(shares)
+    exact = {g: k * max(0.0, shares[g]) / total for g in order}
+    out = {g: int(exact[g]) for g in order}
+    by_fraction = sorted(order, key=lambda g: (-(exact[g] - out[g]), -shares[g], order.index(g)))
+    for g in by_fraction[: k - sum(out.values())]:
+        out[g] += 1
+    return out
+
+
+def split(rows: Sequence[Mapping[str, Any]], settings: Settings, seed: str, k: int) -> tuple[list[dict], list[dict]]:
+    """(the random arm, the rest in order): k of rows drawn at random, stratified by Focus group, and the others
+    sorted by order_key.
+
+    With Focus rows, each group's places are apportion(k, its share) (focus.shares: a group not on the Focus tab is in
+    "other", which holds what the listed groups leave), drawn uniformly within the group. A group with fewer rows than
+    places gives what it has, and the places it cannot fill go to the ranked rest, never to another group, so the
+    random arm's mix is the Focus mix and a difference between the arms is the ranking, not the mix (RT §4.1). With
+    no Focus rows, k are drawn uniformly from all of them. random.Random(seed): a rerun on the same day draws the same.
+    The random arm keeps the order it was drawn in."""
+    ordered = sorted((dict(r) for r in rows), key=lambda r: order_key(r, settings))
+    k = max(0, min(k, len(ordered)))
+    rng = random.Random(seed)
+    picked: list[dict] = []
+    if k and not settings.focus:
+        picked = rng.sample(ordered, k)
+    elif k:
+        by_group: dict[str, list[dict]] = defaultdict(list)
+        for r in ordered:
+            by_group[focus.key_for(r, settings)].append(r)
+        for group, places in apportion(k, focus.shares(settings)).items():
+            pool = by_group.get(group, [])
+            picked += rng.sample(pool, min(places, len(pool)))
+    drawn = {str(r.get("account_id")) for r in picked}
+    return picked, [r for r in ordered if str(r.get("account_id")) not in drawn]
+
+
+def sham_arm(account_id: Any) -> str:
+    """"a" or "b", the parity of sha256("sham:" + account_id + SHAM_KEY): an A/A label that changes nothing about the
+    contact (RT §4.3), so a report split on it shows how far the pipeline alone moves a rate."""
+    h = int(hashlib.sha256((SHAM_PREFIX + str(account_id) + SHAM_KEY).encode()).hexdigest(), 16)
+    return "a" if h % 2 == 0 else "b"
 
 
 # -- test versions (SPEC 9, 12) ----------------------------------------------------------------
