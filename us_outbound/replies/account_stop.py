@@ -48,6 +48,9 @@ A stop the guard refuses (W1-2, 19 Oct 2026; code-replies-crm L2): Instantly.del
 in the campaign stored for the contact. Until then the GuardViolation failed sync_outcomes, a safety job, after its
 writes and again every 15 minutes, as the marker was never written. Now the marker is written with source
 guard_refused, the contact is listed once under the summary's refused, and the next run makes no call for them.
+That run also puts one line under the summary's errors, so heartbeat_check (ops/job_errors.py) posts it once (W1-2
+review): the lead was due to stop, sits in a campaign other than the stored one and may still be sending, and the
+marker means no later run tries again, so a person must stop it in Instantly. Before, the failed run said so.
 
 Dry-run: it counts what it would stop, calls nothing and writes nothing.
 """
@@ -175,6 +178,9 @@ def sweep(ctx: Context) -> dict:
             how, refused = REFUSED_SOURCE, str(exc)[:160]
             if len(out["refused"]) < LIST_LIMIT:
                 out["refused"].append({"contact_id": cid, "account_id": c.get("account_id"), "why": refused})
+            if len(out["errors"]) < LIST_LIMIT:  # told once: the marker below means no run tries again
+                out["errors"].append(f"{cid}: not stopped, the guard refused it ({refused}); its lead may still be "
+                                     f"sending: stop it by hand in Instantly")
             log("account_stop_refused", run_id=ctx.run_id, contact_id=cid, error=refused)
         except (ApiError, LookupError, ConfigError) as exc:  # tried again by the next run
             if len(out["errors"]) < LIST_LIMIT:

@@ -327,6 +327,20 @@ def test_a_warm_reply_that_also_asks_to_stop_is_suppressed_first_and_still_reach
     [alert] = [x for x in world.slack_posts if x.get("blocks")]
     text = "\n".join(b["text"]["text"] for b in alert["blocks"])
     assert f"*Worth knowing:*\n• *{poll.ALSO_STOP}*" in text
+    assert "Claude was not sure" not in text  # 0.9 is at or over MIN_CONFIDENCE (0.7)
+
+
+def test_a_kept_class_on_a_weak_read_says_the_model_was_unsure(world):
+    """W1-2 review: a class kept because they asked to stop is kept at any confidence (0.3 here, under 0.7), and then
+    counts as an engaged company; the alert says the read was weak."""
+    world.sdk.answer = classification("positive", confidence=0.3)
+    world.reply("E1", text=WARM_AND_STOP)
+    run(world)
+    p = only_item(world)["payload"]
+    assert (p["reply_class"], p["confidence"], p["also_asked_to_stop"]) == ("positive", 0.3, True)
+    [alert] = [x for x in world.slack_posts if x.get("blocks")]
+    text = "\n".join(b["text"]["text"] for b in alert["blocks"])
+    assert "Claude was not sure: it read this as " in text and "at only 30%, kept only because they also" in text
 
 
 def test_the_same_reply_with_the_model_timing_out_is_an_unsubscribe_and_no_item(world):

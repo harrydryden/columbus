@@ -381,8 +381,20 @@ def test_a_warm_reply_that_asked_to_stop_is_opted_out_in_hubspot_too(default_set
     assert crm.unsubscribed == ["jane.doe%40acmecreative.com"]
     [task] = crm.objects["tasks"].values()
     assert "They also asked to be taken off the list, so they are suppressed" in task["hs_task_body"]
+    # Nothing to approve (W1-2 review: the task said the desk would not send, then asked for the ✅).
+    assert "Approve the answer" not in task["hs_task_body"] and "✅" not in task["hs_task_body"]
+    assert task["hs_task_body"].endswith("Never reply to the prospect from harry@spill.chat.")
     hw.record_reply(ctx, item(ctx))
     assert crm.unsubscribed == ["jane.doe%40acmecreative.com"]  # once
+
+
+def test_a_contact_hubspot_has_opted_out_already_is_not_unsubscribed_again(default_settings):
+    """W1-2 review: the opt-out was sent whatever HubSpot had, so an answer refusing an address it had unsubscribed
+    already would fail the write every 5 minutes. HubSpot's own hs_email_optout is read first, as optout.py does."""
+    ctx, t, crm = world(default_settings, row=reply_row(also_asked_to_stop=True))
+    crm.add("contacts", {"email": JANE, "firstname": "Jane", "hs_email_optout": "true"})
+    out = hw.record_reply(ctx, item(ctx))
+    assert out["status"] == "written" and out["opted_out"] is True and crm.unsubscribed == []
 
 
 def test_owner_over_someone_elses_is_refused_by_the_guard(default_settings):

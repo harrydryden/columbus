@@ -16,7 +16,10 @@ record_reply() is SPEC 11 "HubSpot writes" for one positive or referral reply it
      no CONNECTED among its options, confirmed 7 Oct 2026) and hubspot_owner_id = Harry, each only where it is empty;
   5. a deal (ensure_deal) when the reply asks for a demo; hubspot_readback does the same for bookings.
 A warm reply that also asked to be taken off the list (replies/poll.py also_asked_to_stop) is opted out in
-HubSpot too once its contact exists there, so a contact created here is never left subscribed.
+HubSpot too once its contact exists there, so a contact created here is never left subscribed; a contact HubSpot
+already has opted out (hs_email_optout, as replies/optout.py checks) is not unsubscribed again, so HubSpot answering
+an address it has already unsubscribed can never fail the write every run. Its task says to answer by hand: the desk
+will not send to a suppressed address, so it does not offer the approval.
 Only standard properties are sent: the identity fields of a new record (name and domain; email, first and
 last name and job title) and the three empty-only fields; the guard refuses anything else
 (clients/guard.py). SPEC 11's six us_outbound_* custom properties are not written (Harry's D9, W1-2): they
@@ -219,14 +222,16 @@ def task_text(item: Any, account: Mapping[str, Any], person: Mapping[str, Any], 
     body = ""
     if emailed:
         body = f"{_titled(person)} replied for {_titled(emailed)}, the person we emailed. "
-    if isinstance(item, ReplyItem) and item.payload.get("also_asked_to_stop"):
+    if isinstance(item, ReplyItem) and item.payload.get("also_asked_to_stop"):  # nothing to approve (W1-2 review)
         body += ("They also asked to be taken off the list, so they are suppressed: the desk will not send to them. "
                  f"Answer them by hand from {item.mailbox}, or lift the suppression knowingly. ")
-    body += (
-        f"Approve the answer in the #us-outbound thread (react ✅ or reply \"send\"; \"edit: <text>\" changes it), "
-        f"or run `us-outbound replies approve {item.short_id} --live`. It goes from {item.mailbox}, signed by "
-        f"{item.owner or 'its owner'}. Never reply to the prospect from {escalation_email}."
-    )
+    else:
+        body += (
+            f"Approve the answer in the #us-outbound thread (react ✅ or reply \"send\"; \"edit: <text>\" changes "
+            f"it), or run `us-outbound replies approve {item.short_id} --live`. It goes from {item.mailbox}, signed by "
+            f"{item.owner or 'its owner'}. "
+        )
+    body += f"Never reply to the prospect from {escalation_email}."
     if item.referral.get("name") or item.referral.get("email"):
         body += " They referred us to " + ", ".join(v for v in item.referral.values() if v) + "."
     return subject, body
@@ -360,7 +365,10 @@ def record_reply(ctx: Context, item: Any) -> dict:
         hs.associate("contacts", contact_id, "companies", company_id)
         out["associated"] = True
     if item.payload.get("also_asked_to_stop") and not out.get("opted_out"):
-        hs.unsubscribe(person["email"])  # they asked to stop: the contact HubSpot now has is opted out too
+        # They asked to stop: the contact HubSpot now has is opted out too, unless HubSpot has it opted out already.
+        have = hs.get_record("contacts", contact_id, ("hs_email_optout",)) or {}
+        if str((have.get("properties") or {}).get("hs_email_optout") or "").lower() != "true":
+            hs.unsubscribe(person["email"])
         out["opted_out"] = True
     save()
 

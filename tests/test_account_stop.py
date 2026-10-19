@@ -19,7 +19,8 @@ def test_a_lead_no_longer_in_its_stored_campaign_is_marked_once_and_the_run_goes
     out = outcomes.run(w.ctx)  # no exception: sync_outcomes finishes
     stops = out["account_stops"]
     # Jane's delete is refused by the client's own check (her lead is in another campaign); Omar's goes through.
-    assert stops["to_stop"] == 2 and stops["stopped"] == {"deleted": 1} and stops["errors"] == []
+    assert stops["to_stop"] == 2 and stops["stopped"] == {"deleted": 1}
+    assert [e.split(":", 1)[0] for e in stops["errors"]] == ["k-jane"]  # told once (the test below)
     assert [r["contact_id"] for r in stops["refused"]] == ["k-jane"]
     assert "not in campaign" in stops["refused"][0]["why"]
     assert deleted(w) == ["L-omar"]
@@ -31,3 +32,25 @@ def test_a_lead_no_longer_in_its_stored_campaign_is_marked_once_and_the_run_goes
     again = account_stop.sweep(w.ctx)
     assert again == {"to_stop": 0, "stopped": {}, "errors": [], "refused": []}
     assert [r for r in w.transport.requests[before:] if "/leads/" in r.url] == []
+
+
+def test_a_refused_stop_is_posted_once_by_heartbeat_check(default_settings):
+    """W1-2 review: the refused stop was listed only under refused, which ops/job_errors.py does not read, so the
+    safety signal the failed run used to give went silent. The run that writes the marker also puts one line under
+    errors (heartbeat_check posts it); the next run makes no call and says nothing."""
+    from us_outbound.ops import job_errors
+    from us_outbound.ops.heartbeat import run_job
+
+    w = in_flight_world(default_settings)
+    w.lead("L-jane", JANE, 1, campaign="cmp-harry")
+    hubspot_opts_out(w, JANE)
+    first = run_job(w.ctx, outcomes.run)["account_stops"]
+    [line] = first["errors"]
+    assert line.startswith("k-jane: not stopped, the guard refused it (") and "stop it by hand in Instantly" in line
+    [hb] = [r for r in w.ctx.store.tables["heartbeats"] if r["job"] == "sync_outcomes"]
+    [finding] = job_errors.findings("sync_outcomes", hb)
+    assert (finding.kind, finding.texts) == ("errors", [line])
+    second = run_job(w.ctx, outcomes.run)["account_stops"]
+    assert (second["to_stop"], second["errors"], second["refused"]) == (0, [], [])
+    [hb] = [r for r in w.ctx.store.tables["heartbeats"] if r["job"] == "sync_outcomes"]
+    assert job_errors.findings("sync_outcomes", hb) == []

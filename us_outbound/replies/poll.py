@@ -627,6 +627,12 @@ def _notes(p: Mapping[str, Any]) -> list[str]:
     elif p.get("reply_class") == "other" and p.get("model_class") not in (None, "", "other"):
         notes.append(f"Claude was not sure: it read this as {_esc(desk.class_label(p['model_class']))} at "
                      f"{float(p.get('confidence') or 0):.0%}, too unsure to count, so it is marked Unclear.")
+    elif p.get("also_asked_to_stop") and float(p.get("confidence") or 0) < classify.MIN_CONFIDENCE:
+        # A class kept because they asked to stop is kept at any confidence (classify.from_answer): say when the
+        # model was unsure, as it then counts as an engaged company on a weak read (W1-2 review).
+        notes.append(f"Claude was not sure: it read this as {_esc(desk.class_label(str(p.get('reply_class'))))} at "
+                     f"only {float(p.get('confidence') or 0):.0%}, kept only because they also asked to stop: "
+                     f"read the reply yourself.")
     if p.get("sequence_may_continue"):
         notes.append("Instantly may still send them the rest of the email sequence (it took this for an automatic "
                      "reply, or could not match it to the lead): "

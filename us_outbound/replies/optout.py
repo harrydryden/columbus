@@ -24,8 +24,11 @@ The first time an opt-out is seen (live), the contact's open reply items are clo
 code-replies-crm M1): handled, the replied event's approval "skipped" by "opt_out", and a note on the item.
 Until then a draft approved after the person asked to stop still went to them. The item for the very email
 being handled (keep_item) is left open: a warm reply that also asked to be taken off the list still needs a
-person to answer it by hand (replies/poll.py). The reply desk refuses to send to a suppressed address either
-way (replies/desk.send_reply), so this only spares Harry an approval that can no longer be sent.
+person to answer it by hand (replies/poll.py). So is such an item (payload also_asked_to_stop) when a later click
+on Instantly's unsubscribe link is what is recorded (W1-2 review): the item was opened knowing they asked to be taken
+off the list, and the click says that again, not that the answer by hand is no longer wanted. A later reply asking to
+stop closes it like any other. The reply desk refuses to send to a suppressed address either way
+(replies/desk.send_reply), so this only spares Harry an approval that can no longer be sent.
 
 Only hashes are logged. SPEC 13: opt-outs are honored the same day.
 """
@@ -113,8 +116,10 @@ def close_items(ctx: Context, contact: Mapping[str, Any] | None, *, keep: str | 
     cid = str((contact or {}).get("contact_id") or "")
     if not cid:
         return []
+    link_click = marker.startswith(lead_marker(""))  # the unsubscribe link, read by sync_outcomes
     rows = [r for r in ctx.store.select(TABLE, {"contact_id": cid, "status": list(ACTIONABLE)})
-            if is_reply(r) and str(r.get("item_id")) != (keep or "")]
+            if is_reply(r) and str(r.get("item_id")) != (keep or "")
+            and not (link_click and (r.get("payload") or {}).get("also_asked_to_stop"))]
     closed = []
     for row in rows:
         item = ReplyItem(row)

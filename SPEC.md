@@ -558,7 +558,7 @@ The reply goes out through Instantly's reply endpoint from the mailbox the prosp
 3.  Add the reply as a note, and a task for Harry due today.
 4.  Set lifecyclestage = lead, hs_lead_status = CONNECTED and hubspot_owner_id = Harry, each only if it is empty.
 5.  Deal. If demo_requested is true, or hubspot_readback sees a meeting booked on Harry's demo link or the website booking page, create one deal named "US Outbound – {clean_name}" in pipeline "Spill 3.0" at its first stage. Only do this if the company has no open deal.
-The six properties, in the group "US Outbound":
+The six properties, in the group "US Outbound" (not written: Harry's D9, W1-2, 19 Oct 2026. They were never created in the portal, so every write naming them failed, and nothing read them; the reply writes send standard properties only, crm/hubspot_writes.py):
 |  |  |
 | :- | :- |
 | **Object** | **Property** |

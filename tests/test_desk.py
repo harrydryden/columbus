@@ -318,6 +318,22 @@ def test_an_opt_out_leaves_the_item_for_the_email_it_came_in(settings):
     assert row_of(ctx)["status"] == "open"
 
 
+def test_a_link_click_leaves_open_an_item_that_already_asked_to_stop(settings):
+    """W1-2 review: the item was opened flagged also_asked_to_stop, to be answered by hand; a later click on
+    Instantly's unsubscribe link (sync_outcomes: marker unsubscribed:lead:..., no keep_item) says the same again, so
+    it stays open. A later reply asking to stop (marker unsubscribed:{email id}) closes it like any other."""
+    from us_outbound.replies import optout
+
+    ctx, *_ = desk_world(settings, row=reply_row(also_asked_to_stop=True))
+    contact = ctx.store.get("contacts", contact_id="con-1")
+    args = dict(addresses=[contact["email"]], contact=contact, account_id="acc-1", mailbox=HANNAH, occurred_at=NOW,
+                source="instantly")
+    optout.opt_out(ctx, marker=optout.lead_marker("lead-1"), **args)
+    assert row_of(ctx)["status"] == "open" and "closed_by_opt_out" not in row_of(ctx)["payload"]
+    optout.opt_out(ctx, marker=optout.reply_marker("em-9"), **{**args, "source": "reply"})
+    assert (row_of(ctx)["status"], row_of(ctx)["handled_by"]) == ("handled", "opt_out")
+
+
 def test_send_reply_refuses_an_address_suppressed_since(settings):
     """M1: the item is still open (the warm reply that also asked to stop, or a suppression from HubSpot's opt-out
     list since), and an approver ticks it: nothing goes, why suppressed_since, one thread note, the tick is spent."""
