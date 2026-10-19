@@ -119,6 +119,25 @@ MISSING = frozenset({NO_STATE, NO_SIZE, NO_INDUSTRY})
 LABEL_REASONS = frozenset({"no Industries label", "industry switched off"})
 OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 
+# Why an account was not verified, as a code for accounts.status_reason (the W1-C contracts commit, 19 Oct 2026),
+# each with what the code does to the account. Defined here, once, before the packages that write the column are
+# built side by side; nothing reads or writes these yet. Today a failed check only counts, so the same never-pass
+# accounts are checked again every run and a transient failure looks like a permanent one (RS P0-3):
+#   terminal     disqualified for good, tiered Excluded: the company cannot become ICP on facts it will not shed
+#   parked       out of the queue while a setting keeps it out (an industry switched off), looked at again when the
+#                setting changes; label_failed only after repeated failures of the label check under one hash
+#   recheck      disqualified, and checked again after recheck_after (an open deal or another owner may end: D22)
+#   transient    nothing changes: the next run tries again (no label call left this run, a HubSpot error)
+TERMINAL, PARKED, RECHECK, TRANSIENT = "terminal", "parked", "recheck", "transient"
+REASON_CODES: dict[str, str] = {
+    **dict.fromkeys(("size", "state", "state_unknown", "partner", "suppressed", "public_body", "association",
+                     "label_other", "no_label", "incomplete", "hubspot_customer", "hubspot_opted_out",
+                     "hubspot_bounced", "hand_check", "declined"), TERMINAL),
+    **dict.fromkeys(("industry_off", "label_failed"), PARKED),
+    **dict.fromkeys(("hubspot_open_deal", "hubspot_owner"), RECHECK),
+    **dict.fromkeys(("label_not_checked", "hubspot_check_failed"), TRANSIENT),
+}
+
 
 def _lower(v: Any) -> str:
     return str(v or "").strip().lower()

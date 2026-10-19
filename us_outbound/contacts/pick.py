@@ -168,8 +168,12 @@ def lookahead(settings: Settings) -> int:
     return LOOKAHEAD_SEND_DAYS * math.ceil(settings.general.weekly_enrol_cap / days)
 
 
-def waiting(ctx: Context) -> tuple[list[dict], int]:
-    """(the accounts enrol could take that have no sendable contact, in queue order; how many already have one)."""
+def _split(ctx: Context) -> tuple[list[dict], list[dict]]:
+    """(the accounts enrol could take with no sendable contact; those with one), each in queue order.
+
+    One read of the verified queue, its contacts, the suppression list and the partners serves both lists, so
+    ready_accounts() and waiting() can never disagree about which account is which.
+    """
     s, store = ctx.settings, ctx.store
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
     domains, hashes = enrol.suppressed(ctx)
@@ -178,16 +182,35 @@ def waiting(ctx: Context) -> tuple[list[dict], int]:
     for chunk in _chunks([a["account_id"] for a in accounts]):
         for c in store.select("contacts", {"account_id": list(chunk)}):
             contacts[c["account_id"]].append(c)
-    need, ready = [], 0
+    need, ready = [], []
     for a in accounts:
         if enrol.account_block(a, s, domains, partners, frozenset()):
             continue
         if any(enrol.contact_block(c, domains, hashes) is None for c in contacts.get(a["account_id"], [])):
-            ready += 1
+            ready.append(a)
         else:
             need.append(a)
     need.sort(key=lambda a: queue.order_key(a, s))
+    ready.sort(key=lambda a: queue.order_key(a, s))
     return need, ready
+
+
+def ready_accounts(ctx: Context) -> list[dict]:
+    """The accounts enrol could take that already have a sendable contact, in queue order (queue.order_key).
+
+    The contract later packages build on (the W1-C contracts commit, 19 Oct 2026): sourcing counts them as ready
+    supply, and the weekly hand-check draws its sample from the positions enrol would reach on the coming send days,
+    so both need the accounts themselves and in enrol's order, not only how many there are.
+    """
+    return _split(ctx)[1]
+
+
+def waiting(ctx: Context) -> tuple[list[dict], int]:
+    """(the accounts enrol could take that have no sendable contact, in queue order; how many already have one).
+
+    The count is len(ready_accounts(ctx)), from the same read."""
+    need, ready = _split(ctx)
+    return need, len(ready)
 
 
 @dataclass

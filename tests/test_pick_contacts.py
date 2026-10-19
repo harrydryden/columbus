@@ -383,6 +383,27 @@ def test_only_the_next_two_send_days_and_only_accounts_without_a_sendable_contac
     assert pick.run(ctx)["reason"] == "enough accounts are ready for the next two send days"
 
 
+def test_ready_accounts_are_the_ones_with_a_sendable_contact_in_queue_order(ctx):
+    """The W1-C contract (19 Oct 2026): ready_accounts(ctx) is the ready set itself, in enrol's order, and waiting()
+    is built on the same read. Four verified Priority accounts: b (score 90) and a (40) have a sendable contact; c (70)
+    has only a contact in CA, whom enrol may never email (SPEC 1.5), so it still needs one; d (99) has a sendable
+    contact but is a partner, which enrol never takes. queue.order_key is tier, then score high first, so the ready
+    set is [b, a] (90 before 40), waiting() is ([c], 2), and d is in neither."""
+    ctx.store.insert("accounts", [
+        account(account_id="acc-a", domain="a.com", score=40),
+        account(account_id="acc-b", domain="b.com", score=90),
+        account(account_id="acc-c", domain="c.com", score=70),
+        account(account_id="acc-d", domain="d.com", score=99),
+    ])
+    ctx.store.insert("partners", [{"domain": "d.com", "name": "D", "reason": "a partner"}])
+    ctx.store.insert("contacts", [
+        {"contact_id": f"k-{x}", "account_id": f"acc-{x}", "email": f"jo@{x}.com", "email_status": "verified",
+         "person_state": "CA" if x == "c" else "NY", "title": "CEO"} for x in "abcd"])
+    assert [a["account_id"] for a in pick.ready_accounts(ctx)] == ["acc-b", "acc-a"]
+    need, ready = pick.waiting(ctx)
+    assert ([a["account_id"] for a in need], ready) == (["acc-c"], 2)
+
+
 def test_dry_run_writes_contacts_and_makes_only_apollo_reads(ctx, transport):
     assert ctx.dry_run
     setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())

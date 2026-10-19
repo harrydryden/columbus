@@ -305,16 +305,17 @@ def test_general_note_rows_are_not_stored(ctx, sheet):
 
 
 def test_a_key_the_code_does_not_know_never_makes_the_version_in_force_unusable(ctx, sheet):
-    """RS P0-2, the rollback case: Harry adds a row for a key a newer package reads (explore_share), the sync stores
-    it, and the code in force does not know it. load_current used to reject General, so every job stopped; it reads
-    the version in force leniently now, and the row is just not read."""
+    """RS P0-2, the rollback case: Harry adds a row for a key a newer package reads (live_split, a Wave 3 key; W1-C
+    made explore_share known, 19 Oct 2026), the sync stores it, and the code in force does not know it. load_current
+    used to reject General, so every job stopped; it reads the version in force leniently now, and the row is just
+    not read."""
     sync.run(ctx)
-    ctx.store.upsert("settings", [{"tab": "General", "key": "explore_share", "values": {
-        "key": "explore_share", "value": "0.15", "note": ""}, "effective_from": T2, "effective_to": None,
+    ctx.store.upsert("settings", [{"tab": "General", "key": "live_split", "values": {
+        "key": "live_split", "value": "both", "note": ""}, "effective_from": T2, "effective_to": None,
         "synced_at": T2}])
     settings, errors = sync.load_current(ctx.store)
     assert settings is not None and not any(errors.values())
-    assert not hasattr(settings.general, "explore_share")
+    assert not hasattr(settings.general, "live_split")
 
 
 def test_the_sync_lists_the_general_rows_it_does_not_read_and_posts_the_unknown_ones_weekly(ctx, sheet):

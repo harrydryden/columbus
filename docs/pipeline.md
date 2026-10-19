@@ -484,7 +484,7 @@ The copy doesn't change, only the gaps. The readout counts a reply for a week af
 | Who | Roles | Titles and who comes first by company size |
 | What counts | Signals | Weights, new keyword signals on an existing source, Hold and Exclude rules |
 | A single company | Overrides | Any field for one domain, winning over every source |
-| Mix | General: `auto_thresholds` (yes: the thresholds follow the queue each day, `scoring/balance.py`), `priority_threshold`, `standard_threshold` (used while it is no), `control_share` | How tiers are cut, and the share kept for the control group |
+| Mix | General: `auto_thresholds` (yes: the thresholds follow the queue each day, `scoring/balance.py`), `priority_threshold`, `standard_threshold` (used while it is no). `control_share` is retired (19 Oct 2026): the Control share stays at 0.15 until `explore_share` (default 0, at most 0.25) replaces it with a random arm | How tiers are cut, and the share kept for the control group |
 
 **Adding the two new tabs to your sheet.** Add a tab named `Focus` with the header row `industry_group | share | note`, and a tab named `Named accounts` with `domain | name | note`. Until they exist, the sync reads them as empty and carries on.
 

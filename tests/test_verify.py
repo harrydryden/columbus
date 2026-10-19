@@ -691,3 +691,23 @@ def test_an_overrides_row_with_only_the_group_places_the_company_under_the_group
     assert (a["industry"], a["industry_group"], a["label_source"]) == (
         "Marketing & Creative Agencies", "Marketing & Creative Agencies", "override")
     assert sdk.calls == []
+
+
+def test_the_reason_codes_contract_splits_every_code_into_one_kind():
+    """The W1-C contract (19 Oct 2026; RS P0-3): accounts.status_reason codes, each with what it does to the account,
+    defined before the packages that write them. A transient failure (no label call left, a HubSpot error) must never
+    be filed as terminal, and an industry switched off is parked, never disqualified for good: those are the two
+    mistakes that would lose companies for good (the ~50 of 13 Oct). 15 terminal + 2 parked + 2 re-checkable + 2
+    transient = 21 codes."""
+    by_kind: dict[str, set[str]] = {}
+    for code, kind in verify.REASON_CODES.items():
+        by_kind.setdefault(kind, set()).add(code)
+    assert by_kind == {
+        verify.TERMINAL: {"size", "state", "state_unknown", "partner", "suppressed", "public_body", "association",
+                          "label_other", "no_label", "incomplete", "hubspot_customer", "hubspot_opted_out",
+                          "hubspot_bounced", "hand_check", "declined"},
+        verify.PARKED: {"industry_off", "label_failed"},
+        verify.RECHECK: {"hubspot_open_deal", "hubspot_owner"},
+        verify.TRANSIENT: {"label_not_checked", "hubspot_check_failed"},
+    }
+    assert len(verify.REASON_CODES) == 21

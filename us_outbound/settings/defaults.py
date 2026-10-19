@@ -44,7 +44,27 @@ _GENERAL: list[tuple[str, str, str]] = [
         "to Instantly once the weekly hand-check is approved. Nothing goes out while live_sending is no.",
     ),
     ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company, and a second contact (second_contact) counts too. Each send day takes what is left of it ÷ the send days left in the week."),
-    ("control_share", "0.15", "Share of each day's enrollment taken from the Control tier."),
+    # control_share is retired (settings/validate.RETIRED_GENERAL; Harry, 19 Oct 2026): explore_share takes its
+    # place as a new key, at 0, so `settings load` removes the old row and adds the new one without starting the arm.
+    (
+        "explore_share",
+        "0",
+        "Share of each day's new companies picked at random from the ready queue, within the Focus shares, instead "
+        "of in score order, so replies can show whether the score helps (contacts.arm). 0: none, every company in "
+        "score order. At most 0.25. Added by the build (Harry, 19 Oct 2026).",
+    ),
+    (
+        "hand_check_sample",
+        "10",
+        "How many companies the weekly hand-check asks you to judge, from 1 to 50. Added by the build (Harry, "
+        "19 Oct 2026).",
+    ),
+    (
+        "early_warning_pause",
+        "no",
+        "yes: when the early warning fires (no human reply from 100 companies whose reply window has closed), new "
+        "enrolment pauses as well as the alert. no: the alert only. Added by the build (Harry, 19 Oct 2026).",
+    ),
     ("priority_threshold", "50", "Score at or above this is Priority. Used only while auto_thresholds is no."),
     ("standard_threshold", "20", "Score at or above this is Standard; below it is Control. Used only while "
      "auto_thresholds is no."),
