@@ -22,15 +22,19 @@ The decisions:
   * wrong industry  the industry in right_label is set as an approver's correction (labels.correct: the account, a
                     label_corrected fact and the Overrides tab), and its doubts are cleared.
 
-poll_approvals (every 5 minutes) runs apply. Each decided row is applied, one at a time, and its own applied cell is
-written as soon as it is done, with a hash of (decision, reason, right_label); a row is applied again whenever that
-hash changes, so a later change is never lost (code-approvals-handcheck-copy B1). A decision that cannot be applied
+poll_approvals (every 5 minutes) runs apply. It first draws the week if its Monday draw did not happen
+(hand_check.catch_up). Each decided row is applied, one at a time, and its own applied cell is written as soon as it
+is done, with a hash of (decision, reason, right_label); a row is applied again whenever that hash changes, so a
+later change is never lost (code-approvals-handcheck-copy B1). A decision that cannot be applied
 (a wrong industry with no right_label, a decision not on the list) leaves applied blank and says why in note, and the
 company stays held; one whose domain has no company says so and counts as settled (B2). Every applied row writes one
 hand_check judgement fact (hand_check.event_id: one per account and week, upserted), so a row applied twice is still
 one fact, and so are the doubt and label facts it writes (B3); a fine is recorded like any other (B4). Errors go to
 hand_check_errors, a list heartbeat_check reads (ops/job_errors.py), and never stop poll_approvals: a Sheets failure
-ends the pass there, and the next poll goes on from the row it stopped at.
+ends the pass there, and the next poll goes on from the row it stopped at (a row done whose cell could not be
+written is listed as unmarked, not applied: the next poll applies it again, to the same end). The two columns the old
+tab had for a missing fact (right_hq_state, right_employees, kept by migrate-tab where they hold a value) are not read:
+a row applied with a value in either says so in its applied cell, as the fact belongs on the Overrides tab.
 
 A week closes (hand_check.close) once every sampled row is applied or settled, or HOLD_DAYS after the draw; a week
 still open at Wednesday 09:00 UK posts one reminder (hand_check.remind).
@@ -39,8 +43,8 @@ Rows applied before 19 Oct 2026 carry no hash; one whose applied text matches it
 fact is written and the hash added, and nothing is done to the company again.
 
 `us-outbound handcheck migrate-tab [--live]` (migrate) moves a tab still under the old 15 columns (OLD_COLUMNS) to
-COLUMNS once, after a backup tab; `us-outbound handcheck export --live` (export) copies every decided row into the
-database as judgement facts without applying anything (W0).
+COLUMNS once, after a backup tab that is never overwritten; `us-outbound handcheck export --live` (export) copies
+every decided row into the database as judgement facts without applying anything (W0).
 """
 
 from __future__ import annotations
@@ -55,7 +59,7 @@ from us_outbound import labels, verify
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.sheets import a1_tab, column_letter, read_tab, write_tab
-from us_outbound.context import Context
+from us_outbound.context import UK, Context
 from us_outbound.enrol.hand_check import (
     DECISIONS,
     DOUBT,
@@ -85,6 +89,9 @@ BY = "the Hand-check tab"
 NOT_DONE = "not done: "
 NOTE_JOIN = " — "  # between Harry's note and the code's "not done: ..."
 NO_COMPANY = "no company with this domain"
+# The old tab's columns for a missing fact: migrate keeps them where they hold a value, and apply never reads them.
+NOT_READ = ("right_hq_state", "right_employees")
+NOT_READ_NOTE = "not read: put the fact on the Overrides tab"
 # A company already emailed (the statuses past verify; sources/apollo_universe.FURTHER_STATUSES): a leave out records,
 # it changes nothing.
 EMAILED = frozenset({"enrolled", "engaged", "demo_requested", "demo_booked"})
@@ -465,6 +472,13 @@ def _adopt(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | None) -
     return True
 
 
+def _not_read(r: Mapping[str, Any]) -> str:
+    """What the applied cell adds when a column apply never reads (NOT_READ) holds a value: a value typed there after
+    the move is otherwise ignored with no word (the W1-5 review, round 2)."""
+    typed = [c for c in NOT_READ if str(r.get(c) or "").strip()]
+    return f"; {' and '.join(typed)} {'are' if len(typed) > 1 else 'is'} {NOT_READ_NOTE}" if typed else ""
+
+
 def _write(ctx: Context, sheet_id: str, r: dict, cells: Mapping[str, str]) -> None:
     """Write the cells that change on this row, and keep them on r so the rest of the pass reads the tab as it is."""
     change = {k: v for k, v in cells.items() if str(r.get(k) or "") != v}
@@ -490,12 +504,27 @@ def apply(ctx: Context) -> dict[str, Any]:
     Never raises but a GuardViolation: poll_approvals goes on, and every failure is in hand_check_errors."""
     from us_outbound.enrol import hand_check
 
-    out: dict[str, Any] = {"applied": [], "not_done": [], "adopted": 0, "closed": [], "hand_check_errors": []}
+    out: dict[str, Any] = {"applied": [], "not_done": [], "unmarked": [], "adopted": 0, "closed": [],
+                           "hand_check_errors": []}
     errors: list[str] = out["hand_check_errors"]
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         return out
     week = hand_check.this_week(ctx)
+    if ctx.live:
+        try:
+            drew = hand_check.catch_up(ctx)
+            if drew is not None:
+                out["drawn"] = drew.get("status")
+                if drew.get("number_error"):
+                    errors.append(f"the catch-up draw: {drew['number_error']}")
+        except GuardViolation:
+            raise
+        except Exception as exc:  # the draw's trouble: the decisions on the tab are still applied
+            errors.append(f"the catch-up draw: {type(exc).__name__}: {str(exc)[:160]}")
+            log("hand_check_catch_up_failed", error=errors[-1])
+    # Read after the catch-up draw, so the week it recorded is here. close() and remind() each start from the item as
+    # stored (hand_check._fresh), so the pulls the rows make in the pass below are never written over by this copy.
     by_week = _by_week(ctx)
     try:
         tab = read_tab(ctx.clients.sheets, sheet_id, TAB) or []
@@ -534,20 +563,23 @@ def apply(ctx: Context) -> dict[str, Any]:
             errors.append(f"{rid}: {type(exc).__name__}: {str(exc)[:160]}")
             continue
         if got.done:
-            cells = {"applied": f"{got.done} · {_hash(r)}", "note": _harrys(r.get("note"))}
-            out["applied"].append(rid)
+            cells = {"applied": f"{got.done}{_not_read(r)} · {_hash(r)}", "note": _harrys(r.get("note"))}
         else:
             cells = {"applied": "", "note": _with_why(r.get("note"), got.why)}
-            out["not_done"].append(rid)
         try:
             _write(ctx, sheet_id, r, cells)
         except GuardViolation:
             raise
         except ValueError as exc:  # this row's id is on the tab twice, or a column is missing: the others go on
             errors.append(f"{rid}: {str(exc)[:160]}")
+            out["unmarked"].append(rid)
+            continue
         except (ApiError, OSError) as exc:  # the sheet is failing: stop here; the next poll goes on from this row
             errors.append(f"{rid}: the {TAB} tab could not be written ({type(exc).__name__}: {str(exc)[:120]})")
+            out["unmarked"].append(rid)
             break
+        # Listed once its cell says so: a row done whose cell failed is applied again at the next poll (unmarked).
+        out["applied" if got.done else "not_done"].append(rid)
     if adopted:
         try:
             ctx.clients.sheets.update_rows(sheet_id, TAB, "id", adopted)
@@ -559,16 +591,14 @@ def apply(ctx: Context) -> dict[str, Any]:
         except Exception as exc:
             errors.append(f"marking {len(adopted)} earlier rows: {type(exc).__name__}: {str(exc)[:120]}")
     try:
-        # The items as the rows just left them: each row's pull wrote its item, and closing from the copy read before
-        # the loop would put back a pull a later decision took off (the W1-5 review, 19 Oct 2026).
-        _close_and_remind(ctx, tab, _by_week(ctx), week, out)
+        _close_and_remind(ctx, tab, by_week, week, out)
     except GuardViolation:
         raise
     except Exception as exc:
         errors.append(f"closing the week: {type(exc).__name__}: {str(exc)[:160]}")
-    if out["applied"] or out["closed"] or out["adopted"] or errors:
+    if out["applied"] or out["closed"] or out["adopted"] or out["unmarked"] or errors:
         log("hand_check_tab", run_id=ctx.run_id, week=week, applied=out["applied"], not_done=out["not_done"],
-            adopted=out["adopted"], closed=out["closed"], errors=errors[:5])
+            unmarked=out["unmarked"], adopted=out["adopted"], closed=out["closed"], errors=errors[:5])
     return out
 
 
@@ -637,16 +667,45 @@ def dropdowns(ctx: Context, sheet_id: str, header: Sequence[str]) -> dict[str, S
     return {k: v for k, v in out.items() if k in header}
 
 
+EMPTY = (f"the {TAB} tab is empty: nothing to move, and an empty tab is never backed up. If a migrate-tab stopped part "
+         f"way, the rows are on the newest '{TAB} backup' tab: copy them back to the {TAB} tab, then run it again.")
+
+
+def _backup_tab(ctx: Context, sheet_id: str) -> tuple[str, list[dict[str, str]] | None]:
+    """(the backup tab's name, read_tab's answer for it: None when there is no such tab yet, [] when it is there with
+    nothing in it). Never a tab that holds rows: "Hand-check backup <date>", else the same with the time (UK) for a
+    second run that day. The first round of W1-5 wrote today's backup again on every run, so a run after one that had
+    cleared the tab and then failed backed up the empty tab over the only copy of every row (the W1-5 review, round 2).
+    ValueError (the command's refusal) when both hold rows."""
+    base = f"{TAB} backup {ctx.today_uk().isoformat()}"
+    names = (base, f"{base} {ctx.now.astimezone(UK):%H%M}")
+    for name in names:
+        there = read_tab(ctx.clients.sheets, sheet_id, name)
+        if not there:
+            return name, there
+    raise ValueError(f"the tabs {' and '.join(repr(n) for n in names)} both hold rows already: none is written "
+                     "over, so run migrate-tab again in a minute")
+
+
 def migrate(ctx: Context) -> dict[str, Any]:
     """`us-outbound handcheck migrate-tab [--live]`: move the tab to COLUMNS, once (W1-5, 19 Oct 2026; RS §2 W1-5).
 
     The tab's columns live here, not in `settings load` (settings/load.LOADABLE), so a new column never arrives by
     itself, and rows written under the old header would put values in the wrong places. Live: a backup tab
-    "Hand-check backup <date>" gets the tab exactly as it is; then the tab is rewritten with the new header and every
-    row's values under their columns (company becomes name, hq_state state; a column with no place and a value
-    somewhere is kept at the right); then the dropdowns are set again on the columns' new places. A tab already under
-    COLUMNS is left as it is (its dropdowns are set again, live). Dry-run prints the header before and after. Run it on
-    a day after the week's rows are decided: a decision typed while it runs could be lost."""
+    "Hand-check backup <date>" gets the tab exactly as it is, and is read back to hold every row; then the tab is
+    rewritten with the new header and every row's values under their columns (company becomes name, hq_state state; a
+    column with no place and a value somewhere is kept at the right); then the dropdowns are set again on the columns'
+    new places. A tab already under COLUMNS is left as it is (its dropdowns are set again, live). Dry-run prints the
+    header before and after.
+
+    The tab is the only record of Harry's judgements a person can read, and the rewrite is two calls (clear, then
+    write), so a failure between them leaves it empty with the rows on the backup alone. So (the W1-5 review, round
+    2): an empty tab is never moved or backed up (EMPTY says where the rows are); a backup tab that holds rows is never
+    written over (_backup_tab); a failed rewrite says, on the error, which tab holds the rows. And it refuses
+    (ValueError) while this week's hand-check is open: a decision typed while it runs could be lost, and with the tab
+    empty poll_approvals would write this week's rows alone onto it (apply). Run it once the week's item is handled."""
+    from us_outbound.enrol import hand_check
+
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise LookupError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
@@ -654,18 +713,46 @@ def migrate(ctx: Context) -> dict[str, Any]:
     tab = read_tab(sheets, sheet_id, TAB)
     if tab is None:
         raise LookupError(f"the settings sheet has no {TAB} tab")
-    before = list(tab[0]) if tab else []
+    out: dict[str, Any] = {"dry_run": ctx.dry_run, "rows": len(tab), "before": [], "after": [], "already": False,
+                           "backup": None, "written": False}
+    if not tab:  # nothing to move, and backing up nothing could only lose a backup
+        out["note"] = EMPTY
+        log("hand_check_tab_migrated", run_id=ctx.run_id, rows=0, already=False, written=False, note="empty")
+        return out
+    before = list(tab[0])
     already = before[: len(COLUMNS)] == COLUMNS
     after = before if already else _header_after(before, tab)
-    moved = [{h: str({RENAMED.get(k, k): v for k, v in r.items()}.get(h, "")) for h in after} for r in tab]
-    backup = f"{TAB} backup {ctx.today_uk().isoformat()}"
-    out: dict[str, Any] = {"dry_run": ctx.dry_run, "rows": len(tab), "before": before, "after": after,
-                           "already": already, "backup": None if already else backup, "written": False}
+    out.update(before=before, after=after, already=already)
+    if not already:
+        item = hand_check.current(ctx)
+        if item is not None and item.get("status") != "handled":
+            why = (f"this week's hand-check ({hand_check.this_week(ctx)}) is still open: run migrate-tab once its "
+                   "rows are decided (or after `us-outbound handcheck approve`), so no decision is typed while the tab "
+                   "moves")
+            if ctx.live:
+                raise ValueError(why)
+            out["refused"] = why
+        backup, there = _backup_tab(ctx, sheet_id)
+        out["backup"] = backup
     if not ctx.live:
         return out
     if not already:
-        write_tab(sheets, sheet_id, backup, before or OLD_COLUMNS, tab, None)  # added, then written as it stood
-        sheets.replace_tab(sheet_id, TAB, after, moved)
+        moved = [{h: str({RENAMED.get(k, k): v for k, v in r.items()}.get(h, "")) for h in after} for r in tab]
+        write_tab(sheets, sheet_id, backup, before, tab, there)  # added when it is not there, then written as it stood
+        kept = read_tab(sheets, sheet_id, backup) or []
+        if len(kept) != len(tab):
+            raise RuntimeError(f"the backup tab {backup!r} holds {len(kept)} rows, not {len(tab)}: the {TAB} tab was "
+                               "not touched")
+        try:
+            sheets.replace_tab(sheet_id, TAB, after, moved)
+        except GuardViolation:
+            raise
+        except Exception as exc:
+            log("hand_check_tab_migrate_failed", run_id=ctx.run_id, backup=backup, rows=len(tab),
+                error=f"{type(exc).__name__}: {str(exc)[:160]}")
+            exc.add_note(f"The {TAB} tab may be empty now: its {len(tab)} rows are on the tab {backup!r}, as they "
+                         f"were. Copy them back to the {TAB} tab, then run migrate-tab again.")
+            raise
         out["written"] = True
     try:
         sheets.set_validation(sheet_id, TAB, after, dropdowns(ctx, sheet_id, after))
@@ -676,5 +763,5 @@ def migrate(ctx: Context) -> dict[str, Any]:
         out["dropdowns"] = False
         out["dropdowns_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
     log("hand_check_tab_migrated", run_id=ctx.run_id, rows=len(tab), already=already, written=out["written"],
-        dropdowns=out["dropdowns"])
+        backup=out["backup"], dropdowns=out["dropdowns"])
     return out

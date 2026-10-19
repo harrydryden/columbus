@@ -227,7 +227,8 @@ def test_a_sheets_failure_on_row_five_stops_the_pass_and_the_next_poll_goes_on(m
     decide(ctx, d[9], "wrong industry", right_label="Fintech")
     ids = [r["id"] for r in sheet_rows(ctx) if r["check"] == tab.SAMPLE]
     first = tab.apply(ctx)
-    assert first["applied"] == ids[:5] and len(first["hand_check_errors"]) == 1  # the 5th was done, not marked
+    # The 5th was done but not marked: unmarked, not applied (the review's round 2: applied listed it, one too many).
+    assert (first["applied"], first["unmarked"]) == (ids[:4], ids[4:5]) and len(first["hand_check_errors"]) == 1
     assert "could not be written (ApiError" in first["hand_check_errors"][0] and first["closed"] == []
     assert [r["applied"] != "" for r in sheet_rows(ctx)] == [True] * 4 + [False] * 6
     second = tab.apply(ctx)
@@ -332,7 +333,8 @@ def test_a_week_left_seven_days_closes_by_itself_and_releases_the_rest(monkeypat
     d = sample_domains(ctx)
     decide(ctx, d[0], "fine")
     tab.apply(ctx)
-    ctx.now = NOW + timedelta(days=7)
+    ctx.now = NOW + timedelta(days=7)  # Monday 2 Nov 07:00 UK: W45's draw ran at 05:45 and posted its own notice
+    assert hand_check.run(ctx)["status"] == "recorded"
     sent = len(posts(t))
     out = tab.apply(ctx)
     item = hand_check.current(ctx, WEEK)
@@ -356,6 +358,86 @@ def test_the_tab_keeps_two_weeks_after_two_draws_and_every_judged_row_has_a_fact
     facts = judgements(ctx)
     assert len(facts) == 20 and all(f["value"]["gate_version"] for f in facts)
     assert Counter(f["value"]["week"] for f in facts) == {WEEK: 10, "2026-W45": 10}
+
+
+def test_a_week_with_fewer_rows_on_the_tab_than_it_drew_stays_open(monkeypatch):
+    """The item drew 10 but only 7 of its rows are on the tab (3 not written yet, or deleted by hand), all 7 decided:
+    the 3 have no decision, so the week stays open (7 rows < 10 drawn) though no row on the tab waits. The review's
+    round 2 found no test failed with that count removed from _close_and_remind."""
+    ctx, _ = drawn_week(monkeypatch)
+    ctx.clients.sheets.tabs[tab.TAB] = sheet_rows(ctx)[:7]
+    for x in sample_domains(ctx):
+        decide(ctx, x, "fine")
+    out = tab.apply(ctx)
+    assert len(out["applied"]) == 7 and out["closed"] == [] and out["hand_check_errors"] == []
+    assert hand_check.current(ctx)["status"] == "open"
+
+
+# -- the catch-up draw: a Monday that did not happen (the review's round 2) -----------------------------------------
+
+
+def calls_to_number(monkeypatch, n=2):
+    """today_number patched to n, counting its calls: one per draw (hand_check.build)."""
+    calls = []
+    monkeypatch.setattr(hand_check, "today_number", lambda ctx, **kw: calls.append(1) or n)
+    return calls
+
+
+def test_a_failed_monday_draw_is_drawn_by_the_poll_once_its_grace_has_passed(monkeypatch):
+    """The gate on (SETTINGS), no W44 item: the 05:45 draw failed. 06:10 UK is inside DRAW_GRACE (05:45 + 30 = 06:15):
+    the poll draws nothing, as the job may still be running. 06:20: the poll draws (14 ready, today's number 2:
+    positions 3 to 152, 12 accounts, 10 drawn), writes the 10 rows and posts the one notice, so enrol waits for the
+    check ("not approved yet") rather than all week for a draw ("has not been posted"). 06:25: nothing more. A dry-run
+    poll at 06:20 draws nothing."""
+    calls = calls_to_number(monkeypatch)
+    ctx, t = world()
+    ctx.clients.sheets = Sheet(ctx.guard, {"Overrides": []})
+    assert hand_check.draw_due(WEEK) == datetime(2026, 10, 26, 6, 15, tzinfo=UTC)  # GMT since 25 Oct
+    ctx.now = datetime(2026, 10, 26, 6, 10, tzinfo=UTC)
+    assert "drawn" not in tab.apply(ctx) and hand_check.current(ctx) is None and calls == []
+    dry = make_context(SETTINGS, live=False, store=ctx.store, now=datetime(2026, 10, 26, 6, 20, tzinfo=UTC))
+    dry.clients.sheets = ctx.clients.sheets
+    assert "drawn" not in tab.apply(dry) and hand_check.current(ctx) is None
+    ctx.now = datetime(2026, 10, 26, 6, 20, tzinfo=UTC)
+    out = tab.apply(ctx)
+    item = hand_check.current(ctx)
+    assert out["drawn"] == "recorded" and item["status"] == "open" and len(hand_check.sample_ids(item)) == 10
+    assert len(sample_domains(ctx)) == 10 and len(posts(t)) == 1 and calls == [1]
+    assert enrol.hand_check(ctx, ctx.now_et().date())[0] == f"this week's hand-check ({WEEK}) is not approved yet"
+    ctx.now = datetime(2026, 10, 26, 6, 25, tzinfo=UTC)
+    assert "drawn" not in tab.apply(ctx) and len(posts(t)) == 1 and calls == [1]
+
+
+def test_a_gated_week_recorded_with_nothing_to_check_is_drawn_once_an_account_is_ready(monkeypatch):
+    """The gate on. 05:45: none of the 14 has a contact yet (pick_contacts still running), so the week is recorded
+    nothing to check, handled, and enrol would go ahead all week unchecked. The poll looks for a ready account before
+    drawing, so while none is ready it never draws again (one draw so far). Once the 14 have their contacts the
+    next poll draws: 10 rows, the item open, and enrol waits for the check."""
+    from tests.test_hand_check import person
+
+    calls = calls_to_number(monkeypatch)
+    ctx, t = world(contacts=0)
+    ctx.clients.sheets = Sheet(ctx.guard, {"Overrides": []})
+    assert hand_check.run(ctx)["status"] == hand_check.NOTHING and calls == [1]
+    out = tab.apply(ctx)
+    assert "drawn" not in out and calls == [1] and hand_check.current(ctx)["payload"]["nothing_to_check"] is True
+    fourteen = {f"mar-{i:03d}" for i in range(14)}
+    ctx.store.insert("contacts", [person(a) for a in ctx.store.select("accounts") if a["account_id"] in fourteen])
+    out = tab.apply(ctx)
+    item = hand_check.current(ctx)
+    assert out["drawn"] == "recorded" and calls == [1, 1]
+    assert item["status"] == "open" and len(hand_check.sample_ids(item)) == 10 and len(sample_domains(ctx)) == 10
+    assert enrol.hand_check(ctx, ctx.now_et().date())[0] == f"this week's hand-check ({WEEK}) is not approved yet"
+
+
+def test_with_the_gate_off_a_week_with_nothing_to_check_is_not_drawn_again_by_the_poll(monkeypatch):
+    """The gate off, today's number 14 of 14 ready: nothing beyond today's, recorded nothing to check. It holds nobody,
+    so the poll does not draw it again (the known gap: someone runs the draw): still one draw."""
+    calls = calls_to_number(monkeypatch, n=14)
+    ctx, _ = world(settings=general(hand_check_gate=False))
+    ctx.clients.sheets = Sheet(ctx.guard, {"Overrides": []})
+    assert hand_check.run(ctx)["status"] == hand_check.NOTHING
+    assert "drawn" not in tab.apply(ctx) and calls == [1]
 
 
 # -- one pass, many rows: each write starts from the item as stored (the W1-5 review) --------------------------------
@@ -467,7 +549,14 @@ def test_a_doubtful_week_writes_one_row_each_with_where_to_fill_the_fact(monkeyp
     assert [r["domain"] for r in rows] == ["mar70.com", "mar71.com", "mar72.com"]
     assert rows[0]["id"] == f"{WEEK}:mar70.com" and rows[0]["check"] == tab.DOUBT
     assert rows[0]["why"] == f"{verify.NO_STATE} (add the missing fact on the Overrides tab: hq_state or employees)"
-    assert posts(t)[-1].json["text"].splitlines()[1] == "Week 44: 3 with a missing HQ state, size or industry."
+    lines = posts(t)[-1].json["text"].splitlines()
+    assert lines[1] == "Week 44: 3 with a missing HQ state, size or industry."
+    # The gate on: the open item holds the whole day (enrol.hand_check), so the notice says so, of every row, as none
+    # was picked at random (the review's round 2: it said only these companies wait).
+    assert lines[0] == ("<@U_HARRY> :warning: *Weekly hand-check: 3 companies to look at before this week's new "
+                        "emails go out*")
+    assert lines[-1] == "_Why it matters: until every row has a decision, no new leads go to Instantly this week._"
+    assert enrol.hand_check(ctx, ctx.now_et().date())[0] == f"this week's hand-check ({WEEK}) is not approved yet"
 
 
 def test_doubtful_rows_are_applied_and_the_week_closes_when_each_is_settled(monkeypatch):
@@ -621,6 +710,125 @@ def test_handcheck_migrate_tab_from_the_command_line(capsys):
     printed = capsys.readouterr().out
     assert f"Header after: {', '.join(tab.COLUMNS)}" in printed
     assert "Would move it, after a backup to the tab 'Hand-check backup 2026-10-19'." in printed
+
+
+# -- migrate-tab never loses the rows: the review's round 2 ----------------------------------------------------------
+
+BACKUP = "Hand-check backup 2026-10-19"  # EXPORT_AT is Monday 19 Oct 14:30 UK (13:30 UTC, BST)
+
+
+class ClearThenFailSheet(Sheet):
+    """replace_tab on the Hand-check tab the first time: the clear goes through and the write answers 503, as the real
+    client's two calls can (clients/sheets.replace_tab: values.clear, then values.update)."""
+
+    def __init__(self, guard, tabs):
+        super().__init__(guard, tabs)
+        self.failed = False
+
+    def replace_tab(self, sheet_id, name, headers, rows):
+        if name == tab.TAB and not self.failed:
+            self.failed = True
+            self.tabs[name] = []
+            raise ApiError("sheets", 503, "The service is currently unavailable.", "https://sheets.googleapis.com/")
+        return super().replace_tab(sheet_id, name, headers, rows)
+
+
+class ShortBackupSheet(Sheet):
+    """Writes only the first 10 rows of any tab but the Hand-check tab: a backup that is not whole."""
+
+    def replace_tab(self, sheet_id, name, headers, rows):
+        return super().replace_tab(sheet_id, name, headers, rows if name == tab.TAB else rows[:10])
+
+
+def as_backed_up(rows):
+    return [{h: r[h] for h in HEADER} for r in rows]
+
+
+def test_a_migrate_that_clears_the_tab_and_then_fails_keeps_the_backup_and_the_next_run_writes_nothing():
+    """The blocking probe of the review's round 2 (w15probe_migrate.py): run 1 backs up the 49 rows, then the rewrite
+    clears the tab and fails. Before, run 2 read the empty tab, wrote the empty table over the backup (49 rows -> 0)
+    and a bare header to the tab: every decision gone. Now run 1 raises with a note naming the backup, which holds the
+    49 rows as they were; run 2 sees an empty tab and writes nothing at all (no backup, no header, no new tab). Harry
+    copies the rows back, and run 3 moves them after a backup of its own: today's name holds rows, so it carries the
+    time, 1430, and the first backup is left exactly as it was."""
+    ctx, _ = w43_world()
+    old = [dict(r) for r in sheet_rows(ctx)]
+    s = ctx.clients.sheets = ClearThenFailSheet(ctx.guard, ctx.clients.sheets.tabs)
+    with pytest.raises(ApiError) as failed:
+        tab.migrate(ctx)
+    assert f"its 49 rows are on the tab {BACKUP!r}, as they were" in " ".join(failed.value.__notes__)
+    assert sheet_rows(ctx) == [] and s.tabs[BACKUP] == as_backed_up(old)
+    again = tab.migrate(ctx)
+    assert (again["rows"], again["written"], again["backup"], again["note"]) == (0, False, None, tab.EMPTY)
+    assert sorted(s.tabs) == sorted([tab.TAB, BACKUP]) and sheet_rows(ctx) == []
+    assert s.tabs[BACKUP] == as_backed_up(old) and s.validation == {}
+    s.tabs[tab.TAB] = [dict(r) for r in s.tabs[BACKUP]]
+    third = tab.migrate(ctx)
+    assert (third["written"], third["backup"]) == (True, f"{BACKUP} 1430")
+    assert s.tabs[f"{BACKUP} 1430"] == s.tabs[BACKUP] == as_backed_up(old)
+    rows = sheet_rows(ctx)
+    assert len(rows) == 49 and all(list(r) == tab.COLUMNS for r in rows)
+    assert [r["name"] for r in rows] == [r["company"] for r in old]
+
+
+def test_a_backup_that_does_not_hold_every_row_stops_the_move_before_the_tab_is_touched():
+    """The backup is read back before the tab is cleared: 10 rows of 49 there, so it raises, and the tab keeps its 49
+    rows under the old header."""
+    ctx, _ = w43_world()
+    old = [dict(r) for r in sheet_rows(ctx)]
+    ctx.clients.sheets = ShortBackupSheet(ctx.guard, ctx.clients.sheets.tabs)
+    with pytest.raises(RuntimeError, match=f"the backup tab {BACKUP!r} holds 10 rows, not 49"):
+        tab.migrate(ctx)
+    assert sheet_rows(ctx) == old
+
+
+def test_migrate_refuses_when_both_backup_names_hold_rows_and_writes_nothing():
+    ctx, _ = w43_world()
+    s = ctx.clients.sheets
+    s.tabs[BACKUP] = [{"id": "x"}]
+    s.tabs[f"{BACKUP} 1430"] = [{"id": "y"}]
+    before = {k: [dict(r) for r in v] for k, v in s.tabs.items()}
+    with pytest.raises(ValueError, match="both hold rows already"):
+        tab.migrate(ctx)
+    assert s.tabs == before
+
+
+def test_migrate_refuses_while_this_week_s_hand_check_is_open():
+    """W43's item open (its rows not all decided, or not closed yet): a live run refuses (ValueError, the command's exit
+    2) and writes nothing, as a decision typed while the tab moves could be lost, and with the tab cleared
+    poll_approvals would put this week's rows alone on it. A dry run says a live run would refuse. Once the item is
+    handled the move goes ahead."""
+    from us_outbound.ops import cli
+
+    ctx, _ = w43_world()
+    ctx.store.upsert("hitl_items", [{"item_id": f"hand_check-{W43}", "kind": "hand_check", "status": "open",
+                                     "created_at": EXPORT_AT,
+                                     "payload": {"iso_week": W43, "drawn_at": EXPORT_AT.isoformat(), "accounts": []}}])
+    old = [dict(r) for r in sheet_rows(ctx)]
+    with pytest.raises(ValueError, match=r"this week's hand-check \(2026-W43\) is still open"):
+        tab.migrate(ctx)
+    assert list(ctx.clients.sheets.tabs) == [tab.TAB] and sheet_rows(ctx) == old
+    assert cli.main(["handcheck", "migrate-tab", "--live"], context_factory=lambda job, live, **kw: ctx) == 2
+    dry = make_context(SETTINGS, live=False, store=ctx.store, now=EXPORT_AT)
+    dry.clients.sheets = ctx.clients.sheets
+    assert tab.migrate(dry)["refused"].startswith("this week's hand-check (2026-W43) is still open")
+    ctx.store.update("hitl_items", {"item_id": f"hand_check-{W43}"}, {"status": "handled"})
+    assert tab.migrate(ctx)["written"] is True and len(sheet_rows(ctx)) == 49
+
+
+def test_a_value_in_a_column_apply_never_reads_is_named_on_the_row_it_applies():
+    """Row 0 decided fine and not applied yet, with GA typed in right_hq_state, which migrate-tab keeps at the right as
+    it holds a value. apply applies the fine, leaves the company's state as it was (IL: the column is not read; the
+    fact belongs on the Overrides tab) and says so in the applied cell."""
+    ctx, companies = w43_world()
+    sheet_rows(ctx)[0].update(right_hq_state="GA", applied="")
+    assert tab.migrate(ctx)["after"] == [*tab.COLUMNS, "right_hq_state"]
+    out = tab.apply(ctx)
+    row = sheet_rows(ctx)[0]
+    assert out["applied"] == [row["id"]] and out["adopted"] == 48
+    assert row["applied"].startswith("2026-10-19: fine; right_hq_state is not read: put the fact on the Overrides "
+                                     "tab · ")
+    assert account(ctx, row["domain"])["hq_state"] == "IL"
 
 
 # -- W0, 19 Oct 2026: the tab keeps every week, and the judgements go into the database --------------------------------

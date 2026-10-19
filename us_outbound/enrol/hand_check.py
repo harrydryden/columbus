@@ -26,9 +26,15 @@ hand_check_draw, Mondays 05:45 UK (after pick_contacts at 05:30, before enrol at
      has nothing to wait for and the readout says 0 picked: with no item at all enrol waited the whole week for a
      check that could never be drawn, and `handcheck approve` refused it (the W1-5 review, 19 Oct 2026). A dry run
      records no such item, as it must never open the gate. A run later in the week (`us-outbound run
-     hand_check_draw`) draws again over a week recorded with nothing to check, as the queue may have grown since. The
-     Monday job is the only scheduled draw, so with the gate off a Monday that finds nothing beyond today's number
-     leaves that week unmeasured unless someone runs it again (a known gap).
+     hand_check_draw`) draws again over a week recorded with nothing to check, as the queue may have grown since.
+  5. catches up (catch_up, from poll_approvals every 5 minutes, live): a week with no item DRAW_GRACE after its Monday
+     draw (the job failed, or never started) is drawn then, and, while the hand-check holds the whole day (gates()), a
+     week recorded with nothing to check is drawn again once an account is ready or a company waits for doubtful
+     facts. Before W1-5 the tab's poll posted a missing week itself, so a failed Monday recovered within minutes; the
+     draw alone left the gated week waiting ("has not been posted") until someone ran it by hand, and a Monday whose
+     05:45 draw ran before pick_contacts had made anyone ready opened the whole gated week with no check (the W1-5
+     review, round 2). With the gate off, a week with nothing beyond today's number is not drawn again by itself: it
+     holds nobody either way, and that week goes unmeasured unless someone runs the draw (a known gap).
 
 Harry decides each row on the tab; poll_approvals applies each decision within 5 minutes (hand_check_tab.apply) and
 writes one hand_check judgement fact per row (judged, tally). What waits for him is General hand_check_gate:
@@ -72,6 +78,10 @@ JOB = "hand_check_draw"
 KIND = "hand_check"
 HOLD_DAYS = 7  # D5: a sampled company waits for its judgement this long from the draw, then it is released
 REMIND_WEEKDAY, REMIND_AT = 2, time(9)  # Wednesday 09:00 UK: a week still open then posts one reminder
+DRAW_AT = time(5, 45)  # Monday 05:45 UK, the hand_check_draw job's time (ops/schedule.py; a test keeps them in step)
+# How long after DRAW_AT poll_approvals waits before drawing a week with no item itself (catch_up): past the job's own
+# 10-minute timeout, so the two never draw side by side (two notices, the rows written twice).
+DRAW_GRACE = timedelta(minutes=30)
 # The ICP rules' part of the gate version: "legacy" until W2-2's one ICP gate has a hash of its own (the plan, §8).
 ICP_RULES_HASH = "legacy"
 EVIDENCE_LIMIT = 3
@@ -293,6 +303,20 @@ def gates(ctx: Context) -> bool:
     return g.hand_check_gate and g.auto_send
 
 
+WHOLE_DAY, SAMPLE_ONLY, NOTHING_WAITS = "whole day", "sample only", "nothing"
+
+
+def holds(ctx: Context) -> str:
+    """What waits for the check, as enrol.hand_check has it, for the notice and the reminder to say: WHOLE_DAY while it
+    gates() the day; SAMPLE_ONLY with hand_check_gate = no (held: the sampled companies, for HOLD_DAYS at most); and
+    NOTHING_WAITS with hand_check_gate = yes and auto_send = no, where enrol neither waits nor holds (every email is
+    approved in Slack). Keyed on gates() alone, that last mode said the sample waited when nothing did (the W1-5 review,
+    round 2)."""
+    if gates(ctx):
+        return WHOLE_DAY
+    return SAMPLE_ONLY if not ctx.settings.general.hand_check_gate else NOTHING_WAITS
+
+
 def slack_text(ctx: Context, payload: Mapping[str, Any], tab_rows: Sequence[Mapping[str, Any]]) -> str:
     """The Monday notice (Harry, 12 Oct 2026): what the check is, how many and why, and a link to the Hand-check tab where
     each company gets a decision from a dropdown. No list of companies and no command: the tab has both."""
@@ -313,8 +337,8 @@ def slack_text(ctx: Context, payload: Mapping[str, Any], tab_rows: Sequence[Mapp
     parts = ([f"{drawn} picked at random from those about to be emailed"] if drawn else []) + \
         [f"{n} with {k}" for k, n in kinds.items() if n]
     n = len(tab_rows)
-    whole_day = gates(ctx)
-    head = (f"Weekly hand-check: {_accounts(n)} to look at before this week's new emails go out" if whole_day and drawn
+    mode = holds(ctx)
+    head = (f"Weekly hand-check: {_accounts(n)} to look at before this week's new emails go out" if mode == WHOLE_DAY
             else f"Weekly hand-check: {_accounts(n)} to look at")
     return say.compose(
         say.ACTION, head, [f"{week}: {', '.join(parts)}."],
@@ -323,9 +347,12 @@ def slack_text(ctx: Context, payload: Mapping[str, Any], tab_rows: Sequence[Mapp
             "industry* (then pick the right one in `right_label`). If the person or the opening line is wrong, pick "
             "*no* in `contact_ok` or `opener_ok`.",
             "That's all: each choice is applied within 5 minutes, and a change later is applied too."],
-        why=("until every company picked at random has a decision, no new leads go to Instantly this week."
-             if whole_day and drawn else
-             f"only these companies wait for you, for {HOLD_DAYS} days at most; everyone else is emailed as usual."))
+        why={WHOLE_DAY: f"until every {'company picked at random' if drawn else 'row'} has a decision, no new leads go "
+                        "to Instantly this week.",
+             SAMPLE_ONLY: f"only these companies wait for you, for {HOLD_DAYS} days at most; everyone else is emailed "
+                          "as usual.",
+             NOTHING_WAITS: "it holds up no email (each one is approved in Slack): the decisions measure how often the "
+                            "companies about to be emailed are the right ones."}[mode])
 
 
 def lines(payload: Mapping[str, Any]) -> list[str]:
@@ -467,14 +494,15 @@ def remind(ctx: Context, item: Mapping[str, Any], waiting: int) -> dict | None:
     when = remind_at(week)
     if waiting <= 0 or item.get("status") == "handled" or payload.get("reminded_at") or when is None or ctx.now < when:
         return None
-    whole_day = gates(ctx)
     text = say.compose(
         say.ACTION, f"Weekly hand-check: {_accounts(waiting)} of {week_label(week)} still "
                     f"{'needs' if waiting == 1 else 'need'} a decision",
         do=f"Pick a `decision` on {'its row' if waiting == 1 else 'each of their rows'} on the "
            f"{say.sheet_link(ctx, tab.TAB)}.",
-        why=("no new leads go to Instantly this week until every row has one." if whole_day else
-             f"those companies wait for it, for {HOLD_DAYS} days from Monday at most; sending does not."))
+        why={WHOLE_DAY: "no new leads go to Instantly this week until every row has one.",
+             SAMPLE_ONLY: f"those companies wait for it, for {HOLD_DAYS} days from Monday at most; sending does not.",
+             NOTHING_WAITS: "it holds up no email; the decisions are the week's measure of whether the right companies "
+                            "are emailed."}[holds(ctx)])
     sent = notify.alert(ctx, notify.mention(ctx) + text)
     payload["reminded_at"] = ctx.now.isoformat()
     ctx.store.upsert("hitl_items", [{"item_id": item["item_id"], "payload": payload}])
@@ -559,6 +587,35 @@ def run(ctx: Context) -> dict:
                    doubtful=len(payload["doubtful"]), **numbers, alert=sent, tab=wrote)
     log("hand_check_draw", **{k: v for k, v in summary.items() if k != "alert"})
     return summary
+
+
+def draw_due(week: str) -> datetime | None:
+    """When poll_approvals draws a week that has no item (catch_up): DRAW_GRACE after its Monday's DRAW_AT, UK."""
+    monday = week_monday(week)
+    return None if monday is None else datetime.combine(monday, DRAW_AT, tzinfo=UK) + DRAW_GRACE
+
+
+def catch_up(ctx: Context) -> dict | None:
+    """The draw poll_approvals runs when the week's own did not happen (hand_check_tab.apply, live only): run()'s
+    summary, or None when nothing is due. Due when, DRAW_GRACE past the Monday draw, the week has no item at all, or,
+    while the check gates() the day, its item says nothing to check and an account is now ready or a company waits
+    for doubtful facts (with the gate the pool reaches back to position 1, so either one gives run() a draw: the check
+    is cheap to rule out every 5 minutes, and run() is never called just to find nothing again). run() itself leaves a
+    recorded week alone, so a second call the same week does nothing."""
+    from us_outbound.contacts import pick
+
+    week = this_week(ctx)
+    due = draw_due(week)
+    if due is None or ctx.now < due:
+        return None
+    item = current(ctx, week)
+    if item is not None and not (_payload(item).get("nothing_to_check") and gates(ctx)
+                                 and (pick.ready_accounts(ctx) or verify.open_doubts(ctx))):
+        return None
+    out = run(ctx)
+    log("hand_check_caught_up", run_id=ctx.run_id, iso_week=week, status=out.get("status"),
+        was="nothing to check" if item is not None else "no item")
+    return out
 
 
 def show(ctx: Context) -> tuple[dict | None, dict]:

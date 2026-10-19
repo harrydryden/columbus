@@ -1508,12 +1508,16 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         ctx, summary = _operate(factory, "handcheck_migrate_tab", args.live, hand_check_tab.migrate, operator=True,
                                 dry_note="the Hand-check tab was not changed.")
         print(f"Hand-check tab, {summary['rows']} rows. Header now: {', '.join(summary['before']) or '(none)'}")
-        if summary["already"]:
+        if summary.get("note"):  # the tab is empty: nothing moved, nothing backed up (the W1-5 review, round 2)
+            print(summary["note"])
+        elif summary["already"]:
             print("It is under the new columns already: nothing to move.")
         else:
             print(f"Header after: {', '.join(summary['after'])}")
             print(("Moved, after a backup to the tab " if summary["written"] else "Would move it, after a backup to "
                    "the tab ") + repr(summary["backup"]) + ".")
+        if summary.get("refused"):  # a dry run while the week is open: the live run refuses (exit 2)
+            print(f"A live run would refuse now: {summary['refused']}.")
         if summary.get("dropdowns") is False:
             print(f"The dropdowns could not be set ({summary.get('dropdowns_error')}): set decision, reason, "
                   "right_label, contact_ok and opener_ok by hand on the sheet.")

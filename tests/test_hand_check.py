@@ -179,6 +179,38 @@ def test_with_the_gate_off_the_notice_says_only_these_companies_wait(number):
                          "emailed as usual._")
 
 
+def test_with_the_gate_on_and_auto_send_off_the_notice_and_reminder_say_nothing_waits(number):
+    """hand_check_gate yes with auto_send no: enrol neither waits for the check (gates() is false) nor holds its sample
+    (held() applies only with hand_check_gate no), so neither post may say the companies wait (the review's round 2:
+    both said "only these companies wait for you", keyed on gates() alone)."""
+    from tests.test_hand_check_tab import Sheet
+    from us_outbound.enrol import hand_check_tab as tab
+
+    ctx, t = world(settings=general(auto_send=False))
+    ctx.clients.sheets = Sheet(ctx.guard, {})
+    hand_check.run(ctx)
+    text = posts(t)[0].json["text"]
+    assert text.splitlines()[0] == "<@U_HARRY> :warning: *Weekly hand-check: 10 companies to look at*"
+    assert text.endswith("_Why it matters: it holds up no email (each one is approved in Slack): the decisions "
+                         "measure how often the companies about to be emailed are the right ones._")
+    assert enrol.hand_check(ctx, ctx.now_et().date())[1] == frozenset()  # nothing held
+    ctx.now = datetime(2026, 10, 28, 9, 5, tzinfo=UTC)  # Wednesday 09:05 UK, the 10 still undecided
+    assert tab.apply(ctx)["reminded"] == 10
+    assert posts(t)[-1].json["text"].endswith("it holds up no email; the decisions are the week's measure of whether "
+                                              "the right companies are emailed._")
+
+
+def test_the_draw_s_time_is_the_schedule_s_and_its_grace_outlasts_the_job():
+    """catch_up waits DRAW_GRACE past DRAW_AT, Monday: the hand_check_draw row's own time, and longer than its timeout,
+    so a poll never draws beside a draw still running."""
+    from us_outbound.ops import schedule
+
+    job = schedule.by_name()["hand_check_draw"]
+    minute, hour, _, _, weekday = job.cron.split()
+    assert (int(hour), int(minute), weekday) == (hand_check.DRAW_AT.hour, hand_check.DRAW_AT.minute, "1")
+    assert hand_check.DRAW_GRACE > timedelta(minutes=job.timeout_minutes)
+
+
 def test_a_dry_run_records_the_item_and_the_live_run_posts_it(number):
     ctx, t = world(live=False)
     assert hand_check.run(ctx)["status"] == "recorded"
