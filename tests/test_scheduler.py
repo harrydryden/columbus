@@ -609,7 +609,7 @@ SPEC9_CRONS = {
     # The 1st of each month (Harry, 5 Oct 2026), after settings_sync (02:00) and before source_universe (03:00).
     "lookalikes": "30 2 1 * *",
     "lookalike_leads": "50 2 1 * *",  # Harry, 5 Oct 2026: the 1st of each month, after lookalikes (02:30)
-    "hand_check_post": "0 8 * * 1",
+    "hand_check_draw": "45 5 * * 1",  # W1-5, 19 Oct 2026: the draw, after pick_contacts (hand_check_post at 08:00)
     "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after source_universe, before verify_accounts (04:30)
     "apollo_enrich": "0 5 * * 1-5",  # W1-3a, 19 Oct 2026: after verify_accounts, for verified accounts (04:10 before)
     "apollo_people": "20 4 * * 1-5",  # Harry, 5 Oct 2026: after read_pages, before verify_accounts' rescore
@@ -619,7 +619,7 @@ SPEC9_CRONS = {
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
-        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post",
+        "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_draw",
         "blackout", "retention", "label_sample_monthly", "capture"}
 
 
@@ -669,7 +669,7 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "capture",
                        "monday_readout", "heartbeat_check",
-                       "suppression_load", "lookalikes", "hand_check_post", "retention", "label_sample_monthly"]
+                       "suppression_load", "lookalikes", "hand_check_draw", "retention", "label_sample_monthly"]
     # lookalike_leads is parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for
     # whole-US pages and kept only the active states. Not started, and not expected, so no false "missed" alert.
     assert "lookalike_leads" not in enabled and "lookalike_leads" not in hb.EXPECTED
@@ -683,6 +683,24 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     # capture (W1-2, 19 Oct 2026; RS §2 W1-2): registered everywhere a new job must be, in the same commit.
     assert cli.JOBS["capture"] == "us_outbound.replies.capture:run" and hb.EXPECTED["capture"] == 8 * 24 * 60
     assert by_name()["capture"].live is True and "capture" in hb.IMPACT
+
+
+def test_the_hand_check_draw_replaces_hand_check_post_everywhere():
+    """W1-5 (19 Oct 2026): hand_check_draw is registered everywhere hand_check_post was (cli.JOBS, heartbeat.EXPECTED,
+    the job names Slack uses) and in IMPACT, and hand_check_post is gone from all of them. It runs Mondays at 05:45,
+    after pick_contacts (05:30) and before enrol (12:00): 5 * 60 + 30 < 5 * 60 + 45 < 12 * 60."""
+    from us_outbound.base import say
+
+    table = by_name()
+    assert table["hand_check_draw"].cron == "45 5 * * 1" and table["hand_check_draw"].live is True
+    assert cli.JOBS["hand_check_draw"] == "us_outbound.enrol.hand_check:run"
+    assert hb.EXPECTED["hand_check_draw"] == 8 * 24 * 60 and "hand_check_draw" in hb.IMPACT
+    assert say.job_name("hand_check_draw") == "the weekly hand-check"
+    for registry in (table, cli.JOBS, hb.EXPECTED, hb.IMPACT):
+        assert "hand_check_post" not in registry
+    minute, hour = table["pick_contacts"].cron.split()[:2]
+    assert int(hour) * 60 + int(minute) == 5 * 60 + 30 < 5 * 60 + 45 < 12 * 60
+    assert "hand_check_draw" not in hb.WEEKDAY_JOBS  # weekly: its 8 days are counted in wall time
 
 
 def test_next_run_and_the_listing():

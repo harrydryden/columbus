@@ -1,48 +1,97 @@
 """The weekly hand-check on the settings sheet (Harry, 12 Oct 2026: "I don't know how to action these slack
 notifications"; the hand-check asked him to paste `handcheck approve --pull ...` into a terminal for 98 companies).
 
-hand_check_post writes the week's companies to the Hand-check tab, one row each (write), and its Slack post links
-there. Harry picks a decision on each row:
-  * fine            the facts are right: the company's doubts are cleared, and the next company check (verify_accounts,
-                    weekdays 04:30 UK) decides on its facts as usual. A right_hq_state or right_employees typed on the
-                    row goes onto the Overrides tab first (a missing HQ state or size needs one; approving alone cannot
-                    supply it);
-  * leave out       never email it: the company is disqualified (status disqualified, tier Excluded) and pulled from
-                    the week's check;
+hand_check_draw writes the week's companies to the Hand-check tab, one row each (write: appended under every earlier
+week, W0, 19 Oct 2026), and its Slack post links there. The columns (COLUMNS; W1-5, 19 Oct 2026):
+  week, id, domain, name, group, industry, size, state     the company as it was drawn
+  contact, title, opener                                   who enrol would write to, and the line it would open with
+  check, why                                               random sample, or held for doubtful facts, and why
+  decision                                                 fine, leave out or wrong industry (a dropdown)
+  reason                                                   why left out (a dropdown, REASONS); words with spaces count
+  right_label                                              the right industry, for wrong industry (a dropdown)
+  contact_ok, opener_ok                                    yes or no: was the person, and the opening line, right
+  note                                                     Harry's words; a decision that cannot be applied says why
+  applied                                                  what was done and when, with the decision's hash
+  gate_version                                             the labels' and ICP rules' hashes the company passed
+The decisions:
+  * fine            the facts are right: the company's doubts are cleared (the next verify_accounts decides on its
+                    facts as usual). A company this tab left out earlier is put back (verified, or new for a doubtful
+                    one), so a leave out changed to fine is undone;
+  * leave out       never email it: the company is disqualified (tier Excluded, status_reason hand_check, the reason in
+                    tier_reason). One already emailed is not changed: the judgement is still recorded;
   * wrong industry  the industry in right_label is set as an approver's correction (labels.correct: the account, a
-                    label_corrected fact and the Overrides tab), any card it no longer fits is withdrawn, and its doubts
-                    are cleared.
-poll_approvals (every 5 minutes) applies each decided row once (apply) and dates its applied column. When every row of
-the week has a decision, the week's item is marked handled with the left-out companies as its pulls
-(hand_check.approve), which posts the confirmation, as `handcheck approve` does; the command still works.
-A row left blank keeps that company waiting; nothing else waits on it unless auto_send = yes (then enrol waits for the
-whole check, as before).
+                    label_corrected fact and the Overrides tab), and its doubts are cleared.
 
-Every week's rows stay on the tab (write only adds rows; W0, 19 Oct 2026), and `us-outbound handcheck export --live`
-copies every decided row into the database as a hand_check judgement fact (export), so the judgements are kept for
-measuring how often the companies we email are the right ones, whatever happens to the tab.
+poll_approvals (every 5 minutes) runs apply. Each decided row is applied, one at a time, and its own applied cell is
+written as soon as it is done, with a hash of (decision, reason, right_label); a row is applied again whenever that
+hash changes, so a later change is never lost (code-approvals-handcheck-copy B1). A decision that cannot be applied
+(a wrong industry with no right_label, a decision not on the list) leaves applied blank and says why in note, and the
+company stays held; one whose domain has no company says so and counts as settled (B2). Every applied row writes one
+hand_check judgement fact (hand_check.event_id: one per account and week, upserted), so a row applied twice is still
+one fact, and so are the doubt and label facts it writes (B3); a fine is recorded like any other (B4). Errors go to
+hand_check_errors, a list heartbeat_check reads (ops/job_errors.py), and never stop poll_approvals: a Sheets failure
+ends the pass there, and the next poll goes on from the row it stopped at.
+
+A week closes (hand_check.close) once every sampled row is applied or settled, or HOLD_DAYS after the draw; a week
+still open at Wednesday 09:00 UK posts one reminder (hand_check.remind).
+
+Rows applied before 19 Oct 2026 carry no hash; one whose applied text matches its decision is adopted: its judgement
+fact is written and the hash added, and nothing is done to the company again.
+
+`us-outbound handcheck migrate-tab [--live]` (migrate) moves a tab still under the old 15 columns (OLD_COLUMNS) to
+COLUMNS once, after a backup tab; `us-outbound handcheck export --live` (export) copies every decided row into the
+database as judgement facts without applying anything (W0).
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from us_outbound import labels, verify
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.clients.sheets import read_tab, write_tab
+from us_outbound.clients.http import ApiError
+from us_outbound.clients.sheets import a1_tab, column_letter, read_tab, write_tab
 from us_outbound.context import Context
+from us_outbound.enrol.hand_check import (
+    DECISIONS,
+    DOUBT,
+    FACT,
+    FINE,
+    LEAVE_OUT,
+    SAMPLE,
+    SOURCE,
+    WRONG_INDUSTRY,
+    event_id,
+)
 from us_outbound.logs import log
+from us_outbound.scoring.score import score_account
 
 TAB = "Hand-check"
-COLUMNS = ["id", "week", "company", "domain", "check", "why", "hq_state", "size", "industry", "decision",
-           "right_label", "right_hq_state", "right_employees", "note", "applied"]
-FINE, LEAVE_OUT, WRONG_INDUSTRY = DECISIONS = ("fine", "leave out", "wrong industry")
-SAMPLE, DOUBT = "random sample", "doubtful facts"
+COLUMNS = ["week", "id", "domain", "name", "group", "industry", "size", "state", "contact", "title", "opener", "check",
+           "why", "decision", "reason", "right_label", "contact_ok", "opener_ok", "note", "applied", "gate_version"]
+# The tab as it stood until W1-5 (19 Oct 2026), and the old names of two columns that moved.
+OLD_COLUMNS = ["id", "week", "company", "domain", "check", "why", "hq_state", "size", "industry", "decision",
+               "right_label", "right_hq_state", "right_employees", "note", "applied"]
+RENAMED = {"company": "name", "hq_state": "state"}
+OLD_NAME = {new: old for old, new in RENAMED.items()}
+REASONS = ("media_publisher", "subsidiary", "it_services_outsourcing", "not_operating_business", "wrong_size",
+           "wrong_state", "other")
+YES_NO = ("yes", "no")
 BY = "the Hand-check tab"
-OVERRIDES_TAB = "Overrides"
-SOURCE, FACT = "hand_check", "judgement"  # the signal_events rows export writes, one per decided row
+NOT_DONE = "not done: "
+NOTE_JOIN = " — "  # between Harry's note and the code's "not done: ..."
+NO_COMPANY = "no company with this domain"
+EMAILED = frozenset({"enrolled", "engaged"})  # a company already emailed: a leave out records, it changes nothing
 SNAPSHOT = ("tier", "score", "industry_group", "industry", "size_band", "hq_state", "source", "label_source")
+HASH_RE = re.compile(r"·\s*([0-9a-f]{10})\s*$")
+# What the applied column said before W1-5 for each decision: such a row is adopted, not applied again.
+LEGACY_APPLIED = {FINE: ": fine", LEAVE_OUT: ": left out", WRONG_INDUSTRY: ": industry set to "}
+
+__all__ = ["DECISIONS", "DOUBT", "FACT", "FINE", "LEAVE_OUT", "SAMPLE", "SOURCE", "WRONG_INDUSTRY", "event_id"]
 
 
 def row_id(week: str, domain: str) -> str:
@@ -56,13 +105,21 @@ def _size(a: Mapping[str, Any]) -> str:
 
 def rows(ctx: Context, payload: Mapping[str, Any]) -> list[dict[str, str]]:
     """The week's rows: the random sample, then the companies held for doubtful facts that still wait."""
+    from us_outbound.enrol import hand_check
+
     week = str(payload.get("iso_week") or "")
+    version = str(payload.get("gate_version") or "")
     out: list[dict[str, str]] = []
     for a in payload.get("accounts") or ():
-        out.append({"id": row_id(week, a.get("domain") or a["account_id"]), "week": week,
-                    "company": a.get("clean_name") or "", "domain": a.get("domain") or "", "check": SAMPLE,
-                    "why": "picked at random: are the name, HQ state, size, contact and opening line right?",
-                    "hq_state": a.get("hq_state") or "", "size": _size(a), "industry": a.get("industry") or ""})
+        c = a.get("contact") or {}
+        out.append({"week": week, "id": row_id(week, a.get("domain") or a["account_id"]), "domain": a.get("domain") or "",
+                    "name": a.get("clean_name") or "", "group": a.get("industry_group") or "",
+                    "industry": a.get("industry") or "", "size": _size(a), "state": a.get("hq_state") or "",
+                    "contact": c.get("role") or c.get("note") or "", "title": c.get("title") or "",
+                    "opener": hand_check._opener(a), "check": SAMPLE,
+                    "why": "picked at random from those about to be emailed: are the name, HQ state, size, contact "
+                           "and opening line right?",
+                    "gate_version": version})
     doubtful = list(payload.get("doubtful") or ())
     ids = [d["account_id"] for d in doubtful]
     waiting = {a["account_id"]: a for a in ctx.store.select("accounts", {"account_id": ids,
@@ -74,17 +131,26 @@ def rows(ctx: Context, payload: Mapping[str, Any]) -> list[dict[str, str]]:
             continue
         missing = verify.MISSING & set(d.get("reasons") or ())
         why = "; ".join(d.get("reasons") or ())
-        columns = [c for m, c in ((verify.NO_STATE, "right_hq_state"), (verify.NO_SIZE, "right_employees"))
-                   if m in missing]
-        hints = [f"type it in {' and '.join(columns)}, then pick fine"] if columns else []
+        if missing - {verify.NO_INDUSTRY}:
+            why += " (add the missing fact on the Overrides tab: hq_state or employees)"
         if verify.NO_INDUSTRY in missing:
-            hints.append("for the industry, pick wrong industry and the right one in right_label")
-        if hints:
-            why += f" ({'; '.join(hints)})"
-        out.append({"id": row_id(week, d.get("domain") or d["account_id"]), "week": week,
-                    "company": d.get("clean_name") or "", "domain": d.get("domain") or "", "check": DOUBT,
-                    "why": why, "hq_state": d.get("hq_state") or "", "size": _size(d),
-                    "industry": a.get("industry") or ""})
+            why += " (for the industry, pick wrong industry and the right one in right_label)"
+        out.append({"week": week, "id": row_id(week, d.get("domain") or d["account_id"]), "domain": d.get("domain") or "",
+                    "name": d.get("clean_name") or "", "group": ctx.settings.industry_group_of(a),
+                    "industry": a.get("industry") or "", "size": _size(d), "state": d.get("hq_state") or "",
+                    "check": DOUBT, "why": why, "gate_version": version})
+    return out
+
+
+def _fit(row: Mapping[str, str], header: Sequence[str]) -> dict[str, str]:
+    """A row's cells placed by the tab's header: under the new names, or under the old names on a tab not migrated
+    yet (company, hq_state). A column the tab does not have is left out, so the append never fails on it."""
+    out: dict[str, str] = {}
+    for k, v in row.items():
+        if k in header:
+            out[k] = v
+        elif OLD_NAME.get(k) in header:
+            out[OLD_NAME[k]] = v
     return out
 
 
@@ -92,10 +158,10 @@ def write(ctx: Context, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Add the week's rows under the rows already on the tab. Live only.
 
     Append-only (W0, 19 Oct 2026; code-approvals-handcheck-copy B4): the tab is the only record of what Harry
-    judged, and a "fine" is stored nowhere else, so no week's rows are ever cleared or rewritten. A row of this week
-    already there (a rerun, or apply writing a week posted before the tab existed) is left exactly as it is, its
-    decision with it; only rows not yet on the tab are added. The tab is written whole only when it has no rows at
-    all (it is new, or only its header is there), as there is nothing on it to lose."""
+    judged that a person can read, so no week's rows are ever cleared or rewritten. A row of this week already there
+    (a rerun, or apply writing a week whose write failed) is left exactly as it is, its decision with it; only rows not
+    yet on the tab are added, each placed under the header as it stands (_fit). The tab is written whole only when it
+    has no rows at all (it is new, or only its header is there), as there is nothing on it to lose."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new = rows(ctx, payload)
     if not sheet_id or not ctx.live:
@@ -107,7 +173,8 @@ def write(ctx: Context, payload: Mapping[str, Any]) -> dict[str, Any]:
         if not kept:
             write_tab(ctx.clients.sheets, sheet_id, TAB, COLUMNS, added, kept)
         elif added:
-            ctx.clients.sheets.append_rows(sheet_id, TAB, added)
+            header = list(kept[0])
+            ctx.clients.sheets.append_rows(sheet_id, TAB, [_fit(r, header) for r in added])
     except GuardViolation:
         raise
     except Exception as exc:  # the post still goes; the next poll_approvals writes the rows (apply)
@@ -116,22 +183,117 @@ def write(ctx: Context, payload: Mapping[str, Any]) -> dict[str, Any]:
     return {"rows": len(new), "added": len(added), "written": True}
 
 
-def event_id(week: str, account_id: str) -> str:
-    return f"{SOURCE}:{week}:{account_id}"
+# -- reading a row -------------------------------------------------------------------------------------
+
+
+def _decision(r: Mapping[str, Any]) -> str:
+    return " ".join(str(r.get("decision") or "").lower().split())
+
+
+def _reason(r: Mapping[str, Any]) -> str:
+    """The reason as one of REASONS ("media publisher" and "Media-Publisher" are media_publisher), "" when blank, and
+    other for words that are none of them (the words themselves are kept in the fact's reason_text)."""
+    words = "_".join(re.split(r"[\s\-_/]+", str(r.get("reason") or "").strip().lower())).strip("_")
+    if not words:
+        return ""
+    return words if words in REASONS else "other"
+
+
+def _yes_no(v: Any) -> str:
+    t = str(v or "").strip().lower()
+    return "yes" if t in {"yes", "y", "ok", "right", "true"} else "no" if t in {"no", "n", "wrong", "false"} else ""
+
+
+def _hash(r: Mapping[str, Any]) -> str:
+    """What the applied cell records of the decision: a change to any of these applies the row again."""
+    key = "|".join((_decision(r), _reason(r), " ".join(str(r.get("right_label") or "").lower().split())))
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+
+
+def _stamp(r: Mapping[str, Any]) -> str | None:
+    m = HASH_RE.search(str(r.get("applied") or ""))
+    return m.group(1) if m else None
+
+
+def _done(r: Mapping[str, Any]) -> bool:
+    """The row's decision, as it stands, has been applied."""
+    return bool(_decision(r)) and _stamp(r) == _hash(r)
+
+
+def _legacy(r: Mapping[str, Any]) -> bool:
+    """A row applied before W1-5 (no hash), whose applied text says its decision was done."""
+    text = str(r.get("applied") or "").strip()
+    marker = LEGACY_APPLIED.get(_decision(r))
+    return bool(text) and marker is not None and _stamp(r) is None and not text.startswith(NOT_DONE) and marker in text
+
+
+def _harrys(note: Any) -> str:
+    """The note without the code's "not done: ..." part."""
+    text = str(note or "").strip()
+    if text.startswith(NOT_DONE):
+        return ""
+    i = text.find(NOTE_JOIN + NOT_DONE)
+    return text[:i].rstrip() if i >= 0 else text
+
+
+def _with_why(note: Any, why: str) -> str:
+    mine = _harrys(note)
+    return f"{mine}{NOTE_JOIN}{NOT_DONE}{why}" if mine else f"{NOT_DONE}{why}"
+
+
+def _domain(r: Mapping[str, Any]) -> str:
+    return str(r.get("domain") or "").strip().lower()
+
+
+def _account(ctx: Context, domain: str) -> dict | None:
+    found = ctx.store.select("accounts", {"domain": domain}) if domain else []
+    return dict(found[0]) if found else None
+
+
+# -- the judgement facts ----------------------------------------------------------------------------
+
+
+def judgement(ctx: Context, r: Mapping[str, Any], a: Mapping[str, Any], week: str) -> dict[str, Any]:
+    """One row's judgement fact (W0's shape, plus the reason, the contact and opener answers and the gate version),
+    with a snapshot of the company as it stood before the decision did anything to it."""
+    from us_outbound.enrol import hand_check
+
+    reason = _reason(r)
+    typed = str(r.get("reason") or "").strip()
+    value = {"week": week, "row_id": str(r.get("id") or ""), "check": str(r.get("check") or ""),
+             "decision": _decision(r), "reason": reason, "right_label": str(r.get("right_label") or "").strip(),
+             "contact_ok": _yes_no(r.get("contact_ok")), "opener_ok": _yes_no(r.get("opener_ok")),
+             "note": _harrys(r.get("note")),
+             "gate_version": str(r.get("gate_version") or "").strip() or hand_check.gate_version(ctx),
+             "snapshot": {c: a.get(c) for c in SNAPSHOT}}
+    if reason == "other" and typed.lower() != "other":
+        value["reason_text"] = typed
+    eid = event_id(week, str(a["account_id"]))
+    return {"event_id": eid, "account_id": a["account_id"], "source": SOURCE, "fact": FACT, "value": value,
+            "quote": f"{week}: {value['decision']}", "source_url": "", "observed_at": ctx.now}
+
+
+def _keep_first(ctx: Context, facts: Sequence[dict]) -> list[dict]:
+    """The facts with the first one's snapshot and time kept, where one was written before: exporting or applying
+    again is safe, and a changed decision is the one kept."""
+    before = {e["event_id"]: e for e in ctx.store.select("signal_events", {"event_id": [f["event_id"] for f in facts]})} \
+        if facts else {}
+    for fact in facts:
+        old = before.get(fact["event_id"])
+        if old is not None and isinstance(old.get("value"), Mapping):
+            fact["value"]["snapshot"] = old["value"].get("snapshot", fact["value"]["snapshot"])
+            fact["observed_at"] = old.get("observed_at") or fact["observed_at"]
+    return list(facts)
 
 
 def export(ctx: Context) -> dict[str, Any]:
     """`us-outbound handcheck export [--live]`: one hand_check judgement fact per decided row of the Hand-check tab,
     every week's (W0, 19 Oct 2026; the database half of the fix for code-approvals-handcheck-copy B4).
 
-    The tab was the only place a judgement lived, and a "fine" left no trace in the database, so the precision of the
-    companies we email could be measured from nothing else. Each fact (signal_events: source hand_check, fact
-    judgement, event_id hand_check:{week}:{account_id}) holds the row's week, check, decision, right_label and note,
-    and a snapshot of the company as it stands at its first export (tier, score, group, industry, size band, HQ state,
-    source, label source). A second export updates the decision cells and keeps the first snapshot and time, so
-    exporting again is safe and a changed decision is the one kept. Rows with no decision are not exported; a row
-    whose domain has no company, or whose decision is not one of DECISIONS, is skipped with the reason. Dry-run counts
-    what it would write and writes nothing."""
+    The facts are the ones apply writes (judgement), so exporting after apply changes nothing but a decision typed
+    since; the companies are not touched. A second export updates the decision cells and keeps the first snapshot and
+    time. Rows with no decision are not exported; a row whose domain has no company, or whose decision is not one of
+    DECISIONS, is skipped with the reason. Dry-run counts what it would write and writes nothing."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         raise LookupError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
@@ -139,39 +301,29 @@ def export(ctx: Context) -> dict[str, Any]:
     if tab is None:
         raise LookupError(f"the settings sheet has no {TAB} tab")
     decided = [r for r in tab if _decision(r)]
-    domains = sorted({str(r.get("domain") or "").strip().lower() for r in decided} - {""})
+    domains = sorted({_domain(r) for r in decided} - {""})
     found = {str(a.get("domain") or "").strip().lower(): dict(a)
              for a in (ctx.store.select("accounts", {"domain": domains}) if domains else [])}
     facts: dict[str, dict[str, Any]] = {}
     skipped: list[dict[str, str]] = []
     for r in decided:
-        decision, domain, week = _decision(r), str(r.get("domain") or "").strip().lower(), str(r.get("week") or "")
+        decision, domain, week = _decision(r), _domain(r), str(r.get("week") or "")
         a = found.get(domain)
         why = ("the decision must be one of " + ", ".join(DECISIONS) if decision not in DECISIONS
-               else "no week on the row" if not week.strip() else "no company with this domain" if a is None else "")
+               else "no week on the row" if not week.strip() else NO_COMPANY if a is None else "")
         if why:
             skipped.append({"id": str(r.get("id") or ""), "domain": domain, "why": why})
             continue
-        a = found[domain]
-        eid = event_id(week, str(a["account_id"]))
-        facts[eid] = {"event_id": eid, "account_id": a["account_id"], "source": SOURCE, "fact": FACT,
-                      "value": {"week": week, "row_id": str(r.get("id") or ""), "check": str(r.get("check") or ""),
-                                "decision": decision, "right_label": str(r.get("right_label") or "").strip(),
-                                "note": str(r.get("note") or "").strip(),
-                                "snapshot": {c: a.get(c) for c in SNAPSHOT}},
-                      "quote": f"{week}: {decision}", "source_url": "", "observed_at": ctx.now}
-    before = {e["event_id"]: e for e in ctx.store.select("signal_events", {"event_id": list(facts)})} if facts else {}
-    for eid, fact in facts.items():  # the first export's snapshot and time stand
-        old = before.get(eid)
-        if old is not None and isinstance(old.get("value"), Mapping):
-            fact["value"]["snapshot"] = old["value"].get("snapshot", fact["value"]["snapshot"])
-            fact["observed_at"] = old.get("observed_at") or fact["observed_at"]
+        fact = judgement(ctx, r, found[domain], week)
+        facts[fact["event_id"]] = fact
+    known = {e["event_id"] for e in ctx.store.select("signal_events", {"event_id": list(facts)})} if facts else set()
+    _keep_first(ctx, list(facts.values()))
     weeks: dict[str, dict[str, int]] = {}
     for fact in facts.values():
         count = weeks.setdefault(fact["value"]["week"], {})
         count[fact["value"]["decision"]] = count.get(fact["value"]["decision"], 0) + 1
     out = {"dry_run": ctx.dry_run, "rows": len(tab), "decided": len(decided), "facts": len(facts),
-           "new": sum(1 for e in facts if e not in before), "already": sum(1 for e in facts if e in before),
+           "new": sum(1 for e in facts if e not in known), "already": sum(1 for e in facts if e in known),
            "weeks": dict(sorted(weeks.items())), "skipped": skipped, "written": False}
     if ctx.live and facts:
         ctx.store.upsert("signal_events", list(facts.values()))
@@ -182,7 +334,8 @@ def export(ctx: Context) -> dict[str, Any]:
 
 
 def undecided(ctx: Context, week: str) -> int | None:
-    """How many of the week's rows still need a decision; None when the tab cannot be read or has none of the week."""
+    """How many of the week's rows still need a decision (none, or one that could not be applied); None when the tab
+    cannot be read or has none of the week."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
     if not sheet_id:
         return None
@@ -195,135 +348,295 @@ def undecided(ctx: Context, week: str) -> int | None:
     mine = [r for r in tab or [] if str(r.get("week")) == week]
     if not mine:  # not written yet: the item's own count stands
         return None
-    return sum(1 for r in mine if not _decision(r) and not str(r.get("applied") or "").strip())
+    return sum(1 for r in mine if not _done(r) and not _legacy(r))
 
 
-def _decision(r: Mapping[str, Any]) -> str:
-    return " ".join(str(r.get("decision") or "").lower().split())
+# -- applying a row ------------------------------------------------------------------------------------
 
 
-def _account(ctx: Context, domain: str) -> dict | None:
-    found = ctx.store.select("accounts", {"domain": domain.strip().lower()})
-    return dict(found[0]) if found else None
+@dataclass
+class Outcome:
+    done: str = ""  # what was done, for the applied cell; "" when nothing could be
+    why: str = ""  # why not, for the note
+    settled: bool = False  # nothing left to apply: no company has the row's domain
 
 
-def _settled(ctx: Context, tab_rows: Sequence[Mapping[str, Any]]) -> list[dict]:
-    """The rows whose company no longer waits (the label check left it out, or it was verified), with its status."""
-    domains = [str(r.get("domain") or "").strip().lower() for r in tab_rows if r.get("domain")]
-    if not domains:
-        return []
-    status = {str(a.get("domain") or "").lower(): str(a.get("status") or "")
-              for a in ctx.store.select("accounts", {"domain": domains})}
-    return [{**r, "_status": status[d]} for r in tab_rows
-            if (d := str(r.get("domain") or "").strip().lower()) in status and status[d] not in verify.WAITING_STATUSES]
+def _left_out_here(a: Mapping[str, Any]) -> bool:
+    """Disqualified by this tab (status_reason hand_check; before W1-5, the tier_reason said so)."""
+    return a.get("status") == "disqualified" and (
+        a.get("status_reason") == "hand_check"
+        or str(a.get("tier_reason") or "").startswith(("hand_check:", "left out at the hand-check")))
 
 
-def _overrides(ctx: Context, sheet_id: str, domain: str, r: Mapping[str, Any]) -> list[str]:
-    """The Overrides rows a "fine" row's corrections need (HQ state, employees); their field names."""
-    out = []
-    for column, field in (("right_hq_state", "hq_state"), ("right_employees", "employees")):
-        value = str(r.get(column) or "").strip()
-        if not value:
-            continue
-        if not ctx.clients.sheets.update_cell(sheet_id, OVERRIDES_TAB, {"domain": domain, "field": field}, "value",
-                                              value):
-            ctx.clients.sheets.append_rows(sheet_id, OVERRIDES_TAB, [{"domain": domain, "field": field, "value": value,
-                                                                      "note": f"from {BY}"}])
-        out.append(field)
-    return out
+def _put_back(ctx: Context, a: Mapping[str, Any], check: str) -> str:
+    """Undo this tab's leave out: a sampled company back to verified (it had passed verify), a doubtful one to new
+    (verify_accounts decides on it again), scored now so it is in the queue for the next enrol."""
+    status = "verified" if check == SAMPLE else "new"
+    back = {**a, "status": status, "status_reason": None}
+    events = ctx.store.select("signal_events", {"account_id": a["account_id"]})
+    r = score_account(back, events, ctx.settings, ctx.today_uk())
+    ctx.store.upsert("accounts", [{"account_id": a["account_id"], "status": status, "status_reason": None,
+                                   "score": r.score, "tier": r.tier, "tier_reason": r.tier_reason}])
+    return status
 
 
 def _doubts(payload: Mapping[str, Any], account_id: str) -> list[dict]:
     return [d for d in payload.get("doubtful") or () if d.get("account_id") == account_id]
 
 
-def _apply_row(ctx: Context, sheet_id: str, payload: Mapping[str, Any], week: str, r: Mapping[str, Any]) -> str:
-    """Do what one decided row says; the text for its applied column (or why it could not be done)."""
-    from us_outbound.enrol import approvals  # the card withdrawal, after a label change
+def _apply_row(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | None) -> Outcome:
+    """Do what one decided row says, and write its judgement fact."""
+    from us_outbound.enrol import approvals, hand_check  # the card withdrawal, after a label change
 
-    decision, domain = _decision(r), str(r.get("domain") or "").strip().lower()
+    decision, domain, week = _decision(r), _domain(r), str(r.get("week") or "").strip()
+    if decision not in DECISIONS:
+        return Outcome(why=f"the decision must be one of {', '.join(DECISIONS)}")
     a = _account(ctx, domain)
     if a is None:
-        return "not done: no company with this domain"
-    day = ctx.today_uk().isoformat()
-    if decision == LEAVE_OUT:
-        ctx.store.upsert("accounts", [{"account_id": a["account_id"], "status": "disqualified", "tier": "Excluded",
-                                       "tier_reason": f"left out at the hand-check ({week})"}])
-        return f"{day}: left out"
+        return Outcome(why=NO_COMPANY, settled=True)
+    ind = None
     if decision == WRONG_INDUSTRY:
         ind = labels.resolve(str(r.get("right_label") or ""), ctx.settings)
         if ind is None:
-            return "not done: pick the right industry in right_label"
-        labels.correct(ctx, a, ind, by=BY, via="sheet", who=f"on the {TAB} tab")
-        found = approvals.unfit_cards(ctx, {a["account_id"]: ctx.store.get("accounts", account_id=a["account_id"])})
-        approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx), found)
-        verify.clear_doubts(ctx, _doubts(payload, a["account_id"]), BY, week)
-        return f"{day}: industry set to {ind.industry}"
-    if decision == FINE:
-        fixed = _overrides(ctx, sheet_id, domain, r)
-        verify.clear_doubts(ctx, _doubts(payload, a["account_id"]), BY, week)
-        return f"{day}: fine" + (f"; {' and '.join(fixed)} added to the Overrides tab" if fixed else "")
-    return f"not done: decision must be one of {', '.join(DECISIONS)}"
+            return Outcome(why="pick the right industry in right_label")
+    fact = _keep_first(ctx, [judgement(ctx, r, a, week)])[0]  # the snapshot before the decision changes the company
+    payload = dict((item or {}).get("payload") or {})
+    reason = _reason(r)
+    aid = str(a["account_id"])
+    if decision == LEAVE_OUT:
+        if a.get("status") in EMAILED:
+            done = "left out, but it was emailed already, so only the judgement is recorded"
+        else:
+            ctx.store.upsert("accounts", [{"account_id": aid, "status": "disqualified", "tier": "Excluded",
+                                           "status_reason": "hand_check",
+                                           "tier_reason": f"hand_check: {reason or 'no reason given'} ({week})"}])
+            done = f"left out ({reason})" if reason else "left out"
+    else:
+        back = _put_back(ctx, a, str(r.get("check") or "")) if _left_out_here(a) else ""
+        if ind is not None:
+            labels.correct(ctx, a, ind, by=BY, via="sheet", who=f"on the {TAB} tab", week=week)
+            found = approvals.unfit_cards(ctx, {aid: ctx.store.get("accounts", account_id=aid)})
+            approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx), found)
+            done = f"industry set to {ind.industry}"
+        else:
+            done = "fine"
+        verify.clear_doubts(ctx, _doubts(payload, aid), BY, week)
+        if back:
+            done += f"; back to {back}"
+    ctx.store.upsert("signal_events", [fact])
+    hand_check.pull(ctx, item, aid, out=decision == LEAVE_OUT)
+    return Outcome(done=f"{ctx.today_uk().isoformat()}: {done}")
+
+
+def _adopt(ctx: Context, r: Mapping[str, Any]) -> bool:
+    """A row applied before W1-5: its judgement fact, and nothing done to the company. False when it has no company."""
+    a = _account(ctx, _domain(r))
+    if a is None:
+        return False
+    ctx.store.upsert("signal_events", _keep_first(ctx, [judgement(ctx, r, a, str(r.get("week") or "").strip())]))
+    return True
+
+
+def _write(ctx: Context, sheet_id: str, r: dict, cells: Mapping[str, str]) -> None:
+    """Write the cells that change on this row, and keep them on r so the rest of the pass reads the tab as it is."""
+    change = {k: v for k, v in cells.items() if str(r.get(k) or "") != v}
+    if change:
+        ctx.clients.sheets.update_rows(sheet_id, TAB, "id", {str(r["id"]).strip(): change})
+        r.update(change)
+
+
+def _settled(r: Mapping[str, Any], status: Mapping[str, str]) -> bool:
+    """Nothing left for Harry on the row: its decision is applied, its company is not on file, or (a doubtful row)
+    the company no longer waits for him."""
+    if _done(r) or _legacy(r):
+        return True
+    d = _domain(r)
+    if _decision(r) and d not in status:
+        return True
+    return r.get("check") == DOUBT and d in status and status[d] not in verify.WAITING_STATUSES
 
 
 def apply(ctx: Context) -> dict[str, Any]:
-    """Apply the decided, not yet applied rows of this week's open hand-check; close the week once every row has a
-    decision. Live only (a dry run reports what it would do). Never raises but a GuardViolation: poll_approvals goes
-    on."""
-    from us_outbound.enrol import hand_check
+    """Apply every decided row of the tab whose decision is not applied as it stands, one at a time; close the weeks
+    that are done or HOLD_DAYS old; remind once about this week's. Live only (a dry run reports what it would apply).
+    Never raises but a GuardViolation: poll_approvals goes on, and every failure is in hand_check_errors."""
+    from us_outbound.enrol import enrol, hand_check
 
-    out: dict[str, Any] = {"applied": [], "closed": False}
+    out: dict[str, Any] = {"applied": [], "not_done": [], "adopted": 0, "closed": [], "hand_check_errors": []}
+    errors: list[str] = out["hand_check_errors"]
     sheet_id = ctx.guard.bounds.settings_sheet_id
-    week = hand_check.this_week(ctx)
-    item = hand_check.current(ctx, week)
-    if ctx.live and ctx.settings.general.auto_send and (item is None or hand_check.needs_sample(ctx, item)):
-        # auto_send switched on mid-week: enrol waits for the week's sample, so post it now rather than on Monday
-        out["posted"] = hand_check.post(ctx).get("status")
-        item = hand_check.current(ctx, week)
-    if not sheet_id or item is None or item.get("status") == "handled":
+    if not sheet_id:
         return out
+    week = hand_check.this_week(ctx)
+    by_week: dict[str, dict] = {}
+    for it in hand_check.items(ctx):
+        w = enrol._item_week(it)
+        if w not in by_week or it.get("item_id") == hand_check.item_id(w):
+            by_week[w] = it
     try:
-        payload = dict(item.get("payload") or {})
         tab = read_tab(ctx.clients.sheets, sheet_id, TAB) or []
-        mine = [r for r in tab if str(r.get("week")) == week]
-        if not mine and ctx.live:  # a week posted before the tab existed, or the tab cleared: put its rows there
-            write(ctx, payload)
+        item = by_week.get(week)
+        if (item is not None and item.get("status") != "handled" and ctx.live
+                and not any(str(r.get("week")) == week for r in tab)):
+            # A week recorded but not on the tab (its write failed, or the tab was cleared): put its rows there.
+            write(ctx, item.get("payload") or {})
             tab = read_tab(ctx.clients.sheets, sheet_id, TAB) or []
-            mine = [r for r in tab if str(r.get("week")) == week]
-            out["written"] = len(mine)
-        todo = [r for r in mine if _decision(r) and not str(r.get("applied") or "").strip()]
-        if not ctx.live:
-            out["would_apply"] = [f"{r.get('domain')}: {_decision(r)}" for r in todo]
-            return out
-        done: dict[str, dict[str, str]] = {}
-        for r in todo:
-            done[str(r["id"])] = {"applied": _apply_row(ctx, sheet_id, payload, week, r)}
-        settled = _settled(ctx, [r for r in mine if not _decision(r) and not str(r.get("applied") or "").strip()
-                                 and r.get("check") == DOUBT])
-        for r in settled:  # verified, left out or disqualified since the row was written: nothing left to decide
-            done[str(r["id"])] = {"applied": f"{ctx.today_uk().isoformat()}: settled without you ({r['_status']})"}
-        # 10 sample rows a week are enough (Harry, 19 Oct 2026; hand_check.WEEKLY_SAMPLE): a week drawn before then,
-        # with more, closes once 10 have a decision, and its other sample rows need none.
-        samples = [r for r in mine if r.get("check") == SAMPLE]
-        if sum(1 for r in samples if _decision(r)) >= hand_check.WEEKLY_SAMPLE:
-            for r in samples:
-                if not _decision(r) and not str(r.get("applied") or "").strip() and str(r["id"]) not in done:
-                    done[str(r["id"])] = {"applied": f"{ctx.today_uk().isoformat()}: not needed, "
-                                                     f"{hand_check.WEEKLY_SAMPLE} checked this week"}
-        if done:
-            ctx.clients.sheets.update_rows(sheet_id, TAB, "id", done)
-            out["applied"] = sorted(done)
-        if mine and all(_decision(r) or str(r.get("applied") or "").strip() or str(r["id"]) in done for r in mine):
-            left_out = [str(r.get("domain")) for r in mine if _decision(r) == LEAVE_OUT]
-            hand_check.approve(ctx, left_out, BY, clear=False)
-            out["closed"] = True
+            out["written"] = sum(1 for r in tab if str(r.get("week")) == week)
     except GuardViolation:
         raise
-    except Exception as exc:  # the sheet or the database: the replies and cards must still be worked
-        out["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
-        log("hand_check_tab_failed", error=out["error"])
+    except Exception as exc:  # the sheet: the replies and cards must still be worked
+        errors.append(f"reading the {TAB} tab: {type(exc).__name__}: {str(exc)[:160]}")
+        log("hand_check_tab_failed", error=errors[-1])
         return out
-    if out["applied"] or out["closed"]:
-        log("hand_check_tab", run_id=ctx.run_id, week=week, applied=out["applied"], closed=out["closed"])
+    todo = [r for r in tab if _decision(r) and not _done(r)]
+    if not ctx.live:
+        out["would_apply"] = [f"{r.get('domain')}: {_decision(r)}" for r in todo if not _legacy(r)]
+        return out
+    adopted: dict[str, dict[str, str]] = {}
+    for r in todo:
+        rid = str(r.get("id") or "").strip()
+        if not rid:
+            errors.append(f"a row for {r.get('domain') or 'no domain'} has no id, so it cannot be marked applied")
+            continue
+        try:
+            if _legacy(r):
+                if _adopt(ctx, r):
+                    adopted[rid] = {"applied": f"{str(r.get('applied')).strip()} · {_hash(r)}"}
+                continue
+            got = _apply_row(ctx, r, by_week.get(str(r.get("week") or "").strip()))
+        except GuardViolation:
+            raise
+        except Exception as exc:  # this row's trouble: the others go on, and the next poll tries it again
+            errors.append(f"{rid}: {type(exc).__name__}: {str(exc)[:160]}")
+            continue
+        if got.done:
+            cells = {"applied": f"{got.done} · {_hash(r)}", "note": _harrys(r.get("note"))}
+            out["applied"].append(rid)
+        else:
+            cells = {"applied": "", "note": _with_why(r.get("note"), got.why)}
+            out["not_done"].append(rid)
+        try:
+            _write(ctx, sheet_id, r, cells)
+        except GuardViolation:
+            raise
+        except ValueError as exc:  # this row's id is on the tab twice, or a column is missing: the others go on
+            errors.append(f"{rid}: {str(exc)[:160]}")
+        except (ApiError, OSError) as exc:  # the sheet is failing: stop here; the next poll goes on from this row
+            errors.append(f"{rid}: the {TAB} tab could not be written ({type(exc).__name__}: {str(exc)[:120]})")
+            break
+    if adopted:
+        try:
+            ctx.clients.sheets.update_rows(sheet_id, TAB, "id", adopted)
+            for r in tab:
+                r.update(adopted.get(str(r.get("id") or "").strip(), {}))
+            out["adopted"] = len(adopted)
+        except GuardViolation:
+            raise
+        except Exception as exc:
+            errors.append(f"marking {len(adopted)} earlier rows: {type(exc).__name__}: {str(exc)[:120]}")
+    try:
+        _close_and_remind(ctx, tab, by_week, week, out)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        errors.append(f"closing the week: {type(exc).__name__}: {str(exc)[:160]}")
+    if out["applied"] or out["closed"] or out["adopted"] or errors:
+        log("hand_check_tab", run_id=ctx.run_id, week=week, applied=out["applied"], not_done=out["not_done"],
+            adopted=out["adopted"], closed=out["closed"], errors=errors[:5])
     return out
 
+
+def _close_and_remind(ctx: Context, tab: Sequence[dict], by_week: Mapping[str, dict], week: str,
+                      out: dict[str, Any]) -> None:
+    """Close each open week whose rows are all settled, or that is HOLD_DAYS old; remind once about this week's."""
+    from us_outbound.enrol import hand_check
+
+    domains = sorted({_domain(r) for r in tab} - {""})
+    status = {str(a.get("domain") or "").strip().lower(): str(a.get("status") or "")
+              for a in (ctx.store.select("accounts", {"domain": domains}) if domains else [])}
+    for w, it in sorted(by_week.items()):
+        if it.get("status") == "handled":
+            continue
+        mine = [r for r in tab if str(r.get("week")) == w]
+        samples = [r for r in mine if r.get("check") == SAMPLE]
+        counted = samples or [r for r in mine if r.get("check") == DOUBT]
+        waiting = sum(1 for r in counted if not _settled(r, status))
+        # Every drawn company has its row (a write that failed has not put them there yet): counted, not matched by
+        # domain, as Harry may have corrected a row's domain.
+        drawn = len((it.get("payload") or {}).get("accounts") or ())
+        if counted and not waiting and len(samples) >= drawn:
+            hand_check.close(ctx, it, BY)
+            out["closed"].append(w)
+        elif hand_check.expired(ctx, it):
+            hand_check.close(ctx, it, BY, announce=False)
+            out["closed"].append(w)
+        elif w == week and mine:
+            sent = hand_check.remind(ctx, it, waiting)
+            if sent is not None:
+                out["reminded"] = waiting
+
+
+# -- the one-off header move ---------------------------------------------------------------------------------
+
+
+def _header_after(before: Sequence[str], tab: Sequence[Mapping[str, str]]) -> list[str]:
+    """COLUMNS, then any column of the old tab that has no place in them and holds a value in some row (a column Harry
+    added, or right_hq_state where one was typed), so no value is lost; an empty one is dropped."""
+    placed = set(COLUMNS) | set(RENAMED)
+    extra = [c for c in before if c not in placed and any(str(r.get(c) or "").strip() for r in tab)]
+    return [*COLUMNS, *extra]
+
+
+def dropdowns(ctx: Context, sheet_id: str, header: Sequence[str]) -> dict[str, Sequence[str] | str]:
+    """The tab's dropdowns: decision, reason, contact_ok and opener_ok from their lists, and right_label from the
+    Industries tab's industry column."""
+    out: dict[str, Sequence[str] | str] = {"decision": DECISIONS, "reason": REASONS, "contact_ok": YES_NO,
+                                           "opener_ok": YES_NO}
+    industries = read_tab(ctx.clients.sheets, sheet_id, "Industries") or []
+    if industries and "industry" in industries[0]:
+        letter = column_letter(list(industries[0]).index("industry"))
+        out["right_label"] = f"{a1_tab('Industries')}!{letter}2:{letter}"
+    return {k: v for k, v in out.items() if k in header}
+
+
+def migrate(ctx: Context) -> dict[str, Any]:
+    """`us-outbound handcheck migrate-tab [--live]`: move the tab to COLUMNS, once (W1-5, 19 Oct 2026; RS §2 W1-5).
+
+    The tab's columns live here, not in `settings load` (settings/load.LOADABLE), so a new column never arrives by
+    itself, and rows written under the old header would put values in the wrong places. Live: a backup tab
+    "Hand-check backup <date>" gets the tab exactly as it is; then the tab is rewritten with the new header and every
+    row's values under their columns (company becomes name, hq_state state; a column with no place and a value
+    somewhere is kept at the right); then the dropdowns are set again on the columns' new places. A tab already under
+    COLUMNS is left as it is (its dropdowns are set again, live). Dry-run prints the header before and after. Run it on
+    a day after the week's rows are decided: a decision typed while it runs could be lost."""
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not sheet_id:
+        raise LookupError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
+    sheets = ctx.clients.sheets
+    tab = read_tab(sheets, sheet_id, TAB)
+    if tab is None:
+        raise LookupError(f"the settings sheet has no {TAB} tab")
+    before = list(tab[0]) if tab else []
+    already = before[: len(COLUMNS)] == COLUMNS
+    after = before if already else _header_after(before, tab)
+    moved = [{h: str({RENAMED.get(k, k): v for k, v in r.items()}.get(h, "")) for h in after} for r in tab]
+    backup = f"{TAB} backup {ctx.today_uk().isoformat()}"
+    out: dict[str, Any] = {"dry_run": ctx.dry_run, "rows": len(tab), "before": before, "after": after,
+                           "already": already, "backup": None if already else backup, "written": False}
+    if not ctx.live:
+        return out
+    if not already:
+        write_tab(sheets, sheet_id, backup, before or OLD_COLUMNS, tab, None)  # added, then written as it stood
+        sheets.replace_tab(sheet_id, TAB, after, moved)
+        out["written"] = True
+    try:
+        sheets.set_validation(sheet_id, TAB, after, dropdowns(ctx, sheet_id, after))
+        out["dropdowns"] = True
+    except GuardViolation:
+        raise
+    except Exception as exc:  # the rows are moved; Harry can set the dropdowns by hand
+        out["dropdowns"] = False
+        out["dropdowns_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+    log("hand_check_tab_migrated", run_id=ctx.run_id, rows=len(tab), already=already, written=out["written"],
+        dropdowns=out["dropdowns"])
+    return out

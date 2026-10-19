@@ -24,8 +24,8 @@ the arm: ✅ records it on the contact, and the item's outcome approved_edited s
 counts it in its arm, and says how many were).
 Waiting items hold their sender's slots today and their place in the week (limits.today), and
 an account with one waiting is not proposed again. With auto_send = no the weekly hand-check is not
-a gate (every email is approved anyway): hand_check_post records only the accounts verify_accounts
-held for doubtful facts, and golive's Hand-check line passes. A second contact at an account (General
+a gate (every email is approved anyway): it still draws its sample to judge (enrol/hand_check.py),
+and golive leaves its Hand-check line out. A second contact at an account (General
 second_contact; enrol/second.py; Harry, 6 Oct 2026) waits for its own ✅ like any email: its card is headed
 "Send approval · second contact" and says who the first contact was and when their email 1 went; 🚫 on it
 stops any further contact with the company, not the first person's emails.

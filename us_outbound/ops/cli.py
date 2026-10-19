@@ -66,6 +66,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
   handcheck export [--live]           every decided Hand-check row, every week's, as a judgement fact in
                                       the database (enrol/hand_check_tab.export); dry-run counts them
+  handcheck migrate-tab [--live]      the Hand-check tab moved to its new columns once, after a backup tab,
+                                      and its dropdowns set (enrol/hand_check_tab.migrate); dry-run prints
+                                      the header before and after
   clay check-email --first NAME       one Work Email lookup through Clay's API for a Spill colleague's own
     --last NAME --domain DOMAIN       name (never a prospect), to confirm the email fallback before
     [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
@@ -96,7 +99,7 @@ Dry-run is the default everywhere. Two kinds of live:
     sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
     test start, settings bootstrap|load, copy qa|draft, campaigns ensure,
-    handcheck show|approve|export, killrules clear, replies skip, approvals contact|company|reject, capture check,
+    handcheck show|approve|export|migrate-tab, killrules clear, replies skip, approvals contact|company|reject, capture check,
     clay check-email): --live alone, so the phase-0 setup and the kill switch work while
     live_sending is still no.
     `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
@@ -177,7 +180,7 @@ JOBS: dict[str, str] = {
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
-    "hand_check_post": "us_outbound.enrol.hand_check:post",  # SPEC 11 weekly hand-check, Mondays
+    "hand_check_draw": "us_outbound.enrol.hand_check:run",  # SPEC 11 weekly hand-check, Mondays (W1-5)
     "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
     # Harry, 11 Oct 2026: a batch of companies to judge by hand each month, last month's scored, to Slack.
     "label_sample_monthly": "us_outbound.ops.label_sample:monthly",
@@ -1487,11 +1490,11 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         summary = run_job(ctx, show)
         payload = holder.get("payload") or {}
         if not hand_check.has_work(payload):
-            why = (f"{hand_check.AUTO_SEND_OFF}, and no account is held for doubtful facts"
-                   if not ctx.settings.general.auto_send else "no queued or verified account in an active industry group")
-            print(f"Hand-check {summary['iso_week']}: nothing to check ({why}).")
+            print(f"Hand-check {summary['iso_week']}: nothing to check (no company is ready to email beyond today's, "
+                  "and none is held for doubtful facts).")
             return 0
-        print(hand_check.text(payload, detailed=True))
+        for line in hand_check.lines(payload):
+            print(line)
         if summary["status"] == "not recorded":
             print("Not recorded yet: `us-outbound handcheck approve --live` records this sample and approves it.")
         else:
@@ -1499,6 +1502,22 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if args.pull and args.action != "approve":
         raise Refused("--pull goes with approve")
+    if args.action == "migrate-tab":  # W1-5, 19 Oct 2026: the tab's header moved to the new columns, once
+        from us_outbound.enrol import hand_check_tab
+
+        ctx, summary = _operate(factory, "handcheck_migrate_tab", args.live, hand_check_tab.migrate, operator=True,
+                                dry_note="the Hand-check tab was not changed.")
+        print(f"Hand-check tab, {summary['rows']} rows. Header now: {', '.join(summary['before']) or '(none)'}")
+        if summary["already"]:
+            print("It is under the new columns already: nothing to move.")
+        else:
+            print(f"Header after: {', '.join(summary['after'])}")
+            print(("Moved, after a backup to the tab " if summary["written"] else "Would move it, after a backup to "
+                   "the tab ") + repr(summary["backup"]) + ".")
+        if summary.get("dropdowns") is False:
+            print(f"The dropdowns could not be set ({summary.get('dropdowns_error')}): set decision, reason, "
+                  "right_label, contact_ok and opener_ok by hand on the sheet.")
+        return 0
     if args.action == "export":  # W0, 19 Oct 2026: every decided row into the database, kept whatever the tab does
         from us_outbound.enrol import hand_check_tab
 
@@ -1882,9 +1901,10 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--replace-drafts", action="store_true",
                     help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
 
-    hc = command("handcheck", "this week's hand-check: show it, or approve it; or export every decided row of the "
-                 "Hand-check tab to the database", cmd_handcheck, takes_live=True)
-    hc.add_argument("action", choices=["show", "approve", "export"])
+    hc = command("handcheck", "this week's hand-check: show it, or approve it; export every decided row of the "
+                 "Hand-check tab to the database; or move the tab to its new columns (migrate-tab)", cmd_handcheck,
+                 takes_live=True)
+    hc.add_argument("action", choices=["show", "approve", "export", "migrate-tab"])
     hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
                     help="approve: accounts to leave out (ids or domains)")
 

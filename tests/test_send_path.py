@@ -81,7 +81,7 @@ def test_candidates_and_the_recheck_agree_on_every_gate():
     cands, skipped = enrol.candidates(ctx, pulled)
     assert sorted(c.account["account_id"] for c in cands) == ["acc-expired", "acc-ok"]  # expired: holds nothing
     assert skipped == {
-        "domain suppressed": 2, "partner domain": 1, "industry switched off": 1, "pulled at this week's hand-check": 1,
+        "domain suppressed": 2, "partner domain": 1, "industry switched off": 1, enrol.HAND_CHECK_SKIP: 1,
         "industry group stopped by a kill rule": 1, "email source paused by a kill rule": 1, "contact suppressed": 2,
         "email domain suppressed": 1, "contact in CA or WA": 1, "email status invalid": 1,
     }

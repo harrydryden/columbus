@@ -340,9 +340,12 @@ def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_chec
     bare = ctx.store.get("accounts", domain="bare.com")
     assert (bare["industry"], bare["industry_group"], bare["status"]) == (None, None, "new")
     _, payload = hand_check.show(ctx)
-    words = hand_check.text(payload)
-    assert "(nostate.com) · visited the US site · HQ ? · 20-49 (35 staff) · Apollo gives no HQ state" in words
-    assert "A missing fact needs a row on the Overrides tab" in words
+    words = "\n".join(hand_check.lines(payload))
+    assert "(nostate.com) · Apollo gives no HQ state · id " in words
+    from us_outbound.enrol import hand_check_tab
+
+    why = {r["domain"]: r["why"] for r in hand_check_tab.rows(ctx, payload)}
+    assert why["nostate.com"] == f"{verify.NO_STATE} (add the missing fact on the Overrides tab: hq_state or employees)"
 
 
 def test_an_overrides_row_fills_a_visitor_s_missing_fact_so_it_comes_in_unheld():

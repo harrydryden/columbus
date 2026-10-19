@@ -213,6 +213,10 @@ class General:
     explore_share: float = 0.0
     # The weekly hand-check's sample size; 10, the default, is the draw's constant today (enrol/hand_check.py).
     hand_check_sample: int = 10
+    # (build) W1-5 (19 Oct 2026): whether the weekly hand-check gates the whole day's enrolment. yes, the default, is
+    # today's behaviour (SPEC 11 as built: with auto_send = yes enrol waits until the week's check is done); no is the
+    # measure Harry chose under D5: only the sampled companies wait, until judged or for 7 days (enrol/hand_check.py).
+    hand_check_gate: bool = True
     # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
     # no, the default: it only alerts (Harry's D13 decides).
     early_warning_pause: bool = False

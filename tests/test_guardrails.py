@@ -366,7 +366,8 @@ def install_routes(t: FakeTransport) -> None:
     t.route("GET", "chat.getPermalink", {"ok": True, "permalink": "https://spill.slack.com/archives/C_ALERT/p11"})
     t.route("POST", "reactions.add", {"ok": True})
     t.route("GET", "auth.test", {"ok": True, "user_id": "U_BOT"})
-    # Sheets.
+    # Sheets. The tab ids first: every later Sheets route (values, batchGet) is matched before it.
+    t.route("GET", f"spreadsheets/{SHEET}", {"sheets": [{"properties": {"sheetId": 7, "title": "Mailboxes"}}]})
     t.route("POST", "sheets.googleapis.com/v4/spreadsheets", {"spreadsheetId": "new-sheet"})
     t.route("POST", ":append", {})
     t.route("POST", "values:batchUpdate", {})
@@ -529,6 +530,9 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "update_rows": lambda c, w: c.update_rows(SHEET, "Mailboxes", "address", {"hannah@meetspill.org": {"status": "Active"}}),
         "replace_tab": lambda c, w: c.replace_tab(SHEET, "Mailboxes", ["address", "status"], [{"address": "a@meetspill.org"}]),
         "add_tab": lambda c, w: c.add_tab(SHEET, "Focus"),
+        # W1-5 (19 Oct 2026): the Hand-check tab's dropdowns, set again after its header moved.
+        "set_validation": lambda c, w: c.set_validation(SHEET, "Mailboxes", ["address", "status"],
+                                                        {"status": ["Active", "Warming"]}),
         "create_settings_sheet": lambda c, w: c.create_settings_sheet(
             {"General": [{"key": "live_sending", "value": "no"}]}, {"General": ["key", "value"]}),
     },

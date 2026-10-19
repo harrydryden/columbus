@@ -58,6 +58,7 @@ us-outbound cohorts changes [A B] | in-flight      what changed between two conf
 us-outbound copy check|preview|qa|draft [...]      the copy desk: check every row, preview one, QA it, draft one
 us-outbound settings sync|load|bootstrap [--live]  sync; load the build's tabs (--tab, --set, --take note) into the sheet; create it
 us-outbound handcheck show|approve [--pull ID ...] [--live]   this week's hand-check without Slack
+us-outbound handcheck export|migrate-tab [--live]   every decided Hand-check row into the database; or move the tab to its new columns once
 us-outbound clay check-email --first NAME --last NAME --domain spill.chat [--live]   one Work Email lookup for your own name, to confirm Clay's email fallback (exits 1 until it can go on)
 us-outbound phase0 check [--seed ADDRESS] [--apollo-credits] [--live]   the live checks of the API details still to confirm (docs/phase0-confirm.md)
 us-outbound erase --email <address> [--live]       an erasure request
@@ -198,10 +199,11 @@ Harry, 7 Oct 2026), `suppression_load` (daily: HubSpot opt-outs and bounces, and
 customer is kept out and its leads in flight stopped by the next night; Harry, 7 Oct 2026), `lookalikes` (the 1st of each month, from
 5 Oct 2026: Spill's HubSpot customers as lookalike cells, their growth from Apollo in aggregate, the
 lookalike fit and an early exclusion; `sources/lookalikes.py`, Harry, 1 and 5 Oct 2026;
-`us-outbound lookalikes show` lists the cells, `lookalikes fit` the fits) and `hand_check_post` (Mondays
-08:00: SPEC 11's weekly hand-check. Enrol waits for it only while `auto_send` = yes; with `auto_send`
-= no every email is approved in Slack, and the hand-check holds only accounts with doubtful Apollo
-facts). `stop` and `start` record the
+`us-outbound lookalikes show` lists the cells, `lookalikes fit` the fits) and `hand_check_draw` (Mondays
+05:45, in place of `hand_check_post` at 08:00 since W1-5, 19 Oct 2026: SPEC 11's weekly hand-check, drawn from the
+accounts the coming send days would take, `hand_check_sample` of them, written to the Hand-check tab. With
+`hand_check_gate` = yes and `auto_send` = yes enrol waits for the whole check, as before; with `hand_check_gate` = no,
+Harry's D5, only the sampled companies wait, until judged or for 7 days). `stop` and `start` record the
 enrollment pause as heartbeats rows (`operator_stop` / `operator_start`). Each kill rule that
 fires is a `hitl_items` row (kind `kill_rule`) that holds the mailbox, source, industry group or
 enrollment until it is cleared (`base/holds.py`). The sending ramp (`registry/ramp.py`: 10 a day

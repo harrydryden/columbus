@@ -93,7 +93,7 @@ EXPECTED: dict[str, int] = {
     "lookalikes": 32 * _DAY,  # the 1st at 02:30 (weekly until 5 Oct 2026)
     # lookalike_leads is parked (W0, 19 Oct 2026: enabled=False in ops/schedule.py), so it is not expected.
     "label_sample_monthly": 32 * _DAY,  # the 1st at 09:15
-    "hand_check_post": 8 * _DAY,  # Mon 08:00 (build addition, SPEC 11 weekly hand-check)
+    "hand_check_draw": 8 * _DAY,  # Mon 05:45 (W1-5, 19 Oct 2026; hand_check_post at Mon 08:00 before)
     "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
@@ -244,6 +244,7 @@ IMPACT: dict[str, str] = {
     "settings_sync": "edits to the settings sheet are not being picked up",
     "daily_post": "the daily summary is not being posted",
     "retention": "old personal data is not being deleted on time",
+    "hand_check_draw": "nobody is checking by hand that the companies about to be emailed are the right ones",
 }
 UNUSABLE = re.compile(r"settings are unusable \(([^)]*)\)")  # bootstrap.SettingsUnusable's text
 FAULT_LINES = 3  # the settings errors shown in an alert
