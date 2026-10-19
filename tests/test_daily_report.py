@@ -11,7 +11,7 @@ from tests.test_registry import HANNAH
 from us_outbound.learn import daily_post, daily_report
 from us_outbound.settings.model import Focus
 
-MON_9 = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)  # 09:00 UK, Mon 26 Oct: the post covers Fri 23 to Sun 25
+SAT_9 = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # 09:00 UK (BST), Sat 24 Oct: the post covers Fri 23 alone
 SECTIONS = ("*Sent and outcomes*", "*Approvals*", "*Found*", "*Pipeline*", "*To improve*", "*Today's number*",
             "*Sources*", "*Mailboxes*", "*Kill rules and items waiting*")
 
@@ -238,21 +238,25 @@ def test_pipeline_by_the_focus_tab_s_groups():
     assert "    Focus: Legal Teams 2, Retail 0, other 1" in lines
 
 
-def test_monday_covers_friday_to_sunday():
-    ctx, _ = world(now=MON_9)
-    fri, sat, thu = datetime(2026, 10, 23, 15, 0, tzinfo=UTC), datetime(2026, 10, 24, 15, 0, tzinfo=UTC), \
-        datetime(2026, 10, 22, 15, 0, tzinfo=UTC)
+def test_saturday_covers_friday_only():
+    """The post runs Tuesday to Saturday and covers the day before alone (metrics-audit L1): Saturday's has Friday's
+    sends and finds, and neither Thursday's nor Saturday morning's."""
+    ctx, _ = world(now=SAT_9)
+    fri, thu, sat = datetime(2026, 10, 23, 15, 0, tzinfo=UTC), datetime(2026, 10, 22, 15, 0, tzinfo=UTC), \
+        datetime(2026, 10, 24, 6, 0, tzinfo=UTC)
     ctx.store.insert("events", [ev(70, "sent", mailbox=HANNAH, step=1, account_id="f1", contact_id="kf", at=fri),
                                 ev(71, "unsubscribed", contact_id="kf", account_id="f1", at=sat),
                                 ev(72, "sent", mailbox=HANNAH, step=1, account_id="t1", contact_id="kt", at=thu)])
-    ctx.store.insert("accounts", [acct("sat", source="apollo", status="new", first_seen=sat)])
-    ctx.store.insert("contacts", [person("c_sat", "sat", created_at=sat)])
+    ctx.store.insert("accounts", [acct("fri", source="apollo", status="new", first_seen=fri),
+                                  acct("thu", source="apollo", status="new", first_seen=thu)])
+    ctx.store.insert("contacts", [person("c_fri", "fri", created_at=fri)])
     lines, nums = daily_post.build(ctx)
-    # Friday's and Sunday's sends (world's Monday sends are later today); Thursday's is not in it.
-    assert lines[1] == ("Since Fri 23 Oct: 2 sent · 0 replies (0 positive) · 1 unsubscribe · 1 company, 1 contact found"
+    # Friday's one send (world's Monday events are days ahead); Thursday's send and find and Saturday's unsubscribe
+    # are not in it.
+    assert lines[1] == ("Yesterday: 1 sent · 0 replies (0 positive) · 0 unsubscribes · 1 company, 1 contact found"
                         " · 0 ready to send")
-    assert "*Found* · Since Fri 23 Oct" in lines and "*Sent and outcomes* · Since Fri 23 Oct (UK)" in lines
-    assert nums["found_companies"] == 1 and nums["found_contacts"] == 1
+    assert "*Found* · Yesterday, Fri 23 Oct" in lines and "*Sent and outcomes* · Yesterday, Fri 23 Oct (UK)" in lines
+    assert (nums["sent"], nums["unsubscribed"], nums["found_companies"], nums["found_contacts"]) == (1, 0, 1, 1)
 
 
 # -- To improve ------------------------------------------------------------------------------------------

@@ -158,6 +158,48 @@ def test_one_bounce_never_pauses_a_mailbox():
     assert row(sheets, HANNAH)["status"] == "Active" and slack_posts(t) == []
 
 
+def _rules(out, rule):
+    return [f for f in out["fired"] if f["rule"] == rule]
+
+
+def test_K2_exactly_3_percent_is_not_over_3_percent():
+    """tests-mutation-safety-measure K2: SPEC 12 says more than 3%; 3 bounces in 100 sends would pause a healthy
+    mailbox under ">= 3%"."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 100, bounced=3)
+    assert _rules(kill_rules.run(ctx), "mailbox_bounce_rate") == []
+    assert row(sheets, HANNAH)["status"] == "Active"
+
+
+def test_K3_a_mailbox_is_judged_on_its_latest_100_sends():
+    """tests-mutation-safety-measure K3: past the ramp a mailbox sends over 100 a week; it is judged on its latest
+    100 in the window. 150 sends with the 4 oldest bounced: the latest 100 are clean, so nothing fires. The same 150
+    with the 4 latest bounced: 4 of the latest 100 (4%, over 3% and at least 2) fires."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 150, bounced=4)  # the 4 oldest bounced
+    assert _rules(kill_rules.run(ctx), "mailbox_bounce_rate") == []
+
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    ids = sends(ctx, HANNAH, 150)
+    ctx.store.insert("events", [{"event_id": f"b-{cid}", "type": "bounced", "contact_id": cid, "step": 1,
+                                 "occurred_at": RECENT + timedelta(minutes=200), "reply_text": "550 5.1.1 user unknown"}
+                                for cid in ids[-4:]])
+    [fired] = _rules(kill_rules.run(ctx), "mailbox_bounce_rate")
+    assert fired["target"] == HANNAH and "4 of" in fired["reason"]
+
+
+def test_K5_the_group_rule_waits_for_the_28_day_reply_windows_to_close():
+    """tests-mutation-safety-measure K5: 400 step-1 sends 10 days ago with no reply must not stop an industry group:
+    its reply windows are open (the 40-day case above fires)."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 400, at=NOW - timedelta(days=10), group_account={"industry_group": "Marketing & Creative Agencies"})
+    assert _rules(kill_rules.run(ctx), "group_reply_rate") == []
+
+
 def test_bounces_older_than_the_window_do_not_count():
     ctx, t, inst, sheets = setup()
     campaigns(inst)

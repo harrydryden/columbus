@@ -67,7 +67,7 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | 07:00 | Mailbox check, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 08:00 | The weekly hand-check: with `auto_send` = yes, a sample of the companies about to be emailed. Since 14 Oct nothing is held here for doubtful facts or an unclear industry: a company missing its HQ state, size or industry is left out by itself ("incomplete information"), as is one the AI cannot place in our industries, and a borderline size (near a band edge) goes ahead on Apollo's count. With `auto_send` = no there is usually no hand-check | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed), or *wrong industry* with the right one in `right_label`. Each choice is applied within 5 minutes; the check closes when every row has one (`handcheck approve` still works from a terminal). To keep a company that was left out for missing information, add its fact on the **Overrides** tab |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 | The daily post, short since 9 Oct 2026: **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
+| 09:00 Tue–Sat | The daily post, short since 9 Oct 2026, Tuesday to Saturday since 19 Oct 2026 (each covers the day before alone: Saturday's is Friday, Tuesday's is Monday; weekend replies are in the Monday readout): **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
 | 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -101,32 +101,41 @@ At 08:30 UK, after the hand-check and before the daily post, `monday_readout` po
 Sunday, UK time) to #us-outbound. `us-outbound readout` prints the same text without posting. Read it top
 to bottom:
 
-1. **Last week:** emails sent, replies (people, not out-of-office) and how many were positive, meetings
-   booked, bounces and unsubscribes. Then the companies emailed so far and how many of their 28-day reply
-   windows have closed: until they have, every rate still rises.
-2. **Against the targets:** companies enrolled against `weekly_enrol_cap`; the reply, positive and meeting
-   rates so far against the working assumption (3 to 5%, about 1%, 0.5 to 1%); the stop rule's progress.
-3. **Exit criteria to scale**, each "Met" or "Not met" with its numbers: bounces under 2%, no complaints,
-   unsubscribes confirmed end to end, every reply classified and routed, no unexplained refusal. When all
-   five are met, raise `weekly_enrol_cap` with the ramp (docs/roadmap.md §3).
-4. **By tier, angle, industry group, sender and step:** last week's sends, replies and meetings, and for
+1. **Last week:** emails sent, the companies that replied (people, not out-of-office; each company once,
+   however many times it wrote, with the reply emails beside when they differ) and how many positively,
+   meetings booked, bounces and unsubscribes.
+2. **So far** (since 19 Oct 2026): only companies whose 28-day reply window has closed are judged. Under 30
+   of them it gives counts and how many have had the 28 days, and no rate; from 30, each rate with its 95%
+   range ("5.7% (2 of 35; 95% 1.6–18.6)") and the working assumption beside it (3 to 5%, about 1%, 0.5 to
+   1%), with no "on track" or "below": at these numbers the range spans the assumption either way. Meetings
+   are judged 45 days after email 1.
+3. **Against the targets:** companies enrolled against `weekly_enrol_cap`; the companies emailed so far; the
+   stop rule's progress.
+4. **Exit criteria to scale**, each "Met" or "Not met" with its numbers: bounces under 2% of the contacts sent
+   email 1 (from 100 contacts, with its range: 100 contacts cannot show 2% is met for sure), unsubscribes
+   confirmed end to end, every reply classified and routed, no unexplained refusal. Spam complaints are "not
+   measured" (nothing reports them yet), so they are not counted. When all four are met and last week reached
+   90% of `weekly_enrol_cap`, raise it with the ramp (docs/roadmap.md §3). Beside them, each email source's
+   bounces per contact over the last 7 days, next to the per-send figure the source's safety pause uses.
+   Before the readout, Monday's credit and spend asks and the mailboxes to add (there is no Monday daily post).
+5. **By tier, angle, industry group, sender and step:** last week's sends, replies and meetings, and for
    each the companies emailed so far and how many replied.
-5. **Cohorts:** the last four enrolment weeks (a company counts in the UK week its first contact was
+6. **Cohorts:** the last four enrolment weeks (a company counts in the UK week its first contact was
    enrolled), each at the latest age its companies have reached after email 1 (7, 14, 21 or 28 days); the
-   latest two compared at the same age once each has 30 companies, with what changed between them ("a
+   latest two compared at the latest age at which each has 30 companies, with what changed between them ("a
    coincidence to test, not a cause"); and **Settings changes**: what changed last week in the settings,
    copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
    table, `us-outbound cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
    two versions, `us-outbound cohorts changes`.
-6. **Industry labels** (Harry, 7 Oct 2026): last week's and all cards with the right industry against the 95%
+7. **Industry labels** (Harry, 7 Oct 2026): last week's and all cards with the right industry against the 95%
    target ("met" or "not met", from 30 cards), the corrections approvers made (`Games studios → Technology &
    Startups (2)`), how often the rules and the model agreed, and the companies held or left out. Many of one
    correction means a definition or keywords on the Industries tab need a change; run `us-outbound labels eval
    --live` before and after.
-7. **Signal value:** the signals whose companies replied more or less than the companies without them. For
-   the whole table, `us-outbound signals value`. To act on it, change a weight on the Signals tab, then
-   `us-outbound sync`. Nothing re-weights itself.
-8. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
+8. **Signal value:** the signals whose companies replied more or less than the companies without them, as
+   monitoring: at this volume most such gaps are chance, so none is a "Needs action" item (since 19 Oct 2026).
+   For the whole table, `us-outbound signals value`. Nothing re-weights itself.
+9. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
    far each running test has got.
 
 **Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
@@ -273,12 +282,12 @@ paste, so the table below is a reference; the message itself says what to do. A 
 
 | Ask | When | What to do |
 | :- | :- | :- |
-| "Credits and settings: … Apollo runs out in about D days…" (or "Apollo is below our reserve…") | 09:00, once a day, when the floor is under 21 days away at the last fortnight's pace, or Apollo is already under it (then sourcing and email reveals have stopped) | Buy Apollo credits, or lower `apollo_monthly_credits` on the General tab (below the floor: buy, or lower `apollo_floor`) |
+| "Credits and settings: … Apollo runs out in about D days…" (or "Apollo is below our reserve…") | 09:00 Tue–Sat with the daily post, Monday 08:30 with the readout; once a day, when the floor is under 21 days away at the last fortnight's pace, or Apollo is already under it (then sourcing and email reveals have stopped) | Buy Apollo credits, or lower `apollo_monthly_credits` on the General tab (below the floor: buy, or lower `apollo_floor`) |
 | "Apollo: … credits used this month (80%)", or "… are used" | 09:00, at 80% and at 100%, once a month each | At 100% sourcing and email reveals stop until the 1st. Raise `apollo_monthly_credits` on the General tab to allow more |
 | "Clay: … (80%)", or "… are used" | The same, for `clay_monthly_credits` (only while Clay is used) | Raise `clay_monthly_credits` |
 | "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, copy QA stops, and new companies wait unverified for the industry label check (those already verified carry on). Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
 | "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
-| "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 09:00, once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
+| "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 08:30 (with the readout), once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
 | "labels: N industry corrections since the last send day…" | 09:00, once a day, when you corrected 3 or more cards' industry, or 10% of at least 10 | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
 | "labels: the model put N of the M companies the rules labelled (P%) in another group or outside our labels…" | 09:00, once a day, when the model agreed on the group for under 70% of at least 20 companies the rules labelled (each counted once; the model naming a label within the rules' group, such as Publishers for Marketing & Creative Agencies, agrees) | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: `us-outbound labels crosswalk` says which, then trim them on the Industries tab |
 | "labels: the rules gave no label to N of M companies checked…" | 09:00, once a day, when at least 20 companies and 30% of those checked had no rules label | The line names the model's commonest labels for them and their commonest NAICS codes (`541511 → Software & SaaS (9)`): add each code to that label's `naics_prefixes` on the Industries tab, then `us-outbound sync` and `us-outbound relabel --live` |

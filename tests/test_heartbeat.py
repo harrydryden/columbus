@@ -117,7 +117,10 @@ def test_expected_matches_the_spec9_schedules():
     assert hb.EXPECTED["poll_replies"] == 45
     assert hb.EXPECTED["poll_approvals"] == 20
     assert hb.EXPECTED["kill_rules"] == 150
-    assert hb.EXPECTED["settings_sync"] == hb.EXPECTED["mailbox_health"] == hb.EXPECTED["daily_post"] == 26 * 60
+    assert hb.EXPECTED["settings_sync"] == hb.EXPECTED["mailbox_health"] == 26 * 60
+    # Tuesday to Saturday (19 Oct 2026): Saturday 09:00 to Tuesday 09:00 is 72 hours, 73 when the clocks go back on
+    # the Sunday between; in wall time, as the job runs on Saturdays.
+    assert hb.EXPECTED["daily_post"] == 74 * 60 and "daily_post" not in hb.WEEKDAY_JOBS
     assert hb.EXPECTED["monday_readout"] == hb.EXPECTED["public_signals"] == 8 * 24 * 60
     # Build, 1 Oct 2026: the sources and verify_accounts run each weekday (ops/schedule.py), in weekday time.
     for job in ("source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people", "verify_accounts"):

@@ -494,7 +494,8 @@ SPEC9_CRONS = {
     "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
     "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
-    "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *", "daily_post": "0 9 * * *",
+    "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *",
+    "daily_post": "0 9 * * 2-6",  # 19 Oct 2026: Tuesday to Saturday, each post the day before (learn/daily_post.py)
     "monday_readout": "30 8 * * 1",  # Harry, 6 Oct 2026: after the hand-check, before the daily post
     "blackout": "40 * * * *",  # Harry, 7 Oct 2026: hourly, the campaigns paused over the blackout dates
     # Build additions.

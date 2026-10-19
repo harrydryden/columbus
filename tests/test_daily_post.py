@@ -13,6 +13,7 @@ from us_outbound.clients.slack import dry_run_note
 DRY = dry_run_note("#us-outbound") + "\n"
 
 TUE_9 = datetime(2026, 10, 27, 9, 0, tzinfo=UTC)  # 09:00 UK (GMT), Tue 27 Oct
+SAT_9 = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # 09:00 UK (BST), Sat 24 Oct: the clocks go back on Sun 25
 MON = datetime(2026, 10, 26, 15, 0, tzinfo=UTC)  # Monday, inside the send window
 
 
@@ -78,7 +79,8 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
         "",
         "*Yesterday (Mon 26 Oct)*",
-        "Sent 8 emails (5 first, 3 follow-ups) · 3 replies (1 interested) · 1 bounce · 1 unsubscribe · 1 demo booked",
+        "Sent 8 emails (5 first, 3 follow-ups) · 3 companies replied (1 interested) · 1 bounce · 1 unsubscribe · "
+        "1 demo booked",
         "Found 0 companies and 0 contacts",
         "Interested: Acme Creative (positive reply to hannah@meetspill.org)",
         "• Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”",
@@ -104,13 +106,14 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
     assert (out["sent"], out["replies"], out["positive"]) == (8, 3, 1)  # the summary keeps the same numbers (human replies)
 
 
-def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_to_sunday_on_monday():
-    ctx, _ = world(now=datetime(2026, 10, 26, 9, 0, tzinfo=UTC))
+def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_only_on_saturday():
+    ctx, _ = world(now=SAT_9)
     day = daily_post.gather(ctx)
     day.mailboxes.append(("sam@meetspill.org", 0, 40, 2))
     lines = daily_post.compact(ctx, day)
-    assert lines[0] == ":warning: *Daily summary, Mon 26 Oct: 3 things need you*"
-    assert "*Fri 23 to Sun 25 Oct*" in lines
+    # The reply waiting and the kill-rule hold; the hand-check item is next week's (2026-W44), so not asked for.
+    assert lines[0] == ":warning: *Daily summary, Sat 24 Oct: 2 things need you*"
+    assert "*Yesterday (Fri 23 Oct)*" in lines and lines[lines.index("*Yesterday (Fri 23 Oct)*") + 1] == "No emails sent"
     assert ("• sam@meetspill.org: 2 of its last 40 emails bounced (5%); over 3% of 100 it is paused automatically"
             in lines)
     assert lines[-1] == "Fine: campaigns. Full report: `railway ssh -- us-outbound daily --full`"
@@ -160,7 +163,7 @@ def test_the_post_covers_yesterday_the_limiter_mailboxes_kill_rules_and_approval
                         "this week's hand-check (the Hand-check tab on the settings sheet)")
     assert "*Sent and outcomes* · Yesterday, Mon 26 Oct (UK)" in lines
     assert "  Sent: 8 (step 1 5, step 2 3)" in lines  # Sunday's send is not yesterday's
-    assert "  Replies: 3 (not classified 1, objection 1, positive 1) · out of office 1" in lines
+    assert "  Replies: 3 companies (not classified 1, objection 1, positive 1) · out of office 1" in lines
     assert "  Positive or referral: 1 · Acme Creative (positive, hannah@meetspill.org)" in lines
     assert "  Bounces: 1 · Unsubscribes: 1 · Demos booked: 1 · Demos held: 0" in lines
     assert ("  • Brightfin (objection): “We already have an EAP through our broker and the team seems happy with it.”"
@@ -201,10 +204,73 @@ def test_the_post_has_one_retention_line_when_today_s_run_deleted_anything():
     assert nums["retention"]["leads"] == 5
 
 
-def test_monday_s_post_covers_friday_to_sunday():
-    ctx, _ = world(now=datetime(2026, 10, 26, 9, 0, tzinfo=UTC))
-    start, end, label = daily_post.period(ctx)
-    assert label == "Since Fri 23 Oct" and (end - start) == timedelta(days=3)
+def test_each_post_covers_the_day_before_only():
+    """metrics-audit L1: Friday's numbers went out on Saturday, Sunday and Monday. The job runs Tuesday to Saturday,
+    and each post covers yesterday (UK) alone: no day is in two posts."""
+    def utc_(day, hour):
+        return datetime(2026, 10, day, hour, 0, tzinfo=UTC)
+
+    for now, label, start, end in (
+        # Fri 23 Oct, midnight BST to midnight BST.
+        (SAT_9, "Yesterday, Fri 23 Oct", utc_(22, 23), utc_(23, 23)),
+        # Mon 26 Oct, midnight GMT to midnight GMT: not Friday to Monday.
+        (TUE_9, "Yesterday, Mon 26 Oct", utc_(26, 0), utc_(27, 0)),
+        # By hand on a Monday (`us-outbound daily`): Sunday alone, not back to Friday; it is 25 hours long, as the
+        # clocks go back at 02:00 that night.
+        (utc_(26, 9), "Yesterday, Sun 25 Oct", utc_(24, 23), utc_(26, 0)),
+    ):
+        ctx, _ = world(now=now)
+        assert daily_post.period(ctx) == (start, end, label)
+
+
+def test_the_post_runs_tuesday_to_saturday_and_saturday_covers_friday():
+    """RS §2 W1-7: Sat 24 Oct posts (Friday); Sun 25 and Mon 26 have no post; Tue 27 covers Mon 26 only; and the
+    heartbeat check at Mon 26 Oct 10:00 does not call the post missed."""
+    from us_outbound.ops import heartbeat, schedule, scheduler
+
+    [cron] = schedule.crons("daily_post")
+    assert cron == "0 9 * * 2-6"
+    c = scheduler.Cron.parse(cron)
+    fri = datetime(2026, 10, 23, 10, 0, tzinfo=UTC)
+    sat = scheduler.next_run(c, fri)
+    assert sat == SAT_9  # Sat 24 Oct 09:00 BST
+    assert scheduler.next_run(c, sat) == TUE_9  # nothing on Sun 25 or Mon 26: next is Tue 27 Oct 09:00 GMT
+    # Saturday 09:00 BST (08:00 UTC) to Monday 10:00 GMT (10:00 UTC) is 50 hours of wall time (the clocks went back on
+    # Sunday), well inside the 74 hours EXPECTED allows; Saturday to Tuesday 09:00 GMT is 73 hours, inside it too.
+    beat = {"job": "daily_post", "status": "ok", "started_at": SAT_9, "last_alive_at": SAT_9, "runs": 1}
+    mon_10 = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
+    assert heartbeat.overdue_minutes("daily_post", beat, mon_10) == 50 * 60 - 74 * 60 < 0
+    assert heartbeat.overdue_minutes("daily_post", beat, TUE_9) == 73 * 60 - 74 * 60 < 0
+    ctx, t = world(now=mon_10)
+    ctx.store.insert("heartbeats", [{"run_id": "dp", "job": "daily_post", "status": "ok", "dry_run": False,
+                                     "started_at": SAT_9, "finished_at": SAT_9 + timedelta(minutes=1)}])
+    assert "daily_post" not in heartbeat.check_heartbeats(ctx, ["daily_post"])
+
+
+def test_one_company_writing_three_times_is_one_reply_in_both_reports():
+    """metrics-audit H3: sync_outcomes writes one replied event per email, so one interested prospect writing three
+    times read "3 replies (3 interested)". Replies and positive replies are companies; reply_emails keeps the 3."""
+    from tests.test_readout import ev as readout_ev, world as readout_world
+    from us_outbound.learn import readout
+
+    ctx, _ = world()
+    ctx.store.delete("events", {"type": "replied"})
+    ctx.store.insert("events", [ev(40 + i, "replied", account_id="a1", reply_class="positive", mailbox=HANNAH)
+                                for i in range(3)])
+    lines, nums = daily_post.build(ctx)
+    assert (nums["replies"], nums["positive"], nums["reply_emails"]) == (1, 1, 3)
+    assert "  Replies: 1 company (positive 1), in 3 emails" in lines
+    assert "  Positive or referral: 1 · Acme Creative (positive, hannah@meetspill.org)" in lines  # listed once
+    short = daily_post.compact(ctx, daily_post.gather(ctx))
+    assert any(x.startswith("Sent 8 emails (5 first, 3 follow-ups) · 1 company replied (1 interested; 3 reply emails)")
+               for x in short)
+
+    rctx, _ = readout_world(weekly=[])
+    rctx.store.insert("events", [readout_ev(i, "replied", account_id="a1", reply_class="positive") for i in range(3)])
+    rlines, rnums = readout.build(rctx)
+    week = rnums["last_week"]
+    assert (week["replies"], week["positive"], week["reply_emails"]) == (1, 1, 3)
+    assert rlines[1].startswith("*Last week:* 0 emails sent · 1 company replied (1 positive; 3 reply emails)")
 
 
 def test_with_no_slack_token_the_post_goes_to_the_log(capsys):

@@ -76,7 +76,9 @@ EXPECTED: dict[str, int] = {
     "kill_rules": 150,  # hourly
     "blackout": 150,  # hourly (Harry, 7 Oct 2026; registry/blackout.py)
     "heartbeat_check": 150,  # hourly; the outside watchdog watches this one (ops/watchdog.py: a late ping emails Harry)
-    "daily_post": 26 * _H,  # 09:00 daily
+    # 09:00 Tuesday to Saturday (19 Oct 2026): Saturday 09:00 to Tuesday 09:00 is 72 hours (73 when the clocks go
+    # back on the Sunday between), counted in wall time as the job runs on a Saturday, so not in WEEKDAY_JOBS.
+    "daily_post": 74 * _H,
     "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
     # Monthly jobs (build additions, Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack, so a monthly
