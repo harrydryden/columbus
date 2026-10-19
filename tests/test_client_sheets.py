@@ -4,7 +4,8 @@ import pytest
 
 from tests.fakes import FakeTransport
 from us_outbound.clients.guard import SETTINGS_SHEET_TITLE, Boundaries, Guard, GuardViolation
-from us_outbound.clients.sheets import Sheets, a1_tab, column_letter
+from us_outbound.clients.http import ApiError
+from us_outbound.clients.sheets import Sheets, a1_tab, column_letter, read_tab
 
 BASE = "https://sheets.googleapis.com/v4/spreadsheets"
 SHEET = "sheet-test"
@@ -139,3 +140,27 @@ def test_credentials_refreshed_when_invalid():
     sheets.read_tabs(SHEET, ["General"])
     assert creds.refreshed == 1
     assert t.requests[1].headers["Authorization"] == "Bearer ya29.fresh"
+
+
+def _google_error(status: int, message: str) -> dict:
+    """The Sheets API's error body (google.rpc.Status in JSON)."""
+    return {"error": {"code": status, "message": message, "status": "INVALID_ARGUMENT" if status == 400 else "INTERNAL"}}
+
+
+def test_read_tab_is_none_only_when_the_tab_is_not_there():
+    """W0, 19 Oct 2026 (code-verify-labels B12). read_tab's None makes its callers write the tab afresh, so only the
+    API's "no such tab" answer may give it: before, any 400 did, and a refused read could replace the Label sample
+    tab (the answer key) with one month's draw. Every other refusal raises."""
+    sheets, t, _ = make(live=False)
+    t.route("GET", "values:batchGet", status=400, body=_google_error(400, "Unable to parse range: 'Label sample'"))
+    assert read_tab(sheets, SHEET, "Label sample") is None
+    for status, message in ((400, "Invalid JSON payload received. Unknown name \"rangez\": Cannot find field."),
+                            (400, "Request contains an invalid argument."), (500, "Internal error encountered.")):
+        sheets, t, _ = make(live=False)
+        t.route("GET", "values:batchGet", status=status, body=_google_error(status, message))
+        with pytest.raises(ApiError) as raised:
+            read_tab(sheets, SHEET, "Label sample")
+        assert raised.value.status == status
+    sheets, t, _ = make(live=False)
+    t.route("GET", "values:batchGet", body={"valueRanges": [{"values": [["domain"], ["a.com"]]}]})
+    assert read_tab(sheets, SHEET, "Label sample") == [{"domain": "a.com"}]

@@ -17,6 +17,10 @@ the week has a decision, the week's item is marked handled with the left-out com
 (hand_check.approve), which posts the confirmation, as `handcheck approve` does; the command still works.
 A row left blank keeps that company waiting; nothing else waits on it unless auto_send = yes (then enrol waits for the
 whole check, as before).
+
+Every week's rows stay on the tab (write only adds rows; W0, 19 Oct 2026), and `us-outbound handcheck export --live`
+copies every decided row into the database as a hand_check judgement fact (export), so the judgements are kept for
+measuring how often the companies we email are the right ones, whatever happens to the tab.
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ FINE, LEAVE_OUT, WRONG_INDUSTRY = DECISIONS = ("fine", "leave out", "wrong indus
 SAMPLE, DOUBT = "random sample", "doubtful facts"
 BY = "the Hand-check tab"
 OVERRIDES_TAB = "Overrides"
+SOURCE, FACT = "hand_check", "judgement"  # the signal_events rows export writes, one per decided row
+SNAPSHOT = ("tier", "score", "industry_group", "industry", "size_band", "hq_state", "source", "label_source")
 
 
 def row_id(week: str, domain: str) -> str:
@@ -83,27 +89,96 @@ def rows(ctx: Context, payload: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def write(ctx: Context, payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Put the week's rows on the tab, keeping any decision already made on a row (a rerun never loses one). Other
-    weeks' rows are dropped: their companies come back on this week's check if they still wait. Live only."""
+    """Add the week's rows under the rows already on the tab. Live only.
+
+    Append-only (W0, 19 Oct 2026; code-approvals-handcheck-copy B4): the tab is the only record of what Harry
+    judged, and a "fine" is stored nowhere else, so no week's rows are ever cleared or rewritten. A row of this week
+    already there (a rerun, or apply writing a week posted before the tab existed) is left exactly as it is, its
+    decision with it; only rows not yet on the tab are added. The tab is written whole only when it has no rows at
+    all (it is new, or only its header is there), as there is nothing on it to lose."""
     sheet_id = ctx.guard.bounds.settings_sheet_id
     new = rows(ctx, payload)
     if not sheet_id or not ctx.live:
         return {"rows": len(new), "written": False}
     try:
         kept = read_tab(ctx.clients.sheets, sheet_id, TAB)
-        before = {str(r.get("id") or ""): r for r in kept or []}
-        merged = []
-        for r in new:
-            old = before.get(r["id"]) or {}
-            merged.append({**r, **{c: str(old.get(c) or "") for c in ("decision", "right_label", "right_hq_state",
-                                                                       "right_employees", "note", "applied")}})
-        write_tab(ctx.clients.sheets, sheet_id, TAB, COLUMNS, merged, kept)
+        there = {str(r.get("id") or "").strip().casefold() for r in kept or []}
+        added = [r for r in new if r["id"].casefold() not in there]
+        if not kept:
+            write_tab(ctx.clients.sheets, sheet_id, TAB, COLUMNS, added, kept)
+        elif added:
+            ctx.clients.sheets.append_rows(sheet_id, TAB, added)
     except GuardViolation:
         raise
     except Exception as exc:  # the post still goes; the next poll_approvals writes the rows (apply)
         log("hand_check_tab_write_failed", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         return {"rows": len(new), "written": False}
-    return {"rows": len(merged), "written": True}
+    return {"rows": len(new), "added": len(added), "written": True}
+
+
+def event_id(week: str, account_id: str) -> str:
+    return f"{SOURCE}:{week}:{account_id}"
+
+
+def export(ctx: Context) -> dict[str, Any]:
+    """`us-outbound handcheck export [--live]`: one hand_check judgement fact per decided row of the Hand-check tab,
+    every week's (W0, 19 Oct 2026; the database half of the fix for code-approvals-handcheck-copy B4).
+
+    The tab was the only place a judgement lived, and a "fine" left no trace in the database, so the precision of the
+    companies we email could be measured from nothing else. Each fact (signal_events: source hand_check, fact
+    judgement, event_id hand_check:{week}:{account_id}) holds the row's week, check, decision, right_label and note,
+    and a snapshot of the company as it stands at its first export (tier, score, group, industry, size band, HQ state,
+    source, label source). A second export updates the decision cells and keeps the first snapshot and time, so
+    exporting again is safe and a changed decision is the one kept. Rows with no decision are not exported; a row
+    whose domain has no company, or whose decision is not one of DECISIONS, is skipped with the reason. Dry-run counts
+    what it would write and writes nothing."""
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not sheet_id:
+        raise LookupError("no settings sheet id: set US_OUTBOUND_SETTINGS_SHEET_ID")
+    tab = read_tab(ctx.clients.sheets, sheet_id, TAB)
+    if tab is None:
+        raise LookupError(f"the settings sheet has no {TAB} tab")
+    decided = [r for r in tab if _decision(r)]
+    domains = sorted({str(r.get("domain") or "").strip().lower() for r in decided} - {""})
+    found = {str(a.get("domain") or "").strip().lower(): dict(a)
+             for a in (ctx.store.select("accounts", {"domain": domains}) if domains else [])}
+    facts: dict[str, dict[str, Any]] = {}
+    skipped: list[dict[str, str]] = []
+    for r in decided:
+        decision, domain, week = _decision(r), str(r.get("domain") or "").strip().lower(), str(r.get("week") or "")
+        a = found.get(domain)
+        why = ("the decision must be one of " + ", ".join(DECISIONS) if decision not in DECISIONS
+               else "no week on the row" if not week.strip() else "no company with this domain" if a is None else "")
+        if why:
+            skipped.append({"id": str(r.get("id") or ""), "domain": domain, "why": why})
+            continue
+        a = found[domain]
+        eid = event_id(week, str(a["account_id"]))
+        facts[eid] = {"event_id": eid, "account_id": a["account_id"], "source": SOURCE, "fact": FACT,
+                      "value": {"week": week, "row_id": str(r.get("id") or ""), "check": str(r.get("check") or ""),
+                                "decision": decision, "right_label": str(r.get("right_label") or "").strip(),
+                                "note": str(r.get("note") or "").strip(),
+                                "snapshot": {c: a.get(c) for c in SNAPSHOT}},
+                      "quote": f"{week}: {decision}", "source_url": "", "observed_at": ctx.now}
+    before = {e["event_id"]: e for e in ctx.store.select("signal_events", {"event_id": list(facts)})} if facts else {}
+    for eid, fact in facts.items():  # the first export's snapshot and time stand
+        old = before.get(eid)
+        if old is not None and isinstance(old.get("value"), Mapping):
+            fact["value"]["snapshot"] = old["value"].get("snapshot", fact["value"]["snapshot"])
+            fact["observed_at"] = old.get("observed_at") or fact["observed_at"]
+    weeks: dict[str, dict[str, int]] = {}
+    for fact in facts.values():
+        count = weeks.setdefault(fact["value"]["week"], {})
+        count[fact["value"]["decision"]] = count.get(fact["value"]["decision"], 0) + 1
+    out = {"dry_run": ctx.dry_run, "rows": len(tab), "decided": len(decided), "facts": len(facts),
+           "new": sum(1 for e in facts if e not in before), "already": sum(1 for e in facts if e in before),
+           "weeks": dict(sorted(weeks.items())), "skipped": skipped, "written": False}
+    if ctx.live and facts:
+        ctx.store.upsert("signal_events", list(facts.values()))
+        out["written"] = True
+    log("hand_check_export", run_id=ctx.run_id, dry_run=ctx.dry_run, facts=len(facts), new=out["new"],
+        skipped=len(skipped), written=out["written"])
+    return out
 
 
 def undecided(ctx: Context, week: str) -> int | None:

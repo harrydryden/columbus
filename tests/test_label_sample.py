@@ -77,6 +77,31 @@ def test_a_batch_is_added_under_the_rows_already_there_and_never_redraws_them():
     assert len({r["domain"] for r in tab}) == 60  # none drawn twice
 
 
+def test_a_refused_read_never_rewrites_the_answer_key():
+    """W0, 19 Oct 2026 (code-verify-labels B12). October's 50 rows are on the tab, 50 judged. A read refused with a
+    400 that is not "no such tab" (an invalid request) used to read as "no tab", so add_batch added the tab and
+    replaced it with November's 25 alone: the 50 verdicts, the answer key, gone. Now the read raises, the batch
+    fails, and the tab keeps its 50 rows with nothing written."""
+    from us_outbound.clients.http import ApiError
+
+    live = world(live=True)
+    ls.run(live)
+    tab = live.clients.sheets.tabs[ls.TAB]
+    for r in tab:
+        r["your_verdict"] = "right"
+    before = [dict(r) for r in tab]
+    writes = list(live.clients.sheets.writes)
+
+    def refused(sheet_id, tabs):
+        raise ApiError("sheets", 400, {"error": {"code": 400, "message": "Invalid JSON payload received."}})
+
+    live.clients.sheets.read_tabs = refused
+    with pytest.raises(ApiError):
+        ls.add_batch(live, 25, "2026-11")
+    assert live.clients.sheets.tabs[ls.TAB] == before and len(before) == 50
+    assert live.clients.sheets.writes == writes  # no add, no replace
+
+
 def test_rows_from_before_the_batch_column_are_the_first_batch():
     live = world(live=True)
     live.clients.sheets.tabs[ls.TAB] = [{"domain": "a001.com", "your_verdict": "Fintech"}]
@@ -121,7 +146,9 @@ def test_the_monthly_post_links_the_definition_suggestions(monkeypatch):
 
     posts: list[str] = []
     monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
-    monkeypatch.setattr(labels, "evaluate", lambda c, rows: {labels.ACCEPTABLE: 8, labels.WRONG: 2, labels.UNSAFE: 0})
+    # Both answer-key passes check every row (a pass cut short scores nothing: test_definition_suggestions).
+    monkeypatch.setattr(labels, "evaluate", lambda c, rows: {labels.ACCEPTABLE: len(rows) - 2, labels.WRONG: 2,
+                                                             labels.UNSAFE: 0, "asked": len(rows)})
     live = world(live=True)
     ls.run(live)
     for r in live.clients.sheets.tabs[ls.TAB]:

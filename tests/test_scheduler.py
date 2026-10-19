@@ -527,7 +527,8 @@ def test_the_table_matches_the_job_registry_and_spec9():
     for j in SCHEDULE:
         if j.cron:
             sch.Cron.parse(j.cron)
-        assert j.enabled is not cli.JOBS[j.name].startswith("not built"), j.name
+        # On when built, off when not built yet, and off when parked (built, off the schedule; W0, 19 Oct 2026).
+        assert j.enabled is not (cli.JOBS[j.name].startswith("not built") or j.name in schedule.PARKED), j.name
         assert 1 <= j.timeout_minutes <= hb.OVERLAP_MINUTES, j.name
     assert table["poll_approvals"].timeout_minutes < 5  # done before it is due again
 
@@ -538,9 +539,14 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "monday_readout",
                        "heartbeat_check",
-                       "suppression_load", "lookalikes", "lookalike_leads", "hand_check_post", "retention", "label_sample_monthly"]
+                       "suppression_load", "lookalikes", "hand_check_post", "retention", "label_sample_monthly"]
+    # lookalike_leads is parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for
+    # whole-US pages and kept only the active states. Not started, and not expected, so no false "missed" alert.
+    assert "lookalike_leads" not in enabled and "lookalike_leads" not in hb.EXPECTED
+    assert by_name()["lookalike_leads"].enabled is False and cli.JOBS["lookalike_leads"].endswith(":run")
     assert set(enabled) <= set(hb.EXPECTED)
-    assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"}  # score has no schedule of its own
+    # score has no schedule of its own; a parked job is not expected
+    assert set(hb.EXPECTED) == {j.name for j in SCHEDULE} - {"score"} - schedule.PARKED
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]
     assert list(dict.fromkeys(j.name for j, _ in sch.Scheduler().jobs)) == enabled
     assert [j.name for j, _ in sch.Scheduler().jobs].count("settings_sync") == 2

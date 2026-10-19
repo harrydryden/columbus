@@ -134,6 +134,22 @@ def _score(out: Mapping[str, Any]) -> str:
             f"{out.get(labels.UNSAFE, 0)} unsafe")
 
 
+def _checked(out: Mapping[str, Any]) -> int:
+    return sum(int(out.get(k, 0) or 0) for k in (labels.ACCEPTABLE, labels.WRONG, labels.UNSAFE))
+
+
+def incomplete(now: Mapping[str, Any], later: Mapping[str, Any], size: int) -> str | None:
+    """"k of N" when either answer-key pass stopped short, else None. labels.evaluate stops at the first model error
+    and returns what it had, with an error; the two passes must cover the same companies to be compared, or a
+    baseline cut short after 5 rows ("4 of 5 right") makes a draft scored on all 40 look like an improvement
+    (W0, 19 Oct 2026; code-learn-reporting B7). k is the shorter pass's count."""
+    counts = (_checked(now), _checked(later))
+    asked = (now.get("asked"), later.get("asked"))
+    if now.get("error") or later.get("error") or min(counts) < size or asked[0] != asked[1]:
+        return f"{min(counts)} of {size}"
+    return None
+
+
 def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: Sequence[Mapping[str, Any]],
             month: str) -> dict[str, Any]:
     """Draft, score and write this month's suggestions (the models are asked only with --live)."""
@@ -154,6 +170,12 @@ def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: 
     except (ClaudeError, BudgetExceeded, ConfigError) as exc:
         out["error"] = f"the model could not be asked ({str(exc)[:160]})"
         log(PURPOSE + "_failed", run_id=ctx.run_id, error=out["error"])
+        return out
+    if (short := incomplete(now, later, len(answer_key))) is not None:
+        out["answer_key_incomplete"] = short
+        out["error"] = f"the answer key was not checked in full ({short} companies), so nothing is scored"
+        log(PURPOSE + "_incomplete", run_id=ctx.run_id, month=month, answer_key=short, now_error=now.get("error"),
+            later_error=later.get("error"))
         return out
     rows = [{"id": f"{month}:{d['label']}", "month": month, "label": d["label"], "current_definition": d["current"],
              "suggested_definition": d["suggested"], "why": d["why"], "answer_key_now": _score(now),
