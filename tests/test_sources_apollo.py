@@ -438,6 +438,8 @@ def test_short_of_two_weeks_it_creates_what_the_yields_need_up_to_twice_the_cap_
     seed_supply(ctx, ready=60, findable=100, raw=200, verified=(20, 40), picked=(20, 40))
     out = uni.run(ctx)
     assert (out["target"], out["raw_need"], out["raw_allowance"], out["created"]) == (300, 560, 300, 300)
+    # The old rule counted 60 + 100 + 200 = 360 open accounts against the 300 and created nothing.
+    assert out["queue_before"] == {"Technology & Startups": 360}
     assert out["supply"]["contactable"] == 160.0 and out["supply"]["basis"] == {"p_v": "measured", "p_c": "measured"}
     assert out["stopped_by"] == (
         "the ceiling of 2 × weekly_enrol_cap (300) raw accounts a run; contactable supply was 160 of 300 (two weeks "
@@ -481,7 +483,8 @@ def test_an_account_nobody_was_found_at_or_with_no_candidates_is_no_findable_sup
     (10, 30, 10 / 30, "measured"),  # 0.333: 30 checks are enough to measure (YIELD_MIN_N 20)
     (10, 100, 0.20, "floored"),  # 0.10 is below the floor: 0.20, said as such
     (1, 5, 0.60, "default"),  # 5 checks are too few: the default
-    (12, 20, 0.60, "measured"),  # exactly 20: measured
+    (10, 19, 0.60, "default"),  # 19 is still under 20 (10 ÷ 19 = 0.526 is not used)
+    (12, 20, 0.60, "measured"),  # exactly 20: measured, 12 ÷ 20 = 0.60
 ])
 def test_a_yield_is_measured_from_20_floored_at_0_2_and_the_default_before(k, n, value, basis):
     y = uni.measured_yield(k, n, uni.DEFAULT_P_VERIFY)
