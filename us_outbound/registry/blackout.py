@@ -37,6 +37,9 @@ starts it) or gone needs nothing. Each is a blackout_resume row, which settles t
 leaves it open, and the next run tries again. A pause made by hand in Instantly's own pages during the blackout
 cannot be told from the blackout's: `us-outbound stop --live` can, and that is the way to pause sending.
 
+On the last-good settings (a sheet that fails a check; ops/bootstrap.py SAFETY_JOBS, W1-1) it still pauses, but
+starts nothing again: resume_deferred says so, and the first run on settings in force starts them.
+
 Live only for Instantly (SPEC 0.3): a dry run, or live_sending = no as for every job, says what it would pause or
 start, changes nothing and records nothing. Slack: one line when it pauses and one when it starts them again
 (notify.post_once, keyed by the hold's first send day after, so each is posted once), in the alert channel.
@@ -374,6 +377,9 @@ def run(ctx: Context) -> dict:
                            "until": _iso(h.until) if h else None, "paused_by_blackout": sorted(open_)}
     if h is not None:
         out.update(_pause(ctx, h, open_))
+    elif open_ and ctx.protective_only:  # on the last-good settings it only pauses (ops/bootstrap.py SAFETY_JOBS)
+        out["resume_deferred"] = ("the settings in force fail a check, so this runs on their last-good fallback and "
+                                  "starts nothing; the first run after the sheet is fixed starts them")
     elif open_:
         out.update(_resume(ctx, open_))
     log(JOB, run_id=ctx.run_id, **out)

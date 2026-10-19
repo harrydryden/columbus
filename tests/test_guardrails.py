@@ -926,6 +926,97 @@ def test_refuse_unless_allowed_judges_early_and_records_only_a_refusal():
     assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is True
 
 
+def test_a_protective_only_guard_pauses_and_stops_but_never_starts_adds_or_sends():
+    """W1-1 (RS P0-1): a safety job on the last-good settings runs live with Guard.protective_only. What starts sending
+    or reaches a prospect is refused before any request; what slows or stops it goes through as in any live run."""
+    guard = Guard(live=True, bounds=BOUNDS, protective_only=True)
+    campaign, box = PREFIX + "Hannah Spalding", ADDRESSES[0]
+    refused = [
+        ("instantly", Op("lead.add", target=campaign, write=True)),
+        ("instantly", Op("campaign.activate", target=campaign, write=True)),
+        ("instantly", Op("account.resume", target=box, write=True, detail={"accounts": [box]})),
+        ("instantly", Op("email.reply", target=box, write=True, detail={
+            "accounts": [box], "campaign": campaign, "approved_by": APPROVER})),
+        ("instantly", Op("email.forward", target=box, write=True, detail={"accounts": [box], "to": [ESCALATION]})),
+        # A daily limit raised, or set with no limit to compare: refused. 30 -> 40 is up.
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 40,
+                                                                                 "previous_limit": 30})),
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 10})),
+    ]
+    for system, op in refused:
+        with pytest.raises(GuardViolation, match="protective-only mode"):
+            guard.authorize(system, op)
+    allowed = [
+        ("instantly", Op("campaign.pause", target=campaign, write=True)),
+        ("instantly", Op("lead.stop", target=campaign, write=True)),
+        ("instantly", Op("lead.delete", target=campaign, write=True)),
+        ("instantly", Op("blocklist.add", target="blocklist", write=True, detail={"entries": ["x@acme.com"]})),
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 10,
+                                                                                 "previous_limit": 30})),  # down
+        ("hubspot", Op("communication.unsubscribe", target="x@acme.com", write=True)),
+        ("sheets", Op("values.update", target=SHEET, write=True)),
+        ("slack", Op("chat.postMessage", target=ALERT, write=True)),
+    ]
+    assert all(guard.authorize(system, op) is True for system, op in allowed)
+    # The same calls without the flag are as before: an activation is allowed live.
+    assert Guard(live=True, bounds=BOUNDS).authorize("instantly", Op("campaign.activate", target=campaign, write=True))
+    # Through the client: lead.add is refused before any request goes, campaign.pause goes.
+    t = FakeTransport()
+    t.route("GET", "/campaigns", {"items": [{"id": "c1", "name": campaign, "status": 1}]})
+    inst = Instantly(guard, t, "test-key")
+    with pytest.raises(GuardViolation, match="protective-only mode"):
+        inst.add_leads(campaign, [{"email": "dana@harbor.com"}])
+    assert [r for r in t.requests if r.method == "POST"] == []
+    inst.pause_campaign(campaign)
+    assert [r.url.rsplit("/v2", 1)[1] for r in t.requests if r.method == "POST"] == ["/campaigns/c1/pause"]
+
+
+def test_a_protective_only_campaign_update_may_only_shrink_the_campaign():
+    """The W1-1 review's second lock: on the last-good settings a campaign.update may take addresses off the sending
+    list and lower the daily limit, nothing else. The campaign has [harry@meetspill.org, harry@tryspill.org] at 60."""
+    guard = Guard(live=True, bounds=BOUNDS, protective_only=True)
+    campaign, a, b, hannah = PREFIX + "Harry Dryden", ADDRESSES[2], ADDRESSES[3], ADDRESSES[0]
+    before = {"previous_accounts": [a, b], "previous_daily_limit": 60}
+
+    def update(**detail):
+        return Op("campaign.update", target=campaign, write=True, detail=detail)
+
+    refused = {
+        "an address added": update(fields=["daily_limit"], accounts=[a, hannah], daily_limit=30, **before),
+        "a list with nothing to compare": update(fields=["daily_limit"], accounts=[a], daily_limit=30),
+        "the limit raised, 60 -> 61": update(fields=["daily_limit"], accounts=[a], daily_limit=61, **before),
+        "a limit with nothing to compare": update(fields=["daily_limit"], daily_limit=30, previous_accounts=[a, b]),
+        "another field": update(fields=["campaign_schedule"], **before),
+        "a campaign created": Op("campaign.create", target=campaign, write=True, detail={"accounts": [a],
+                                                                                           "daily_limit": 30}),
+    }
+    for why, op in refused.items():
+        with pytest.raises(GuardViolation, match="protective-only mode"):
+            guard.authorize("instantly", op)
+    allowed = {
+        "an address off, the limit down": update(fields=["daily_limit"], accounts=[a], daily_limit=30, **before),
+        "the same list, the same limit": update(fields=["daily_limit"], accounts=[b, a], daily_limit=60, **before),
+        "the list alone, shorter": update(fields=[], accounts=[b], **before),
+    }
+    assert all(guard.authorize("instantly", op) is True for op in allowed.values())
+    # Without the flag the same widening update goes through as before (the registry and the prefix are all it checks).
+    assert Guard(live=True, bounds=BOUNDS).authorize("instantly", refused["an address added"])
+    # Through the client: update_campaign carries the campaign it was given as previous_*, so a shrink goes and a
+    # widening is refused before any request.
+    t = FakeTransport()
+    t.route("GET", "/campaigns", {"items": [{"id": "c1", "name": campaign, "status": 1}]})
+    t.route("PATCH", "/campaigns/c1", {"id": "c1"})
+    inst = Instantly(guard, t, "test-key")
+    current = {"email_list": [a, b], "daily_limit": 60}
+    with pytest.raises(GuardViolation, match="adds 1 account"):
+        inst.update_campaign(campaign, {"daily_limit": 30}, accounts=[a, hannah], previous=current)
+    with pytest.raises(GuardViolation, match="no previous list"):
+        inst.update_campaign(campaign, {"daily_limit": 30}, accounts=[a])
+    assert [r for r in t.requests if r.method == "PATCH"] == []
+    inst.update_campaign(campaign, {"daily_limit": 30}, accounts=[a], previous=current)
+    assert [r.json for r in t.requests if r.method == "PATCH"] == [{"daily_limit": 30, "email_list": [a]}]
+
+
 # -- (c) static: who may import what ----------------------------------------------------------------
 
 IMPORT_RULES: list[tuple[str, set[str]]] = [

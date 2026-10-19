@@ -249,7 +249,7 @@ def test_heartbeat_check_runs_on_the_defaults_when_the_settings_are_unusable_and
     assert sent and {p["channel"] for p in sent} == {"C_ALERT"}  # live on the defaults: not the dev channel
     [post] = [p for p in sent if "Some automatic jobs ran into problems" in p["text"]]
     assert "*The jobs have stopped (since " in post["text"]
-    assert "General tab" in post["text"] and "every job except the hourly health check refuses to start" in post["text"]
+    assert "General tab" in post["text"] and "every job but the safety jobs refuses to start (the safety jobs run on a fallback that only pauses)" in post["text"]
     assert pings(t) == [PING + "/fail"]
     [row] = [r for r in store.select("heartbeats") if r["job"] == "heartbeat_check"]
     assert row["status"] == "ok" and row["dry_run"] is False and row["detail"]["failed"] == ["settings_sync"]

@@ -16,6 +16,8 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   start | stop                        resume or pause every US Outbound campaign, and enrollment. start
                                       --live syncs the sheet first, so live_sending just set counts.
                                       stop --live is the brake: live_sending = no does not stop Instantly.
+                                      stop --live --no-db pauses the campaigns while the database is down
+                                      (no settings, no operator_stop row: run stop --live once it is back)
                                       Over a blackout start leaves the campaigns paused, and the blackout
                                       job starts them after it (registry/blackout.py; 7 Oct 2026)
   approvals list | send | contact |   send approvals without Slack (enrol/approvals/; Harry, 2 Oct 2026:
@@ -74,7 +76,9 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       that seed lead of ours alone; without --live it only says what it calls
   erase --email <address>             an erasure request (SPEC 6)
   schedule                            the job table and next runs (UK time)
-  run <job> [--live]                  one job, what the scheduler starts
+  run <job> [--live]                  one job, what the scheduler starts; its summary printed as one JSON
+                                      line, each list cut to its first 10 (Railway drops lines at its rate
+                                      limit: 1,276 on 19 Oct 2026)
 Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
 (remove that month's leads), rescore (the score job), dry-run <job>, db apply, hubspot setup|ids,
 suppression load, lookalikes show [--top N] [--all]
@@ -222,6 +226,26 @@ def _print(value: Any) -> None:
     print(json.dumps(value, indent=2, default=str, ensure_ascii=False))
 
 
+LOG_LIST_LIMIT = 10  # items of a list kept in a scheduled run's one-line summary
+
+
+def _cut(value: Any) -> Any:
+    """Lists longer than LOG_LIST_LIMIT cut to that many, then "+N more", at any depth (the log line only: the
+    heartbeat row keeps the whole summary)."""
+    if isinstance(value, dict):
+        return {k: _cut(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = [_cut(v) for v in value]
+        return items if len(items) <= LOG_LIST_LIMIT else [*items[:LOG_LIST_LIMIT], f"+{len(items) - LOG_LIST_LIMIT} more"]
+    return value
+
+
+def _print_line(value: Any) -> None:
+    """A scheduled run's summary as one compact JSON line (W1-1, 19 Oct 2026): pretty-printed, one summary was
+    hundreds of lines, and Railway dropped 1,276 lines at its rate limit."""
+    print(json.dumps(_cut(value), separators=(",", ":"), default=str, ensure_ascii=False))
+
+
 def _synced(ctx: Context) -> str:
     """When the sheet was last read into the settings in force (settings/sync.last_read), in UK time."""
     from us_outbound.settings import sync
@@ -288,7 +312,8 @@ def _record_unusable(exc: bootstrap.SettingsUnusable, job: str) -> None:
         log("heartbeat_write_failed", job=job, error=str(write_error))
 
 
-def _job(name: str, live_flag: bool, factory: Factory) -> int:
+def _job(name: str, live_flag: bool, factory: Factory, *, one_line: bool = False) -> int:
+    """One job run. one_line: the summary as one JSON line (`run`, what the scheduler starts); pretty otherwise."""
     fn = resolve_job(name)
     try:
         ctx = factory(name, live_flag)
@@ -299,7 +324,7 @@ def _job(name: str, live_flag: bool, factory: Factory) -> int:
         print(_live_sending_note(ctx))
     with _sigterm_ends_the_run():
         summary = run_job(ctx, fn)
-    _print(summary)
+    (_print_line if one_line else _print)(summary)
     return 0
 
 
@@ -379,7 +404,7 @@ def _sigterm_ends_the_run() -> Iterator[None]:
 
 
 def cmd_run(args: argparse.Namespace, factory: Factory) -> int:
-    return _job(args.job, args.live, factory)
+    return _job(args.job, args.live, factory, one_line=True)
 
 
 def cmd_dry_run(args: argparse.Namespace, factory: Factory) -> int:
@@ -539,11 +564,42 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+NO_DB_NOTE = ("no operator_stop row was written: enrol will keep adding leads to paused campaigns (they do not send); "
+              "run `us-outbound stop --live` once the database is back")
+
+
+def _brake_context(live: bool) -> Context:
+    """The context of `stop --no-db` (bootstrap.brake_context); tests replace it."""
+    return bootstrap.brake_context(live)
+
+
 def cmd_stop(args: argparse.Namespace, factory: Factory) -> int:
+    if getattr(args, "no_db", False):
+        return _stop_without_db(args)
     ctx = factory(OPERATOR_STOP, args.live, operator=True)
     summary = run_job(ctx, campaigns.stop)
     _print(summary)
     print("Enrollment is stopped (in every mode) until `us-outbound start --live` runs with live_sending = yes.")
+    _dry_note(ctx, "campaigns were not paused in Instantly.")
+    return 0
+
+
+def _stop_without_db(args: argparse.Namespace) -> int:
+    """`stop --live --no-db` (W1-1, 19 Oct 2026; code-platform-ops B4): the brake when Postgres is down. No settings
+    and no heartbeat (both live in the database): the campaigns named "US Outbound – " are paused through the
+    Instantly client on a guard built from the environment alone, and the alert channel is told."""
+    from us_outbound.base import notify
+
+    ctx = _brake_context(args.live)
+    summary = campaigns.stop(ctx)
+    summary["enrollment"] = "not stopped: no database"
+    _print(summary)
+    print(NO_DB_NOTE)
+    if ctx.live:
+        paused = ", ".join(summary["campaigns_paused"]) or "none was sending"
+        sent = notify.alert(ctx, f"Emergency stop without the database: paused {paused}. {NO_DB_NOTE}.")
+        if not sent.get("posted"):
+            print(f"(the alert was not posted to Slack: {sent.get('error') or 'no reason given'})")
     _dry_note(ctx, "campaigns were not paused in Instantly.")
     return 0
 
@@ -1602,7 +1658,8 @@ def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
 
     if args.list:
         return cmd_schedule(args, factory)
-    return scheduler.Scheduler(max_parallel=scheduler.max_parallel_from_env(), at_start=scheduler.AT_START).run()
+    return scheduler.Scheduler(max_parallel=scheduler.max_parallel_from_env(), at_start=scheduler.AT_START,
+                               store_factory=scheduler.heartbeat_store).run()
 
 
 # -- parser and entrypoint ----------------------------------------------------------------
@@ -1660,7 +1717,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "companies.csv`, keep it private and delete it when you are done")
     command("sync", "bring the sheet's edits into force now (the same as settings sync)", cmd_sync, takes_live=True)
     command("start", "sync the sheet, then resume the campaigns and enrollment", cmd_start, takes_live=True)
-    command("stop", "pause every US Outbound campaign and enrollment (the brake)", cmd_stop, takes_live=True)
+    so = command("stop", "pause every US Outbound campaign and enrollment (the brake)", cmd_stop, takes_live=True)
+    so.add_argument("--no-db", action="store_true",
+                    help="the database is down: pause the campaigns through Instantly alone (no settings, no "
+                         "operator_stop row; run stop --live again once it is back)")
 
     ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
                  cmd_approvals, takes_live=True)

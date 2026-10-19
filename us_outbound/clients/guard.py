@@ -13,6 +13,17 @@ channel. Live needs both the --live flag and live_sending = yes; the caller work
 and passes `live`.
 
 Every call is recorded in Guard.calls so tests can inspect them all.
+
+Protective-only (W1-1, 19 Oct 2026; RS P0-1): a safety job running on the last-good settings (ops/bootstrap.py
+SAFETY_JOBS) may only slow or stop sending. Instantly campaign.activate, campaign.create, account.resume, lead.add,
+email.reply, email.forward and a daily limit raised (account.update_limit without a higher previous_limit) are refused
+with "protective-only mode"; pauses, lead stops and deletes, the blocklist, HubSpot unsubscribes, sheet status writes,
+database writes and Slack posts go on as in any run. A campaign.update may only shrink: its sending list a subset of
+the one the campaign had (previous_accounts, read just before), its daily limit no higher than before
+(previous_daily_limit), and nothing else changed. The fallback's Mailboxes tab can be an earlier version, in which a
+mailbox paused since is still Active: a kill rule's pause of another mailbox rebuilds the owner's sending list from it,
+and without this rule would put the paused one back (registry/mailboxes._sync_campaign shrinks as well; this is the
+second lock).
 """
 
 from __future__ import annotations
@@ -26,6 +37,12 @@ from us_outbound.logs import log, redact
 
 US_CAMPAIGN_PREFIX = "US Outbound – "  # en dash, as in SPEC 9
 ERASE_JOB = "erase"  # the only job that may GDPR-delete in HubSpot (SPEC 6 erase --email)
+# What a protective-only guard refuses (module docstring): everything that starts sending or reaches a prospect.
+PROTECTIVE_REFUSED = frozenset({"campaign.activate", "campaign.create", "account.resume", "lead.add", "email.reply",
+                                "email.forward"})
+# What a protective-only campaign.update may change (the module docstring): the sending list and the daily limit, down.
+PROTECTIVE_CAMPAIGN_FIELDS = frozenset({"daily_limit"})
+PROTECTIVE_ONLY = "protective-only mode"
 # SPEC 1.3, as changed by decision D11 (Harry, 1 Oct 2026): nothing goes to a prospect after their
 # first reply unless an approver approved it. An approver is a Slack id on approver_slack_ids, or the
 # owner of the mailbox the prospect wrote to (Mailboxes slack_id). At the command line (Slack may not
@@ -140,20 +157,47 @@ class Boundaries:
         return self.registry_addresses | self.registry_account_ids
 
 
+def _campaign_widened(detail: Mapping[str, Any]) -> str:
+    """Why a campaign.update does more than shrink the campaign (the module docstring's protective-only rule), or "".
+    What it cannot compare (no previous list or limit given) counts as widening: the rule fails closed."""
+    other = set(detail.get("fields") or ()) - PROTECTIVE_CAMPAIGN_FIELDS
+    if other:
+        return f"changes {sorted(other)}"
+    if "accounts" in detail:
+        before = detail.get("previous_accounts")
+        if not isinstance(before, (list, tuple)):
+            return "replaces the sending list with no previous list to compare"
+        added = {str(x).lower() for x in detail["accounts"]} - {str(x).lower() for x in before}
+        if added:
+            return f"adds {len(added)} account(s) to the sending list"
+    if "daily_limit" in set(detail.get("fields") or ()):
+        limit, before = detail.get("daily_limit"), detail.get("previous_daily_limit")
+        if not (isinstance(limit, int) and isinstance(before, int)):
+            return "sets the daily limit with no previous limit to compare"
+        if limit > before:
+            return f"raises the daily limit from {before} to {limit}"
+    return ""
+
+
 class Guard:
-    def __init__(self, live: bool = False, bounds: Boundaries | None = None, job: str = ""):
+    def __init__(self, live: bool = False, bounds: Boundaries | None = None, job: str = "",
+                 protective_only: bool = False):
         self.live = live
         self.bounds = bounds or Boundaries()
         self.job = job  # the job this process runs (Context.job); some writes belong to one job only
+        self.protective_only = protective_only  # the module docstring: pause and stop only
         self.calls: list[CallRecord] = []
 
-    def configure(self, *, live: bool | None = None, bounds: Boundaries | None = None, job: str | None = None) -> None:
+    def configure(self, *, live: bool | None = None, bounds: Boundaries | None = None, job: str | None = None,
+                  protective_only: bool | None = None) -> None:
         if live is not None:
             self.live = live
         if bounds is not None:
             self.bounds = bounds
         if job is not None:
             self.job = job
+        if protective_only is not None:
+            self.protective_only = protective_only
 
     # -- the one entry point -------------------------------------------------
 
@@ -252,6 +296,19 @@ class Guard:
             if not op.target.startswith(US_CAMPAIGN_PREFIX):
                 raise GuardViolation(f"Instantly {a} targets campaign {op.target!r}, not a US Outbound campaign")
 
+        if op.write and self.protective_only:
+            raised = a == "account.update_limit" and not (
+                isinstance(op.detail.get("previous_limit"), int) and isinstance(op.detail.get("daily_limit"), int)
+                and op.detail["daily_limit"] < op.detail["previous_limit"])
+            if a in PROTECTIVE_REFUSED or raised:
+                raise GuardViolation(f"{PROTECTIVE_ONLY}: Instantly {a} is refused while the settings run on their "
+                                     "last-good fallback (ops/bootstrap.py)")
+            if a == "campaign.update":
+                widened = _campaign_widened(op.detail)
+                if widened:
+                    raise GuardViolation(f"{PROTECTIVE_ONLY}: Instantly campaign.update {widened}; on the last-good "
+                                         "fallback a campaign may only shrink (ops/bootstrap.py)")
+
         if not op.write:
             if a in {"email.list", "email.get", "account.list", "account.get", "account.vitals", "warmup.analytics",
                      "account.analytics_daily"}:
@@ -302,7 +359,7 @@ class Guard:
             need_registry_accounts()
         elif a == "account.update_limit":
             need_registry_accounts()  # only the daily limit, only on a registry account (Instantly.set_daily_limit)
-            if set(op.detail) - {"accounts", "daily_limit"}:
+            if set(op.detail) - {"accounts", "daily_limit", "previous_limit"}:
                 raise GuardViolation("Instantly account.update_limit may change only the daily limit")
         elif a == "account.update_name":
             # Only the sender name, only on a registry account, and only to a registry owner's full name

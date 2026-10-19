@@ -22,6 +22,18 @@ alone too (ALERTS_ON_DEFAULTS), since live_sending is unknown then and it only p
 channel and pings. Its context alone also reads US_OUTBOUND_WATCHDOG_URL, through the secrets
 client, into the guard's boundaries (ops/watchdog.py).
 
+The brakes on a broken sheet (W1-1, 19 Oct 2026; RS P0-1): when the version in force fails validation, the
+SAFETY_JOBS (the kill rules, the blackout pause, reading replies and email results, the do-not-contact list, the
+health check, stop and unenrol) build from the last-good settings instead (settings/sync.load_fallback): each failing
+tab's latest earlier version that validates, or General's defaults with the Mailboxes and States tabs. Before, every
+job but the repair ones refused (11 Oct 2026), and a plain fallback to the defaults would have run the brakes dry,
+since live_sending defaults to no: so live_sending is read raw from the General row in force, and the guard runs
+protective-only (clients/guard.py: pauses, stops, blocklists and posts, never an activation, a lead added, a reply,
+a forward, a campaign created, or a sending list or daily limit widened). poll_approvals is not a safety job: it sends replies. Every other job refuses as before, and enrol never
+runs on fallback content. The context says so: settings.fallback_tabs, and guard.protective_only. A fallback search
+that fails (settings_fallback_failed in the log) is as if there were none: heartbeat_check, stop and unenrol build on
+General's defaults (DEFAULTS_OK) as before, and the other safety jobs refuse.
+
 Live (SPEC 0.3) needs the --live flag and live_sending = yes. Operator commands that
 never reach a prospect (setup, pause, erase; see ops/cli.py) pass operator=True and are
 live with the --live flag alone.
@@ -54,6 +66,9 @@ DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap", "settings_load",
 # channel and the watchdog's ping, which reach no prospect, and its alert must not go to the dev channel just
 # because the sheet that says live_sending = yes cannot be read.
 ALERTS_ON_DEFAULTS = frozenset({watchdog.JOB})
+# Jobs that run on the last-good settings, protective-only, when the version in force fails (module docstring).
+SAFETY_JOBS = frozenset({"kill_rules", "blackout", "sync_outcomes", "poll_replies", "suppression_load", watchdog.JOB,
+                         OPERATOR_STOP, UNENROL_JOB})
 DATABASE_VAR = "DATABASE_URL"
 GOOGLE_KEY_VAR = "US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON"
 # ConfigError (the environment is missing something) lives in context.py, beside Secrets;
@@ -85,17 +100,29 @@ def database_url(env: Mapping[str, str]) -> str:
     return value
 
 
+def _in_use(store: Store, settings: Settings) -> Settings:
+    """A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py); and the day's
+    automatic thresholds stand in for the sheet's while auto_thresholds is yes (scoring/balance.py)."""
+    from us_outbound.scoring import balance
+
+    return balance.applied(store, with_holds(store, settings))
+
+
 def _load_settings(store: Store) -> tuple[Settings | None, Mapping[str, list[Any]]]:
     from us_outbound.settings.sync import load_current  # built alongside; imported when used
-
-    from us_outbound.scoring import balance
 
     settings, errors = load_current(store)
     if settings is None:
         return None, errors
-    # A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py); and the day's
-    # automatic thresholds stand in for the sheet's while auto_thresholds is yes (scoring/balance.py).
-    return balance.applied(store, with_holds(store, settings)), errors
+    return _in_use(store, settings), errors
+
+
+def _load_fallback(store: Store) -> Settings | None:
+    """The last-good settings for a safety job (settings/sync.load_fallback), as the jobs use them."""
+    from us_outbound.settings.sync import load_fallback
+
+    settings = load_fallback(store)
+    return _in_use(store, settings) if settings is not None else None
 
 
 def sheets_credentials(env: Mapping[str, str]) -> Any:
@@ -131,6 +158,30 @@ def sheets_credentials(env: Mapping[str, str]) -> Any:
         raise ConfigError(f"{GOOGLE_KEY_VAR} could not be read as a service-account key; create a new key") from None
 
 
+def brake_context(live: bool, *, env: Mapping[str, str] | None = None, transport: Transport | None = None,
+                  secrets: Secrets | None = None) -> Context:
+    """The context of `stop --no-db` (ops/cli.py): no database and no settings. A guard from the environment alone
+    (the sheet id; the "US Outbound – " campaign prefix the guard always holds), live with --live alone (an
+    operator command that reaches no prospect), General's defaults for the alert channel, and a store in memory that
+    nothing reads. Instantly and Slack keys come from the sealed variables as for every job."""
+    from us_outbound.clients.db import MemoryStore
+
+    env = os.environ if env is None else env
+    settings = Settings(general=General())
+    guard = Guard(live=bool(live), job=OPERATOR_STOP)
+    guard.configure(bounds=boundaries_for(settings, (env.get("US_OUTBOUND_SETTINGS_SHEET_ID") or "").strip(),
+                                          job=OPERATOR_STOP))
+    store = MemoryStore(guard)
+    secrets = secrets or Secrets(guard, env)
+    if transport is None:
+        from us_outbound.clients.http import RequestsTransport
+
+        transport = RequestsTransport()
+    clients = Clients(guard, transport, secrets, store, settings)
+    log("context", job=OPERATOR_STOP, live=guard.live, no_db=True)
+    return Context(job=OPERATOR_STOP, settings=settings, store=store, guard=guard, clients=clients, live_flag=bool(live))
+
+
 def build_context(
     job: str,
     live_flag: bool,
@@ -139,6 +190,7 @@ def build_context(
     env: Mapping[str, str] | None = None,
     store: Store | None = None,
     load_settings: Callable[[Store], tuple[Settings | None, Mapping[str, list[Any]]]] | None = None,
+    load_fallback: Callable[[Store], Settings | None] | None = None,
     transport: Transport | None = None,
     secrets: Secrets | None = None,
     google_credentials: Any = None,
@@ -155,6 +207,18 @@ def build_context(
         store = PostgresStore(guard, dsn)
     store.guard = guard
     settings, errors = (load_settings or _load_settings)(store)
+    protective = False
+    if settings is None and job in SAFETY_JOBS:
+        try:
+            settings = (load_fallback or _load_fallback)(store)
+        except Exception as exc:  # the search must never stop a brake: the path below is as before the fallback
+            log("settings_fallback_failed", job=job, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+            settings = None
+        if settings is not None:
+            protective = True
+            operator = operator or job in ALERTS_ON_DEFAULTS
+            log("settings_fallback_used", job=job, tabs=sorted(settings.fallback_tabs), mode=settings.fallback_mode,
+                live_sending=settings.general.live_sending, protective_only=True)
     if settings is None:
         if job not in DEFAULTS_OK:
             raise SettingsUnusable(errors, store)
@@ -165,7 +229,8 @@ def build_context(
     live = resolve_live(live_flag, settings, operator=operator)
     secrets = secrets or Secrets(guard, env)
     ping_url = watchdog.read(secrets)[0] if job == watchdog.JOB else ""
-    guard.configure(live=live, bounds=boundaries_for(settings, sheet_id, job=job, watchdog_url=ping_url))
+    guard.configure(live=live, bounds=boundaries_for(settings, sheet_id, job=job, watchdog_url=ping_url),
+                    protective_only=protective)
     if live_flag and not live:
         log("live_refused", job=job, reason="live_sending is not yes in the settings sheet; running dry")
     if transport is None:

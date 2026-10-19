@@ -7,6 +7,15 @@ whole tab: settings_sync then keeps the previous version of that tab in force.
 
 Row numbers are sheet rows counting the header, so the first data row is row 2.
 Errors are written for Harry, in American English.
+
+General keys are forward-compatible (W1-1, 19 Oct 2026; RS P0-2): a key the code does not know, one renamed
+(RENAMED_GENERAL) or one retired (RETIRED_GENERAL) is a warning, and its row is not read; it never rejects the tab.
+Before, an unknown key was an error, so a package that added a key, and a rollback after Harry added its row, left
+the General version in force unusable and stopped every job, the brakes included (11 Oct 2026). strict (the sheet
+sync, the default) still fails on a duplicate key; strict=False (settings/sync.load_current, re-reading the version
+in force) keeps the first row of a duplicated key and warns. A value that does not parse fails in both. Every key a
+package deletes from General goes into RETIRED_GENERAL in the same commit, and the live sheet's key names are a test
+fixture (tests/fixtures/general_keys_live.txt). general_warnings() lists the warnings.
 """
 
 from __future__ import annotations
@@ -416,7 +425,9 @@ RENAMED_GENERAL = {
 }
 # Keys no longer used (Harry, 1 Oct 2026): emails carry no postal address and no privacy link, and
 # the opt-out is Instantly's own unsubscribe link. A sheet that still has these rows stays valid;
-# `us-outbound settings load` removes them.
+# `us-outbound settings load` removes them. Every key a later package deletes from General joins this map in the
+# same commit as its deletion (W1-1, 19 Oct 2026), never before: a key still on General is read, and retiring it
+# early would put its code default in place of the sheet's value.
 RETIRED_GENERAL = {
     "postal_address": "emails carry no postal address (Harry, 1 Oct 2026)",
     "privacy_url": "emails carry no privacy link; the opt-out is Instantly's unsubscribe link (Harry, 1 Oct 2026)",
@@ -560,9 +571,15 @@ def _check_general_value(key: str, value: Any) -> None:
             raise ValueError(f"{', '.join(bad)} is not a path on the site: each starts with /, like /us/pricing")
 
 
-def _general(rows: list[_Row]) -> General:
+def _general(rows: list[_Row], strict: bool = True, warnings: list[RowError] | None = None) -> General:
+    """The General tab. Unknown, renamed and retired keys are warnings (module docstring), added to `warnings`."""
     values: dict[str, Any] = {}
     where: dict[str, _Row] = {}
+
+    def warn(r: _Row, message: str) -> None:
+        if warnings is not None:
+            warnings.append(RowError("General", r.number, "key", message, r.label))
+
     for r in rows:
         key = r.text("key")
         if not key:
@@ -571,15 +588,19 @@ def _general(rows: list[_Row]) -> General:
             continue  # a note-only row
         if key in RENAMED_GENERAL:
             new, why = RENAMED_GENERAL[key]
-            r.fail("key", f"{key!r} is now {new!r}: {why}")
+            warn(r, f"{key!r} is now {new!r} ({why}): this row is not read; put its value on a {new} row")
             continue
         if key in RETIRED_GENERAL:
-            continue  # no longer used; the row can be deleted
+            warn(r, f"{key!r} is no longer used ({RETIRED_GENERAL[key]}): the row can be deleted")
+            continue
         if key not in _GENERAL_TYPES:
-            r.fail("key", f"unknown key {key!r}{hint(key, _GENERAL_TYPES)}")
+            warn(r, f"unknown key {key!r}{hint(key, _GENERAL_TYPES)}: this row is not read")
             continue
         if key in where:
-            r.fail("key", f"{key} is already on row {where[key].number}")
+            if strict:
+                r.fail("key", f"{key} is already on row {where[key].number}")
+            else:
+                warn(r, f"{key} is already on row {where[key].number}: this row is not read")
             continue
         where[key] = r
         kind = _GENERAL_TYPES[key]
@@ -1158,19 +1179,31 @@ _VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
 }
 
 
-def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None) -> tuple[Any, list[RowError]]:
+def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None, *, strict: bool = True,
+              warnings: list[RowError] | None = None) -> tuple[Any, list[RowError]]:
     if tab not in _VALIDATORS:
         raise ValueError(f"unknown settings tab {tab!r}")
     errors: list[RowError] = []
     prepared = _prepare(tab, rows, errors)
     if prepared is None:
         return (General() if tab == "General" else []), errors
+    if tab == "General":
+        return _general(prepared, strict, warnings), errors
     return _VALIDATORS[tab](prepared), errors
 
 
-def validate_tab(tab: str, rows: Iterable[Mapping[str, Any]] | None) -> tuple[Any, list[RowError]]:
+def general_warnings(rows: Iterable[Mapping[str, Any]] | None, *, strict: bool = True) -> list[RowError]:
+    """The General rows that are not read, and why: an unknown, renamed or retired key (and, with strict=False, a
+    duplicate). None of them rejects the tab (module docstring)."""
+    warnings: list[RowError] = []
+    _validate("General", rows, strict=strict, warnings=warnings)
+    return warnings
+
+
+def validate_tab(tab: str, rows: Iterable[Mapping[str, Any]] | None, *,
+                 strict: bool = True) -> tuple[Any, list[RowError]]:
     """One tab on its own: (General, errors) for General, else (tuple of the tab's rows, errors)."""
-    value, errors = _validate(tab, rows)
+    value, errors = _validate(tab, rows, strict=strict)
     if tab == "General":
         return value, errors
     return tuple(obj for obj, _ in value), errors
@@ -1184,13 +1217,15 @@ def _names(rows: Iterable[Mapping[str, Any]] | None, col: str) -> dict[str, str]
     return {n.casefold(): n for n in (_cell(r, col) for r in rows or ()) if n}
 
 
-def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None]) -> tuple[Settings | None, dict[str, list[RowError]]]:
-    """Every tab, then the references between them. Settings only when there are no errors at all."""
+def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None], *,
+                 strict: bool = True) -> tuple[Settings | None, dict[str, list[RowError]]]:
+    """Every tab, then the references between them. Settings only when there are no errors at all. strict: see the
+    module docstring (False when the version in force is read again)."""
     raw = {tab: (list(tabs[tab]) if tabs.get(tab) is not None else None) for tab in TABS}
     values: dict[str, Any] = {}
     errors: dict[str, list[RowError]] = {}
     for tab in TABS:
-        values[tab], errors[tab] = _validate(tab, raw[tab])
+        values[tab], errors[tab] = _validate(tab, raw[tab], strict=strict)
 
     # References are checked against every name on the referenced tab, valid row or not, so
     # one bad Angles row does not also fail the signals that name it.

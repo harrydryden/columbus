@@ -288,8 +288,13 @@ def test_the_heartbeat_says_the_apollo_source_is_paused(default_settings):
     pause_source(h, "apollo")
     assert h.run("dry-run", "pick_contacts") == 0
     [beat] = h.beats("pick_contacts")
-    assert beat["status"] == "ok" and beat["detail"]["status"] == "skipped"
+    # The job said it skipped, so the row says so (W1-1: the heartbeat read only a truthy "skipped" key and stored
+    # this run as ok). A skip for a reason of its own still shows the job alive (base/heartbeats._shows_alive).
+    assert beat["status"] == "skipped" and beat["detail"]["status"] == "skipped"
     assert beat["detail"]["reason"].startswith("a kill rule pauses the apollo email source (5% bounced)")
+    from us_outbound.base.heartbeats import latest_runs
+
+    assert latest_runs(h.store)["pick_contacts"]["last_alive_at"] is not None
 
 
 def test_apollo_balance_at_the_floor_spends_nothing(ctx, transport):

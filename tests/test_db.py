@@ -755,6 +755,97 @@ def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
     assert notify.sent_before(ctx, ["apollo_floor:2026-10-07", "claude_cap_80:2026-10"]) == {"apollo_floor:2026-10-07"}
 
 
+def test_the_w1_1_reads_and_writes_run_on_postgres(store):
+    """W1-1 on the real database: the failure-rate query (each job's last 12 finished runs), the scheduler's error
+    row for a failed run (Range on started_at, then an upsert), and the fallback's earlier versions of a tab."""
+    from us_outbound.ops import job_errors
+    from us_outbound.ops import scheduler as sch
+    from us_outbound.settings import sync
+
+    now = datetime.now(UTC)
+    # 14 hubspot_readback runs every 15 minutes, newest first; errors at positions 1, 5, 9 and 13. Only the latest
+    # 12 count, so position 13's error is out: 3 errors, the latest at position 1.
+    store.insert("heartbeats", [
+        {"run_id": f"h{i}", "job": "hubspot_readback", "status": "error" if i in (1, 5, 9, 13) else "ok",
+         "started_at": now - timedelta(minutes=15 * (i + 1)), "error": f"boom {i}" if i in (1, 5, 9, 13) else None}
+        for i in range(14)])
+    ctx = SimpleNamespace(store=store, now=now)
+    runs = job_errors.recent_runs(ctx, ["hubspot_readback"])["hubspot_readback"]
+    assert [r["run_id"] for r in runs] == [f"h{i}" for i in range(12)]
+    [rate] = job_errors.failure_rates(ctx, ["hubspot_readback"])
+    assert (rate.count, rate.texts) == (3, ["boom 1"])
+    # A run the loop launched at `start`: its own row still running is set to error; none at all is written.
+    start = now - timedelta(minutes=3)
+    store.insert("heartbeats", [{"run_id": "m1", "job": "mailbox_health", "status": "running",
+                                 "started_at": start + timedelta(seconds=2), "dry_run": False}])
+    assert sch.record_failed_run(store, "mailbox_health", start, now, -9, "timeout", 180.0) == "updated"
+    assert store.get("heartbeats", run_id="m1")["status"] == "error"
+    assert store.get("heartbeats", run_id="m1")["detail"] == {"exit_code": -9, "seconds": 180.0}
+    assert sch.record_failed_run(store, "enrol", start, now, 1, "error", 1.0) == "written"
+    [row] = store.select("heartbeats", {"job": "enrol"})
+    assert row["status"] == "error" and row["error"] == "exited 1 (error)"
+    # Two versions of a tab: the earlier one comes back as it stood before the change.
+    t0, t1 = now - timedelta(days=2), now - timedelta(days=1)
+    store.upsert("settings", [
+        {"tab": "States", "key": "NY", "values": {"state": "NY", "active": "yes"}, "effective_from": t0,
+         "effective_to": t1, "synced_at": t0},
+        {"tab": "States", "key": "NY", "values": {"state": "NY", "active": "no"}, "effective_from": t1,
+         "effective_to": None, "synced_at": t1},
+        {"tab": "States", "key": "TX", "values": {"state": "TX", "active": "yes"}, "effective_from": t0,
+         "effective_to": None, "synced_at": t0},
+    ])
+    assert sync.earlier_versions(store, "States") == [[{"state": "NY", "active": "yes"},
+                                                        {"state": "TX", "active": "yes"}]]
+
+
+def test_the_scheduler_heartbeat_store_writes_the_error_row_and_cannot_hang_the_loop(store, dsn):
+    """scheduler.heartbeat_store, as `us-outbound scheduler` opens it after a failed run: DATABASE_URL, a 5 s connect
+    timeout and a 5 s statement timeout (the loop is one thread). The row is written (no row of that start: one new,
+    status error, dry_run unknown), the session carries statement_timeout 5s, and a row locked by another transaction
+    makes the write fail after about 5 s instead of waiting for ever."""
+    import threading
+    import time
+
+    from us_outbound.ops import scheduler as sch
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    hb = sch.heartbeat_store({"DATABASE_URL": dsn})
+    try:
+        assert hb._connection().execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "5s"
+        assert sch.record_failed_run(hb, "enrol", now - timedelta(seconds=60), now, 1, "error", 60.0) == "written"
+    finally:
+        hb.close()
+    [row] = store.select("heartbeats", {"job": "enrol"})
+    assert (row["status"], row["error"], row["dry_run"]) == ("error", "exited 1 (error)", None)
+    assert row["detail"] == {"exit_code": 1, "seconds": 60.0}
+
+    # A transaction elsewhere holds the heartbeats row of a run still "running"; the loop's update of it must give up.
+    start = now - timedelta(minutes=2)
+    store.insert("heartbeats", [{"run_id": "locked", "job": "mailbox_health", "status": "running",
+                                 "started_at": start + timedelta(seconds=1), "dry_run": False}])
+    held, release = threading.Event(), threading.Event()
+
+    def hold_lock():
+        with psycopg.connect(dsn) as conn, conn.transaction():
+            conn.execute("SELECT 1 FROM us_outbound.heartbeats WHERE run_id = 'locked' FOR UPDATE")
+            held.set()
+            release.wait(30)
+
+    locker = threading.Thread(target=hold_lock)
+    locker.start()
+    try:
+        assert held.wait(10)
+        hb = sch.heartbeat_store({"DATABASE_URL": dsn})
+        began = time.monotonic()
+        with pytest.raises(psycopg.errors.QueryCanceled):
+            sch.record_failed_run(hb, "mailbox_health", start, now, -9, "timeout", 120.0)
+        assert 4.0 <= time.monotonic() - began < 15.0  # about STATEMENT_TIMEOUT_MS, not for ever
+        hb.close()
+    finally:
+        release.set()
+        locker.join(30)
+
+
 # -- DB-free: the store's rules hold before any SQL ---------------------------------------------
 
 

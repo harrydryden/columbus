@@ -36,6 +36,16 @@ edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound syn
 sending its follow-ups. To resume, run `us-outbound start --live`. It syncs the sheet, checks the
 campaigns still match the settings, and activates them.
 
+If the database is down, `us-outbound stop --live --no-db` still pauses every US Outbound campaign
+through Instantly and posts in the alert channel. It cannot record the stop, so enrol would go on adding
+leads to the paused campaigns (they send nothing): run `us-outbound stop --live` once the database is back.
+
+If the settings sheet has an error that leaves the jobs without usable settings, the safety jobs (the
+kill rules, the blackout pause, reading replies and email results, the do-not-contact list, the health
+check and `stop`) keep running on the last good version of the failing tab, or on the defaults with the
+Mailboxes and States tabs. They stay live if `live_sending` was yes, but only pause and stop: nothing is
+started, added or sent until the sheet is fixed. The settings sync says so in Slack once a day.
+
 ## Blackout dates
 
 The General tab's `blackout_dates` (23 to 27 November 2026, and 18 December 2026 to 4 January 2027) are days

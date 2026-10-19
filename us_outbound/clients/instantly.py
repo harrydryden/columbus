@@ -550,13 +550,16 @@ class Instantly(HttpClient):
                 out[email][str(r.get("date") or "")[:10]] = r
         return out
 
-    def set_daily_limit(self, email: str, daily_limit: int) -> None:
-        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap)."""
+    def set_daily_limit(self, email: str, daily_limit: int, *, previous: int | None = None) -> None:
+        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap). previous: the limit it
+        replaces, when known; a protective-only guard allows only a lower one (clients/guard.py)."""
         limit = int(daily_limit)
-        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit)
+        extra = {"previous_limit": int(previous)} if previous is not None else {}
+        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit, **extra)
         self.request(
             "PATCH", f"/accounts/{_segment(acc)}",
-            Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
+            Op("account.update_limit", target=acc, write=True,
+               detail={"accounts": [acc], "daily_limit": limit, **extra}),
             json={"daily_limit": limit},
         )
 
@@ -649,11 +652,22 @@ class Instantly(HttpClient):
             self._ids[name] = str(body["id"])
         return body
 
-    def update_campaign(self, name: str, fields: Mapping[str, Any], *, accounts: Iterable[str] | None = None) -> None:
-        """PATCH campaign fields; accounts replaces the sending list (registry accounts only)."""
+    def update_campaign(self, name: str, fields: Mapping[str, Any], *, accounts: Iterable[str] | None = None,
+                        previous: Mapping[str, Any] | None = None) -> None:
+        """PATCH campaign fields; accounts replaces the sending list (registry accounts only).
+
+        previous: the campaign as the caller has just read it (get_campaign). Its sending list and daily limit go in
+        the guard's detail, so a protective-only guard can see that the change only shrinks the campaign
+        (clients/guard.py); without it a protective-only guard refuses a new list or limit."""
         fields = dict(fields)
         _check_campaign_fields(fields)
         detail: dict[str, Any] = {"fields": sorted(fields)}
+        if "daily_limit" in fields:
+            detail["daily_limit"] = fields["daily_limit"]
+        if previous is not None:
+            detail["previous_accounts"] = _lower_all(previous.get("email_list") or ())
+            if isinstance(previous.get("daily_limit"), int):
+                detail["previous_daily_limit"] = previous["daily_limit"]
         if accounts is not None:
             accs = _lower_all(accounts)
             if not accs:

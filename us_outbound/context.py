@@ -239,6 +239,11 @@ class Context:
     def dry_run(self) -> bool:
         return not self.guard.live
 
+    @property
+    def protective_only(self) -> bool:
+        """A safety job on the last-good settings (ops/bootstrap.py): it may pause and stop, never start or send."""
+        return bool(getattr(self.guard, "protective_only", False))
+
     def today_uk(self) -> date:
         return self.now.astimezone(UK).date()
 

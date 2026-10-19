@@ -2,6 +2,7 @@
 
 import copy
 from datetime import date, time
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from us_outbound.settings.validate import (
     FIRST_DATA_ROW,
     HEADER_ROW,
     RowError,
+    general_warnings,
     natural_key,
     parse_blackout_dates,
     parse_bool,
@@ -217,25 +219,98 @@ def test_several_errors_on_one_row_are_all_reported(tabs):
 # -- General ------------------------------------------------------------------------
 
 
-def test_general_unknown_and_duplicate_keys(tabs):
-    tabs["General"].append({"key": "live_sendng", "value": "no", "note": ""})
+def _no_errors(errors):
+    return {t: [str(e) for e in errs] for t, errs in errors.items() if errs}
+
+
+def test_an_unknown_key_warns_and_a_duplicate_key_still_fails_the_sync(tabs):
+    """W1-1 (RS P0-2): an unknown key was an error, so a rollback after Harry added a new key's row (or a package
+    that added one) left General unusable and stopped every job, the brakes included (11 Oct 2026). It warns now,
+    with the same hint, and its row is not read; a duplicate key still fails the sheet sync (strict)."""
+    tabs["General"].append({"key": "live_sendng", "value": "yes", "note": ""})
+    n = len(tabs["General"]) + 1  # the typo's sheet row
+    settings, errors = validate_all(tabs)
+    assert _no_errors(errors) == {} and settings.general.live_sending is False  # the typo's "yes" is never read
+    [w] = general_warnings(tabs["General"])
+    assert w.row == n and w.column == "key" and "unknown key" in w.message and "did you mean live_sending" in w.message
     tabs["General"].append({"key": "weekly_enrol_cap", "value": "20", "note": ""})
-    errs = _errors(tabs, "General")
-    by_row = {e.row: e for e in errs}
-    n = len(tabs["General"]) + 1
-    assert "unknown key" in by_row[n - 1].message and "did you mean live_sending" in by_row[n - 1].message
-    assert "already on row" in by_row[n].message
-    assert all(e.column == "key" for e in errs)
+    e = _one(tabs, "General", "key")
+    assert e.row == n + 1 and "already on row" in e.message
 
 
-def test_renamed_keys_say_what_replaced_them(tabs):
+def test_renamed_keys_warn_and_say_what_replaced_them(tabs):
     for old, new, why in (("daily_enrol_cap", "weekly_enrol_cap", "Monday to Sunday"),
                           ("clay_weekly_credits", "clay_monthly_credits", "monthly, like Clay's own"),
                           ("apollo_weekly_credits", "apollo_monthly_credits", "monthly, like Apollo's own")):
         t = copy.deepcopy(BASE)
         t["General"].append({"key": old, "value": "30", "note": ""})
-        e = _one(t, "General", "key")
-        assert f"'{old}' is now '{new}'" in e.message and why in e.message
+        settings, errors = validate_all(t)
+        assert _no_errors(errors) == {} and settings is not None
+        [w] = general_warnings(t["General"])
+        assert f"'{old}' is now '{new}'" in w.message and why in w.message and "this row is not read" in w.message
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_unknown_renamed_and_retired_keys_warn_in_both_modes_and_a_bad_value_fails(tabs, strict):
+    """The W1-1 case: a retired key (postal_address), a renamed one (daily_enrol_cap) and an unknown one: 3
+    warnings and 0 errors, strict or not. control_share is a key General still reads today (W1-C retires it, with
+    explore_share in its place), so it validates as any known key and is not among the warnings."""
+    assert _row(tabs, "General", key="control_share")[1]["value"] == "0.15"  # on the tab already, as on the live sheet
+    for key, value in (("postal_address", "1 Main St"), ("daily_enrol_cap", "30"), ("made_up_key", "x")):
+        tabs["General"].append({"key": key, "value": value, "note": ""})
+    settings, errors = validate_all(tabs, strict=strict)
+    assert _no_errors(errors) == {} and settings is not None
+    warned = general_warnings(tabs["General"], strict=strict)
+    assert sorted(w.label for w in warned) == ["daily_enrol_cap", "made_up_key", "postal_address"]
+    # A value that does not parse fails in both modes: leniency is about key names, never about values.
+    _, row = _row(tabs, "General", key="weekly_enrol_cap")
+    row["value"] = "abc"
+    _, errors = validate_all(tabs, strict=strict)
+    [e] = errors["General"]
+    assert e.label == "weekly_enrol_cap" and e.column == "value" and "whole number" in e.message
+
+
+def test_a_duplicate_key_in_the_stored_version_is_read_leniently(tabs):
+    """strict=False (load_current re-reading the version in force) keeps the first row of a duplicated key."""
+    tabs["General"].append({"key": "weekly_enrol_cap", "value": "20", "note": ""})
+    settings, errors = validate_all(tabs, strict=False)
+    assert _no_errors(errors) == {} and settings.general.weekly_enrol_cap == 150  # the first row's value
+    [w] = general_warnings(tabs["General"], strict=False)
+    assert "already on row" in w.message
+
+
+LIVE_KEYS = [line.strip() for line in
+             (Path(__file__).parent / "fixtures" / "general_keys_live.txt").read_text().splitlines()
+             if line.strip() and not line.startswith("#")]
+# The live General values that differ from the code defaults (data-crm-settings, 19 Oct 2026); ids are stand-ins.
+LIVE_VALUES = {"live_sending": "yes", "auto_send": "yes", "priority_threshold": "40", "approver_slack_ids": "U0LIVE01",
+               "optout_tested": "yes", "hubspot_pipeline_id": "1001", "hubspot_deal_stage": "Demo requested",
+               "hubspot_deal_stage_id": "2002", "hubspot_owner_id": "3003", "second_contact": "yes",
+               "max_employees": "350", "claude_monthly_cap_usd": "50"}
+
+
+def test_every_live_general_key_is_known_retired_or_renamed():
+    from us_outbound.settings.validate import RENAMED_GENERAL, RETIRED_GENERAL, _GENERAL_TYPES
+
+    assert len(LIVE_KEYS) == 66 == len(set(LIVE_KEYS))
+    unknown = [k for k in LIVE_KEYS if k not in _GENERAL_TYPES and k not in RETIRED_GENERAL and k not in RENAMED_GENERAL]
+    assert unknown == []
+
+
+def test_the_live_general_rows_validate_with_no_errors(tabs):
+    """The live sheet's General tab as it is (auto_send, second_contact and control_share included), strict and
+    lenient: no errors, no warnings, and the 12 changed values read as the sheet has them."""
+    by_key = {r["key"]: r for r in tabs["General"] if r.get("key")}
+    assert sorted(by_key) == sorted(LIVE_KEYS)
+    for key, value in LIVE_VALUES.items():
+        by_key[key]["value"] = value
+    for strict in (True, False):
+        settings, errors = validate_all(tabs, strict=strict)
+        assert _no_errors(errors) == {}
+        assert general_warnings(tabs["General"], strict=strict) == []
+        g = settings.general
+        assert (g.live_sending, g.auto_send, g.second_contact, g.max_employees, g.control_share) == (True, True, True,
+                                                                                                    350, 0.15)
 
 
 def test_general_types(tabs):

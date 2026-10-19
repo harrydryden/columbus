@@ -6,7 +6,13 @@ run_job(ctx, fn) wraps a job function run(ctx) -> dict:
     going, so a slow poll never overlaps the next one (operator commands are never skipped);
   * runs the job, then upserts the row with status ok, error or skipped, finished_at,
     the job's summary as detail, and the error text (clipped, emails hashed).
-A job reports a skip by returning {"skipped": True, "reason": ...} or raising Skip.
+A job reports a skip by returning {"skipped": True, "reason": ...} or {"status": "skipped", "reason": ...}, or by
+raising Skip; any other summary is ok. The test is `is True`, not truthiness: enrol's summary carries "skipped", a
+count of the accounts it passed over, and every live enrol run was stored as skipped until 19 Oct 2026 (W1-1). The
+row's detail is the summary with duration_s added, and settings_fallback when the run started on the last-good
+settings (ops/bootstrap.py SAFETY_JOBS). A summary may also carry the per-item contract ops/job_errors.py reads:
+failures {reason: count} for the items that failed inside a run that still finished, and candidates, how many
+items it tried.
 Errors are re-raised after the row is written, so the CLI exits non-zero.
 
 run(ctx) is the heartbeat_check job (hourly, beside kill_rules; Harry, 7 Oct 2026): check_heartbeats,
@@ -147,8 +153,18 @@ def run_job(ctx: Context, fn: Callable[[Context], Any]) -> dict:
         raise
     summary = result if isinstance(result, Mapping) else {"result": result}
     summary = _json_safe(summary)
-    finish(SKIPPED if summary.get("skipped") else OK, summary, None)
+    detail = {**summary, "duration_s": round((max(datetime.now(UTC), now) - now).total_seconds(), 1)}
+    fallback = sorted(getattr(ctx.settings, "fallback_tabs", ()) or ())
+    if fallback:
+        detail["settings_fallback"] = fallback
+    finish(summary_status(summary), detail, None)
     return summary
+
+
+def summary_status(summary: Mapping[str, Any]) -> str:
+    """SKIPPED when the job said it skipped ({"status": "skipped"} or {"skipped": True}), else OK. A count or a
+    mapping under "skipped" (enrol's accounts passed over) is no skip."""
+    return SKIPPED if summary.get("status") == SKIPPED or summary.get("skipped") is True else OK
 
 
 # -- the heartbeat check ---------------------------------------------------------
@@ -257,7 +273,7 @@ def settings_fault(ctx: Context, tabs: Iterable[str]) -> tuple[list[str], list[s
     except Exception as exc:  # the alert still goes, with the tabs alone
         log("settings_fault_unread", error=str(exc)[:160])
     links = and_list(say.sheet_link(ctx, t) for t in tabs) or say.sheet_link(ctx)
-    facts = [f"The settings sheet has errors on the {links}, so every job except the hourly health check refuses to start."]
+    facts = [f"The settings sheet has errors on the {links}, so {sync.REFUSE_WORDS}."]
     if errors:
         facts.append("The first error:" if len(errors) == 1 else f"The first {min(len(errors), FAULT_LINES)} errors:")
         facts += [f"   ◦ {esc(str(e))}" for e in errors[:FAULT_LINES]]

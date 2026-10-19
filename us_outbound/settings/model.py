@@ -623,6 +623,11 @@ class Settings:
     named_accounts: tuple[NamedAccount, ...] = ()
     synced_at: datetime | None = None
     versions: dict[str, Any] = field(default_factory=dict)  # tab -> effective_from of the version in force
+    # The last-good fallback (ops/bootstrap.py SAFETY_JOBS; W1-1, 19 Oct 2026): the tabs whose version in force failed
+    # validation, and what stands in for them: "earlier versions" of those tabs, or "defaults" (General's code
+    # defaults with the Mailboxes and States tabs in force). Empty for the settings in force.
+    fallback_tabs: frozenset[str] = frozenset()
+    fallback_mode: str = ""
 
     # -- lookups used across jobs --
 
