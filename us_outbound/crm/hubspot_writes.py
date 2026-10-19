@@ -1,10 +1,4 @@
-"""HubSpot writes (SPEC 1.2, 11): the six us_outbound_* properties, the ids to look up, and the reply writes.
-
-ensure_properties() creates the property group "US Outbound" (internal name us_outbound)
-on companies and contacts, then any of the six properties that is missing. It never
-changes an existing property: if one of the six names already exists with a different
-type, it reports the clash and creates nothing at all. Dry-run creates nothing and says
-what it would create.
+"""HubSpot writes (SPEC 1.2, 11): the ids to look up, and the reply writes.
 
 lookup_pipeline() reads the "Spill 3.0" pipeline, its first stage and Harry's owner id,
 for Harry to paste into the General tab. It never writes settings itself.
@@ -12,18 +6,24 @@ for Harry to paste into the General tab. It never writes settings itself.
 record_reply() is SPEC 11 "HubSpot writes" for one positive or referral reply item (replies/items.py):
   1. the company by root domain: more than one → nothing is written, the account is held and a
      manual_merge item is opened (it closes itself once HubSpot has one company for the domain);
-     none → created with the clean name, the domain and the four company properties;
-  2. the contact by email, or created; associated with the company; the two contact properties set;
-  3. the reply as a note, and a task for Harry due today;
+     none → created with the clean name and the domain;
+  2. the person who replied, by email, or created; associated with the company. That is the emailed
+     contact, or the colleague who answered for them (SPEC 2: anyone at the account; W1-2, 19 Oct 2026,
+     code-replies-crm M9: until then HubSpot recorded the person we emailed, and the task named them);
+  3. the reply as a note, and a task for Harry due today, both naming who replied and, for a colleague,
+     who was emailed;
   4. lifecyclestage = lead, hs_lead_status = CONNECTED (contacts only: companies have hs_lead_status, but with
      no CONNECTED among its options, confirmed 7 Oct 2026) and hubspot_owner_id = Harry, each only where it is empty;
   5. a deal (ensure_deal) when the reply asks for a demo; hubspot_readback does the same for bookings.
-Only the six properties, the identity fields of a new record (name and domain; email, first and
-last name and job title) and the three empty-only fields are ever sent; the guard refuses anything
-else (clients/guard.py). Each step's result is kept on the item (payload.hubspot) as it is made,
-so a re-run carries on where the last stopped rather than writing twice; found records are looked
-up by the ids stored on accounts and contacts first. Dry-run reads, works out every write and
-sends none (the guard skips them), and stores nothing.
+A warm reply that also asked to be taken off the list (replies/poll.py also_asked_to_stop) is opted out in
+HubSpot too once its contact exists there, so a contact created here is never left subscribed.
+Only standard properties are sent: the identity fields of a new record (name and domain; email, first and
+last name and job title) and the three empty-only fields; the guard refuses anything else
+(clients/guard.py). SPEC 11's six us_outbound_* custom properties are not written (Harry's D9, W1-2): they
+were never created in the portal, so every company and contact write failed with a 400, and nothing read
+them. Each step's result is kept on the item (payload.hubspot) as it is made, so a re-run carries on where
+the last stopped rather than writing twice; found records are looked up by the ids stored on accounts and
+contacts first. Dry-run reads, works out every write and sends none (the guard skips them), and stores nothing.
 """
 
 from __future__ import annotations
@@ -33,141 +33,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from us_outbound import fmt
-from us_outbound.clients.guard import HUBSPOT_PROPERTY_GROUP, HUBSPOT_SIX_PROPS, US_CAMPAIGN_PREFIX, WARM_REPLY_CLASSES
+from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, WARM_REPLY_CLASSES
 from us_outbound.clients.hubspot import COMPANY_PROPS, CONTACT_PROPS, DEAL_PROPS
 from us_outbound.context import Context
 from us_outbound.logs import clip, log
 from us_outbound.replies.items import ReplyItem, save_payload
-from us_outbound.settings.model import TIERS
-
-# SPEC 11 classification classes, in plain English for the dropdown.
-REPLY_CLASSES: dict[str, str] = {
-    "positive": "Positive",
-    "referral": "Referral",
-    "objection": "Objection",
-    "not_now": "Not now",
-    "negative": "Negative",
-    "out_of_office": "Out of office",
-    "wrong_person": "Wrong person",
-    "unsubscribe": "Unsubscribe",
-    "other": "Other",
-}
-
-
-def _options(values: Mapping[str, str]) -> list[dict]:
-    return [{"label": label, "value": value, "displayOrder": i, "hidden": False} for i, (value, label) in enumerate(values.items())]
-
-
-def _spec(name: str, label: str, description: str, type_: str, field_type: str, **extra: Any) -> dict:
-    return {
-        "name": name,
-        "label": label,
-        "description": description,
-        "groupName": HUBSPOT_PROPERTY_GROUP,
-        "type": type_,
-        "fieldType": field_type,
-        "formField": False,
-        **extra,
-    }
-
-
-# (object type, property spec) for the six properties of SPEC 11, in the group "US Outbound".
-PROPERTY_SPECS: tuple[tuple[str, dict], ...] = (
-    (
-        "companies",
-        _spec(
-            "us_outbound_account_id", "US Outbound account id",
-            "The account's id in the US Outbound system (its database, us_outbound.accounts). Set by the jobs.",
-            "string", "text", hasUniqueValue=True,
-        ),
-    ),
-    (
-        "companies",
-        _spec(
-            "us_outbound_tier", "US Outbound tier", "The account's tier when it replied. Set by the jobs.",
-            "enumeration", "select", options=_options({t: t for t in TIERS}),
-        ),
-    ),
-    (
-        "companies",
-        _spec(
-            "us_outbound_industry_group", "US Outbound industry group",
-            "The website industry group the account was found under. Set by the jobs.", "string", "text",
-        ),
-    ),
-    (
-        "companies",
-        _spec(
-            "us_outbound_top_signals", "US Outbound top signals",
-            "The signals that scored the account, with their evidence. Set by the jobs.", "string", "textarea",
-        ),
-    ),
-    (
-        "contacts",
-        _spec(
-            "us_outbound_angle", "US Outbound angle",
-            "The angle and copy version this contact was sent. Set by the jobs.", "string", "text",
-        ),
-    ),
-    (
-        "contacts",
-        _spec(
-            "us_outbound_reply_class", "US Outbound reply class",
-            "How the contact's reply was classified. Set by the jobs.", "enumeration", "select",
-            options=_options(REPLY_CLASSES),
-        ),
-    ),
-)
-assert {s["name"] for _, s in PROPERTY_SPECS} == HUBSPOT_SIX_PROPS
-OBJECT_TYPES = ("companies", "contacts")
-
-
-class PropertyClash(Exception):
-    """One of the six names already exists on HubSpot with a different type. Nothing was created."""
-
-
-def ensure_properties(ctx: Context) -> dict:
-    """Create the group and any missing us_outbound_* property; never modify an existing one."""
-    hs = ctx.clients.hubspot
-    existing = {obj: {p.get("name"): p for p in hs.properties(obj)} for obj in OBJECT_TYPES}
-    clashes: list[str] = []
-    missing: list[tuple[str, dict]] = []
-    present: list[str] = []
-    notes: list[str] = []
-    for obj, spec in PROPERTY_SPECS:
-        have = existing[obj].get(spec["name"])
-        if have is None:
-            missing.append((obj, spec))
-            continue
-        present.append(spec["name"])
-        if have.get("type") != spec["type"]:
-            clashes.append(f"{obj} {spec['name']}: exists as type {have.get('type')!r}, we need {spec['type']!r}")
-            continue
-        if have.get("groupName") != HUBSPOT_PROPERTY_GROUP:
-            notes.append(f"{obj} {spec['name']} exists in group {have.get('groupName')!r}; left as it is")
-        if spec["type"] == "enumeration":
-            want = {o["value"] for o in spec["options"]}
-            got = {o.get("value") for o in have.get("options") or []}
-            if want - got:
-                notes.append(f"{obj} {spec['name']} lacks options {sorted(want - got)}; left as it is (add them by hand)")
-    if clashes:
-        log("hubspot_setup_clash", clashes=clashes)
-        raise PropertyClash("; ".join(clashes) + ". Nothing was created; ask Harry which property to use.")
-
-    for obj in OBJECT_TYPES:
-        hs.ensure_property_group(obj)
-    for obj, spec in missing:
-        hs.create_property(obj, spec)
-    names = [s["name"] for _, s in missing]
-    summary = {
-        "dry_run": ctx.dry_run,
-        "group": HUBSPOT_PROPERTY_GROUP,
-        ("would_create" if ctx.dry_run else "created"): names,
-        "existing": present,
-        "notes": notes,
-    }
-    log("hubspot_setup", **summary)
-    return summary
 
 
 def lookup_pipeline(ctx: Context) -> dict:
@@ -192,9 +62,6 @@ LIFECYCLE_LEAD = "lead"  # docs/phase0-facts.md: a valid lifecyclestage option
 LEAD_STATUS_CONNECTED = "CONNECTED"  # docs/phase0-facts.md: a valid hs_lead_status option
 MANUAL_MERGE = "manual_merge"  # the hitl_items kind for a domain with more than one HubSpot company
 DEAL_EVENT = "hs-deal:"  # events.event_id of a deal: the HubSpot object id, prefixed by its type
-TOP_SIGNALS = 5
-TOP_SIGNALS_CHARS = 1000
-EVIDENCE_CHARS = 120
 NOTE_CHARS = 5000
 # accounts.status, in the order an account moves through it (sql/ddl/01); it never moves back.
 STATUS_ORDER = ("new", "queued", "verified", "enrolled", "engaged", "demo_requested", "demo_booked")
@@ -232,45 +99,6 @@ def advance_status(ctx: Context, account_id: str, status: str) -> bool:
     return True
 
 
-def top_signals(ctx: Context, account: Mapping[str, Any]) -> str:
-    """us_outbound_top_signals: the account's strongest fresh signals, each with its evidence (SPEC 11)."""
-    from us_outbound.scoring.score import score_account
-
-    events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
-    result = score_account(account, events, ctx.settings, ctx.today_uk())
-    parts = []
-    for m in sorted(result.matches, key=lambda m: -m.weight_applied)[:TOP_SIGNALS]:
-        ev = m.evidence[0] if m.evidence else None
-        what = clip(" ".join((ev.quote or ev.text).split()), EVIDENCE_CHARS) if ev else ""
-        parts.append(f"{m.signal.signal} ({m.weight_applied:+d})" + (f": {what}" if what else ""))
-    return clip("; ".join(parts), TOP_SIGNALS_CHARS)
-
-
-def company_properties(ctx: Context, account: Mapping[str, Any]) -> dict[str, str]:
-    """The four company properties (SPEC 11), the blank ones left out."""
-    props = {
-        "us_outbound_account_id": str(account["account_id"]),
-        "us_outbound_tier": str(account.get("tier") or "") if account.get("tier") in TIERS else "",
-        "us_outbound_industry_group": ctx.settings.industry_group_of(account),
-        "us_outbound_top_signals": top_signals(ctx, account),
-    }
-    return {k: v for k, v in props.items() if not _blank(v)}
-
-
-def contact_properties(contact: Mapping[str, Any], reply_class: str) -> dict[str, str]:
-    """The two contact properties (SPEC 11): the angle with its copy version, and the reply class."""
-    angle, version = str(contact.get("angle") or "").strip(), str(contact.get("copy_version") or "").strip()
-    props = {
-        "us_outbound_angle": f"{angle} ({version})" if angle and version else angle or version,
-        "us_outbound_reply_class": reply_class,
-    }
-    return {k: v for k, v in props.items() if not _blank(v)}
-
-
-def _changed(have: Mapping[str, Any], want: Mapping[str, str]) -> dict[str, str]:
-    return {k: v for k, v in want.items() if str(have.get(k) or "").strip() != v}
-
-
 def _where_empty(have: Mapping[str, Any], want: Mapping[str, str]) -> dict[str, str]:
     """The empty-only fields (owner, lifecycle, lead status) that are empty now (SPEC 1.2, 11 step 4)."""
     return {k: v for k, v in want.items() if not _blank(v) and _blank(have.get(k))}
@@ -291,7 +119,6 @@ def _company(ctx: Context, account: Mapping[str, Any], reply_class: str, out: di
     More than one company for the domain sets out["merge_ids"] and returns None (nothing is written).
     """
     hs, g = ctx.clients.hubspot, ctx.settings.general
-    ours = company_properties(ctx, account)
     empty_only = {"hubspot_owner_id": g.hubspot_owner_id.strip(), "lifecyclestage": LIFECYCLE_LEAD}
     found = _known(ctx, "companies", (out.get("company_id"), account.get("hubspot_company_id")), COMPANY_PROPS)
     if found is None:
@@ -302,58 +129,79 @@ def _company(ctx: Context, account: Mapping[str, Any], reply_class: str, out: di
         found = matches[0] if matches else None
     if found is None:
         props = {"name": str(account.get("clean_name") or account["domain"]), "domain": str(account["domain"]),
-                 **ours, **{k: v for k, v in empty_only.items() if v}}
+                 **{k: v for k, v in empty_only.items() if v}}
         new = _id(hs.create_company(props, reply_class=reply_class))
         out["company_created"] = True
         return new
     have = found.get("properties") or {}
-    update = {**_changed(have, ours), **_where_empty(have, empty_only)}
+    update = _where_empty(have, empty_only)
     if update:
         hs.update_company(str(found["id"]), update, current=have)
     return str(found["id"])
 
 
-def _contact(ctx: Context, contact: Mapping[str, Any], reply_class: str, out: dict) -> str | None:
-    """The contact's HubSpot id: the stored one, else found by email, else created (SPEC 11 step 2)."""
+def replier(item: Any, contact: Mapping[str, Any]) -> tuple[dict, bool]:
+    """(the person who wrote the reply, True when that is not the emailed contact).
+
+    A colleague's reply (poll_replies' from_is_contact false) carries their address and the name on its From line
+    (from_address, from_name); an item from before those were kept, or with no address, falls back to the contact.
+    """
+    p = item.payload if isinstance(item, ReplyItem) else {}
+    address = str(p.get("from_address") or "").strip().lower()
+    if p.get("from_is_contact") is not False or "@" not in address or address == str(contact.get("email") or "").lower():
+        return dict(contact), False
+    first, _, last = " ".join(str(p.get("from_name") or "").split()).partition(" ")
+    return {"email": address, "first_name": first, "last_name": last, "title": ""}, True
+
+
+def _contact(ctx: Context, person: Mapping[str, Any], reply_class: str, out: dict, *, stored: str = "") -> str | None:
+    """The replier's HubSpot contact id: the one on the item, the one stored on our contact (stored, only when the
+    replier is that contact), else found by email, else created (SPEC 11 step 2)."""
     hs, g = ctx.clients.hubspot, ctx.settings.general
-    ours = contact_properties(contact, reply_class)
     empty_only = {"hubspot_owner_id": g.hubspot_owner_id.strip(), "lifecyclestage": LIFECYCLE_LEAD,
                   "hs_lead_status": LEAD_STATUS_CONNECTED}
-    email = str(contact.get("email") or "").strip().lower()
-    found = _known(ctx, "contacts", (out.get("contact_id"), contact.get("hubspot_contact_id")), CONTACT_PROPS)
+    email = str(person.get("email") or "").strip().lower()
+    found = _known(ctx, "contacts", (out.get("contact_id"), stored), CONTACT_PROPS)
     if found is None:
         matches = hs.search_contacts_by_email(email)
         found = matches[0] if matches else None
     if found is None:
-        identity = {"email": email, "firstname": contact.get("first_name"), "lastname": contact.get("last_name"),
-                    "jobtitle": contact.get("title")}
-        props = {**{k: str(v).strip() for k, v in identity.items() if not _blank(v)}, **ours,
+        identity = {"email": email, "firstname": person.get("first_name"), "lastname": person.get("last_name"),
+                    "jobtitle": person.get("title")}
+        props = {**{k: str(v).strip() for k, v in identity.items() if not _blank(v)},
                  **{k: v for k, v in empty_only.items() if v}}
         new = _id(hs.create_contact(props, reply_class=reply_class))
         out["contact_created"] = True
         return new
     have = found.get("properties") or {}
-    update = {**_changed(have, ours), **_where_empty(have, empty_only)}
+    update = _where_empty(have, empty_only)
     if update:
         hs.update_contact(str(found["id"]), update, current=have)
     return str(found["id"])
 
 
-def _person(contact: Mapping[str, Any]) -> str:
+def _person(contact: Mapping[str, Any], default: str = "the contact") -> str:
     name = " ".join(str(contact.get(k) or "").strip() for k in ("first_name", "last_name")).strip()
-    return name or "the contact"
+    return name or str(contact.get("email") or "").strip() or default
 
 
-def note_html(ctx: Context, item: Any, account: Mapping[str, Any], contact: Mapping[str, Any]) -> str:
-    """The reply as a HubSpot note (hs_note_body is HTML): who, when, to which mailbox, and the text."""
+def _titled(contact: Mapping[str, Any]) -> str:
+    return _person(contact) + (f", {contact['title']}" if contact.get("title") else "")
+
+
+def note_html(ctx: Context, item: Any, account: Mapping[str, Any], person: Mapping[str, Any],
+              emailed: Mapping[str, Any] | None = None) -> str:
+    """The reply as a HubSpot note (hs_note_body is HTML): who, when, to which mailbox, and the text. emailed: the
+    contact we emailed, when someone else at the company replied (M9)."""
     reply = ctx.store.get("events", event_id=item.email_id) if item.email_id else None
     text = str((reply or {}).get("reply_text") or item.excerpt or "").strip()
     when = fmt.uk_time(item.received_at, "%d %b %Y %H:%M UK", missing="recently")
-    who = _person(contact) + (f", {contact['title']}" if contact.get("title") else "")
     lines = [
         f"<p><strong>US Outbound: {html.escape(item.reply_class.replace('_', ' '))} reply</strong> from "
-        f"{html.escape(who)} at {html.escape(str(account.get('clean_name') or account.get('domain')))}, "
+        f"{html.escape(_titled(person))} at {html.escape(str(account.get('clean_name') or account.get('domain')))}, "
         f"to {html.escape(item.mailbox)}, {when}.</p>",
+        f"<p>We emailed {html.escape(_titled(emailed))}; {html.escape(_person(person))} answered for them.</p>"
+        if emailed else "",
         "<p>" + html.escape(clip(text, NOTE_CHARS)).replace("\n", "<br>") + "</p>" if text else "",
     ]
     ref = item.referral
@@ -363,11 +211,18 @@ def note_html(ctx: Context, item: Any, account: Mapping[str, Any], contact: Mapp
     return "".join(x for x in lines if x)
 
 
-def task_text(item: Any, account: Mapping[str, Any], contact: Mapping[str, Any], escalation_email: str) -> tuple[str, str]:
-    """(subject, body) of Harry's task: who replied, and how to act (SPEC 11)."""
+def task_text(item: Any, account: Mapping[str, Any], person: Mapping[str, Any], escalation_email: str,
+              emailed: Mapping[str, Any] | None = None) -> tuple[str, str]:
+    """(subject, body) of Harry's task: who replied (and, for a colleague, who we emailed), and how to act (SPEC 11)."""
     company = str(account.get("clean_name") or account.get("domain") or "the account")
-    subject = f"US Outbound: {item.reply_class.replace('_', ' ')} reply from {_person(contact)} at {company}"
-    body = (
+    subject = f"US Outbound: {item.reply_class.replace('_', ' ')} reply from {_person(person)} at {company}"
+    body = ""
+    if emailed:
+        body = f"{_titled(person)} replied for {_titled(emailed)}, the person we emailed. "
+    if isinstance(item, ReplyItem) and item.payload.get("also_asked_to_stop"):
+        body += ("They also asked to be taken off the list, so they are suppressed: the desk will not send to them. "
+                 f"Answer them by hand from {item.mailbox}, or lift the suppression knowingly. ")
+    body += (
         f"Approve the answer in the #us-outbound thread (react ✅ or reply \"send\"; \"edit: <text>\" changes it), "
         f"or run `us-outbound replies approve {item.short_id} --live`. It goes from {item.mailbox}, signed by "
         f"{item.owner or 'its owner'}. Never reply to the prospect from {escalation_email}."
@@ -490,27 +345,35 @@ def record_reply(ctx: Context, item: Any) -> dict:
         advance_status(ctx, str(account["account_id"]), "engaged")  # a warm reply (never moves an account back)
     save()
 
-    contact_id = _contact(ctx, contact, item.reply_class, out)
+    person, colleague = replier(item, contact)
+    emailed = contact if colleague else None
+    contact_id = _contact(ctx, person, item.reply_class, out,
+                          stored="" if colleague else str(contact.get("hubspot_contact_id") or ""))
     if contact_id is None:
         return {**out, "status": "dry_run", "why": "would create the contact, the note and the task"}
     out["contact_id"] = contact_id
-    if ctx.live and contact.get("hubspot_contact_id") != contact_id:
+    if colleague:
+        out["replier"] = person["email"]
+    elif ctx.live and contact.get("hubspot_contact_id") != contact_id:
         store.upsert("contacts", [{"contact_id": contact["contact_id"], "hubspot_contact_id": contact_id}])
     if not out.get("associated"):
         hs.associate("contacts", contact_id, "companies", company_id)
         out["associated"] = True
+    if item.payload.get("also_asked_to_stop") and not out.get("opted_out"):
+        hs.unsubscribe(person["email"])  # they asked to stop: the contact HubSpot now has is opted out too
+        out["opted_out"] = True
     save()
 
     records = [("companies", company_id), ("contacts", contact_id)]
     if not out.get("note_id"):
-        note = hs.create_note(note_html(ctx, item, account, contact), records, at=item.received_at or ctx.now)
+        note = hs.create_note(note_html(ctx, item, account, person, emailed), records, at=item.received_at or ctx.now)
         out["note_id"] = _id(note) or ("dry-run" if ctx.dry_run else None)
         save()
     if not out.get("task_id"):
         if _blank(g.hubspot_owner_id):
             out["why"] = "no task: hubspot_owner_id is not set on the General tab"
         else:
-            subject, body = task_text(item, account, contact, g.escalation_email)
+            subject, body = task_text(item, account, person, g.escalation_email, emailed)
             task = hs.create_task(subject, body, g.hubspot_owner_id, ctx.today_uk(), records)
             out["task_id"] = _id(task) or ("dry-run" if ctx.dry_run else None)
             save()

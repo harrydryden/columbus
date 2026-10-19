@@ -1,7 +1,10 @@
 """SPEC 11 HubSpot writes on a positive or referral reply (crm/hubspot_writes.record_reply).
 
-Only the six us_outbound_* properties, identity fields on create and the three empty-only fields;
-idempotent; a domain with two companies is held for a manual merge; one deal per company.
+Standard properties only (W1-2, 19 Oct 2026; Harry's D9): identity fields on create and the three empty-only
+fields. The fake HubSpot answers 400 to any property outside its declared schema, as the portal did to the six
+us_outbound_* properties nobody created (code-replies-crm H1), so a test cannot pass on a write HubSpot refuses.
+Idempotent; a domain with two companies is held for a manual merge; one deal per company; a colleague who replied is
+the HubSpot contact, and the note and task name both people (M9).
 """
 
 from __future__ import annotations
@@ -16,15 +19,14 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from us_outbound.clients.guard import (
     HUBSPOT_COMPANY_CREATE_FIELDS,
-    HUBSPOT_COMPANY_PROPS,
     HUBSPOT_CONTACT_CREATE_FIELDS,
-    HUBSPOT_CONTACT_PROPS,
     HUBSPOT_EMPTY_ONLY,
     GuardViolation,
 )
 from us_outbound.clients.http import ApiError, Response
 from us_outbound.crm import hubspot_writes as hw
 from us_outbound.logs import hash_email
+from us_outbound.settings.model import General, Settings
 
 NOW = datetime(2026, 10, 5, 15, 0, tzinfo=UTC)  # Monday 16:00 UK
 HANNAH = "hannah@meetspill.org"
@@ -47,17 +49,43 @@ class Transport(FakeTransport):
         return resp.body if isinstance(resp.body, Response) else resp
 
 
+# The properties the fake portal has, per object type: HubSpot's standard ones the jobs use. Anything else in a create
+# or an update is a 400, as HubSpot answers a property that does not exist (the six us_outbound_* never did).
+SCHEMA = {
+    "companies": {"name", "domain", "lifecyclestage", "hs_lead_status", "hubspot_owner_id"},
+    "contacts": {"email", "firstname", "lastname", "jobtitle", "lifecyclestage", "hs_lead_status", "hubspot_owner_id",
+                 "hs_email_optout", "associatedcompanyid"},
+    "deals": {"dealname", "pipeline", "dealstage", "hubspot_owner_id", "hs_is_closed", "closedate"},
+    "notes": {"hs_note_body", "hs_timestamp"},
+    "tasks": {"hs_task_subject", "hs_task_body", "hubspot_owner_id", "hs_timestamp", "hs_task_status",
+              "hs_task_priority", "hs_task_type"},
+    "meetings": set(),
+}
+
+
 class FakeHubSpot:
-    """An in-memory HubSpot CRM behind the transport: objects, search, associations, pipelines."""
+    """An in-memory HubSpot CRM behind the transport: objects, search, associations, pipelines, opt-outs. A create or
+    update with a property outside SCHEMA answers 400 (PROPERTY_DOESNT_EXIST), and is kept in rejected."""
 
     def __init__(self, t: FakeTransport):
         self.objects: dict[str, dict[str, dict]] = {k: {} for k in ("companies", "contacts", "deals", "notes", "tasks",
                                                                      "meetings")}
         self.links: set[tuple[str, str, str, str]] = set()  # (from type, from id, to type, to id)
         self.fail: dict[str, int] = {}  # object type -> HTTP status its next create answers
+        self.rejected: list[tuple[str, list[str]]] = []  # (object type, unknown properties) of each 400
+        self.unsubscribed: list[str] = []
         self._n = 0
         for method in ("GET", "POST", "PATCH", "PUT"):
             t.route(method, "api.hubapi.com", fn=self.handle)
+
+    def _unknown(self, obj: str, properties: dict) -> Response | None:
+        unknown = sorted(set(properties) - SCHEMA.get(obj, set()))
+        if not unknown:
+            return None
+        self.rejected.append((obj, unknown))
+        return Response(400, {"status": "error", "category": "VALIDATION_ERROR",
+                              "message": f"Property values were not valid: {unknown}",
+                              "errors": [{"code": "PROPERTY_DOESNT_EXIST", "name": n} for n in unknown]})
 
     def add(self, obj: str, properties: dict, **links: list[str]) -> str:
         self._n += 1
@@ -91,6 +119,9 @@ class FakeHubSpot:
     def handle(self, req) -> Any:
         path = urlparse(req.url).path
         parts = path.strip("/").split("/")
+        if parts[:2] == ["communication-preferences", "v4"]:  # POST .../statuses/{email}/unsubscribe-all
+            self.unsubscribed.append(parts[3])
+            return {}
         if parts[:3] == ["crm", "v3", "pipelines"]:
             return {"id": parts[4], "stages": STAGES} if len(parts) > 4 else {"results": [{"id": "pipe-spill3", "stages": STAGES}]}
         if parts[:3] == ["crm", "v4", "objects"]:  # PUT /crm/v4/objects/{a}/{id}/associations/default/{b}/{id}
@@ -105,6 +136,9 @@ class FakeHubSpot:
         if req.method == "POST":
             if obj in self.fail:
                 return Response(self.fail.pop(obj), {"message": "boom"})
+            refused = self._unknown(obj, req.json["properties"])
+            if refused is not None:
+                return refused
             rid = self.add(obj, req.json["properties"])
             for a in req.json.get("associations") or ():
                 self.link(obj, rid, {190: "companies", 192: "companies", 5: "companies", 202: "contacts",
@@ -115,6 +149,9 @@ class FakeHubSpot:
         if rid not in self.objects[obj]:
             return Response(404, {"message": "not found"})
         if req.method == "PATCH":
+            refused = self._unknown(obj, req.json["properties"])
+            if refused is not None:
+                return refused
             self.objects[obj][rid].update(req.json["properties"])
             return {"id": rid, "properties": self.objects[obj][rid]}
         query = parse_qs(urlparse(req.url).query) or (req.params or {})
@@ -170,10 +207,10 @@ def item(ctx, item_id: str = "item-0001-aaaa"):
 
 
 ALLOWED = {
-    "company.create": HUBSPOT_COMPANY_PROPS | HUBSPOT_EMPTY_ONLY | HUBSPOT_COMPANY_CREATE_FIELDS,
-    "company.update": HUBSPOT_COMPANY_PROPS | HUBSPOT_EMPTY_ONLY,
-    "contact.create": HUBSPOT_CONTACT_PROPS | HUBSPOT_EMPTY_ONLY | HUBSPOT_CONTACT_CREATE_FIELDS,
-    "contact.update": HUBSPOT_CONTACT_PROPS | HUBSPOT_EMPTY_ONLY,
+    "company.create": HUBSPOT_EMPTY_ONLY | HUBSPOT_COMPANY_CREATE_FIELDS,
+    "company.update": HUBSPOT_EMPTY_ONLY,
+    "contact.create": HUBSPOT_EMPTY_ONLY | HUBSPOT_CONTACT_CREATE_FIELDS,
+    "contact.update": HUBSPOT_EMPTY_ONLY,
 }
 
 
@@ -190,18 +227,13 @@ def test_new_company_contact_note_and_task(default_settings):
     ctx, t, crm = world(default_settings)
     out = hw.record_reply(ctx, item(ctx))
     assert out["status"] == "written"
+    # Standard properties only: the identity fields and the three empty-only fields, and HubSpot took every write.
+    assert crm.rejected == []
     [(cid, company)] = crm.objects["companies"].items()
-    assert company == {
-        "name": "Acme Creative", "domain": "acmecreative.com", "us_outbound_account_id": "acc-1",
-        "us_outbound_tier": "Priority", "us_outbound_industry_group": "Marketing & Creative Agencies",
-        **({"us_outbound_top_signals": company["us_outbound_top_signals"]}
-           if "us_outbound_top_signals" in company else {}),  # blank (left out) with no fresh signal
-        "hubspot_owner_id": "owner-harry",
-        "lifecyclestage": "lead",
-    }
+    assert company == {"name": "Acme Creative", "domain": "acmecreative.com", "hubspot_owner_id": "owner-harry",
+                       "lifecyclestage": "lead"}
     [(kid, contact)] = crm.objects["contacts"].items()
     assert contact == {"email": JANE, "firstname": "Jane", "lastname": "Doe", "jobtitle": "Head of People",
-                       "us_outbound_angle": "Upgrade the EAP (eap-v1)", "us_outbound_reply_class": "positive",
                        "hubspot_owner_id": "owner-harry", "lifecyclestage": "lead", "hs_lead_status": "CONNECTED"}
     assert crm.linked("contacts", kid, "companies") == [cid]
     [note] = crm.objects["notes"].values()
@@ -251,7 +283,7 @@ def test_existing_records_keep_their_owner_lifecycle_and_lead_status(default_set
     hw.record_reply(ctx, item(ctx))
     company = crm.objects["companies"][co]
     assert company["name"] == "ACME CREATIVE INC" and company["hubspot_owner_id"] == "owner-sally"
-    assert company["lifecyclestage"] == "opportunity" and company["us_outbound_account_id"] == "acc-1"
+    assert company["lifecyclestage"] == "opportunity" and crm.rejected == []
     [contact] = crm.objects["contacts"].values()
     assert contact["firstname"] == "Janet" and contact["hs_lead_status"] == "OPEN"  # never overwritten
     assert contact["lifecyclestage"] == "lead" and contact["hubspot_owner_id"] == "owner-harry"  # they were empty
@@ -293,14 +325,64 @@ def test_a_referral_is_written_with_whom_they_referred(default_settings):
     assert "Referred us to: Sam Lee, COO" in note["hs_note_body"]
 
 
-def test_a_disallowed_property_is_refused_before_any_request(default_settings, monkeypatch):
-    """The guard catches a mistake in this module: nothing but the six properties is ever sent."""
+@pytest.mark.parametrize("prop", ["us_outbound_account_id", "us_outbound_reply_class", "annualrevenue"])
+def test_a_custom_or_other_property_is_refused_before_any_request(default_settings, prop):
+    """The guard holds the allowlist: a custom property (the retired six included) never reaches HubSpot."""
     ctx, t, crm = world(default_settings)
-    original = hw.company_properties
-    monkeypatch.setattr(hw, "company_properties", lambda c, a: {**original(c, a), "annualrevenue": "5000000"})
-    with pytest.raises(GuardViolation, match="annualrevenue"):
-        hw.record_reply(ctx, item(ctx))
-    assert crm.writes(t) == [] and crm.objects["companies"] == {}
+    hs = ctx.clients.hubspot
+    with pytest.raises(GuardViolation, match=prop):
+        hs.create_company({"name": "Acme", "domain": "acmecreative.com", prop: "x"}, reply_class="positive")
+    with pytest.raises(GuardViolation, match=prop):
+        hs.create_contact({"email": JANE, prop: "x"}, reply_class="positive")
+    assert crm.writes(t) == [] and crm.objects["companies"] == {} and crm.objects["contacts"] == {}
+
+
+def test_the_fake_portal_answers_400_to_a_property_it_does_not_have():
+    """The fake is strict, as HubSpot is: the old six-property write fails here as it did live (H1)."""
+    t = Transport()
+    crm = FakeHubSpot(t)
+    resp = t.send("POST", "https://api.hubapi.com/crm/v3/objects/companies", headers={},
+                  json={"properties": {"name": "Acme", "us_outbound_account_id": "acc-1"}})
+    assert resp.status == 400 and crm.objects["companies"] == {}
+    assert crm.rejected == [("companies", ["us_outbound_account_id"])]
+
+
+def test_a_colleagues_reply_puts_the_colleague_in_hubspot_and_names_both(default_settings):
+    """M9: Sam Lee answered for Jane Doe, whom we emailed. HubSpot gets Sam (from the reply's From line), linked to the
+    company; the note and the task say Sam replied for Jane; our contact keeps no HubSpot id of Sam's."""
+    row = reply_row(from_is_contact=False, from_address="sam.lee@acmecreative.com", from_name="Sam Lee")
+    ctx, t, crm = world(default_settings, row=row)
+    out = hw.record_reply(ctx, item(ctx))
+    assert out["status"] == "written" and out["replier"] == "sam.lee@acmecreative.com" and crm.rejected == []
+    [(kid, person)] = crm.objects["contacts"].items()
+    assert (person["email"], person["firstname"], person["lastname"]) == ("sam.lee@acmecreative.com", "Sam", "Lee")
+    assert crm.linked("contacts", kid, "companies") == [out["company_id"]]
+    [task] = crm.objects["tasks"].values()
+    assert task["hs_task_subject"] == "US Outbound: positive reply from Sam Lee at Acme Creative"
+    assert task["hs_task_body"].startswith("Sam Lee replied for Jane Doe, Head of People, the person we emailed.")
+    [note] = crm.objects["notes"].values()
+    assert "from Sam Lee at Acme Creative" in note["hs_note_body"]
+    assert "We emailed Jane Doe, Head of People; Sam Lee answered for them." in note["hs_note_body"]
+    assert ctx.store.get("contacts", contact_id="con-1").get("hubspot_contact_id") is None
+
+
+def test_an_old_item_without_the_from_address_records_the_contact(default_settings):
+    ctx, t, crm = world(default_settings, row=reply_row(from_is_contact=False))
+    hw.record_reply(ctx, item(ctx))
+    [person] = crm.objects["contacts"].values()
+    assert person["email"] == JANE
+
+
+def test_a_warm_reply_that_asked_to_stop_is_opted_out_in_hubspot_too(default_settings):
+    """The contact this write creates must not be left subscribed: it is opted out once, the same run."""
+    ctx, t, crm = world(default_settings, row=reply_row(also_asked_to_stop=True))
+    out = hw.record_reply(ctx, item(ctx))
+    assert out["status"] == "written" and out["opted_out"] is True
+    assert crm.unsubscribed == ["jane.doe%40acmecreative.com"]
+    [task] = crm.objects["tasks"].values()
+    assert "They also asked to be taken off the list, so they are suppressed" in task["hs_task_body"]
+    hw.record_reply(ctx, item(ctx))
+    assert crm.unsubscribed == ["jane.doe%40acmecreative.com"]  # once
 
 
 def test_owner_over_someone_elses_is_refused_by_the_guard(default_settings):
@@ -363,3 +445,30 @@ def test_dry_run_reads_and_writes_nothing(default_settings):
     out = hw.record_reply(ctx, item(ctx))  # with the company there, every later write is worked out too
     assert out["status"] == "dry_run" and out["company_id"] == co and crm.writes(t) == []
     assert {w.action for w in ctx.guard.writes("hubspot")} >= {"contact.create"}
+
+
+def test_lookup_pipeline_reads_the_ids():
+    """`hubspot ids` (kept when `hubspot setup` went): the Spill 3.0 pipeline, its first stage and Harry's owner id."""
+    t = FakeTransport()
+    t.route("GET", "/crm/v3/pipelines/deals", body={"results": [
+        {"id": "1", "label": "Sales", "stages": [{"id": "s", "displayOrder": 0}]},
+        {"id": "82002613", "label": "Spill 3.0", "stages": [
+            {"id": "154381889", "displayOrder": 1}, {"id": "154381888", "displayOrder": 0}]},
+    ]})
+    t.route("GET", "/crm/v3/owners", body={"results": [{"id": "82221891", "email": "harry@spill.chat"}]})
+    ctx = make_context(Settings(general=General()), transport=t)
+    assert hw.lookup_pipeline(ctx) == {
+        "hubspot_pipeline_id": "82002613", "hubspot_deal_stage_id": "154381888", "hubspot_owner_id": "82221891"}
+    assert t.writes() == []
+
+
+def test_the_property_setup_is_gone():
+    """Harry's D9 (W1-2): no property group or property create is left to call, and the guard refuses both."""
+    from us_outbound.clients.guard import Guard, Op
+
+    for name in ("ensure_properties", "PROPERTY_SPECS", "top_signals", "company_properties", "contact_properties"):
+        assert not hasattr(hw, name), name
+    guard = Guard(live=True)
+    for action in ("property_group.create", "property.create"):
+        with pytest.raises(GuardViolation, match="is not allowed"):
+            guard.authorize("hubspot", Op(action, target="us_outbound", write=True))

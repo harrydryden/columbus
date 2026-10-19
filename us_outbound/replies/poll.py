@@ -34,6 +34,8 @@ hubspot_readback). This job writes one hitl_items row for each reply a human mus
     received_at          ISO 8601 (UTC)
     company, place, industry, tier, why (tier_reason), contact_name, first_name, title, role,
     from_is_contact      for the alert and the desk; from_is_contact is false when a colleague replied
+    from_address, from_name   who wrote it (the From line), so HubSpot records a colleague who replied
+    also_asked_to_stop, opt_out, stop_note   a warm reply that also asked to stop: opted out, answered by hand
     sequence_may_continue, sequence_paused   see "Stopping the sequence"
     instantly_interest   for a positive reply: "interested" once Instantly's interest status is set, or why it
                          was not (see "Interested in Instantly")
@@ -50,12 +52,24 @@ Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a h
   unsubscribe, or a reply asking to stop
       opted out everywhere (replies/optout.py): suppression (hashed), the Instantly blocklist, and
       HubSpot's opt-out where HubSpot already has the contact. No item; a one-line note in Slack so a
-      wrong opt-out can be caught. The stop rule catches the plain ones without a model call.
+      wrong opt-out can be caught.
+  a warm reply that also asks to stop (W1-2, 19 Oct 2026; code-replies-crm H2)
+      In this order: the stop rule (a stop phrasing in the prospect's words; replies/classify.py) opts
+      the address out at once, before any model call; then the model is asked, and any failure of it
+      is the stop rule's unsubscribe. A positive, referral or wrong_person class is kept: the item is
+      opened after the opt-out (so the opt-out's closing of the contact's open items leaves it alone),
+      flagged also_asked_to_stop, and its alert says they are suppressed, so it is answered by hand or
+      the suppression lifted knowingly (the desk refuses to send to a suppressed address). The model's
+      own asks_to_stop opts out the same way. Until then 6 of 7 realistic warm replies were caught by
+      the rule and became an unsubscribe with "Nothing to do".
   out_of_office
       the return date is stored on a hitl_items row of kind "out_of_office", status "handled" (there
       is nothing for a person to do), and the lead is re-timed: paused now and set going again two
       send days after the return date. Re-timing waits for phase 0 to confirm Instantly can pause a
       lead (clients/instantly.py LEAD_PAUSE_CONFIRMED); until then the row only notes the date.
+Every email listed as received but not from outside Spill (a campaign send, our own mailbox, a system
+sender, a Spill address; outcomes.received_reason) is counted by why in the summary's dropped (W1-2;
+code-replies-crm M3: until then a misread field would have looked exactly like "no replies yet").
 Every reply but an out-of-office one engages its account (replies/outcomes.mark_engaged). The reply's
 events row (type replied) carries the class, the stripped text (reply_text, purged after 90 days by
 the retention job, SPEC 6; the item's excerpt is reply text too), language_terms and competitor_named.
@@ -134,6 +148,9 @@ RETRY = timedelta(minutes=30)  # a model error is retried on later runs until th
 RUN_SECONDS = 6 * 60
 _clock = time.monotonic  # tests replace it
 NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply gives none
+# The alert's line, and the item's, for a reply kept for a person although it asked to stop (W1-2, 19 Oct 2026).
+ALSO_STOP = ("They also asked to be taken off the list: suppressed, so the desk will not send to them. Answer by "
+             "hand, or lift the suppression knowingly.")
 OOO_RESUME_SEND_DAYS = 2  # set going again two send days after the return date (gtm-review 03 §6)
 INTERESTED_CLASSES = frozenset({"positive"})  # marked "Interested" in Instantly (not referral: see the docstring)
 INTERESTED = "interested"  # the payload's instantly_interest once it is set
@@ -260,13 +277,23 @@ def _info(ctx: Context, email: Mapping[str, Any], m: Match, mailbox: str, receiv
         "contact_name": " ".join(str(c.get(k) or "").strip() for k in ("first_name", "last_name")).strip(),
         "first_name": first, "title": str(c.get("title") or ""), "role": str(c.get("role") or ""),
         "from_is_contact": m.from_is_contact,
+        # Who wrote it (W1-2, code-replies-crm M9): a colleague's reply puts them in HubSpot, not the person emailed.
+        "from_address": outcomes.from_address(email), "from_name": _sender_name(email),
     }
 
 
-def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, Any], out: dict) -> classify.Verdict | None:
-    """The verdict, or None to try again on a later run."""
+def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, Any], out: dict,
+              stop: bool = False) -> classify.Verdict | None:
+    """The verdict, or None to try again on a later run. With stop (the stop rule matched, and the address is opted
+    out already) there is always a verdict: any model failure is the stop rule's unsubscribe (replies/classify.py)."""
     try:
-        return classify.classify(ctx, text, received=received, company=info["company"], title=info["title"])
+        verdict = classify.classify(ctx, text, received=received, company=info["company"], title=info["title"],
+                                    stop=stop)
+        if verdict.source == classify.RULE and verdict.error.startswith(BudgetExceeded.__name__):
+            out["claude_cap_reached"] += 1
+        elif verdict.source == classify.RULE and verdict.error:
+            out.setdefault("claude_error", verdict.error[:200])  # the run's first, for heartbeat_check
+        return verdict
     except BudgetExceeded:
         out["claude_cap_reached"] += 1
         return classify.Verdict.fallback("Claude's monthly cap is used up")
@@ -406,9 +433,27 @@ def _note(ctx: Context, text: str) -> None:
         log("slack_note_failed", run_id=ctx.run_id, error=str(exc)[:200])
 
 
+def _opt_out(ctx: Context, email: Mapping[str, Any], m: Match, info: Mapping[str, Any], received: datetime,
+             done: set[str], out: dict) -> str:
+    """Opt the reply's sender (and the contact, when a colleague asked) out everywhere (replies/optout.py), leaving
+    this email's own item open; the result is counted in the summary's opted_out."""
+    eid = str(info["instantly_email_id"])
+    result = optout.opt_out(
+        ctx, marker=optout.reply_marker(eid), addresses=_opt_out_addresses(email, m), contact=m.contact,
+        account_id=info["account_id"], mailbox=info["mailbox"], occurred_at=received, source=REPLY_SOURCE, done=done,
+        keep_item=f"{KIND}:{eid}",
+    )
+    out["opted_out"][result] += 1
+    return result
+
+
 def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, done: set[str], out: dict) -> None:
     eid, mailbox = str(email.get("id") or ""), _lower(email.get("eaccount"))
-    if not eid or not outcomes.is_received(email, mailbox, ctx.guard.bounds.registry_addresses):
+    if not eid:
+        return
+    why = outcomes.received_reason(email, mailbox, ctx.guard.bounds.registry_addresses)
+    if why is not None:  # counted (W1-2; code-replies-crm M3): a misread field shows here, not as "no replies"
+        out["dropped"][why] += 1
         return
     if seen.done(eid):
         out["already_handled"] += 1
@@ -435,9 +480,15 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
                 out["estimate_error"] = str(exc)
         return
 
-    verdict = _classify(ctx, text, received, info, out)
+    # The stop rule first (W1-2, 19 Oct 2026): a stop phrasing is opted out at once, before the model is asked, so
+    # the opt-out never waits on the model; the model is still asked, as a warm reply often says "remove me" too.
+    stop = classify.asks_to_stop(text)
+    result = _opt_out(ctx, email, m, info, received, done, out) if stop else None
+    verdict = _classify(ctx, text, received, info, out, stop=stop)
     if verdict is None:
         return
+    if verdict.asks_to_stop and result is None:  # the model saw a request to stop the rule did not: the same, now
+        result = _opt_out(ctx, email, m, info, received, done, out)
     cls = verdict.reply_class
     sends = outcomes.sent_events(ctx, [str(info["contact_id"])]).get(str(info["contact_id"]), [])
     event = {
@@ -448,13 +499,9 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
     }
     if cls == "unsubscribe":
         ctx.store.upsert("events", [event])
-        result = optout.opt_out(
-            ctx, marker=optout.reply_marker(eid), addresses=_opt_out_addresses(email, m), contact=m.contact,
-            account_id=info["account_id"], mailbox=mailbox, occurred_at=received, source=REPLY_SOURCE, done=done,
-        )
-        out["opted_out"][result] += 1
-        _note(ctx, opt_out_note(info, from_is_contact=m.from_is_contact, by_rule=verdict.source == "rule",
-                                result=result))
+        if result is None:  # the model's class alone (no asks_to_stop): opted out here
+            result = _opt_out(ctx, email, m, info, received, done, out)
+        _note(ctx, opt_out_note(info, from_is_contact=m.from_is_contact, by_rule=verdict.by_rule, result=result))
     elif cls == "out_of_office":
         _record_ooo(ctx, verdict, info, text, out)
         ctx.store.upsert("events", [event])
@@ -471,6 +518,9 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
             "follow_up_source": ("reply" if given else "default") if follow_up else None,
             "sequence_may_continue": cont, "sequence_paused": paused, "slack_channel": None, "slack_ts": None,
         }
+        if verdict.asks_to_stop:  # opted out above; a person answers by hand (the desk will not send to them)
+            payload.update(also_asked_to_stop=True, opt_out=result, stop_note=ALSO_STOP)
+            out["also_asked_to_stop"] += 1
         item = {"item_id": f"{KIND}:{eid}", "kind": KIND, "status": OPEN, "account_id": info["account_id"],
                 "contact_id": info["contact_id"], "event_id": eid, "payload": payload, "created_at": ctx.now}
         ctx.store.upsert("hitl_items", [item])  # the item first: a run that stops here leaves no reply unseen
@@ -492,9 +542,13 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
 
 
 def _sweep_opt_outs(ctx: Context, d: Directory, done: set[str], out: dict) -> None:
-    """Opt-outs by reply still waiting for the blocklist or HubSpot: the reply is read back by id."""
+    """Opt-outs by reply still waiting for the blocklist or HubSpot: the reply is read back by id. A warm reply that
+    also asked to stop (its item's also_asked_to_stop) is retried the same way, its item left open."""
     registry = ctx.guard.bounds.registry_addresses
-    for ev in ctx.store.select("events", {"type": outcomes.REPLIED, "reply_class": "unsubscribe"}):
+    asked = {str(r.get("event_id")) for r in ctx.store.select("hitl_items", {"kind": KIND})
+             if (r.get("payload") or {}).get("also_asked_to_stop")}
+    replies = ctx.store.select("events", {"type": outcomes.REPLIED})
+    for ev in [e for e in replies if e.get("reply_class") == "unsubscribe" or str(e.get("event_id")) in asked]:
         marker = optout.reply_marker(str(ev["event_id"]))
         mailbox = _lower(ev.get("mailbox"))
         if marker in done or mailbox not in registry:
@@ -513,7 +567,7 @@ def _sweep_opt_outs(ctx: Context, d: Directory, done: set[str], out: dict) -> No
         result = optout.opt_out(ctx, marker=marker, addresses=addresses, contact=contact or None,
                                 account_id=ev.get("account_id"),
                                 mailbox=mailbox, occurred_at=utc(ev.get("occurred_at")) or ctx.now,
-                                source=REPLY_SOURCE, done=done)
+                                source=REPLY_SOURCE, done=done, keep_item=f"{KIND}:{ev['event_id']}")
         out["opted_out_on_retry"][result] += 1
 
 
@@ -549,6 +603,8 @@ def _slack(ctx: Context):
 def _notes(p: Mapping[str, Any]) -> list[str]:
     """The alert's "Worth knowing" lines: what the reply and the account add, and anything to check."""
     notes = []
+    if p.get("also_asked_to_stop"):
+        notes.append(f"*{ALSO_STOP}*")
     if p.get("why"):
         notes.append(f"Why we emailed them: {_esc(p['why'])}")
     if p.get("demo_requested"):
@@ -667,10 +723,10 @@ def run(ctx: Context) -> dict:
     stop = _clock() + RUN_SECONDS
     d = Directory(ctx)
     start = outcomes.since(ctx, JOB, live_only=True, earliest=d.earliest_enrolled())
-    out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry")}
+    out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry", "dropped")}
     out.update({k: 0 for k in ("unmatched", "already_handled", "retry_later", "claude_cap_reached", "would_classify",
                                "would_opt_out", "ooo_paused", "ooo_resumed", "alerts_posted", "slack_errors",
-                               "left_for_next_run", "marked_interested")})
+                               "left_for_next_run", "marked_interested", "also_asked_to_stop")})
     out["would_spend_usd_at_most"] = 0.0
     seen = _Seen(ctx)
     done = optout.done_markers(ctx.store)

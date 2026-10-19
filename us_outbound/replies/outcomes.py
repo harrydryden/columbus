@@ -169,15 +169,40 @@ def is_campaign_send(email: Mapping[str, Any], eaccount: str) -> bool:
     return not sender or sender == eaccount
 
 
+# Why an email listed as received is not a reply from outside Spill (received_reason). Each is counted in the
+# readers' summaries (W1-2, 19 Oct 2026; code-replies-crm M3): until then a dropped email left no trace, so a wrong
+# reading of one Instantly field (from_address_email filled from the eaccount, say) would look exactly like "no
+# replies yet".
+CAMPAIGN_SEND, MANUAL_SEND, NO_SENDER, FROM_SELF = "campaign_send", "manual_send", "no_sender", "from_self"
+REGISTRY_SENDER, SPILL_DOMAIN, SYSTEM_SENDER = "registry_sender", "spill_domain", "system_sender"
+DROP_REASONS = (CAMPAIGN_SEND, MANUAL_SEND, NO_SENDER, FROM_SELF, REGISTRY_SENDER, SPILL_DOMAIN, SYSTEM_SENDER)
+
+
+def received_reason(email: Mapping[str, Any], eaccount: str, registry: frozenset[str] = frozenset()) -> str | None:
+    """None for an email someone outside Spill sent to the mailbox; else why it is not one (DROP_REASONS)."""
+    ue = _ue_type(email)
+    if ue == UE_CAMPAIGN:
+        return CAMPAIGN_SEND
+    if ue == UE_MANUAL:
+        return MANUAL_SEND
+    sender = from_address(email)
+    if not sender:
+        return NO_SENDER
+    if sender == eaccount:
+        return FROM_SELF
+    if sender in registry:
+        return REGISTRY_SENDER
+    local, _, domain = sender.partition("@")
+    if is_spill_domain(domain):
+        return SPILL_DOMAIN
+    if local in SYSTEM_SENDERS:
+        return SYSTEM_SENDER
+    return None
+
+
 def is_received(email: Mapping[str, Any], eaccount: str, registry: frozenset[str] = frozenset()) -> bool:
     """An email someone outside Spill sent to the mailbox (not ours, not a system notice)."""
-    if _ue_type(email) in (UE_CAMPAIGN, UE_MANUAL):
-        return False
-    sender = from_address(email)
-    if not sender or sender == eaccount or sender in registry:
-        return False
-    local, _, domain = sender.partition("@")
-    return not is_spill_domain(domain) and local not in SYSTEM_SENDERS
+    return received_reason(email, eaccount, registry) is None
 
 
 # -- who an email or lead belongs to --------------------------------------------------------
@@ -422,7 +447,11 @@ def _record_replies(ctx: Context, d: Directory, emails: Iterable[Mapping[str, An
     auto = 0
     for e in emails:
         eid, acct = str(e.get("id") or ""), _lower(e.get("eaccount"))
-        if not eid or eid in known or eid in rows or not is_received(e, acct, registry):
+        if not eid or eid in known or eid in rows:
+            continue
+        why = received_reason(e, acct, registry)
+        if why is not None:
+            dropped[f"received: {why}"] += 1
             continue
         if is_auto_reply(e):
             auto += 1  # poll_replies decides: an away message engages nobody

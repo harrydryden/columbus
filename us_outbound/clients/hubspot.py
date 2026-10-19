@@ -1,13 +1,14 @@
 """HubSpot CRM client (SPEC 1.2, 4, 11, 13): warm leads only.
 
-Every call is an Op the guard judges. Writes are limited to the six us_outbound_*
-properties, notes, tasks, Spill 3.0 deals and the three empty-only fields; records are
-created only for positive or referral replies. Reads (search, pipelines, owners,
-properties, deal-to-company associations) are free in any mode. In dry-run every write
-returns its dry_result and sends nothing. The company and deal searches take the
-properties to read from the caller, so a job reads only the fields it needs.
+Every call is an Op the guard judges. Writes are limited to a new warm record's identity
+fields, notes, tasks, Spill 3.0 deals and the three empty-only fields, all standard HubSpot
+properties (the six us_outbound_* custom properties went on 19 Oct 2026: they were never
+created in the portal; clients/guard.py); records are created only for positive or referral
+replies. Reads (search, pipelines, owners, deal-to-company associations) are free in any
+mode. In dry-run every write returns its dry_result and sends nothing. The company and deal
+searches take the properties to read from the caller, so a job reads only the fields it needs.
 
-API: CRM v3 objects and search, v4 default associations, v3 pipelines/owners/properties,
+API: CRM v3 objects and search, v4 default associations, v3 pipelines/owners,
 communication preferences v4 and the v3 GDPR delete.
 """
 
@@ -17,7 +18,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, date, datetime
 from typing import Any
 
-from us_outbound.clients.guard import HUBSPOT_EMPTY_ONLY, HUBSPOT_PROPERTY_GROUP, Op
+from us_outbound.clients.guard import HUBSPOT_EMPTY_ONLY, Op
 from us_outbound.clients.http import ApiError, HttpClient
 from us_outbound.clients.http import quote_segment as _quote  # an id or an email in a path
 from us_outbound.logs import log
@@ -33,10 +34,6 @@ COMPANY_PROPS = (
     "lifecyclestage",
     "hs_lead_status",
     "hubspot_owner_id",
-    "us_outbound_account_id",
-    "us_outbound_tier",
-    "us_outbound_industry_group",
-    "us_outbound_top_signals",
 )
 CONTACT_PROPS = (
     "email",
@@ -48,8 +45,6 @@ CONTACT_PROPS = (
     "hubspot_owner_id",
     "hs_email_optout",
     "associatedcompanyid",
-    "us_outbound_angle",
-    "us_outbound_reply_class",
 )
 DEAL_PROPS = ("dealname", "pipeline", "dealstage", "hubspot_owner_id", "hs_is_closed", "closedate")
 # Meetings (hubspot_readback, SPEC 9, 11). A meeting booked through Harry's meetings link (the emails'
@@ -279,16 +274,6 @@ class HubSpot(HttpClient):
         ) or {}
         return sorted(body.get("stages") or [], key=lambda s: s.get("displayOrder", 0))
 
-    def properties(self, object_type: str) -> list[dict]:
-        body = self.request("GET", f"/crm/v3/properties/{object_type}", Op("property.list", target=object_type)) or {}
-        return body.get("results", [])
-
-    def property_groups(self, object_type: str) -> list[dict]:
-        body = self.request(
-            "GET", f"/crm/v3/properties/{object_type}/groups", Op("property_group.list", target=object_type)
-        ) or {}
-        return body.get("results", [])
-
     def iter_opted_out_or_bounced_emails(self) -> Iterator[str]:
         """Emails of contacts opted out of all email or hard-bounced, each yielded once.
 
@@ -482,31 +467,6 @@ class HubSpot(HttpClient):
         )
         payload = {"properties": properties, "associations": _associations("deals", [("companies", company_id)])}
         return self.request("POST", "/crm/v3/objects/deals", op, json=payload, dry_result={"id": None, "dry_run": True})
-
-    def ensure_property_group(self, object_type: str) -> None:
-        """Create the "US Outbound" property group on this object type if it is missing."""
-        if any(g.get("name") == HUBSPOT_PROPERTY_GROUP for g in self.property_groups(object_type)):
-            return
-        self.request(
-            "POST",
-            f"/crm/v3/properties/{object_type}/groups",
-            Op("property_group.create", target=HUBSPOT_PROPERTY_GROUP, write=True, detail={"object_type": object_type}),
-            json={"name": HUBSPOT_PROPERTY_GROUP, "label": "US Outbound", "displayOrder": -1},
-        )
-
-    def create_property(self, object_type: str, spec: Mapping[str, Any]) -> None:
-        """Post a property spec as given; the guard allows only the six us_outbound_* names."""
-        self.request(
-            "POST",
-            f"/crm/v3/properties/{object_type}",
-            Op(
-                "property.create",
-                target=str(spec.get("name", "")),
-                write=True,
-                detail={"object_type": object_type, "group": spec.get("groupName")},
-            ),
-            json=dict(spec),
-        )
 
     def unsubscribe(self, email: str) -> None:
         """Opt the address out of every email subscription (communication preferences v4)."""

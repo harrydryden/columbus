@@ -108,6 +108,40 @@ def test_a_reply_is_recorded_unclassified_and_engages_the_account(world):
     assert "k-jane" in stopped_contacts(world.ctx.store)
 
 
+def test_each_received_email_that_is_no_reply_is_counted_by_why(world):
+    """M3 (code-replies-crm; W1-2): the same reasons poll_replies counts (outcomes.received_reason), so a misread
+    Instantly field shows in the summary rather than as "no replies yet"."""
+    world.reply("D1", HANNAH, ue_type=1, text="A campaign step listed as received")
+    world.reply("D2", HANNAH, text="From the mailbox itself")
+    world.reply("D3", "mailer-daemon@acmecreative.com", text="Delivery failed")
+    world.reply("D4", "hello@spill.chat", text="Internal")
+    world.reply("D5", "harry@meetspill.org", text="One of our own mailboxes")
+    world.reply("D6", "", text="No sender at all")
+    world.reply("E1")
+    out = run(world)
+    assert out["dropped"] == {"received: campaign_send": 1, "received: from_self": 1, "received: system_sender": 1,
+                              "received: spill_domain": 1, "received: registry_sender": 1, "received: no_sender": 1}
+    assert out["replied"] == 1 and [e["event_id"] for e in world.events("replied")] == ["E1"]
+
+
+def test_received_reason_names_each_case():
+    reg = frozenset({HANNAH, "harry@meetspill.org"})
+    cases = {
+        "campaign_send": {"ue_type": 1, "from_address_email": JANE},
+        "manual_send": {"ue_type": 3, "from_address_email": JANE},
+        "no_sender": {"from_address_email": ""},
+        "from_self": {"from_address_email": HANNAH},
+        "registry_sender": {"from_address_email": "harry@meetspill.org"},
+        "spill_domain": {"from_address_email": "hello@spill.chat"},
+        "system_sender": {"from_address_email": "postmaster@acmecreative.com"},
+        None: {"from_address_email": JANE, "ue_type": 2},
+    }
+    for want, email in cases.items():
+        assert outcomes.received_reason(email, HANNAH, reg) == want, email
+        assert outcomes.is_received(email, HANNAH, reg) is (want is None)
+    assert set(outcomes.DROP_REASONS) == {k for k in cases if k}
+
+
 def test_an_auto_reply_is_left_to_poll_replies(world):
     world.reply("E1", text="I am out of the office.", is_auto_reply=1)
     out = run(world)

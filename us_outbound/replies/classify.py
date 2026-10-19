@@ -10,15 +10,23 @@ structured output (json_schema), so it is always the SPEC 11 fields:
 
 Rules applied to the answer (from_answer):
   * SPEC 11: a class below confidence 0.7 is treated as "other";
-  * a reply that asks to stop is "unsubscribe" whatever else it is (SPEC 11 routes "a negative
-    reply asking to stop" with unsubscribes), and at any confidence: a wrong opt-out costs a lead,
-    a missed one breaks CAN-SPAM. A positive or referral reply keeps its class;
+  * a reply that asks to stop (the stop rule below, or the model's own asks_to_stop) is "unsubscribe"
+    whatever else it is (SPEC 11 routes "a negative reply asking to stop" with unsubscribes), and at
+    any confidence: a wrong opt-out costs a lead, a missed one breaks CAN-SPAM. A positive, referral
+    or wrong_person reply keeps its class, at any confidence (a person reads it), with asks_to_stop
+    set: poll_replies opts the address out and still opens an item for a person to answer by hand
+    (KEEP_ON_STOP);
   * dates must parse and fall on or after the day the reply came; a referral email must look like
     one. Anything else is dropped rather than guessed.
 
-The stop rule (asks_to_stop) runs first and needs no model: "stop", "unsubscribe", "remove me" and
-the like. So an opt-out is honored even when the monthly cap is used up (docs/gtm-review/README.md
-B1c: a reply that says "stop" is classified unsubscribe).
+The stop rule (asks_to_stop) needs no model: "stop", "unsubscribe", "remove me" and the like. When it
+matches, poll_replies suppresses and blocklists the address at once, before any model call, so an
+opt-out is honoured even when the monthly cap is used up or the model is down (docs/gtm-review/README.md
+B1c). The model is still asked (W1-2, 19 Oct 2026; code-replies-crm H2): 6 of 7 realistic warm replies
+tripped the rule ("Sounds interesting, can we talk Tuesday? Please remove me from the newsletter
+though."), and until then each became an unsubscribe with nobody told. Any failure of the model while
+the rule matched (the cap, an API error, a timeout, anything) gives the stop rule's own verdict,
+unsubscribe; with no stop phrasing a failure takes poll_replies' usual retry-then-a-person path.
 
 reply_text() turns an Instantly email into the prospect's own words: the quoted thread, our
 signature, the data-source notice and the unsubscribe line are cut, so neither the model nor the
@@ -45,7 +53,9 @@ CLASSES = (
 )
 OBJECTIONS = ("price", "have_eap", "have_vendor", "timing", "not_decision_maker", "other", "none")
 MIN_CONFIDENCE = 0.7  # SPEC 11: below this, a reply is treated as "other"
-KEEP_ON_STOP = frozenset({"positive", "referral"})  # asks_to_stop does not turn these into unsubscribe
+# asks_to_stop does not turn these into unsubscribe: a person still answers them, by hand, as the address is
+# suppressed. wrong_person too (W1-2, 19 Oct 2026): "not me, please remove me and ask our HR lead" says who to ask.
+KEEP_ON_STOP = frozenset({"positive", "referral", "wrong_person"})
 EFFORT = "low"
 MAX_TOKENS = 1024  # the hard ceiling per call: thinking and the JSON together (about 1 cent at most)
 REPLY_CHARS = 4000  # the most of a reply the model reads
@@ -53,6 +63,7 @@ STOP_RULE_CHARS = 1500  # the stop rule reads the start of the reply only
 MAX_TERMS, TERM_CHARS = 5, 60
 LONGEST_DATE = timedelta(days=730)  # a date further out than this is not believed
 PURPOSE = "reply_classify"
+RULE, MODEL_AND_RULE = "rule", "model+rule"  # Verdict.source when the stop rule matched (without, with a model answer)
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -188,7 +199,9 @@ class Verdict:
     reply_class: str
     model_class: str = ""  # what the model said, before the rules ("" when no model was called)
     confidence: float = 0.0
-    source: str = "model"  # model, rule (the stop rule) or fallback (no answer: the cap, an error)
+    # model; rule (the stop rule matched, no model answer); model+rule (the stop rule matched and the model answered);
+    # or fallback (no answer: the cap, an error)
+    source: str = "model"
     asks_to_stop: bool = False
     demo_requested: bool = False
     objection: str = "none"
@@ -201,8 +214,15 @@ class Verdict:
     error: str = ""
 
     @classmethod
-    def stop_rule(cls) -> Verdict:
-        return cls("unsubscribe", source="rule", confidence=1.0, asks_to_stop=True, summary="Asked to stop the emails.")
+    def stop_rule(cls, error: str = "") -> Verdict:
+        """The stop rule's own verdict, with no usable model answer (error: why, when the model was asked)."""
+        return cls("unsubscribe", source=RULE, confidence=1.0, asks_to_stop=True, summary="Asked to stop the emails.",
+                   error=error)
+
+    @property
+    def by_rule(self) -> bool:
+        """The stop rule matched the reply, whether or not the model answered too."""
+        return self.source in (RULE, MODEL_AND_RULE)
 
     @classmethod
     def fallback(cls, error: str) -> Verdict:
@@ -230,8 +250,12 @@ def _text(v: Any, limit: int) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()[:limit]
 
 
-def from_answer(answer: Mapping[str, Any], received: date) -> Verdict:
-    """The model's JSON, checked field by field, with SPEC 11's confidence rule and the stop rule applied."""
+def from_answer(answer: Mapping[str, Any], received: date, *, stop: bool = False) -> Verdict:
+    """The model's JSON, checked field by field, with SPEC 11's confidence rule and the stop rule applied.
+
+    stop: the stop rule matched the reply, kept apart from the model's own asks_to_stop so the verdict says which saw
+    it (source model+rule). Either one makes every class outside KEEP_ON_STOP an unsubscribe, at any confidence; a
+    KEEP_ON_STOP class is kept, at any confidence, with asks_to_stop set."""
     model_class = str(answer.get("class") or "")
     if model_class not in CLASSES:
         model_class = "other"
@@ -239,9 +263,11 @@ def from_answer(answer: Mapping[str, Any], received: date) -> Verdict:
         confidence = min(1.0, max(0.0, float(answer.get("confidence") or 0.0)))
     except (TypeError, ValueError):
         confidence = 0.0
-    stop = answer.get("asks_to_stop") is True
-    if model_class == "unsubscribe" or (stop and model_class not in KEEP_ON_STOP):
+    asked = stop or answer.get("asks_to_stop") is True
+    if model_class == "unsubscribe":
         reply_class = "unsubscribe"
+    elif asked:
+        reply_class = model_class if model_class in KEEP_ON_STOP else "unsubscribe"
     elif confidence < MIN_CONFIDENCE:
         reply_class = "other"
     else:
@@ -259,7 +285,8 @@ def from_answer(answer: Mapping[str, Any], received: date) -> Verdict:
         reply_class=reply_class,
         model_class=model_class,
         confidence=round(confidence, 3),
-        asks_to_stop=stop,
+        source=MODEL_AND_RULE if stop else "model",
+        asks_to_stop=asked,
         demo_requested=answer.get("demo_requested") is True,
         objection=objection if objection in OBJECTIONS else "other",
         not_now_date=_date(answer.get("not_now_date"), received),
@@ -281,21 +308,29 @@ def prompt(text: str, *, received: datetime, company: str = "", title: str = "")
     )
 
 
-def classify(ctx: Context, text: str, *, received: datetime, company: str = "", title: str = "") -> Verdict:
-    """The stop rule, then (only when it does not apply) one call to the task model.
+def classify(ctx: Context, text: str, *, received: datetime, company: str = "", title: str = "",
+             stop: bool | None = None) -> Verdict:
+    """One call to the task model, with the stop rule applied to its answer (the module docstring).
 
-    Raises BudgetExceeded or ClaudeError when the model cannot answer; poll_replies decides
-    whether to try again later or hand the reply to a human as "other".
+    stop: whether the stop rule matched, when the caller has checked already (poll_replies does, to opt the address
+    out before this call); None checks here. With the rule matched, any exception from the model (BudgetExceeded,
+    ClaudeError, OSError, a timeout, anything) gives Verdict.stop_rule(): the opt-out never waits on the model.
+    Without it, BudgetExceeded or ClaudeError is raised as before, and poll_replies decides whether to try again
+    later or hand the reply to a human as "other".
     """
-    if asks_to_stop(text):
-        return Verdict.stop_rule()
+    stop = asks_to_stop(text) if stop is None else stop
     if not text.strip():
-        return Verdict.fallback("the reply has no text to read")
-    answer = ctx.clients.claude_task.json(
-        SYSTEM, prompt(text, received=received, company=company, title=title), SCHEMA,
-        max_tokens=MAX_TOKENS, purpose=PURPOSE, now=ctx.now, effort=EFFORT,
-    )
-    return from_answer(answer, received.astimezone(ET).date())
+        return Verdict.stop_rule() if stop else Verdict.fallback("the reply has no text to read")
+    try:
+        answer = ctx.clients.claude_task.json(
+            SYSTEM, prompt(text, received=received, company=company, title=title), SCHEMA,
+            max_tokens=MAX_TOKENS, purpose=PURPOSE, now=ctx.now, effort=EFFORT,
+        )
+    except Exception as exc:  # with a stop phrasing every failure is the stop rule's unsubscribe; else as before
+        if not stop:
+            raise
+        return Verdict.stop_rule(error=f"{type(exc).__name__}: {str(exc)[:160]}")
+    return from_answer(answer, received.astimezone(ET).date(), stop=stop)
 
 
 def estimate_usd(ctx: Context, text: str) -> float:

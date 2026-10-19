@@ -18,7 +18,7 @@ Slack only in `#us-outbound-dev`. Every outbound call goes through one guard
   sheet that `settings_sync` brought in: at 02:00 UK, at 11:30 UK on weekdays, or now with
   `us-outbound sync` (`start --live` syncs first by itself).
 - **Operator commands** whose writes never reach a prospect (`stop`, `mailbox`, `unenrol`,
-  `erase`, `test start`, `settings bootstrap|load`, `hubspot setup`, `campaigns ensure`,
+  `erase`, `test start`, `settings bootstrap|load`, `campaigns ensure`, `capture check`,
   `handcheck show|approve`, `killrules clear`, `replies skip`, `approvals contact|company`,
   `clay check-email`) are live
   with `--live` alone, so the phase-0 setup and the kill switch work while `live_sending` is still
@@ -69,7 +69,8 @@ us-outbound rescore [--live]                     * the score job
 us-outbound dry-run <job>                        * one job, dry-run
 us-outbound test start|read <test_id> [--live]   * a test on the Tests tab: ab, variant (one change to one email) or holdout
 us-outbound db apply [--live]                    * the DDL in sql/ against DATABASE_URL (prints it unless --live)
-us-outbound hubspot setup|ids [--live]           * the six properties; ids for the General tab
+us-outbound hubspot ids                          * the ids for the General tab (reads only)
+us-outbound capture check [--live]               * the reply read's weekly canary, checked the day after it went
 us-outbound suppression load [--live]            * HubSpot opt-outs and bounces, hashed
 us-outbound lookalikes show [--top N] [--all]    * the lookalike cells from Spill's HubSpot customers
 us-outbound lookalikes fit                       * the accounts' lookalike fits and the tier mix the new rows give

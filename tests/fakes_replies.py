@@ -58,18 +58,24 @@ class ClaudeSDK:
 
     def __init__(self):
         self.calls: list[dict] = []
-        self.answer: dict = classification()
+        # The classification: one answer for every reply, or a function of the prompt (its <reply> text) for a run
+        # that reads several.
+        self.answer: dict | Callable[[str], dict] = classification()
         self.draft: Callable[[str], str] = good_draft
         self.raises: Exception | None = None
+        self.before: Callable[[], None] | None = None  # called as each request arrives (to see what came first)
         self.messages = self
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
+        if self.before is not None:
+            self.before()
         if self.raises is not None:
             raise self.raises
         prompt = kwargs["messages"][0]["content"]
         schema = kwargs["output_config"]["format"]["schema"]
-        text = json.dumps({"body": self.draft(prompt)} if "body" in schema["properties"] else self.answer)
+        answer = self.answer(prompt) if callable(self.answer) else self.answer
+        text = json.dumps({"body": self.draft(prompt)} if "body" in schema["properties"] else answer)
         usage = SimpleNamespace(input_tokens=(len(kwargs["system"]) + len(prompt)) // 4, output_tokens=300,
                                 cache_creation_input_tokens=0, cache_read_input_tokens=0, cache_creation=None)
         return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)], stop_reason="end_turn", usage=usage)

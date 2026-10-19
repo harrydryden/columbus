@@ -137,7 +137,7 @@ def test_a_hubspot_opt_out_stops_the_lead_in_flight_and_the_rest_of_its_account(
     w = in_flight_world(default_settings)
     assert hubspot_opts_out(w, JANE)["added"] == 1
     out = outcomes.run(w.ctx)["account_stops"]
-    assert out == {"to_stop": 2, "stopped": {"deleted": 2}, "errors": []}
+    assert out == {"to_stop": 2, "stopped": {"deleted": 2}, "errors": [], "refused": []}
     assert deleted(w) == ["L-jane", "L-omar"]  # Bob, at another company, goes on
     calls = [c for c in w.ctx.guard.writes("instantly") if c.action == "lead.delete"]
     assert [(c.target, c.sent) for c in calls] == [(CAMPAIGNS["cmp-hannah"], True)] * 2  # through the guard, live
@@ -188,7 +188,7 @@ def test_an_expired_entry_and_a_finished_lead_stop_nothing(default_settings):
                     now=w.ctx.now - timedelta(days=40), expires_at=w.ctx.now - timedelta(days=1))
     w.ctx.store.update("contacts", {"account_id": "acc-acme"}, {"enrolled_at": REPLY_NOW - timedelta(days=40)})
     suppression.add(w.ctx.store, email=JANE, reason="hubspot_opt_out_or_bounce", source="hubspot", now=w.ctx.now)
-    assert account_stop.sweep(w.ctx) == {"to_stop": 0, "stopped": {}, "errors": []} and deleted(w) == []
+    assert account_stop.sweep(w.ctx) == {"to_stop": 0, "stopped": {}, "errors": [], "refused": []} and deleted(w) == []
 
 
 def test_an_instantly_unsubscribe_still_pending_is_left_to_its_own_path(default_settings):

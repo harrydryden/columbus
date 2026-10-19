@@ -83,11 +83,9 @@ BOUNDS = Boundaries(
 # -- SPEC 1.2 restated as data (deliberately not imported from guard.py) ----------------------
 
 PREFIX = "US Outbound – "  # "US Outbound – ", en dash (SPEC 9)
-HS_COMPANY_PROPS = {"us_outbound_account_id", "us_outbound_tier", "us_outbound_industry_group", "us_outbound_top_signals"}
-HS_CONTACT_PROPS = {"us_outbound_angle", "us_outbound_reply_class"}
+# W1-2 (19 Oct 2026; Harry's D9): no custom property is written. SPEC 11's six us_outbound_* were never created.
 HS_EMPTY_ONLY = {"hubspot_owner_id", "lifecyclestage", "hs_lead_status"}
 HS_IDENTITY_ON_CREATE = {"company": {"name", "domain"}, "contact": {"email", "firstname", "lastname", "jobtitle"}}
-HS_SIX = {"company": HS_COMPANY_PROPS, "contact": HS_CONTACT_PROPS}
 HS_DEAL_PROPS = {"dealname", "pipeline", "dealstage", "hubspot_owner_id"}
 HS_WARM = {"positive", "referral"}
 HS_FREE_WRITES = {"note.create", "task.create", "association.create", "communication.unsubscribe"}
@@ -133,7 +131,8 @@ def spec_violation(rec: CallRecord) -> str | None:
         if not rec.write:
             if a in {"email.list", "email.get", "account.get", "account.list", "warmup.analytics", "account.analytics_daily"}:
                 return None if in_registry else f"Instantly {a} not filtered by registry accounts"
-            if a in {"lead.list", "lead.get", "campaign.get", "campaign.steps_analytics", "campaign.sending_status"}:
+            if a in {"lead.list", "lead.get", "campaign.get", "campaign.steps_analytics", "campaign.analytics",
+                     "campaign.sending_status"}:
                 return None if t.startswith(PREFIX) else f"Instantly {a} on {t!r}"
             if a == "campaign.list":
                 return None if str(d.get("search", "")).startswith(PREFIX.strip()) else "unfiltered campaign list"
@@ -182,10 +181,10 @@ def spec_violation(rec: CallRecord) -> str | None:
         if a in {"company.create", "contact.create"}:
             if d.get("reply_class") not in HS_WARM:
                 return f"HubSpot {a} without a positive or referral reply"
-            extra = props - HS_SIX[obj] - HS_EMPTY_ONLY - HS_IDENTITY_ON_CREATE[obj]
+            extra = props - HS_EMPTY_ONLY - HS_IDENTITY_ON_CREATE[obj]
             return f"HubSpot {a} sets {sorted(extra)}" if extra else None
         if a in {"company.update", "contact.update"}:
-            extra = props - HS_SIX[obj] - HS_EMPTY_ONLY
+            extra = props - HS_EMPTY_ONLY
             current = dict(d.get("current") or {})
             filled = [p for p in props & HS_EMPTY_ONLY if p not in current or current[p] not in (None, "")]
             if extra or filled:
@@ -199,10 +198,6 @@ def spec_violation(rec: CallRecord) -> str | None:
                 and props <= HS_DEAL_PROPS
             )
             return None if ok else "HubSpot deal outside Spill 3.0's first stage"
-        if a == "property_group.create":
-            return None if t == "us_outbound" else f"property group {t!r}"
-        if a == "property.create":
-            return None if t in HS_COMPANY_PROPS | HS_CONTACT_PROPS else f"property {t!r}"
         if a == "contact.gdpr_delete":
             return None if d.get("erasure_request") is True else "GDPR delete outside an erasure request"
         return None if a in HS_FREE_WRITES else f"HubSpot write {a} is not allowed"
@@ -488,8 +483,6 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "search_meetings": lambda c, w: c.search_meetings("owner-harry", NOW),
         "search_pipeline_deals": lambda c, w: c.search_pipeline_deals(PIPELINE, NOW),
         "pipeline_stages": lambda c, w: c.pipeline_stages(PIPELINE),
-        "properties": lambda c, w: c.properties("companies"),
-        "property_groups": lambda c, w: c.property_groups("companies"),
         "iter_opted_out_or_bounced_emails": lambda c, w: list(c.iter_opted_out_or_bounced_emails()),
         # The lookalikes job's reads (sources/lookalikes.py): company and deal fields only.
         "iter_companies": lambda c, w: list(c.iter_companies(
@@ -499,26 +492,19 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "companies_by_id": lambda c, w: c.companies_by_id(["c1"], ["domain"]),
         "deal_company_ids": lambda c, w: c.deal_company_ids("d1"),
         "create_company": lambda c, w: c.create_company(
-            {"name": "Acme Creative", "domain": "acmecreative.com", "us_outbound_account_id": "acc-1",
-             "us_outbound_tier": "Priority", "us_outbound_industry_group": "Marketing & Creative Agencies"},
-            reply_class="positive"),
+            {"name": "Acme Creative", "domain": "acmecreative.com", "lifecyclestage": "lead"}, reply_class="positive"),
         "update_company": lambda c, w: c.update_company(
-            "c1", {"us_outbound_top_signals": "EAP named (ComPsych)", "lifecyclestage": "lead",
-                   "hubspot_owner_id": "owner-harry"}, current={"lifecyclestage": "", "hubspot_owner_id": None}),
+            "c1", {"lifecyclestage": "lead", "hubspot_owner_id": "owner-harry"},
+            current={"lifecyclestage": "", "hubspot_owner_id": None}),
         "create_contact": lambda c, w: c.create_contact(
-            {"email": JANE, "firstname": "Jane", "lastname": "Doe", "jobtitle": "Head of People",
-             "us_outbound_angle": "Upgrade the EAP (eap-v1)"}, reply_class="referral"),
-        "update_contact": lambda c, w: c.update_contact(
-            "k1", {"us_outbound_reply_class": "positive", "hs_lead_status": "CONNECTED"}, current=None),
+            {"email": JANE, "firstname": "Jane", "lastname": "Doe", "jobtitle": "Head of People"},
+            reply_class="referral"),
+        "update_contact": lambda c, w: c.update_contact("k1", {"hs_lead_status": "CONNECTED"}, current=None),
         "associate": lambda c, w: c.associate("contacts", "k1", "companies", "c1"),
         "create_note": lambda c, w: c.create_note("Reply: sounds good", [("companies", "c1"), ("contacts", "k1")], at=NOW),
         "create_task": lambda c, w: c.create_task("Reply from Jane", "Approve in Slack", "owner-harry", NOW,
                                                   [("companies", "c1")]),
         "create_deal": lambda c, w: c.create_deal(PREFIX + "Acme Creative", PIPELINE, FIRST_STAGE, "owner-harry", "c1"),
-        "ensure_property_group": lambda c, w: c.ensure_property_group("companies"),
-        "create_property": lambda c, w: c.create_property(
-            "companies", {"name": "us_outbound_tier", "label": "US Outbound tier", "type": "string",
-                          "fieldType": "text", "groupName": "us_outbound"}),
         "unsubscribe": lambda c, w: c.unsubscribe(JANE),
         "gdpr_delete_contact": lambda c, w: w.as_job("erase", lambda: c.gdpr_delete_contact(JANE)),
     },
@@ -575,6 +561,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "forward": lambda c, w: c.forward("hannah@meetspill.org", "E1", "harry@spill.chat", "Waiting 24 hours."),
         "blocklist_add": lambda c, w: c.blocklist_add([JANE]),
         "step_analytics": lambda c, w: c.step_analytics(HANNAH_CAMPAIGN),
+        "campaign_analytics": lambda c, w: c.campaign_analytics(HANNAH_CAMPAIGN, start_date=NOW, end_date=NOW),
         "daily_sends": lambda c, w: c.daily_sends(["hannah@meetspill.org"], start_date="2026-10-20"),
         "set_daily_limit": lambda c, w: c.set_daily_limit("hannah@meetspill.org", 30),
         "set_sender_name": lambda c, w: c.set_sender_name("hannah@meetspill.org", "Hannah", "Spalding"),
@@ -803,8 +790,12 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
         PREFIX + "Acme", PIPELINE, "stage-won", "owner-harry", "c1"),
     "hubspot deal not named US Outbound": lambda w: w.clients["HubSpot"].create_deal(
         "Acme renewal", PIPELINE, FIRST_STAGE, "owner-harry", "c1"),
-    "hubspot property of another team": lambda w: w.clients["HubSpot"].create_property(
-        "companies", {"name": "annualrevenue", "groupName": "companyinformation"}),
+    "hubspot property of another team": lambda w: w.clients["HubSpot"].request(
+        "POST", "/crm/v3/properties/companies", Op("property.create", target="annualrevenue", write=True)),
+    "hubspot us_outbound property group (retired with the six, W1-2)": lambda w: w.clients["HubSpot"].request(
+        "POST", "/crm/v3/properties/companies/groups", Op("property_group.create", target="us_outbound", write=True)),
+    "hubspot us_outbound_* custom property (retired, W1-2)": lambda w: w.clients["HubSpot"].create_company(
+        {"name": "Acme", "domain": "acmecreative.com", "us_outbound_account_id": "acc-1"}, reply_class="positive"),
     "hubspot gdpr delete outside erase": lambda w: w.as_job("enrol", lambda: w.clients["HubSpot"].gdpr_delete_contact(JANE)),
     "hubspot workflow edit": lambda w: w.clients["HubSpot"].request(
         "PATCH", "/automation/v4/flows/1", Op("workflow.update", target="flows", write=True)),
