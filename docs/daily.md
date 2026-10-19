@@ -264,6 +264,22 @@ The first time, add the `share_a` header cell after `find` (or `us-outbound sett
 - Change the split by starting a new test, not by editing a running one: companies already in the test
   keep their version, so a mid-test change mixes two splits in one read.
 
+### Before you are up (weekdays, no message unless something fails)
+
+| UK time | Job | What it does |
+| :- | :- | :- |
+| 03:00 | `source_universe` | Finds new companies in Apollo until there are two weeks of `weekly_enrol_cap` in companies that can be emailed ("contactable supply"), never more than 2 × the cap in a run or 3 × in a week. The states take turns, from a different state each week |
+| 03:45, 04:20 | `read_pages`, `apollo_people` | Free reads: careers pages, People leaders |
+| 04:30 | `verify_accounts` | The free checks and the industry label check |
+| 05:00, 05:10 | `apollo_enrich`, `apollo_signals` | Paid reads, for verified companies only (since 19 Oct): an exact headcount (one outside the size range is left out for good) and funding; open job postings |
+| 05:30 | `pick_contacts` | One rescore, then a contact for the companies the next two send days need |
+
+To see why sourcing stopped: the `stopped_by` of the run's `source_universe_done` log line (and its heartbeat's
+detail, with the counts under `supply`). It names the
+contactable supply against the target and whether each yield is *measured*, the *default* (fewer than 20
+observations) or *floored* at 0.20. On the floor, sourcing asks for a lot of raw companies per contact: the
+ceilings keep that to 300 a run and 450 a week at a cap of 150.
+
 ## Expected volume in the pilot
 
 Each sender takes new contacts at a quarter of its daily cap, so the follow-ups on days 7, 14 and

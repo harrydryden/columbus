@@ -377,7 +377,17 @@ def test_only_the_next_two_send_days_and_only_accounts_without_a_sendable_contac
                    {"t-ceo": match("t-ceo", "ceo@top.com")}, weekly_enrol_cap=5)
     ctx.store.insert("contacts", [{"contact_id": "k-ready", "account_id": "acc-ready", "email": "jo@ready.com",
                                    "email_status": "verified", "person_state": "NY", "title": "CEO"}])
+    # The order and the hold come from the facts, as the rescore pick_contacts starts with sets them (W1-3a): top.com
+    # is hiring (apollo_signals' open_roles, "Hiring and growth"), so it outranks next.com; a competitor's counselling
+    # on h.com's careers page is the default Signals tab's Hold row ("Modern mental-health vendor named").
+    ctx.store.insert("signal_events", [
+        {"event_id": "top-roles", "account_id": "acc-top", "source": "apollo_jobs", "fact": "open_roles", "value": 5,
+         "quote": "Apollo lists 5 open job postings", "source_url": "", "observed_at": ctx.now},
+        {"event_id": "held-lyra", "account_id": "acc-held", "source": "clay_careers", "fact": "benefit",
+         "value": {"item": "Lyra"}, "quote": "Counseling through Lyra.", "source_url": "https://h.com/careers",
+         "observed_at": ctx.now}])
     out = pick.run(ctx)
+    assert ctx.store.get("accounts", account_id="acc-held")["tier"] == "Held"
     assert (out["ready_before"], out["wanted"], out["waiting"], out["picked"]) == (1, 1, 2, 1)
     assert [s["organization_ids"] for s in apollo.searches] == [[ORG]]  # the top of the queue only
     assert pick.run(ctx)["reason"] == "enough accounts are ready for the next two send days"
@@ -412,6 +422,39 @@ def test_dry_run_writes_contacts_and_makes_only_apollo_reads(ctx, transport):
     apollo_calls = [c for c in ctx.guard.calls if c.system == "apollo"]
     assert apollo_calls and all(not c.write and c.sent and c.action in APOLLO_READ_ACTIONS for c in apollo_calls)
     assert {c.action for c in apollo_calls} == {"usage.credits", "people.search", "people.bulk_match"}
+
+
+def test_it_rescores_once_before_it_reads_the_queue(ctx, transport, monkeypatch):
+    """W1-3a (RS P0-8): apollo_enrich and apollo_signals no longer rescore; pick_contacts rescores once, first, so
+    the queue it reads is in the order the morning's facts give. The rescore is called exactly once, and before
+    the first Apollo search."""
+    from us_outbound.scoring import score
+
+    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
+    calls: list[int] = []
+    real = score.rescore
+
+    def counted(c):
+        calls.append(len(apollo.searches))  # how many searches were made before the rescore
+        return real(c)
+
+    monkeypatch.setattr(score, "rescore", counted)
+    out = pick.run(ctx)
+    assert calls == [0] and out["picked"] == 1 and "tiers" in out["rescore"]
+
+
+def test_a_failed_rescore_is_reported_and_the_contacts_are_still_found(ctx, transport, monkeypatch):
+    from us_outbound.scoring import score
+
+    setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
+
+    def broken(c):
+        raise RuntimeError("deadlock detected")
+
+    monkeypatch.setattr(score, "rescore", broken)
+    out = pick.run(ctx)
+    # The error under "error" is what heartbeat_check reads as a caught failure (ops/job_errors.py).
+    assert out["rescore"] == {"error": "RuntimeError: deadlock detected"} and out["picked"] == 1
 
 
 def test_the_job_is_wired_before_enrol():

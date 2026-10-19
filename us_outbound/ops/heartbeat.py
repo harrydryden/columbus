@@ -64,9 +64,9 @@ _DAY = 24 * _H
 EXPECTED: dict[str, int] = {
     "settings_sync": 26 * _H,  # 02:00 daily (and 11:30 on weekdays; the 02:00 run alone keeps it healthy)
     "source_universe": 26 * _H,  # 03:00 weekdays (weekday time; SPEC 9 had the 1st of the month)
-    "apollo_signals": 26 * _H,  # 03:30 weekdays (weekday time; SPEC 9 had Mondays)
+    "apollo_signals": 26 * _H,  # 05:10 weekdays (weekday time; SPEC 9 had Mondays; 03:30 until W1-3a, 19 Oct 2026)
     "read_pages": 26 * _H,  # 03:45 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
-    "apollo_enrich": 26 * _H,  # 04:10 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
+    "apollo_enrich": 26 * _H,  # 05:00 weekdays (weekday time; build addition, Harry, 2 Oct 2026; 04:10 until W1-3a)
     "apollo_people": 26 * _H,  # 04:20 weekdays (weekday time; build addition, Harry, 5 Oct 2026)
     "site_visits": 26 * _H,  # 06:00 daily
     "public_signals": 8 * _DAY,  # Mon 04:00
@@ -230,6 +230,9 @@ IMPACT: dict[str, str] = {
     "sync_outcomes": "bounces, opt-outs and other email results are not being recorded",
     "enrol": "nobody new is being added to the email campaign",
     "pick_contacts": "no new contacts are being chosen",
+    # Re-timed by W1-3a (19 Oct 2026): after verify_accounts, for verified companies only.
+    "apollo_enrich": "verified companies' exact headcounts and funding are not being read from Apollo",
+    "apollo_signals": "verified companies' open job postings are not being read from Apollo",
     "kill_rules": "bounce and complaint limits are not being checked",
     "mailbox_health": "the sending mailboxes are not being checked",
     "blackout": "sends are not being paused on holidays",

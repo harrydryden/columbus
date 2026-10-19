@@ -7,7 +7,7 @@ a contact for: after verify_accounts, so too late to shape the queue, and with a
 meant nothing and "First People hire" (people_leader_count = 0) could never fire. On 5 Oct 12 of 432 companies had
 People data.
 
-Each weekday at 04:20 UK, after apollo_enrich (04:10) and before verify_accounts (04:30), whose rescore scores the new
+Each weekday at 04:20 UK, after read_pages (03:45) and before verify_accounts (04:30), whose rescore scores the new
 facts before pick_contacts (05:30), for the queue accounts (new, queued or verified, not Excluded or Held) with a domain
 and a size the Roles tab contacts a People leader at: never-searched accounts first, then those searched more than
 REFRESH_DAYS ago; within each, the Focus tab's groups, then queue order (enrol/queue.order_key), as apollo_enrich

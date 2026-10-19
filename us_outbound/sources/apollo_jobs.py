@@ -3,10 +3,12 @@
 These are the facts the "Hiring and growth" (open_roles >= 3), "People role open" and "First People
 hire (likely)" (open_people_roles >= 1) signals read. open_roles is owned by this source (docs/pipeline.md, change 4).
 
-Each weekday at 03:30 UK, after source_universe and before verify_accounts, for the accounts in the
-queue (new, queued or verified, not Excluded or Held) with an Apollo organization id and no
-apollo_jobs facts from the last REFRESH_DAYS days: never-read accounts first, then the Focus tab's
-groups, then queue order.
+Each weekday at 05:10 UK, after verify_accounts (04:30) and apollo_enrich (05:00) and before
+pick_contacts (05:30), whose rescore scores the new facts, for the verified accounts (not Excluded or
+Held) with an Apollo organization id and no apollo_jobs facts from the last REFRESH_DAYS days:
+never-read accounts first, then the Focus tab's groups, then queue order. Until 19 Oct 2026 it ran at
+03:30 for new and queued accounts too, and paid for postings at companies the label check then left
+out (W1-3a; code-sources B4). It does not rescore (RS P0-8).
   1. A screen: one organization search per 100 accounts, filtered to their ids and to companies
      with at least one current posting (organization_ids, organization_num_jobs_range). An account
      it leaves out has no open postings: open_roles 0, open_people_roles 0, no titles.
@@ -20,8 +22,8 @@ credits for the screen, and 1 more if it has open postings. The job may spend SI
 apollo_monthly_credits, paced by the weekday, and never more than is left of the whole Apollo
 budget today (sources/apollo_credits.py); nothing while Apollo's balance is below apollo_floor.
 
-Schedule: weekdays rather than SPEC 9's Mondays, so the accounts sourced each morning are read
-before verify_accounts at 04:30 and its rescore, and the credits are paced by the weekday.
+Schedule: weekdays rather than SPEC 9's Mondays, so the accounts verified each morning are read
+before pick_contacts at 05:30 and its rescore, and the credits are paced by the weekday.
 
 Dry-run: the reads happen and their credits are recorded; facts and the ledger are database
 writes, which dry-run makes too (SPEC 0.3), as in source_universe. Nothing is written outside
@@ -46,13 +48,14 @@ from us_outbound.logs import log
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Settings
 from us_outbound.sources import apollo_credits as credits
-from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
+from us_outbound.sources.apollo_universe import OUT_OF_QUEUE_TIERS
 from us_outbound.timeparse import utc
 
 JOB = "apollo_signals"
 SOURCE = "apollo_jobs"
 SIGNALS_SHARE = 0.25  # of apollo_monthly_credits (source_universe as much, apollo_enrich 0.15; the 0.35 left for reveals)
 REFRESH_DAYS = 30  # read an account again after this; the hiring signals count facts for 90 days
+VERIFIED = "verified"  # the only status read (W1-3a)
 SCREEN_BATCH = MAX_PER_PAGE  # accounts per screening search: one page holds them all
 POSTINGS_PER_PAGE = 100  # one request (1 credit) per account; a larger count is taken from pagination
 TITLES_KEPT = 50
@@ -95,9 +98,12 @@ def last_read(ctx: Context, account_ids: Sequence[str]) -> dict[str, datetime]:
 
 
 def candidates(ctx: Context) -> list[dict]:
-    """Queue accounts with an Apollo id and no apollo_jobs facts from the last REFRESH_DAYS, in reading order."""
+    """Verified accounts with an Apollo id and no apollo_jobs facts from the last REFRESH_DAYS, in reading order.
+
+    Verified only (W1-3a, 19 Oct 2026; code-sources B4): a posting read costs a credit, and before verify about
+    60% of new accounts are left out by the label check (13 Oct: 62 of 103)."""
     s = ctx.settings
-    rows = [a for a in ctx.store.select("accounts", {"status": list(OPEN_STATUSES)})
+    rows = [a for a in ctx.store.select("accounts", {"status": VERIFIED})
             if a.get("apollo_org_id") and a.get("tier") not in OUT_OF_QUEUE_TIERS]
     seen = last_read(ctx, [a["account_id"] for a in rows])
     cutoff = ctx.now - timedelta(days=REFRESH_DAYS)

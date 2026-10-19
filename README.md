@@ -223,8 +223,9 @@ From name prospects see, are its owner's full name from the Mailboxes tab ("Hann
 For the 5 Oct pilot (1 Oct 2026): `verify_accounts` (weekdays 04:30) verifies accounts on their
 Apollo data and HubSpot while the General key `clay_verification` is `skip` (Harry: go live before
 the Clay functions exist; `required` once they do). `source_universe` and `apollo_signals` run each
-weekday (03:00, 03:30) rather than monthly and on Mondays, to keep the queue two weeks deep with
-Apollo credits paced by the weekday (`us_outbound/sources/`).
+weekday (03:00; 05:10, after `verify_accounts`, since 19 Oct) rather than monthly and on Mondays, to keep
+the queue two weeks deep in companies that can be emailed ("contactable supply", W1-3a), with Apollo
+credits paced by the weekday (`us_outbound/sources/`).
 
 Clay narrowed (Harry, 2 Oct 2026): `read_pages` (weekdays 03:45) is our own careers and benefits
 page reader, in place of Clay's: each queued account's own careers, jobs and benefits pages and
@@ -240,11 +241,12 @@ HQ state or size, a count and band that disagree, a count near a size edge) befo
 weekly hand-check (`us_outbound/clay_cross_check.py`; the function's spec is in docs/pipeline.md).
 
 Funding from Apollo's organization enrich (Harry, 2 Oct 2026): Apollo's search rows carry no
-funding and no employee count, so `apollo_enrich` (weekdays 04:10, before `verify_accounts`)
-enriches the queue accounts in the General key `apollo_enrich_groups` (default Technology &
+funding and no employee count, so `apollo_enrich` (weekdays 05:00, after `verify_accounts` since 19 Oct)
+enriches the verified accounts in the General key `apollo_enrich_groups` (default Technology &
 Startups), 1 credit per company found, within 15% of `apollo_monthly_credits`, each again after
 180 days (`sources/apollo_enrich.py`). Its facts fire the funding signals, and its exact employee
-count replaces the searched size band unless an Overrides row or Clay says otherwise.
+count replaces the searched size band unless an Overrides row or Clay says otherwise; a count outside
+the General size range leaves the company out (`status_reason` `size`).
 
 People leaders at every account (Harry, 5 Oct 2026): `apollo_people` (weekdays 04:20, before
 `verify_accounts`' rescore) searches Apollo's free people search for the People leaders at each
