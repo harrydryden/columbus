@@ -170,6 +170,10 @@ CLAY_VERIFICATION_MODES = (CLAY_REQUIRED, CLAY_SKIP)
 # group's copy), for a Claude outage.
 LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP = "required", "skip"
 LABEL_CHECK_MODES = (LABEL_CHECK_REQUIRED, LABEL_CHECK_SKIP)
+# General explore_share's ceiling (the W1-C contracts commit, 19 Oct 2026): above a quarter the random arm would be
+# most of a send day's picks outside the score order; and hand_check_sample's range, in rows a week.
+MAX_EXPLORE_SHARE = 0.25
+HAND_CHECK_SAMPLE_MIN, HAND_CHECK_SAMPLE_MAX = 1, 50
 
 
 @dataclass(frozen=True)
@@ -198,7 +202,20 @@ class General:
     # to Instantly (enrol/approvals/); yes, enrol adds leads straight away, as before.
     auto_send: bool = False
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
+    # Retired from the sheet (RETIRED_GENERAL; the W1-C contracts commit, 19 Oct 2026; Harry's D7: rank by score plus
+    # a random explore arm in place of the Control tier). A control_share row is no longer read, so this is always the
+    # code default, which is the live sheet's value: the Control share enrol keeps until the explore arm replaces it.
     control_share: float = 0.15
+    # (build) The W1-C contracts commit (19 Oct 2026): keys later Wave 1 packages read, defined once. Each default is
+    # today's behaviour, so a sheet without the row, and code that does not read the key yet, change nothing.
+    # The share of each day's picks and sends drawn at random from the eligible queue, within the Focus shares, in
+    # place of the Control tier (Harry's D7). 0, the default: no random arm. At most MAX_EXPLORE_SHARE.
+    explore_share: float = 0.0
+    # The weekly hand-check's sample size; 10, the default, is the draw's constant today (enrol/hand_check.py).
+    hand_check_sample: int = 10
+    # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
+    # no, the default: it only alerts (Harry's D13 decides).
+    early_warning_pause: bool = False
     priority_threshold: int = 50
     standard_threshold: int = 20
     # (build) Harry, 19 Oct 2026: the two thresholds follow the queue each day (scoring/balance.py); no: as typed

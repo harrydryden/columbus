@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS us_outbound.contacts (
   copy_hash text,
   lead_deleted_at timestamptz,
   test_arm text,
+  arm text,
+  sham_arm text,
+  industry_at_enrol text,
+  industry_group_at_enrol text,
+  size_band_at_enrol text,
+  copy_level text,
+  email1_subject text,
+  email_hashes jsonb,
   PRIMARY KEY (contact_id)
 );
 -- For databases created before enrolled_at, opener_arm, opener_source and the enrolment snapshot existed.
@@ -69,6 +77,17 @@ ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS lead_deleted_at timest
 -- The running copy test's arm the contact was given, beside test_id (Harry, 7 Oct 2026: A/B tests of email copy,
 -- enrol/variants.py): a or b. learn/looks.py reads a variant test's arms from it.
 ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS test_arm text;
+-- The W1-C contracts commit (19 Oct 2026): what the account and the email looked like at enrolment, stamped by
+-- enrol._record_enrolled once its package lands, so a relabel or a resize never moves a contact between the groups a
+-- report compares, and the arm it was enrolled in. Nothing writes or reads them yet; contacts before carry NULL.
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS arm text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS sham_arm text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS industry_at_enrol text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS industry_group_at_enrol text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS size_band_at_enrol text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS copy_level text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS email1_subject text;
+ALTER TABLE us_outbound.contacts ADD COLUMN IF NOT EXISTS email_hashes jsonb;
 CREATE INDEX IF NOT EXISTS contacts_account_id_idx ON us_outbound.contacts (account_id);
 CREATE INDEX IF NOT EXISTS contacts_email_sha256_idx ON us_outbound.contacts (email_sha256);
 COMMENT ON TABLE us_outbound.contacts IS 'One row per person (SPEC 6). Contacts who never replied are deleted 12 months after their last step by the retention job (ops/retention.py), with their hitl_items payloads and raw_clay_contacts rows; their events and suppression hash stay.';
@@ -98,3 +117,11 @@ COMMENT ON COLUMN us_outbound.contacts.code_sha IS 'The code the contact was ren
 COMMENT ON COLUMN us_outbound.contacts.lead_deleted_at IS 'When the retention job deleted the contact''s Instantly lead, more than 31 days after its last step (SPEC 13; ops/retention.py), or found it gone already (Instantly answered 404). instantly_lead_id is cleared then, so the deletion is made once and nothing calls Instantly for a lead that no longer exists; enrolled_at, enrolment_month and instantly_campaign stay. NULL: the lead is still in Instantly, or the contact never had one.';
 COMMENT ON COLUMN us_outbound.contacts.copy_hash IS 'The Copy row''s content hash when the contact was rendered (CopyRow.content_hash), so two wordings under one copy_version are told apart (Harry, 7 Oct 2026). NULL: enrolled before 8 Oct 2026, unstamped.';
 COMMENT ON COLUMN us_outbound.contacts.test_arm IS 'The arm of the running copy test (test_id) the contact was given at enrollment (build addition; Harry, 7 Oct 2026). One of: a, b. a is the test''s version_a and b its version_b: for an ab test the Copy row the contact got, for a variant test (enrol/variants.py) the arm''s change to one email (b is often the email as the Copy row has it). Set only when the arm was applied: an account where a variant''s change could not be made under both arms is in no test. A second contact has its account''s arm. NULL: in no test, or enrolled in an ab test before 8 Oct 2026 (its arm is then its copy_version).';
+COMMENT ON COLUMN us_outbound.contacts.arm IS 'One of: random, ranked. The account''s arm when this contact was enrolled (accounts.arm). NULL: enrolled before the explore arm existed, read as ranked.';
+COMMENT ON COLUMN us_outbound.contacts.sham_arm IS 'One of: a, b. A label from a hash of the account id that changes nothing about the contact (an A/A split): a difference between a and b in any report is pipeline bias, not an effect. NULL: enrolled before it was stamped.';
+COMMENT ON COLUMN us_outbound.contacts.industry_at_enrol IS 'The account''s industry label when this contact was enrolled. NULL: enrolled before it was stamped.';
+COMMENT ON COLUMN us_outbound.contacts.industry_group_at_enrol IS 'The account''s industry group when this contact was enrolled. NULL: enrolled before it was stamped.';
+COMMENT ON COLUMN us_outbound.contacts.size_band_at_enrol IS 'The account''s size band when this contact was enrolled. NULL: enrolled before it was stamped.';
+COMMENT ON COLUMN us_outbound.contacts.copy_level IS 'One of: label, group, general. The copy level the contact''s emails were rendered at (labels.copy_level). NULL: enrolled before it was stamped.';
+COMMENT ON COLUMN us_outbound.contacts.email1_subject IS 'Email 1''s subject as rendered for this contact. NULL: enrolled before it was stamped.';
+COMMENT ON COLUMN us_outbound.contacts.email_hashes IS 'sha256 of each step''s rendered HTML body, a JSON list in step order, so what a contact was sent can be told apart without keeping the text. NULL: enrolled before it was stamped.';

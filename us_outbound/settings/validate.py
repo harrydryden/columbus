@@ -58,6 +58,9 @@ from us_outbound.settings.model import (
     COPY_TEST_KINDS,
     CLAY_VERIFICATION_MODES,
     LABEL_CHECK_MODES,
+    HAND_CHECK_SAMPLE_MAX,
+    HAND_CHECK_SAMPLE_MIN,
+    MAX_EXPLORE_SHARE,
     COPY_STATUSES,
     COPY_STEPS,
     EMAIL1_SUBJECT_VARIABLES,
@@ -431,6 +434,11 @@ RENAMED_GENERAL = {
 RETIRED_GENERAL = {
     "postal_address": "emails carry no postal address (Harry, 1 Oct 2026)",
     "privacy_url": "emails carry no privacy link; the opt-out is Instantly's unsubscribe link (Harry, 1 Oct 2026)",
+    # The one exception to "in the same commit as its deletion" (the W1-C contracts commit, 19 Oct 2026; RS P0-2):
+    # Harry's D7 replaces the Control tier with a random arm under a new key, explore_share, rather than renaming
+    # this one, which would carry 0.15 into the new key and put the arm live on deploy. General.control_share stays
+    # until the package that removes its reader, at its code default, 0.15, the live sheet's value: nothing moves.
+    "control_share": "the Control tier gives way to a random explore arm, explore_share (Harry, 19 Oct 2026)",
 }
 
 
@@ -503,8 +511,12 @@ def _check_general_value(key: str, value: Any) -> None:
     kind = _GENERAL_TYPES[key]
     if kind in (int, float) and value < 0:
         raise ValueError("must not be negative")
-    if key == "control_share" and not 0 <= value <= 1:
-        raise ValueError("is a share: between 0 and 1, like 0.15")
+    if key == "explore_share" and not 0 <= value <= MAX_EXPLORE_SHARE:
+        raise ValueError(f"is a share: between 0 and {MAX_EXPLORE_SHARE:g}, like 0.15 for 15% of each day's picks "
+                         "drawn at random; 0 means no random arm")
+    if key == "hand_check_sample" and not HAND_CHECK_SAMPLE_MIN <= value <= HAND_CHECK_SAMPLE_MAX:
+        raise ValueError(f"is the number of companies in the weekly hand-check: {HAND_CHECK_SAMPLE_MIN} to "
+                         f"{HAND_CHECK_SAMPLE_MAX}, like 20")
     if key in ("stop_rule_bounce_rate", "stop_rule_complaint_rate") and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
     if key == "opener_holdout_share" and not 0 <= value <= 1:

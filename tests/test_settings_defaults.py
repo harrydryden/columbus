@@ -7,7 +7,7 @@ import pytest
 
 from us_outbound.settings.defaults import COLUMNS, US_STATES, default_tabs
 from us_outbound.settings.model import TABS, General, SendWindow
-from us_outbound.settings.validate import validate_all
+from us_outbound.settings.validate import RETIRED_GENERAL, validate_all
 
 
 @pytest.fixture(scope="module")
@@ -37,8 +37,11 @@ def test_defaults_are_fresh_copies(tabs):
 
 
 def test_general_has_every_model_key_once(tabs, settings):
+    """Every General field has one row, except a retired key whose field stays until its reader goes: control_share
+    (W1-C, 19 Oct 2026), so `settings load` removes its row from the sheet and never adds it back."""
     keys = [r["key"] for r in tabs["General"]]
-    assert sorted(keys) == sorted(f.name for f in dataclasses.fields(General))
+    assert sorted(keys) == sorted(f.name for f in dataclasses.fields(General) if f.name not in RETIRED_GENERAL)
+    assert "control_share" in RETIRED_GENERAL and "explore_share" in keys
     assert len(keys) == len(set(keys))
     # Every value reads back as the model default: a key missing from the tab takes the same value.
     assert settings.general == General()
@@ -61,6 +64,9 @@ def test_general_spec_values(tabs, settings):
     assert g.send_window == SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
     # Harry, 30 Sep 2026: a weekly enrolment target (SPEC's 30 a day is 150 a week), monthly credits.
     assert (g.weekly_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (150, 0.15, 50, 20)
+    # The W1-C keys at today's behaviour: no random arm, the hand-check's 10, the early warning alerts only.
+    assert (raw["explore_share"], raw["hand_check_sample"], raw["early_warning_pause"]) == ("0", "10", "no")
+    assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.0, 10, False)
     assert (g.apollo_monthly_credits, g.clay_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 2000.0, 5000, 24)
     assert g.claude_monthly_cap_usd == 10.0
 

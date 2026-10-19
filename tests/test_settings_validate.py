@@ -252,16 +252,18 @@ def test_renamed_keys_warn_and_say_what_replaced_them(tabs):
 
 @pytest.mark.parametrize("strict", [False, True])
 def test_unknown_renamed_and_retired_keys_warn_in_both_modes_and_a_bad_value_fails(tabs, strict):
-    """The W1-1 case: a retired key (postal_address), a renamed one (daily_enrol_cap) and an unknown one: 3
-    warnings and 0 errors, strict or not. control_share is a key General still reads today (W1-C retires it, with
-    explore_share in its place), so it validates as any known key and is not among the warnings."""
-    assert _row(tabs, "General", key="control_share")[1]["value"] == "0.15"  # on the tab already, as on the live sheet
-    for key, value in (("postal_address", "1 Main St"), ("daily_enrol_cap", "30"), ("made_up_key", "x")):
+    """The W1-1 case as the plan gives it: a retired key (control_share, retired by W1-C with explore_share in its
+    place), a renamed one (daily_enrol_cap) and an unknown one: 3 warnings and 0 errors, strict or not. The retired
+    row's value is not read: General keeps control_share's code default, 0.15, however the sheet sets it."""
+    for key, value in (("control_share", "0.4"), ("daily_enrol_cap", "30"), ("made_up_key", "x")):
         tabs["General"].append({"key": key, "value": value, "note": ""})
     settings, errors = validate_all(tabs, strict=strict)
     assert _no_errors(errors) == {} and settings is not None
+    assert settings.general.control_share == 0.15  # the code default, not the row's 0.4
     warned = general_warnings(tabs["General"], strict=strict)
-    assert sorted(w.label for w in warned) == ["daily_enrol_cap", "made_up_key", "postal_address"]
+    assert sorted(w.label for w in warned) == ["control_share", "daily_enrol_cap", "made_up_key"]
+    [retired] = [w for w in warned if w.label == "control_share"]
+    assert "no longer used" in retired.message and "explore_share" in retired.message
     # A value that does not parse fails in both modes: leniency is about key names, never about values.
     _, row = _row(tabs, "General", key="weekly_enrol_cap")
     row["value"] = "abc"
@@ -297,27 +299,72 @@ def test_every_live_general_key_is_known_retired_or_renamed():
     assert unknown == []
 
 
+def _live_general() -> list[dict]:
+    """The live sheet's General tab: its 66 key names (the fixture) with the 12 changed values, every other value the
+    build's default; control_share, retired by W1-C and so not among the build's rows any more, at its live 0.15."""
+    build = {r["key"]: r["value"] for r in BASE["General"] if r.get("key")}
+    values = {**build, "control_share": "0.15", **LIVE_VALUES}
+    return [{"key": k, "value": values[k], "note": ""} for k in LIVE_KEYS]
+
+
 def test_the_live_general_rows_validate_with_no_errors(tabs):
     """The live sheet's General tab as it is (auto_send, second_contact and control_share included), strict and
-    lenient: no errors, no warnings, and the 12 changed values read as the sheet has them."""
-    by_key = {r["key"]: r for r in tabs["General"] if r.get("key")}
-    assert sorted(by_key) == sorted(LIVE_KEYS)
-    for key, value in LIVE_VALUES.items():
-        by_key[key]["value"] = value
+    lenient: no errors; one warning, control_share's (retired by W1-C: the row can be deleted); the 12 changed values
+    read as the sheet has them; and the three keys W1-C adds take their code defaults, today's behaviour, since the
+    sheet has no row for them: explore_share 0 (no random arm), hand_check_sample 10, early_warning_pause no."""
+    tabs["General"] = _live_general()
     for strict in (True, False):
         settings, errors = validate_all(tabs, strict=strict)
         assert _no_errors(errors) == {}
-        assert general_warnings(tabs["General"], strict=strict) == []
+        assert [w.label for w in general_warnings(tabs["General"], strict=strict)] == ["control_share"]
         g = settings.general
         assert (g.live_sending, g.auto_send, g.second_contact, g.max_employees, g.control_share) == (True, True, True,
                                                                                                     350, 0.15)
+        assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.0, 10, False)
+
+
+def test_the_live_general_rows_with_harry_s_new_values_validate(tabs):
+    """The W1-C acceptance: the live rows plus explore_share = 0.15 (Harry's D7) and hand_check_sample = 20 (his D5)
+    validate, strict and lenient, and read as typed; control_share is still the one warning."""
+    tabs["General"] = _live_general() + [{"key": "explore_share", "value": "0.15", "note": ""},
+                                         {"key": "hand_check_sample", "value": "20", "note": ""},
+                                         {"key": "early_warning_pause", "value": "yes", "note": ""}]
+    for strict in (True, False):
+        settings, errors = validate_all(tabs, strict=strict)
+        assert _no_errors(errors) == {}
+        assert [w.label for w in general_warnings(tabs["General"], strict=strict)] == ["control_share"]
+        g = settings.general
+        assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 20, True)
+
+
+@pytest.mark.parametrize("key, value, ok", [
+    # explore_share is a share from 0 to 0.25 (MAX_EXPLORE_SHARE), both ends allowed.
+    ("explore_share", "0", True), ("explore_share", "0.25", True), ("explore_share", "0.26", False),
+    ("explore_share", "-0.01", False), ("explore_share", "15%", False),
+    # hand_check_sample is a whole number of rows from 1 to 50.
+    ("hand_check_sample", "1", True), ("hand_check_sample", "50", True), ("hand_check_sample", "0", False),
+    ("hand_check_sample", "51", False), ("hand_check_sample", "12.5", False),
+    ("early_warning_pause", "yes", True), ("early_warning_pause", "maybe", False),
+])
+def test_the_contracts_commit_keys_hold_to_their_ranges(tabs, key, value, ok):
+    """The edges of W1-C's three new keys: a value outside them fails the row (strict or not: leniency is about key
+    names), so a typo can never put a quarter-plus of the day's sends outside the score order."""
+    _row(tabs, "General", key=key)[1]["value"] = value  # the build's row, as `settings load` puts it on the sheet
+    for strict in (True, False):
+        settings, errors = validate_all(tabs, strict=strict)
+        if ok:
+            assert _no_errors(errors) == {}, (key, value)
+        else:
+            [e] = errors["General"]
+            assert (e.label, e.column) == (key, "value"), (key, value, str(e))
 
 
 def test_general_types(tabs):
     for key, value, fragment in [
         ("weekly_enrol_cap", "thirty", "whole number"),
-        ("control_share", "15%", "number"),
-        ("control_share", "1.5", "between 0 and 1"),
+        ("explore_share", "15%", "number"),
+        ("explore_share", "0.5", "between 0 and 0.25"),
+        ("hand_check_sample", "100", "1 to 50"),
         ("live_sending", "maybe", "yes or no"),
         ("send_window", "Mon–Fri 09:00–16:00 America/Nowhere", "time zone"),
         ("send_window", "weekdays", "must look like"),

@@ -22,6 +22,16 @@ from us_outbound.clean.domains import canonical_domain, is_personal_domain, is_p
 from us_outbound.clean.names import clean_company_name
 from us_outbound.clients.db import Store, new_id
 
+# accounts.status, in the order an account moves through them (the W1-C contracts commit, 19 Oct 2026):
+#   new           admitted here, not checked yet
+#   queued        waiting to be checked again: held for the hand-check, or put back for the label check
+#   verified      passed verify_accounts: enrol may take it
+#   disqualified  left out, for good or until accounts.recheck_after; accounts.status_reason says which
+#   parked        out of the queue while a setting keeps it out (its industry switched off), back to new when the
+#                 setting changes (written once W1-4 lands; every reader of status names it on purpose)
+#   enrolled      its contact is in a sender's campaign
+#   engaged       someone there replied (replies/outcomes.mark_engaged)
+# SPEC 6 also lists demo_requested and demo_booked; nothing writes them, but readers still count them as emailed.
 NEW = "new"
 SITE_VISIT = "site_visit"  # accounts.source of a company that came in by visiting (sources/site_visits.py)
 US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})

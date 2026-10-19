@@ -16,7 +16,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.qualify import qualify
 
-from us_outbound.clients.db import COLUMNS, JSON_COLUMNS, TABLE_KEYS, TIMESTAMP_COLUMNS
+from us_outbound.clients.db import COLUMNS, DATE_COLUMNS, JSON_COLUMNS, TABLE_KEYS, TIMESTAMP_COLUMNS
 from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
 from us_outbound.ops import ddl
 from us_outbound.settings.model import SIZE_BANDS, TABS, TIERS
@@ -45,16 +45,24 @@ SPEC_COLUMNS: dict[str, set[str]] = {
     "suppression": {"email_sha256", "domain", "reason", "source", "added_at"},
     "settings": {"tab", "key", "values", "effective_from", "effective_to", "synced_at"},
 }
+# The W1-C contracts commit (19 Oct 2026): the columns several Wave 1 packages write, added once, before them.
+W1C_COLUMNS: dict[str, tuple[str, ...]] = {
+    "accounts": ("status_reason", "arm", "recheck_after"),
+    "contacts": ("arm", "sham_arm", "industry_at_enrol", "industry_group_at_enrol", "size_band_at_enrol", "copy_level",
+                 "email1_subject", "email_hashes"),
+}
 # Columns the build adds to SPEC 6 tables.
 BUILD_ADDITIONS: dict[str, set[str]] = {
     "accounts": {"hq_country",  # accounts.any_us_state (Harry, 6 Oct 2026)
-                 "label_source", "label_confidence", "label_checked_at"},  # the label check (labels.py, 7 Oct 2026)
+                 "label_source", "label_confidence", "label_checked_at",  # the label check (labels.py, 7 Oct 2026)
+                 *W1C_COLUMNS["accounts"]},
     "contacts": {"last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol", "score_at_enrol",
                  "tier_at_enrol", "data_record", "subject_arm",
                  "contact_slot",  # enrol/second.py (Harry, 6 Oct 2026)
                  "config_version", "code_sha", "copy_hash",  # the cohort stamp (Harry, 7 Oct 2026)
                  "lead_deleted_at",  # the retention job's Instantly deletion (SPEC 13; ops/retention.py)
-                 "test_arm"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
+                 "test_arm",  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
+                 *W1C_COLUMNS["contacts"]},
     "suppression": {"expires_at"},
     "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
 }
@@ -97,6 +105,7 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
+DATES = {"recheck_after"}  # a re-check falls due on a day (W1-C, 19 Oct 2026)
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
         "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight"}
 FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
@@ -129,6 +138,11 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     ("contacts", "opener_arm"): {"opener", "holdout", "none"},  # enrol/openers.py (Harry, 2 Oct 2026)
     ("contacts", "subject_arm"): {"personal", "copy"},  # render.subject_arm (Harry, 5 Oct 2026)
     ("contacts", "test_arm"): {"a", "b"},  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
+    # The W1-C contracts (19 Oct 2026): the explore arm, the A/A label and the copy level stamped at enrolment.
+    ("accounts", "arm"): {"random", "ranked"},
+    ("contacts", "arm"): {"random", "ranked"},
+    ("contacts", "sham_arm"): {"a", "b"},
+    ("contacts", "copy_level"): {"label", "group", "general"},
     ("events", "type"): {
         "sent", "bounced", "replied", "unsubscribed", "site_visit", "meeting_booked", "demo_held", "deal_created",
         "escalated", "send_approval",  # enrol/approvals/ (Harry, 2 Oct 2026)
@@ -162,6 +176,8 @@ def expected_type(table: str, column: str) -> str:
         return "JSONB"
     if column.endswith("_at") or column in TIMESTAMPS:
         return "TIMESTAMPTZ"
+    if column in DATES:
+        return "DATE"
     if column in INTS:
         return "INT"
     if column in FLOATS:
@@ -355,12 +371,31 @@ def test_json_columns_are_jsonb_and_only_they(tables):
 
 
 def test_memory_store_columns_match_the_ddl(tables):
-    """MemoryStore refuses a column not in COLUMNS and stores a TIMESTAMP_COLUMNS value as Postgres does (clients/db.py;
-    9 Oct 2026). No column is a date or a timestamp without a zone, which it would have to convert as well."""
+    """MemoryStore refuses a column not in COLUMNS and stores a TIMESTAMP_COLUMNS or DATE_COLUMNS value as Postgres
+    does (clients/db.py; 9 Oct 2026, dates 19 Oct 2026). No column is a timestamp without a zone, which it would have
+    to convert as well."""
     assert {name: set(t.columns) for name, t in tables.items()} == {name: set(c) for name, c in COLUMNS.items()}
     stamps = {name: {c for c in t.columns if t.type(c) == "TIMESTAMPTZ"} for name, t in tables.items()}
     assert {name: c for name, c in stamps.items() if c} == {name: set(c) for name, c in TIMESTAMP_COLUMNS.items()}
-    assert not [f"{t.name}.{c}" for t in tables.values() for c in t.columns if t.type(c) in {"DATE", "TIMESTAMP"}]
+    days = {name: {c for c in t.columns if t.type(c) == "DATE"} for name, t in tables.items()}
+    assert {name: c for name, c in days.items() if c} == {name: set(c) for name, c in DATE_COLUMNS.items()}
+    assert not [f"{t.name}.{c}" for t in tables.values() for c in t.columns if t.type(c) == "TIMESTAMP"]
+
+
+def test_the_contracts_commit_adds_exactly_eleven_columns():
+    """W1-C's acceptance: the `db apply` dry run lists exactly 11 ADD COLUMN IF NOT EXISTS for its columns (3 on
+    accounts + 8 on contacts = 11), one each, with no default (the statement form allows none), so no stored row
+    moves; test_an_added_column_is_also_in_its_create_table holds each to its CREATE TABLE."""
+    want = {("accounts", "status_reason"): "text", ("accounts", "arm"): "text", ("accounts", "recheck_after"): "date",
+            ("contacts", "arm"): "text", ("contacts", "sham_arm"): "text", ("contacts", "industry_at_enrol"): "text",
+            ("contacts", "industry_group_at_enrol"): "text", ("contacts", "size_band_at_enrol"): "text",
+            ("contacts", "copy_level"): "text", ("contacts", "email1_subject"): "text",
+            ("contacts", "email_hashes"): "jsonb"}
+    assert len(want) == 11 and set(want) == {(t, c) for t, cols in W1C_COLUMNS.items() for c in cols}
+    add = re.compile(r"ALTER TABLE us_outbound\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)$")
+    found = [m.groups() for s in ddl.apply(Guard(), "", connect=no_connection) if (m := add.search(s.strip()))]
+    ours = [((t, c), kind) for t, c, kind in found if (t, c) in want]
+    assert len(ours) == 11 and dict(ours) == want
 
 
 def test_column_types(tables):

@@ -4,12 +4,13 @@ Jobs talk to a Store. PostgresStore is the real one; MemoryStore backs the tests
 local dry-runs. Both take and return plain dicts of Python values: JSON columns (jsonb)
 take and return Python objects, and timestamps come back as aware UTC datetimes, so no
 job ever handles JSON text or a naive time. The tables are created by ops/ddl.py from
-sql/ddl; TABLE_KEYS, JSON_COLUMNS, TIMESTAMP_COLUMNS and COLUMNS here are what that DDL
+sql/ddl; TABLE_KEYS, JSON_COLUMNS, TIMESTAMP_COLUMNS, DATE_COLUMNS and COLUMNS here are what that DDL
 must match (tests/test_sql.py).
 
 MemoryStore stores a timestamp as Postgres does (9 Oct 2026): ISO text, a naive datetime
 (UTC) and a date (UTC midnight) become an aware UTC datetime, and text that is no time
-raises, as Postgres refuses it. It refuses a column the table does not have, in a row or
+raises, as Postgres refuses it. A date column (DATE_COLUMNS) likewise keeps a date: an aware
+datetime is taken on its UTC day, as the store's UTC session casts it, and text by its date. It refuses a column the table does not have, in a row or
 a where. So a test cannot pass on a value or a filter that production would never see.
 """
 
@@ -22,7 +23,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from itertools import groupby
 from typing import Any
 
@@ -72,13 +73,14 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "raw_site_visits": frozenset({"payload"}),
     "raw_layoffs": frozenset({"payload"}),
     "events": frozenset({"language_terms"}),
-    "contacts": frozenset({"signals_at_enrol", "data_record"}),  # enrol._record_enrolled (5 Oct 2026)
+    "contacts": frozenset({"signals_at_enrol", "data_record",  # enrol._record_enrolled (5 Oct 2026)
+                           "email_hashes"}),  # each step's rendered body, hashed (the W1-C contracts, 19 Oct 2026)
     "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general",  # 7 Oct 2026
                                   "copy_test"}),  # the running copy test (config_version.copy_test; 7 Oct 2026)
     "config_log": frozenset({"changed_keys", "detail"}),
 }
 
-# Columns stored as timestamptz (sql/ddl has no date column).
+# Columns stored as timestamptz (the date columns are DATE_COLUMNS).
 TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
     "accounts": frozenset({"label_checked_at", "clay_checked_at", "first_seen", "last_scored"}),
     "contacts": frozenset({"created_at", "last_step_at", "enrolled_at", "lead_deleted_at"}),
@@ -103,6 +105,11 @@ TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
     "config_log": frozenset({"changed_at"}),
 }
 
+# Columns stored as date (the W1-C contracts commit, 19 Oct 2026): a re-check falls due on a day, not at an instant.
+DATE_COLUMNS: dict[str, frozenset[str]] = {
+    "accounts": frozenset({"recheck_after"}),
+}
+
 # Every table's columns: MemoryStore refuses any other, in a row or a where, as Postgres does.
 RAW_COLUMNS = frozenset({"loaded_at", "run_id", "key", "payload"})
 COLUMNS: dict[str, frozenset[str]] = {
@@ -110,14 +117,16 @@ COLUMNS: dict[str, frozenset[str]] = {
         "account_id", "domain", "clean_name", "legal_name", "apollo_org_id", "hq_city", "hq_state", "hq_country",
         "industry", "industry_group", "label_source", "label_confidence", "label_checked_at", "naics", "employees",
         "us_employees", "size_band", "founded_year", "source", "score", "tier", "tier_reason", "angle", "sender",
-        "status", "clay_checked_at", "clay_credits_used", "hubspot_company_id", "first_seen", "last_scored"}),
+        "status", "clay_checked_at", "clay_credits_used", "hubspot_company_id", "first_seen", "last_scored",
+        "status_reason", "arm", "recheck_after"}),
     "contacts": frozenset({
         "contact_id", "account_id", "role", "title", "first_name", "last_name", "email", "email_sha256", "email_status",
         "email_source", "person_state", "enrolment_month", "angle", "copy_version", "test_id", "mailbox",
         "instantly_campaign", "instantly_lead_id", "hubspot_contact_id", "suppressed", "suppressed_reason",
         "created_at", "last_step_at", "enrolled_at", "opener_arm", "opener_source", "signals_at_enrol",
         "score_at_enrol", "tier_at_enrol", "data_record", "subject_arm", "contact_slot", "config_version", "code_sha",
-        "copy_hash", "lead_deleted_at", "test_arm"}),
+        "copy_hash", "lead_deleted_at", "test_arm", "arm", "sham_arm", "industry_at_enrol", "industry_group_at_enrol",
+        "size_band_at_enrol", "copy_level", "email1_subject", "email_hashes"}),
     "signal_events": frozenset({
         "event_id", "account_id", "source", "fact", "value", "quote", "source_url", "observed_at"}),
     "events": frozenset({
@@ -277,6 +286,21 @@ def _timestamp(v: Any) -> Any:
     return None if v is None else utc_strict(v).astimezone(UTC)
 
 
+def _date(v: Any) -> Any:
+    """A date value as Postgres stores and returns it: None, or a date. An aware datetime is taken on its UTC day (the
+    store's session time zone is UTC), a naive one on its own day, and text by its leading YYYY-MM-DD; any other text,
+    blank included, raises, as Postgres refuses it for a date."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return (v.astimezone(UTC) if v.tzinfo else v).date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str):
+        return date.fromisoformat(v.strip()[:10])  # ValueError on blank or no date, as Postgres refuses it
+    raise TypeError(f"not a date: {v!r}")
+
+
 def _known(table: str, cols: Iterable[str]) -> None:
     """Refuse a column the table does not have, as Postgres does (an unknown table is the guard's to refuse)."""
     have = COLUMNS.get(table)
@@ -287,8 +311,9 @@ def _known(table: str, cols: Iterable[str]) -> None:
 def _stored(table: str, row: Mapping[str, Any]) -> dict:
     """A copy of row as Postgres would store it: its columns checked, its timestamptz columns converted."""
     _known(table, row)
-    times = TIMESTAMP_COLUMNS.get(table, frozenset())
-    return {c: _timestamp(v) if c in times else v for c, v in copy.deepcopy(dict(row)).items()}
+    times, days = TIMESTAMP_COLUMNS.get(table, frozenset()), DATE_COLUMNS.get(table, frozenset())
+    return {c: _timestamp(v) if c in times else _date(v) if c in days else v
+            for c, v in copy.deepcopy(dict(row)).items()}
 
 
 class MemoryStore(Store):
@@ -303,14 +328,15 @@ class MemoryStore(Store):
         """where with its columns checked against the table and a timestamptz column's values stored as Postgres
         compares them."""
         _known(table, where or {})
-        times = TIMESTAMP_COLUMNS.get(table, frozenset())
+        times, days = TIMESTAMP_COLUMNS.get(table, frozenset()), DATE_COLUMNS.get(table, frozenset())
         out: Where = {}
         for col, want in (where or {}).items():
-            if col in times and isinstance(want, Range):
-                want = Range(_timestamp(want.lo), _timestamp(want.hi))  # an open end stays open
-            elif col in times and not callable(want):
+            as_stored = _timestamp if col in times else _date if col in days else None
+            if as_stored is not None and isinstance(want, Range):
+                want = Range(as_stored(want.lo), as_stored(want.hi))  # an open end stays open
+            elif as_stored is not None and not callable(want):
                 many = isinstance(want, (list, tuple, set, frozenset))
-                want = [_timestamp(v) for v in want] if many else _timestamp(want)
+                want = [as_stored(v) for v in want] if many else as_stored(want)
             out[col] = want
         return out
 

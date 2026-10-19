@@ -436,6 +436,7 @@ SAMPLES = {
     "double precision": lambda col: 1.5,
     "boolean": lambda col: True,
     "timestamp with time zone": lambda col: T0,
+    "date": lambda col: date(2026, 11, 18),
     "jsonb": lambda col: {"column": col, "list": [1, "two", None], "ok": True, "n": 1.25},
 }
 
@@ -639,6 +640,42 @@ def test_memory_store_stores_timestamps_as_postgres_does(store):
             call(store)
         with pytest.raises(ValueError, match="heartbeats has no column 'started'"):
             call(memory)
+
+
+# Each way a job might write a date column (accounts.recheck_after, the W1-C contracts, 19 Oct 2026), and the date
+# Postgres gives back in the store's UTC session (MemoryStore must give back the same).
+DAYS = {
+    "day": (date(2026, 11, 18), date(2026, 11, 18)),
+    "text": ("2026-11-18", date(2026, 11, 18)),
+    "utc_late": (datetime(2026, 11, 18, 23, 30, tzinfo=UTC), date(2026, 11, 18)),
+    # 20:00 in New York on 18 Nov (EST, UTC-5) is 01:00 UTC on the 19th: the UTC session's day is the 19th.
+    "new_york_evening": (datetime(2026, 11, 18, 20, 0, tzinfo=ZoneInfo("America/New_York")), date(2026, 11, 19)),
+    "naive": (datetime(2026, 11, 18, 23, 0), date(2026, 11, 18)),  # a naive time keeps its own day
+    "none": (None, None),
+}
+
+
+def _dated(s) -> dict:
+    s.insert("accounts", [{"account_id": a, "recheck_after": given} for a, (given, _) in DAYS.items()])
+    return {r["account_id"]: r["recheck_after"] for r in s.select("accounts")}
+
+
+def test_memory_store_stores_dates_as_postgres_does(store):
+    """A date column comes back a date from both stores, whichever way it was written, and a where on it compares
+    days: lo <= day < hi, so Range(None, 19 Nov) holds the four written for the 18th and not the 19th or NULL."""
+    from us_outbound.clients.db import Range
+
+    memory = MemoryStore(Guard())
+    assert _dated(memory) == _dated(store) == {a: back for a, (_, back) in DAYS.items()}
+    for s in (store, memory):
+        due = s.select("accounts", {"recheck_after": Range(None, date(2026, 11, 19))})
+        assert sorted(r["account_id"] for r in due) == ["day", "naive", "text", "utc_late"]
+        assert [r["account_id"] for r in s.select("accounts", {"recheck_after": "2026-11-19"})] == ["new_york_evening"]
+    for bad in ("soon", ""):
+        with pytest.raises(psycopg.errors.DataError):
+            store.insert("accounts", [{"account_id": "bad", "recheck_after": bad}])
+        with pytest.raises(ValueError):
+            memory.insert("accounts", [{"account_id": "bad", "recheck_after": bad}])
 
 
 def test_query_binds_params(store):
@@ -927,6 +964,13 @@ def test_memory_store_converts_timestamps_and_refuses_unknown_columns_without_a_
         s.upsert("accounts", [{"account_id": "a1", "x": 1, "Tier": "Held"}])
     with pytest.raises(GuardViolation, match="unknown table"):  # the guard's refusal comes first
         s.insert("hubspot_contacts", [{"id": "x"}])
+    # A date column (accounts.recheck_after) keeps a date: text by its date, an aware time on its UTC day.
+    s.upsert("accounts", [{"account_id": "a2", "recheck_after": "2026-11-18"},
+                          {"account_id": "a3", "recheck_after": datetime(2026, 11, 18, 20, tzinfo=ZoneInfo("America/New_York"))}])
+    assert (s.get("accounts", account_id="a2")["recheck_after"], s.get("accounts", account_id="a3")["recheck_after"]) == (
+        date(2026, 11, 18), date(2026, 11, 19))
+    with pytest.raises(ValueError):
+        s.update("accounts", {"account_id": "a2"}, {"recheck_after": "next month"})
 
 
 def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
