@@ -103,7 +103,12 @@ def test_with_no_active_mailbox_it_says_so():
             "weekly target (`weekly_enrol_cap`) is 150, and 300 companies are ready.\n") in text
 
 
-def test_the_monday_daily_post_runs_the_check():
+def test_the_monday_readout_runs_the_check_and_the_daily_post_does_not():
+    """From 19 Oct 2026 the daily post runs Tuesday to Saturday, so the Monday readout (08:30) makes the ask."""
+    from us_outbound.learn import readout
+
     ctx, _ = post_world(now=MON_9)
-    out = daily_post.run(ctx)
+    out = readout.run(ctx)
     assert out["mailboxes_ahead"]["checked"] is True and out["mailboxes_ahead"]["add"] == 0
+    assert out["mailboxes_ahead"]["ready"] == 0  # enrol/today.py's count, as the daily post took it
+    assert "mailboxes_ahead" not in daily_post.run(ctx)  # by hand on a Monday: the readout's ask, not the post's

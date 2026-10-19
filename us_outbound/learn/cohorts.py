@@ -24,8 +24,9 @@ starting, stopping or changing: Harry, 7 Oct 2026) and the settings
 table's history (the content tabs' rows then in force), and the campaign changes made under leads in flight
 between them (config_log).
 
-Insights (insights): consecutive cohorts compared at the latest age both have reached, with signal_review's
-two-proportion test, only from MIN_COMPANIES (30) companies a side: "W42 replies less than W41 at 14 days (2.9%
+Insights (insights): consecutive cohorts compared at the latest age both have 30 companies at (common_age, since 19
+Oct 2026; metrics-audit M1), with signal_review's two-proportion test, only from MIN_COMPANIES (30) companies a
+side: "W42 replies less than W41 at 14 days (2.9%
 vs 6.2%, p = 0.07)" and then what changed between them, "a coincidence to test, not a cause"; two versions inside
 one week, likewise; and a reply rate that has risen or fallen three cohorts running. Nothing re-weights or decides:
 a line points at a change worth a pre-registered test on the Tests tab.
@@ -466,7 +467,14 @@ def week_changes(ctx: Context, start: datetime, end: datetime) -> list[str]:
 
 
 def common_age(a: Cohort, b: Cohort) -> int | None:
-    """The latest age both cohorts have companies at."""
+    """The latest age at which both cohorts have MIN_COMPANIES companies, or None. Not the latest age both have any
+    company at (metrics-audit M1): a week's companies reach 14 days on different days, so on a Monday the newer week
+    has a handful at 14 days, and comparing there hid a clear difference at 7 days (8 of 40 against 0 of 40)."""
+    return max((x for x in AGES if min(a.ages[x].matured, b.ages[x].matured) >= MIN_COMPANIES), default=None)
+
+
+def _latest_shared_age(a: Cohort, b: Cohort) -> int | None:
+    """The latest age both cohorts have any company at: where "too few to read" is said when no age has enough."""
     return max((x for x in AGES if a.ages[x].matured and b.ages[x].matured), default=None)
 
 
@@ -483,17 +491,20 @@ def _compare(what: str, verb: str, label_a: str, label_b: str, age: int, a: tupl
 
 
 def compare(ctx: Context, older: Cohort, newer: Cohort, label_a: str = "", label_b: str = "") -> list[str]:
-    """newer against older at the latest age both have reached: replies, then positive replies and bounces when
-    they differ; and what changed between them when something does. Nothing until both have 30 companies."""
+    """newer against older at the latest age both have 30 companies at (common_age): replies, then positive replies
+    and bounces when they differ; and what changed between them when something does. "Too few to read" at the latest
+    age both have reached while no age has 30 a side."""
     label_a, label_b = label_a or older.label, label_b or newer.label
     age = common_age(older, newer)
     if age is None:
-        return []
-    a, b = older.ages[age], newer.ages[age]
-    if min(a.matured, b.matured) < MIN_COMPANIES:
+        shared = _latest_shared_age(older, newer)
+        if shared is None:
+            return []
+        a, b = older.ages[shared], newer.ages[shared]
         label, small = (label_b, b) if b.matured < MIN_COMPANIES else (label_a, a)
-        return [f"Too few to read: {label} has {fmt.plural(small.matured, 'company', 'companies')} at {age} days "
+        return [f"Too few to read: {label} has {fmt.plural(small.matured, 'company', 'companies')} at {shared} days "
                 f"({MIN_COMPANIES} needed on each side to compare {label_b} with {label_a})."]
+    a, b = older.ages[age], newer.ages[age]
     out = [_compare("replies", "replies", label_a, label_b, age, (a.replied, a.matured), (b.replied, b.matured), True)]
     out.append(_compare("positive replies", "has positive replies", label_a, label_b, age,
                         (a.positive, a.matured), (b.positive, b.matured), False))
@@ -537,8 +548,7 @@ def within_week(ctx: Context, weeks: Iterable[str], found: Sequence[Company] | N
     for week in weeks:
         parts = sorted(by_week.get(week, ()), key=lambda c: first_seen.get(c.value, len(first_seen)))
         for older, newer in zip(parts, parts[1:]):
-            age = common_age(older, newer)
-            if age is None or min(older.ages[age].matured, newer.ages[age].matured) < MIN_COMPANIES:
+            if common_age(older, newer) is None:  # no age with 30 companies a side
                 continue
             out += compare(ctx, older, newer, f"{short_week(week)} version {older.value}",
                            f"{short_week(week)} version {newer.value}")

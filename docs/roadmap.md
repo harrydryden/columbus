@@ -167,7 +167,8 @@ verification and contact choice write only the database; enrol, replies and post
   positive replies answered the same day.
 - **Exit criteria to scale** (end of week 1; the Monday readout says "Met" or "Not met" for each, with its
   numbers, from 12 Oct):
-  - bounce rate under 2% and no complaints;
+  - bounces under 2% of the contacts sent email 1, judged from 100 contacts (per contact since 19 Oct 2026: per
+    send, follow-ups diluted it about 4x); complaints are "not measured" and not counted until a feed reports them;
   - unsubscribes confirmed end to end;
   - every reply classified and routed;
   - no copy-rule or guard refusal left unexplained.

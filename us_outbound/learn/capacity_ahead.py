@@ -2,7 +2,8 @@
 
 A new mailbox warms for about 21 days before it may send (registry/mailboxes.py promotes it then), so limits.py's
 same-day line ("Add a mailbox for ...", when sending capacity is already today's limit) comes about three weeks
-late. That line stays; this one looks ahead. On Mondays the daily post (learn/daily_post.py) compares:
+late. That line stays; this one looks ahead. On Mondays the Monday readout (learn/readout.py, 08:30; the daily post
+until 19 Oct 2026, when it moved to Tuesday to Saturday) compares:
   * capacity at full ramp: each Active mailbox's daily cap once its sending ramp is over (ramp.Ramp.full_cap), each
     sender's steady pace of new companies a day (capacity.steady_pace: the cap ÷ the 4 emails each new company
     receives), and the send days in a week (the send window's weekdays): X new companies a week;
@@ -128,7 +129,7 @@ def check(ctx: Context, ready: int) -> dict[str, Any]:
             out["alert"] = notify.post_once(ctx, [(notify.once_key(ctx, "mailboxes", per="week"), line(a))], head=HEAD)
     except GuardViolation:
         raise
-    except Exception as exc:  # the daily post still goes
+    except Exception as exc:  # the post it runs before still goes
         log("capacity_ahead_failed", error=str(exc)[:200])
         return {"checked": False, "capacity_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     log("capacity_ahead", **out)

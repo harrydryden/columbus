@@ -1,7 +1,8 @@
 """Credit and spend alerts (Harry, 7 Oct 2026): ask for a purchase or a raise before a balance or a budget runs out.
 
-The daily post (learn/daily_post.py, 09:00 UK) runs this first, so the asks reach the alert channel just before
-the post, in one message with the approvers mentioned (base/notify.post_once keeps what was sent in events, so a
+The daily post (learn/daily_post.py, 09:00 UK Tuesday to Saturday) runs this first, and on Mondays the Monday readout
+(learn/readout.py, 08:30), since there is no Monday post from 19 Oct 2026; so the asks reach the alert channel just
+before the post, in one message with the approvers mentioned (base/notify.post_once keeps what was sent in events, so a
 rerun or a restart never repeats a line):
   * Apollo's own balance (credit_usage: lead credits) against General apollo_floor. Below the floor every source
     and pick_contacts' email reveals stop spending (sources/apollo_credits.floor_reason), and a source's skip for

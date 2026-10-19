@@ -235,7 +235,24 @@ def test_the_daily_post_asks_first_and_carries_the_spend_line():
     assert ("\nSpend: Apollo 4,000 credits left, below the 5,000 reserve: finding companies and emails has stopped · "
             "Claude $2.50 of $10 this month (25%) · website-visitor credits 1,150 of 1,200 left\n") in post
     assert out["spend_alert"]["keys"] == ["apollo_floor:2026-10-27"] and out["spend"]["apollo_left"] == 4_000
-    assert out["mailboxes_ahead"] == {"checked": False}  # a Tuesday
+    assert "mailboxes_ahead" not in out  # a Monday ask, made by the Monday readout
+
+
+def test_the_monday_readout_makes_monday_s_asks_first():
+    """There is no Monday daily post from 19 Oct 2026 (it runs Tuesday to Saturday), so the Monday readout makes
+    Monday's asks before its own post: the credit and spend asks, keyed by Monday's date, and the mailboxes ahead."""
+    from us_outbound.learn import readout
+
+    ctx, t = post_world(now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))  # Mon 26 Oct 07:30 UK (GMT)
+    t.route("POST", "/usage_stats/credit_usage_stats", body=usage(4_000, 1_150))
+    out = readout.run(ctx)
+    ask, post = posts(t)
+    assert ask.startswith("<@U_HARRY> :rotating_light: *Credits and settings") and UNDER_FLOOR in ask
+    assert post.startswith(":warning: *Monday readout, 19–25 Oct")
+    assert out["spend_alert"]["keys"] == ["apollo_floor:2026-10-26"]
+    assert out["mailboxes_ahead"]["checked"] is True and out["mailboxes_ahead"]["add"] == 0
+    readout.run(ctx)  # a rerun asks nothing twice (base/notify.post_once)
+    assert len(posts(t)) == 3 and posts(t)[2].startswith(":warning: *Monday readout")
 
 
 def test_the_spend_line_with_the_balance_unknown_or_far_from_the_floor():

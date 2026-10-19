@@ -130,7 +130,7 @@ Instantly first), `mailbox pause <address> --live`, `mailbox retire <address> --
 Scheduled in phase 0 (UK time): settings_sync 02:00 (and 11:30 on weekdays since 4 Oct, so morning
 sheet edits are in force for the 12:00 enrol), suppression_load 01:30, mailbox_health
 07:00, heartbeat_check hourly at :05; and, brought forward for the first sends (Harry, 1 Oct
-2026), kill_rules hourly at :00, daily_post 09:00 and hand_check_post Mondays 08:00. Later-phase
+2026), kill_rules hourly at :00, daily_post 09:00 (Tuesday to Saturday since 19 Oct 2026) and hand_check_post Mondays 08:00. Later-phase
 jobs have `enabled=False` in `us_outbound/ops/schedule.py` until their phase; turning one on is a
 reviewed code change.
 

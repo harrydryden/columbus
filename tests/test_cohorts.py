@@ -359,6 +359,23 @@ def test_no_clear_difference_and_too_few_are_said_as_such():
         "Too few to read: W41 has 29 companies at 28 days (30 needed on each side to compare W41 with W40)."]
 
 
+def test_a_week_enrolled_across_days_is_compared_at_the_age_both_have_30_at():
+    """metrics-audit M1: a week's companies reach 14 days on different days, so on a Monday the newer week has a
+    handful at 14 days. At NOW (Mon 9 Nov 12:00): W43, 40 enrolled Mon 19 Oct, has 40 at 7 and at 14 days; W44 has 3
+    enrolled Mon 26 Oct 11:00 (14 days 1 hour) and 37 on Thu 29 Oct (10 days), so 40 at 7 days and 3 at 14.
+    Compared at 14 days it read "too few"; at 7 days, the latest age with 30 a side, 8 of 40 against 0 of 40:
+    pooled p = 8/80 = 0.1, se = √(0.1 × 0.9 × 2/40) = 0.0671, z = 0.2/0.0671 = 2.98, p = 0.003."""
+    w = World()
+    for i in range(40):
+        w.company(datetime(2026, 10, 19, 15, tzinfo=UTC), reply_day=2 if i < 8 else None, cls="objection")
+    for i in range(40):
+        w.company(datetime(2026, 10, 26, 11, tzinfo=UTC) if i < 3 else datetime(2026, 10, 29, 15, tzinfo=UTC))
+    w43, w44 = cohorts.rows(w.ctx)
+    assert (w43.ages[7].matured, w43.ages[14].matured, w44.ages[7].matured, w44.ages[14].matured) == (40, 40, 40, 3)
+    assert cohorts.common_age(w43, w44) == 7
+    assert cohorts.insights(w.ctx, [w43, w44])[0] == "W44 replies less than W43 at 7 days (0.0% vs 20.0%, p = 0.00)."
+
+
 def test_unstamped_cohorts_never_break_a_comparison():
     w = World()
     w.version("v2", datetime(2026, 10, 5, 11, tzinfo=UTC))

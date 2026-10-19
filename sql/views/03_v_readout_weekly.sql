@@ -16,8 +16,10 @@
 --     accounts_meeting (a meeting booked any time after step 1), accounts_window_closed (its 28 days
 --     are over) and the rates; replies count within 28 days of step 1, so a week's rates settle four
 --     weeks after it starts.
---   Activity columns, by the week the event happened: sends, bounces, replies (human: every class
---     but out_of_office, unclassified included), positive_replies (positive or referral),
+--   Activity columns, by the week the event happened: sends, bounces, replies (companies with a human
+--     reply that week: every class but out_of_office, unclassified included), positive_replies
+--     (companies with a positive or referral reply that week; both by company since 19 Oct 2026,
+--     metrics-audit H3, as one prospect writing three times was three replies),
 --     meetings_booked (companies with a meeting_booked event that week, so a meeting and a deal for
 --     one booking count once), unsubscribes, complaints (events type complained, learn/kill_rules.py),
 --     and site_visit events, split by whether they came before the account's first email (or it has
@@ -72,10 +74,10 @@ activity AS (
     h.cut_value,
     count(DISTINCT h.event_id) FILTER (WHERE h.type = 'sent') AS sends,
     count(DISTINCT h.event_id) FILTER (WHERE h.type = 'bounced') AS bounces,
-    count(DISTINCT h.event_id) FILTER (
+    count(DISTINCT h.account_id) FILTER (
       WHERE h.type = 'replied' AND COALESCE(h.reply_class, '') <> 'out_of_office'
     ) AS replies,
-    count(DISTINCT h.event_id) FILTER (
+    count(DISTINCT h.account_id) FILTER (
       WHERE h.type = 'replied' AND h.reply_class IN ('positive', 'referral')
     ) AS positive_replies,
     count(DISTINCT h.account_id) FILTER (WHERE h.type = 'meeting_booked') AS meetings_booked,

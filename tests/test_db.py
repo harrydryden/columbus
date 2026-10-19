@@ -428,6 +428,29 @@ def test_the_learning_loop_views(store):
     assert sum(r["accounts_enrolled"] for r in priority) == 35 and sum(r["accounts_replied"] for r in priority) == 10
 
 
+def test_v_readout_weekly_counts_replies_by_company(store):
+    """metrics-audit H3: one interested prospect writing three times in a week was three replies and three positive
+    replies. The week's replies and positive replies are companies (count DISTINCT account_id); a second company's
+    objection and an away message make 2 replies, 1 positive."""
+    sent_at = datetime(2026, 10, 6, 12, tzinfo=UTC)  # a Tuesday: every event below is in the week of Mon 5 Oct
+    store.insert("accounts", [account("p1", status="enrolled"), account("p2", status="enrolled")])
+    store.insert("contacts", [{"contact_id": f"k{a}", "account_id": a, "email_sha256": f"h{a}"} for a in ("p1", "p2")])
+    events = [{"event_id": f"s-{a}", "contact_id": f"k{a}", "account_id": a, "type": "sent", "step": 1,
+               "mailbox": "hannah@meetspill.org", "occurred_at": sent_at} for a in ("p1", "p2")]
+    events += [{"event_id": f"r-p1-{i}", "contact_id": "kp1", "account_id": "p1", "type": "replied", "step": 1,
+                "reply_class": "positive", "occurred_at": sent_at + timedelta(minutes=10 + i)} for i in range(3)]
+    events += [{"event_id": "r-p2", "contact_id": "kp2", "account_id": "p2", "type": "replied", "step": 1,
+                "reply_class": "objection", "occurred_at": sent_at + timedelta(minutes=20)},
+               {"event_id": "r-p2-ooo", "contact_id": "kp2", "account_id": "p2", "type": "replied", "step": 1,
+                "reply_class": "out_of_office", "occurred_at": sent_at + timedelta(minutes=21)}]
+    store.insert("events", events)
+    [row] = store.query(f"SELECT * FROM {SCHEMA}.v_readout_weekly WHERE cut = 'all'")
+    assert (row["week_start"], row["sends"]) == (date(2026, 10, 5), 2)
+    assert (row["replies"], row["positive_replies"]) == (2, 1)
+    step = store.query(f"SELECT * FROM {SCHEMA}.v_readout_weekly WHERE cut = 'step'")
+    assert sum(r["replies"] for r in step) == 2
+
+
 # -- PostgresStore round trips -------------------------------------------------------------
 
 SAMPLES = {

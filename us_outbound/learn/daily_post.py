@@ -1,4 +1,14 @@
-"""daily_post, 09:00 UK (SPEC 9, 11 "Daily post"): one message on yesterday's outbound and what waits for Harry.
+"""daily_post, 09:00 UK Tuesday to Saturday (SPEC 9, 11 "Daily post"): one message on yesterday's outbound and what
+waits for Harry.
+
+Since 19 Oct 2026 (the metrics review: metrics-audit L1 and H3) it runs Tuesday to Saturday and each post covers the
+day before only, the previous US send day: Saturday's covers Friday and Tuesday's covers Monday, so Friday's numbers
+are no longer posted three times over a weekend and no day is in two posts. Weekend replies are in the Monday
+readout's last week. Replies and positive replies are counted by company (distinct accounts with a human, or a
+positive or referral, reply in the period), as every company-level rate counts them; the emails themselves are kept
+as reply_emails. Monday's asks (the credit and spend asks, and the mailboxes to add three weeks ahead) are made by
+the Monday readout (learn/readout.py, Mondays 08:30) since there is no Monday post, so an ask that comes due on a
+Sunday is made on Monday, a day later than before.
 
 Since 9 Oct 2026 (Harry: "a more readable pithier version of the daily report") the job posts the short post
 (compact). Since 12 Oct 2026 (Harry: clear to anyone, even new to the system) its first line says whether anything
@@ -11,9 +21,8 @@ numbers in the heartbeat are the same either way. What follows describes the ful
 
 Harry, 2 Oct 2026: "the number of emails sent, the number of companies and contacts identified, the
 pipeline of companies to send to, the [un]subscribes, the replies, and anything else important to
-surface to make the system better over time". It covers the last send day (Mondays cover Friday to
-Sunday, so weekend replies are not lost), and reads top to bottom:
-  * the headline: sent, replies (positive or referral among them), unsubscribes, companies and
+surface to make the system better over time". It covers the day before, and reads top to bottom:
+  * the headline: sent, companies that replied (positive or referral among them), unsubscribes, companies and
     contacts found, and accounts ready to send, on one line;
   * Needs you (4 Oct 2026), right under it: the send approvals waiting for a ✅ (the oldest's age,
     and that a card lapses at the end of the next send day), the reply items waiting (the oldest's
@@ -60,24 +69,24 @@ It posts to the alert channel (the dev channel in dry-run), or to the log with n
 Before it, the asks (Harry, 7 Oct 2026), each in its own message with the approvers mentioned and each
 line once (base/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
 apollo_floor, the monthly Apollo and Clay budgets, Claude's spend against its cap, Apollo's website-visitor
-credits), and on Mondays the mailboxes to add three weeks ahead (learn/capacity_ahead.py). The credit
-budget lines end with the one-line spend summary (spend.summary_line).
+credits). The mailboxes to add three weeks ahead (learn/capacity_ahead.py) are a Monday ask, so the Monday
+readout makes it. The credit budget lines end with the one-line spend summary (spend.summary_line).
 """
 
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, fmt, labels, limits
+from us_outbound import fmt, labels, limits
 from us_outbound.base import holds, notify, say
 from us_outbound.clients.db import Range
 from us_outbound.context import UK, Context
 from us_outbound.enrol import approvals, enrol, focus, second, today
-from us_outbound.learn import capacity_ahead, daily_report, kill_rules, spend
+from us_outbound.learn import daily_report, kill_rules, spend
 from us_outbound.logs import clip, log
 from us_outbound.ops import retention
 from us_outbound.registry import ramp
@@ -100,15 +109,27 @@ MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {sch
 
 
 def period(ctx: Context) -> tuple[datetime, datetime, str]:
-    """[start, end) and its label: the last send day before today (UK), through yesterday."""
+    """[start, end) and its label: yesterday (UK), and nothing before it. The job runs Tuesday to Saturday
+    (ops/schedule.py), so yesterday is the previous US send day. A post never reaches back over a weekend, so no day
+    is in two posts (metrics-audit L1: Friday's numbers went out on Saturday, Sunday and Monday)."""
     today = ctx.today_uk()
     day = today - timedelta(days=1)
-    for _ in range(6):
-        if budget.is_send_day(day, ctx.settings):
-            break
-        day -= timedelta(days=1)
-    label = f"Yesterday, {day:%a %d %b}" if day == today - timedelta(days=1) else f"Since {day:%a %d %b}"
-    return uk_midnight(day), uk_midnight(today), label
+    return uk_midnight(day), uk_midnight(today), f"Yesterday, {day:%a %d %b}"
+
+
+def _company(e: Mapping[str, Any]) -> str:
+    """The company an event belongs to; an event with no account counts by itself."""
+    return str(e.get("account_id") or f"event:{e.get('event_id')}")
+
+
+def by_company(events: Iterable[Mapping[str, Any]]) -> list[dict]:
+    """Each company's first event among these: a company that writes three times is one company (metrics-audit
+    H3: sync_outcomes writes one replied event per email received, from the contact or anyone at the domain)."""
+    first: dict[str, dict] = {}
+    for e in sorted(events, key=lambda e: (utc(e.get("occurred_at")) or datetime.min.replace(tzinfo=UK),
+                                           str(e.get("event_id")))):
+        first.setdefault(_company(e), dict(e))
+    return list(first.values())
 
 
 def mailbox_last_100(ctx: Context) -> dict[str, tuple[int, int]]:
@@ -241,23 +262,31 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
 
     steps = Counter(e.get("step") for e in sent)
     # A reply is a person writing back (replies/kinds.py), as the readout counts it; away messages are listed apart.
-    human = [e for e in replies if kinds.is_human(e.get("reply_class"))]
-    classes = Counter(str(e.get("reply_class") or "not classified") for e in human)
-    warm = [e for e in replies if kinds.is_warm(e.get("reply_class"))]
+    # Replies, positive replies and away messages count by company (by_company); reply_emails keeps the emails.
+    human_emails = [e for e in replies if kinds.is_human(e.get("reply_class"))]
+    human = by_company(human_emails)
+    seen: dict[str, set[str]] = {}
+    for e in human_emails:
+        seen.setdefault(_company(e), set()).add(str(e.get("reply_class") or "not classified"))
+    classes = Counter(c for found in seen.values() for c in found)  # companies per class
+    warm = by_company(e for e in replies if kinds.is_warm(e.get("reply_class")))
+    away = by_company(e for e in replies if not kinds.is_human(e.get("reply_class")))
     nums = {
         "period": label, "sent": len(sent), "by_step": {str(k): v for k, v in steps.items()}, "replies": len(human),
-        "out_of_office": len(replies) - len(human),
+        "reply_emails": len(human_emails), "out_of_office": len(away),
         "by_class": dict(classes), "positive": len(warm), "bounced": len(by_type.get("bounced", [])),
         "unsubscribed": len(by_type.get("unsubscribed", [])),
         # By company: a meeting and a Spill 3.0 deal for one booking are two events (crm/readback.py, 6 Oct 2026).
-        "demos_booked": len({e.get("account_id") or e["event_id"] for e in by_type.get("meeting_booked", [])}),
-        "demos_held": len(by_type.get("demo_held", [])),
+        "demos_booked": len({_company(e) for e in by_type.get("meeting_booked", [])}),
+        "demos_held": len({_company(e) for e in by_type.get("demo_held", [])}),
     }
     lines = [f"*Daily post, {ctx.now.astimezone(UK):%a %d %b}*" + (" (dry-run)" if ctx.dry_run else "")]
     lines += ["", f"*Sent and outcomes* · {label} (UK)"]
     step_text = fmt.counts(Counter({f"{k}": v for k, v in steps.items() if k is not None}), label="step ")
     lines.append(f"  Sent: {len(sent)}" + (f" ({step_text})" if step_text else ""))
-    lines.append(f"  Replies: {len(human)}" + (f" ({fmt.counts(classes)})" if human else "")
+    lines.append(f"  Replies: {fmt.plural(len(human), 'company', 'companies')}"
+                 + (f" ({fmt.counts(classes)})" if human else "")
+                 + (f", in {fmt.plural(len(human_emails), 'email')}" if len(human_emails) != len(human) else "")
                  + (f" · out of office {nums['out_of_office']}" if nums["out_of_office"] else ""))
     lines.append(f"  Positive or referral: {len(warm)}"
                  + (" · " + "; ".join(f"{who(e)} ({e.get('reply_class')}, {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT])
@@ -270,9 +299,8 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     if listed:
         lines.append("Objections, negatives and other replies:")
         lines += [f"  • {x}" for x in objections]
-    ooo = [e for e in replies if not kinds.is_human(e.get("reply_class"))]
-    if ooo:
-        lines.append("Out of office: " + ", ".join(who(e) for e in ooo[:LIST_LIMIT]))
+    if away:
+        lines.append("Out of office: " + ", ".join(who(e) for e in away[:LIST_LIMIT]))
     visits = {str(e.get("account_id") or "") for e in by_type.get("site_visit", [])}
     enrolled = {str(a["account_id"]) for a in ctx.store.select("accounts", {"account_id": sorted(visits)})
                 if a.get("status") in ("enrolled", "engaged")} if visits else set()
@@ -422,11 +450,8 @@ LIMIT_WORDS = {"weekly_target": "this week's target (`weekly_enrol_cap`)",
 
 
 def _span(day: Day) -> str:
-    """"Mon 26 Oct", or "Fri 23 to Sun 25 Oct" for Monday's post."""
-    first, last = day.start.astimezone(UK), (day.end - timedelta(days=1)).astimezone(UK)
-    if first.date() == last.date():
-        return f"{first:%a %-d %b}"
-    return f"{first:%a %-d} to {last:%a %-d %b}" if first.month == last.month else f"{first:%a %-d %b} to {last:%a %-d %b}"
+    """"Mon 26 Oct": the one day the post covers (period)."""
+    return f"{day.start.astimezone(UK):%a %-d %b}"
 
 
 def _short_names(owners: Sequence[str]) -> dict[str, str]:
@@ -483,8 +508,11 @@ def _yesterday(day: Day) -> list[str]:
         later = sum(int(v) for k, v in steps.items() if k != "1")
         kinds_ = ", ".join(x for x in (f"{first} first" if first else "", f"{later} follow-up{'s' if later != 1 else ''}"
                                        if later else "") if x)
+        # By company (metrics-audit H3); the reply emails only when a company wrote more than once.
+        emails = int(n.get("reply_emails", n.get("replies", 0)) or 0)
         parts = [f"Sent {n.get('sent', 0)} emails" + (f" ({kinds_})" if kinds_ else ""),
-                 f"{fmt.plural(n.get('replies', 0), 'reply', 'replies')} ({n.get('positive', 0)} interested)"]
+                 f"{fmt.plural(n.get('replies', 0), 'company', 'companies')} replied ({n.get('positive', 0)} interested"
+                 + (f"; {fmt.plural(emails, 'reply email')}" if emails != n.get("replies", 0) else "") + ")"]
     else:
         parts = ["No emails sent"]
     parts += [fmt.plural(n[k], word) for k, word in (("bounced", "bounce"), ("unsubscribed", "unsubscribe"))
@@ -597,9 +625,7 @@ def compact(ctx: Context, day: Day) -> list[str]:
         head = f"{say.ACTION} *Daily summary, {date}: {fmt.plural(len(needs), 'thing needs', 'things need')} you*"
     else:
         head = f"{say.INFO} *Daily summary, {date}: nothing needs you today*"
-    span = _span(day)
-    period_ = f"Yesterday ({span})" if day.label.startswith("Yesterday") else span
-    lines = [head, *needs, "", f"*{period_}*", *_yesterday(day), "", *_today(ctx, day), "",
+    lines = [head, *needs, "", f"*Yesterday ({_span(day)})*", *_yesterday(day), "", *_today(ctx, day), "",
              "*Pipeline*", *_pipeline(day)]
     if day.spend:
         lines += ["", day.spend]
@@ -622,9 +648,8 @@ def run(ctx: Context) -> dict:
     spent, asked = spend.check(ctx)  # the credit and spend asks first, so a failing post below never holds them
     day = gather(ctx, spent)
     lines, nums = compact(ctx, day), day.nums
-    mailboxes = capacity_ahead.check(ctx, int(nums.get("ready_accounts") or 0))  # Mondays only
+    # The mailboxes three weeks ahead are a Monday ask, and there is no Monday post: the Monday readout makes it.
     sent = notify.alert(ctx, "\n".join(lines))
-    summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent, "spend_alert": asked,
-               "mailboxes_ahead": mailboxes}
+    summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent, "spend_alert": asked}
     log("daily_post_done", run_id=ctx.run_id, **summary)
     return summary
