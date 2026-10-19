@@ -236,6 +236,34 @@ def test_a_sheets_failure_on_row_five_stops_the_pass_and_the_next_poll_goes_on(m
     assert tab.apply(ctx)["applied"] == []
 
 
+def test_a_correction_applied_twice_is_one_fact_that_keeps_the_label_it_went_out_as(monkeypatch):
+    """A wrong industry whose applied cell cannot be written (a 503 on the first write) is applied again at the next
+    poll: still one label_corrected fact (B3: before, each pass added one, padding the labels' answer key), and its
+    "from" is the label the company went out as, Advertising agencies, not Fintech, which the account holds by then."""
+    ctx, _ = drawn_week(monkeypatch, sheet=FlakySheet, fail=[1])
+    x = sample_domains(ctx)[0]
+    decide(ctx, x, "wrong industry", right_label="Fintech")
+    assert len(tab.apply(ctx)["hand_check_errors"]) == 1
+    assert tab.apply(ctx)["applied"] == [tab.row_id(WEEK, x)]
+    [corrected] = facts_of(ctx, "label_corrected")
+    assert (corrected["value"]["from"], corrected["value"]["to"]) == ("Advertising agencies", "Fintech")
+    assert corrected["event_id"] == f"label_corrected:{WEEK}:{account(ctx, x)['account_id']}"
+
+
+def test_a_changed_reason_alone_is_applied_again(monkeypatch):
+    """The reason is part of the decision's hash: media_publisher changed to subsidiary on a row already applied is
+    applied again, and the company's tier_reason and the fact say subsidiary."""
+    ctx, _ = drawn_week(monkeypatch)
+    x = sample_domains(ctx)[0]
+    decide(ctx, x, "leave out", reason="media_publisher")
+    tab.apply(ctx)
+    decide(ctx, x, "leave out", reason="subsidiary")
+    assert tab.apply(ctx)["applied"] == [tab.row_id(WEEK, x)]
+    assert account(ctx, x)["tier_reason"] == f"hand_check: subsidiary ({WEEK})"
+    [fact] = judgements(ctx)
+    assert fact["value"]["reason"] == "subsidiary"
+
+
 def test_a_left_out_company_already_emailed_is_not_changed(monkeypatch):
     ctx, _ = drawn_week(monkeypatch)
     x = sample_domains(ctx)[0]
