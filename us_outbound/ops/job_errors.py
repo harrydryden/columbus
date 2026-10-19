@@ -11,12 +11,20 @@ LOOKBACK and posts what it finds to the alert channel, with the approvers mentio
                 tried again within minutes (a redeploy's SIGTERM, a 502), and one that keeps failing is told as
                 missed, with its error (heartbeat.check_heartbeats);
   * errors      a non-empty list under "errors" or a key ending "_errors", anywhere in the detail;
-  * <key>       a text under a key ending "_error" (vitals_error, claude_error, alert_error);
+  * <key>       a text under a key ending "_error" (vitals_error, claude_error, alert_error), or under a key named
+                error (the hand-check tab's pass inside poll_approvals: hand_check_tab_failed 208 times in 17 hours,
+                19 Oct 2026, with nobody told). Not a post's own result ({"posted": ..., "error": ...}: slack_post
+                below), and not a dry run's note ("dry-run: no model asked");
+  * failures    the per-item contract (ops/heartbeat.py): one reason under "failures" counting 3 items or more and at
+                least half the run's "candidates" (25 of 25 HubSpot checks failed, the run still exited 0);
   * <key>       a count above 0 under a key ending "_errors" (poll_replies' slack_errors);
   * claude_cap  claude_cap_reached above 0: replies were classified "other" with no draft;
   * slack_post  a post the job could not make (a {"posted": false, "error": ...} result; a post that went to
                 the log for want of a token is no failure);
-  * unusable    the settings are unusable, so jobs refuse to start (ops/cli._record_unusable): one line for all.
+  * unusable    the settings are unusable, so jobs refuse to start (ops/cli._record_unusable): one line for all;
+  * failure_rate a frequent job (one that runs more often than daily) whose last RATE_RUNS runs hold RATE_ERRORS or
+                more errors: each failure alone waits for the next run (transient, or missed), so a job failing one
+                run in four never reached anyone (code-platform-ops B13). Posted once a day, with the latest error.
 A count under "errors" itself is no error list (settings_sync's sheet errors, which it posts itself; pick_contacts'
 Clay lookups), and is left out. Each finding quotes its first error, shortened (QUOTE) and passed through
 logs.redact.
@@ -46,7 +54,7 @@ from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import SECRET_NAMES, UK, Context
 from us_outbound.logs import clip, log, redact
 from us_outbound.ops.bootstrap import GOOGLE_KEY_VAR
-from us_outbound.ops.heartbeat import DAILY, EXPECTED, and_list, settings_fault
+from us_outbound.ops.heartbeat import DAILY, EXPECTED, and_list, settings_fault, unusable_tabs
 from us_outbound.ops.watchdog import JOB as SELF  # heartbeat_check: its own detail holds what it found
 from us_outbound.settings import sync
 from us_outbound.settings.validate import CLAUDE_CAP_USD
@@ -68,6 +76,16 @@ TRANSIENT = re.compile(r"HTTP (?:5\d\d|429)\b|timed out|timeout|ConnectionError|
                        r"Connection (?:reset|aborted)", re.IGNORECASE)
 SERVER_ERROR = re.compile(r"\b(\w+) HTTP (\d{3})\b")
 FAILED, ERRORS, CLAUDE_CAP, SLACK_POST, UNUSABLE = "failed", "errors", "claude_cap", "slack_post", "unusable"
+FAILURES, FAILURE_RATE, ERROR_KEY = "failures", "failure_rate", "error"
+FAILURES_MIN, FAILURES_SHARE = 3, 0.5  # one reason failing 3 items or more, and at least half the candidates
+RATE_RUNS, RATE_ERRORS = 12, 3  # the failure-rate rule: 3 errors or more in a frequent job's last 12 runs
+RECENT_SQL = (  # each job's latest RATE_RUNS finished runs
+    "SELECT job, run_id, status, started_at, error FROM ("
+    "SELECT job, run_id, status, started_at, error,"
+    " ROW_NUMBER() OVER (PARTITION BY job ORDER BY started_at DESC, run_id DESC) AS n"
+    " FROM {schema}.heartbeats WHERE started_at >= %(since)s AND status <> 'running' AND job = ANY(%(jobs)s)) t"
+    " WHERE n <= %(runs)s ORDER BY job, started_at DESC, run_id DESC"
+)
 # The post (Harry, 12 Oct 2026: clear to a newcomer; base/say.py): a headline, one bullet per finding with the job in
 # plain words (say.job_name), what to do where someone must act, and where to look for more.
 HEAD = f"{say.ACTION} *Some automatic jobs ran into problems*"
@@ -79,6 +97,7 @@ ERROR_WORDS = {
     "alert_error": "could not post its alert",
     "capacity_error": "could not check the sending capacity ahead",
     "customers_error": "could not read Spill's customers from HubSpot",
+    ERROR_KEY: "met an error",
 }
 COUNT_WORDS = {"slack_errors": "Slack posts failed"}  # a count under a key ending "_errors"
 
@@ -160,6 +179,44 @@ def two_latest(ctx: Context, jobs: Iterable[str]) -> tuple[dict[str, dict], dict
     return latest, before
 
 
+def recent_runs(ctx: Context, jobs: Iterable[str]) -> dict[str, list[dict]]:
+    """job -> its latest RATE_RUNS finished runs started in the last LOOKBACK, the latest first (one query)."""
+    wanted = sorted(set(jobs))
+    if not wanted:
+        return {}
+    since = ctx.now - LOOKBACK
+    try:
+        rows = ctx.store.query(RECENT_SQL.format(schema=ctx.store.schema),
+                               {"since": since, "jobs": wanted, "runs": RATE_RUNS})
+    except NotImplementedError:  # MemoryStore: the same in Python
+        rows = []
+        for r in ctx.store.select("heartbeats", {"job": wanted}):
+            started = utc(r.get("started_at"))
+            if r.get("status") != "running" and started is not None and started >= since:
+                rows.append(r)
+        rows.sort(key=lambda r: (utc(r.get("started_at")), str(r.get("run_id"))), reverse=True)
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        runs = out.setdefault(str(r.get("job") or ""), [])
+        if len(runs) < RATE_RUNS:
+            runs.append(dict(r))
+    return out
+
+
+def failure_rates(ctx: Context, jobs: Iterable[str]) -> list[Finding]:
+    """The failure-rate rule (module docstring): a frequent job with RATE_ERRORS or more errors in its last RATE_RUNS
+    runs, with its latest error. A daily (or rarer) job is told on its first failure (failed) instead."""
+    frequent = [j for j in jobs if 0 < EXPECTED.get(j, 0) < DAILY]
+    out = []
+    for job, runs in sorted(recent_runs(ctx, frequent).items()):
+        # A refusal on unusable settings is told once for every job (unusable), not again as each job's failure rate.
+        errors = [r for r in runs if r.get("status") == "error" and not unusable_tabs(r.get("error"))]
+        if len(errors) >= RATE_ERRORS:
+            out.append(Finding(job, FAILURE_RATE, [str(errors[0].get("error") or "no error text")], count=len(errors),
+                               at=utc(errors[0].get("started_at"))))
+    return out
+
+
 def transient(f: Finding) -> bool:
     """Whether every error of the finding is a service's own outage (TRANSIENT)."""
     return bool(f.texts) and all(TRANSIENT.search(str(t)) for t in f.texts)
@@ -173,14 +230,42 @@ def passing(job: str, found: list[Finding], before: Mapping[str, Any] | None) ->
     return [f for f in found if not transient(f) or f.kind in earlier]
 
 
-def _walk(detail: Any, depth: int = 0) -> Iterator[tuple[str, Any]]:
-    """(key, value) for every key in the detail, nested mappings included, to DEPTH."""
+def _walk(detail: Any, depth: int = 0) -> Iterator[tuple[str, Any, Mapping[str, Any]]]:
+    """(key, value, the mapping holding it) for every key in the detail, nested mappings included, to DEPTH."""
     if not isinstance(detail, Mapping) or depth > DEPTH:
         return
     for key, value in detail.items():
-        yield str(key), value
+        yield str(key), value, detail
         if isinstance(value, Mapping):
             yield from _walk(value, depth + 1)
+
+
+def _error_text(value: Any, holder: Mapping[str, Any]) -> bool:
+    """Whether a text under a key named error is a failure: not a post's own result (slack_post reads those), not
+    a dry run's note, and not the log-only post with no token."""
+    return (isinstance(value, str) and bool(value.strip()) and "posted" not in holder
+            and not value.startswith("dry-run") and value != notify.NO_TOKEN)
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _failures(job: str, detail: Mapping[str, Any], at: datetime | None) -> Finding | None:
+    """The per-item contract (module docstring): the reasons that failed FAILURES_MIN items or more and at least
+    FAILURES_SHARE of the candidates (with no candidates given, the count alone), the commonest first."""
+    failures = detail.get(FAILURES)
+    if not isinstance(failures, Mapping):
+        return None
+    tried = _count(detail.get("candidates"))
+    tried = tried if tried and tried > 0 else None
+    hits = sorted(((str(reason), n) for reason, n in ((r, _count(v)) for r, v in failures.items())
+                   if n is not None and n >= FAILURES_MIN and (tried is None or n >= FAILURES_SHARE * tried)),
+                  key=lambda x: (-x[1], x[0]))
+    if not hits:
+        return None
+    texts = [f"{reason} ({n} of {tried})" if tried else f"{reason} ({n})" for reason, n in hits]
+    return Finding(job, FAILURES, texts, count=sum(n for _, n in hits), at=at)
 
 
 def findings(job: str, run: Mapping[str, Any]) -> list[Finding]:
@@ -195,8 +280,13 @@ def findings(job: str, run: Mapping[str, Any]) -> list[Finding]:
             return []  # tried again within minutes; missed (with this error) if it keeps failing
         return [Finding(job, FAILED, [error], at=at)]
     out: dict[str, Finding] = {}
-    for key, value in _walk(detail):
-        if key == "claude_cap_reached" and isinstance(value, int) and value > 0:
+    failed = _failures(job, detail, at)
+    if failed is not None:
+        out[FAILURES] = failed
+    for key, value, holder in _walk(detail):
+        if key == ERROR_KEY and _error_text(value, holder):
+            out.setdefault(ERROR_KEY, Finding(job, ERROR_KEY, at=at)).texts.append(value)
+        elif key == "claude_cap_reached" and isinstance(value, int) and value > 0:
             out.setdefault(CLAUDE_CAP, Finding(job, CLAUDE_CAP, at=at)).count += value
         elif (key == "errors" or key.endswith("_errors")) and isinstance(value, list) and value:
             out.setdefault(ERRORS, Finding(job, ERRORS, at=at)).texts += [str(v) for v in value]
@@ -259,6 +349,12 @@ def describe(f: Finding, ctx: Context) -> str:
                 "Console to match.")
     if f.kind == FAILED:
         return f"• *{_job(f.job)}* failed ({when}): {_quote(f.texts[0])}"
+    if f.kind == FAILURES:
+        return (f"• *{_job(f.job)}* ({when}) finished, but {fmt.plural(f.count, 'item', 'items')} in it failed. The "
+                f"commonest: {_quote(f.texts[0])}")
+    if f.kind == FAILURE_RATE:
+        return (f"• *{_job(f.job)}* failed in {f.count} of its last {RATE_RUNS} runs (the latest {when}): each "
+                f"failure alone is tried again, but this one keeps coming back. The latest: {_quote(f.texts[0])}")
     if f.kind == SLACK_POST:
         return f"• *{_job(f.job)}* ({when}) could not post its message to Slack: {_quote(f.texts[0])}"
     if f.kind == ERRORS:
@@ -320,8 +416,10 @@ def _sync_post(run: Mapping[str, Any] | None) -> str:
 def check(ctx: Context, jobs: Iterable[str]) -> dict[str, Any]:
     """Read, then post what was not posted today. Never raises (but a GuardViolation): heartbeat_check goes on."""
     try:
-        runs, before = two_latest(ctx, [j for j in jobs if j != SELF])
+        watched = [j for j in jobs if j != SELF]
+        runs, before = two_latest(ctx, watched)
         found = [f for job, run in sorted(runs.items()) for f in passing(job, findings(job, run), before.get(job))]
+        found += failure_rates(ctx, watched)  # never filtered as transient: it exists for the intermittent ones
         unusable = [f for f in found if f.kind == UNUSABLE]
         found = [f for f in found if f.kind != UNUSABLE] + unusable[:1]  # one line for all the jobs it stops
         if unusable:

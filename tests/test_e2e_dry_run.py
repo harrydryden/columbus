@@ -30,7 +30,7 @@ from us_outbound.clients.guard import Guard
 from us_outbound.context import Secrets
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.logs import hash_email
-from us_outbound.ops import bootstrap, cli
+from us_outbound.ops import bootstrap, cli, heartbeat
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import TABS
@@ -339,6 +339,12 @@ def test_every_job_left_a_heartbeat(flow):
         hb = flow[stage]["heartbeat"]
         assert (hb["job"], hb["status"], hb["dry_run"]) == (job, "ok", True), stage
         assert hb["finished_at"] and hb["error"] is None
+        # Each job's real summary maps to the status it meant (W1-1): enrol's "skipped" is its count of accounts
+        # passed over, never a skip, and every live enrol run was stored as skipped until 19 Oct 2026.
+        assert heartbeat.summary_status(hb["detail"]) == hb["status"], stage
+    enrol = flow["enrol"]["heartbeat"]["detail"]
+    assert enrol["status"] == "ok" and isinstance(enrol["skipped"], dict)
+    assert heartbeat.summary_status({**enrol, "skipped": {"no contact": 335}}) == "ok"
     assert len(beats) == 5 and all(b["status"] == "ok" for b in beats)
 
 

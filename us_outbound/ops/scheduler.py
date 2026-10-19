@@ -18,6 +18,13 @@ The loop:
     not blocked by a heartbeat left "running";
   * logs each start and finish with the exit code (0 ok, 1 error, 2 refused, 3 blocked by
     a guardrail, 143 stopped by SIGTERM; negative: killed by that signal);
+  * on a non-zero exit, or a run stopped at its timeout, makes sure the run has an error row in
+    heartbeats (W1-1, 19 Oct 2026): a job that died before run_job wrote anything (an import
+    error, a crash building its context) left no row at all, and one killed after SIGTERM left its
+    row "running", so neither showed in `status` as a failure. The row of that start still
+    "running" is set to error; with none, one is written. It goes through a store opened for the
+    write alone, with a 5 s connect timeout (heartbeat_store), and any failure is logged and
+    swallowed: the loop never stops for a heartbeat. A row the job finished itself is left as it is;
   * does not backfill: minutes the loop missed (a restart, a redeploy, a stall) are not run
     afterwards, and a job due in the minute the scheduler starts waits for its next time.
     heartbeat_check alerts on any job that misses its heartbeat (ops/heartbeat.py);
@@ -54,7 +61,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -71,8 +77,8 @@ GRACE_SECONDS = 25.0  # after SIGTERM: how long running jobs get to finish
 KILL_AFTER_SECONDS = 3.0  # after terminate(): how long before kill()
 POLL_SECONDS = 1.0  # between checks for finished runs, timeouts and free slots
 HORIZON = timedelta(days=366)  # how far next_run looks ahead
-HISTORY = 500  # finished runs kept in memory (the log has them all)
 EXIT_MEANING = {0: "ok", 1: "error", 2: "refused", 3: "blocked", 143: "terminated"}
+CONNECT_TIMEOUT_SECONDS = 5  # the heartbeat write after a failed run waits no longer than this for Postgres
 AT_START = ("settings_sync",)  # run once when the worker starts (module docstring)
 
 # -- cron -------------------------------------------------------------------------------
@@ -201,6 +207,37 @@ def launch(job: ScheduledJob) -> Process:
     return subprocess.Popen(command(job), start_new_session=True)
 
 
+def heartbeat_store(env: Mapping[str, str] | None = None) -> Any:
+    """A store for one heartbeat write from the loop: DATABASE_URL, a CONNECT_TIMEOUT_SECONDS connect timeout, closed
+    by the caller after the write. Dry-run guard: database writes are allowed in every mode (clients/guard.py)."""
+    from us_outbound.clients.db import PostgresStore
+    from us_outbound.clients.guard import Guard
+    from us_outbound.ops.bootstrap import database_url
+
+    dsn = database_url(os.environ if env is None else env)
+    return PostgresStore(Guard(live=False, job="scheduler"), dsn, connect_timeout=CONNECT_TIMEOUT_SECONDS)
+
+
+def record_failed_run(store: Any, name: str, started: datetime, now: datetime, code: int, status: str,
+                      seconds: float) -> str:
+    """The error row for a run that exited non-zero or was stopped at its timeout (module docstring): the run's own
+    row still "running" (the latest of this job started at or after the launch) set to error, or a new row when the
+    run wrote none. A row the run finished itself keeps its own status and error. Returns what it did."""
+    from us_outbound.base.heartbeats import ERROR, RUNNING, TABLE
+    from us_outbound.clients.db import Range, new_id
+    from us_outbound.timeparse import utc_strict_or_none
+
+    error = f"exited {code} ({status})"
+    detail = {"exit_code": code, "seconds": seconds}
+    rows = store.select(TABLE, {"job": name, "started_at": Range(lo=started)})
+    rows.sort(key=lambda r: (utc_strict_or_none(r.get("started_at")) or started, str(r.get("run_id"))))
+    if rows and rows[-1].get("status") != RUNNING:
+        return "left"
+    row = rows[-1] if rows else {"run_id": new_id(), "job": name, "started_at": started, "dry_run": True}
+    store.upsert(TABLE, [{**row, "finished_at": now, "status": ERROR, "error": error, "detail": detail}])
+    return "updated" if rows else "written"
+
+
 def max_parallel_from_env(env: Mapping[str, str] | None = None) -> int:
     raw = ((os.environ if env is None else env).get(MAX_PARALLEL_VAR) or "").strip()
     if not raw:
@@ -234,7 +271,10 @@ class Scheduler:
         launch: Callable[[ScheduledJob], Process] = launch,
         grace_seconds: float = GRACE_SECONDS,
         at_start: Iterable[str] = (),
+        store_factory: Callable[[], Any] | None = None,
     ):
+        """store_factory: opens the store a failed run's heartbeat is written through (heartbeat_store in production,
+        `us-outbound scheduler`); None writes none (tests of the loop alone)."""
         if max_parallel < 1:
             raise ValueError("max_parallel must be 1 or more")
         self.jobs = [(j, Cron.parse(j.cron)) for j in table if j.enabled and j.cron]
@@ -243,7 +283,7 @@ class Scheduler:
         self.grace_seconds = grace_seconds
         self.running: dict[str, Run] = {}
         self.pending: list[tuple[ScheduledJob, datetime]] = []
-        self.history: deque[dict[str, Any]] = deque(maxlen=HISTORY)  # the latest finished runs, oldest first
+        self.store_factory = store_factory
         self.stopping = False
         unknown = set(at_start) - {j.name for j, _ in self.jobs}
         if unknown:
@@ -286,7 +326,26 @@ class Scheduler:
             status = run.stop_reason or EXIT_MEANING.get(code) or (f"killed by signal {-code}" if code < 0 else "error")
             seconds = round((now - run.started).total_seconds(), 1)
             log("scheduler_job_end", job=name, pid=run.proc.pid, exit_code=code, status=status, seconds=seconds)
-            self.history.append({"job": name, "exit_code": code, "status": status, "started": run.started, "seconds": seconds})
+            if code != 0 or run.stop_reason == "timeout":
+                self._record_failure(name, run, now, code, status, seconds)
+
+    def _record_failure(self, name: str, run: Run, now: datetime, code: int, status: str, seconds: float) -> None:
+        """The failed run's heartbeat (record_failed_run). Never raises: the loop goes on whatever the database does."""
+        if self.store_factory is None:
+            return
+        store = None
+        try:
+            store = self.store_factory()
+            outcome = record_failed_run(store, name, run.started, now, code, status, seconds)
+            log("scheduler_heartbeat_written", job=name, exit_code=code, outcome=outcome)
+        except Exception as exc:  # Postgres down, say: the log line is the record
+            log("scheduler_heartbeat_failed", job=name, exit_code=code, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        finally:
+            try:
+                if store is not None:
+                    store.close()
+            except Exception:
+                pass
 
     def _stop(self, run: Run, now: datetime, reason: str) -> None:
         try:

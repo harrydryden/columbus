@@ -550,13 +550,16 @@ class Instantly(HttpClient):
                 out[email][str(r.get("date") or "")[:10]] = r
         return out
 
-    def set_daily_limit(self, email: str, daily_limit: int) -> None:
-        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap)."""
+    def set_daily_limit(self, email: str, daily_limit: int, *, previous: int | None = None) -> None:
+        """Set a registry account's own daily sending limit (the Mailboxes tab's daily_cap). previous: the limit it
+        replaces, when known; a protective-only guard allows only a lower one (clients/guard.py)."""
         limit = int(daily_limit)
-        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit)
+        extra = {"previous_limit": int(previous)} if previous is not None else {}
+        [acc] = self._registry("account.update_limit", [email], write=True, daily_limit=limit, **extra)
         self.request(
             "PATCH", f"/accounts/{_segment(acc)}",
-            Op("account.update_limit", target=acc, write=True, detail={"accounts": [acc], "daily_limit": limit}),
+            Op("account.update_limit", target=acc, write=True,
+               detail={"accounts": [acc], "daily_limit": limit, **extra}),
             json={"daily_limit": limit},
         )
 

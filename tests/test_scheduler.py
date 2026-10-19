@@ -103,6 +103,18 @@ class Launcher:
         return [t for n, t in self.started if n == name]
 
 
+def ends(text: str) -> list[dict]:
+    """The scheduler_job_end log lines in the captured output, oldest first (the loop keeps no history of its own:
+    W1-1)."""
+    import json
+
+    out = []
+    for line in text.splitlines():
+        if line.startswith("{") and '"scheduler_job_end"' in line:
+            out.append(json.loads(line))
+    return out
+
+
 def drive(table, start: datetime, until: datetime, *, seconds=30, max_parallel=2, jump=None, at_start=()):
     """Run the real loop on a fake clock from start until `until`; jump=(at, by) stalls the loop once."""
     clock = FakeClock(start)
@@ -232,13 +244,14 @@ def fall_and_spring_table():
     return [t["settings_sync"], replace(t["poll_approvals"], enabled=True), t["heartbeat_check"], t["suppression_load"]]
 
 
-def test_the_loop_on_the_fall_back_night():
+def test_the_loop_on_the_fall_back_night(capsys):
     s, launcher = drive(fall_and_spring_table(), utc(2026, 10, 25, 0, 0), utc(2026, 10, 25, 3, 0))
     assert launcher.starts("suppression_load") == [utc(2026, 10, 25, 0, 30)]
     assert launcher.starts("settings_sync") == [utc(2026, 10, 25, 2, 0)]
     assert launcher.starts("heartbeat_check") == [utc(2026, 10, 25, h, 5) for h in (0, 1, 2)]
     assert len(launcher.starts("poll_approvals")) == 35  # 00:05 to 02:55; the start minute 00:00 is not run
-    assert all(r["status"] == "ok" and r["exit_code"] == 0 for r in s.history)
+    finished = ends(capsys.readouterr().out)
+    assert finished and all(r["status"] == "ok" and r["exit_code"] == 0 for r in finished)
 
 
 def test_the_loop_on_the_spring_forward_night_waits_for_a_free_slot():
@@ -257,9 +270,10 @@ def test_a_job_still_running_is_skipped_not_started_twice(capsys):
     start = utc(2026, 10, 6, 9, 0)
     s, launcher = drive([job("slow")], start, start + 6 * MIN, seconds=150)  # each run 2.5 minutes
     assert launcher.starts("slow") == [start + MIN, start + 4 * MIN]
-    skips = [line for line in capsys.readouterr().out.splitlines() if "scheduler_job_skipped" in line]
+    out = capsys.readouterr().out
+    skips = [line for line in out.splitlines() if "scheduler_job_skipped" in line]
     assert len(skips) == 3 and all("previous run still going" in line for line in skips)  # 09:02, 09:03, 09:05
-    assert [r["status"] for r in s.history] == ["ok", "shutdown"]
+    assert [r["status"] for r in ends(out)] == ["ok", "shutdown"]
 
 
 def test_at_most_max_parallel_jobs_run_and_the_rest_wait_in_order():
@@ -297,7 +311,7 @@ def _wait_until_reaped(s: sch.Scheduler, name: str, clock: FakeClock, seconds: f
         s.poll(clock())
 
 
-def test_a_run_past_its_timeout_is_terminated_real_subprocess():
+def test_a_run_past_its_timeout_is_terminated_real_subprocess(capsys):
     clock = FakeClock(utc(2026, 10, 6, 9, 0))
     procs = []
 
@@ -315,10 +329,11 @@ def test_a_run_past_its_timeout_is_terminated_real_subprocess():
     s.poll(clock())  # one minute: SIGTERM
     _wait_until_reaped(s, "slow", clock)
     assert "slow" not in s.running
-    assert s.history[-1] == {**s.history[-1], "job": "slow", "status": "timeout", "exit_code": -signal.SIGTERM}
+    last = ends(capsys.readouterr().out)[-1]
+    assert (last["job"], last["status"], last["exit_code"]) == ("slow", "timeout", -signal.SIGTERM)
 
 
-def test_a_run_that_ignores_sigterm_is_killed_real_subprocess():
+def test_a_run_that_ignores_sigterm_is_killed_real_subprocess(capsys):
     clock = FakeClock(utc(2026, 10, 6, 9, 0))
     code = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"
     procs = []
@@ -339,11 +354,12 @@ def test_a_run_that_ignores_sigterm_is_killed_real_subprocess():
     clock.t += timedelta(seconds=sch.KILL_AFTER_SECONDS)
     s.poll(clock())  # SIGKILL
     _wait_until_reaped(s, "stubborn", clock)
-    assert s.history[-1]["status"] == "timeout" and s.history[-1]["exit_code"] == -signal.SIGKILL
+    last = ends(capsys.readouterr().out)[-1]
+    assert last["status"] == "timeout" and last["exit_code"] == -signal.SIGKILL
     procs[0].stdout.close()
 
 
-def test_exit_codes_are_logged_with_their_meaning():
+def test_exit_codes_are_logged_with_their_meaning(capsys):
     clock = FakeClock(utc(2026, 10, 6, 9, 0))
     launcher = Launcher(clock, seconds=None)
     names = ["ok", "error", "refused", "blocked", "signal"]
@@ -353,8 +369,96 @@ def test_exit_codes_are_logged_with_their_meaning():
     for name, code in zip(names, (0, 1, 2, 3, -9)):
         launcher.procs[name][0].code = code
     s.poll(clock())
-    assert {r["job"]: r["status"] for r in s.history} == {
+    assert {r["job"]: r["status"] for r in ends(capsys.readouterr().out)} == {
         "ok": "ok", "error": "error", "refused": "refused", "blocked": "blocked", "signal": "killed by signal 9"}
+
+
+def _beats(store, name):
+    return [r for r in store.tables.get("heartbeats", []) if r["job"] == name]
+
+
+def test_a_run_that_dies_before_its_row_and_one_killed_at_its_timeout_both_leave_an_error_row():
+    """W1-1 (RS P0-4): a job that exited 1 before run_job wrote anything left no row, so status and heartbeat_check
+    never saw it; one killed after ignoring SIGTERM left its row "running" for ever. Real subprocesses."""
+    from tests.fakes import make_context
+    from us_outbound.clients.db import MemoryStore
+    from us_outbound.clients.guard import Guard
+    from us_outbound.settings.model import General, Settings
+
+    store = MemoryStore(Guard())
+    clock = FakeClock(utc(2026, 10, 6, 9, 0))
+    stubborn = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"
+    procs = []
+
+    def launch(j):
+        if j.name == "enrol":  # an import error, say: exit 1 and no heartbeat row
+            procs.append(subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(1)"]))
+        else:  # mailbox_health: run_job's "running" row, then a process that ignores SIGTERM
+            store.upsert("heartbeats", [{"run_id": "mh-1", "job": j.name, "started_at": clock(), "finished_at": None,
+                                         "status": "running", "dry_run": False, "detail": None, "error": None}])
+            procs.append(subprocess.Popen([sys.executable, "-c", stubborn], stdout=subprocess.PIPE, text=True))
+            assert procs[-1].stdout.readline().strip() == "ready"
+        return procs[-1]
+
+    s = sch.Scheduler([job("enrol"), job("mailbox_health", timeout=1)], clock=clock, sleep=clock.sleep, launch=launch,
+                      store_factory=lambda: store)
+    s.tick(clock())
+    s.poll(clock())
+    _wait_until_reaped(s, "enrol", clock)
+    clock.t += MIN
+    s.poll(clock())  # mailbox_health: SIGTERM at its 1-minute timeout, ignored
+    clock.t += timedelta(seconds=sch.KILL_AFTER_SECONDS)
+    s.poll(clock())  # SIGKILL
+    _wait_until_reaped(s, "mailbox_health", clock)
+    procs[1].stdout.close()
+
+    [died] = _beats(store, "enrol")  # exactly one row, written by the loop
+    assert died["status"] == "error" and died["detail"]["exit_code"] == 1 and died["error"] == "exited 1 (error)"
+    assert died["started_at"] == utc(2026, 10, 6, 9, 0) and died["dry_run"] is True
+    [killed] = _beats(store, "mailbox_health")  # its own row, updated, not a second one
+    assert killed["run_id"] == "mh-1" and killed["status"] == "error"
+    assert killed["detail"]["exit_code"] == -signal.SIGKILL and killed["error"] == f"exited {-signal.SIGKILL} (timeout)"
+    # Both now count as failing: each job's only run is an error, so heartbeat_check lists both as missed (before
+    # the fix enrol had no row at all, and mailbox_health's "running" first run counted as alive).
+    ctx = make_context(Settings(general=General()), store=store, now=utc(2026, 10, 6, 10, 0))
+    assert sorted(hb.check_heartbeats(ctx, ["enrol", "mailbox_health"])) == ["enrol", "mailbox_health"]
+
+
+def test_a_row_the_job_finished_itself_is_left_as_it_is():
+    from us_outbound.clients.db import MemoryStore
+    from us_outbound.clients.guard import Guard
+
+    store = MemoryStore(Guard())
+    start = utc(2026, 10, 6, 9, 0)
+    store.upsert("heartbeats", [{"run_id": "r1", "job": "enrol", "started_at": start + SEC, "finished_at": start + MIN,
+                                 "status": "error", "dry_run": False, "detail": None, "error": "Terminated: by SIGTERM"}])
+    assert sch.record_failed_run(store, "enrol", start, start + MIN, 143, "terminated", 60.0) == "left"
+    [row] = _beats(store, "enrol")
+    assert row["error"] == "Terminated: by SIGTERM" and row["detail"] is None
+    # An older run's row (started before this launch) is never taken for this one.
+    assert sch.record_failed_run(store, "enrol", start + 2 * MIN, start + 3 * MIN, 1, "error", 60.0) == "written"
+    assert len(_beats(store, "enrol")) == 2
+
+
+def test_a_store_that_fails_inside_reap_never_stops_the_loop(capsys):
+    start = utc(2026, 10, 6, 9, 0)
+    clock = FakeClock(start)
+    launcher = Launcher(clock, seconds=None)
+
+    def broken_store():
+        raise ConnectionError("Postgres is down")
+
+    s = sch.Scheduler([job("flaky")], clock=clock, sleep=clock.sleep, launch=launcher, store_factory=broken_store)
+    s.tick(clock())
+    s.poll(clock())
+    launcher.procs["flaky"][0].code = 1
+    s.poll(clock())  # reaped: the heartbeat write fails, and is swallowed
+    assert "flaky" not in s.running
+    clock.t += MIN
+    assert s.tick(clock()) == ["flaky"]  # the next tick runs
+    s.poll(clock())
+    assert len(launcher.starts("flaky")) == 2
+    assert "scheduler_heartbeat_failed" in capsys.readouterr().out
 
 
 def test_a_launch_failure_is_logged_and_the_others_still_start(capsys):
@@ -417,7 +521,7 @@ def _signal_after_first_start(s: sch.Scheduler, clock: FakeClock, launcher: Laun
 
 
 @pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
-def test_a_signal_stops_launching_waits_then_terminates(signum):
+def test_a_signal_stops_launching_waits_then_terminates(signum, capsys):
     clock = FakeClock(utc(2026, 10, 6, 8, 59, 30))
     launcher = Launcher(clock, seconds=None)  # never ends by itself
     s = sch.Scheduler([job("a"), job("b")], max_parallel=1, clock=clock, launch=launcher)
@@ -429,17 +533,18 @@ def test_a_signal_stops_launching_waits_then_terminates(signum):
     assert [n for n, _ in launcher.started] == ["a"]  # b was waiting for the slot and never starts
     [(what, when)] = launcher.procs["a"][0].signals
     assert what == "TERM" and when - sent[0] >= timedelta(seconds=sch.GRACE_SECONDS)
-    assert s.history[-1]["status"] == "shutdown" and s.running == {} and s.pending == []
+    assert ends(capsys.readouterr().out)[-1]["status"] == "shutdown" and s.running == {} and s.pending == []
 
 
-def test_a_run_that_ends_within_the_grace_period_is_left_alone():
+def test_a_run_that_ends_within_the_grace_period_is_left_alone(capsys):
     clock = FakeClock(utc(2026, 10, 6, 8, 59, 30))
     launcher = Launcher(clock, seconds=10)
     s = sch.Scheduler([job("a")], clock=clock, launch=launcher)
     sent: list[datetime] = []
     s.sleep = _signal_after_first_start(s, clock, launcher, signal.SIGTERM, sent)
     assert s.run() == 0
-    assert launcher.procs["a"][0].signals == [] and s.history[-1]["status"] == "ok"
+    assert launcher.procs["a"][0].signals == [] and ends(capsys.readouterr().out)[-1]["status"] == "ok"
+    assert not hasattr(s, "history")  # the unread in-memory history is gone (W1-1): the log has every run
 
 
 def test_a_run_that_ignores_the_shutdown_is_killed():

@@ -400,17 +400,21 @@ class PostgresStore(Store):
     identifiers, never text from the data; values are always bound parameters.
     """
 
-    def __init__(self, guard: Guard, dsn: str, *, connect: Callable[[], Any] | None = None):
+    def __init__(self, guard: Guard, dsn: str, *, connect: Callable[[], Any] | None = None,
+                 connect_timeout: int | None = None):
         """connect: a zero-argument callable returning a psycopg connection, used instead of
-        psycopg.connect(dsn) (tests). The dsn carries the password: never log it."""
+        psycopg.connect(dsn) (tests). connect_timeout: seconds to wait for the server (the scheduler's
+        heartbeat write after a failed run, ops/scheduler.py); None waits as libpq does. The dsn carries the
+        password: never log it."""
         super().__init__(guard)
         self.dsn = dsn
         self._connect = connect
+        self._timeout = {"connect_timeout": connect_timeout} if connect_timeout else {}
         self._conn: Any = None
 
     def _connection(self) -> Any:
         if self._conn is None or self._conn.closed:
-            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn)
+            conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn, **self._timeout)
             conn.autocommit = True
             conn.row_factory = dict_row
             conn.execute("SET TIME ZONE 'UTC'")  # timestamptz values load as UTC datetimes

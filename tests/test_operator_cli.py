@@ -328,6 +328,70 @@ def test_mailbox_check_fix_also_puts_the_campaigns_right(monkeypatch, capsys):
     assert "--fix goes with check" in capsys.readouterr().err
 
 
+# -- the brake without the database, and the scheduled run's one-line summary (W1-1, 19 Oct 2026) -----------------
+
+
+def _no_database(job, live_flag, operator=False):
+    import psycopg
+
+    raise psycopg.OperationalError("connection to server failed: Connection refused")
+
+
+def test_stop_live_no_db_pauses_every_us_campaign_without_the_database(monkeypatch, capsys):
+    """code-platform-ops B4: the brake needed Postgres (the settings and its heartbeat live there). --no-db pauses the
+    three sending "US Outbound – " campaigns through Instantly on a guard from the environment alone, leaves the
+    EU campaign and the paused one alone, writes no row, and tells the alert channel in one message."""
+    from us_outbound.context import Secrets
+
+    t = slack_routes(FakeTransport())
+    inst = FakeInstantly(t)
+    for owner in ("Hannah Spalding", "Sam Jackson", "Harry Dryden"):
+        inst.add_campaign(f"US Outbound – {owner}", status=1)
+    inst.add_campaign("US Outbound – Old Owner", status=2)  # already paused
+    inst.add_campaign("EU Outbound – Anna", status=1)  # not ours: never touched
+    monkeypatch.setattr(cli, "_brake_context", lambda live: bootstrap.brake_context(
+        live, env={"US_OUTBOUND_SETTINGS_SHEET_ID": "sheet-test"}, transport=t,
+        secrets=Secrets(Guard(), fetch=lambda name: f"test-{name}")))
+    assert cli.main(["stop", "--live", "--no-db"], context_factory=_no_database) == 0
+    pauses = [r.url.rsplit("/v2", 1)[1] for r in t.requests if r.method == "POST" and r.url.endswith("/pause")]
+    assert len(pauses) == 3 and {c["name"] for c in inst.campaigns.values() if c["status"] == 2} == {
+        "US Outbound – Hannah Spalding", "US Outbound – Sam Jackson", "US Outbound – Harry Dryden",
+        "US Outbound – Old Owner"}
+    assert inst.by_name("EU Outbound – Anna")["status"] == 1
+    out = capsys.readouterr().out
+    assert cli.NO_DB_NOTE in out
+    [alert] = [r.json for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert alert["channel"] == "C_ALERT" and alert["text"].startswith("Emergency stop without the database: paused ")
+    assert cli.NO_DB_NOTE in alert["text"]
+    # Without --no-db the brake still needs the database and fails as before (exit 1, with its traceback).
+    assert cli.main(["stop", "--live"], context_factory=_no_database) == 1
+
+
+def hundred(ctx):
+    return {"checked": list(range(100)), "nested": {"ids": [f"a{i}" for i in range(12)]}, "fired": []}
+
+
+def test_a_scheduled_run_prints_its_summary_as_one_line_with_long_lists_cut(monkeypatch, capsys):
+    """Railway dropped 1,276 log lines at its rate limit (data-logs §0): `run` (what the scheduler starts) prints one
+    JSON line, each list over 10 cut to its first 10 and "+N more"; 100 items -> 10 and "+90 more", 12 -> "+2 more".
+    The heartbeat row keeps the whole summary, and other commands keep the pretty print."""
+    import json
+
+    monkeypatch.setitem(cli.JOBS, "kill_rules", "tests.test_operator_cli:hundred")
+    h = Harness(SETTINGS)
+    assert h.run("run", "kill_rules") == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event"')]
+    [line] = lines
+    printed = json.loads(line)
+    assert printed["checked"] == [*range(10), "+90 more"] and printed["nested"]["ids"][-1] == "+2 more"
+    assert printed["fired"] == []
+    [beat] = h.beats("kill_rules")
+    assert beat["detail"]["checked"] == list(range(100))
+    assert h.run("dry-run", "kill_rules") == 0
+    pretty = [line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event"')]
+    assert pretty[0] == "{" and len(pretty) > 100
+
+
 @pytest.mark.parametrize("argv", [["approvals", "list"], ["replies", "list"], ["killrules", "show"],
                                   ["copy", "check"], ["campaigns", "show"]])
 def test_live_on_a_read_only_action_says_it_does_nothing(argv, capsys):

@@ -49,6 +49,14 @@ All firings of a run go in one Slack message to the alert channel, mentioning th
 with no Slack token the message goes to the log (base/notify.py). Dry-run computes, records the
 items and posts to the dev channel, but changes neither the sheet nor Instantly.
 
+The outbox (W1-1, 19 Oct 2026; code-platform-ops B2): the pause happens before the alert, so a Slack that
+times out used to leave a mailbox paused with nobody told. Each live item keeps its slack_ts empty until
+a post went, and its attempts in its payload (alert_attempts). Before it looks for new firings, every
+run posts again, in one message, the open live items written by this code (payload outbox) whose alert
+never went and that are under OUTBOX_DAYS old; an item tried OUTBOX_TRIES times waits for the run at
+OUTBOX_HOUR_UK, once a day. A dry-run item is never posted again, and nothing is posted again from a
+dry run; an alert that went to the log for want of a token is not tried again.
+
 Not here: a human-in-the-loop item left for 24 hours (the reply desk escalates it; enrol already
 pauses while a positive reply waits, enrol.reply_pause); the credit rules (budget.py and the
 jobs that spend credits); a failed settings sync (settings_sync keeps the version in force).
@@ -70,7 +78,7 @@ from us_outbound.base.holds import KIND, PAUSE_ENROLMENT, PAUSE_MAILBOX, PAUSE_S
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
-from us_outbound.context import ConfigError, Context
+from us_outbound.context import UK, ConfigError, Context
 from us_outbound.logs import log
 from us_outbound.replies import kinds
 from us_outbound.settings.model import Settings
@@ -95,6 +103,9 @@ VITALS_FAIL_WARMUP = frozenset({"banned", "permanent_suspension"})  # instantly.
 SOURCES = ("apollo", "clay")  # contacts.email_source
 BOUNCE_REASON = "bounce"
 LIST_LIMIT = 100
+OUTBOX_DAYS = 7  # an item whose alert never went is posted again for this long
+OUTBOX_TRIES = 3  # then only at the OUTBOX_HOUR_UK run, once a day
+OUTBOX_HOUR_UK = 9
 
 
 def _lower(v: Any) -> str:
@@ -466,9 +477,66 @@ def _pause(ctx: Context, settings: Settings, address: str) -> tuple[str, str]:
 
 
 def _payload(ctx: Context, f: Firing) -> dict:
+    """outbox: written by the code that posts an unsent alert again (the module docstring's outbox)."""
     return {"rule": f.rule, "scope": f.scope, "target": f.target, "action": f.action, "reason": f.reason,
             "mailboxes": f.mailboxes, "until": f.until.isoformat() if f.until else None, "numbers": f.numbers,
-            "dry_run": ctx.dry_run, "outcome": f.outcome, "campaigns_paused": f.campaigns}
+            "dry_run": ctx.dry_run, "outcome": f.outcome, "campaigns_paused": f.campaigns, "outbox": True}
+
+
+def _firing(item: Mapping[str, Any]) -> Firing:
+    """The Firing an item's payload records, for its alert posted again."""
+    p = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
+    until = p.get("until")
+    return Firing(rule=str(p.get("rule") or ""), scope=str(p.get("scope") or ""), target=str(p.get("target") or ""),
+                  action=str(p.get("action") or ""), reason=str(p.get("reason") or ""),
+                  mailboxes=list(p.get("mailboxes") or ()), until=date.fromisoformat(str(until)) if until else None,
+                  numbers=dict(p.get("numbers") or {}), item_id=str(item["item_id"]), outcome=str(p.get("outcome") or ""),
+                  campaigns=list(p.get("campaigns_paused") or ()))
+
+
+def _attempted(ctx: Context, item_id: str, payload: Mapping[str, Any], sent: Mapping[str, Any]) -> None:
+    """One more try at the item's alert: its attempts and last error in the payload, its slack_ts once it went."""
+    row: dict[str, Any] = {"item_id": item_id, "payload": {
+        **payload, "alert_attempts": int(payload.get("alert_attempts") or 0) + 1, "alert_error": sent.get("error")}}
+    if sent.get("ts"):
+        row.update(slack_channel=sent.get("channel"), slack_ts=sent["ts"])
+    ctx.store.upsert("hitl_items", [row])
+
+
+def unsent(ctx: Context) -> list[dict]:
+    """The open live items whose alert has not gone and is due another try (the module docstring's outbox)."""
+    since = ctx.now - timedelta(days=OUTBOX_DAYS)
+    daily = ctx.now.astimezone(UK).hour == OUTBOX_HOUR_UK
+    out = []
+    for r in holds.in_force(ctx.store):
+        p = r.get("payload") if isinstance(r.get("payload"), Mapping) else {}
+        created = utc(r.get("created_at"))
+        if (r.get("slack_ts") or not p.get("outbox") or p.get("dry_run") is not False or created is None
+                or created < since or p.get("alert_error") == notify.NO_TOKEN):
+            continue
+        if int(p.get("alert_attempts") or 0) >= OUTBOX_TRIES and not daily:
+            continue
+        out.append(r)
+    return sorted(out, key=lambda r: (utc(r.get("created_at")), str(r["item_id"])))
+
+
+def post_unsent(ctx: Context) -> dict:
+    """Post the outbox's items again, in one message, at most once a run; live runs only."""
+    if not ctx.live:
+        return {}
+    items = unsent(ctx)
+    if not items:
+        return {}
+    fired = [_firing(r) for r in items]
+    first = min(utc(r.get("created_at")) for r in items)
+    text = (message(ctx, fired, []) + f"\n_Posted again: Slack did not take this alert when it was first sent "
+            f"({first.astimezone(UK):%a %d %b %H:%M} UK)._")
+    sent = notify.alert(ctx, text)
+    for r in items:
+        _attempted(ctx, r["item_id"], r.get("payload") or {}, sent)
+    log("kill_rules_reposted", run_id=ctx.run_id, items=[r["item_id"] for r in items], posted=bool(sent.get("ts")),
+        error=sent.get("error"))
+    return {"items": [r["item_id"] for r in items], "posted": bool(sent.get("ts")), "error": sent.get("error")}
 
 
 def _record(ctx: Context, f: Firing) -> None:
@@ -695,6 +763,7 @@ def message(ctx: Context, fired: list[Firing], expired: list[dict]) -> str:
 
 def run(ctx: Context) -> dict:
     """The kill_rules job (JOB CONTRACT: run(ctx) -> summary)."""
+    reposted = post_unsent(ctx)  # first: an earlier run's pause whose alert never went
     settings = holds.with_holds(ctx.store, ctx.settings)
     ev = _Events(ctx.store, ctx.now)
     fired_before = _Fired(ctx.store)
@@ -730,10 +799,8 @@ def run(ctx: Context) -> dict:
     alert: dict[str, Any] = {}
     if firing or expired:
         alert = notify.alert(ctx, message(ctx, firing, expired))
-        if alert.get("ts"):
-            for f in firing:
-                ctx.store.upsert("hitl_items", [{"item_id": f.item_id, "slack_channel": alert.get("channel"),
-                                                 "slack_ts": alert["ts"]}])
+        for f in firing:  # slack_ts once it went; otherwise the outbox posts it again next run
+            _attempted(ctx, f.item_id, _payload(ctx, f), alert)
     summary = {
         "job": JOB, "dry_run": ctx.dry_run,
         "fired": [{"rule": f.rule, "target": f.target, "action": f.action, "reason": f.reason, "item_id": f.item_id,
@@ -744,6 +811,7 @@ def run(ctx: Context) -> dict:
         "holds_in_force": len(holds.in_force(ctx.store)),
         "vitals_error": vitals_error or None,
         "alert": alert or None,
+        "reposted": reposted or None,
     }
     log("kill_rules_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "fired"},
         fired=[f.rule for f in firing])

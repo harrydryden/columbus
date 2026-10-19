@@ -20,6 +20,19 @@ Nightly at 02:00 UK and on demand:
 
 The settings table has one row per (tab, key) version; values is the raw sheet row.
 A second run over an unchanged sheet writes nothing.
+
+load_current re-reads the version in force leniently (strict=False, settings/validate.py): a General key this code
+does not know, has renamed or retired is a warning, so a package that adds or deletes a key, or a rollback after Harry
+adds one, never makes the version in force unusable (W1-1, 19 Oct 2026; RS P0-2). The sync itself reads the sheet
+strictly, and its summary lists the General rows it did not read (general_warnings); the unknown and renamed ones
+are posted once a week each.
+
+load_fallback is for the safety jobs alone (ops/bootstrap.py SAFETY_JOBS) when the version in force fails even so:
+each failing tab's most recent earlier version (by effective_to, up to FALLBACK_VERSIONS back) that validates with
+the others, or, when no combination does, General's defaults with the Mailboxes and States tabs in force if they
+validate alone. live_sending is always read raw from the General row in force, never a default, so a brake on the
+fallback runs live when the sheet said live. While the settings are unusable, settings_sync says once a day that
+the brakes run on the fallback.
 """
 
 from __future__ import annotations
@@ -43,6 +56,7 @@ from us_outbound.settings.validate import (
     KEY_COLUMNS,
     MAY_BE_EMPTY,
     RowError,
+    general_warnings,
     is_legacy_copy,
     is_legacy_roles,
     natural_key,
@@ -53,6 +67,10 @@ from us_outbound.timeparse import utc_strict
 
 TABLE = "settings"
 SLACK_ERROR_LINES = 20
+# What unusable settings stop (W1-1: the brakes run on load_fallback); ops/heartbeat.settings_fault says it too.
+REFUSE_WORDS = "every job but the safety jobs refuses to start (the safety jobs run on a fallback that only pauses)"
+FALLBACK_VERSIONS = 5  # how many earlier versions of a failing tab the fallback tries, the latest first
+FALLBACK_EARLIER, FALLBACK_DEFAULTS = "earlier versions", "defaults"  # Settings.fallback_mode
 HEADLINE = "The settings sheet has errors"  # format_errors' headline opens with it (ops/job_errors quotes it)
 # When the worker reads the sheet by itself (ops/schedule.py: 02:00 daily, 11:30 weekdays; ops/scheduler.AT_START).
 SYNC_TIMES = "each time the worker starts, and at 02:00 UK daily and 11:30 UK on weekdays"
@@ -144,8 +162,101 @@ def load_current(store: Store) -> tuple[Settings | None, dict[str, list[RowError
     tab to the latest effective_from among its rows; synced_at is the latest row write.
     """
     in_force, _ = _in_force(store)
-    settings, errors = validate_all(_stored(in_force))
+    settings, errors = validate_all(_stored(in_force), strict=False)
     return (_stamp(settings, in_force) if settings else None), errors
+
+
+def _rows_before(rows: list[dict], order: list[dict], at: datetime) -> Rows:
+    """A tab's rows as they stood just before `at` (in force from before it, closed at or after it), in the sheet
+    order recorded then."""
+    def held(r: Mapping[str, Any]) -> bool:
+        to = r.get("effective_to")
+        return utc_strict(r["effective_from"]) < at and (to is None or utc_strict(to) >= at)
+
+    then = {str(r["key"]): r for r in sorted((r for r in rows if held(r)), key=lambda r: utc_strict(r["effective_from"]))}
+    keys = next((list((r.get("values") or {}).get("keys") or ()) for r in order if held(r)), [])
+    pos = {k: i for i, k in enumerate(keys)}
+    return [_raw(then[k]["values"] or {}) for k in sorted(then, key=lambda k: (pos.get(k, len(pos)), k))]
+
+
+def earlier_versions(store: Store, tab: str, limit: int = FALLBACK_VERSIONS) -> list[Rows]:
+    """The tab's versions before the one in force, the latest first: the rows as they stood just before each time a
+    row of it was closed (effective_to descending), up to `limit` that differ."""
+    rows = store.select(TABLE, {"tab": tab})
+    order = [r for r in store.select(TABLE, {"tab": ORDER_TAB}) if r.get("key") == tab]
+    closes = sorted({utc_strict(r["effective_to"]) for r in rows + order if r.get("effective_to") is not None},
+                    reverse=True)
+    out: list[Rows] = []
+    for at in closes:
+        version = _rows_before(rows, order, at)
+        if version and version not in out:
+            out.append(version)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def raw_live_sending(in_force: InForce) -> bool:
+    """live_sending as the General row in force has it, read on its own: the fallback never takes the default (no)
+    for it, or a brake would run dry while the sheet says live (RS P0-1). Unreadable reads as no."""
+    from us_outbound.settings.parsers import parse_bool
+
+    row = in_force["General"].get("live_sending")
+    text = str(((row or {}).get("values") or {}).get("value") or "").strip()
+    try:
+        return bool(parse_bool(text)) if text else False
+    except ValueError:
+        log("settings_fallback_live_sending_unreadable", value=text[:20])
+        return False
+
+
+def load_fallback(store: Store) -> Settings | None:
+    """The last-good settings for the safety jobs (module docstring), or None when nothing at all is stored. The
+    settings in force when they validate (fallback_tabs empty)."""
+    in_force, _ = _in_force(store)
+    if not any(in_force[t] for t in TABS):
+        return None
+    stored = _stored(in_force)
+    settings, errors = validate_all(stored, strict=False)
+    if settings is not None:
+        return _stamp(settings, in_force)
+    failing = [t for t in TABS if errors[t]]
+    live = raw_live_sending(in_force)
+    chosen = dict(stored)
+    for tab in failing:
+        for version in earlier_versions(store, tab):
+            _, errs = validate_all({**chosen, tab: version}, strict=False)
+            if not errs[tab]:
+                chosen[tab] = version
+                break
+    settings, _ = validate_all(chosen, strict=False)
+    if settings is not None:
+        mode = FALLBACK_EARLIER
+    else:  # no combination validates: General's defaults, with the registry and the states if they stand alone
+        from us_outbound.settings.model import General
+        from us_outbound.settings.validate import validate_tab
+
+        mailboxes, m_errors = validate_tab("Mailboxes", stored["Mailboxes"], strict=False)
+        states, s_errors = validate_tab("States", stored["States"], strict=False)
+        settings = Settings(general=General(), mailboxes=() if m_errors else mailboxes, states=() if s_errors else states)
+        mode = FALLBACK_DEFAULTS
+    settings = dataclasses.replace(_stamp(settings, in_force), fallback_tabs=frozenset(failing), fallback_mode=mode,
+                                   general=dataclasses.replace(settings.general, live_sending=live))
+    log("settings_fallback", tabs=failing, mode=mode, live_sending=live)
+    return settings
+
+
+def fallback_line(settings: Settings) -> str:
+    """The fallback in words, for Slack and the heartbeat_check readers."""
+    tabs = _and([f"{t} tab" for t in sorted(settings.fallback_tabs)])
+    stand_in = (f"an earlier good version of the {tabs}" if settings.fallback_mode == FALLBACK_EARLIER else
+                "the code defaults for the General tab, with the Mailboxes and States tabs as they are")
+    return (f"The safety jobs (the kill rules, the blackout pause, reading replies and email results, the do-not-contact "
+            f"list, the health check and the stop command) are running on {stand_in}, because the {tabs} in force "
+            f"{'fails' if len(settings.fallback_tabs) == 1 else 'fail'} a check. They only pause and stop: nothing "
+            f"is started, added or sent, live_sending stays as the sheet has it "
+            f"({'yes' if settings.general.live_sending else 'no'}), and enrolment and the reply desk stay stopped "
+            "until the sheet is fixed.")
 
 
 def _choose(
@@ -259,8 +370,7 @@ def format_errors(report: Mapping[str, list[RowError]], unusable: list[str], ctx
                      "until the errors are fixed.")
     if unusable:
         facts.append(f"The {_and([tab(t) for t in unusable])} {'has' if len(unusable) == 1 else 'have'} no earlier "
-                     "good version to fall back on, so every job except the hourly health check refuses to start "
-                     "until the errors are fixed.")
+                     f"good version to fall back on, so {REFUSE_WORDS} until the errors are fixed.")
     errors = [e for t in tabs for e in report[t]]
     facts += [f"• {_slack_escape(str(e))}" for e in errors[:SLACK_ERROR_LINES]]
     if len(errors) > SLACK_ERROR_LINES:
@@ -362,10 +472,13 @@ def run(ctx: Context) -> dict:
             alert_error = exc
             log("settings_sync_alert_failed", error=str(exc))
 
+    warnings = general_warnings(sheet.get("General"))
+    warned = _post_warnings(ctx, warnings)
     settings, _ = load_current(ctx.store)
-    rescored, named, lookalike = False, None, None
+    rescored, named, lookalike, fallback = False, None, None, None
     if settings is None:
         log("settings_sync_rescore_skipped", reason="settings unusable", unusable=unusable)
+        fallback = _post_fallback(ctx)
     else:
         current = dataclasses.replace(ctx, settings=settings)
         named = _named(current)
@@ -386,6 +499,9 @@ def run(ctx: Context) -> dict:
         "named_accounts": named,
         "lookalike_facts": lookalike,
         "rescored": rescored,
+        "general_warnings": [str(w) for w in warnings],
+        "warnings_posted": warned,
+        "fallback": fallback,
     }
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
         summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
@@ -401,6 +517,50 @@ def run(ctx: Context) -> dict:
     if alert_error is not None:
         raise alert_error
     return summary
+
+
+WARNING_HEAD = "The settings sheet has General rows the jobs do not read"
+
+
+def _post_warnings(ctx: Context, warnings: list[RowError]) -> list[str]:
+    """The unknown and renamed General keys, once a week each (a retired key's row is harmless and is only listed in
+    the summary). Never raises: the sync goes on."""
+    from us_outbound.base import notify, say
+    from us_outbound.settings.validate import RETIRED_GENERAL
+
+    told = [w for w in warnings if w.label not in RETIRED_GENERAL]
+    if not told:
+        return []
+    try:
+        pairs = [(notify.once_key(ctx, "settings_warning", w.label, per="week"), f"• {_slack_escape(str(w))}")
+                 for w in told]
+        sent = notify.post_once(ctx, pairs, head=f"{say.ACTION} *{WARNING_HEAD}*",
+                                foot=f"_A typo in a key name leaves its value unread: correct it on the "
+                                     f"{say.sheet_link(ctx, 'General')}._")
+        return list(sent.get("keys") or [])
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("settings_warnings_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
+
+
+def _post_fallback(ctx: Context) -> dict | None:
+    """While the settings are unusable: what the safety jobs run on, once a day (load_fallback). Never raises."""
+    from us_outbound.base import notify, say
+
+    try:
+        fallback = load_fallback(ctx.store)
+        if fallback is None:
+            return None
+        sent = notify.post_once(ctx, [(notify.once_key(ctx, "settings_fallback"), fallback_line(fallback))],
+                                head=f"{say.URGENT} *The safety jobs are running on a fallback of the settings*")
+        return {"tabs": sorted(fallback.fallback_tabs), "mode": fallback.fallback_mode, "posted": sent.get("keys") or []}
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("settings_fallback_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return None
 
 
 def bootstrap(ctx: Context, *, force: bool = False) -> str | None:

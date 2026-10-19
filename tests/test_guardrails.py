@@ -926,6 +926,51 @@ def test_refuse_unless_allowed_judges_early_and_records_only_a_refusal():
     assert guard.refuse_unless_allowed("slack", Op("chat.postMessage", target=ALERT, write=True)) is True
 
 
+def test_a_protective_only_guard_pauses_and_stops_but_never_starts_adds_or_sends():
+    """W1-1 (RS P0-1): a safety job on the last-good settings runs live with Guard.protective_only. What starts sending
+    or reaches a prospect is refused before any request; what slows or stops it goes through as in any live run."""
+    guard = Guard(live=True, bounds=BOUNDS, protective_only=True)
+    campaign, box = PREFIX + "Hannah Spalding", ADDRESSES[0]
+    refused = [
+        ("instantly", Op("lead.add", target=campaign, write=True)),
+        ("instantly", Op("campaign.activate", target=campaign, write=True)),
+        ("instantly", Op("account.resume", target=box, write=True, detail={"accounts": [box]})),
+        ("instantly", Op("email.reply", target=box, write=True, detail={
+            "accounts": [box], "campaign": campaign, "approved_by": APPROVER})),
+        ("instantly", Op("email.forward", target=box, write=True, detail={"accounts": [box], "to": [ESCALATION]})),
+        # A daily limit raised, or set with no limit to compare: refused. 30 -> 40 is up.
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 40,
+                                                                                 "previous_limit": 30})),
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 10})),
+    ]
+    for system, op in refused:
+        with pytest.raises(GuardViolation, match="protective-only mode"):
+            guard.authorize(system, op)
+    allowed = [
+        ("instantly", Op("campaign.pause", target=campaign, write=True)),
+        ("instantly", Op("lead.stop", target=campaign, write=True)),
+        ("instantly", Op("lead.delete", target=campaign, write=True)),
+        ("instantly", Op("blocklist.add", target="blocklist", write=True, detail={"entries": ["x@acme.com"]})),
+        ("instantly", Op("account.update_limit", target=box, write=True, detail={"accounts": [box], "daily_limit": 10,
+                                                                                 "previous_limit": 30})),  # down
+        ("hubspot", Op("communication.unsubscribe", target="x@acme.com", write=True)),
+        ("sheets", Op("values.update", target=SHEET, write=True)),
+        ("slack", Op("chat.postMessage", target=ALERT, write=True)),
+    ]
+    assert all(guard.authorize(system, op) is True for system, op in allowed)
+    # The same calls without the flag are as before: an activation is allowed live.
+    assert Guard(live=True, bounds=BOUNDS).authorize("instantly", Op("campaign.activate", target=campaign, write=True))
+    # Through the client: lead.add is refused before any request goes, campaign.pause goes.
+    t = FakeTransport()
+    t.route("GET", "/campaigns", {"items": [{"id": "c1", "name": campaign, "status": 1}]})
+    inst = Instantly(guard, t, "test-key")
+    with pytest.raises(GuardViolation, match="protective-only mode"):
+        inst.add_leads(campaign, [{"email": "dana@harbor.com"}])
+    assert [r for r in t.requests if r.method == "POST"] == []
+    inst.pause_campaign(campaign)
+    assert [r.url.rsplit("/v2", 1)[1] for r in t.requests if r.method == "POST"] == ["/campaigns/c1/pause"]
+
+
 # -- (c) static: who may import what ----------------------------------------------------------------
 
 IMPORT_RULES: list[tuple[str, set[str]]] = [

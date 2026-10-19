@@ -51,7 +51,37 @@ def test_ok_run_writes_one_row_with_the_summary():
     assert row["run_id"] == ctx.run_id and row["job"] == "suppression_load"
     assert row["status"] == "ok" and row["dry_run"] is True and row["error"] is None
     assert row["started_at"] == MON_NOON and row["finished_at"] >= MON_NOON
+    # The row's detail is the summary plus how long the run took (W1-1); the job's own summary is returned as it was.
+    duration = row["detail"].pop("duration_s")
+    assert isinstance(duration, float) and duration >= 0
     assert row["detail"] == {"added": 2, "when": MON_NOON.isoformat()} == out
+
+
+@pytest.mark.parametrize("summary, status", [
+    # enrol's live summary: "skipped" is a Counter of the accounts it passed over, so a truthy "skipped" is no skip.
+    # Every live enrol run was stored as skipped until 19 Oct 2026 (ops/heartbeat.py:150; enrol.py:1091).
+    ({"enrolled": 21, "skipped": {"no contact": 335}}, "ok"),
+    ({"enrolled": 0, "skipped": {}}, "ok"),
+    ({"status": "skipped", "reason": "a blackout date"}, "skipped"),  # enrol's own skip (enrol.py:960)
+    ({"skipped": True, "reason": "no registry mailboxes"}, "skipped"),
+    ({"status": "ok", "skipped": 3}, "ok"),
+])
+def test_the_run_status_follows_the_summary_not_a_truthy_skipped_key(summary, status):
+    ctx = ctx_at(MON_NOON, job="enrol")
+    hb.run_job(ctx, lambda c: summary)
+    [row] = ctx.store.tables["heartbeats"]
+    assert row["status"] == status
+    assert hb.summary_status(summary) == status
+
+
+def test_a_run_on_the_settings_fallback_names_it_in_its_detail():
+    import dataclasses
+
+    fallback = dataclasses.replace(SETTINGS, fallback_tabs=frozenset({"Copy"}), fallback_mode="earlier versions")
+    ctx = make_context(fallback, job="kill_rules", now=MON_NOON, transport=slack_transport())
+    hb.run_job(ctx, lambda c: {"fired": []})
+    [row] = ctx.store.tables["heartbeats"]
+    assert row["status"] == "ok" and row["detail"]["settings_fallback"] == ["Copy"]
 
 
 def test_error_run_writes_error_and_reraises():
@@ -194,7 +224,7 @@ def test_unusable_settings_are_the_cause_said_once_with_the_tab_its_errors_and_t
             "on and HubSpot is not being updated.") in text
     assert text.count("settings sheet has errors") == 1 and "settings are unusable" not in text  # said once
     assert "Why: the settings sheet has errors on the <https://docs.google.com/spreadsheets/d/" in text
-    assert "|Industries tab>, so every job except the hourly health check refuses to start." in text
+    assert "|Industries tab>, so every job but the safety jobs refuses to start (the safety jobs run on a fallback that only pauses)." in text
     assert "   ◦ Industries row 1:" in text  # the first errors of the saved version, without the logs
     assert ("2. Run `railway ssh -- us-outbound sync` to read the sheet now. Otherwise it is read each time the worker "
             "starts, and at 02:00 UK daily and 11:30 UK on weekdays.") in text

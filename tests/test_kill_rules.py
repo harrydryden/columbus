@@ -409,6 +409,78 @@ def test_with_no_slack_token_the_alert_goes_to_the_log_and_the_pause_still_happe
     assert slack_posts(t) == [] and '"event": "slack_off"' in capsys.readouterr().out
 
 
+def _slack_times_out(t, times: int = 1):
+    """The next `times` posts raise ReadTimeout (an OSError: the POST may have gone), then posts go through."""
+    import requests
+
+    left = [times]
+
+    def post(req):
+        if left[0] > 0:
+            left[0] -= 1
+            raise requests.exceptions.ReadTimeout("read timed out")
+        return {"ok": True, "channel": req.json["channel"], "ts": "2.2"}
+
+    t.route("POST", "chat.postMessage", fn=post)
+
+
+def test_an_alert_lost_to_a_slack_timeout_is_posted_again_from_the_outbox():
+    """W1-1 (code-platform-ops B2): the pause comes before the alert, and a Slack ReadTimeout lost the alert for good
+    while the mailbox stayed paused. Run 1: paused, the alert times out, the item keeps slack_ts empty. Run 2 (an
+    hour on, Slack healthy): exactly one post, slack_ts set. Run 3: nothing more."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 40, bounced=2)
+    _slack_times_out(t)
+    out = kill_rules.run(ctx)
+    assert out["alert"]["posted"] is False and out["alert"]["error"] == "unknown outcome: ReadTimeout"
+    [item] = items(ctx, "open")
+    assert item.get("slack_ts") is None and item["payload"]["alert_attempts"] == 1 and item["payload"]["outbox"] is True
+    assert row(sheets, HANNAH)["status"] == "Paused" and inst.by_name(C_HANNAH)["status"] == 2  # the pause stood
+    run2 = later(ctx, t, 1 / 24)
+    out2 = kill_rules.run(run2)
+    assert out2["fired"] == [] and out2["reposted"] == {"items": [item["item_id"]], "posted": True, "error": None}
+    [post] = [p for p in slack_posts(t) if p.json.get("text")][-1:]
+    assert "Safety stop: Hannah's mailbox has stopped sending" in post.json["text"]  # the same alert, posted again
+    assert "Posted again" in post.json["text"]
+    [item] = items(ctx, "open")
+    assert item["slack_ts"] == "2.2" and item["payload"]["alert_attempts"] == 2
+    posts_so_far = len(slack_posts(t))
+    assert kill_rules.run(later(ctx, t, 2 / 24))["reposted"] is None and len(slack_posts(t)) == posts_so_far
+
+
+def test_the_outbox_skips_dry_run_items_old_items_and_backs_off_after_three_tries():
+    ctx, t, inst, sheets = setup(live=False)
+    campaigns(inst)
+    sends(ctx, HANNAH, 40, bounced=2)
+    _slack_times_out(t)
+    kill_rules.run(ctx)  # dry run: its alert to the dev channel times out
+    [dry] = items(ctx, "open")
+    assert dry.get("slack_ts") is None and dry["payload"]["dry_run"] is True
+    live = later(ctx, t, 1 / 24)
+    live.guard.configure(live=True)
+    base = {"rule": "vitals", "scope": "mailbox", "target": SAM, "action": "pause_mailbox", "reason": "sending_error",
+            "mailboxes": [SAM], "until": None, "numbers": {}, "dry_run": False, "outcome": "", "campaigns_paused": [],
+            "outbox": True}
+    ctx.store.upsert("hitl_items", [
+        # 8 days old: past OUTBOX_DAYS (7), never posted again.
+        {"item_id": "old", "kind": "kill_rule", "status": "open", "created_at": ctx.now - timedelta(days=8),
+         "payload": {**base, "alert_attempts": 1}},
+        # tried 3 times (OUTBOX_TRIES): waits for the 09:00 UK run.
+        {"item_id": "tried", "kind": "kill_rule", "status": "open", "created_at": ctx.now - timedelta(hours=3),
+         "payload": {**base, "alert_attempts": 3}},
+        # written before the outbox existed (no outbox key): never posted again.
+        {"item_id": "before", "kind": "kill_rule", "status": "open", "created_at": ctx.now - timedelta(hours=3),
+         "payload": {k: v for k, v in base.items() if k != "outbox"}},
+    ])
+    assert [r["item_id"] for r in kill_rules.unsent(live)] == []  # 13:00 UK: none is due
+    nine = later(ctx, t, 20 / 24)  # Wed 28 Oct 08:00 UTC = 08:00 UK (GMT)
+    nine.now = nine.now.replace(hour=9)
+    nine.guard.configure(live=True)
+    assert [r["item_id"] for r in kill_rules.unsent(nine)] == ["tried"]
+    assert kill_rules.post_unsent(ctx) == {}  # a dry run posts nothing again
+
+
 def test_a_held_mailbox_never_goes_back_on_a_sending_list_before_the_sheet_syncs():
     ctx, t, inst, sheets = setup()
     campaigns(inst)

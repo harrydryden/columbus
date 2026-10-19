@@ -227,11 +227,19 @@ def test_bad_tab_with_no_version_in_force_is_unusable(ctx, sheet, fake_score):
     assert summary["tabs"]["Signals"]["status"] == "unusable"
     assert _rows(ctx, tab="Signals") == []
     assert _rows(ctx, tab="General")  # the valid tabs are still stored
-    (post,) = ctx.clients.slack.posts
+    post, fallback = ctx.clients.slack.posts
     assert post[1].startswith(":rotating_light: *The settings sheet has errors, so the jobs have stopped*")
-    assert ("|Signals tab> has no earlier good version to fall back on, so every job except the hourly health check "
-            "refuses to start until the errors are fixed.") in post[1]
+    assert ("|Signals tab> has no earlier good version to fall back on, so every job but the safety jobs refuses to "
+            "start (the safety jobs run on a fallback that only pauses) until the errors are fixed.") in post[1]
     assert "Not applied" not in post[1]  # nothing earlier to keep
+    # The brakes run on a fallback, and the sync says so once a day (W1-1): Signals has no earlier version, so it is
+    # General's defaults with the Mailboxes and States tabs in force, live_sending as the stored row has it (no).
+    assert summary["fallback"] == {"tabs": ["Signals"], "mode": "defaults",
+                                   "posted": [f"settings_fallback:{T1.date().isoformat()}"]}
+    assert "*The safety jobs are running on a fallback of the settings*" in fallback[1]
+    assert "live_sending stays as the sheet has it (no)" in fallback[1]
+    sync.run(ctx)  # the same day again: not posted twice
+    assert len(ctx.clients.slack.posts) == 3  # the second run's sheet-errors post only
     assert summary["rescored"] is False and fake_score.calls == []
     settings, errors = sync.load_current(ctx.store)
     assert settings is None and errors["Signals"]
@@ -294,6 +302,34 @@ def test_general_note_rows_are_not_stored(ctx, sheet):
     sheet["General"].append({"key": "", "value": "", "note": "Section: HubSpot"})
     sync.run(ctx)
     assert _rows(ctx, tab="General", key="") == []
+
+
+def test_a_key_the_code_does_not_know_never_makes_the_version_in_force_unusable(ctx, sheet):
+    """RS P0-2, the rollback case: Harry adds a row for a key a newer package reads (explore_share), the sync stores
+    it, and the code in force does not know it. load_current used to reject General, so every job stopped; it reads
+    the version in force leniently now, and the row is just not read."""
+    sync.run(ctx)
+    ctx.store.upsert("settings", [{"tab": "General", "key": "explore_share", "values": {
+        "key": "explore_share", "value": "0.15", "note": ""}, "effective_from": T2, "effective_to": None,
+        "synced_at": T2}])
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values())
+    assert not hasattr(settings.general, "explore_share")
+
+
+def test_the_sync_lists_the_general_rows_it_does_not_read_and_posts_the_unknown_ones_weekly(ctx, sheet):
+    """A typo'd key (live_sendng) is read as nothing: the sync still brings the sheet in, lists it in its summary,
+    and posts it once a week. A retired key (postal_address) is harmless: listed, never posted."""
+    sheet["General"].append({"key": "live_sendng", "value": "yes", "note": ""})
+    sheet["General"].append({"key": "postal_address", "value": "1 Main St", "note": ""})
+    summary = sync.run(ctx)
+    assert summary["rejected"] == [] and summary["unusable"] == []
+    assert len(summary["general_warnings"]) == 2
+    assert summary["warnings_posted"] == ["settings_warning:live_sendng:2026-W40"]  # Thu 1 Oct 2026 is in ISO week 40
+    (post,) = ctx.clients.slack.posts
+    assert sync.WARNING_HEAD in post[1] and "unknown key 'live_sendng'" in post[1] and "postal_address" not in post[1]
+    ctx.now = T2
+    assert sync.run(ctx)["warnings_posted"] == [] and len(ctx.clients.slack.posts) == 1  # the same week
 
 
 def test_a_failed_alert_is_raised_after_the_writes_and_rescore(ctx, sheet, fake_score):
