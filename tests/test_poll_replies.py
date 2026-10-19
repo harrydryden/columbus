@@ -282,14 +282,102 @@ def test_hubspot_opt_out_only_when_hubspot_has_the_contact(world):
     assert [e["event_id"] for e in world.events("unsubscribed")] == ["unsubscribed:E1"]
 
 
+def opted_out_at_each_call(world) -> list[tuple[bool, bool]]:
+    """(suppressed, blocklisted) as each model request arrives: what the stop rule had done before the model."""
+    seen: list[tuple[bool, bool]] = []
+    world.sdk.before = lambda: seen.append((bool(world.suppressed(JANE)), world.blocked == [[JANE]]))
+    return seen
+
+
 @pytest.mark.parametrize("text", ["STOP", "Please remove me from your list.", "Unsubscribe", "take me off this list",
                                   "Do not contact me again", "stop emailing me"])
-def test_the_stop_rule_opts_out_without_a_model_call(world, text):
+def test_the_stop_rule_opts_out_before_the_model_is_asked(world, text):
+    """W1-2 (code-replies-crm H2; RS §2 W1-2): a stop phrasing is suppressed and blocklisted at once, and only then is
+    the model asked (it may be a warm reply that also says "remove me")."""
+    world.sdk.answer = classification("unsubscribe", asks_to_stop=True)
+    seen = opted_out_at_each_call(world)
     world.reply("E1", text=text)
+    out = run(world)
+    assert seen == [(True, True)]  # one classification call, made after the suppression and the blocklist
+    assert world.events("replied")[0]["reply_class"] == "unsubscribe" and world.items() == []
+    assert world.blocked == [[JANE]] and out["opted_out"] == {"done": 1}
+    [note] = world.slack_posts
+    assert "Read as a stop request by the stop-word check" in note["text"]
+
+
+WARM_AND_STOP = "Sounds interesting, can we talk Tuesday? Please remove me from the newsletter though."
+
+
+def test_a_warm_reply_that_also_asks_to_stop_is_suppressed_first_and_still_reaches_a_person(world):
+    world.sdk.answer = classification("positive", confidence=0.9)
+    seen = opted_out_at_each_call(world)
+    world.reply("E1", text=WARM_AND_STOP)
+    out = run(world)
+    assert seen[0] == (True, True)  # the suppression row and the blocklist came before the model call
+    assert world.suppressed(JANE)[0]["reason"] == "unsubscribe" and world.blocked == [[JANE]]
+    [marker] = world.events("unsubscribed")
+    assert marker["event_id"] == "unsubscribed:E1"
+    item = only_item(world)
+    p = item["payload"]
+    assert (item["status"], p["reply_class"], p["classified_by"]) == ("open", "positive", "model+rule")
+    assert p["also_asked_to_stop"] is True and p["opt_out"] == "done" and p["stop_note"] == poll.ALSO_STOP
+    assert world.events("replied")[0]["reply_class"] == "positive"
+    assert out["items"] == {"positive": 1} and out["also_asked_to_stop"] == 1 and out["opted_out"] == {"done": 1}
+    # The alert says so, first among what is worth knowing.
+    [alert] = [x for x in world.slack_posts if x.get("blocks")]
+    text = "\n".join(b["text"]["text"] for b in alert["blocks"])
+    assert f"*Worth knowing:*\n• *{poll.ALSO_STOP}*" in text
+    assert "Claude was not sure" not in text  # 0.9 is at or over MIN_CONFIDENCE (0.7)
+
+
+def test_a_kept_class_on_a_weak_read_says_the_model_was_unsure(world):
+    """W1-2 review: a class kept because they asked to stop is kept at any confidence (0.3 here, under 0.7), and then
+    counts as an engaged company; the alert says the read was weak."""
+    world.sdk.answer = classification("positive", confidence=0.3)
+    world.reply("E1", text=WARM_AND_STOP)
     run(world)
-    assert world.sdk.calls == []
-    assert world.events("replied")[0]["reply_class"] == "unsubscribe"
+    p = only_item(world)["payload"]
+    assert (p["reply_class"], p["confidence"], p["also_asked_to_stop"]) == ("positive", 0.3, True)
+    [alert] = [x for x in world.slack_posts if x.get("blocks")]
+    text = "\n".join(b["text"]["text"] for b in alert["blocks"])
+    assert "Claude was not sure: it read this as " in text and "at only 30%, kept only because they also" in text
+
+
+def test_the_same_reply_with_the_model_timing_out_is_an_unsubscribe_and_no_item(world):
+    world.sdk.raises = TimeoutError("ReadTimeout")  # anything at all: an OSError from the transport here
+    world.reply("E1", text=WARM_AND_STOP)
+    out = run(world)
+    assert world.items() == [] and world.events("replied")[0]["reply_class"] == "unsubscribe"
+    assert world.suppressed(JANE) and world.blocked == [[JANE]] and len(world.sdk.calls) == 1
+    assert out["retry_later"] == 0 and out["claude_error"].startswith("TimeoutError")
+
+
+def test_a_wrong_person_who_asks_to_be_removed_keeps_the_class_and_is_suppressed(world):
+    world.sdk.answer = classification("wrong_person", confidence=0.8)
+    world.reply("E1", text="Not the right person, please remove me and contact our HR lead instead")
+    run(world)
+    p = only_item(world)["payload"]
+    assert (p["reply_class"], p["also_asked_to_stop"]) == ("wrong_person", True)
+    assert world.suppressed(JANE) and world.blocked == [[JANE]]
+
+
+def test_plain_unsubscribe_with_the_model_saying_negative_is_an_unsubscribe(world):
+    world.sdk.answer = classification("negative", confidence=0.9)
+    world.reply("E1", text="unsubscribe")
+    run(world)
+    assert world.items() == [] and world.events("replied")[0]["reply_class"] == "unsubscribe"
     assert world.blocked == [[JANE]]
+
+
+@pytest.mark.parametrize("cls", ["negative", "objection", "not_now", "other", "wrong_person"])
+def test_C1_the_models_stop_flag_at_low_confidence_always_suppresses(world, cls):
+    """Probe C1 at the job (the classify test has the class rule): the regex sees nothing, the model says
+    asks_to_stop at 0.3. Every one of the five is suppressed and blocklisted; only wrong_person keeps an item."""
+    world.sdk.answer = classification(cls, confidence=0.3, asks_to_stop=True)
+    world.reply("E1", text="I would rather you did not keep sending these.")
+    run(world)
+    assert world.suppressed(JANE) and world.blocked == [[JANE]]
+    assert [i["payload"]["reply_class"] for i in world.items()] == (["wrong_person"] if cls == "wrong_person" else [])
 
 
 def test_a_negative_reply_asking_to_stop_is_an_unsubscribe(world):
@@ -309,6 +397,7 @@ def test_a_colleague_asking_to_stop_suppresses_them_and_the_contact(world):
 
 def test_an_opt_out_that_fails_is_retried_on_the_next_live_run(world):
     world.fail_blocklist(500)
+    world.sdk.answer = classification("unsubscribe", asks_to_stop=True)
     world.reply("E1", text="Unsubscribe me please")
     out = run(world)
     assert out["opted_out"] == {"pending": 1} and world.events("unsubscribed") == []
@@ -318,7 +407,7 @@ def test_an_opt_out_that_fails_is_retried_on_the_next_live_run(world):
     out = run(world)
     assert out["opted_out_on_retry"] == {"done": 1} and len(world.events("unsubscribed")) == 1
     assert any(r.url.endswith("/emails/E1") for r in world.transport.requests)  # read back by id
-    assert world.sdk.calls == []  # the stop rule, both times
+    assert len(world.sdk.calls) == 1  # classified once, after the opt-out; the retry reads the reply back only
     world.at(NOW + timedelta(minutes=30))
     before = len(world.instantly_writes())
     run(world)
@@ -512,8 +601,9 @@ def test_a_reaction_the_bot_cannot_add_never_stops_the_alert(world, capsys):
 def test_the_cap_never_blocks_an_opt_out(world):
     ledger(world, 10.0)
     world.reply("E1", text="Please unsubscribe me.")
-    run(world)
-    assert world.sdk.calls == [] and world.blocked == [[JANE]]
+    out = run(world)
+    assert world.sdk.calls == [] and world.blocked == [[JANE]]  # the cap refuses before any request
+    assert world.events("replied")[0]["reply_class"] == "unsubscribe" and out["claude_cap_reached"] == 1
 
 
 def test_a_model_error_is_retried_then_handed_to_a_person(world):
@@ -572,6 +662,7 @@ def test_the_alert_escapes_what_the_prospect_wrote(world):
 
 def test_dry_run_calls_no_model_writes_no_item_and_sends_nothing(default_settings):
     world = make_world(default_settings, live=False)
+    world.sdk.answer = lambda prompt: classification("unsubscribe" if "remove me" in prompt else "positive")
     world.hubspot_contacts[JANE] = {}
     world.reply("E1")
     world.reply("E2", BOB, to=HARRY, text="Please remove me from your list.")
@@ -697,3 +788,53 @@ def test_an_opt_out_still_waiting_on_instantly_or_hubspot_says_it_is_retried():
                     "On our do-not-contact list now. Instantly's blocklist or HubSpot's opt-out did not take it yet; the "
                     "next check for replies (every 15 minutes) tries again. Read as a stop request by the stop-word "
                     "check; they wrote to hannah@meetspill.org. Nothing to do.")
+
+
+# -- what the read drops, counted (W1-2, code-replies-crm M3) ---------------------------------------------------------
+
+
+def test_each_email_dropped_from_the_read_is_counted_by_why(world):
+    """Five received emails: a campaign send, one from the mailbox itself, a bounce notice at the prospect's domain,
+    one from a Spill address and a prospect's reply. The first four are dropped, each counted; one is processed."""
+    world.reply("D1", HANNAH, ue_type=1, text="A campaign step listed as received")
+    world.reply("D2", HANNAH, text="From the mailbox itself")
+    world.reply("D3", "mailer-daemon@acmecreative.com", text="Delivery failed")
+    world.reply("D4", "hello@spill.chat", text="Internal")
+    world.reply("E1")
+    out = run(world)
+    assert out["dropped"] == {"campaign_send": 1, "from_self": 1, "system_sender": 1, "spill_domain": 1}
+    assert out["classified"] == {"positive": 1} and out["received"] == 5
+
+
+def test_a_warm_reply_that_asked_to_stop_retries_its_opt_out_and_keeps_its_item(world):
+    world.fail_blocklist(500)
+    world.sdk.answer = classification("positive", confidence=0.9)
+    world.reply("E1", text=WARM_AND_STOP)
+    out = run(world)
+    assert out["opted_out"] == {"pending": 1} and only_item(world)["payload"]["opt_out"] == "pending"
+    world.transport.routes.pop()  # the blocklist works again
+    world.at(NOW + timedelta(minutes=15))
+    out = run(world)
+    assert out["opted_out_on_retry"] == {"done": 1} and world.blocked == [[JANE]]
+    assert only_item(world)["status"] == "open"  # still for a person to answer by hand
+
+
+def test_the_first_warm_reply_that_asked_to_stop_end_to_end(world):
+    """W1-2's acceptance: the reply ends with HubSpot records (standard properties only, the strict fake refusing any
+    other), an open item, a Slack alert, and the address suppressed, blocklisted and opted out in HubSpot."""
+    from tests.test_hubspot_writes import FakeHubSpot
+    from us_outbound.crm import hubspot_writes as hw
+
+    crm = FakeHubSpot(world.transport)  # the strict portal (a 400 for any property it lacks)
+    world.sdk.answer = classification("positive", confidence=0.9, demo_requested=True)
+    world.reply("E1", text=WARM_AND_STOP)
+    run(world)
+    item = only_item(world)
+    assert item["status"] == "open" and item["payload"]["also_asked_to_stop"] is True
+    assert [p for p in world.slack_posts if p.get("blocks")]  # the alert
+    assert world.suppressed(JANE) and world.blocked == [[JANE]]
+    out = hw.record_reply(world.ctx, item)  # what the reply desk does next (replies/desk.py)
+    assert out["status"] == "written" and crm.rejected == []
+    assert len(crm.objects["companies"]) == len(crm.objects["contacts"]) == len(crm.objects["notes"]) == 1
+    assert len(crm.objects["tasks"]) == 1 and len(crm.objects["deals"]) == 1
+    assert crm.unsubscribed == ["jane.doe%40acmecreative.com"]

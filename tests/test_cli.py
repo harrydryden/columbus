@@ -83,7 +83,7 @@ class Harness:
         (["settings", "bootstrap", "--live"], {"action": "bootstrap", "live": True, "force": False}),
         (["db", "apply"], {"command": "db", "action": "apply", "live": False}),
         (["db", "apply", "--live"], {"action": "apply", "live": True}),
-        (["hubspot", "setup", "--live"], {"action": "setup", "live": True}),
+        (["capture", "check", "--live"], {"action": "check", "live": True}),
         (["hubspot", "ids"], {"action": "ids"}),
         (["campaigns", "ensure", "--fix"], {"action": "ensure", "fix": True}),
         (["campaigns", "show"], {"action": "show"}),
@@ -114,7 +114,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
                                                "hand_check_post", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
-                                               "blackout", "retention", "label_sample_monthly"}
+                                               "blackout", "retention", "label_sample_monthly", "capture"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"

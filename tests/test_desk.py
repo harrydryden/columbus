@@ -255,21 +255,135 @@ def test_a_failed_send_is_never_retried_without_a_person(settings):
     assert len(inst.replies) == 1
 
 
-def test_a_reply_outside_a_us_outbound_thread_is_refused_once(settings):
+def test_a_reply_outside_a_us_outbound_thread_is_closed_for_a_person_and_the_run_goes_on(settings):
+    """M2 (code-replies-crm; RS §2 W1-2): a colleague's reply whose thread carries no campaign id is refused by the
+    guard (Instantly.reply answers only in a US Outbound thread). Until 19 Oct 2026 the GuardViolation crashed
+    poll_approvals (this test asserted the crash), so the escalation, the send approvals and the hand-check tab were
+    not processed either. Now: that item is handled "by hand" with why, one alert says so, the other item is sent and
+    the run finishes."""
+    ctx, t, crm, sl, inst = desk_world(settings)
+    inst.campaign_of["em-1"] = None  # Instantly's campaign_id "can be null" (OpenAPI)
+    second = reply_row(instantly_email_id="em-2", slack_ts="200.000200")
+    second.update(item_id="item-0002-bbbb", event_id="em-2", created_at=NOW - timedelta(minutes=10))
+    ctx.store.upsert("hitl_items", [second])
+    inst.campaign_of["em-2"] = "c-hannah"
+    sl.thread["200.000200"] = []
+    sl.say(HARRY_ID, "send")
+    sl.say(HARRY_ID, "send", parent="200.000200")
+    out = poll(ctx)  # no exception: exit 0
+    row = row_of(ctx)
+    assert (row["status"], row["handled_by"]) == ("handled", "by hand")
+    assert "US Outbound" in row["payload"]["refused"] and out["by_hand"][0]["item"] == ITEM[:8]
+    replied = ctx.store.get("events", event_id="em-1")
+    assert (replied["approval"], replied["approved_by"]) == ("by hand", "guard")
+    # The other item went, from its own thread, and the rest of the desk ran.
+    [sent] = inst.replies
+    assert sent["reply_to_uuid"] == "em-2" and row_of(ctx, "item-0002-bbbb")["status"] == "handled"
+    assert "hand_check" in out and "send_approvals" in out
+    [alert] = [x for x in sl.texts() if x.startswith(":warning: *Answer ")]
+    assert "by hand*" in alert.splitlines()[0]
+    assert any("refused by a guardrail" in e for e in out["errors"])  # heartbeat_check tells Harry too
+    poll(ctx)  # handled: neither retried nor alerted again
+    assert len(inst.replies) == 1 and len([x for x in sl.texts() if x.startswith(":warning: *Answer ")]) == 1
+
+
+def test_a_hubspot_write_a_guardrail_refuses_leaves_the_item_open_for_its_answer(settings, monkeypatch):
+    """W1-2 review, round 2: a GuardViolation from record_reply reached poll_approvals' per-item catch, which closed
+    the item "by hand" before anyone had approved it, with an alert saying a safety rule stopped the send. Now it is
+    a HubSpot error like an API one: the item stays open, nothing is closed or alerted, and the approval that follows
+    sends the reply."""
     from us_outbound.clients.guard import GuardViolation
 
+    def refuse(ctx, item):
+        raise GuardViolation("hubspot deal.update is not allowed")
+
+    monkeypatch.setattr(desk.hw, "record_reply", refuse)
     ctx, t, crm, sl, inst = desk_world(settings)
-    inst.campaign_of["em-1"] = "c-eu"
+    out = poll(ctx)  # no approval yet
+    assert row_of(ctx)["status"] == "open" and out["by_hand"] == [] and inst.replies == []
+    assert out["errors"] == [f"{ITEM[:8]}: HubSpot: refused by a guardrail: hubspot deal.update is not allowed"]
+    assert not [x for x in sl.texts() if x.startswith(":warning: *Answer ")]
     sl.say(HARRY_ID, "send")
-    with pytest.raises(GuardViolation, match="US Outbound"):
-        poll(ctx)
-    assert row_of(ctx)["status"] == "open" and inst.replies == []
-    [note] = [x for x in sl.texts() if "safety rule" in x]
-    assert note.startswith(":warning: *Not sent: a safety rule stopped it* (")
-    assert note.endswith("*What to do:* answer them yourself from hannah@meetspill.org, then reply `skip` here to close "
-                         "this.")
-    poll(ctx)  # the refusal is not retried every five minutes
+    out = poll(ctx)
+    [sent] = inst.replies
+    assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["handled_by"] == HARRY_ID and out["by_hand"] == []
+
+
+def test_an_opt_out_closes_the_contacts_open_reply_items(settings):
+    """M1: an item open since 15:30 UK; the contact opts out at 16:00 (a later reply, or Instantly's link). The item is
+    closed without sending (approval skipped by opt_out), so a ✅ given after it sends nothing."""
+    from us_outbound.replies import optout
+
+    ctx, t, crm, sl, inst = desk_world(settings)
+    contact = ctx.store.get("contacts", contact_id="con-1")
+    result = optout.opt_out(ctx, marker="unsubscribed:em-9", addresses=[contact["email"]], contact=contact,
+                            account_id="acc-1", mailbox=HANNAH, occurred_at=NOW, source="reply")
+    assert result == "done"
+    row = row_of(ctx)
+    assert (row["status"], row["handled_by"]) == ("handled", "opt_out")
+    assert row["payload"]["closed_by_opt_out"]["marker"] == "unsubscribed:em-9"
+    replied = ctx.store.get("events", event_id="em-1")
+    assert (replied["approval"], replied["approved_by"]) == ("skipped", "opt_out")
+    sl.react("white_check_mark", HARRY_ID)
+    poll(ctx)
     assert inst.replies == []
+
+
+def test_an_opt_out_leaves_the_item_for_the_email_it_came_in(settings):
+    """keep_item: a warm reply that also asked to stop keeps its own item open for a person."""
+    from us_outbound.replies import optout
+
+    ctx, *_ = desk_world(settings)
+    contact = ctx.store.get("contacts", contact_id="con-1")
+    optout.opt_out(ctx, marker="unsubscribed:em-1", addresses=[contact["email"]], contact=contact, account_id="acc-1",
+                   mailbox=HANNAH, occurred_at=NOW, source="reply", keep_item=ITEM)
+    assert row_of(ctx)["status"] == "open"
+
+
+def test_a_link_click_leaves_open_an_item_that_already_asked_to_stop(settings):
+    """W1-2 review: the item was opened flagged also_asked_to_stop, to be answered by hand; a later click on
+    Instantly's unsubscribe link (sync_outcomes: marker unsubscribed:lead:..., no keep_item) says the same again, so
+    it stays open. A later reply asking to stop (marker unsubscribed:{email id}) closes it like any other."""
+    from us_outbound.replies import optout
+
+    ctx, *_ = desk_world(settings, row=reply_row(also_asked_to_stop=True))
+    contact = ctx.store.get("contacts", contact_id="con-1")
+    args = dict(addresses=[contact["email"]], contact=contact, account_id="acc-1", mailbox=HANNAH, occurred_at=NOW,
+                source="instantly")
+    optout.opt_out(ctx, marker=optout.lead_marker("lead-1"), **args)
+    assert row_of(ctx)["status"] == "open" and "closed_by_opt_out" not in row_of(ctx)["payload"]
+    optout.opt_out(ctx, marker=optout.reply_marker("em-9"), **{**args, "source": "reply"})
+    assert (row_of(ctx)["status"], row_of(ctx)["handled_by"]) == ("handled", "opt_out")
+
+
+def test_send_reply_refuses_an_address_suppressed_since(settings):
+    """M1: the item is still open (the warm reply that also asked to stop, or a suppression from HubSpot's opt-out
+    list since), and an approver ticks it: nothing goes, why suppressed_since, one thread note, the tick is spent."""
+    from us_outbound import suppression
+
+    row = reply_row(also_asked_to_stop=True)
+    ctx, t, crm, sl, inst = desk_world(settings, row=row)
+    suppression.add(ctx.store, email=ctx.store.get("contacts", contact_id="con-1")["email"], reason="unsubscribe",
+                    source="reply", now=NOW)
+    sl.react("white_check_mark", HARRY_ID)
+    out = poll(ctx)
+    assert inst.replies == [] and out["not_sent"][0]["why"] == desk.SUPPRESSED_SINCE == "suppressed_since"
+    assert row_of(ctx)["status"] == "open"  # for Harry to answer by hand, then skip
+    [note] = [x for x in sl.texts() if x.startswith(":warning: *Not sent: they are on our do-not-contact list now*")]
+    assert "reply to them yourself from hannah@meetspill.org" in note
+    poll(ctx)
+    assert inst.replies == [] and len([x for x in sl.texts() if "do-not-contact list now" in x]) == 1
+    # The command line takes the same path.
+    res = desk.approve(ctx, ITEM)
+    assert res["sent"] is False and res["why"] == "suppressed_since" and inst.replies == []
+
+
+def test_a_contact_marked_suppressed_is_refused_too(settings):
+    ctx, t, crm, sl, inst = desk_world(settings)
+    ctx.store.update("contacts", {"contact_id": "con-1"}, {"suppressed": True, "suppressed_reason": "bounce"})
+    sl.say(HARRY_ID, "send")
+    out = poll(ctx)
+    assert inst.replies == [] and out["not_sent"][0]["why"] == "suppressed_since"
 
 
 def test_claim_lets_only_one_run_send(settings):

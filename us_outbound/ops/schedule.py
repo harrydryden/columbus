@@ -96,6 +96,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # day, so Friday is posted once on Saturday rather than on Saturday, Sunday and Monday (learn/daily_post.py). The
     # Monday readout makes Monday's asks; heartbeat.EXPECTED allows the 72 hours from Saturday to Tuesday.
     ScheduledJob("daily_post", "0 9 * * 2-6", live=True, enabled=True, timeout_minutes=10, phase=2),
+    # W1-2 (19 Oct 2026; RT §1.6): Mondays at 07:30, before the readout, the reply read checked two ways: Instantly's
+    # own counts against our events, and the seed inbox's answer to last week's canary (replies/capture.py). It adds
+    # one lead, to the seed inbox only, and deletes it once checked (the canary is sent only once Harry's D10 e is
+    # confirmed: capture.SEED_AUTO_REPLY_CONFIRMED): Instantly writes, so --live.
+    ScheduledJob("capture", "30 7 * * 1", live=True, enabled=True, timeout_minutes=15, phase=2),
     # Harry, 6 Oct 2026 ("push ahead with building"): Mondays at 08:30, after the hand-check (08:00) and before the
     # daily post (09:00; SPEC 9 had both at 09:00). It only reads and posts: the alert channel needs --live, and in
     # dry-run the post goes to the dev channel (learn/readout.py).

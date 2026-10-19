@@ -27,6 +27,10 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      send counts, steps and the kill rules' bounce rates leave it out. While it goes out the item is held at
      status "sending" by a compare-and-set, so it can never go twice; if a run dies mid-send the
      item is not resent by itself: the thread (and `replies list`) asks a person to check.
+     Never to a suppressed address (W1-2, 19 Oct 2026; code-replies-crm M1): if the person who wrote, or the
+     contact, is suppressed now (they asked to stop since, or in the reply itself), the send is refused, why
+     suppressed_since, and the thread says to answer by hand. A send the guard refuses (a colleague's thread with
+     no US Outbound campaign id, M2) closes the item "by hand" with one alert, and the run goes on to the rest.
   4. Re-post (SPEC 11, D11). An alert unanswered for 2 hours is re-posted in its thread and to the
      channel, mentioning the approvers, between 13:00 and 23:00 UK (D11 moved the end from 21:00,
      which is 4 pm ET). Once per item.
@@ -65,8 +69,8 @@ from dataclasses import dataclass, field
 from datetime import time, timedelta
 from typing import Any
 
-from us_outbound import fmt
-from us_outbound.base import say
+from us_outbound import fmt, suppression
+from us_outbound.base import notify, say
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import UK, ConfigError, Context
@@ -103,6 +107,8 @@ APPROVED, EDITED, SKIPPED = "approved", "edited", "skipped"  # events.approval (
 ESCALATED_EVENT = "escalated:"  # events.event_id of an escalation: the item's id, prefixed
 SENT_EVENT = "reply-sent:"  # events.event_id of a sent reply when Instantly returns no id
 LIST_LIMIT = 50  # per-list entries kept in the summary
+SUPPRESSED_SINCE = "suppressed_since"  # send_reply's why: the address is suppressed now (W1-2, code-replies-crm M1)
+BY_HAND = "by hand"  # events.approval when a guardrail refused the desk's send: a person answers (M2)
 EXCERPT_CHARS = 200  # SPEC 1.7: at most 200 characters of any email body leave the database
 
 # Each reply class in plain words, for a reader new to the system (Harry, 12 Oct 2026): (label, what it means).
@@ -384,11 +390,11 @@ def copy_problems(ctx: Context, item: ReplyItem, text: str) -> list[str]:
             *structure_violations(text)]
 
 
-def _record_skip_event(ctx: Context, item: ReplyItem, by: str) -> None:
-    """approval = skipped on the prospect's replied event (SPEC 6), added if poll_replies has not made it."""
+def _record_skip_event(ctx: Context, item: ReplyItem, by: str, approval: str = SKIPPED) -> None:
+    """approval (skipped, or by hand) on the prospect's replied event (SPEC 6), added if poll_replies has not made it."""
     if not item.email_id:
         return
-    values = {"approval": SKIPPED, "approved_by": by}
+    values = {"approval": approval, "approved_by": by}
     if not ctx.store.update("events", {"event_id": item.email_id}, values):
         ctx.store.upsert("events", [{
             "event_id": item.email_id, "type": "replied", "account_id": item.account_id or None,
@@ -398,10 +404,35 @@ def _record_skip_event(ctx: Context, item: ReplyItem, by: str) -> None:
         }])
 
 
+def suppressed_since(ctx: Context, item: ReplyItem) -> bool:
+    """The person who wrote, or the contact we emailed, is suppressed now: they asked to stop (or bounced, or their
+    company was kept out) after the reply came in, or in the reply itself (replies/poll.py also_asked_to_stop)."""
+    _, contact = _names(ctx, item)
+    if contact.get("suppressed"):
+        return True
+    addresses = {str(a).strip().lower() for a in (contact.get("email"), item.payload.get("from_address")) if a}
+    return any(suppression.is_suppressed(ctx.store, email=a, now=ctx.now) for a in addresses if "@" in a)
+
+
 def send_reply(ctx: Context, item: ReplyItem, text: str, *, by: str, edited: bool, via: str,
                slack: Any = None) -> dict:
-    """Send the approved text from the mailbox the prospect wrote to, then close the item (SPEC 11 Approval)."""
+    """Send the approved text from the mailbox the prospect wrote to, then close the item (SPEC 11 Approval).
+
+    Never to a suppressed address (W1-2, 19 Oct 2026; code-replies-crm M1): an approval given after the person
+    asked to stop is refused (why SUPPRESSED_SINCE), the approval is spent, and the thread says to answer by hand
+    or lift the suppression knowingly."""
     result: dict[str, Any] = {"item": item.short_id, "account_id": item.account_id, "via": via, "by": by}
+    if suppressed_since(ctx, item):
+        result.update(sent=False, why=SUPPRESSED_SINCE,
+                      problems=["they are on the do-not-contact list now (they asked to stop, or bounced)"])
+        if ctx.live:
+            note = _thread(slack, item, f"{say.ACTION} *Not sent: they are on our do-not-contact list now* (they "
+                                        "asked to be taken off the list, or their address bounced).\n*What to do:* "
+                                        f"if they still want an answer, reply to them yourself from {item.mailbox}, "
+                                        "then reply `skip` here; or lift the suppression knowingly first.")
+            save_payload(ctx.store, item.id, desk={**item.desk, "approve_ts": note, "blocked": [SUPPRESSED_SINCE]})
+        log("desk_blocked", item_id=item.id, problems=[SUPPRESSED_SINCE])
+        return result
     problems = copy_problems(ctx, item, text)
     if not item.mailbox or not item.reply_to:
         problems.append("the item names no mailbox or Instantly email to reply to")
@@ -485,14 +516,45 @@ def skip_item(ctx: Context, item: ReplyItem, *, by: str, via: str, slack: Any = 
     return result
 
 
+def refused(ctx: Context, item: ReplyItem, exc: GuardViolation) -> dict:
+    """A guardrail refused something the desk did for this item (most likely the send: a colleague's reply whose
+    thread carries no US Outbound campaign id, which Instantly.reply refuses; code-replies-crm M2). Until 19 Oct 2026
+    the violation crashed poll_approvals, and with it the escalation and the hand-check tab, every 5 minutes. Now
+    (live) the item is closed for a person to answer by hand: payload.refused keeps why, the replied event's approval
+    is "by hand", and one alert says so. The rest of the run goes on."""
+    reason = str(exc)[:300]
+    out = {"item": item.short_id, "account_id": item.account_id, "refused": reason}
+    if ctx.dry_run:
+        return {**out, "dry_run": True}
+    item = _reload(ctx, item)
+    save_payload(ctx.store, item.id, {"status": HANDLED, "handled_at": ctx.now, "handled_by": BY_HAND},
+                 refused=reason, desk={**item.desk, "by_hand": {"at": ctx.now.isoformat(), "why": reason}})
+    _record_skip_event(ctx, item, "guard", BY_HAND)
+    who = _describe(ctx, item)
+    posted = notify.alert(ctx, say.compose(
+        say.ACTION, f"Answer {_esc(who)} by hand",
+        [f"A safety rule stopped the reply desk sending it ({_esc(reason[:160])}), so it is closed here."],
+        do=f"reply to them yourself from {item.mailbox or 'the mailbox they wrote to'}."))
+    log("desk_refused", item_id=item.id, error=reason)
+    return {**out, "alert": posted.get("posted"), **({"alert_error": posted["error"]} if posted.get("error") else {})}
+
+
 def _hubspot(ctx: Context, item: ReplyItem, slack: Any, out: Counter[str], errors: list[str]) -> ReplyItem:
-    """SPEC 11 HubSpot writes for a warm reply not yet written; its thread gets the link once."""
+    """SPEC 11 HubSpot writes for a warm reply not yet written; its thread gets the link once.
+
+    A guardrail refusing a HubSpot write is said like an API error, and the item stays open for its answer: the write
+    is tried again next run. Before (W1-2 review, round 2) it reached poll_approvals' per-item catch, which closed the
+    item "by hand", perhaps before anyone had approved it, with an alert saying a safety rule stopped the send."""
     if not item.is_warm or item.hubspot.get("status") == "written":
         return item
     try:
         res = hw.record_reply(ctx, item)
     except (ApiError, ConfigError) as exc:
         errors.append(f"{item.short_id}: HubSpot: {str(exc)[:160]}")
+        return item
+    except GuardViolation as exc:
+        errors.append(f"{item.short_id}: HubSpot: refused by a guardrail: {str(exc)[:160]}")
+        log("desk_hubspot_refused", item_id=item.id, error=str(exc)[:300])
         return item
     out[res.get("status", "?")] += 1
     item = _reload(ctx, item)
@@ -573,6 +635,7 @@ class _Run:
     edited: list[str] = field(default_factory=list)
     reposted: list[str] = field(default_factory=list)
     escalated: list[dict] = field(default_factory=list)
+    by_hand: list[dict] = field(default_factory=list)
     would: list[dict] = field(default_factory=list)
     stuck: list[str] = field(default_factory=list)
     ignored: Counter[str] = field(default_factory=Counter)
@@ -825,6 +888,9 @@ def poll_approvals(ctx: Context) -> dict:
                 _work(ctx, item, slack, run)
         except (ApiError, LookupError) as exc:  # one item's trouble never stops the others
             run.errors.append(f"{item.short_id}: {type(exc).__name__}: {str(exc)[:160]}")
+        except GuardViolation as exc:  # a guardrail refused it: a person answers by hand; the rest go on (M2)
+            run.errors.append(f"{item.short_id}: refused by a guardrail: {str(exc)[:160]}")
+            run.add("by_hand", refused(ctx, item, exc))
     escalate(ctx, slack, run)
     sends = approvals.poll(ctx, slack)
     from us_outbound.enrol import hand_check_tab  # the weekly hand-check's decisions on the sheet (12 Oct 2026)
@@ -833,7 +899,7 @@ def poll_approvals(ctx: Context) -> dict:
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "slack": slack is not None, "items": len(items),
         "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited,
-        "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck,
+        "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck, "by_hand": run.by_hand,
         "hubspot": dict(run.hubspot), "ignored_non_approvers": sum(run.ignored.values()), "errors": run.errors,
         "send_approvals": sends, "hand_check": checked,
     }

@@ -561,7 +561,7 @@ def test_with_one_contact_per_account_the_sweep_calls_nothing(default_settings):
     w = stop_world(default_settings, second_contact=False)
     w.lead("L-jane", JANE_ADDR, LEAD_BOUNCED)
     out = outcomes.run(w.ctx)
-    assert out["bounced"] == 1 and out["account_stops"] == {"to_stop": 0, "stopped": {}, "errors": []}
+    assert out["bounced"] == 1 and out["account_stops"] == {"to_stop": 0, "stopped": {}, "errors": [], "refused": []}
     assert deletes(w) == [] and w.lead_patches == []
 
 

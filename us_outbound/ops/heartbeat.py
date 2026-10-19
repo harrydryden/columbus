@@ -85,6 +85,7 @@ EXPECTED: dict[str, int] = {
     # 09:00 Tuesday to Saturday (19 Oct 2026): Saturday 09:00 to Tuesday 09:00 is 72 hours (73 when the clocks go
     # back on the Sunday between), counted in wall time as the job runs on a Saturday, so not in WEEKDAY_JOBS.
     "daily_post": 74 * _H,
+    "capture": 8 * _DAY,  # Mon 07:30 (W1-2, 19 Oct 2026; replies/capture.py)
     "monday_readout": 8 * _DAY,  # Mon 08:30 (Harry, 6 Oct 2026; learn/readout.py)
     "suppression_load": 26 * _H,  # 01:30 daily (build addition)
     # Monthly jobs (build additions, Harry, 5 Oct 2026): at most 31 days apart, plus a day's slack, so a monthly
@@ -227,6 +228,7 @@ def scheduled_jobs() -> list[str]:
 # What stops happening when a job stops, for a reader who does not know the job (say.job_name names it).
 IMPACT: dict[str, str] = {
     "poll_replies": "replies from prospects are not being read",
+    "capture": "nobody is checking that replies are being read at all (the weekly check against Instantly)",
     "poll_approvals": "approvals given in Slack are not being acted on",
     "hubspot_readback": "HubSpot is not being updated",
     "sync_outcomes": "bounces, opt-outs and other email results are not being recorded",

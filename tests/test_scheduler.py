@@ -615,11 +615,12 @@ SPEC9_CRONS = {
     "apollo_people": "20 4 * * 1-5",  # Harry, 5 Oct 2026: after read_pages, before verify_accounts' rescore
     "retention": "40 0 * * *",  # SPEC 6 and 13 (SPEC 9 had the lead deletions in sync_outcomes at 01:00)
     "label_sample_monthly": "15 9 1 * *",  # Harry, 11 Oct 2026: the labels judged by hand, a batch a month
+    "capture": "30 7 * * 1",  # W1-2, 19 Oct 2026: the reply read checked, Mondays before the readout
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
         "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_post",
-        "blackout", "retention", "label_sample_monthly"}
+        "blackout", "retention", "label_sample_monthly", "capture"}
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
@@ -666,8 +667,8 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
                        "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
-                       "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "monday_readout",
-                       "heartbeat_check",
+                       "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "capture",
+                       "monday_readout", "heartbeat_check",
                        "suppression_load", "lookalikes", "hand_check_post", "retention", "label_sample_monthly"]
     # lookalike_leads is parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for
     # whole-US pages and kept only the active states. Not started, and not expected, so no false "missed" alert.
@@ -679,6 +680,9 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     assert hb.scheduled_jobs() == [j for j in cli.built_jobs() if j in enabled]
     assert list(dict.fromkeys(j.name for j, _ in sch.Scheduler().jobs)) == enabled
     assert [j.name for j, _ in sch.Scheduler().jobs].count("settings_sync") == 2
+    # capture (W1-2, 19 Oct 2026; RS §2 W1-2): registered everywhere a new job must be, in the same commit.
+    assert cli.JOBS["capture"] == "us_outbound.replies.capture:run" and hb.EXPECTED["capture"] == 8 * 24 * 60
+    assert by_name()["capture"].live is True and "capture" in hb.IMPACT
 
 
 def test_next_run_and_the_listing():

@@ -53,13 +53,10 @@ CLI_APPROVER = "cli"
 SETTINGS_SHEET_TITLE = "US Outbound – Settings"
 DB_SCHEMA = "us_outbound"
 
-# HubSpot write allowlist (SPEC 1.2).
-HUBSPOT_PROPERTY_GROUP = "us_outbound"
-HUBSPOT_COMPANY_PROPS = frozenset(
-    {"us_outbound_account_id", "us_outbound_tier", "us_outbound_industry_group", "us_outbound_top_signals"}
-)
-HUBSPOT_CONTACT_PROPS = frozenset({"us_outbound_angle", "us_outbound_reply_class"})
-HUBSPOT_SIX_PROPS = HUBSPOT_COMPANY_PROPS | HUBSPOT_CONTACT_PROPS
+# HubSpot write allowlist (SPEC 1.2). Standard properties only (W1-2, 19 Oct 2026; Harry's D9): SPEC 11's six
+# us_outbound_* custom properties were never created in the portal, so every warm reply's company and contact write
+# would have failed with a 400, every 5 minutes, and nothing read them. They are gone, and with them the property
+# group and property creates (`hubspot setup`): the guard refuses both as any other HubSpot write it does not list.
 HUBSPOT_EMPTY_ONLY = frozenset({"hubspot_owner_id", "lifecyclestage", "hs_lead_status"})
 # Identity fields a new warm record needs; only on create.
 HUBSPOT_COMPANY_CREATE_FIELDS = frozenset({"name", "domain"})
@@ -397,21 +394,21 @@ class Guard:
 
         if a == "company.create":
             need_warm()
-            extra = props - HUBSPOT_COMPANY_PROPS - HUBSPOT_EMPTY_ONLY - HUBSPOT_COMPANY_CREATE_FIELDS
+            extra = props - HUBSPOT_EMPTY_ONLY - HUBSPOT_COMPANY_CREATE_FIELDS
             if extra:
                 raise GuardViolation(f"HubSpot company.create may not set {sorted(extra)}")
         elif a == "company.update":
-            extra = props - HUBSPOT_COMPANY_PROPS - HUBSPOT_EMPTY_ONLY
+            extra = props - HUBSPOT_EMPTY_ONLY
             if extra:
                 raise GuardViolation(f"HubSpot company.update may not set {sorted(extra)}")
             empty_only_ok()
         elif a == "contact.create":
             need_warm()
-            extra = props - HUBSPOT_CONTACT_PROPS - HUBSPOT_EMPTY_ONLY - HUBSPOT_CONTACT_CREATE_FIELDS
+            extra = props - HUBSPOT_EMPTY_ONLY - HUBSPOT_CONTACT_CREATE_FIELDS
             if extra:
                 raise GuardViolation(f"HubSpot contact.create may not set {sorted(extra)}")
         elif a == "contact.update":
-            extra = props - HUBSPOT_CONTACT_PROPS - HUBSPOT_EMPTY_ONLY
+            extra = props - HUBSPOT_EMPTY_ONLY
             if extra:
                 raise GuardViolation(f"HubSpot contact.update may not set {sorted(extra)}")
             empty_only_ok()
@@ -428,12 +425,6 @@ class Guard:
             extra = props - {"dealname", "pipeline", "dealstage", "hubspot_owner_id"}
             if extra:
                 raise GuardViolation(f"HubSpot deal.create may not set {sorted(extra)}")
-        elif a == "property_group.create":
-            if op.target != HUBSPOT_PROPERTY_GROUP:
-                raise GuardViolation("the only HubSpot property group we create is 'US Outbound'")
-        elif a == "property.create":
-            if op.target not in HUBSPOT_SIX_PROPS:
-                raise GuardViolation(f"HubSpot property {op.target!r} is not one of the six us_outbound_* properties")
         elif a == "communication.unsubscribe":
             pass  # SPEC 11 routing: opted out in HubSpot when the contact exists there
         elif a == "contact.gdpr_delete":

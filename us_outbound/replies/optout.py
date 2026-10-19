@@ -20,6 +20,16 @@ opt_out() does three things:
      opt-out is pending, and each live run tries again (the lead's status is read every run, and a
      reply is read back from Instantly by its id), so a failed call is never the end of it.
 
+The first time an opt-out is seen (live), the contact's open reply items are closed (W1-2, 19 Oct 2026;
+code-replies-crm M1): handled, the replied event's approval "skipped" by "opt_out", and a note on the item.
+Until then a draft approved after the person asked to stop still went to them. The item for the very email
+being handled (keep_item) is left open: a warm reply that also asked to be taken off the list still needs a
+person to answer it by hand (replies/poll.py). So is such an item (payload also_asked_to_stop) when a later click
+on Instantly's unsubscribe link is what is recorded (W1-2 review): the item was opened knowing they asked to be taken
+off the list, and the click says that again, not that the answer by hand is no longer wanted. A later reply asking to
+stop closes it like any other. The reply desk refuses to send to a suppressed address either way
+(replies/desk.send_reply), so this only spares Harry an approval that can no longer be sent.
+
 Only hashes are logged. SPEC 13: opt-outs are honored the same day.
 """
 
@@ -33,6 +43,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.logs import hash_email, log
 from us_outbound import suppression
+from us_outbound.replies.items import ACTIONABLE, HANDLED, TABLE, ReplyItem, is_reply
 
 REASON = "unsubscribe"
 UNSUBSCRIBED = "unsubscribed"  # the events type (SPEC 6; enrol/capacity.py STOP_EVENTS)
@@ -96,6 +107,36 @@ def _hubspot(ctx: Context, addresses: list[str]) -> str | None:
     return None
 
 
+CLOSED_BY = "opt_out"  # hitl_items.handled_by and events.approved_by on a reply item an opt-out closed
+SKIPPED = "skipped"  # events.approval (SPEC 6), as the desk's skip
+
+
+def close_items(ctx: Context, contact: Mapping[str, Any] | None, *, keep: str | None = None, marker: str = "") -> list[str]:
+    """Close the contact's open reply items (the module docstring), all but keep; their ids. Live callers only."""
+    cid = str((contact or {}).get("contact_id") or "")
+    if not cid:
+        return []
+    link_click = marker.startswith(lead_marker(""))  # the unsubscribe link, read by sync_outcomes
+    rows = [r for r in ctx.store.select(TABLE, {"contact_id": cid, "status": list(ACTIONABLE)})
+            if is_reply(r) and str(r.get("item_id")) != (keep or "")
+            and not (link_click and (r.get("payload") or {}).get("also_asked_to_stop"))]
+    closed = []
+    for row in rows:
+        item = ReplyItem(row)
+        note = {"at": ctx.now.isoformat(), "marker": marker,
+                "note": "closed without sending: they asked us to stop emailing them after this reply came in"}
+        if not ctx.store.update(TABLE, {"item_id": item.id, "status": row.get("status")},
+                                {"status": HANDLED, "handled_at": ctx.now, "handled_by": CLOSED_BY,
+                                 "payload": {**item.payload, "closed_by_opt_out": note}}):
+            continue  # moved on in the meantime (the desk is sending it, or closed it)
+        if item.email_id:
+            ctx.store.update("events", {"event_id": item.email_id}, {"approval": SKIPPED, "approved_by": CLOSED_BY})
+        closed.append(item.id)
+    if closed:
+        log("opt_out_closed_items", run_id=ctx.run_id, marker=marker, items=closed)
+    return closed
+
+
 def opt_out(
     ctx: Context,
     *,
@@ -107,8 +148,11 @@ def opt_out(
     occurred_at: datetime,
     source: str,
     done: set[str] | None = None,
+    keep_item: str | None = None,
 ) -> str:
-    """Record one opt-out everywhere it belongs: "done", "pending" (a call failed; the next live run retries) or "dry_run"."""
+    """Record one opt-out everywhere it belongs: "done", "pending" (a call failed; the next live run retries) or "dry_run".
+
+    keep_item: the hitl_items id of the reply being handled, left open when the contact's other items close."""
     addrs = _clean(addresses)
     if not addrs:
         raise ValueError("an opt-out needs an email address")
@@ -120,6 +164,7 @@ def opt_out(
     if ctx.dry_run:
         log("opt_out_dry_run", run_id=ctx.run_id, marker=marker, email_sha256=hashes)
         return DRY_RUN
+    close_items(ctx, contact, keep=keep_item, marker=marker)
     problems = [p for p in (_blocklist(ctx, addrs), _hubspot(ctx, addrs)) if p]
     if problems:
         log("opt_out_pending", run_id=ctx.run_id, marker=marker, email_sha256=hashes, problems=problems)

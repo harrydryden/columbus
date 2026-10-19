@@ -44,6 +44,14 @@ its own path: an Instantly unsubscribe or bounce, which Instantly has stopped al
 replies/optout.py retries from the lead's status until it is recorded (deleting the lead would end that). Safety:
 never held for a cohort, a config version or anything else, in any campaign.
 
+A stop the guard refuses (W1-2, 19 Oct 2026; code-replies-crm L2): Instantly.delete_lead refuses a lead that is not
+in the campaign stored for the contact. Until then the GuardViolation failed sync_outcomes, a safety job, after its
+writes and again every 15 minutes, as the marker was never written. Now the marker is written with source
+guard_refused, the contact is listed once under the summary's refused, and the next run makes no call for them.
+That run also puts one line under the summary's errors, so heartbeat_check (ops/job_errors.py) posts it once (W1-2
+review): the lead was due to stop, sits in a campaign other than the stored one and may still be sending, and the
+marker means no later run tries again, so a person must stop it in Instantly. Before, the failed run said so.
+
 Dry-run: it counts what it would stop, calls nothing and writes nothing.
 """
 
@@ -53,7 +61,7 @@ from collections import Counter
 from typing import Any
 
 from us_outbound.clients import instantly as instantly_client
-from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
+from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.enrol import capacity, enrol, second
@@ -62,6 +70,9 @@ from us_outbound.logs import hash_email, log
 STOPPED = "lead_stopped"  # events.type (enrol/capacity.STOP_EVENTS reads it)
 SUPPRESSED = "suppressed"  # the cause of a stop for an address or domain suppressed while the lead was in flight
 SUPPRESSION_SOURCE = "suppression"  # events.source on the lead_stopped rows it makes
+# events.source on a lead_stopped row whose stop the guard refused (W1-2, 19 Oct 2026; code-replies-crm L2): the
+# lead is not in the campaign stored for it, so no call of ours can stop it; the summary's refused lists it once.
+REFUSED_SOURCE = "guard_refused"
 ID_CHUNK = 1000
 LIST_LIMIT = 50
 
@@ -152,7 +163,7 @@ def sweep(ctx: Context) -> dict:
     """Stop the leads of everyone else at an account where someone replied, bounced, unsubscribed or complained, and
     of everyone at an account where a contact in flight was suppressed."""
     pending = to_stop(ctx)
-    out: dict[str, Any] = {"to_stop": len(pending), "stopped": Counter(), "errors": []}
+    out: dict[str, Any] = {"to_stop": len(pending), "stopped": Counter(), "errors": [], "refused": []}
     if ctx.dry_run:
         out["would_stop"] = [{"account_id": c.get("account_id"), "contact_id": c["contact_id"],
                               "because": e.get("type")} for c, e in pending[:LIST_LIMIT]]
@@ -160,8 +171,17 @@ def sweep(ctx: Context) -> dict:
         return out
     for c, e in pending:
         cid, campaign, lead_id = str(c["contact_id"]), str(c["instantly_campaign"]), str(c["instantly_lead_id"])
+        refused = ""
         try:
             how = _stop(ctx, campaign, lead_id)
+        except GuardViolation as exc:  # the lead is not in its stored campaign: no call can stop it (the docstring)
+            how, refused = REFUSED_SOURCE, str(exc)[:160]
+            if len(out["refused"]) < LIST_LIMIT:
+                out["refused"].append({"contact_id": cid, "account_id": c.get("account_id"), "why": refused})
+            if len(out["errors"]) < LIST_LIMIT:  # told once: the marker below means no run tries again
+                out["errors"].append(f"{cid}: not stopped, the guard refused it ({refused}); its lead may still be "
+                                     f"sending: stop it by hand in Instantly")
+            log("account_stop_refused", run_id=ctx.run_id, contact_id=cid, error=refused)
         except (ApiError, LookupError, ConfigError) as exc:  # tried again by the next run
             if len(out["errors"]) < LIST_LIMIT:
                 out["errors"].append(f"{cid}: {type(exc).__name__}: {str(exc)[:160]}")
@@ -169,9 +189,13 @@ def sweep(ctx: Context) -> dict:
             continue
         row = {"event_id": marker(cid), "contact_id": cid, "account_id": c.get("account_id"), "type": STOPPED,
                "mailbox": c.get("mailbox"), "occurred_at": ctx.now}
-        if e.get("type") == SUPPRESSED:
+        if refused:
+            row["source"] = REFUSED_SOURCE
+        elif e.get("type") == SUPPRESSED:
             row["source"] = SUPPRESSION_SOURCE
         ctx.store.upsert("events", [row])
+        if refused:
+            continue
         out["stopped"][how] += 1
         log("account_stop", run_id=ctx.run_id, contact_id=cid, account_id=c.get("account_id"), how=how,
             because=e.get("type"), because_event=e.get("event_id"))

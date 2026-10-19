@@ -57,6 +57,7 @@ JOB_NAMES: dict[str, str] = {
     "poll_approvals": "checking the approvals in Slack",
     "hubspot_readback": "updating HubSpot",
     "sync_outcomes": "recording email results",
+    "capture": "the weekly check that replies are being read",
     "mailbox_health": "checking the sending mailboxes",
     "kill_rules": "checking bounce and complaint limits",
     "blackout": "pausing sends on holidays",

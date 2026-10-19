@@ -6,6 +6,7 @@ import pytest
 
 from tests.fakes import FakeTransport
 from us_outbound.clients.guard import Guard, GuardViolation, Op
+from us_outbound.clients.http import ApiError, Response
 from us_outbound.clients.instantly import (
     CAMPAIGN_SETTINGS,
     LEAD_IMPORT_OPTIONS,
@@ -527,6 +528,78 @@ def test_step_analytics_always_filtered_by_campaign():
     assert inst.step_analytics(C_HANNAH, start_date="2026-10-01")[0]["sent"] == 10
     [req] = [r for r in t.requests if "analytics" in r.url]
     assert req.params == {"campaign_id": "c-hannah", "start_date": "2026-10-01"}
+
+
+def test_campaign_analytics_is_one_campaigns_totals():
+    """The capture check's read (replies/capture.py): one campaign by id, the window as given, its row alone."""
+    inst, t, _ = make()
+    t.route("GET", "/campaigns/analytics", body=[
+        {"campaign_id": "c-other", "emails_sent_count": 999},
+        {"campaign_id": "c-hannah", "emails_sent_count": 48, "reply_count_unique": 2, "bounced_count": 2}])
+    since, until = datetime(2026, 10, 19, 6, 30, tzinfo=UTC), datetime(2026, 10, 26, 6, 30, tzinfo=UTC)
+    row = inst.campaign_analytics(C_HANNAH, start_date=since, end_date=until)
+    assert (row["emails_sent_count"], row["reply_count_unique"], row["bounced_count"]) == (48, 2, 2)
+    [req] = [r for r in t.requests if "analytics" in r.url]
+    assert req.params == {"id": "c-hannah", "exclude_total_leads_count": "true", "start_date": "2026-10-19T06:30:00Z",
+                          "end_date": "2026-10-26T06:30:00Z"}
+    with pytest.raises(GuardViolation):
+        inst.campaign_analytics(C_EU)
+
+
+def test_list_emails_asks_for_the_whole_inbox():
+    """M4 (code-replies-crm): mode=emode_all on every request, beside email_type, so "Others" is read too."""
+    inst, t, _ = make()
+    t.route("GET", "/emails", body={"items": [{"id": "e1", "eaccount": HANNAH}]})
+    assert [e["id"] for e in inst.list_emails([HANNAH, SAM], email_type="received")] == ["e1"]
+    assert [(r.params["mode"], r.params["email_type"]) for r in t.requests] == [("emode_all", "received")] * 2
+
+
+def test_a_400_naming_mode_reads_again_without_it_and_never_sends_it_again(capsys):
+    """If Instantly refuses the parameter, both reply readers must keep working as before (RS §2 W1-2)."""
+    class Answers(FakeTransport):
+        """A route function may answer with a whole Response (here, the 400)."""
+
+        def send(self, method, url, **kw):
+            resp = super().send(method, url, **kw)
+            return resp.body if isinstance(resp.body, Response) else resp
+
+    t = Answers()
+    t.route("GET", "/campaigns", body={"items": CAMPAIGNS[:2]})
+    inst = Instantly(Guard(live=True, bounds=boundaries_for(SETTINGS)), t, "inst-test")
+
+    def emails(req):
+        if "mode" in req.params:
+            return Response(400, {"statusCode": 400, "error": "Bad Request",
+                                  "message": "querystring/mode must be equal to one of the allowed values"})
+        return {"items": [{"id": f"e-{req.params['eaccount']}", "eaccount": req.params["eaccount"]}]}
+
+    t.route("GET", "/emails", fn=emails)
+    got = inst.list_emails([HANNAH, SAM], email_type="received")
+    assert [e["id"] for e in got] == [f"e-{HANNAH}", f"e-{SAM}"]
+    # Hannah: refused with mode, read again without; Sam: never asked with mode at all.
+    assert [("mode" in r.params, r.params["eaccount"]) for r in t.requests] == [(True, HANNAH), (False, HANNAH),
+                                                                                (False, SAM)]
+    assert '"event": "instantly_mode_unsupported"' in capsys.readouterr().out
+
+
+def test_any_other_400_is_raised_as_before():
+    inst, t, _ = make()
+    t.route("GET", "/emails", body={"message": "min_timestamp_created is invalid"}, status=400)
+    with pytest.raises(ApiError):
+        inst.list_emails([HANNAH], email_type="received")
+    assert len(t.requests) == 1
+
+
+@pytest.mark.parametrize("message", ["starting_after is not valid with emode_all", "email_mode is read-only",
+                                     "unknown model id"])
+def test_a_400_that_only_contains_the_letters_mode_is_raised_too(message):
+    """W1-2 review, round 2: the fallback matched the substring "mode" anywhere, so any of these would have dropped
+    the parameter for good. Only the word mode, the parameter's own name, turns it off."""
+    inst, t, _ = make()
+    t.route("GET", "/emails", body={"message": message}, status=400)
+    with pytest.raises(ApiError):
+        inst.list_emails([HANNAH], email_type="received")
+    assert len(t.requests) == 1 and inst._mode_ok is True
 
 
 def test_schedule_days_and_step_delays():

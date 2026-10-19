@@ -71,6 +71,8 @@ What Harry uses (`us-outbound --help` lists these, in this order):
     [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
                                       only says what it would send. With --live it exits 1 unless the
                                       fallback can go on
+  capture check [--live]              the reply read's weekly canary checked by hand, the day after it went
+                                      (replies/capture.py; the Monday capture job checks it otherwise)
   phase0 check [--seed ADDRESS]       the live checks of the API details still to confirm (ops/phase0.py,
     [--apollo-credits] [--live]       docs/phase0-confirm.md): read-only probes, and with --seed writes on
                                       that seed lead of ours alone; without --live it only says what it calls
@@ -80,7 +82,7 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       line, each list cut to its first 10 (Railway drops lines at its rate
                                       limit: 1,276 on 19 Oct 2026)
 Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
-(remove that month's leads), rescore (the score job), dry-run <job>, db apply, hubspot setup|ids,
+(remove that month's leads), rescore (the score job), dry-run <job>, db apply, hubspot ids,
 suppression load, lookalikes show [--top N] [--all]
 (the cells the lookalikes job last stored), lookalikes fit (the accounts' lookalike fits and the tier mix the
 build's lookalike rows would give, scored in memory), pages show (the careers and benefits page reader's
@@ -93,8 +95,8 @@ Dry-run is the default everywhere. Two kinds of live:
     live_sending = yes in the synced settings, as SPEC 0.3 says (a dry-run sync still brings the
     sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
-    test start, settings bootstrap|load, copy qa|draft, hubspot setup, campaigns ensure,
-    handcheck show|approve|export, killrules clear, replies skip, approvals contact|company|reject,
+    test start, settings bootstrap|load, copy qa|draft, campaigns ensure,
+    handcheck show|approve|export, killrules clear, replies skip, approvals contact|company|reject, capture check,
     clay check-email): --live alone, so the phase-0 setup and the kill switch work while
     live_sending is still no.
     `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
@@ -168,6 +170,7 @@ JOBS: dict[str, str] = {
     "kill_rules": "us_outbound.learn.kill_rules:run",
     "blackout": "us_outbound.registry.blackout:run",  # Harry, 7 Oct 2026: campaigns paused over the blackout dates
     "daily_post": "us_outbound.learn.daily_post:run",
+    "capture": "us_outbound.replies.capture:run",  # W1-2, 19 Oct 2026: is the reply read working? Mondays
     "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
     # Build additions (README "Deviations").
     "heartbeat_check": "us_outbound.ops.heartbeat:run",  # missed jobs, caught errors, the outside watchdog
@@ -1288,14 +1291,12 @@ def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
+    """`hubspot ids`: the ids for the General tab (reads only). `hubspot setup` went with the six us_outbound_*
+    properties (W1-2, 19 Oct 2026; Harry's D9): they were never created, and nothing read them."""
     from us_outbound.crm import hubspot_writes as hw
 
-    if args.action == "setup":
-        ctx, _ = _operate(factory, "hubspot_setup", args.live, hw.ensure_properties,
-                         operator=True, dry_note="no HubSpot property or group was created.")
-    else:
-        _only_reads(args)
-        ctx = factory("hubspot_ids", False)
+    _only_reads(args)
+    ctx = factory("hubspot_ids", False)
     ids = hw.lookup_pipeline(ctx)
     print("Paste these into the General tab (they are never written automatically):")
     for key, value in ids.items():
@@ -1612,6 +1613,17 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_capture(args: argparse.Namespace, factory: Factory) -> int:
+    """`capture check` (replies/capture.py): the last canary's check alone, the day after it went (the weekly capture
+    job does it at its next run otherwise). An operator command: its one write takes the seed inbox's own lead out of
+    its campaign, which reaches no prospect, so --live alone."""
+    from us_outbound.replies import capture
+
+    _, summary = _operate(factory, capture.CHECK_JOB, args.live, capture.check_only, operator=True,
+                          dry_note="the canary's lead was not deleted and its check was not recorded.")
+    return 0 if not summary.get("errors") else 2
+
+
 def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
     """`phase0 check`: the API details to confirm that a live read, or a write on Harry's own seed lead, settles
     (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
@@ -1793,6 +1805,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
                          "s1_subject, the default)")
 
+    cp = command("capture", "the reply read's canary: check that the seed inbox's answer to the last one came back",
+                 cmd_capture, takes_live=True)
+    cp.add_argument("action", choices=["check"])
+
     p0 = command("phase0", "the live checks of the API details still to confirm: read-only, or your own seed lead",
                  cmd_phase0, takes_live=True)
     p0.add_argument("action", choices=["check"])
@@ -1914,8 +1930,8 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("job")
     db = command("db", "create the tables and views in DATABASE_URL (prints them unless --live)", cmd_db, takes_live=True)
     db.add_argument("action", choices=["apply"])
-    hs = command("hubspot", "the six properties, and the ids for the General tab", cmd_hubspot, takes_live=True)
-    hs.add_argument("action", choices=["setup", "ids"])
+    hs = command("hubspot", "the ids for the General tab (reads only)", cmd_hubspot, takes_live=True)
+    hs.add_argument("action", choices=["ids"])
     sp = command("suppression", "load HubSpot opt-outs and bounces", cmd_suppression, takes_live=True)
     sp.add_argument("action", choices=["load"])
     lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers, or the accounts' fits",
@@ -1952,11 +1968,10 @@ def main(argv: list[str] | None = None, *, context_factory: Factory | None = Non
         print(f"us-outbound {args.command}: {exc}", file=sys.stderr)
         return 128 + signal.SIGTERM
     except Exception as exc:
-        from us_outbound.crm.hubspot_writes import PropertyClash
         from us_outbound.registry.mailboxes import MailboxError
 
         bug = isinstance(exc, (KeyError, IndexError, UnicodeError, json.JSONDecodeError))
-        if not bug and isinstance(exc, (MailboxError, PropertyClash, ValueError, LookupError)):
+        if not bug and isinstance(exc, (MailboxError, ValueError, LookupError)):
             print(f"us-outbound {args.command}: {redact(str(exc))}", file=sys.stderr)
             return 2
         print(redact(traceback.format_exc()), file=sys.stderr)
