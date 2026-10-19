@@ -138,9 +138,10 @@ def draw(ctx: Context, week: str, per_group: int = PER_GROUP) -> dict[str, list[
     return _cap(out, week)
 
 
-def _cap(sample: dict[str, list[dict]], week: str, total: int = WEEKLY_SAMPLE) -> dict[str, list[dict]]:
-    """The draw cut to total accounts in all, taken from the groups in turn (a week-seeded order of groups), so
-    each group gets its share and one with fewer accounts leaves the rest to the others."""
+def _cap(sample: dict[str, list[dict]], week: str, total: int | None = None) -> dict[str, list[dict]]:
+    """The draw cut to total (WEEKLY_SAMPLE) accounts in all, taken from the groups in turn (a week-seeded order of
+    groups), so each group gets its share and one with fewer accounts leaves the rest to the others."""
+    total = WEEKLY_SAMPLE if total is None else total
     order = sorted(sample)
     random.Random(f"{week}:groups").shuffle(order)
     kept: dict[str, list[dict]] = {g: [] for g in order}

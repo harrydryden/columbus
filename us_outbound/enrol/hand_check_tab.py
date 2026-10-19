@@ -227,6 +227,14 @@ def apply(ctx: Context) -> dict[str, Any]:
                                  and r.get("check") == DOUBT])
         for r in settled:  # verified, left out or disqualified since the row was written: nothing left to decide
             done[str(r["id"])] = {"applied": f"{ctx.today_uk().isoformat()}: settled without you ({r['_status']})"}
+        # 10 sample rows a week are enough (Harry, 19 Oct 2026; hand_check.WEEKLY_SAMPLE): a week drawn before then,
+        # with more, closes once 10 have a decision, and its other sample rows need none.
+        samples = [r for r in mine if r.get("check") == SAMPLE]
+        if sum(1 for r in samples if _decision(r)) >= hand_check.WEEKLY_SAMPLE:
+            for r in samples:
+                if not _decision(r) and not str(r.get("applied") or "").strip() and str(r["id"]) not in done:
+                    done[str(r["id"])] = {"applied": f"{ctx.today_uk().isoformat()}: not needed, "
+                                                     f"{hand_check.WEEKLY_SAMPLE} checked this week"}
         if done:
             ctx.clients.sheets.update_rows(sheet_id, TAB, "id", done)
             out["applied"] = sorted(done)

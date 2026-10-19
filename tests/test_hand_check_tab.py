@@ -155,3 +155,20 @@ def test_a_left_out_company_the_rebuilt_week_no_longer_holds_still_closes_the_we
     out = tab.apply(ctx)
     assert out["closed"] is True and "error" not in out
     assert sorted(hand_check.current(ctx)["payload"]["pulled_account_ids"]) == ["mar-70", "mar-71"]
+
+
+def test_a_week_drawn_with_more_than_ten_closes_once_ten_sample_rows_have_a_decision(monkeypatch):
+    ctx, _ = world()
+    ctx.clients.sheets = Sheet(ctx.guard, {"Overrides": []})
+    monkeypatch.setattr(hand_check, "WEEKLY_SAMPLE", 100)  # drawn before 19 Oct: 10 a group
+    hand_check.post(ctx)
+    monkeypatch.setattr(hand_check, "WEEKLY_SAMPLE", 10)
+    rows = sheet_rows(ctx)
+    assert len(rows) == 17 and all(r["check"] == tab.SAMPLE for r in rows)
+    for r in rows[:9]:
+        r["decision"] = "fine"
+    assert tab.apply(ctx)["closed"] is False  # 9 is not enough
+    rows[9]["decision"] = "fine"
+    out = tab.apply(ctx)
+    assert out["closed"] is True and hand_check.current(ctx)["status"] == "handled"
+    assert all(r["applied"].endswith("not needed, 10 checked this week") for r in rows[10:])
