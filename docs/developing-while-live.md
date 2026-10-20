@@ -57,7 +57,13 @@ campaign's last one finishes.
    else) and is applied by `us-outbound db apply --live` on deploy. New columns are nullable; code reads NULL
    as "before this existed" (contacts enrolled before 8 Oct 2026 are "unstamped").
 6. **Dry-run first**, then `us-outbound golive`. A deploy while enrol (12:00 UK) or poll_approvals runs is
-   fine: jobs are idempotent and the scheduler drains for 30 seconds.
+   fine: jobs are idempotent and the scheduler drains for 30 seconds. **Not from 06:55 to 07:15 UK**
+   (whole-wave review, 20 Oct 2026): mailbox_health runs only at 07:00, the scheduler does not backfill a minute
+   it missed, and a run cut off after 25 s stops part-way through its Instantly writes (warmup, daily limits,
+   sender names). Either way it next runs the following 07:00, so the ramp's step-up of the daily limits is missed
+   for a day and heartbeat_check posts it failed (exit 143) or missed. Deploy after its 07:00 heartbeat reads ok
+   (07:15 to 08:45 is clear on a Tuesday to Friday; on a Monday, capture runs at 07:30 and the readout at 08:30).
+   If a deploy lands near 07:00 anyway, run `us-outbound run mailbox_health --live` by hand at once.
 7. **Never rename an owner** on the Mailboxes tab, and never pause a mailbox to "test" something: both move
    leads in flight (the campaign name and `accounts.sender` are the owner's name; Instantly hands a paused
    mailbox's follow-ups to the owner's other mailbox).
