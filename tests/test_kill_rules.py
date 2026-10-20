@@ -434,6 +434,87 @@ def test_account_level_bounces_raise_the_stop_rule():
     assert holds.enrolment_stop(ctx.store)
 
 
+def _first_three(meeting_after_step1: timedelta) -> tuple:
+    """The stop rule's world of three (stop_rule_accounts 3, stop_rule_meetings 1): acc0..acc2 enrolled 30, 31 and 32
+    days ago and sent step 1 an hour later, and one meeting booked at acc1 `meeting_after_step1` from its step 1."""
+    s = dataclasses.replace(SETTINGS, general=dataclasses.replace(SETTINGS.general, stop_rule_accounts=3,
+                                                                  stop_rule_meetings=1))
+    ctx, t, inst, sheets = setup(s)
+    campaigns(inst)
+    step1 = {}
+    for i in range(3):
+        enrolled = NOW - timedelta(days=30 + i)
+        step1[i] = enrolled + timedelta(hours=1)
+        ctx.store.insert("contacts", [{"contact_id": f"k{i}", "account_id": f"acc{i}", "enrolled_at": enrolled}])
+        ctx.store.insert("events", [{"event_id": f"s-k{i}", "type": "sent", "mailbox": HANNAH, "contact_id": f"k{i}",
+                                     "account_id": f"acc{i}", "step": 1, "occurred_at": step1[i]}])
+    ctx.store.insert("events", [{"event_id": "m-acc1", "type": "meeting_booked", "account_id": "acc1",
+                                 "source": "calendar", "occurred_at": step1[1] + meeting_after_step1}])
+    return ctx
+
+
+def test_a_meeting_after_step_1_counts_toward_the_stop_rule_and_one_before_it_does_not():
+    """The stop rule's meetings come from outcomes.per_company's meeting_any (W2-3). A meeting at acc1 ten days after
+    its step 1: met = 1, not under stop_rule_meetings (1), so nothing fires (a rule that never counted meetings,
+    met = 0, would stop enrolment here). The same meeting three days before acc1's step 1 is no outcome of the email
+    (W2-3's deviation: before W2-3 any booking at the account counted): met = 0 < 1, so the stop rule fires."""
+    after = _first_three(timedelta(days=10))
+    assert kill_rules.run(after)["fired"] == [] and not holds.enrolment_stop(after.store)
+
+    before = _first_three(-timedelta(days=3))
+    [fired] = kill_rules.run(before)["fired"]
+    assert (fired["rule"], fired["action"]) == ("stop_rule_meetings", "pause_enrolment")
+    [item] = items(before, "open")
+    assert item["payload"]["numbers"] == {"accounts": 3, "meetings": 0}
+
+
+def test_a_bounce_at_a_later_step_counts_in_the_stop_rule():
+    """The stop rule counts a bounce at any step (outcomes.bounced_any), not only step 1's. 100 accounts sent step 1
+    15 days ago (inside STOP_WINDOW_DAYS, 30), 25 from each mailbox; the first of each mailbox's contacts bounced at
+    step 2, 7 days later (8 days ago: outside the bounce rules' 7-day window, so no mailbox, domain or source rule
+    reads it). None bounced at step 1, so all 100 are delivered; bounced 4 of 100 = 4.0% > stop_rule_bounce_rate 3%:
+    it fires with {accounts 100, bounced 4}. Counting step-1 bounces only (not delivered) would read 0 of 100."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    at = NOW - timedelta(days=15)
+    for box in (HANNAH, HARRY, SAM, HARRY2):
+        [first, *_] = sends(ctx, box, 25, at=at)
+        aid = first.replace("c-", "a-", 1)
+        ctx.store.insert("events", [
+            {"event_id": f"s2-{first}", "type": "sent", "mailbox": box, "contact_id": first, "account_id": aid,
+             "step": 2, "occurred_at": at + timedelta(days=7)},
+            {"event_id": f"b2-{first}", "type": "bounced", "contact_id": first, "step": 2,
+             "occurred_at": at + timedelta(days=7, minutes=5), "reply_text": "550 5.1.1 user unknown"}])
+    out = kill_rules.run(ctx)
+    [fired] = out["fired"]
+    assert (fired["rule"], fired["action"]) == ("stop_rule_bounce_rate", "pause_enrolment")
+    [item] = items(ctx, "open")
+    assert item["payload"]["numbers"] == {"accounts": 100, "bounced": 4}
+    assert holds.enrolment_stop(ctx.store)
+
+
+def test_a_failure_reading_the_outcomes_never_loses_a_bounce_pause(monkeypatch):
+    """W2-3 r1: the group and stop rules read outcomes.per_company after the bounce rules have fired. If that read
+    fails, Hannah's 2 bounces in 40 (5.0% > 3%) are still paused and alerted, and the run then raises, so the
+    heartbeat records an error rather than an hour with no pause."""
+    from us_outbound.learn import outcomes
+
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 40, bounced=2)
+
+    def broken(_ctx, events=None):
+        raise RuntimeError("contacts table unreadable")
+
+    monkeypatch.setattr(outcomes, "per_company", broken)
+    with pytest.raises(RuntimeError, match="contacts table unreadable"):
+        kill_rules.run(ctx)
+    assert row(sheets, HANNAH)["status"] == "Paused" and inst.by_name(C_HANNAH)["status"] == 2
+    [item] = items(ctx, "open")
+    assert item["payload"]["rule"] == "mailbox_bounce_rate" and item["slack_ts"] == "1.1"
+    assert holds.held_mailboxes(ctx.store) == {HANNAH: item["payload"]["reason"]}
+
+
 # -- dry-run, Slack and the holds ------------------------------------------------------------------------------
 
 

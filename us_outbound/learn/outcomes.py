@@ -24,7 +24,9 @@ and the view (sql/views/00_v_account_outcomes.sql) once; tests/test_learn_outcom
                  mailbox in the 28 days after step 1.
   stamps         what the step-1 contact was enrolled as (contacts: arm, sham_arm, group, size band, score, signals,
                  tier, angle, copy version, test, opener and subject arms, config version), the gate version (the
-                 labels' hash of that config version) and the search that sourced the account (its sourced_by fact).
+                 labels' hash of that config version: the plan's gate version is labels_hash + icp_rules_hash, and no
+                 icp_rules_hash is stored yet, so W3 adds it) and the search that sourced the account (its earliest
+                 sourced_by fact).
 
 Read-only, Python over the tables, so it runs on a MemoryStore as on Postgres.
 """
@@ -211,11 +213,13 @@ def _stamp(ctx: Context, out: Mapping[str, Outcome], contact_ids: set[str]) -> N
     contacts = {str(c["contact_id"]): c for chunk in _chunks(sorted(contact_ids))
                 for c in store.select("contacts", {"contact_id": chunk})}
     versions = {str(v.get("config_version")): v for v in store.select("config_versions")} if contacts else {}
-    sourced: dict[str, dict] = {}
-    for chunk in _chunks(sorted(out)):
-        for f in store.select("signal_events", {"account_id": chunk, "fact": "sourced_by"}):
-            v = f.get("value") if isinstance(f.get("value"), Mapping) else {}
-            sourced.setdefault(str(f["account_id"]), dict(v))
+    sourced: dict[str, dict] = {}  # the earliest sourced_by fact per account (observed_at, then event_id)
+    facts = [f for chunk in _chunks(sorted(out))
+             for f in store.select("signal_events", {"account_id": chunk, "fact": "sourced_by"})]
+    facts.sort(key=lambda f: (utc(f.get("observed_at")) or _NEVER, str(f.get("event_id"))))
+    for f in facts:
+        v = f.get("value") if isinstance(f.get("value"), Mapping) else {}
+        sourced.setdefault(str(f["account_id"]), dict(v))
     for o in out.values():
         c = contacts.get(o.contact_id, {})
         o.stamps = {k: c.get(k) for k in STAMPS}

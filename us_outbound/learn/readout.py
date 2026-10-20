@@ -486,6 +486,22 @@ def cut_lines(rows: Sequence[Mapping[str, Any]], cut: str, title: str, about: st
     return out
 
 
+def signal_section(ctx: Context) -> tuple[list[str], int | None]:
+    """The Signals section's lines and how many signal splits are readable (None when it could not be built). The
+    review is monitoring, so a failure in it says so in its section and never stops the readout (W2-3 r1)."""
+    try:
+        signals = signal_review.review(ctx)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("readout_signals_failed", run_id=ctx.run_id, error=f"{type(exc).__name__}: {exc}"[:200])
+        return [f"  could not be built ({type(exc).__name__}); the rest of the readout is complete."], None
+    text = signal_review.lines(signals, SIGNAL_LINES)
+    # The first line is the review's own summary, which the readout says elsewhere; with nothing emailed it is the
+    # only line ("No company has been emailed yet"), so it stays.
+    return [f"  {x}" for x in (text[1:] if signals.companies else text)], sum(sp.readable for sp in signals.splits)
+
+
 # -- the job -------------------------------------------------------------------------------------------------------
 
 
@@ -516,9 +532,9 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     checked, by_hand = hand_check.readout_lines(ctx, start)
     body += checked
     # Monitoring, not a decision (metrics-audit H5; W2-3): counts and intervals, no verdict, never a "Needs action".
-    signals = signal_review.review(ctx)
+    signal_lines, signals_readable = signal_section(ctx)
     body += ["", "*Signals* (replies with each buying signal at enrolment against without, and the random arm against "
-                 "the ranked, with 95% intervals)", *(f"  {x}" for x in signal_review.lines(signals, SIGNAL_LINES)[1:])]
+                 "the ranked, with 95% intervals)", *signal_lines]
     tests, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=7))
     body += ["", "*Tests* (copy tests, each read only at points fixed in advance on the Tests tab, called looks)",
              *tests]
@@ -544,7 +560,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "exit_criteria": met, "views": rows is not None, "to_act_on": todo,
         "bounces": {"contacts": n, "bounced": b, **({"interval": [round(x, 4) for x in wilson(b, n)]} if n else {})},
         "source_bounces": by_source,
-        "signals_readable": sum(sp.readable for sp in signals.splits),
+        "signals_readable": signals_readable,
         "tests_at_a_look": at_look,
         "hand_check": by_hand,
         **by_cohort,  # the counts by enrolment week, and how many settings changes last week

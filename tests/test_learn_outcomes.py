@@ -114,8 +114,13 @@ def test_exposure_and_stamps(default_settings):
                                    "industry_group_at_enrol": "Legal Teams", "size_band_at_enrol": "50-99",
                                    "score_at_enrol": 40, "config_version": "v1"}])
     ctx.store.insert("config_versions", [{"config_version": "v1", "labels_hash": "abc123"}])
-    ctx.store.insert("signal_events", [{"event_id": "f1", "account_id": "a-C", "source": "source_universe",
-                                        "fact": "sourced_by", "value": {"slice": "Legal Teams|NY|50-99"}}])
+    # Two sourced_by facts: the account was found first by the Legal Teams search (day -20), and again later by
+    # another (day -5, stored first). The stamp is the earliest, whatever order the store returns them in.
+    ctx.store.insert("signal_events", [
+        {"event_id": "f2", "account_id": "a-C", "source": "source_universe", "fact": "sourced_by",
+         "value": {"slice": "Fintech|CA|50-99"}, "observed_at": T0 - timedelta(days=5)},
+        {"event_id": "f1", "account_id": "a-C", "source": "source_universe", "fact": "sourced_by",
+         "value": {"slice": "Legal Teams|NY|50-99"}, "observed_at": T0 - timedelta(days=20)}])
     ctx.store.insert("hitl_items", [{"item_id": "k1", "kind": "kill_rule", "status": "open",
                                      "created_at": T0 + timedelta(days=10),
                                      "payload": {"action": "pause_mailbox", "mailboxes": ["hannah@meetspill.org"],
@@ -174,6 +179,9 @@ COLUMNS = ("delivered", "replied_in_window", "positive_in_window", "meeting_any"
 def test_python_matches_the_hand_count(default_settings):
     _, found = companies(default_settings, parity_world(), 55)
     assert {o.account_id: tuple(o.as_row()[c] for c in COLUMNS) for o in found} == PARITY_EXPECTED
+    by = {o.account_id: o for o in found}
+    # N's positive reply came a day before its step 1: no first_positive_at; C's first was day 1.
+    assert by["a-N"].first_positive_at is None and by["a-C"].first_positive_at == T0 + timedelta(days=1)
 
 
 def test_the_view_and_per_company_agree(store, default_settings):  # noqa: F811
@@ -185,8 +193,15 @@ def test_the_view_and_per_company_agree(store, default_settings):  # noqa: F811
     ctx = make_context(default_settings, now=T0 + timedelta(days=55), store=store)
     python = {o.account_id: tuple(o.as_row()[c] for c in COLUMNS) for o in outcomes.per_company(ctx)}
     assert python == view
-    [c] = [r for r in store.query(f"SELECT * FROM {store.schema}.v_account_outcomes") if r["account_id"] == "a-C"]
-    assert c["first_positive_at"] == T0 + timedelta(days=1) and c["window_closed_45"] is True
+    rows = {r["account_id"]: r for r in store.query(f"SELECT * FROM {store.schema}.v_account_outcomes")}
+    assert rows["a-C"]["first_positive_at"] == T0 + timedelta(days=1) and rows["a-C"]["window_closed_45"] is True
+    # N's positive reply came a day before its step 1, so it has no first_positive_at (the >= step1_at filter).
+    assert rows["a-N"]["first_positive_at"] is None
+    # The view's windows run on the database's clock (now()): Q, sent step 1 30 days before it, has its 28-day window
+    # closed and its 45-day one open (a 45-day column read as 28 days would say closed).
+    store.insert("events", [{**_sent("Q"), "occurred_at": datetime.now(UTC) - timedelta(days=30)}])
+    [q] = [r for r in store.query(f"SELECT * FROM {store.schema}.v_account_outcomes") if r["account_id"] == "a-Q"]
+    assert q["window_closed"] is True and q["window_closed_45"] is False
 
 
 @pytest.mark.parametrize("mutation", ["drop_correction", "meeting_any_as_45"])

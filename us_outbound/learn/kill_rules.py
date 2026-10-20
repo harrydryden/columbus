@@ -40,7 +40,8 @@ windowed (sends and bounces of the last WINDOW_DAYS); the group and stop rules r
 analytics call), and connection_error (a lost OAuth grant: Instantly sends nothing) is a failing status. Beside the
 hourly run, sync_outcomes calls after_bounce at its end whenever it recorded a bounce: the three bounce-rate rules
 run then, so a mailbox over the limit is paused within that run, not up to an hour later. Nothing is slower or
-narrower than before.
+narrower than before. A failure reading the outcomes (or in the group or stop rule) never costs the bounce rules'
+pauses: those are acted on first, and the run then ends in that error (W2-3 r1).
 
 Each firing is a hitl_items row (kind kill_rule; base/holds.py says what it holds). A mailbox
 is paused through the registry pause path (registry/mailboxes.mailbox_pause: Paused on the
@@ -767,9 +768,20 @@ def run(ctx: Context) -> dict:
     expired = expire(ctx)
 
     firing, vitals_error = bounce_rules(ctx, settings, ev, fired_before)
-    found = outcomes.per_company(ctx)  # every company's outcome, no window: the group and stop rules (RS P0-7)
-    firing += group_rules(ctx, settings, found, fired_before)
-    firing += stop_rules(ctx, settings, found, fired_before)
+    # The group and stop rules read every company's outcome, no window (RS P0-7). outcomes.per_company also reads the
+    # enrolment stamps and exposure; if it (or either rule) fails, the bounce rules' firings above are still acted on
+    # below, and the run then raises, so it is an error the failure-rate alert sees, not a lost pause (W2-3 r1).
+    found: list[outcomes.Outcome] = []
+    outcome_error: Exception | None = None
+    try:
+        found = outcomes.per_company(ctx)
+        firing += group_rules(ctx, settings, found, fired_before)
+        firing += stop_rules(ctx, settings, found, fired_before)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        outcome_error = exc
+        log("kill_rules_outcome_rules_failed", run_id=ctx.run_id, error=f"{type(exc).__name__}: {str(exc)[:160]}")
     paused, alert = _act(ctx, firing, expired)
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "fired": _fired_list(firing), "paused": paused, "expired": expired,
@@ -780,9 +792,12 @@ def run(ctx: Context) -> dict:
         "alert": alert or None,
         "reposted": reposted or None,
         "reposted_error": reposted_error,
+        "outcome_rules_error": f"{type(outcome_error).__name__}: {str(outcome_error)[:160]}" if outcome_error else None,
     }
     log("kill_rules_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "fired"},
         fired=[f.rule for f in firing])
+    if outcome_error is not None:
+        raise outcome_error  # the bounce rules' pauses above stand; the group and stop rules run again next hour
     return summary
 
 

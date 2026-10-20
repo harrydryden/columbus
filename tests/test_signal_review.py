@@ -118,15 +118,6 @@ def test_the_review_reads_email_1_s_subject_split_the_same_way():
         "Email 1 subject: too few to show (personal 14, the Copy row's 40 emailed; 15 a side needed).")
 
 
-def test_the_monday_post_says_when_the_review_is_worth_reading():
-    few = world([(f"a{i}", 20, [], "ranked", None) for i in range(59)])
-    assert signal_review.ready(few) == ""
-    enough = world([(f"a{i}", 20, [], "ranked", None) for i in range(60)])
-    assert signal_review.ready(enough).startswith("  Signal review: 60 companies emailed (0 reply windows closed).")
-    recent = world([(f"a{i}", 5, [], "ranked", None) for i in range(80)])
-    assert signal_review.ready(recent) == ""  # under two weeks since the first send
-
-
 def test_nothing_emailed_says_so_and_the_command_is_read_only(capsys):
     from tests.test_cli import Harness
 

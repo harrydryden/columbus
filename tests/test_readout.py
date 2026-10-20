@@ -478,6 +478,39 @@ def test_the_signals_are_counts_with_intervals_and_too_few_is_said():
     assert nums["signals_readable"] == 1 and nums["to_act_on"] == ["check 5 replies"]
 
 
+SIGNALS_HEAD = ("*Signals* (replies with each buying signal at enrolment against without, and the random arm against "
+                "the ranked, with 95% intervals)")
+
+
+def _signals_body(lines: list[str]) -> list[str]:
+    at = lines.index(SIGNALS_HEAD)
+    return lines[at + 1:lines.index("", at)]
+
+
+def test_with_nothing_emailed_the_signals_section_says_so():
+    """W2-3 r1: the readout drops the review's first (summary) line, but with no company emailed that line is the
+    whole review, so it stays rather than leaving the heading alone."""
+    ctx, _ = world(SETTINGS, weekly=[])
+    lines, nums = readout.build(ctx)
+    assert _signals_body(lines) == ["  No company has been emailed yet, so there is nothing to review."]
+    assert nums["signals_readable"] == 0
+
+
+def test_a_signal_review_that_fails_never_stops_the_readout(monkeypatch):
+    """W2-3 r1: the signal review is monitoring; if it raises, its section says it could not be built and the rest of
+    the readout (the tests below it, the numbers) is built as usual."""
+    from us_outbound.learn import signal_review
+
+    def broken(_ctx):
+        raise KeyError("signals_at_enrol")
+
+    monkeypatch.setattr(signal_review, "review", broken)
+    ctx, _ = signals_world(LIVE)
+    lines, nums = readout.build(ctx)
+    assert _signals_body(lines) == ["  could not be built (KeyError); the rest of the readout is complete."]
+    assert any(x.startswith("*Tests*") for x in lines) and nums["signals_readable"] is None
+
+
 def test_tests_at_a_look_are_listed_with_their_read(monkeypatch):
     from us_outbound.settings.model import Test
 

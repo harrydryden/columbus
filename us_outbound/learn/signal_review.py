@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from us_outbound import fmt
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
@@ -33,8 +33,6 @@ from us_outbound.learn import outcomes, stats
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
 
 MIN_CELL = 15  # companies on each side before a split is shown (design-final §9: "every cell has n ≥ 15")
-READY_DELIVERED = 60  # the daily post says the review is worth reading from this many emailed companies
-READY_DAYS = 14  # ... and this many days after the first send
 RANDOM, RANKED = "random", "ranked"
 
 
@@ -163,12 +161,3 @@ def lines(r: Review, limit: int | None = None) -> list[str]:
     out.append("Monitoring, not a verdict: with every signal shown at once, some intervals miss each other by chance. "
                "A weight changes only on the Signals tab, after a read at 300 matured companies a side.")
     return out
-
-
-def ready(ctx: Context) -> str:
-    """The daily post's one line once the review is worth reading, else ""."""
-    companies, closed = emailed(ctx)
-    if len(companies) < READY_DELIVERED or ctx.now - companies[0].step1_at < timedelta(days=READY_DAYS):
-        return ""
-    return (f"  Signal review: {len(companies)} companies emailed ({closed} reply windows closed). "
-            "`us-outbound report signals` shows the replies with each signal against without, with intervals.")

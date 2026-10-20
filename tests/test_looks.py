@@ -282,11 +282,19 @@ def test_a_read_uses_fisher_s_exact_test_against_the_look_s_threshold():
 
 def test_two_looks_use_the_o_brien_fleming_thresholds():
     """A count look at 30 a side and the read date: two looks at alpha 0.10. The first's threshold is 0.0111 (each side
-    spends 2 − 2Φ(1.96/√½) = 0.0056; tests/test_stats.py), the read date's 0.0965."""
+    spends 2 − 2Φ(1.96/√½) = 0.0056; tests/test_stats.py), the read date's 0.0965.
+
+    5 of 30 replied with eap-v1, 0 of 30 with general-v1. Fisher's two-sided p: 5 successes in 60, 30 a side;
+    P(x) = C(30, x)·C(30, 5 − x)/C(60, 5), C(60, 5) = 5,461,512; x = 5 and x = 0 are C(30, 5) = 142,506 each, 0.026093,
+    and every other table is likelier (x = 1: 30·27,405 = 822,150, 0.1505), so p = 0.0522. That is above the first
+    look's 0.0111 (not below its threshold, though below the whole alpha, 0.10: a read that compared p with ALPHA at an
+    interim look would stop the test early) and below the read date's 0.0965."""
     ctx = world(ab_test(looks=(30,), read_date=date(2026, 12, 21)))
     for i in range(60):
-        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0)
+        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0, reply="objection" if i < 5 else None)
     first = looks.read(ctx, "t1")
     assert first["look"]["number"] == 1 and first["look_threshold"] == 0.0111
+    assert first["reply_p"] == 0.0522 and first["below_threshold"] is False
     later = looks.read(dataclasses.replace(ctx, now=datetime(2026, 12, 22, tzinfo=UTC)), "t1")
     assert later["look"]["number"] == 2 and later["look_threshold"] == 0.0965
+    assert later["reply_p"] == 0.0522 and later["below_threshold"] is True
