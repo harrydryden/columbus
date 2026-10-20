@@ -4,7 +4,7 @@ import copy
 import dataclasses
 import sys
 import types
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -289,17 +289,17 @@ def test_general_note_rows_are_not_stored(ctx, sheet):
 
 
 def test_a_key_the_code_does_not_know_never_makes_the_version_in_force_unusable(ctx, sheet):
-    """RS P0-2, the rollback case: Harry adds a row for a key a newer package reads (live_split, a Wave 3 key; W1-C
-    made explore_share known, 19 Oct 2026), the sync stores it, and the code in force does not know it. load_current
-    used to reject General, so every job stopped; it reads the version in force leniently now, and the row is just
-    not read."""
+    """RS P0-2, the rollback case: Harry adds a row for a key a newer package reads (a later package's key; W1-C
+    made explore_share known, 19 Oct 2026, and W3-4 live_split, 21 Oct 2026), the sync stores it, and the code in
+    force does not know it. load_current used to reject General, so every job stopped; it reads the version in force
+    leniently now, and the row is just not read."""
     sync.run(ctx)
-    ctx.store.upsert("settings", [{"tab": "General", "key": "live_split", "values": {
-        "key": "live_split", "value": "both", "note": ""}, "effective_from": T2, "effective_to": None,
+    ctx.store.upsert("settings", [{"tab": "General", "key": "next_split_rule", "values": {
+        "key": "next_split_rule", "value": "both", "note": ""}, "effective_from": T2, "effective_to": None,
         "synced_at": T2}])
     settings, errors = sync.load_current(ctx.store)
     assert settings is not None and not any(errors.values())
-    assert not hasattr(settings.general, "live_split")
+    assert not hasattr(settings.general, "next_split_rule")
 
 
 def test_the_sync_lists_the_general_rows_it_does_not_read_and_posts_the_unknown_ones_weekly(ctx, sheet):
@@ -546,3 +546,134 @@ def test_anything_apply_approved_did_not_foresee_is_recorded_and_the_sync_goes_o
     summary = sync.run(ctx)
     assert summary["definition_apply_errors"] == [{"id": "", "label": "", "error": "KeyError: 'suggested_definition'"}]
     assert _in_force(ctx, "States", "NC")["values"]["active"] == "yes"
+
+
+# -- W3-4 (21 Oct 2026): the ICP widening post; a Tests row never keeps General back (r1) ------------------------------
+
+
+def test_a_sync_that_activates_10_more_labels_posts_once_so_the_decision_log_can_say_why(ctx, sheet):
+    """The default sheet has some labels switched off; switching 10 of them on widens the ICP: one post naming "10
+    more industries active". The same sync again posts nothing more (post_once); a narrowing is no widening. The run
+    starts from the version in force, as bootstrap builds it (W3-4 r2: from the code's defaults, nothing is posted)."""
+    assert sync.run(ctx)["icp_widened"] == []  # the first sync: ctx.settings is no version in force
+    ctx.settings, _ = sync.load_current(ctx.store)
+    off = [r for r in sheet["Industries"] if r["active"].strip().lower() == "no"][:10]
+    assert len(off) == 10
+    for r in off:
+        r["active"] = "yes"
+    summary = sync.run(ctx)
+    assert summary["icp_widened"][0].startswith("10 more industries active (")
+    posts = [text for _, text in ctx.clients.slack.posts if sync.WIDENED_HEAD in text]
+    assert len(posts) == 1 and "10 more industries active" in posts[0] and "docs/decisions.md" in posts[0]
+    sync.run(ctx)
+    assert len([t for _, t in ctx.clients.slack.posts if sync.WIDENED_HEAD in t]) == 1
+    before, _ = validate_all(default_tabs())
+    narrower = dataclasses.replace(before, general=dataclasses.replace(before.general, max_employees=200))
+    assert sync.widening(before, narrower) == []
+    assert sync.widening(narrower, before) == ["max_employees 200 → 249"]
+
+
+def _general(sheet, key: str, value: str) -> None:
+    next(r for r in sheet["General"] if r["key"] == key)["value"] = value
+
+
+def test_live_sending_no_comes_into_force_whatever_the_tests_tab_says(ctx, sheet):
+    """W3-4 r1 (the review's probe): in force, live_split = test, live_sending = yes and a copy test started from 21 Oct
+    running. Harry then sets live_split = none and live_sending = no, and leaves the Tests row on running. Before r1 the
+    Tests tab no longer validated and kept General back with it (spec.EXTRA_DEPENDS), so live_sending = yes stayed in
+    force. Now nothing is rejected: live_sending = no is in force, the Tests tab is in force with its test running, and
+    the test draws no arms (Settings.drawn_test is None under live_split none). One post a day says the test is
+    paused; the same sync again the same day posts nothing more."""
+    for c in sheet["Copy"]:
+        c.update(status="approved", approved_by="Harry")
+    _general(sheet, "live_split", "test")
+    _general(sheet, "live_sending", "yes")
+    _general(sheet, "approver_slack_ids", "U01HARRY")  # live_sending = yes needs one
+    sheet["Tests"][0].update(status="running", start_date="2026-10-26", read_date="2027-02-01",
+                             version_a=sheet["Copy"][0]["copy_version"], version_b=sheet["Copy"][1]["copy_version"])
+    first = sync.run(ctx)
+    assert first["rejected"] == [] and first["split_mismatches"] == [], first
+    settings, _ = sync.load_current(ctx.store)
+    assert settings.general.live_sending is True and settings.drawn_test() is not None  # the one split, drawing
+
+    _general(sheet, "live_split", "none")
+    _general(sheet, "live_sending", "no")
+    second = sync.run(dataclasses.replace(ctx, now=ctx.now + timedelta(hours=1)))
+    assert second["rejected"] == [] and second["unusable"] == [], second
+    settings, errors = sync.load_current(ctx.store)
+    assert not any(errors.values())
+    assert settings.general.live_sending is False and settings.general.live_split == "none"
+    test_id = sheet["Tests"][0]["test_id"]
+    assert settings.running_test().test_id == test_id and settings.drawn_test() is None
+    assert second["split_mismatches"] == [f"{test_id} needs General live_split = test (it is none): its arms are not "
+                                          "drawn for new contacts (paused)"]
+    told = [text for _, text in ctx.clients.slack.posts if sync.SPLIT_HEAD in text]
+    assert len(told) == 1 and test_id in told[0]
+    sync.run(dataclasses.replace(ctx, now=ctx.now + timedelta(hours=2)))
+    assert len([t for _, t in ctx.clients.slack.posts if sync.SPLIT_HEAD in t]) == 1  # once a day
+
+
+def _holdout_from_22_oct_without_registration(tabs) -> dict:
+    """The review's probe row (W3-4 r2): the default Tests row as a running opener holdout started Thu 22 Oct 2026,
+    after REGISTRY_FROM, with none of the five pre-registration fields (the code before W3-4 has no such columns)."""
+    row = tabs["Tests"][0]
+    row.update(kind="holdout", version_a="opener", version_b="holdout", status="running", start_date="2026-10-22",
+               read_date="2027-01-15", metric_id="", definition_version="", test="", alpha="", look_thresholds="")
+    return row
+
+
+def test_a_version_stored_by_older_code_with_an_unregistered_test_stays_in_force(ctx, sheet):
+    """W3-4 r2 (the review's blocking issue): the code in force before this deploy lets Harry start a holdout on or
+    after 21 Oct without the pre-registration, and stores the row. After the deploy, load_current must still read
+    that version (strict=False) with no Tests error, and load_fallback must not fall back (fallback_tabs empty):
+    otherwise enrolment and the reply desk stop until the sheet is fixed. The sheet's copy of the row is still
+    refused by the sync's own (strict) check, so the stored version stays in force, and one post a day names the gap."""
+    tabs = default_tabs()
+    _holdout_from_22_oct_without_registration(tabs)
+    ctx.store.insert("settings", [{"tab": tab, "key": natural_key(tab, r), "values": r, "effective_from": T1,
+                                   "effective_to": None, "synced_at": T1} for tab, rows in tabs.items() for r in rows])
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values()), {t: [str(e) for e in v] for t, v in errors.items() if v}
+    (t,) = [t for t in settings.tests if t.status == "running"]
+    assert (t.test_id, t.kind, t.registered, t.pre_registered) == ("t1-eap-opener", "holdout", True, False)
+    fallback = sync.load_fallback(ctx.store)
+    assert fallback is not None and fallback.fallback_tabs == frozenset()
+
+    _holdout_from_22_oct_without_registration(sheet)  # the sheet still says the same
+    ctx.settings, ctx.now = settings, T2
+    summary = sync.run(ctx)
+    assert summary["rejected"] == ["Tests"] and summary["unusable"] == []
+    gap = ("t1-eap-opener needs its pre-registration fields (metric_id, definition_version, test, alpha, "
+           "look_thresholds)")
+    assert summary["registration_gaps"] == [gap]
+    told = [text for _, text in ctx.clients.slack.posts if sync.REGISTRATION_HEAD in text]
+    assert len(told) == 1 and gap in told[0]
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values())  # still in force after the refused sync
+    ctx.now = T2 + timedelta(hours=1)
+    sync.run(ctx)
+    assert len([t for _, t in ctx.clients.slack.posts if sync.REGISTRATION_HEAD in t]) == 1  # once a day
+
+
+def test_a_sync_that_starts_from_the_defaults_or_the_fallback_posts_no_widening(ctx, sheet):
+    """W3-4 r2 (review note): settings_sync can run on the code's defaults (nothing in force) or on the fallback. The
+    widening post compares against the version that was in force, so neither posts one. Each starting point below has
+    max_employees 100 against the sheet's 249, which widening() reads as "max_employees 100 → 249"; only the one that
+    is a version in force (versions set, no fallback_tabs) posts it."""
+    from us_outbound.settings.model import General, Settings
+
+    defaults = Settings(general=dataclasses.replace(General(), max_employees=100))  # bootstrap's stand-in: no versions
+    ctx.settings = defaults
+    summary = sync.run(ctx)
+    assert sync.widening(defaults, sync.load_current(ctx.store)[0]) == ["max_employees 100 → 249"]  # what it would say
+    assert summary["icp_widened"] == []
+    in_force, _ = sync.load_current(ctx.store)
+    narrow = dataclasses.replace(in_force.general, max_employees=100)
+    ctx.settings = dataclasses.replace(in_force, general=narrow, fallback_tabs=frozenset({"Industries"}))
+    ctx.now = T2
+    assert sync.run(ctx)["icp_widened"] == []
+    assert not [t for _, t in ctx.clients.slack.posts if sync.WIDENED_HEAD in t]
+    ctx.settings = dataclasses.replace(in_force, general=narrow)  # the same narrower start, as a version in force
+    ctx.now = T3
+    assert sync.run(ctx)["icp_widened"] == ["max_employees 100 → 249"]
+    assert len([t for _, t in ctx.clients.slack.posts if sync.WIDENED_HEAD in t]) == 1

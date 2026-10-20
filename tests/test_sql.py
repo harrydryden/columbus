@@ -66,7 +66,8 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
     "suppression": {"expires_at"},
     "events": {"source",  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
                "analytics_source",  # a booker's hs_analytics_source (crm/readback.py; W2-4, 20 Oct 2026)
-               "amount"},  # apollo_balance's balance (learn/spend.py; W2-3, 20 Oct 2026)
+               "amount",  # apollo_balance's balance (learn/spend.py; W2-3, 20 Oct 2026)
+               "ai_interest_value"},  # Instantly's interest read of a reply (replies/poll.py; W3-4, 21 Oct 2026)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {

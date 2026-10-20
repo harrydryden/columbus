@@ -841,3 +841,107 @@ def test_items_without_a_kind_we_know_are_left_alone(settings):
     sl.say(HARRY_ID, "send")
     out = poll(ctx)
     assert out["items"] == 1 and len(inst.replies) == 1
+
+
+# -- class: X, a person's correction of a reply's class (W3-4, 21 Oct 2026; design-final §5 L11) ----------------------
+
+
+def test_class_in_the_thread_records_one_correction_and_the_outcomes_read_it(settings):
+    """An item classified positive; Harry replies `class: referral`. One reply_class_corrected event, source the
+    reply's events row (em-1), reply_class referral; learn/outcomes.classes reads referral for em-1 (the latest
+    correction counts). It decides nothing: nothing is sent, the item stays open, and a second poll writes no
+    second event (the message is read once)."""
+    from us_outbound.learn import outcomes
+
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "class: referral")
+    out = poll(ctx)
+    [event] = ctx.store.select("events", {"type": "reply_class_corrected"})
+    assert (event["source"], event["reply_class"], event["approved_by"], event["account_id"]) == (
+        "em-1", "referral", HARRY_ID, "acc-1")
+    assert outcomes.classes(ctx.store.select("events", {"type": list(outcomes.EVENT_TYPES)}))["em-1"] == "referral"
+    assert out["corrected"] == [{"item": "item-000", "from": "positive", "to": "referral", "by": HARRY_ID}]
+    assert inst.replies == [] and row_of(ctx)["status"] == "open"
+    assert any("Class recorded as *Referral*" in x and "Nothing was sent" in x for x in sl.texts())
+    poll(ctx)
+    assert len(ctx.store.select("events", {"type": "reply_class_corrected"})) == 1
+
+
+def test_class_needs_an_approver_and_a_known_class(settings):
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say("U_STRANGER", "class: negative")  # not an approver
+    sl.say(HARRY_ID, "class: maybe")  # no such class: no command at all
+    poll(ctx)
+    assert ctx.store.select("events", {"type": "reply_class_corrected"}) == []
+    assert poll_desk.parse_command("class: not now") == poll_desk.Command("class", "not_now")
+    assert poll_desk.parse_command("Class: Wrong-Person.") == poll_desk.Command("class", "wrong_person")
+    assert poll_desk.parse_command("class: maybe") is None
+
+
+def test_class_unsubscribe_opts_the_person_out(settings):
+    """W3-4 r1: `class: unsubscribe` says the reply asked to stop, so beside the correction the person is opted out as a
+    reply read so is (replies/optout.opt_out, marker unsubscribed:em-1): the contact's address suppressed, the contact
+    marked, one unsubscribed event; the card stays open, and its draft cannot go (suppressed_since). A second poll
+    opts out nothing more. A dry run says it would and writes nothing."""
+    from us_outbound import suppression
+
+    dry, *_, dry_sl, _ = desk_world(settings, live=False)
+    dry_sl.say(HARRY_ID, "class: unsubscribe")
+    out = poll(dry)
+    assert {"item": "item-000", "action": "opt_out"} in out["would"]
+    assert dry.store.select("events", {"type": "unsubscribed"}) == [] and dry.store.select("suppression") == []
+
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "class: unsubscribe")
+    out = poll(ctx)
+    assert out["opted_out"] == [{"item": "item-000", "result": "done"}]
+    email = ctx.store.get("contacts", contact_id="con-1")["email"]
+    assert suppression.is_suppressed(ctx.store, email=email)
+    [event] = ctx.store.select("events", {"type": "unsubscribed"})
+    assert (event["event_id"], event["contact_id"]) == ("unsubscribed:em-1", "con-1")
+    assert row_of(ctx)["status"] == "open" and any("They are opted out everywhere" in x for x in sl.texts())
+    sl.say(HARRY_ID, "send")
+    out = poll(ctx)
+    assert inst.replies == [] and out["not_sent"][0]["why"] == "suppressed_since"
+    assert len(ctx.store.select("events", {"type": "unsubscribed"})) == 1
+
+
+def test_a_correction_then_send_in_one_thread_does_both(settings):
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "class: referral")
+    sl.say(HARRY_ID, "send")
+    poll(ctx)
+    assert len(ctx.store.select("events", {"type": "reply_class_corrected"})) == 1 and len(inst.replies) == 1
+
+
+def test_a_dry_run_correction_writes_nothing(settings):
+    ctx, t, crm, sl, inst = desk_world(settings, live=False)
+    sl.say(HARRY_ID, "class: negative")
+    out = poll(ctx)
+    assert ctx.store.select("events", {"type": "reply_class_corrected"}) == []
+    assert {"item": "item-000", "from": "positive", "to": "negative", "by": HARRY_ID, "dry_run": True} in out["would"]
+
+
+def test_the_agreement_table_prints_from_ten_corrections(settings):
+    """Twelve handled items, each classified objection: four at confidence 0.6 (two corrected to negative), eight at
+    0.9 (all eight given a class: event, one of them objection, the class it already had, so no change). Under
+    0.70: 2 of 4 kept their class (50%); 0.85 and over: 1 of 8 (12%); objection → negative 9 times. With nine
+    corrections there is no table."""
+    ctx, *_ = desk_world(settings)
+    rows, events = [], []
+    for i in range(12):
+        conf = 0.6 if i < 4 else 0.9
+        rows.append({"item_id": f"it-{i}", "kind": "reply", "status": "handled", "event_id": f"rx-{i}",
+                     "payload": {"instantly_email_id": f"rx-{i}", "reply_class": "objection", "confidence": conf}})
+        if i in (0, 1) or i >= 4:
+            to = "objection" if i == 4 else "negative"
+            events.append({"event_id": f"c-{i}", "type": "reply_class_corrected", "source": f"rx-{i}",
+                           "reply_class": to, "occurred_at": NOW})
+    ctx.store.upsert("hitl_items", rows)
+    ctx.store.upsert("events", events[:9])
+    assert desk.correction_table(ctx) == []
+    ctx.store.upsert("events", events[9:])
+    lines = desk.correction_table(ctx)
+    assert lines[1:3] == ["    confidence under 0.70: 2 of 4 kept their class (50%)",
+                          "    confidence 0.85 and over: 1 of 8 kept their class (12%)"]
+    assert "Objection → Not interested 9" in lines[-1]

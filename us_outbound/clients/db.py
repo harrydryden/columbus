@@ -152,7 +152,8 @@ COLUMNS: dict[str, frozenset[str]] = {
         "event_id", "contact_id", "account_id", "type", "step", "mailbox", "reply_class", "reply_text",
         "language_terms", "competitor_named", "approval", "approved_by", "occurred_at", "source",
         "analytics_source",  # W2-4 (20 Oct 2026): a booker's hs_analytics_source (crm/readback.py)
-        "amount"}),  # W2-3 (20 Oct 2026): apollo_balance's balance (learn/spend.py)
+        "amount",  # W2-3 (20 Oct 2026): apollo_balance's balance (learn/spend.py)
+        "ai_interest_value"}),  # W3-4 (21 Oct 2026): Instantly's own interest read of a reply (replies/poll.py)
     "suppression": frozenset({"email_sha256", "domain", "reason", "source", "added_at", "expires_at"}),
     "settings": frozenset({"tab", "key", "values", "effective_from", "effective_to", "synced_at"}),
     "heartbeats": frozenset({"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error",

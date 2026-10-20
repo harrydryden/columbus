@@ -15,7 +15,12 @@ For each reply item not yet handled:
        "send: <text>"              send that text instead (SPEC 11);
        "edit: <text>"              the text replaces the draft, which is posted again in the thread;
                                    ✅ on that message, or "send", then sends it;
-       ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11; "no", "reject" or "don't send" too).
+       ❌ on the draft, or "skip"   handled, and nothing is sent (SPEC 11; "no", "reject" or "don't send" too);
+       "class: <class>"            the reply's class corrected (W3-4, 21 Oct 2026; design-final §5 L11): one
+                                   reply_class_corrected event (desk.correct_class), which every outcome and report
+                                   takes; it decides nothing about the answer and the thread reading goes on.
+                                   Read only while the item is open: once it is sent or skipped its thread is not
+                                   read again, so a "class:" written after that is not taken (W3-4 r2; known, kept).
      Thread replies count in order, then the reactions on the current draft message; ❌ beats ✅. A ✅ on a draft
      that was edited since, or whose send failed, no longer counts. The bot seeds ✅ and ❌ on each alert
      (replies/poll.py) and on a changed draft; its own reactions and notes are neither decisions nor ignored.
@@ -58,6 +63,9 @@ from us_outbound.replies.desk import (
     WAITING,
     ReplyItem,
     approvers_for,
+    class_label,
+    correct_class,
+    opt_out_corrected,
     describe_item,
     esc,
     mentions,
@@ -104,6 +112,8 @@ _SKIP = re.compile(r"^(?:skip|no|reject|don'?t send)[\s.!]*$", re.I)
 _SEND_TEXT = re.compile(r"^send\s*:\s*(.*)$", re.I | re.S)
 
 _EDIT = re.compile(r"^edit\s*:\s*(.*)$", re.I | re.S)
+# "class: referral", "class: not now" (W3-4): one of replies/classify.CLASSES, spaces read as underscores.
+_CLASS = re.compile(r"^class\s*:\s*([a-z_ -]+?)[\s.!]*$", re.I)
 
 
 
@@ -133,7 +143,7 @@ def slack_text(text: Any) -> str:
 
 @dataclass(frozen=True)
 class Command:
-    kind: str  # send | send_text | edit | skip
+    kind: str  # send | send_text | edit | skip | class
     text: str = ""
 
 
@@ -144,6 +154,12 @@ def parse_command(text: Any) -> Command | None:
         return Command("send")
     if _SKIP.match(t):
         return Command("skip")
+    m = _CLASS.match(t)
+    if m:
+        from us_outbound.replies.classify import CLASSES
+
+        cls = re.sub(r"[\s-]+", "_", m.group(1).strip().lower())
+        return Command("class", cls) if cls in CLASSES else None
     for rx, kind in ((_SEND_TEXT, "send_text"), (_EDIT, "edit")):
         m = rx.match(t)
         if m:
@@ -177,6 +193,7 @@ class Decision:
     draft: str = ""  # the draft after any edits
     edited: bool = False
     edits: list[tuple[str, str]] = field(default_factory=list)  # (user, new draft), in order
+    classes: list[tuple[str, str, str]] = field(default_factory=list)  # (user, class, message ts): class: X
     approve_ts: str = ""  # the message whose ✅ / ❌ count
     seen_ts: str = ""  # the newest thread reply read
     ignored: list[str] = field(default_factory=list)  # users who are not approvers for this item
@@ -202,7 +219,9 @@ def read_decision(slack: Any, item: ReplyItem, approvers: frozenset[str], bot: s
         if user not in approvers:
             d.ignored.append(user)
             continue
-        if cmd.kind == "edit":
+        if cmd.kind == "class":  # a correction, not a decision: read on
+            d.classes.append((user, cmd.text, d.seen_ts))
+        elif cmd.kind == "edit":
             d.edits.append((user, cmd.text))
             d.draft, d.edited, d.approve_ts = cmd.text, True, ""  # a ✅ on the old draft no longer counts
         elif cmd.kind == "skip":
@@ -288,6 +307,8 @@ class _Run:
     skipped: list[dict] = field(default_factory=list)
     blocked: list[dict] = field(default_factory=list)
     edited: list[str] = field(default_factory=list)
+    corrected: list[dict] = field(default_factory=list)  # class: X (W3-4)
+    opted_out: list[dict] = field(default_factory=list)  # class: unsubscribe (W3-4 r1)
     reposted: list[str] = field(default_factory=list)
     escalated: list[dict] = field(default_factory=list)
     by_hand: list[dict] = field(default_factory=list)
@@ -332,6 +353,10 @@ def _work(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
     d = read_decision(slack, item, approvers, run.bot)
     run.ignored.update(u for u in d.ignored if u)
     if ctx.dry_run:
+        for user, cls, ts in d.classes:
+            run.add("would", correct_class(ctx, item, cls, by=user, ref=ts))
+            if cls == "unsubscribe":
+                run.add("would", {"item": item.short_id, "action": "opt_out"})
         if d.action or d.edits:
             run.add("would", {"item": item.short_id, "action": d.action or "edit", "by": d.by, "via": d.via,
                               "edited": d.edited})
@@ -340,6 +365,19 @@ def _work(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
         return
     if d.edits:
         run.add("edited", item.short_id)
+    for user, cls, ts in d.classes:
+        run.add("corrected", correct_class(ctx, item, cls, by=user, ref=ts))
+        stopped = ""
+        if cls == "unsubscribe":  # they asked to stop: opted out, as a reply read so is (W3-4 r1)
+            result = opt_out_corrected(ctx, item)
+            run.add("opted_out", {"item": item.short_id, "result": result})
+            stopped = {"done": " They are opted out everywhere: no more emails, and this card's draft cannot go.",
+                       "pending": " They are on our do-not-contact list; Instantly's blocklist or HubSpot did not "
+                                  "answer, and the next run tries again."}.get(
+                result, " No address is on this card, so nobody was opted out: opt them out by hand.")
+        post_in_thread(slack, item, f"{say.INFO} Class recorded as *{esc(class_label(cls))}* (it was "
+                                    f"{esc(class_label(item.reply_class))}), by <@{user}>: the reports count it so. "
+                                    f"Nothing was sent.{stopped}")
     item = _apply_reading(ctx, item, d, slack)
     if d.action == "send":
         res = send_reply(ctx, item, d.text, by=d.by, edited=d.edited, via=d.via, slack=slack)
@@ -434,7 +472,8 @@ def poll_desk(ctx: Context) -> dict:
         log("poll_desk_failed", run_id=ctx.run_id, part="hand_check", error=f"{type(exc).__name__}: {str(exc)[:200]}")
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "slack": slack is not None, "items": len(items),
-        "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited,
+        "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited, "corrected": run.corrected,
+        "opted_out": run.opted_out,
         "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck, "by_hand": run.by_hand,
         "hubspot": dict(run.hubspot), "ignored_non_approvers": sum(run.ignored.values()), "errors": run.errors,
         "send_approvals": sends, "hand_check": checked, "hand_check_errors": hand_check_errors,

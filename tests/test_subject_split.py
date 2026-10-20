@@ -147,6 +147,33 @@ def test_enrol_sends_each_account_its_arm_s_subject_and_records_the_arm():
     assert got == {"con-1": PERSONAL, "con-2": PERSONAL, "con-3": COPY}
 
 
+@pytest.mark.parametrize("live_split, held, subjects", [
+    # both (the default, today's draws): the holdout (share 1.0: every account) and the subject split, as above.
+    ("both", {"holdout"}, {PERSONAL: 2, COPY: 1}),
+    ("opener", {"holdout"}, {render.NO_SUBJECT_ARM: 3}),  # the holdout alone; no subject arm, the Copy row's subject
+    # The holdout not drawn: every account its opener, and opener_arm n/a, in no arm (W3-4 r2, as subject_arm n/a).
+    ("subject", {openers.NO_ARM}, {PERSONAL: 2, COPY: 1}),  # the subject split alone; every opener
+    ("test", {openers.NO_ARM}, {render.NO_SUBJECT_ARM: 3}),  # neither: the Tests tab's test alone
+    ("none", {openers.NO_ARM}, {render.NO_SUBJECT_ARM: 3}),  # no split at all
+])
+def test_live_split_decides_which_split_draws_arms(live_split, held, subjects):
+    """W3-4 (21 Oct 2026; design-final §5 L10, D8): General live_split names the one split that draws arms. With the
+    opener holdout at a share of 1.0, a drawn holdout holds every account out; the subject split's arms by hash are
+    acc-1 and acc-2 personal, acc-3 copy (the test above)."""
+    from tests.test_enrol import instantly_posts, make
+
+    s = split(subject=NAMED, live_sending=True, opener_holdout_share=1.0, live_split=live_split)
+    ctx, t = make(live=True, settings=s)
+    out = enrol.run(ctx)
+    assert out["enrolled"] == 3 and out["subjects"] == {"arms": subjects}
+    contacts = ctx.store.select("contacts")
+    assert {c["opener_arm"] for c in contacts} == held
+    sent = {lead["email"]: lead["custom_variables"] for p in instantly_posts(t) for lead in p.json["leads"]}
+    if render.NO_SUBJECT_ARM in subjects:  # every email 1 has the Copy row's own subject
+        assert sent["jane@acmecreative.com"]["s1_subject"] == "Support for the Acme Creative team"
+        assert {c["subject_arm"] for c in contacts} == {render.NO_SUBJECT_ARM}
+
+
 # -- copy preview ----------------------------------------------------------------------------------------------------
 
 

@@ -623,7 +623,7 @@ def test_registered_on_the_schedule_heartbeat_and_cli():
     from us_outbound.ops import cli, schedule
 
     job = schedule.by_name()[metrics.JOB]
-    assert (job.cron, job.live, job.enabled) == ("50 8 * * *", False, True)
+    assert (job.cron, job.live, job.enabled) == ("50 8 * * *", True, True)  # --live from W3-4: the early warning posts
     assert cli.JOBS[metrics.JOB] == "us_outbound.learn.metrics:run" and health.EXPECTED[metrics.JOB] == 26 * 60
     assert metrics.JOB in health.IMPACT and say.job_name(metrics.JOB) == "keeping the daily numbers"
     # After the Monday readout (08:30), which scores last week's forecasts itself, before the daily post (09:00).

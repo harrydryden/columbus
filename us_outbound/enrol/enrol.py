@@ -34,6 +34,10 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      email1_subject_share get General email1_subject, the rest the Copy row's s1_subject; Harry, 5 Oct 2026),
      a running variant test's arm (enrol/variants.py; Harry, 7 Oct 2026: one part of one email changed for every
      account, whatever its Copy row; an account where the change cannot be made is left out of the test),
+     each split drawn only while General live_split lets it (W3-4, 21 Oct 2026: both, the default, draws all
+     three as before; opener, subject or test draws that one alone, none draws none; Settings.drawn_test,
+     draws_opener_holdout, draws_subject_split; a split not drawn records its arm as n/a: subject_arm, and
+     opener_arm from W3-4 r2, so a later read of either never counts an account no draw put in an arm),
      its four rendered emails (any copy-rule violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the
@@ -483,7 +487,7 @@ def copy_possible(account: Mapping[str, Any], settings: Settings, rows: Mapping[
 def running_test_counts(ctx: Context) -> Counter[str]:
     """Accounts already in the running copy test, per arm ("a" or "b"). A contact enrolled in an ab test before
     test_arm existed (8 Oct 2026) is placed by its copy version."""
-    t = ctx.settings.running_test()
+    t = ctx.settings.drawn_test()  # W3-4: only while live_split lets it draw
     if t is None:
         return Counter()
     seen: dict[str, set[str]] = defaultdict(set)
@@ -516,7 +520,7 @@ def choose_copy(
                  labels.GROUP_COPY: f"{label}'s group or General (its label earns the group's copy)",
                  labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
         return None, "", "", f"no approved copy that has passed QA for {where}", note
-    t = settings.running_test()
+    t = settings.drawn_test()  # W3-4: only while General live_split lets it draw
     if t and t.kind == AB_TEST and row.copy_version == t.version_a:
         arm = queue.test_version(str(account["account_id"]), t.test_id, t.share_a)
         chosen = rows.get(t.arm_name(arm))
@@ -616,7 +620,7 @@ class Prepared:
     lead: dict
     opener_note: str = ""  # the opener lines passed over, and why (enrol/openers.py)
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
-    opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
+    opener_arm: str = openers.NONE  # opener, holdout, none or n/a: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, or the generic line's General key
     subject_arm: str = render.COPY_SUBJECT  # personal or copy: email 1's subject (contacts.subject_arm)
     # The four emails as rendered, the variables they were filled with, and the mailbox they were rendered for.
@@ -686,7 +690,7 @@ def prepare(
     op, overlay = account_opener(ctx, a, c, check)
     opener, note = render.pick_opener(op.text, sender_is_harry=host, demo_host=g.demo_host, exempt=exempt)
     if note:  # every filled opener goes through the copy rules once more, as it will be sent
-        op = openers.Opener("", openers.NONE, "", (*op.notes, note))
+        op = openers.Opener("", openers.NO_ARM if op.arm == openers.NO_ARM else openers.NONE, "", (*op.notes, note))
     values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
     arm = render.subject_arm(a.get("account_id"), s)  # Harry, 5 Oct 2026: email 1's personal subject, as a split
     first_subject = render.email1_subject(arm, s)
@@ -696,7 +700,7 @@ def prepare(
                                        subject=first_subject if n == render.SUBJECT_STEP else "").violations)
 
     # A variant test (Harry, 7 Oct 2026): the account's arm, made in its Copy row's email, or why it is not in the test.
-    variant = variants.choose(s.running_test(), a, row, today=ctx.today_uk(), subject_arm=arm, counts=counts,
+    variant = variants.choose(s.drawn_test(), a, row, today=ctx.today_uk(), subject_arm=arm, counts=counts,
                               check=email_problems)
     if variant is not None and variant.arm:
         test_id, test_arm = variant.test_id, variant.arm
@@ -1052,7 +1056,7 @@ def _failures(skipped: Mapping[str, int]) -> dict[str, int]:
 def _copy_test_summary(s: Settings, r: _Run) -> dict[str, Any] | None:
     """The enrol summary's copy_test: the running copy test, today's contacts in each arm, and why others were not in
     it (a variant whose change could not be made, or whose arm is full)."""
-    t = s.running_test()
+    t = s.drawn_test()
     if t is None:
         return None
     return {"test_id": t.test_id, "kind": t.kind, "arms": {t.arm_name(a): r.test_arms[a] for a in ("a", "b")},

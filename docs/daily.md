@@ -105,6 +105,11 @@ one click decides.
 | ❌ or `skip` (or `no`, `reject`, `don't send`) | The card is closed, and nothing is sent |
 | `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
 | `send: …` | Sends that text instead of the draft |
+| `class: …` (for example `class: referral`, `class: not now`) | Records the class the reply should have had. Nothing is sent and the card stays open; every report counts the reply as you said. `class: unsubscribe` also opts them out everywhere, as a reply asking to stop is (the card stays open: close it with `skip`). Write it before `send` or `skip`: once the card is closed its thread is not read again. Once 10 corrections exist, the first readout of each month shows how often the model's class stood |
+
+A card that says *Instantly thinks this reply is interested; our model does not* is one where Instantly's own read
+of the email disagrees with ours: read it yourself. An away message Instantly reads as interested gets a card too
+(with no draft).
 
 ## Mondays: the readout
 
@@ -160,6 +165,38 @@ how many of the ranges would miss by chance alone. Read it top to bottom:
 
 The numbers behind it are kept daily by `metrics_daily` (08:50 UK, from 20 Oct 2026) in the database's `metrics`
 table, one row per day, cut and measure, so a later look can read a series rather than old posts.
+
+**The experiment registry** (in *Tests*, from 21 Oct 2026). General `live_split` says which random split new
+contacts are drawn into: `both` (the default) keeps today's three, the opener holdout, the email 1 subject split and
+the running test on the Tests tab; `opener`, `subject` or `test` keeps only that one; `none` draws none. Contacts
+already enrolled keep theirs. Each split's line gives what it is decided on, the test and its looks, how many
+companies each side needs (589 a side to tell 3% from 6%), how many it has, and the date it should be readable at the
+current pace. A test started from 21 Oct needs, on the Tests tab before `us-outbound test start`, `metric_id` (O4: any
+human reply within 28 days; O3: a positive one), `definition_version` (the metrics' version, 2026-10-20), `test`
+(`fisher_exact` or `beta_posterior`), `alpha` (like 0.10) and `look_thresholds` (`one_look`, or `obrien_fleming` with
+looks), and runs alone, with `live_split` naming its split. While a running test's split is not `live_split`, it
+draws no arms (a copy test) or draws beside the others (a holdout under `both`): the registry line says "paused" or
+"not alone", and one post a day says so. The sync never holds General back for it, so `live_sending` = no always
+comes into force. `warm-intro-70` runs on as it started. A test started from 21 Oct that is running without those five
+columns (only one started before this check existed can be) keeps the settings in force as they are, draws no arms,
+and is named in one post a day ("A running test cannot draw arms as the Tests tab has it") until its row is filled in.
+A split `live_split` leaves out records its arm as `n/a` on new contacts (`opener_arm`, `subject_arm`), so neither
+arm counts them.
+
+**The early warning** (from 21 Oct 2026; `metrics_daily`). One post a week, only when it fires: no human reply from
+100 companies that have had 28 days (P = 0.048 if the true rate were 3%), or a meeting or positive-reply rate very
+likely under half of what the pilot expects. It says to check reply capture and deliverability before the copy. It
+pauses nothing unless General `early_warning_pause` = yes; the stop rule (5 meetings in the first 1,500 companies)
+stays the brake.
+
+**The segment value** (the 1st, 02:20 UK, `segment_prior_monthly`). Spill's own decided HubSpot deals per industry
+group and size band, read only, are the starting point for which groups convert; the lookalike fit's industry part
+uses them (Legal Teams above Technology & Startups, Construction below). Focus-share or switch-off rows for the
+Suggestions tab come only once a group has 300 companies past 28 days, so not for months; the readout says how many
+each Focus group has.
+
+**When a sync widens who we email** (more industries active, a wider size range on General), one post says so: add a
+dated line to `docs/decisions.md` with the reason.
 
 **Small numbers read as small.** A rate is given only from 30 companies whose window has closed; before that, counts.
 A split shows only when every part has 15 companies ("pooled only" otherwise). Every rate carries its counts and a

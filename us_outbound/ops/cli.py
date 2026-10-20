@@ -121,6 +121,8 @@ JOBS: dict[str, str] = {
     "heartbeat_check": "us_outbound.ops.health:run",  # missed jobs, caught errors, the outside watchdog (W2-4)
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
+    # W3-4, 21 Oct 2026 (loop L9): Spill's HubSpot deals as the segment prior, then the segment value's proposals.
+    "segment_prior_monthly": "us_outbound.learn.segments:run",
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_draw": "us_outbound.enrol.hand_check:run",  # SPEC 11 weekly hand-check, Mondays (W1-5)
     "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
@@ -443,7 +445,11 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     else:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
-    print(f"Running test: {running.test_id} ({running.kind}, read on {running.read_date})" if running
+    paused_test = ""  # W3-4 r2: running on the sheet, but drawing no arms for new contacts (Settings.drawn_test)
+    if running is not None and s.drawn_test() is None:
+        paused_test = (" (paused: its row needs its pre-registration fields)" if running.registered
+                       and not running.pre_registered else f" (paused: live_split is {s.general.live_split})")
+    print(f"Running test: {running.test_id} ({running.kind}, read on {running.read_date}){paused_test}" if running
           else "Running test: none")
     _status_heartbeats(ctx.store, ctx.now)
     try:
@@ -686,7 +692,7 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
     print(f"Read at {look['label']}" + ("." if look["final"] else f"; the next is {result['next_look']}."
                                          if result["next_look"] else "."))
     print(looks.summary_line(result))
-    print("Reply rate decides (a 2x difference is what the test detects); positive and meeting rates are for information.")
+    print(looks.decides_line(result))  # the registered metric and test (W3-4 r1)
     print("Harry writes the result on the Tests tab.")
     return 0
 

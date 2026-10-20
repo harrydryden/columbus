@@ -49,7 +49,7 @@ from us_outbound.logs import log
 from us_outbound.settings.definitions import apply_approved
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings import spec
-from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
+from us_outbound.settings.model import OPTIONAL_TABS, SPLIT_BOTH, SPLIT_TEST, TABS, Settings
 from us_outbound.settings.validate import (
     HEADER_ROW,
     KEY_COLUMNS,
@@ -272,7 +272,11 @@ def _choose(
     report = {t: list(sheet_errors[t]) for t in rejected}
     errors = sheet_errors
     for _ in range(len(TABS) + 1):
-        _, errors = validate_all({t: stored[t] if t in rejected else sheet.get(t) for t in TABS})
+        # Leniently (W3-4 r2): a rejected tab's version in force is read as load_current reads it, so a row stored by
+        # older code (a test started from 21 Oct without its pre-registration) neither leaves it unusable nor holds
+        # back the tabs it names. A sheet tab still in play passed the strict check above on its own, and the checks
+        # between tabs are the same either way.
+        _, errors = validate_all({t: stored[t] if t in rejected else sheet.get(t) for t in TABS}, strict=False)
         grew = False
         for t in TABS:
             if not errors[t]:
@@ -476,6 +480,9 @@ def run(ctx: Context) -> dict:
         current = dataclasses.replace(ctx, settings=settings)
         lookalike = _lookalikes(current)
         rescored = _rescore(current)
+    widened = _post_widening(ctx, ctx.settings, settings) if settings is not None else []
+    split_paused = _post_split_mismatches(ctx, settings) if settings is not None else []
+    unregistered = _post_registration_gaps(ctx, settings) if settings is not None else []
 
     summary = {
         "sheet_id": sheet_id,
@@ -493,6 +500,9 @@ def run(ctx: Context) -> dict:
         "general_warnings": [str(w) for w in warnings],
         "warnings_posted": warned,
         "fallback": fallback,
+        "icp_widened": widened,
+        "split_mismatches": split_paused,
+        "registration_gaps": unregistered,
     }
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
         summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
@@ -508,6 +518,132 @@ def run(ctx: Context) -> dict:
     if alert_error is not None:
         raise alert_error
     return summary
+
+
+WIDENED_HEAD = "This sync widened who the system emails"
+
+
+def widening(before: Settings | None, after: Settings) -> list[str]:
+    """What a sync widened in the ICP (W3-4, 21 Oct 2026; design-final W3-4 change 6): more active industry labels on
+    the Industries tab, or a wider General size range. A narrowing is not listed: it only leaves companies out."""
+    if before is None:
+        return []
+    out = []
+    was = {i.industry for i in before.industries if i.active}
+    now = {i.industry for i in after.industries if i.active}
+    added = sorted(now - was)
+    if was and added:
+        out.append(f"{len(added)} more industries active ({', '.join(added[:8])}{', ...' if len(added) > 8 else ''})")
+    g0, g1 = before.general, after.general
+    if g1.max_employees > g0.max_employees:
+        out.append(f"max_employees {g0.max_employees} → {g1.max_employees}")
+    if g1.min_employees < g0.min_employees:
+        out.append(f"min_employees {g0.min_employees} → {g1.min_employees}")
+    return out
+
+
+def _post_widening(ctx: Context, before: Settings | None, after: Settings) -> list[str]:
+    """One post for a sync that widened the ICP, so docs/decisions.md can record why (a person's reason is the log's
+    entry). Once per change and day (post_once). Never raises: the sync goes on. Nothing when the run started from the
+    code's defaults or the fallback (no version in force, or fallback_tabs): what it would compare against is not what
+    was in force, and a widening from the defaults would be spurious (W3-4 r2)."""
+    import hashlib
+
+    from us_outbound.base import notify, say
+
+    if before is None or before.fallback_tabs or not before.versions:
+        return []
+    try:
+        lines = widening(before, after)
+        if not lines:
+            return []
+        digest = hashlib.sha256("|".join(lines).encode()).hexdigest()[:12]
+        notify.post_once(ctx, [(notify.once_key(ctx, "icp_widened", digest), "\n".join(f"• {x}" for x in lines))],
+                         head=f"{say.ACTION} *{WIDENED_HEAD}*",
+                         foot="_Add a dated line to docs/decisions.md with the reason (your words), so the change "
+                              "and why are on record beside the numbers it moves._")
+        return lines
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("icp_widening_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
+
+
+SPLIT_HEAD = "A running test is not the split General live_split names"
+
+
+def split_mismatches(settings: Settings) -> list[str]:
+    """One line per running test started from 21 Oct 2026 whose split is not General live_split (W3-4 r1;
+    Settings.split_mismatches): a copy test's arms are not drawn for new contacts, and a holdout's split, if it draws,
+    is not the one split. Validation does not refuse this (spec.EXTRA_DEPENDS: the Tests tab never keeps General back,
+    so live_sending = no always comes into force); this says so instead."""
+    return [line for _, line in _mismatches(settings)]
+
+
+def _mismatches(settings: Settings) -> list[tuple[str, str]]:
+    split = settings.general.live_split
+    out = []
+    for t in settings.split_mismatches():
+        state = ("its arms are not drawn for new contacts (paused)" if t.split() == SPLIT_TEST or split not in
+                 (SPLIT_BOTH, t.split()) else "its split draws beside the others, so it is not the one split")
+        out.append((t.test_id, f"{t.test_id} needs General live_split = {t.split()} (it is {split}): {state}"))
+    return out
+
+
+def _post_split_mismatches(ctx: Context, settings: Settings) -> list[str]:
+    """Once a day per test while its split is not General live_split (split_mismatches). Never raises."""
+    from us_outbound.base import notify, say
+
+    try:
+        found = _mismatches(settings)
+        if not found:
+            return []
+        lines = [line for _, line in found]
+        pairs = [(notify.once_key(ctx, "test_split", test_id), f"• {_slack_escape(line)}") for test_id, line in found]
+        notify.post_once(ctx, pairs, head=f"{say.ACTION} *{SPLIT_HEAD}*",
+                         foot=f"_Set General live_split to the test's split, or stop the test, on the "
+                              f"{say.sheet_link(ctx, 'General')}; contacts already enrolled keep their arms._")
+        return lines
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("test_split_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
+
+
+REGISTRATION_HEAD = "A running test cannot draw arms as the Tests tab has it"
+
+
+def registration_gaps(settings: Settings) -> list[str]:
+    """One line per running test started from 21 Oct 2026 that the sheet's check would refuse (W3-4 r2;
+    Settings.registration_gaps): its row has not every pre-registration field, or another test is running too. Only a
+    version stored by the code before W3-4 holds one (validate._tests reads it leniently, so the reply desk and
+    enrolment go on); a copy test in this state draws no arms for new contacts."""
+    return [f"{t.test_id} {why}" for t, why in settings.registration_gaps()]
+
+
+def _post_registration_gaps(ctx: Context, settings: Settings) -> list[str]:
+    """Once a day per test while registration_gaps names it. Never raises."""
+    from us_outbound.base import notify, say
+
+    try:
+        found = settings.registration_gaps()
+        if not found:
+            return []
+        lines = [f"{t.test_id} {why}" for t, why in found]
+        pairs = [(notify.once_key(ctx, "test_registration", t.test_id), f"• {_slack_escape(line)}")
+                 for (t, _), line in zip(found, lines)]
+        notify.post_once(ctx, pairs, head=f"{say.ACTION} *{REGISTRATION_HEAD}*",
+                         foot=f"_Fill in metric_id, definition_version, test, alpha and look_thresholds, and leave one "
+                              f"test running, on the {say.sheet_link(ctx, 'Tests')}; until the sheet passes, the "
+                              f"version in force stays and a copy test's arms are not drawn for new contacts._")
+        return lines
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("test_registration_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
 
 
 WARNING_HEAD = "The settings sheet has General rows the jobs do not read"

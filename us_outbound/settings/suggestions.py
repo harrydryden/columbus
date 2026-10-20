@@ -30,9 +30,12 @@ from us_outbound.logs import log
 TAB = "Suggestions"
 COLUMNS = ("id", "kind", "target", "text", "evidence", "snapshot", "status", "applied")
 ROLES_TITLE, DOMAIN_ALIAS = "roles_title", "domain_alias"
+FOCUS_SHARE, GROUP_OFF = "focus_share", "group_off"  # loop L9, segment value (learn/segments.py; W3-4)
 KINDS = {
     ROLES_TITLE: "a title to add to a Roles-tab row for the size range named in target",
     DOMAIN_ALIAS: "an email domain to take as the account's own (domain_aliases), for the domain named in target",
+    FOCUS_SHARE: "a Focus-tab share (text) for the industry group named in target, once it has 300 matured companies",
+    GROUP_OFF: "switch off the industry group named in target (Industries tab), read once per 300 matured companies",
 }
 PROPOSED = "proposed"
 TITLE_MISSES = 10  # accounts in one size range where the title was left out (loop L5)

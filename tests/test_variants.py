@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from tests.fakes import make_context
-from tests.test_cli import Harness, _approved, _tests_tab
+from tests.test_cli import PREREG, Harness, _approved, _split, _tests_tab
 from tests.test_enrol import default_openers, instantly_posts, make  # noqa: F401  (default_openers: autouse)
 from tests.test_looks import T0, emailed
 from tests.test_looks import world as looks_world
@@ -52,7 +52,8 @@ def variant_row(**kw) -> dict[str, str]:
     row = {c: "" for c in COLUMNS["Tests"]}
     row.update(test_id="warm-intro", kind="variant", hypothesis="A warm intro gets more replies",
                version_a="warm intro", version_b="no intro", accounts_per_version="400", status="planned",
-               read_date="2027-03-29", decision_rule="reply rate", email="1", change="first_line", text_a=WARM)
+               read_date="2027-03-29", decision_rule="reply rate", email="1", change="first_line", text_a=WARM,
+               **PREREG)
     row.update(kw)
     return row
 
@@ -168,43 +169,46 @@ def test_a_variant_may_not_run_beside_the_ab_test_but_may_beside_a_holdout(tabs)
 
 
 def test_test_start_starts_a_variant(capsys):
-    h = Harness(SETTINGS, sheet_tabs={"Tests": [variant_row()]})
+    h = Harness(_split(SETTINGS), sheet_tabs={"Tests": [variant_row()]})
     assert h.run("test", "start", "warm-intro", "--live") == 0
     row = h.sheet_tabs["Tests"][0]
     assert row["status"] == "running" and row["start_date"] == "2026-10-27"
 
 
 def test_test_start_refuses_a_variant_whose_text_breaks_a_rule(capsys):
-    h = Harness(SETTINGS, sheet_tabs={"Tests": [variant_row(text_a="Book a demo with us!")]})
+    h = Harness(_split(SETTINGS), sheet_tabs={"Tests": [variant_row(text_a="Book a demo with us!")]})
     assert h.run("test", "start", "warm-intro", "--live") == 2
     err = capsys.readouterr().err
     assert "does not pass the checks settings_sync makes" in err and "exclamation mark" in err
     assert h.sheet_tabs["Tests"][0]["status"] == "planned"
 
 
-def test_test_start_refuses_a_variant_beside_the_running_ab_test_and_not_beside_a_holdout(capsys):
+def test_test_start_refuses_a_variant_beside_any_running_test(capsys):
+    """One copy test at a time (SPEC 9), and from 21 Oct 2026 one test of any kind (W3-4): a variant is refused beside
+    a running holdout too (it started beside one before)."""
     running = _tests_tab(test_id="t1", status="running", start_date="2026-10-20")
-    h = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [running, variant_row()]})
+    h = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())), sheet_tabs={"Tests": [running, variant_row()]})
     assert h.run("test", "start", "warm-intro", "--live") == 2
     assert "only one copy test (ab or variant) runs at a time (SPEC 9); t1 is running" in capsys.readouterr().err
     holdout = _tests_tab(test_id="t2", kind="holdout", version_a="opener", version_b="holdout", status="running",
                          start_date="2026-10-20")
-    h2 = Harness(SETTINGS, sheet_tabs={"Tests": [holdout, variant_row()]})
-    assert h2.run("test", "start", "warm-intro", "--live") == 0
+    h2 = Harness(_split(SETTINGS), sheet_tabs={"Tests": [holdout, variant_row()]})
+    assert h2.run("test", "start", "warm-intro", "--live") == 2
+    assert "only one test runs at a time: t2 is running" in capsys.readouterr().err
     # And an ab test is refused beside the running variant.
-    h3 = Harness(dataclasses.replace(SETTINGS, copy=_approved()),
+    h3 = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())),
                  sheet_tabs={"Tests": [variant_row(status="running", start_date="2026-10-20"), _tests_tab()]})
     assert h3.run("test", "start", "t1", "--live") == 2
 
 
 def test_test_start_says_which_copy_rows_the_change_fits_and_refuses_one_it_fits_none(capsys):
-    h = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [variant_row()]})
+    h = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())), sheet_tabs={"Tests": [variant_row()]})
     assert h.run("test", "start", "warm-intro") == 0
     out = capsys.readouterr().out
     result, _ = json.JSONDecoder().raw_decode(out[out.index('{\n  "dry_run"'):])
     assert result["copy_rows"] == {"change_fits": 2, "sendable": 2, "not_in_the_test": {}}
     absent = variant_row(change="replace", find="Words no email has.", text_a="Other words.")
-    h2 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [absent]})
+    h2 = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())), sheet_tabs={"Tests": [absent]})
     assert h2.run("test", "start", "warm-intro", "--live") == 2
     assert "cannot be made in any sendable Copy row" in capsys.readouterr().err
 
@@ -321,12 +325,53 @@ def test_every_account_gets_its_arm_control_included_and_email_1_carries_it():
                                 "arms": {"warm intro": seen["a"], "no intro": seen["b"]}, "not_in_test": {}}
 
 
+@pytest.mark.parametrize("live_split, in_test", [("both", True), ("test", True), ("opener", False),
+                                                 ("subject", False), ("none", False)])
+def test_the_running_variant_draws_arms_only_while_live_split_lets_it(live_split, in_test):
+    """W3-4 (21 Oct 2026): the running copy test draws arms under live_split both (today's draws, warm-intro-70 among
+    them) or test; under opener, subject or none no new contact gets a test arm, and email 1 is the Copy row's (no warm
+    line), so exactly one split draws once Harry names it."""
+    accts, cons = agencies(8)
+    s = make_settings(live_sending=True, tests=(WARM_TEST,), live_split=live_split)
+    ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
+    out = enrol.run(ctx)
+    contacts = ctx.store.select("contacts")
+    assert len(contacts) == 8
+    bodies = [lead["custom_variables"]["s1_body"] for r in instantly_posts(t) for lead in r.json["leads"]]
+    if in_test:
+        assert {c["test_arm"] for c in contacts} == {"a", "b"} and out["copy_test"]["test_id"] == "warm-intro"
+        assert any(WARM in b for b in bodies)
+    else:
+        assert {c.get("test_id") or "" for c in contacts} == {""} and out.get("copy_test") is None
+        assert not any(WARM in b for b in bodies)
+
+
+@pytest.mark.parametrize("live_split, in_test", [("both", False), ("test", True), ("opener", False),
+                                                 ("subject", False), ("none", False)])
+def test_a_test_started_from_21_oct_draws_arms_only_under_live_split_test(live_split, in_test):
+    """W3-4 r1: the same variant started 26 Oct (registered) draws only under live_split = test, as the one split; under
+    both it is paused (Settings.drawn_test is None), which validation no longer refuses, so a Tests row can never keep
+    General, and live_sending = no, back."""
+    accts, cons = agencies(8)
+    registered = dataclasses.replace(WARM_TEST, start_date=date(2026, 10, 26), **{**PREREG, "alpha": 0.10})
+    s = make_settings(live_sending=True, tests=(registered,), live_split=live_split)
+    assert (s.drawn_test() is not None) is in_test
+    ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
+    out = enrol.run(ctx)
+    contacts = ctx.store.select("contacts")
+    assert len(contacts) == 8
+    bodies = [lead["custom_variables"]["s1_body"] for r in instantly_posts(t) for lead in r.json["leads"]]
+    assert ({c.get("test_arm") or "" for c in contacts} == {"a", "b"}) is in_test
+    assert any(WARM in b for b in bodies) is in_test and (out.get("copy_test") is not None) is in_test
+
+
 def test_an_ab_test_records_its_arm_too():
     accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(6)]
     cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(6)]
     rows = make_settings().copy + (copy_row("agencies-v2", "Marketing & Creative Agencies"),)
-    ctx, _ = make(live=True, settings=make_settings(live_sending=True, tests=(FIRST_TEST,), copy=rows),
-                  accounts=accts, contacts=cons)
+    # FIRST_TEST has no start_date, so it reads as started from 21 Oct: it draws under live_split = test (W3-4 r1).
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=rows, live_split="test")
+    ctx, _ = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     for i in range(6):
         con = ctx.store.get("contacts", contact_id=f"c-{i}")
@@ -416,7 +461,8 @@ def test_a_variant_test_is_read_from_its_arms_since_its_start():
     # Fisher on 1 of 2 against 1 of 2 is 1; look 1 of 2 (the count look, then the read date) has the O'Brien-Fleming
     # threshold 0.011 at alpha 0.10 (tests/test_stats.py); equal data, so P(no intro better) = 0.5.
     assert looks.summary_line(result) == ("warm intro 1 of 2 replied (50.0%); no intro 1 of 2 replied (50.0%) "
-                                          "· Fisher p = 1.000 (this look's threshold 0.011) · P(no intro better) = 0.50")
+                                          "· Fisher p = 1.000 (this look's threshold 0.011): does not cross "
+                                          "· P(no intro better) = 0.500, for information")
     lines, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=60))
     assert at_look == ["warm-intro"] and lines[0].startswith(
         "  warm-intro (one-change variant test) reached look 1: 2 accounts")
@@ -468,9 +514,28 @@ def test_the_running_copy_test_is_in_the_config_version(monkeypatch):
         "text_b": "", "find": ""}
     assert current(dataclasses.replace(WARM_TEST, text_a="Great to be connected.")).id != warm.id
     assert current(dataclasses.replace(WARM_TEST, status="read")).id == none.id  # stopped: as before it started
-    assert current(FIRST_TEST).snapshot["copy_test"]["kind"] == "ab"
     config_version.record(ctx, warm)
     assert ctx.store.get("config_versions", config_version=warm.id)["copy_test"]["text_a"] == WARM
+    ctx.settings = make_settings(tests=(FIRST_TEST,), live_split="test")  # no start_date: it draws under test alone
+    assert config_version.current(ctx).snapshot["copy_test"]["kind"] == "ab"
+
+
+def test_live_split_is_in_the_config_version_once_it_is_not_both(monkeypatch):
+    """W3-4 r1: under live_split = none a contact gets no test arm, the opener for every account and the Copy row's
+    subject, so its config id differs from one enrolled under both: live_split is in `general`, and copy_test is the
+    test that draws (Settings.drawn_test), None here. both, the default, adds nothing, so today's ids do not change."""
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    ctx = make_context(make_settings())
+
+    def current(split: str, *tests):
+        ctx.settings = make_settings(tests=tests, live_split=split)
+        return config_version.current(ctx)
+
+    both, none = current("both", WARM_TEST), current("none", WARM_TEST)
+    assert "live_split" not in both.snapshot["general"] and both.snapshot["copy_test"]["test_id"] == "warm-intro"
+    assert none.snapshot["general"]["live_split"] == "none" and none.snapshot["copy_test"] is None
+    assert none.id != both.id and current("both").id != current("opener").id
+    assert current("test", WARM_TEST).snapshot["copy_test"]["test_id"] == "warm-intro"
 
 
 def test_cohorts_changes_say_when_a_copy_test_started_changed_or_stopped():
@@ -546,8 +611,8 @@ def test_an_uneven_ab_test_splits_by_its_share():
     cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(40)]
     rows = make_settings().copy + (copy_row("agencies-v2", "Marketing & Creative Agencies"),)
     uneven = dataclasses.replace(FIRST_TEST, share_a=0.8)
-    ctx, _ = make(live=True, settings=make_settings(live_sending=True, tests=(uneven,), copy=rows),
-                  accounts=accts, contacts=cons)
+    s = make_settings(live_sending=True, tests=(uneven,), copy=rows, live_split="test")  # no start_date: W3-4 r1
+    ctx, _ = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     arms = {i: ctx.store.get("contacts", contact_id=f"c-{i}").get("test_arm") for i in range(40)}
     in_test = {i: arm for i, arm in arms.items() if arm}
@@ -557,12 +622,12 @@ def test_an_uneven_ab_test_splits_by_its_share():
 
 
 def test_test_start_says_the_split(capsys):
-    h = Harness(SETTINGS, sheet_tabs={"Tests": [variant_row(share_a="70%")]})
+    h = Harness(_split(SETTINGS), sheet_tabs={"Tests": [variant_row(share_a="70%")]})
     assert h.run("test", "start", "warm-intro") == 0
     out = capsys.readouterr().out
     result, _ = json.JSONDecoder().raw_decode(out[out.index('{\n  "dry_run"'):])
     assert result["split"] == "warm intro 70%, no intro 30%"
-    h2 = Harness(SETTINGS, sheet_tabs={"Tests": [variant_row()]})
+    h2 = Harness(_split(SETTINGS), sheet_tabs={"Tests": [variant_row()]})
     assert h2.run("test", "start", "warm-intro") == 0
     out = capsys.readouterr().out
     assert "split" not in json.JSONDecoder().raw_decode(out[out.index('{\n  "dry_run"'):])[0]

@@ -54,6 +54,10 @@ hubspot_readback). This job writes one hitl_items row for each reply a human mus
     sequence_may_continue, sequence_paused   see "Stopping the sequence"
     instantly_interest   for a positive reply: "interested" once Instantly's interest status is set, or why it
                          was not (see "Interested in Instantly")
+    instantly_thinks_interested   true when Instantly's ai_interest_value reads as interested and our class is not
+                         positive or referral (W3-4, 21 Oct 2026; design-final §5 L11): the alert says so, and an
+                         out-of-office our model read opens an item too (no draft), so a person reads it. The value
+                         is stored on the replied event (events.ai_interest_value) for every reply either way.
     slack_channel, slack_ts   once posted
 
 Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a human answers):
@@ -163,6 +167,13 @@ NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply 
 ALSO_STOP = ("They also asked to be taken off the list: suppressed, so the desk will not send to them. Answer by "
              "hand, or lift the suppression knowingly.")
 INTERESTED_CLASSES = frozenset({"positive"})  # marked "Interested" in Instantly (not referral: see the docstring)
+# Instantly's own read of a received email (W3-4, 21 Oct 2026; design-final §5 L11): its ai_interest_value, stored on
+# the replied event as Instantly gives it. A value of INSTANTLY_INTERESTED_AT or more is read as interested (its lead
+# interest values: 1 interested, 2 meeting booked, 3 meeting completed, 4 won; 0 out of office, below 0 not
+# interested, wrong person, lost). PHASE0-CONFIRM: that the email's ai_interest_value takes those values and not a
+# probability between 0 and 1 (a value we cannot read is stored and never opens an item).
+INSTANTLY_INTERESTED_AT = 1.0
+INSTANTLY_SAYS = "Instantly thinks this reply is interested; our model does not. Read it yourself."
 INTERESTED = "interested"  # the payload's instantly_interest once it is set
 # The alert's last section: what each reaction or thread reply does (replies/desk.py reads them; the words themselves
 # never change). Already Slack-escaped.
@@ -366,6 +377,20 @@ def _mark_interested(ctx: Context, info: Mapping[str, Any], m: Match, out: dict)
     return INTERESTED
 
 
+def ai_interest(email: Mapping[str, Any]) -> str | None:
+    """Instantly's ai_interest_value for the email, as text; None when it gives none."""
+    v = email.get("ai_interest_value")
+    return None if v is None or str(v).strip() == "" else str(v).strip()
+
+
+def instantly_interested(value: str | None) -> bool:
+    """Instantly's value reads as interested (INSTANTLY_INTERESTED_AT); anything that is no number never does."""
+    try:
+        return value is not None and float(value) >= INSTANTLY_INTERESTED_AT
+    except ValueError:
+        return False
+
+
 def _opt_out_addresses(email: Mapping[str, Any], m: Match) -> list[str]:
     """Whoever asked, and the contact too when a colleague asked for them: an opt-out errs on the safe side."""
     out = [outcomes.from_address(email)]
@@ -443,7 +468,8 @@ def record(ctx: Context, d: Directory, emails: list[Mapping[str, Any]], out: dic
             out["auto_replies_left_to_classify"] += 1
             continue
         rows[eid] = {"event_id": eid, "contact_id": m.contact["contact_id"], "account_id": m.contact.get("account_id"),
-                     "type": outcomes.REPLIED, "mailbox": mailbox, "occurred_at": outcomes.email_time(email) or ctx.now}
+                     "type": outcomes.REPLIED, "mailbox": mailbox, "occurred_at": outcomes.email_time(email) or ctx.now,
+                     "ai_interest_value": ai_interest(email)}
     if rows:
         sends = outcomes.sent_events(ctx, {r["contact_id"] for r in rows.values()})
         for r in rows.values():
@@ -493,27 +519,41 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], m: Match, see
         "step": outcomes.step_before(sends, received), "mailbox": mailbox, "reply_class": cls,
         "reply_text": text[:STORED_TEXT_CHARS], "language_terms": verdict.language_terms,
         "competitor_named": verdict.competitor_named or None, "occurred_at": received,
+        "ai_interest_value": ai_interest(email),
     }
     ctx.store.upsert("events", [event])  # the class on record first; an item, if any, after it (the module docstring)
+    # Instantly reads it as interested and our model does not (W3-4; L11): a person reads it, so an item opens, an
+    # out-of-office among them (an opt-out stays an opt-out, and the desk never answers a suppressed address).
+    disagree = instantly_interested(event["ai_interest_value"]) and cls not in WARM_REPLY_CLASSES
+    if disagree and cls != "unsubscribe":
+        out["instantly_thinks_interested"] += 1
     if cls == "unsubscribe":
         if result is None:  # the model's class alone (no asks_to_stop): opted out here
             result = _opt_out(ctx, email, m, info, received, done, out)
         _note(ctx, opt_out_note(info, from_is_contact=m.from_is_contact, by_rule=verdict.by_rule, result=result))
-    elif cls == "out_of_office":
+    elif cls == "out_of_office" and not disagree:
         _record_ooo(ctx, verdict, info, text)
     else:
+        if cls == "out_of_office":  # its return date kept as for any away message; the item below as well
+            _record_ooo(ctx, verdict, info, text)
         follow_up, given = None, False
         if cls == "not_now":
             given = verdict.not_now_date is not None
             follow_up = verdict.not_now_date or (received.astimezone(ET).date() + NOT_NOW_DEFAULT)
-        cont, paused = _pause_if_needed(ctx, email, info)
+        # An away message (here only because Instantly read it as interested) never pauses the lead's sequence: the
+        # next email may go when they are back (W3-4 r1; inert while LEAD_PAUSE_CONFIRMED is False).
+        cont, paused = (may_continue(email), False) if cls == "out_of_office" else _pause_if_needed(ctx, email, info)
         payload = {
             **info, **verdict.as_payload(), "reply_excerpt": text[:EXCERPT_CHARS],
-            **_draft(ctx, verdict, info, text, follow_up, given, out),
+            **({"draft": "", "draft_problems": ["our model read an out-of-office, so there is no draft"],
+                "draft_rejected": ""} if cls == "out_of_office" else _draft(ctx, verdict, info, text, follow_up, given,
+                                                                            out)),
             "follow_up_date": follow_up.isoformat() if follow_up else None,
             "follow_up_source": ("reply" if given else "default") if follow_up else None,
             "sequence_may_continue": cont, "sequence_paused": paused, "slack_channel": None, "slack_ts": None,
         }
+        if disagree:
+            payload["instantly_thinks_interested"] = True
         if verdict.asks_to_stop:  # opted out above; a person answers by hand (the desk will not send to them)
             payload.update(also_asked_to_stop=True, opt_out=result, stop_note=ALSO_STOP)
             out["also_asked_to_stop"] += 1
@@ -580,6 +620,8 @@ def _notes(p: Mapping[str, Any]) -> list[str]:
     notes = []
     if p.get("also_asked_to_stop"):
         notes.append(f"*{ALSO_STOP}*")
+    if p.get("instantly_thinks_interested"):
+        notes.append(f"*{INSTANTLY_SAYS}*")
     if p.get("why"):
         notes.append(f"Why we emailed them: {_esc(p['why'])}")
     if p.get("demo_requested"):
@@ -708,7 +750,8 @@ def run(ctx: Context) -> dict:
     out.update({k: 0 for k in ("recorded", "auto_replies_left_to_classify", "unmatched", "already_handled",
                                "retry_later", "claude_cap_reached",
                                "would_classify", "would_opt_out", "alerts_posted", "slack_errors",
-                               "left_for_next_run", "marked_interested", "also_asked_to_stop")})
+                               "left_for_next_run", "marked_interested", "also_asked_to_stop",
+                               "instantly_thinks_interested")})
     out["would_spend_usd_at_most"] = 0.0
     seen = _Seen(ctx)
     done = optout.done_markers(ctx.store)

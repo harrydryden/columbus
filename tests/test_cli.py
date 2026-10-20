@@ -135,7 +135,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
                                                "hand_check_draw", "read_pages", "apollo_enrich", "contact_precheck", "lookalike_leads",
                                                "blackout", "retention", "label_sample_monthly", "capture", "follow_up",
-                                               "metrics_daily"}
+                                               "metrics_daily", "segment_prior_monthly"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
@@ -515,6 +515,25 @@ def test_status_prints_jobs_and_mailboxes(capsys):
     assert "Today: 0, limited by ready accounts" in out
     assert "Apollo: 0 of 2,000 credits used this month (0%)" in out
     assert "Retention (00:40 UK daily): not run yet" in out  # ops/retention.py
+    assert "Running test: none" in out
+
+
+@pytest.mark.parametrize("live_split, prereg, says", [
+    ("test", True, "Running test: t1-agencies (ab, read on None)\n"),  # draws: no note
+    ("both", True, "Running test: t1-agencies (ab, read on None) (paused: live_split is both)\n"),
+    ("test", False, "Running test: t1-agencies (ab, read on None) (paused: its row needs its pre-registration "
+                    "fields)\n"),
+])
+def test_status_says_when_the_running_test_draws_no_arms(capsys, live_split, prereg, says):
+    """W3-4 r2 (review note): a test running on the sheet that draws no arms for new contacts (Settings.drawn_test is
+    None) is shown as paused, with why: live_split names another split, or its row lacks the pre-registration."""
+    from tests.test_render import FIRST_TEST
+
+    t = FIRST_TEST if prereg else dataclasses.replace(FIRST_TEST, metric_id="", definition_version="", test="",
+                                                      alpha=None, look_thresholds="")
+    s = dataclasses.replace(SETTINGS, tests=(t,), general=dataclasses.replace(SETTINGS.general, live_split=live_split))
+    assert Harness(s).run("status") == 0
+    assert says in capsys.readouterr().out
 
 
 def test_retention_runs_by_hand_and_shows_in_status(capsys):
@@ -530,11 +549,22 @@ def test_retention_runs_by_hand_and_shows_in_status(capsys):
 # -- copy tests -------------------------------------------------------------------------------------------
 
 
+# The Tests tab's pre-registration (W3-4, 21 Oct 2026; settings/model.PRE_REGISTRATION): a test started from 21 Oct
+# 2026 runs only with every field.
+PREREG = {"metric_id": "O4", "definition_version": "2026-10-20", "test": "fisher_exact", "alpha": "0.10",
+          "look_thresholds": "one_look"}
+
+
 def _tests_tab(**over):
     row = {"test_id": "t1", "hypothesis": "EAP opener wins", "version_a": "eap-v1", "version_b": "general-v1",
            "accounts_per_version": "400", "start_date": "", "read_date": "2026-12-15", "decision_rule": "reply rate",
-           "status": "planned", "result": ""}
+           "status": "planned", "result": "", **PREREG}
     return {**row, **over}
+
+
+def _split(settings, split: str = "test"):
+    """The settings with General live_split set: a test started from 21 Oct 2026 needs its split named (W3-4)."""
+    return dataclasses.replace(settings, general=dataclasses.replace(settings.general, live_split=split))
 
 
 def _approved():
@@ -544,7 +574,7 @@ def _approved():
 
 
 def test_test_start_sets_running_and_refuses_a_second():
-    settings = dataclasses.replace(SETTINGS, copy=_approved())
+    settings = _split(dataclasses.replace(SETTINGS, copy=_approved()))
     h = Harness(settings, sheet_tabs={"Tests": [_tests_tab(), _tests_tab(test_id="t2")]})
     assert h.run("test", "start", "t1") == 0  # dry-run
     assert h.sheet_tabs["Tests"][0]["status"] == "planned"
@@ -555,10 +585,10 @@ def test_test_start_sets_running_and_refuses_a_second():
 
 
 def test_test_start_needs_a_read_date_and_approved_copy(capsys):
-    h = Harness(SETTINGS, sheet_tabs={"Tests": [_tests_tab()]})
+    h = Harness(_split(SETTINGS), sheet_tabs={"Tests": [_tests_tab()]})
     assert h.run("test", "start", "t1", "--live") == 2
     assert "not approved" in capsys.readouterr().err
-    h2 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [_tests_tab(read_date="")]})
+    h2 = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())), sheet_tabs={"Tests": [_tests_tab(read_date="")]})
     assert h2.run("test", "start", "t1", "--live") == 2
     assert "pre-register" in capsys.readouterr().err
 
@@ -566,7 +596,7 @@ def test_test_start_needs_a_read_date_and_approved_copy(capsys):
 def test_test_start_checks_the_row_as_it_will_be_written(capsys):
     """9 Oct 2026: a read_date of 2026-9-30 passed a comparison of text; the sheet said running and the next
     settings_sync refused the Tests tab, so the test the operator was told is running was not."""
-    settings = dataclasses.replace(SETTINGS, copy=_approved())
+    settings = _split(dataclasses.replace(SETTINGS, copy=_approved()))
     for bad, says in (("2026-9-30", "read_date"), ("30/11/2026", "read_date"), ("2026-10-01", "must be after")):
         h = Harness(settings, sheet_tabs={"Tests": [_tests_tab(read_date=bad)]})
         assert h.run("test", "start", "t1", "--live") == 2
@@ -608,6 +638,9 @@ def test_test_read_reports_reply_rate_per_version_at_the_read_date(capsys):
                                             "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
     assert result["versions"]["general-v1"]["delivered"] == 2 and result["versions"]["general-v1"]["reply_rate"] == 0.0
     assert result["look"]["final"] and "Read at look 1 (the read date)" in out and "Harry writes the result" in out
+    # What decides comes from the test's registration (W3-4 r1): t1 has none, so the defaults (O4, Fisher, 0.10).
+    assert ("O4 (any human reply within 28 days) decides, by Fisher's exact two-sided p, crossing below this look's "
+            "threshold (obrien_fleming, total alpha 0.10)") in out and "Reply rate decides" not in out
     assert h.store.tables["heartbeats"] == []  # a read writes nothing
 
 

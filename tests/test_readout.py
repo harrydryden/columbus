@@ -237,9 +237,9 @@ def _contacts(ctx, ids, **stamp):
 
 def test_a_split_prints_only_when_every_cell_has_15():
     """35 companies matured at 28 days: 20 Legal Teams, 12 Technology & Startups, 3 Marketing & Creative Agencies:
-    two cells are under 15, so the group split is "pooled only". The arm split has random 20 (2 replied) and ranked
-    15 (1): both have 15, so it prints with Jeffreys intervals: 2 of 20 → 2.1-28.4%, 1 of 15 → 0.7-27.2%
-    (stats.jeffreys: the Beta(k + ½, n − k + ½) 2.5% and 97.5% quantiles)."""
+    two cells are under 15, so the group split is "pooled only". The explore arm's table (W3-4: learn/experiments.py)
+    has random 20 (2 replied) and ranked 15 (1): both have 15, so O4 prints with Jeffreys intervals: 2 of 20 →
+    2.1-28.4%, 1 of 15 → 0.7-27.2% (stats.jeffreys: the Beta(k + ½, n − k + ½) 2.5% and 97.5% quantiles)."""
     rows = outcome_rows(35, days_ago=30, replied=3)
     ctx, _ = world(weekly=[], outcomes=rows)
     ids = [f"o30-{i}" for i in range(35)]
@@ -251,7 +251,8 @@ def test_a_split_prints_only_when_every_cell_has_15():
     splits = block(readout.build(ctx)[0], "*Splits*")
     assert ("  By industry group: pooled only (matured companies: Legal Teams 20, Marketing & Creative Agencies 3, "
             "Technology & Startups 12; a split prints once every cell has 15).") in splits
-    assert ("  By explore arm: random 2 of 20 (10.0%, 95% 2.1–28.4%) · ranked 1 of 15 (6.7%, 95% 0.7–27.2%).") in splits
+    assert ("    O4 any human reply within 28 days: random 10.0% (2 of 20; 2.1–28.4%), ranked 6.7% (1 of 15; "
+            "0.7–27.2%).") in splits
     # The size band has one cell (no stamp: unknown): no split to print.
     assert "  By size band: pooled only (matured companies: unknown 35; a split prints once every cell has 15)." in splits
     # The edge: a cell of 14 is under 15 (pooled only), one of 15 is enough.
@@ -550,8 +551,8 @@ def test_a_test_at_a_look_is_a_decision_waiting():
     # One look (the read date): its threshold is the whole alpha, 0.10; Fisher on 0 of 2 against 0 of 2 is 1; with
     # no reply either side the Beta posteriors are the same, so P(general-v1 better) = 0.5.
     at = lines.index("  t1 (A/B copy test) reached look 1 (the read date): Thu 08 Oct 2026: eap-v1 0 of 2 replied "
-                     "(0.0%); general-v1 0 of 2 replied (0.0%) · Fisher p = 1.000 (this look's threshold 0.100) · "
-                     "P(general-v1 better) = 0.50")
+                     "(0.0%); general-v1 0 of 2 replied (0.0%) · Fisher p = 1.000 (this look's threshold 0.100): does "
+                     "not cross · P(general-v1 better) = 0.500, for information")
     assert lines[at + 1].startswith('    *What to do:* apply its decision rule ("reply rate")')
 
 

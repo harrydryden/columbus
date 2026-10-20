@@ -884,11 +884,14 @@ SPEC9_CRONS = {
     "label_sample_monthly": "15 9 1 * *",  # Harry, 11 Oct 2026: the labels judged by hand, a batch a month
     "capture": "30 7 * * 1",  # W1-2, 19 Oct 2026: the reply read checked, Mondays before the readout
     "follow_up": "45 8 * * *",  # W2-4, 20 Oct 2026: the not-now dates kept (replies/follow_up.py)
+    "segment_prior_monthly": "20 2 1 * *",  # W3-4, 21 Oct 2026: the HubSpot segment prior, before lookalikes
 }
 # The --live choices deploy/jobs.yaml had: every job that writes outside the database.
 LIVE = {"settings_sync", "score", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes",
         "mailbox_health", "kill_rules", "daily_post", "monday_readout", "heartbeat_check", "hand_check_draw",
-        "blackout", "retention", "label_sample_monthly", "capture", "follow_up"}
+        "blackout", "retention", "label_sample_monthly", "capture", "follow_up",
+        "metrics_daily",  # W3-4, 21 Oct 2026: it posts the early warning
+        "segment_prior_monthly"}  # W3-4: it writes the Suggestions tab
 
 
 def test_the_table_matches_the_job_registry_and_spec9():
@@ -942,8 +945,8 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
                        "contact_precheck", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "capture",
                        "monday_readout", "metrics_daily", "heartbeat_check",
-                       "suppression_load", "lookalikes", "hand_check_draw", "retention", "label_sample_monthly",
-                       "follow_up"]
+                       "suppression_load", "lookalikes", "segment_prior_monthly", "hand_check_draw", "retention",
+                       "label_sample_monthly", "follow_up"]
     # lookalike_leads is parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for
     # whole-US pages and kept only the active states. Not started, and not expected, so no false "missed" alert.
     assert "lookalike_leads" not in enabled and "lookalike_leads" not in hb.EXPECTED
@@ -959,9 +962,10 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     assert cli.JOBS["follow_up"] == "us_outbound.replies.follow_up:sweep" and hb.EXPECTED["follow_up"] == 26 * 60
     assert by_name()["follow_up"].live is True and "follow_up" in hb.IMPACT
     # metrics_daily (W3-1, 20 Oct 2026): registered everywhere a new job must be, in the same commit; daily, so its
-    # 26 hours are wall time, and it writes only the database (no --live).
+    # 26 hours are wall time.
     assert cli.JOBS["metrics_daily"] == "us_outbound.learn.metrics:run" and hb.EXPECTED["metrics_daily"] == 26 * 60
-    assert by_name()["metrics_daily"].live is False and "metrics_daily" in hb.IMPACT
+    # live from W3-4 (21 Oct 2026): it posts the early warning to the alert channel (learn/early_warning.py).
+    assert by_name()["metrics_daily"].live is True and "metrics_daily" in hb.IMPACT
     assert "metrics_daily" not in hb.WEEKDAY_JOBS
     # capture (W1-2, 19 Oct 2026; RS §2 W1-2): registered everywhere a new job must be, in the same commit.
     assert cli.JOBS["capture"] == "us_outbound.replies.capture:run" and hb.EXPECTED["capture"] == 8 * 24 * 60

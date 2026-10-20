@@ -835,6 +835,8 @@ def test_tests(tabs):
     _row(t, "Tests", test_id="t1-eap-opener")[1]["status"] = "running"
     errs = _errors(t, "Tests")
     assert {e.column for e in errs} == {"start_date", "read_date"}
+    # A test started from 21 Oct 2026 runs only as the one split drawing arms (W3-4): General live_split = test.
+    next(r for r in t["General"] if r["key"] == "live_split")["value"] = "test"
     _row(t, "Tests", test_id="t1-eap-opener")[1].update(start_date="2026-11-02", read_date="2026-12-14",
                                                          version_a="cpa-firms-people-v1", version_b="cpa-firms-people-v9")
     errs = _errors(t, "Tests")
@@ -847,7 +849,118 @@ def test_tests(tabs):
     assert settings.running_test().start_date == date(2026, 11, 2)
     second = dict(_row(t, "Tests", test_id="t1-eap-opener")[1], test_id="t2")
     t["Tests"].append(second)
+    # Both started from 21 Oct 2026 (W3-4): one test of any kind runs at a time, and both rows are refused.
+    errs = _errors(t, "Tests")
+    assert [(e.row, e.column) for e in errs] == [(2, "status"), (3, "status")]
+    assert all("only one test runs at a time from 21 Oct 2026 (rows 2, 3 say running)" in e.message for e in errs)
+    # Before 21 Oct (warm-intro-70's rules, kept): the copy-test rule, on the second row only.
+    for r in t["Tests"]:
+        r["start_date"] = "2026-10-12"
+    next(r for r in t["General"] if r["key"] == "live_split")["value"] = "both"
     assert "only one copy test (ab or variant) runs at a time" in _one(t, "Tests", "status").message
+
+
+def _prereg_tabs(tabs, **row):
+    t = copy.deepcopy(tabs)
+    next(r for r in t["General"] if r["key"] == "live_split")["value"] = row.pop("live_split", "test")
+    for c in t["Copy"]:
+        c.update(status="approved", approved_by="Harry")
+    _row(t, "Tests", test_id="t1-eap-opener")[1].update({
+        "status": "running", "start_date": "2026-10-26", "read_date": "2027-02-01",
+        "version_a": "cpa-firms-people-v1", "version_b": "legal-teams-people-v1", **row})
+    return t
+
+
+def test_a_test_started_from_21_oct_needs_its_pre_registration_and_its_split(tabs):
+    """W3-4 (design-final §5 L10; RT §3): the Tests tab is the pre-registration. A test started on or after 21 Oct
+    2026 runs only with metric_id (O3 or O4), definition_version, test, alpha and look_thresholds, and only while
+    General live_split names its split alone (drawn_test; not a validation error since r1); one started before
+    (warm-intro-70, 12 Oct) keeps the rules it started under, so the live sheet's Tests tab still validates and draws
+    with live_split = both."""
+    settings, errors = validate_all(_prereg_tabs(tabs))
+    assert not any(errors.values())
+    t = settings.running_test()
+    assert (t.metric_id, t.test, t.alpha, t.look_thresholds, t.registered) == ("O4", "fisher_exact", 0.10,
+                                                                             "one_look", True)
+    missing = _errors(_prereg_tabs(tabs, metric_id="", alpha=""), "Tests")
+    assert {(e.column, e.message) for e in missing} == {("metric_id", "is required"), ("alpha", "is required")}
+    assert [e.column for e in _errors(_prereg_tabs(tabs, metric_id="O2"), "Tests")] == ["metric_id"]
+    assert [e.column for e in _errors(_prereg_tabs(tabs, alpha="0.6"), "Tests")] == ["alpha"]
+    assert [e.column for e in _errors(_prereg_tabs(tabs, looks="2026-12-01"), "Tests")] == ["looks"]  # one_look
+    of = _prereg_tabs(tabs, look_thresholds="obrien_fleming")
+    assert "needs at least one look before the read_date" in _one(of, "Tests", "looks").message
+    assert not any(validate_all(_prereg_tabs(tabs, look_thresholds="obrien_fleming", looks="2026-12-01"))[1].values())
+    # The split is not checked here (W3-4 r1): an error would keep General back with the Tests tab, live_sending = no
+    # with it. Under both the test validates and draws no arms (Settings.drawn_test; settings_sync says so daily).
+    settings, errors = validate_all(_prereg_tabs(tabs, live_split="both"))
+    assert not any(errors.values()) and settings.drawn_test() is None
+    assert [t.test_id for t in settings.split_mismatches()] == ["t1-eap-opener"]
+    # Started before 21 Oct: no pre-registration needed, and it runs beside both, as warm-intro-70 does.
+    legacy = _prereg_tabs(tabs, live_split="both", start_date="2026-10-12", metric_id="", definition_version="",
+                          test="", alpha="", look_thresholds="")
+    settings, errors = validate_all(legacy)
+    assert not any(errors.values()) and settings.running_test().registered is False
+    assert settings.drawn_test() is settings.running_test() and settings.split_mismatches() == []
+    assert (settings.running_test().metric, settings.running_test().method) == ("O4", "fisher_exact")  # the defaults
+
+
+_BLANK_REGISTRATION = dict(metric_id="", definition_version="", test="", alpha="", look_thresholds="")
+
+
+def test_the_version_in_force_is_read_without_the_pre_registration_rules_and_draws_nothing(tabs):
+    """W3-4 r2 (the review's blocking probe): the code before W3-4 lets a test start on or after 21 Oct with no
+    pre-registration columns, and stores the row. Read again under this code (strict=False: sync.load_current and
+    load_fallback), the row must still validate, or every tab falls back and enrolment and the reply desk stop
+    (spec.py: rows stored under older code validate under newer code). The sheet's own check (strict, the default)
+    still refuses it. A copy test in that state draws no arms, and registration_gaps names what it lacks."""
+    bare = _prereg_tabs(tabs, **_BLANK_REGISTRATION)  # a copy test, started 26 Oct 2026, live_split = test
+    strict = _errors(bare, "Tests")
+    assert sorted((e.column, e.message) for e in strict) == sorted((c, "is required") for c in _BLANK_REGISTRATION)
+    settings, errors = validate_all(bare, strict=False)
+    assert settings is not None and not any(errors.values()), errors
+    t = settings.running_test()
+    assert (t.registered, t.pre_registered) == (True, False)
+    # Under live_split = test it would draw (drawn_test's split rule); without its pre-registration it does not.
+    assert settings.drawn_test() is None
+    assert [(g.test_id, why) for g, why in settings.registration_gaps()] == [
+        ("t1-eap-opener", "needs its pre-registration fields (metric_id, definition_version, test, alpha, "
+                          "look_thresholds)")]
+    # The same row with its five fields draws, and has no gap (the guard is the pre-registration, nothing else).
+    full, _ = validate_all(_prereg_tabs(tabs), strict=False)
+    assert full.drawn_test() is full.running_test() and full.registration_gaps() == []
+
+    # Two running from 21 Oct: a holdout (opener/holdout, 22 Oct) beside the copy test, as the old code allowed.
+    # Strict: both rows refused (the one-test rule). Lenient: both read; each named once, for what it lacks.
+    two = _prereg_tabs(tabs)
+    two["Tests"].append(dict(two["Tests"][0], test_id="h1", kind="holdout", version_a="opener", version_b="holdout",
+                             start_date="2026-10-22", **_BLANK_REGISTRATION))
+    assert [(e.row, e.column) for e in _errors(two, "Tests") if e.column == "status"] == [(2, "status"), (3, "status")]
+    settings, errors = validate_all(two, strict=False)
+    assert settings is not None and not any(errors.values()), errors
+    assert [(g.test_id, why.split(" (")[0]) for g, why in settings.registration_gaps()] == [
+        ("t1-eap-opener", "is not the only test running"), ("h1", "needs its pre-registration fields")]
+
+    # A rule its looks do not fit (one_look with an interim look): strict refuses it; lenient reads it with the
+    # default rule (look_thresholds blank, so not pre-registered: it draws nothing, and its gap is named).
+    unfit = _prereg_tabs(tabs, looks="2026-12-01")
+    assert _one(unfit, "Tests", "looks")
+    settings, errors = validate_all(unfit, strict=False)
+    assert settings is not None and not any(errors.values())
+    assert settings.running_test().look_thresholds == "" and settings.running_test().look_rule == "obrien_fleming"
+    assert settings.drawn_test() is None
+    # Started before 21 Oct (warm-intro-70): no gap, either way.
+    legacy, _ = validate_all(_prereg_tabs(tabs, live_split="both", start_date="2026-10-12", **_BLANK_REGISTRATION),
+                             strict=False)
+    assert legacy.registration_gaps() == [] and legacy.drawn_test() is legacy.running_test()
+
+
+def test_live_split_is_one_of_five(tabs):
+    for value in ("both", "opener", "subject", "test", "none"):
+        next(r for r in tabs["General"] if r["key"] == "live_split")["value"] = value
+        settings, errors = validate_all(tabs)
+        assert not any(errors.values()) and settings.general.live_split == value
+    next(r for r in tabs["General"] if r["key"] == "live_split")["value"] = "holdout"
+    assert "must be one of both, opener, subject, test, none" in _one(tabs, "General", "value").message
 
 
 # -- tab-level ---------------------------------------------------------------------

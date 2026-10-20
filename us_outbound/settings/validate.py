@@ -16,6 +16,9 @@ sync, the default) still fails on a duplicate key; strict=False (settings/sync.l
 in force) keeps the first row of a duplicated key and warns. A value that does not parse fails in both. Every key a
 package deletes from General goes into RETIRED_GENERAL in the same commit, and the live sheet's key names are a test
 fixture (tests/fixtures/general_keys_live.txt). general_warnings() lists the warnings.
+
+The Tests tab's pre-registration and its one-running-test rule (W3-4) are enforced the same way (W3-4 r2): strictly
+on the sheet, not on the version in force read again (_tests), which the code before W3-4 may have stored without them.
 """
 
 from __future__ import annotations
@@ -57,6 +60,13 @@ from us_outbound.settings.model import (
     ACTIONS,
     COPY_TEST_KINDS,
     LABEL_CHECK_MODES,
+    LIVE_SPLITS,
+    LOOK_RULES,
+    METRIC_IDS,
+    OBRIEN_FLEMING,
+    ONE_LOOK,
+    REGISTRY_FROM,
+    TEST_METHODS,
     HAND_CHECK_SAMPLE_MAX,
     HAND_CHECK_SAMPLE_MIN,
     MAX_EXPLORE_SHARE,
@@ -570,6 +580,9 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"must be a Claude model id like claude-opus-5-5 or claude-sonnet-5-5, not {value!r}")
     if key == "email_format" and value not in EMAIL_FORMATS:
         raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
+    if key == "live_split" and value not in LIVE_SPLITS:
+        raise ValueError(f"must be one of {', '.join(LIVE_SPLITS)} (both: the opener holdout, the subject split and the "
+                         "running test, as before; or the one split that draws arms)")
     if key == "label_check" and value not in LABEL_CHECK_MODES:
         raise ValueError(f"must be one of {', '.join(LABEL_CHECK_MODES)} (required: the task model checks each new "
                          "company's industry label before it is verified; skip: the rules alone)")
@@ -1091,13 +1104,20 @@ def _variant(r: _Row, kind: str) -> tuple[int, str, str, str, str]:
     return email, change, texts[0], texts[1], find
 
 
-def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
+def _tests(rows: list[_Row], strict: bool = True) -> list[tuple[Test, int]]:
     """The Tests tab. kind (ab, the default, holdout or variant) and looks (Harry, 6 Oct 2026) are optional columns,
     and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026), and share_a, the share
-    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank)."""
+    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank).
+
+    strict=False (the version in force, read again: settings/sync.load_current) does not require the pre-registration
+    or the one running test (W3-4 r2): a row stored by the code before W3-4, started on or after REGISTRY_FROM without
+    them, must still be read, or every tab falls back and enrolment and the reply desk stop (spec.py: rows stored under
+    older code validate under newer code). Such a test draws no arms (Settings.drawn_test) and settings_sync says so
+    once a day (Settings.registration_gaps); the sheet's own check (strict) still refuses the row."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
+    running_rows = [r.number for r in rows if r.text("status").strip().lower() == "running"]
     for r in rows:
         test_id = r.parse("test_id", str)
         _unique(r, "test_id", test_id.casefold() if test_id else None, seen, f"test {test_id!r}")  # as load keys it
@@ -1138,10 +1158,35 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
             elif not SHARE_A_MIN <= share_a <= 1 - SHARE_A_MIN:
                 r.fail("share_a", f"must be between {SHARE_A_MIN:.0%} and {1 - SHARE_A_MIN:.0%}: the smaller arm "
                                   "decides when the test can be read")
+        # The pre-registration (W3-4, 21 Oct 2026; settings/model.PRE_REGISTRATION): a test started from REGISTRY_FROM
+        # runs only once its row names the metric, the outcomes definition, the test, alpha and the per-look rule, and
+        # only as the one test running. A test started before keeps the rules it started under.
+        registered = start is None or start >= REGISTRY_FROM
+        needed = is_running and registered and strict
+        metric_id = r.parse("metric_id", one_of(METRIC_IDS), required=needed, default="")
+        version = r.parse("definition_version", str, required=needed, default="")
+        method = r.parse("test", one_of(TEST_METHODS), required=needed, default="")
+        alpha = r.parse("alpha", _alpha, required=needed, default=None)
+        rule_name = r.parse("look_thresholds", one_of(LOOK_RULES), required=needed, default="")
+        interim = tuple(looks or ())  # the looks before the read_date, which is always the last
+        unfit = ""
+        if is_running and registered and rule_name == ONE_LOOK and interim:
+            unfit = "must be blank when look_thresholds is one_look: the test is read once, on its read_date"
+        elif is_running and registered and rule_name == OBRIEN_FLEMING and not interim:
+            unfit = ("needs at least one look before the read_date when look_thresholds is obrien_fleming; or set "
+                     "look_thresholds to one_look")
+        if unfit and strict:
+            r.fail("looks", unfit)
+        elif unfit:  # the version in force, read again: read with the default rule, and not pre-registered (no draws)
+            rule_name = ""
+        alone = needed and len(running_rows) > 1
+        if alone:
+            r.fail("status", f"only one test runs at a time from {REGISTRY_FROM:%d %b %Y} (rows "
+                             f"{', '.join(str(n) for n in running_rows)} say running): stop the others first")
         # SPEC 9: one copy test at a time, since it decides each account's copy; a variant test decides part of it,
-        # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it runs beside either.
+        # so it counts as one (Harry, 7 Oct 2026). A holdout assigns nothing, so it ran beside either (before 21 Oct).
         if is_running and kind in COPY_TEST_KINDS:
-            if running is not None:
+            if running is not None and not alone:
                 r.fail("status", f"only one copy test (ab or variant) runs at a time; row {running} is already "
                                  "running")
             else:
@@ -1151,8 +1196,18 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
                              status=status, start_date=start, read_date=read, decision_rule=rule,
                              result=r.text("result"), kind=kind, looks=looks, email=email, change=change,
                              text_a=text_a, text_b=text_b, find=find,
-                             share_a=share_a if share_a is not None else 0.5), r.number))
+                             share_a=share_a if share_a is not None else 0.5, metric_id=metric_id or "",
+                             definition_version=version or "", test=method or "", alpha=alpha,
+                             look_thresholds=rule_name or ""), r.number))
     return out
+
+
+def _alpha(text: str) -> float:
+    """A test's total two-sided alpha: above 0 and at most 0.5, like 0.10."""
+    value = parse_float(text)
+    if not 0 < value <= 0.5:
+        raise ValueError(f"is the test's total two-sided alpha, above 0 and at most 0.5, like 0.10, not {text!r}")
+    return value
 
 
 _VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
@@ -1180,6 +1235,8 @@ def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None, *, strict: boo
         return (General() if tab == "General" else []), errors
     if tab == "General":
         return _general(prepared, strict, warnings), errors
+    if tab == "Tests":
+        return _tests(prepared, strict), errors
     return _VALIDATORS[tab](prepared), errors
 
 
@@ -1289,6 +1346,11 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None], *,
                 errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
             elif status != "approved":
                 errors["Tests"].append(RowError("Tests", row, col, f"a running test needs {version} approved", t.test_id))
+    # One randomised split draws arms (W3-4, 21 Oct 2026; design-final §5 L10). General live_split is not checked
+    # against the Tests tab here (W3-4 r1): the error would keep the Tests tab back, and General, with live_sending = no,
+    # could then be kept back with it. A test started from REGISTRY_FROM draws arms only while live_split names its
+    # split (Settings.drawn_test); settings_sync posts once a day while a running one does not (sync.split_mismatches),
+    # and `test start` refuses to start one under another split (learn/looks.start).
     values["Tests"] = tests
 
     # An Overrides industry names an Industries label and an industry_group a group, as written there (9 Oct 2026:
