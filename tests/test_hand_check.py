@@ -541,3 +541,65 @@ def test_the_confirmation_says_what_happens_next_in_plain_words():
     assert hand_check.confirmation(friday, WEEK, "harry", [], 2).splitlines()[1:] == [
         "The 2 companies with doubtful facts are checked again at 04:30 on Monday, then cleared to email if their "
         "facts hold."]
+
+
+def test_the_sample_is_drawn_after_the_accounts_enrol_takes_today_random_lane_first(monkeypatch):
+    """The Waves 2-3 review's scenario 2, through the real pick_contacts, the draw and enrol: Mon 26 Oct 2026 (W44),
+    300 eligible accounts alternating Tech and Agencies (scores 100 down), none with a contact; weekly_enrol_cap 150,
+    explore_share 0.15, Focus 50/50, hand_check_gate no, hand_check_sample 20.
+    pick at 05:30: 2 send days of ceil(150 / 5) = 30 ahead, 60 wanted; round(0.15 x 60) = 9 drawn at random from the
+    300 (mostly low scores, so after position 30 in plain queue order). The 05:45 draw: n = 150 / 5 send days = 30;
+    enrol walks explore_count(30) = round(4.5) = 5 random first, then 25 ranked: today 30, the rest 4 random + 26
+    ranked = 30, the whole pool. Before, the window was ready[30:180]: all 9 random-arm accounts, 3 of today's 5
+    random lane among the 20 sampled, held, and enrol realised 3 random of 30 (0.10)."""
+    from tests import test_enrol as te
+    from tests import test_pick_contacts as tp
+    from tests.test_render import account
+    from us_outbound.enrol import queue
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.model import Focus
+    from us_outbound.settings.validate import validate_all
+
+    monkeypatch.setattr(pick, "_rescore", lambda ctx: {})
+    accts, people, matches = [], {}, {}
+    for i in range(300):
+        tech = i % 2 == 0
+        aid, domain = f"a{i:02d}", f"co{i:02d}.com"
+        accts.append(account(account_id=aid, domain=domain, clean_name=f"Co {i}", apollo_org_id="", score=100 - i,
+                             industry="Fintech" if tech else "Advertising agencies",
+                             industry_group=TECH if tech else AGENCIES, angle="General", tier="Queue",
+                             employees=30, size_band="20-49", hq_state="NY"))
+        people[domain] = [tp.person(f"p-{i:02d}", "CEO")]
+        matches[f"p-{i:02d}"] = tp.match(f"p-{i:02d}", f"ceo@{domain}")
+    s = te.make_settings(live_sending=True, focus=(Focus(TECH, 0.5), Focus(AGENCIES, 0.5)), weekly_enrol_cap=150,
+                         explore_share=0.15, hand_check_gate=False, hand_check_sample=20)
+    s = dataclasses.replace(s, roles=validate_all(default_tabs())[0].roles)
+    mon = datetime(2026, 10, 26, 5, 30, tzinfo=UTC)
+    ctx, t = te.make(live=True, settings=s, accounts=accts, contacts=[], now=mon)
+    t.route("POST", "/mixed_people/api_search",
+            fn=lambda req: {"people": people.get((req.json.get("q_organization_domains_list") or [""])[0], [])})
+    t.route("POST", "/people/bulk_match", fn=lambda req: {
+        "matches": [matches.get(d["id"]) for d in req.json["details"]],
+        "credits_consumed": float(len(req.json["details"]))})
+    t.route("POST", "/usage_stats/credit_usage_stats",
+            body={"credit_usage_stats": {"lead_credit": {"left_over": 30000.0}}})
+    slack_routes(t)
+    assert pick.run(ctx)["explore"]["picked"] == 9
+
+    ctx = dataclasses.replace(ctx, now=mon + timedelta(minutes=15))
+    payload = hand_check.build(ctx, hand_check.this_week(ctx))
+    hand_check._record(ctx, payload)
+    ready = pick.ready_accounts(ctx)
+    random_ready = [a["account_id"] for a in ready if a.get("arm") == queue.RANDOM]
+    ranked_ready = [a["account_id"] for a in ready if a.get("arm") != queue.RANDOM]
+    assert (len(ready), len(random_ready), payload["number_today"], payload["pool"]) == (60, 9, 30, 30)
+    today = set(random_ready[:5]) | set(ranked_ready[:25])
+    window = set(random_ready[5:]) | set(ranked_ready[25:])  # 4 random of 30, 13%
+    sample = {a["account_id"] for a in payload["accounts"]}
+    assert len(sample) == 20 and sample <= window and not sample & today
+
+    ctx = dataclasses.replace(ctx, now=datetime(2026, 10, 26, 12, 0, tzinfo=UTC))
+    e = enrol.run(ctx)
+    took = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
+    assert e["enrolled"] == 30 and set(took) == today and not set(took) & sample
+    assert sum(arm == queue.RANDOM for arm in took.values()) == e["explore"]["prepared"] == 5

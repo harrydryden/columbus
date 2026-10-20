@@ -26,10 +26,11 @@ sender's accounts wait rather than move to someone else.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import random
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -94,6 +95,62 @@ def explore_count(n: int, settings: Settings, available: int) -> int:
     if n >= MIN_N_FOR_EXPLORE:
         want = max(want, 1)
     return min(want, available, n)
+
+
+def lanes(rows: Sequence[Any], settings: Settings,
+          account: Callable[[Any], Mapping[str, Any]] = lambda r: r) -> tuple[list[Any], list[Any]]:
+    """(the random lane, the ranked lane), each in order_key order: the accounts pick_contacts drew at random
+    (accounts.arm = random) while explore_share is above 0, and every other. With the share at 0 there is no random
+    lane: an account drawn while it was above 0 is ranked. account: the account row of each item (enrol walks its
+    candidates, the hand-check the account rows)."""
+    exploring = settings.general.explore_share > 0
+    ordered = sorted(rows, key=lambda r: order_key(account(r), settings))
+    drawn = [r for r in ordered if exploring and account(r).get("arm") == RANDOM]
+    ids = {id(r) for r in drawn}
+    return drawn, [r for r in ordered if id(r) not in ids]
+
+
+def day_order(ready: Sequence[Mapping[str, Any]], settings: Settings, n: int,
+              quota: focus.Quota | None = None) -> tuple[list[dict], list[dict]]:
+    """(the accounts a send day of n takes, the rest in order_key order), as enrol.run walks its lanes when every
+    account it reaches can be prepared: explore_count(n) from the random lane first, whatever the Focus quota; then the
+    ranked lane, an account whose Focus share is full today held; then the random lane's rest under the quota; then the
+    held ranked accounts and the held random ones, each without it. The hand-check draws from the rest (enrol/
+    hand_check.window): random-arm accounts mostly have low scores, so in plain order_key order they sat after
+    today's number while enrol took them first (the Waves 2-3 review: 3 of Monday's 5 held, and 6 of the 9 drawn
+    sampled against 14 of 51 ranked). quota: today's (focus.today), copied, so the caller's is not used up."""
+    rnd, ranked = lanes([dict(r) for r in ready], settings)
+    q = dataclasses.replace(quota, left=dict(quota.left), done=Counter(quota.done)) if quota is not None else None
+    today: list[dict] = []
+
+    def walk(lane: Iterator[dict], target: int, bound: bool, held: list[dict] | None = None) -> None:
+        taken = 0
+        while taken < target:
+            row = next(lane, None)
+            if row is None:
+                return
+            if bound and q is not None and not q.allows(row):
+                if held is not None:
+                    held.append(row)
+                continue
+            today.append(row)
+            taken += 1
+            if q is not None:
+                q.take(row)
+
+    n = max(0, n)
+    random_lane, ranked_lane = iter(rnd), iter(ranked)
+    held_ranked: list[dict] = []
+    held_random: list[dict] = []
+    walk(random_lane, explore_count(n, settings, len(rnd)), bound=False)
+    walk(ranked_lane, n - len(today), bound=True, held=held_ranked)
+    walk(random_lane, n - len(today), bound=True, held=held_random)
+    for held in (held_ranked, held_random):
+        walk(iter(held), n - len(today), bound=False)
+    taken = {str(r.get("account_id")) for r in today}
+    rest = sorted((r for r in rnd + ranked if str(r.get("account_id")) not in taken),
+                  key=lambda r: order_key(r, settings))
+    return today, rest
 
 
 def apportion(k: int, shares: Mapping[str, float]) -> dict[str, int]:

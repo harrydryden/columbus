@@ -4,10 +4,10 @@ ones. It is the only working measure of ICP precision the system has (code-appro
 
 hand_check_draw, Mondays 05:45 UK (after pick_contacts at 05:30, before enrol at 12:00), and on demand
 (`us-outbound run hand_check_draw`):
-  1. the pool: the accounts enrol could take that already have a sendable contact (contacts/pick.ready_accounts), in
-     queue order (queue.order_key), from position today's number + 1 to today's number + weekly_enrol_cap. Those are
-     the accounts the coming send days would take, not today's, so holding them never touches Monday's own enrolment
-     (RS §2 W1-5). Before, the sample was dealt across every active industry group, so 18 of W43's 48 rows came from
+  1. the pool: the accounts enrol could take that already have a sendable contact (contacts/pick.ready_accounts),
+     after the today's number of them enrol takes first (queue.day_order: its random lane, then the ranked under the
+     Focus quota), the next weekly_enrol_cap in queue order (queue.order_key). Those are the accounts the coming send
+     days would take, not today's, so holding them never touches Monday's own enrolment (RS §2 W1-5). Before, the sample was dealt across every active industry group, so 18 of W43's 48 rows came from
      groups rarely emailed (code-approvals-handcheck-copy B5). While the hand-check holds the whole day (gates()) and
      fewer than hand_check_sample accounts are ready beyond today's (supply binds: 30 to 60 ready against a number of
      about 30), the pool is every ready account from position 1: the day waits for the check anyway, so a sample from
@@ -155,17 +155,23 @@ def today_number(ctx: Context, errors: list[str] | None = None) -> int:
 
 
 def window(ctx: Context, number: int) -> tuple[int, list[dict]]:
-    """(the first queue position drawn from, the accounts there): the ready accounts in queue order
-    (pick.ready_accounts) from position number + 1 to number + weekly_enrol_cap, the ones the coming send days would
-    take. While the hand-check holds the whole day (gates()) and fewer than hand_check_sample are there, every ready
+    """(the first queue position drawn from, the accounts there): the ready accounts (pick.ready_accounts) after the
+    number today takes, as enrol walks them (queue.day_order: the random lane first, the Focus quota), the next
+    weekly_enrol_cap in queue order, the ones the coming send days would take. In plain queue order the random-arm
+    accounts, mostly low scores, all fell in the window while enrol took some of them first (the Waves 2-3 review).
+    While the hand-check holds the whole day (gates()) and fewer than hand_check_sample are there, every ready
     account from position 1 to number + weekly_enrol_cap instead: today's accounts wait for the check anyway, and a
     pool of none would leave the week with no check for the gate to wait on (the W1-5 review, 19 Oct 2026)."""
+    from us_outbound import budget
     from us_outbound.contacts import pick
+    from us_outbound.enrol import focus, queue
 
-    g = ctx.settings.general
+    s = ctx.settings
+    g = s.general
     n = max(0, number)
     ready = pick.ready_accounts(ctx)
-    ahead = ready[n : n + g.weekly_enrol_cap]
+    quota = focus.today(ctx, budget.send_days_left_in_week(ctx.now_et().date(), s))
+    ahead = queue.day_order(ready, s, n, quota)[1][: g.weekly_enrol_cap]
     if gates(ctx) and len(ahead) < g.hand_check_sample:
         return 1, ready[: n + g.weekly_enrol_cap]
     return n + 1, ahead

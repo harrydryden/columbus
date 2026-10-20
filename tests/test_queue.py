@@ -278,3 +278,37 @@ def test_harry_keeps_his_account_with_one_mailbox_paused():
 def test_no_active_mailbox_means_no_sender():
     none = make_settings(mailboxes=tuple(dataclasses.replace(m, status="Warming") for m in (HANNAH, SAM)))
     assert queue.assign_sender({"account_id": "x"}, none, {}) is None
+
+
+# -- the day's order (day_order: enrol's lanes, for the hand-check's window) ------------------------------------------
+
+
+def test_day_order_takes_the_random_lane_first_and_the_focus_quota_as_enrol_walks_them():
+    """12 ready accounts, scores 100 down to 89 (i = 0..11): 0-4 Tech, 5-11 Agencies; pick drew 8, 10 and 11 into the
+    random arm (low scores, as a uniform draw from the whole queue gives). n = 6: explore_count(6) = round(0.9) = 1,
+    raised to 1 from 4 a day, so the random lane gives 8; the ranked lane (0-7, 9) gives the next 5, 0-4. Plain queue
+    order would have had 0-5 today and 8 in the window. With Focus quotas of 3 Tech and 3 Agencies left today: 8
+    (Agencies, 2 left), then 0, 1, 2 (Tech, 0 left), 3 and 4 held, 5 and 6 (Agencies): today 8, 0, 1, 2, 5, 6."""
+    from us_outbound.enrol import focus
+
+    s = make_settings(explore_share=0.15, focus=(Focus(TECH, 0.5), Focus(AGENCIES, 0.5)))
+    rows = [{"account_id": f"a{i:02d}", "score": 100 - i, "size_band": "20-49",
+             "industry": "Fintech" if i < 5 else "Advertising agencies", "industry_group": TECH if i < 5 else AGENCIES,
+             "arm": queue.RANDOM if i in (8, 10, 11) else None} for i in range(12)]
+    random.Random(7).shuffle(rows)
+    ids = lambda xs: [x["account_id"] for x in xs]  # noqa: E731
+    today, rest = queue.day_order(rows, s, 6)
+    assert ids(today) == ["a08", "a00", "a01", "a02", "a03", "a04"]
+    assert ids(rest) == ["a05", "a06", "a07", "a09", "a10", "a11"]
+    quota = focus.Quota(left={TECH: 3, AGENCIES: 3}, targets={TECH: 75, AGENCIES: 75}, settings=s)
+    today, rest = queue.day_order(rows, s, 6, quota)
+    assert ids(today) == ["a08", "a00", "a01", "a02", "a05", "a06"]
+    assert ids(rest) == ["a03", "a04", "a07", "a09", "a10", "a11"]
+    assert quota.left == {TECH: 3, AGENCIES: 3}  # the caller's quota is not used up
+    # explore_share 0: no random lane, the queue in order.
+    today, rest = queue.day_order(rows, explore(0.0), 6)
+    assert ids(today) == [f"a{i:02d}" for i in range(6)] and ids(rest) == [f"a{i:02d}" for i in range(6, 12)]
+    # Too few ranked for the day: n = 3 draws none at random (round(0.45) = 0, under 4 a day), the one ranked account
+    # a00, then the random lane's first two fill the day.
+    today, rest = queue.day_order([r for r in rows if r["arm"] or r["account_id"] == "a00"], s, 3)
+    assert ids(today) == ["a00", "a08", "a10"] and ids(rest) == ["a11"]

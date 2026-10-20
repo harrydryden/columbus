@@ -1102,15 +1102,14 @@ def run(ctx: Context) -> dict:
     # is no random walk: every account is walked in queue order, those pick drew while the share was above 0
     # included, and their contacts are stamped ranked. (The Control tier's lane, which kept its share while
     # explore_share was 0, went with the tiers: W2-2.)
-    in_order = sorted(cands, key=lambda c: queue.order_key(c.account, s))
+    # The lanes are queue.lanes, and queue.day_order walks them as below, for the hand-check's window.
     exploring = s.general.explore_share > 0
 
     def in_random_arm(account: Mapping[str, Any]) -> bool:
         return exploring and account.get("arm") == queue.RANDOM
 
-    drawn = [c for c in in_order if in_random_arm(c.account)]
-    random_lane = iter(drawn)
-    ranked_lane = iter([c for c in in_order if not in_random_arm(c.account)])
+    drawn, ranked = queue.lanes(cands, s, account=lambda c: c.account)
+    random_lane, ranked_lane = iter(drawn), iter(ranked)
     n_random = queue.explore_count(n, s, len(drawn))
     counts, approved = running_test_counts(ctx), sendable_copy(s)
     # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
