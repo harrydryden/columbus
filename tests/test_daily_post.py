@@ -252,7 +252,7 @@ def test_each_post_covers_the_day_before_only():
 def test_the_post_runs_tuesday_to_saturday_and_saturday_covers_friday():
     """RS §2 W1-7: Sat 24 Oct posts (Friday); Sun 25 and Mon 26 have no post; Tue 27 covers Mon 26 only; and the
     heartbeat check at Mon 26 Oct 10:00 does not call the post missed."""
-    from us_outbound.ops import heartbeat, schedule, scheduler
+    from us_outbound.ops import health, schedule, scheduler
 
     [cron] = schedule.crons("daily_post")
     assert cron == "0 9 * * 2-6"
@@ -265,12 +265,12 @@ def test_the_post_runs_tuesday_to_saturday_and_saturday_covers_friday():
     # Sunday), well inside the 74 hours EXPECTED allows; Saturday to Tuesday 09:00 GMT is 73 hours, inside it too.
     beat = {"job": "daily_post", "status": "ok", "started_at": SAT_9, "last_alive_at": SAT_9, "runs": 1}
     mon_10 = datetime(2026, 10, 26, 10, 0, tzinfo=UTC)
-    assert heartbeat.overdue_minutes("daily_post", beat, mon_10) == 50 * 60 - 74 * 60 < 0
-    assert heartbeat.overdue_minutes("daily_post", beat, TUE_9) == 73 * 60 - 74 * 60 < 0
+    assert health.overdue_minutes("daily_post", beat, mon_10) == 50 * 60 - 74 * 60 < 0
+    assert health.overdue_minutes("daily_post", beat, TUE_9) == 73 * 60 - 74 * 60 < 0
     ctx, t = world(now=mon_10)
     ctx.store.insert("heartbeats", [{"run_id": "dp", "job": "daily_post", "status": "ok", "dry_run": False,
                                      "started_at": SAT_9, "finished_at": SAT_9 + timedelta(minutes=1)}])
-    assert "daily_post" not in heartbeat.check_heartbeats(ctx, ["daily_post"])
+    assert "daily_post" not in health.check_heartbeats(ctx, ["daily_post"])
 
 
 def test_one_company_writing_three_times_is_one_reply_in_both_reports():

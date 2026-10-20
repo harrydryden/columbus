@@ -453,6 +453,13 @@ RETIRED_GENERAL = {
     "apollo_credits_per_account": "never read (W2-1, 20 Oct 2026)",
     "opener_focus": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
     "opener_focus_line": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
+    # W2-4 (20 Oct 2026): constants Harry never edits, now in code at the live sheet's values (settings/model.py).
+    "score_cap": "a constant in code now, 100 (settings/model.SCORE_CAP; W2-4, 20 Oct 2026)",
+    "escalation_hours": "a constant in code now, 24 (settings/model.ESCALATION_HOURS; W2-4, 20 Oct 2026)",
+    "apollo_enrich_groups": "a constant in code now, Technology & Startups (settings/model.APOLLO_ENRICH_GROUPS; W2-4)",
+    "site_visit_domain": "a constant in code now, spill.chat (settings/model.SITE_VISIT_DOMAIN; W2-4, 20 Oct 2026)",
+    "site_visit_us_paths": "a constant in code now, /us (settings/model.SITE_VISIT_US_PATHS; W2-4, 20 Oct 2026)",
+    "site_visit_intent_paths": "a constant in code now (settings/model.SITE_VISIT_INTENT_PATHS; W2-4, 20 Oct 2026)",
 }
 
 
@@ -546,8 +553,6 @@ def _check_general_value(key: str, value: Any) -> None:
         problems = _line_problems(value, GENERIC_LINE_TOKENS)
         if problems:
             raise ValueError("; ".join(problems))
-    if key == "escalation_hours" and value < 1:
-        raise ValueError("must be at least 1")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (a guard against a typo: settings/validate.py)")
     if key == "escalation_email":
@@ -573,13 +578,6 @@ def _check_general_value(key: str, value: Any) -> None:
         bad = [v for v in value if not _SLACK_USER.fullmatch(v)]
         if bad:
             raise ValueError(f"{', '.join(bad)} is not a Slack user id (they look like U01ABCDEF)")
-    # The website-visit signals (sources/site_visits.py; Harry, 5 Oct 2026).
-    if key == "site_visit_domain" and value and not _DOMAIN.fullmatch(value.strip().lower()):
-        raise ValueError(f"is the bare domain Apollo's tracker is on, like spill.chat (no https:// or path), not {value!r}")
-    if key in ("site_visit_us_paths", "site_visit_intent_paths"):
-        bad = [v for v in value if not v.startswith("/")]
-        if bad:
-            raise ValueError(f"{', '.join(bad)} is not a path on the site: each starts with /, like /us/pricing")
 
 
 def _general(rows: list[_Row], strict: bool = True, warnings: list[RowError] | None = None) -> General:
@@ -1322,19 +1320,6 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None], *,
             continue
         focus_rows.append((dataclasses.replace(f, industry_group=canonical), row))
     values["Focus"] = focus_rows
-
-    # General apollo_enrich_groups names industry groups on the Industries tab (sources/apollo_enrich.py).
-    general = values["General"]
-    enrich_row = next((i + FIRST_DATA_ROW for i, r in enumerate(raw["General"] or ())
-                       if _cell(r, "key") == "apollo_enrich_groups"), HEADER_ROW)
-    unknown = [g for g in general.apollo_enrich_groups if g.casefold() not in groups]
-    for g in unknown:
-        errors["General"].append(RowError("General", enrich_row, "value", f"apollo_enrich_groups: {g!r} is not an "
-                                          f"industry_group on the Industries tab{hint(g, groups.values())}",
-                                          "apollo_enrich_groups"))
-    if not unknown and general.apollo_enrich_groups:
-        values["General"] = dataclasses.replace(general, apollo_enrich_groups=tuple(
-            dict.fromkeys(groups[g.casefold()] for g in general.apollo_enrich_groups)))
 
     if any(errors.values()):
         return None, errors

@@ -118,7 +118,7 @@ from us_outbound.context import UK, ConfigError, Context
 from us_outbound.enrol import capacity
 from us_outbound.logs import log, normalise_email, redact
 from us_outbound.replies import optout
-from us_outbound.replies.items import REPLY_KINDS, WAITING
+from us_outbound.replies.desk import REPLY_KINDS, WAITING
 from us_outbound.replies.poll import OOO_KIND
 from us_outbound.scoring.score import SCORING_SOURCE
 from us_outbound.scoring.tiers import DECLINED_IN_SLACK

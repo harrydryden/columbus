@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import dataclasses
 import re
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2, SAM, SETTINGS, FakeInstantly, StubSheets, slack_routes
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli, schedule
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.settings.model import General, Settings
 from us_outbound.settings.model import Test as CopyTest
 
@@ -351,12 +353,12 @@ def test_stop_pauses_every_us_campaign_and_enrolment():
     harry = h.instantly.add_campaign(C_HARRY, status=0)
     eu = h.instantly.add_campaign("EU Outbound – Anna", status=1)
     assert h.run("stop") == 0  # dry-run: enrolment stops, campaigns do not
-    assert heartbeats.enrolment_paused(h.store) is not None
+    assert health.enrolment_paused(h.store) is not None
     assert hannah["status"] == 1
     assert h.run("stop", "--live") == 0  # operator command: --live alone
     assert hannah["status"] == 2 and harry["status"] == 0 and eu["status"] == 1
     assert not [r for r in h.transport.requests if f"/{eu['id']}" in r.url]
-    assert [b["status"] for b in h.beats(heartbeats.OPERATOR_STOP)] == ["ok", "ok"]
+    assert [b["status"] for b in h.beats(health.OPERATOR_STOP)] == ["ok", "ok"]
 
 
 def test_campaigns_show_prints_each_owner_campaign_as_instantly_holds_it(capsys):
@@ -379,7 +381,7 @@ def test_start_needs_live_sending_and_checks_drift():
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())
-    assert heartbeats.enrolment_paused(h.store) is not None
+    assert health.enrolment_paused(h.store) is not None
 
     live = Harness(LIVE_SETTINGS)
     live.store, live.instantly, live.transport = h.store, h.instantly, h.transport
@@ -390,7 +392,7 @@ def test_start_needs_live_sending_and_checks_drift():
     h.instantly.by_name(C_SAM)["open_tracking"] = False
     assert live.run("start", "--live") == 0
     assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
-    assert heartbeats.enrolment_paused(h.store) is None
+    assert health.enrolment_paused(h.store) is None
 
 
 # -- operator commands ----------------------------------------------------------------------------------
@@ -606,7 +608,7 @@ def test_no_http_library_outside_the_http_client():
     from pathlib import Path
 
     root = Path(cli.__file__).resolve().parents[1]
-    mine = ["ops/cli.py", "ops/heartbeat.py", "base/heartbeats.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py",
+    mine = ["ops/cli.py", "ops/health.py", "base/health.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py",
             "ops/scheduler.py", "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py",
             "__main__.py"]
     for rel in mine:
@@ -675,3 +677,104 @@ def test_operate_refuses_in_the_jobs_words_and_lets_a_bug_through(capsys):
     _, summary = cli._operate(factory, "x", False, lambda c: {"done": 1}, dry_note="nothing was changed.")
     out = capsys.readouterr().out
     assert summary == {"done": 1} and '"done": 1' in out and "Dry-run: nothing was changed." in out
+
+
+# -- the command table (W2-4, 20 Oct 2026; RS P0-10) ----------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parents[1]
+# The commands the plan keeps (design-final W2-4, change 5, with RS P0-10's), and the ones W2-4 keeps beside them:
+# copy (a Copy row is sendable only once `copy qa` passes it), verify (W1-4's one-off migration, run once after its
+# deploy) and scheduler (the worker's start command).
+KEEP = {"run", "status", "sync", "start", "stop", "unenrol", "erase", "db", "schedule", "replies", "handcheck",
+        "labels", "accounts", "killrules", "campaigns", "mailbox", "cohorts", "test", "settings", "seed", "report"}
+ALSO_KEPT = {"copy", "verify", "scheduler"}
+# Records of their day, not runbooks: they name commands as they were then, under a header that says so.
+HISTORICAL = {"build-plan.md", "open-questions.md", "phase0-confirm.md", "phase0-facts.md", "phase0-runbook.md",
+              "system-review-2026-10-04.md"}
+NAMED = re.compile(r"(?:`|-- )us-outbound ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
+SAID = re.compile(r"\bcommand\(\s*f?[\"']([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
+GONE = re.compile(r"\b(?:removed|no longer|went in|went with|retired|folded)\b", re.I)
+
+
+def _actions() -> dict[str, set[str]]:
+    """command -> the choices of its first positional argument (its action), when it has one."""
+    out: dict[str, set[str]] = {}
+    sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    for name, parser in sub.choices.items():
+        for action in parser._actions:
+            if not action.option_strings and action.choices:
+                out[name] = set(action.choices)
+                break
+    return out
+
+
+def _named(text: str) -> list[tuple[int, str, str]]:
+    """(line, command, second word) for every command the text names, outside lines that say it was removed."""
+    found = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if GONE.search(line):
+            continue
+        for rx in (NAMED, SAID):
+            found += [(n, m.group(1), m.group(2) or "") for m in rx.finditer(line)]
+    return found
+
+
+def test_the_help_lists_the_command_table_in_order(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = capsys.readouterr().out
+    names = [c.name for c in cli.COMMANDS]
+    assert set(names) == KEEP | ALSO_KEPT
+    listed = [line.split()[0] for line in out.splitlines() if line.startswith("    ") and line.split()]
+    assert [n for n in listed if n in set(names)] == names
+
+
+def test_every_command_an_alert_or_a_doc_names_is_one_the_parser_has():
+    """A command an alert or a runbook tells Harry to run must parse (RS P0-10). Read: every module's text (alerts
+    are built with say.command or written out in backticks), docs/*.md bar the historical records, and the README; a
+    line that says a command was removed may name it."""
+    commands, actions = {c.name for c in cli.COMMANDS}, _actions()
+    paths = [*(ROOT / "us_outbound").rglob("*.py"), *(ROOT / "docs").glob("*.md"), ROOT / "README.md"]
+    bad = []
+    for p in paths:
+        if p.name in HISTORICAL:
+            continue
+        for n, cmd, word in _named(p.read_text(encoding="utf-8")):
+            if cmd not in commands:
+                bad.append(f"{p.relative_to(ROOT)}:{n}: us-outbound {cmd}")
+            elif word and cmd in actions and word not in actions[cmd]:
+                bad.append(f"{p.relative_to(ROOT)}:{n}: us-outbound {cmd} {word}")
+    assert not bad, "\n".join(bad)
+
+
+def test_the_grep_catches_a_command_the_parser_no_longer_has():
+    """The probe: a removed command named in an alert is found; one named as removed is not."""
+    assert _named("Run `us-outbound relabel --live` now.") == [(1, "relabel", "")]
+    assert _named(f"x {'say'}.command('labels audit --live')") == [(1, "labels", "audit")]
+    assert _named("`us-outbound relabel` was removed in W2-4.") == []
+
+
+def test_the_historical_docs_say_they_are_records():
+    for name in HISTORICAL:
+        head = (ROOT / "docs" / name).read_text(encoding="utf-8")[:800]
+        assert "A record of its day" in head, name
+
+
+def test_the_commands_the_alerts_name_parse():
+    """killrules clear, campaigns ensure --fix --live and mailbox check --live (learn/kill_rules.py's alert text), and
+    the rest an alert or runbook names (RS P0-10)."""
+    p = cli.build_parser()
+    for argv in (["killrules", "clear", "ITEM", "--live"], ["campaigns", "ensure", "--fix", "--live"],
+                 ["campaigns", "ensure", "--fix", "--in-flight", "--live"], ["mailbox", "check", "--live"],
+                 ["mailbox", "check", "--fix", "--live"], ["killrules", "show"], ["cohorts", "in-flight"],
+                 ["cohorts", "changes"], ["stop", "--live", "--no-db"], ["report", "capture", "--live"],
+                 ["report", "daily", "--full"], ["run", "enrol", "--due", "2026-10-20T11:00"],
+                 ["mailbox", "add", "a@b.com", "--owner", "A B", "--live"], ["mailbox", "pause", "a@b.com"],
+                 ["test", "start", "t1"], ["test", "read", "t1"], ["settings", "load", "--live"],
+                 ["seed", "check"], ["seed", "send", "a@b.com", "--owner", "A B"], ["unenrol", "--month", "2026-10"]):
+        assert p.parse_args(argv).fn is not None, argv
+    for gone in (["relabel"], ["daily"], ["readout"], ["signals", "review"], ["dry-run", "enrol"], ["rescore"],
+                 ["hubspot", "ids"], ["data", "show"], ["campaigns", "show"], ["labels", "audit"],
+                 ["settings", "bootstrap"], ["capture", "check"]):
+        with pytest.raises(SystemExit):
+            p.parse_args(gone)

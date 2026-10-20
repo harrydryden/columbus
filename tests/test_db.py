@@ -25,7 +25,7 @@ from psycopg.rows import dict_row
 from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
 from us_outbound import budget
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
@@ -740,7 +740,7 @@ def test_close_and_reconnect(store):
 
 
 def test_erase_and_heartbeat_sql_run_on_postgres(store):
-    """ops/erase.py and base/heartbeats.py query the database directly; their SQL must run on it."""
+    """ops/erase.py and base/health.py query the database directly; their SQL must run on it."""
     store.insert("contacts", [{"contact_id": "k1", "email": "Jane.Doe@Acme.com "}, {"contact_id": "k2", "email": "j@x.com"}])
     store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
                                        {"key": "x.com|J", "payload": {"email": "j@x.com"}}])
@@ -756,7 +756,7 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
-    runs = heartbeats.latest_runs(store)
+    runs = health.latest_runs(store)
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
@@ -803,10 +803,10 @@ def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
 
 
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
-    """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
+    """ops/health.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
     events (Harry, 7 Oct 2026)."""
     from us_outbound.base import notify
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     now = datetime.now(UTC)
     store.insert("heartbeats", [
@@ -818,7 +818,7 @@ def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
         {"run_id": "k1", "job": "kill_rules", "status": "ok", "started_at": now - timedelta(hours=30), "detail": {}},
     ])
     ctx = SimpleNamespace(store=store, now=now)
-    runs = job_errors.latest_finished(ctx, ["enrol", "kill_rules"])
+    runs = health.latest_finished(ctx, ["enrol", "kill_rules"])
     assert set(runs) == {"enrol"} and runs["enrol"]["run_id"] == "e2"
     assert runs["enrol"]["detail"] == {"errors": ["latest"], "send_approvals": {"errors": []}}
     store.upsert("events", [{"event_id": "alert:apollo_floor:2026-10-07", "type": "alert", "occurred_at": now}])
@@ -829,7 +829,7 @@ def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
 def test_the_w1_1_reads_and_writes_run_on_postgres(store):
     """W1-1 on the real database: the failure-rate query (each job's last 12 finished runs), the scheduler's error
     row for a failed run (Range on started_at, then an upsert), and the fallback's earlier versions of a tab."""
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
     from us_outbound.ops import scheduler as sch
     from us_outbound.settings import sync
 
@@ -841,9 +841,9 @@ def test_the_w1_1_reads_and_writes_run_on_postgres(store):
          "started_at": now - timedelta(minutes=15 * (i + 1)), "error": f"boom {i}" if i in (1, 5, 9, 13) else None}
         for i in range(14)])
     ctx = SimpleNamespace(store=store, now=now)
-    runs = job_errors.recent_runs(ctx, ["hubspot_readback"])["hubspot_readback"]
+    runs = health.recent_runs(ctx, ["hubspot_readback"])["hubspot_readback"]
     assert [r["run_id"] for r in runs] == [f"h{i}" for i in range(12)]
-    [rate] = job_errors.failure_rates(ctx, ["hubspot_readback"])
+    [rate] = health.failure_rates(ctx, ["hubspot_readback"])
     assert (rate.count, rate.texts) == (3, ["boom 1"])
     # A run the loop launched at `start`: its own row still running is set to error; none at all is written.
     start = now - timedelta(minutes=3)

@@ -12,7 +12,7 @@ still say something a live system can lose overnight, so `status` prints them; e
               FAIL, "run start --live". With live_sending = no an active campaign WARNs, as live_sending does not
               stop Instantly: only `stop --live` pauses the campaigns. A campaign the blackout job paused PASSes,
               "paused for the blackout until <day>" (registry/blackout.py; Harry, 7 Oct 2026)
-  Watchdog    US_OUTBOUND_WATCHDOG_URL is set (Harry, 7 Oct 2026; ops/watchdog.py): without it a dead worker,
+  Watchdog    US_OUTBOUND_WATCHDOG_URL is set (Harry, 7 Oct 2026; ops/health.py): without it a dead worker,
               database or Slack token says nothing, so it WARNs
 
 A check that cannot be made (a missing key, an API error) FAILs with the reason; one broken check never hides the
@@ -115,13 +115,13 @@ def check_copy(ctx: Context) -> Check:
 
 
 def check_watchdog(ctx: Context) -> Check:
-    from us_outbound.ops import watchdog
+    from us_outbound.ops import health
 
-    url, why = watchdog.read(ctx.clients.secrets)
+    url, why = health.watchdog_url(ctx.clients.secrets)
     if url:
         return Check(PASS, "Watchdog", "set: heartbeat_check pings it every hour, and Healthchecks.io emails if it stops")
     if why.endswith("is not set"):
-        return Check(WARN, "Watchdog", f"no outside watchdog: set {watchdog.VAR} (docs/railway-setup.md, step h)")
+        return Check(WARN, "Watchdog", f"no outside watchdog: set {health.WATCHDOG_VAR} (docs/railway-setup.md, step h)")
     return Check(WARN, "Watchdog", f"{why}: paste the check's ping URL from Healthchecks.io (docs/railway-setup.md, "
                                    "step h)")
 

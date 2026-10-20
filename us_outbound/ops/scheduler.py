@@ -25,9 +25,21 @@ The loop:
     "running" is set to error; with none, one is written. It goes through a store opened for the
     write alone, with a 5 s connect timeout (heartbeat_store), and any failure is logged and
     swallowed: the loop never stops for a heartbeat. A row the job finished itself is left as it is;
-  * does not backfill: minutes the loop missed (a restart, a redeploy, a stall) are not run
-    afterwards, and a job due in the minute the scheduler starts waits for its next time.
-    heartbeat_check alerts on any job that misses its heartbeat (ops/heartbeat.py);
+  * runs nothing until it holds the scheduler lock (W2-4, 20 Oct 2026; RS P0-4), a Postgres session advisory
+    lock (clients/db.SessionLock), so one scheduler runs: over a deploy the old and the new container are alive
+    together for 4 to 13 s, and each scheduler kept only its own runs apart (code-platform-ops B5). The new one tries
+    the lock every LOCK_POLL_SECONDS, logging each wait (scheduler_lock_wait), and takes over once the old one's
+    SIGTERM ends its connection. Still waiting after LOCK_WAIT_SECONDS, it pings the outside watchdog's /fail and
+    waits on: it never runs beside another, and never exits for want of the lock (a scheduler that exited left
+    production with none). With Postgres out of reach it retries with backoff, and pings /fail after
+    DB_DOWN_FAIL_SECONDS; never a silent exit. A session lock dies with its connection, so before each minute's
+    tick the loop checks it still holds it, and takes it again (the same wait) before it starts anything more;
+  * catches up (W2-4; code-platform-ops B7): when it starts, or takes the lock back, each job with a fixed time of
+    day whose time fell in the last CATCH_UP_MINUTES with no heartbeat since is started once, for that minute.
+    Every start from the table carries its due minute (`run <job> --due`), and the run claims the row
+    "<job>:<due minute>" in heartbeats before it does anything (ops/health.run_job), so two starts for one minute
+    (two schedulers, or a catch-up of a run the old container began) run once. Other minutes the loop missed are
+    not run afterwards; heartbeat_check alerts on any job that misses its heartbeat (ops/health.py);
   * runs the jobs in AT_START once as it starts: settings_sync, so a deploy whose validation
     is stricter than the version in force brings the sheet in at once, instead of every job
     refusing until the next scheduled sync (11 Oct 2026: the definition check left the
@@ -81,6 +93,14 @@ EXIT_MEANING = {0: "ok", 1: "error", 2: "refused", 3: "blocked", 143: "terminate
 CONNECT_TIMEOUT_SECONDS = 5  # the heartbeat write after a failed run waits no longer than this for Postgres
 STATEMENT_TIMEOUT_MS = 5000  # nor this long for a statement: a lock on heartbeats must not hold the loop
 AT_START = ("settings_sync",)  # run once when the worker starts (module docstring)
+# The scheduler lock (module docstring): one 64-bit key for pg_try_advisory_lock, fixed for good ("usoutbo" in hex).
+SCHEDULER_KEY = 0x75736F7574626F
+LOCK_POLL_SECONDS = 2.0  # between tries while another scheduler holds the lock
+LOCK_WAIT_SECONDS = 180.0  # the old container's SIGTERM frees it within 4 to 13 s; past this the watchdog hears
+LOCK_LOG_EVERY_SECONDS = 60.0  # how often a wait past LOCK_WAIT_SECONDS is logged
+DB_BACKOFF_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)  # between tries while Postgres is out of reach, then 30 s each
+DB_DOWN_FAIL_SECONDS = 300.0  # Postgres out of reach this long at the lock: the watchdog's /fail
+CATCH_UP_MINUTES = 90  # how far back a missed daily job is caught up (module docstring)
 
 # -- cron -------------------------------------------------------------------------------
 
@@ -197,15 +217,17 @@ class Process(Protocol):
     def kill(self) -> None: ...
 
 
-def command(job: ScheduledJob) -> list[str]:
-    """What the scheduler runs for a job: the same CLI entrypoint as by hand (SPEC 13)."""
-    return [sys.executable, "-m", "us_outbound", "run", job.name, *(["--live"] if job.live else [])]
+def command(job: ScheduledJob, due: datetime | None = None) -> list[str]:
+    """What the scheduler runs for a job: the same CLI entrypoint as by hand (SPEC 13), with the minute it was due
+    (UTC), which the run claims (ops/health.run_job); a start at the scheduler's start (AT_START) has none."""
+    when = ["--due", due.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")] if due is not None else []
+    return [sys.executable, "-m", "us_outbound", "run", job.name, *(["--live"] if job.live else []), *when]
 
 
-def launch(job: ScheduledJob) -> Process:
+def launch(job: ScheduledJob, due: datetime | None = None) -> Process:
     # A session of its own: a Ctrl-C or a signal to the scheduler's process group does not
     # reach the jobs; the scheduler decides when they stop. Output goes to the same log.
-    return subprocess.Popen(command(job), start_new_session=True)
+    return subprocess.Popen(command(job, due), start_new_session=True)
 
 
 def heartbeat_store(env: Mapping[str, str] | None = None) -> Any:
@@ -222,26 +244,21 @@ def heartbeat_store(env: Mapping[str, str] | None = None) -> Any:
                          options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}")
 
 
-def record_failed_run(store: Any, name: str, started: datetime, now: datetime, code: int, status: str,
-                      seconds: float) -> str:
-    """The error row for a run that exited non-zero or was stopped at its timeout (module docstring): the run's own
-    row still "running" (the latest of this job started at or after the launch) set to error, or a new row when the
-    run wrote none. A row the run finished itself keeps its own status and error. Returns what it did."""
-    from us_outbound.base.heartbeats import ERROR, RUNNING, TABLE
-    from us_outbound.clients.db import Range, new_id
-    from us_outbound.timeparse import utc_strict_or_none
+def scheduler_lock(env: Mapping[str, str] | None = None) -> Any:
+    """The scheduler lock on DATABASE_URL (clients/db.SessionLock, SCHEDULER_KEY). Dry-run guard: it reads only."""
+    from us_outbound.clients.db import SessionLock
+    from us_outbound.clients.guard import Guard
+    from us_outbound.ops.bootstrap import database_url
 
-    error = f"exited {code} ({status})"
-    detail = {"exit_code": code, "seconds": seconds}
-    rows = store.select(TABLE, {"job": name, "started_at": Range(lo=started)})
-    rows.sort(key=lambda r: (utc_strict_or_none(r.get("started_at")) or started, str(r.get("run_id"))))
-    if rows and rows[-1].get("status") != RUNNING:
-        return "left"
-    # dry_run unknown on a row written here: the run decided live or dry itself (--live and live_sending), and died
-    # before it said which. None claims neither; readers that want a live run test `is False`.
-    row = rows[-1] if rows else {"run_id": new_id(), "job": name, "started_at": started, "dry_run": None}
-    store.upsert(TABLE, [{**row, "finished_at": now, "status": ERROR, "error": error, "detail": detail}])
-    return "updated" if rows else "written"
+    dsn = database_url(os.environ if env is None else env)
+    return SessionLock(Guard(live=False, job="scheduler"), dsn, SCHEDULER_KEY, connect_timeout=CONNECT_TIMEOUT_SECONDS)
+
+
+def watchdog_fail(reason: str, env: Mapping[str, str] | None = None) -> dict:
+    """The outside watchdog's /fail, from the environment alone (ops/health.ping_from_env). Never raises."""
+    from us_outbound.ops import health
+
+    return health.ping_from_env(reason, env=env)
 
 
 def max_parallel_from_env(env: Mapping[str, str] | None = None) -> int:
@@ -259,6 +276,7 @@ class Run:
     proc: Process
     started: datetime
     due_at: datetime
+    claimed: bool = False  # started with --due: its row's run_id is the claim (ops/health.due_run_id)
     stop_reason: str | None = None  # "timeout" or "shutdown" once terminate() was sent
     stop_sent: datetime | None = None
     killed: bool = False
@@ -274,13 +292,17 @@ class Scheduler:
         max_parallel: int = DEFAULT_MAX_PARALLEL,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleep: Callable[[float], None] = time.sleep,
-        launch: Callable[[ScheduledJob], Process] = launch,
+        launch: Callable[..., Process] = launch,
         grace_seconds: float = GRACE_SECONDS,
         at_start: Iterable[str] = (),
         store_factory: Callable[[], Any] | None = None,
+        lock: Any = None,
+        fail: Callable[[str], Any] | None = None,
     ):
-        """store_factory: opens the store a failed run's heartbeat is written through (heartbeat_store in production,
-        `us-outbound scheduler`); None writes none (tests of the loop alone)."""
+        """store_factory: opens the store a failed run's heartbeat is written through, and the catch-up reads
+        (heartbeat_store in production, `us-outbound scheduler`); None writes and catches up nothing (tests of the loop
+        alone). lock: the scheduler lock (scheduler_lock(); None runs without one, tests of the loop alone). fail: pings
+        the outside watchdog's /fail with a reason (watchdog_fail)."""
         if max_parallel < 1:
             raise ValueError("max_parallel must be 1 or more")
         self.jobs = [(j, Cron.parse(j.cron)) for j in table if j.enabled and j.cron]
@@ -288,8 +310,10 @@ class Scheduler:
         self.clock, self.sleep, self.launch = clock, sleep, launch
         self.grace_seconds = grace_seconds
         self.running: dict[str, Run] = {}
-        self.pending: list[tuple[ScheduledJob, datetime]] = []
+        self.pending: list[tuple[ScheduledJob, datetime, bool]] = []  # (job, due minute, start it with --due)
         self.store_factory = store_factory
+        self.lock = lock
+        self.fail = fail
         self.stopping = False
         unknown = set(at_start) - {j.name for j, _ in self.jobs}
         if unknown:
@@ -309,11 +333,107 @@ class Scheduler:
             if job.name in self.running:
                 log("scheduler_job_skipped", job=job.name, reason="previous run still going",
                     running_since=self.running[job.name].started)
-            elif any(j.name == job.name for j, _ in self.pending):
+            elif any(j.name == job.name for j, _, _ in self.pending):
                 log("scheduler_job_skipped", job=job.name, reason="still waiting for a free slot")
             else:
-                self.pending.append((job, _floor(minute)))
+                self.pending.append((job, _floor(minute), True))
                 queued.append(job.name)
+        return queued
+
+    # -- the lock and the catch-up --
+
+    def _wait_step(self, seconds: float) -> None:
+        """One wait while the lock is not held: running jobs are still collected and stopped at their timeout, but
+        nothing new starts."""
+        now = self.clock()
+        self._reap(now)
+        self._enforce_timeouts(now)
+        self.sleep(seconds)
+
+    def acquire_lock(self) -> bool:
+        """Block until this scheduler holds the lock (module docstring); False if a stop came first. Never raises."""
+        if self.lock is None:
+            return True
+        began = self.clock()
+        tries, down_tries, told, logged_at = 0, 0, False, None
+        while not self.stopping:
+            now = self.clock()
+            waited = (now - began).total_seconds()
+            try:
+                if self.lock.try_acquire():
+                    log("scheduler_lock_held", waited_seconds=round(waited, 1), tries=tries + 1)
+                    return True
+                tries += 1
+                down_tries = 0
+                quiet = logged_at is not None and (now - logged_at).total_seconds() < LOCK_LOG_EVERY_SECONDS
+                if waited < LOCK_WAIT_SECONDS or not quiet:
+                    log("scheduler_lock_wait", waited_seconds=round(waited, 1), tries=tries,
+                        reason="another scheduler holds the lock")
+                    logged_at = now
+                if waited >= LOCK_WAIT_SECONDS and not told:
+                    told = True
+                    self._tell(f"the scheduler has waited {int(waited)} s for its lock: another still holds it")
+                pause = LOCK_POLL_SECONDS
+            except Exception as exc:  # Postgres out of reach (LockUnavailable), or anything else: retry, never exit
+                pause = DB_BACKOFF_SECONDS[min(down_tries, len(DB_BACKOFF_SECONDS) - 1)]
+                down_tries += 1
+                log("scheduler_lock_wait", waited_seconds=round(waited, 1), reason="database unreachable",
+                    error=type(exc).__name__, retry_in_seconds=pause)
+                if waited >= DB_DOWN_FAIL_SECONDS and not told:
+                    told = True
+                    self._tell(f"the scheduler cannot reach Postgres for its lock ({int(waited)} s)")
+            self._wait_step(pause)
+        return False
+
+    def _tell(self, reason: str) -> None:
+        log("scheduler_lock_alert", reason=reason)
+        if self.fail is None:
+            return
+        try:
+            self.fail(reason)
+        except Exception as exc:  # the watchdog must never stop the loop
+            log("scheduler_watchdog_failed", error=type(exc).__name__)
+
+    def catch_up(self, now: datetime) -> list[str]:
+        """Queue once each fixed-time job whose time fell in the last CATCH_UP_MINUTES with no heartbeat since that
+        minute (module docstring). Never raises: a database it cannot read catches nothing up."""
+        if self.store_factory is None:
+            return []
+        from us_outbound.clients.db import Range
+
+        wanted = []
+        current = _floor(now)
+        for job, cron in self.jobs:
+            if not cron.fixed or job.name in self.running:
+                continue
+            t = current
+            while t > current - timedelta(minutes=CATCH_UP_MINUTES):
+                if due(cron, t):
+                    wanted.append((job, t))
+                    break
+                t -= MINUTE
+        if not wanted:
+            return []
+        queued: list[str] = []
+        store = None
+        try:
+            store = self.store_factory()
+            for job, minute in wanted:
+                if any(j.name == job.name for j, _, _ in self.pending):
+                    continue  # waiting already (AT_START), or a job with two rows (settings_sync): once
+                if store.select("heartbeats", {"job": job.name, "started_at": Range(lo=minute)}):
+                    continue
+                self.pending.append((job, minute, True))
+                queued.append(job.name)
+                log("scheduler_catch_up", job=job.name, due=minute)
+        except Exception as exc:  # the database, say: nothing is caught up, and the loop goes on
+            log("scheduler_catch_up_failed", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        finally:
+            try:
+                if store is not None:
+                    store.close()
+            except Exception:
+                pass
         return queued
 
     def poll(self, now: datetime) -> None:
@@ -336,13 +456,17 @@ class Scheduler:
                 self._record_failure(name, run, now, code, status, seconds)
 
     def _record_failure(self, name: str, run: Run, now: datetime, code: int, status: str, seconds: float) -> None:
-        """The failed run's heartbeat (record_failed_run). Never raises: the loop goes on whatever the database does."""
+        """The failed run's heartbeat (health.record_failed_run). Never raises: the loop goes on whatever the database
+        does."""
+        from us_outbound.ops.health import due_run_id, record_failed_run
+
         if self.store_factory is None:
             return
         store = None
         try:
             store = self.store_factory()
-            outcome = record_failed_run(store, name, run.started, now, code, status, seconds)
+            claim = due_run_id(name, run.due_at) if run.claimed else None
+            outcome = record_failed_run(store, name, run.started, now, code, status, seconds, run_id=claim)
             log("scheduler_heartbeat_written", job=name, exit_code=code, outcome=outcome)
         except Exception as exc:  # Postgres down, say: the log line is the record
             log("scheduler_heartbeat_failed", job=name, exit_code=code, error=f"{type(exc).__name__}: {str(exc)[:160]}")
@@ -375,13 +499,13 @@ class Scheduler:
 
     def _start_pending(self, now: datetime) -> None:
         while self.pending and len(self.running) < self.max_parallel:
-            job, due_at = self.pending.pop(0)
+            job, due_at, claimed = self.pending.pop(0)
             try:
-                proc = self.launch(job)
+                proc = self.launch(job, due_at if claimed else None)
             except OSError as exc:
                 log("scheduler_launch_failed", job=job.name, error=f"{type(exc).__name__}: {exc}")
                 continue
-            self.running[job.name] = Run(job, proc, now, due_at)
+            self.running[job.name] = Run(job, proc, now, due_at, claimed)
             log("scheduler_job_start", job=job.name, pid=proc.pid, live_flag=job.live, due=due_at,
                 waited_seconds=round((now - due_at).total_seconds()), timeout_minutes=job.timeout_minutes)
 
@@ -399,14 +523,24 @@ class Scheduler:
         previous = self._install_signal_handlers()
         try:
             log("scheduler_start", jobs=[j.name for j, _ in self.jobs], max_parallel=self.max_parallel, pid=os.getpid())
+            if not self.acquire_lock():
+                self.shutdown()
+                return 0
             start = self.clock()
-            next_minute = _floor(start) + MINUTE  # the minute it starts in is not run (no backfill)
+            next_minute = _floor(start) + MINUTE  # the minute it starts in is caught up, not ticked
             by_name = {j.name: j for j, _ in self.jobs}
-            self.pending.extend((by_name[name], start) for name in self.at_start)
+            self.pending.extend((by_name[name], start, False) for name in self.at_start)
+            self.catch_up(start)
             while not self.stopping:
                 now = self.clock()
                 self._reap(now)  # a run that has ended is not "still going" when its job is due again
                 if now >= next_minute:
+                    if self.lock is not None and not self.lock.held():
+                        log("scheduler_lock_lost", reason="the lock's connection dropped; taking it again")
+                        if not self.acquire_lock():
+                            break
+                        now = self.clock()
+                        self.catch_up(now)
                     minute = _floor(now)
                     if minute > next_minute:
                         log("scheduler_minutes_missed", first=next_minute, last=minute - MINUTE, backfilled=False)
@@ -426,7 +560,7 @@ class Scheduler:
         """Start nothing more; give running jobs grace_seconds to finish, then terminate, then kill."""
         self.stopping = True
         if self.pending:
-            log("scheduler_not_started", jobs=[j.name for j, _ in self.pending], reason="scheduler stopping")
+            log("scheduler_not_started", jobs=[j.name for j, _, _ in self.pending], reason="scheduler stopping")
             self.pending.clear()
         deadline = self.clock() + timedelta(seconds=self.grace_seconds)
         while self.running and self.clock() < deadline:
@@ -450,6 +584,8 @@ class Scheduler:
                 pass
             log("scheduler_job_killed", job=run.job.name, pid=run.proc.pid, reason="scheduler stopping")
         self._reap(self.clock())
+        if self.lock is not None:
+            self.lock.close()  # the next scheduler takes over at once, not after the connection times out
         log("scheduler_stopped", still_running=sorted(self.running))
 
     def _install_signal_handlers(self) -> dict[int, Any]:

@@ -28,7 +28,7 @@ blackout_pause, config_version.log_change), with the leads then in flight, so th
 
 What it starts again once the hold is over: only the campaigns whose latest blackout row is a pause (paused), each
 once, and only while Instantly shows it paused (or a draft `start` deferred, below). It leaves paused, and says why:
-  * one an operator stop holds (base/heartbeats.enrolment_paused): `us-outbound start --live` starts it;
+  * one an operator stop holds (ops/health.enrolment_paused): `us-outbound start --live` starts it;
   * one a kill rule paused since (its mailbox hold left the owner no Active mailbox; registry/mailboxes
     ._kill_rule_pauses): mailbox_health starts it once that mailbox is Active again;
   * one whose owner has no Active mailbox now (a kill rule's hold counts), as _sync_campaign leaves it.
@@ -65,7 +65,7 @@ from zoneinfo import ZoneInfo
 
 from us_outbound import budget, config_version
 from us_outbound.base import holds, notify, say
-from us_outbound.base.heartbeats import enrolment_paused
+from us_outbound.ops.health import enrolment_paused
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import CAMPAIGN_STATUS
 from us_outbound.context import UK, Context

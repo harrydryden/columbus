@@ -15,7 +15,7 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from us_outbound import suppression, verify
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
-from us_outbound.ops.heartbeat import run_job
+from us_outbound.ops.health import run_job
 from us_outbound.settings.model import Override
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.validate import validate_all

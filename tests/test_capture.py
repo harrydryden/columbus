@@ -9,8 +9,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.test_cli import Harness
-from us_outbound.ops import job_errors, seed
-from us_outbound.ops.heartbeat import run_job
+from us_outbound.ops import health, seed
+from us_outbound.ops.health import run_job
 from us_outbound.replies import capture
 
 C_HANNAH, C_HARRY = "US Outbound – Hannah Spalding", "US Outbound – Harry Dryden"
@@ -165,9 +165,9 @@ def test_a_broken_read_is_a_drift_an_error_and_an_unverified_week(h):
     [fact] = [r for r in ctx.store.tables["signal_events"] if r["fact"] in (capture.VERIFIED, capture.UNVERIFIED)]
     assert (fact["event_id"], fact["fact"], fact["account_id"]) == ("capture:2026-W44", "capture_unverified", None)
     assert fact["value"]["drift"] == summary["reconcile"]["drift"]
-    # heartbeat_check's reading of the run (ops/job_errors.py): one "errors" finding quoting the drift first.
+    # heartbeat_check's reading of the run (ops/health.py): one "errors" finding quoting the drift first.
     [hb] = [r for r in ctx.store.tables["heartbeats"] if r["job"] == "capture"]
-    [finding] = job_errors.findings("capture", hb)
+    [finding] = health.findings("capture", hb)
     assert finding.kind == "errors" and finding.texts[0].startswith("capture drift on replied")
 
 

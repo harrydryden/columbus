@@ -239,7 +239,7 @@ def test_a_new_customer_is_suppressed_by_the_nightly_load_and_its_lead_in_flight
 
 
 def test_a_failed_customer_read_keeps_the_opt_outs_and_says_so(default_settings):
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     w = in_flight_world(default_settings)
     w.transport.route("POST", "/crm/v3/objects/companies/search", status=403, body={"message": "missing scope"})
@@ -247,7 +247,7 @@ def test_a_failed_customer_read_keeps_the_opt_outs_and_says_so(default_settings)
     assert out["added"] == 1 and suppression.is_suppressed(w.ctx.store, email=JANE, now=w.ctx.now)
     assert out["customers_error"].startswith("Spill's customers could not be read from HubSpot (AuthError: ")  # a 403
     assert out["customers_error"].endswith("yesterday's entries stand") and "customers" not in out
-    [finding] = job_errors.findings("suppression_load", {"status": "ok", "detail": out, "started_at": w.ctx.now})
+    [finding] = health.findings("suppression_load", {"status": "ok", "detail": out, "started_at": w.ctx.now})
     assert finding.kind == "customers_error"  # heartbeat_check tells Harry, once a day
 
 

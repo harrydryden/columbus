@@ -291,7 +291,7 @@ def test_the_heartbeat_says_the_apollo_source_is_paused(default_settings):
     # this run as ok). A skip for a reason of its own still shows the job alive (base/heartbeats._shows_alive).
     assert beat["status"] == "skipped" and beat["detail"]["status"] == "skipped"
     assert beat["detail"]["reason"].startswith("a kill rule pauses the apollo email source (5% bounced)")
-    from us_outbound.base.heartbeats import latest_runs
+    from us_outbound.ops.health import latest_runs
 
     assert latest_runs(h.store)["pick_contacts"]["last_alive_at"] is not None
 
@@ -602,7 +602,7 @@ def test_a_failed_rescore_is_reported_and_the_contacts_are_still_found(ctx, tran
 
     monkeypatch.setattr(score, "rescore", broken)
     out = pick.run(ctx)
-    # The error under "error" is what heartbeat_check reads as a caught failure (ops/job_errors.py).
+    # The error under "error" is what heartbeat_check reads as a caught failure (ops/health.py).
     assert out["rescore"] == {"error": "RuntimeError: deadlock detected"} and out["picked"] == 1
 
 

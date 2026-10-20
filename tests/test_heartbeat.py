@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.fakes import FakeTransport, make_context
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.settings.model import General, Settings
 from us_outbound.clients.slack import dry_run_note
 
@@ -59,7 +59,7 @@ def test_ok_run_writes_one_row_with_the_summary():
 
 @pytest.mark.parametrize("summary, status", [
     # enrol's live summary: "skipped" is a Counter of the accounts it passed over, so a truthy "skipped" is no skip.
-    # Every live enrol run was stored as skipped until 19 Oct 2026 (ops/heartbeat.py:150; enrol.py:1091).
+    # Every live enrol run was stored as skipped until 19 Oct 2026 (ops/health.py:150; enrol.py:1091).
     ({"enrolled": 21, "skipped": {"no contact": 335}}, "ok"),
     ({"enrolled": 0, "skipped": {}}, "ok"),
     ({"status": "skipped", "reason": "a blackout date"}, "skipped"),  # enrol's own skip (enrol.py:960)
@@ -289,7 +289,7 @@ def test_a_job_killed_every_run_is_missed():
                  detail={"skipped": True, "reason": hb.OVERLAP_REASON, "other_run_id": f"killed-{i - i % 4}"})
         start += timedelta(minutes=15)
         i += 1
-    assert heartbeats.latest_runs(ctx.store)["poll_replies"]["status"] in {"running", "skipped"}
+    assert health.latest_runs(ctx.store)["poll_replies"]["status"] in {"running", "skipped"}
     assert hb.check_heartbeats(ctx, jobs=["poll_replies"]) == ["poll_replies"]
 
 
@@ -339,7 +339,7 @@ def test_latest_runs_uses_the_view_when_the_store_has_one():
     ctx.store.query_handlers["v_heartbeats"] = lambda store, params: seen.append(1) or [
         {"job": "poll_replies", "status": "ok", "started_at": MON_NOON, "finished_at": MON_NOON, "last_ok_at": MON_NOON}
     ]
-    assert heartbeats.latest_runs(ctx.store)["poll_replies"]["status"] == "ok" and seen == [1]
+    assert health.latest_runs(ctx.store)["poll_replies"]["status"] == "ok" and seen == [1]
 
 
 # -- operator stop / start -------------------------------------------------------------------
@@ -348,20 +348,20 @@ def test_latest_runs_uses_the_view_when_the_store_has_one():
 def test_enrolment_paused_follows_stop_and_live_start():
     ctx = ctx_at(MON_NOON)
     s = ctx.store
-    assert heartbeats.enrolment_paused(s) is None
-    beat(s, heartbeats.OPERATOR_STOP, MON_NOON - timedelta(hours=3), status="error")  # a failed stop still stops
-    assert heartbeats.enrolment_paused(s)["job"] == heartbeats.OPERATOR_STOP
-    beat(s, heartbeats.OPERATOR_START, MON_NOON - timedelta(hours=2), dry_run=True)  # a dry-run start does not
-    assert heartbeats.enrolment_paused(s) is not None
-    beat(s, heartbeats.OPERATOR_START, MON_NOON - timedelta(hours=1), dry_run=False)
-    assert heartbeats.enrolment_paused(s) is None
-    beat(s, heartbeats.OPERATOR_STOP, MON_NOON, dry_run=True)
-    assert heartbeats.enrolment_paused(s) is not None
+    assert health.enrolment_paused(s) is None
+    beat(s, health.OPERATOR_STOP, MON_NOON - timedelta(hours=3), status="error")  # a failed stop still stops
+    assert health.enrolment_paused(s)["job"] == health.OPERATOR_STOP
+    beat(s, health.OPERATOR_START, MON_NOON - timedelta(hours=2), dry_run=True)  # a dry-run start does not
+    assert health.enrolment_paused(s) is not None
+    beat(s, health.OPERATOR_START, MON_NOON - timedelta(hours=1), dry_run=False)
+    assert health.enrolment_paused(s) is None
+    beat(s, health.OPERATOR_STOP, MON_NOON, dry_run=True)
+    assert health.enrolment_paused(s) is not None
 
 
 def test_operator_commands_are_never_skipped_by_the_lock():
-    ctx = ctx_at(MON_NOON, job=heartbeats.OPERATOR_STOP)
-    beat(ctx.store, heartbeats.OPERATOR_STOP, MON_NOON - timedelta(minutes=2), status="running", run_id="stuck")
+    ctx = ctx_at(MON_NOON, job=health.OPERATOR_STOP)
+    beat(ctx.store, health.OPERATOR_STOP, MON_NOON - timedelta(minutes=2), status="running", run_id="stuck")
     ran = []
     hb.run_job(ctx, lambda c: ran.append(1) or {})
     assert ran == [1]

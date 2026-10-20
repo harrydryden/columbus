@@ -608,7 +608,7 @@ def test_a_model_error_is_retried_then_handed_to_a_person(world):
     world.reply("E1", at=NOW - timedelta(minutes=5))
     out = run(world)
     assert out["retry_later"] == 1 and world.items() == [] and world.events("replied") == []
-    assert out["claude_error"] == "Claude API error 529"  # for heartbeat_check (ops/job_errors.py; 7 Oct 2026)
+    assert out["claude_error"] == "Claude API error 529"  # for heartbeat_check (ops/health.py; 7 Oct 2026)
     world.at(NOW + timedelta(minutes=40))
     run(world)
     p = only_item(world)["payload"]
@@ -674,7 +674,7 @@ def test_dry_run_calls_no_model_writes_no_item_and_sends_nothing(default_setting
 
 
 def test_the_job_runs_from_the_cli_with_a_heartbeat(default_settings):
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     world = make_world(default_settings)
     world.reply("E1")
@@ -689,7 +689,7 @@ def test_a_backlog_stops_at_the_time_budget_and_the_next_run_takes_the_rest(worl
     """Each draft can take a minute: past RUN_SECONDS no new reply is started, and none is lost."""
     import itertools
 
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     world.reply("E1", at=NOW - timedelta(days=5))
     world.reply("E2", at=NOW - timedelta(days=4))  # older than the two days every run re-reads

@@ -282,7 +282,7 @@ def test_a_failed_number_reaches_heartbeat_check(monkeypatch):
     """today.read fails: the draw goes on at the weekly pace (150 / 5 send days = 30) and its summary carries
     number_error, a text under a key ending _error, which heartbeat_check reports (ops/job_errors)."""
     from us_outbound.enrol import today
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     def broken(*a, **k):
         raise RuntimeError("database gone away")
@@ -294,7 +294,7 @@ def test_a_failed_number_reaches_heartbeat_check(monkeypatch):
     assert out["number_error"] == ("today's number could not be worked out (RuntimeError: database gone away); the "
                                    "draw used 30, the weekly pace")
     run = {"job": hand_check.JOB, "status": "ok", "started_at": NOW, "finished_at": NOW, "detail": out}
-    assert [f.kind for f in job_errors.findings(hand_check.JOB, run)] == ["number_error"]
+    assert [f.kind for f in health.findings(hand_check.JOB, run)] == ["number_error"]
 
 
 def test_the_facts_harry_checks():

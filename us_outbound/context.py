@@ -34,7 +34,7 @@ SECRET_NAMES = {
     "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
     "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",
     "claude": "US_OUTBOUND_CLAUDE_API_KEY",
-    # Harry, 7 Oct 2026: the outside watchdog's Healthchecks.io ping URL (ops/watchdog.py). Optional, and
+    # Harry, 7 Oct 2026: the outside watchdog's Healthchecks.io ping URL (ops/health.py). Optional, and
     # sealed like a key: anyone holding it could report the worker alive.
     "watchdog": "US_OUTBOUND_WATCHDOG_URL",
 }
@@ -79,7 +79,7 @@ class Secrets:
 
 
 def boundaries_for(settings: Settings, settings_sheet_id: str = "", watchdog_url: str = "") -> Boundaries:
-    """The containers a job may touch. watchdog_url: the ping URL heartbeat_check may GET (ops/watchdog.py), only
+    """The containers a job may touch. watchdog_url: the ping URL heartbeat_check may GET (ops/health.py), only
     for that job; "" for every other."""
     g = settings.general
     live_mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
@@ -149,7 +149,7 @@ class Clients:
 
     @cached_property
     def watchdog(self):
-        """The outside watchdog's pinger (ops/watchdog.py), to the URL the guard was given; None when it has none."""
+        """The outside watchdog's pinger (ops/health.py), to the URL the guard was given; None when it has none."""
         from us_outbound.clients.watchdog import Watchdog
 
         url = self.guard.bounds.watchdog_url

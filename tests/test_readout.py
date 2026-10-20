@@ -12,7 +12,7 @@ from tests.test_registry import SETTINGS, slack_routes
 from us_outbound.base import say
 from us_outbound.clients.guard import Guard
 from us_outbound.learn import readout, signal_value
-from us_outbound.ops import cli, heartbeat, schedule
+from us_outbound.ops import cli, health, schedule
 from us_outbound.clients.slack import dry_run_note
 
 DRY = dry_run_note("#us-outbound") + "\n"
@@ -483,14 +483,14 @@ def test_tests_at_a_look_are_listed_with_their_read(monkeypatch):
 def test_registered_on_the_schedule_heartbeat_and_cli():
     job = schedule.by_name()["monday_readout"]
     assert (job.cron, job.live, job.enabled) == ("30 8 * * 1", True, True)
-    assert cli.JOBS["monday_readout"] == "us_outbound.learn.readout:run" and "monday_readout" in heartbeat.scheduled_jobs()
-    assert heartbeat.EXPECTED["monday_readout"] == 8 * 24 * 60
+    assert cli.JOBS["monday_readout"] == "us_outbound.learn.readout:run" and "monday_readout" in health.scheduled_jobs()
+    assert health.EXPECTED["monday_readout"] == 8 * 24 * 60
 
 
 def test_dry_run_posts_to_the_dev_channel_and_writes_only_its_heartbeat():
     ctx, t = world(weekly=[])
     before = {k: list(v) for k, v in ctx.store.tables.items()}
-    summary = heartbeat.run_job(ctx, readout.run)
+    summary = health.run_job(ctx, readout.run)
     [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
     assert post.json["channel"] == "C_DEV" and post.json["text"].startswith(DRY + ":warning: *Monday readout")
     assert summary["dry_run"] and summary["alert"]["posted"]

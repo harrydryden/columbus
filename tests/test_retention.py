@@ -13,7 +13,7 @@ from tests.test_render import make_settings
 from us_outbound.clients.instantly import LEAD_ACTIVE, LEAD_BOUNCED, LEAD_PAUSED, LEAD_UNSUBSCRIBED
 from us_outbound.enrol import capacity
 from us_outbound.ops import retention
-from us_outbound.ops.heartbeat import run_job
+from us_outbound.ops.health import run_job
 from us_outbound.replies import account_stop, optout
 
 NOW = datetime(2026, 12, 15, 17, 0, tzinfo=UTC)  # Tuesday 15 Dec 2026, 12:00 US Eastern
@@ -391,7 +391,7 @@ def test_reply_text_is_purged_after_90_days_and_the_rest_stays():
 
 
 def test_a_purged_card_still_reads_on_the_reply_desk():
-    from us_outbound.replies.items import ReplyItem
+    from us_outbound.replies.desk import ReplyItem
 
     w = reply_world()
     w.run()

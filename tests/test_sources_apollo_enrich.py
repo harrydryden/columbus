@@ -15,7 +15,7 @@ from tests.fakes import FakeTransport, make_context
 from us_outbound import verify
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
 from us_outbound.ops import cli, schedule
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.scoring import score
 from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs

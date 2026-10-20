@@ -86,7 +86,7 @@ from us_outbound.logs import clip, log
 from us_outbound.ops import retention
 from us_outbound.registry import ramp
 from us_outbound.replies import kinds
-from us_outbound.replies.items import is_reply
+from us_outbound.replies.desk import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
 from us_outbound.timeparse import uk_midnight, utc
 
@@ -100,7 +100,7 @@ HAND_CHECK = "hand_check"  # hitl_items.kind of the weekly hand-check (enrol/han
 # as holds, never as waiting for approval.
 KIND_LABELS = {"reply": "replies", "reply_approval": "reply approvals", HAND_CHECK: "hand-checks",
                "manual_merge": "manual merges"}
-SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind (replies/desk.close_send_approvals)
+SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind (replies/poll_desk.close_send_approvals)
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
 
 

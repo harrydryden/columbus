@@ -455,7 +455,7 @@ def test_mailbox_health_dry_run_proposes_only():
 
 
 def go_live(ctx, at=NOW - timedelta(days=3), *, stop_after: bool = False) -> None:
-    """`us-outbound start --live` ran ok (and, if stop_after, `stop` after it): ops/heartbeat.py's rows."""
+    """`us-outbound start --live` ran ok (and, if stop_after, `stop` after it): ops/health.py's rows."""
     rows = [{"run_id": "start-1", "job": "operator_start", "status": "ok", "dry_run": False, "started_at": at}]
     if stop_after:
         rows.append({"run_id": "stop-1", "job": "operator_stop", "status": "ok", "dry_run": True,

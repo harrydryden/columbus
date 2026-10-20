@@ -2,7 +2,7 @@
 
 Every Slack alert comes from inside the Railway worker, so a dead worker, database or Slack token says
 nothing. heartbeat_check therefore ends each hourly run by pinging US_OUTBOUND_WATCHDOG_URL
-(ops/watchdog.py decides which form): Healthchecks.io emails Harry when a ping is late or says /fail.
+(ops/health.ping decides which form): Healthchecks.io emails Harry when a ping is late or says /fail.
 
 The URL holds the check's secret id, so it is never logged or put in an error: a failed ping is reported
 by its HTTP status or the exception's type alone. The guard allows a GET of exactly the URL the job was

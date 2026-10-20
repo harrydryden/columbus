@@ -116,8 +116,9 @@ SPEC: dict[str, tuple[Col, ...]] = {
 assert tuple(SPEC) == TABS
 assert not any(c.optional and c.required for cols in SPEC.values() for c in cols)  # a missing column reads blank
 
-# General's apollo_enrich_groups names Industries groups from a value, not a column (9 Oct 2026).
-EXTRA_DEPENDS: dict[str, tuple[str, ...]] = {"General": ("Industries",)}
+# A tab whose values name another tab's rows, beyond its columns' ref= (none since W2-4, 20 Oct 2026: General's
+# apollo_enrich_groups, which named Industries groups, is a constant in code now).
+EXTRA_DEPENDS: dict[str, tuple[str, ...]] = {}
 
 
 def columns(tab: str) -> list[str]:

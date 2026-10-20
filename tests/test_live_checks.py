@@ -15,7 +15,7 @@ from us_outbound.registry import mailboxes as reg
 
 NOW = datetime(2026, 10, 5, 7, 30, tzinfo=UTC)  # Mon 5 Oct 2026, 08:30 UK: the pilot's first morning
 WEEK = "2026-W41"
-PING = "https://hc-ping.com/5a1b2c3d-golive"  # US_OUTBOUND_WATCHDOG_URL (ops/watchdog.py)
+PING = "https://hc-ping.com/5a1b2c3d-golive"  # US_OUTBOUND_WATCHDOG_URL (ops/health.py)
 HARRY = "US Outbound – Harry Dryden"
 
 

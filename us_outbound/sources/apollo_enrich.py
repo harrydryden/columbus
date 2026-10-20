@@ -4,7 +4,7 @@ The first live run (2 Oct 2026) showed that Apollo's organization search rows ca
 and no employee count, so the funding signals ("Funding in the last 6 months", "Funding 6–12 months
 ago"; sources apollo_org and clay_funding) never fired. Harry, 2 Oct 2026: funding is a sign that a
 company is in a period of change and growth; take it from Apollo's organization enrich (1 credit a
-company) for the industry groups where funding is common (General apollo_enrich_groups, default
+company) for the industry groups where funding is common (settings/model.APOLLO_ENRICH_GROUPS, the General key until W2-4:
 Technology & Startups).
 
 Each weekday at 05:00 UK, after verify_accounts (04:30) and before pick_contacts (05:30), whose rescore
@@ -70,7 +70,7 @@ from us_outbound.facts import newest, newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import aged_value
-from us_outbound.settings.model import Settings
+from us_outbound.settings.model import APOLLO_ENRICH_GROUPS, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as uni
 from us_outbound.timeparse import utc, utc_strict
@@ -120,7 +120,7 @@ def candidates(ctx: Context) -> tuple[list[dict], dict[str, set[str]]]:
     and the apollo_org facts each has stored. Verified only: credits buy facts for companies that passed the free
     checks and the label check (code-sources B4)."""
     s = ctx.settings
-    wanted = {g.casefold() for g in s.general.apollo_enrich_groups}
+    wanted = {g.casefold() for g in APOLLO_ENRICH_GROUPS}
     rows = [a for a in ctx.store.select("accounts", {"status": VERIFIED})
             if a.get("domain") and a.get("tier") not in uni.OUT_OF_QUEUE_TIERS
             and s.industry_group_of(a).casefold() in wanted]
@@ -354,7 +354,7 @@ def latest_run(store: Any) -> str | None:
 
 def post_lines(ctx: Context) -> list[str]:
     """The daily post's lines: the last run and every account enriched so far (learn/daily_post.py)."""
-    groups = ", ".join(ctx.settings.general.apollo_enrich_groups) or "no group: apollo_enrich_groups is blank"
+    groups = ", ".join(APOLLO_ENRICH_GROUPS) or "no group: APOLLO_ENRICH_GROUPS is empty"
     today = ctx.today_uk()
     total = tally(ctx.store, today)
     if not total.accounts:
@@ -375,9 +375,9 @@ def _done(ctx: Context, summary: dict) -> dict:
 def run(ctx: Context) -> dict:
     """The apollo_enrich job (JOB CONTRACT: run(ctx) -> summary)."""
     s = ctx.settings
-    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "groups": list(s.general.apollo_enrich_groups)}
-    if not s.general.apollo_enrich_groups:
-        summary.update(skipped=True, reason="apollo_enrich_groups is blank, so no industry group is enriched")
+    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "groups": list(APOLLO_ENRICH_GROUPS)}
+    if not APOLLO_ENRICH_GROUPS:
+        summary.update(skipped=True, reason="APOLLO_ENRICH_GROUPS is empty, so no industry group is enriched")
         return _done(ctx, summary)
     todo, stored = candidates(ctx)
     if not todo:

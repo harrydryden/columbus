@@ -189,6 +189,24 @@ class DateRange:
         return self.start <= d <= self.end
 
 
+
+# Constants Harry never edits, moved from the General tab to code (W2-4, 20 Oct 2026; design §8 W2-4), each at the value
+# the live sheet had (its default: data-crm-settings, 19 Oct 2026). Their sheet rows are retired
+# (settings/validate.RETIRED_GENERAL): a row left on the sheet is a warning and is not read. apollo_floor stays on the
+# sheet: the Apollo alerts name it as Harry's lever (learn/spend.apollo_floor_ask), and so do the four generic opener
+# lines, which are copy.
+SCORE_CAP = 100  # an account's total score is capped here (scoring/score.py)
+ESCALATION_HOURS = 24  # an item open this long goes to escalation_email (replies/escalation.py; SPEC 11)
+# The industry groups whose verified accounts apollo_enrich enriches for funding and an exact headcount, where
+# funding is common (sources/apollo_enrich.py; Harry, 2 Oct 2026).
+APOLLO_ENRICH_GROUPS: tuple[str, ...] = ("Technology & Startups",)
+# The website-visit signals (sources/site_visits.py; Harry, 5 Oct 2026): the site Apollo's visitor tracker is on, and
+# the pages that count as a US-site visit and as a pricing or demo visit (a page whose path contains any of them).
+SITE_VISIT_DOMAIN = "spill.chat"
+SITE_VISIT_US_PATHS: tuple[str, ...] = ("/us",)
+SITE_VISIT_INTENT_PATHS: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
+
+
 @dataclass(frozen=True)
 class General:
     """The General tab. Defaults are SPEC 5's; keys marked (build) were added by the build."""
@@ -219,12 +237,10 @@ class General:
     standard_threshold: int = 20
     # (build) Harry, 19 Oct 2026: the two thresholds follow the queue each day (scoring/balance.py); no: as typed
     auto_thresholds: bool = True
-    score_cap: int = 100
     apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)
     apollo_floor: int = 5000
     approver_slack_ids: tuple[str, ...] = ()
     escalation_email: str = "harry@spill.chat"
-    escalation_hours: int = 24
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"  # (build)
     booking_link: str = "https://meetings.hubspot.com/harry336/us-demo-link"
@@ -246,15 +262,6 @@ class General:
     hubspot_pipeline_id: str = ""  # (build) looked up through the API in phase 0
     hubspot_deal_stage_id: str = ""  # (build)
     hubspot_owner_id: str = ""  # (build) Harry's HubSpot owner id
-    # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
-    # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.
-    apollo_enrich_groups: tuple[str, ...] = ("Technology & Startups",)
-    # (build) Harry, 5 Oct 2026: the website-visit signals (sources/site_visits.py). The site Apollo's visitor tracker
-    # is on (blank: the job reads nothing), and the pages that count as a US-site visit and as a pricing or demo
-    # visit: Apollo matches a page whose path contains any of them.
-    site_visit_domain: str = "spill.chat"
-    site_visit_us_paths: tuple[str, ...] = ("/us",)
-    site_visit_intent_paths: tuple[str, ...] = ("/us/pricing", "/us/demo", "/us/book")
     # (build) Harry, 6 Oct 2026: the company size range, in employees, both ends included (SPEC 2: 10 to 249).
     # Every source searches it, verify_accounts holds accounts to it, and the hand-check's size edges follow it.
     min_employees: int = 10

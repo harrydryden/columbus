@@ -72,7 +72,7 @@ from datetime import date
 from typing import Any
 
 from us_outbound.base import holds
-from us_outbound.base.heartbeats import enrolment_paused
+from us_outbound.ops.health import enrolment_paused
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
@@ -84,7 +84,8 @@ from us_outbound.enrol import capacity, focus, openers, plan, queue, render, var
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
-from us_outbound.settings.model import AB_TEST, GENERAL_COPY, SIZE_BANDS, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.settings.model import (AB_TEST, ESCALATION_HOURS, GENERAL_COPY, SIZE_BANDS, CopyRow, CopyStep,
+                                        Mailbox, Settings)
 from us_outbound.settings.overrides import effective
 from us_outbound.timeparse import utc
 
@@ -152,12 +153,12 @@ def operator_pause(ctx: Context) -> str | None:
 def reply_pause(ctx: Context) -> str | None:
     """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
 
-    The reply items are poll_replies' (kind "reply"; replies/items.py reads them, and the first kind
+    The reply items are poll_replies' (kind "reply"; replies/desk.py reads them, and the first kind
     name too): positive or referral, not yet handled, escalated included.
     """
-    from us_outbound.replies.items import positive_waiting
+    from us_outbound.replies.desk import positive_waiting
 
-    hours = ctx.settings.general.escalation_hours
+    hours = ESCALATION_HOURS
     old = positive_waiting(ctx.store, ctx.now, hours)
     if not old:
         return None

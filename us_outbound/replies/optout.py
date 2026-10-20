@@ -43,7 +43,7 @@ from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
 from us_outbound.logs import hash_email, log
 from us_outbound import suppression
-from us_outbound.replies.items import ACTIONABLE, HANDLED, TABLE, ReplyItem, is_reply
+from us_outbound.replies.desk import ACTIONABLE, HANDLED, TABLE, ReplyItem, is_reply
 
 REASON = "unsubscribe"
 UNSUBSCRIBED = "unsubscribed"  # the events type (SPEC 6; enrol/capacity.py STOP_EVENTS)

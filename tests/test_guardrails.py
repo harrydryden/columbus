@@ -61,7 +61,7 @@ ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
 APPROVER = "U_HARRY"  # approver_slack_ids (SPEC 1.3): the only reply approver, and the only Slack DM recipient
 HANNAH_SLACK = "U_HANNAH"  # D11: Hannah approves replies to her own mailbox only
-WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/watchdog.py; Harry, 7 Oct 2026)
+WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/health.py; Harry, 7 Oct 2026)
 
 BOUNDS = Boundaries(
     registry_addresses=frozenset(ADDRESSES),

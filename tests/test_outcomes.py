@@ -313,7 +313,7 @@ def test_the_last_two_days_are_re_read_once_a_day_and_six_hours_otherwise(world)
 
 
 def test_a_long_outage_is_caught_up_a_week_a_run(world):
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     world.honor_until = True
     _beat(world, timedelta(days=20))  # the last good run, before an outage

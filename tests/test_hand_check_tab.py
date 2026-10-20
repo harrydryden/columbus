@@ -16,7 +16,7 @@ from us_outbound import verify
 from us_outbound.clients.http import ApiError
 from us_outbound.enrol import enrol, hand_check
 from us_outbound.enrol import hand_check_tab as tab
-from us_outbound.ops import job_errors
+from us_outbound.ops import health
 from us_outbound.replies import desk
 
 
@@ -304,7 +304,7 @@ def test_the_errors_reach_heartbeat_check(monkeypatch):
     """hand_check_errors is a list under a key ending _errors, which ops/job_errors finds anywhere in the detail."""
     run = {"job": "poll_approvals", "status": "ok", "started_at": NOW, "finished_at": NOW,
            "detail": {"hand_check": {"applied": [], "hand_check_errors": ["W44:x.com: the tab could not be written"]}}}
-    [found] = job_errors.findings("poll_approvals", run)
+    [found] = health.findings("poll_approvals", run)
     assert found.kind == "errors" and found.texts == ["W44:x.com: the tab could not be written"]
 
 

@@ -133,7 +133,7 @@ def test_the_key_variables():
         "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
         "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",
         "claude": "US_OUTBOUND_CLAUDE_API_KEY",
-        "watchdog": "US_OUTBOUND_WATCHDOG_URL",  # optional: the outside watchdog's ping URL (ops/watchdog.py)
+        "watchdog": "US_OUTBOUND_WATCHDOG_URL",  # optional: the outside watchdog's ping URL (ops/health.py)
     }
 
 
@@ -219,7 +219,7 @@ def test_with_a_slack_token_the_real_client_is_used():
 
 def test_stop_and_unenrol_run_on_the_general_defaults_when_the_settings_are_unusable(capsys):
     """`stop --live` must pause the campaigns even when no valid settings are in force."""
-    from us_outbound.base.heartbeats import OPERATOR_STOP, enrolment_paused
+    from us_outbound.ops.health import OPERATOR_STOP, enrolment_paused
     from us_outbound.settings.model import General
 
     assert {OPERATOR_STOP, "unenrol"} <= bootstrap.DEFAULTS_OK and "enrol" not in bootstrap.DEFAULTS_OK
@@ -335,7 +335,7 @@ def test_the_kill_rules_run_live_and_protective_only_on_the_last_good_settings(b
     from tests.test_ramp import past_ramp
     from tests.test_registry import C_HANNAH, HANNAH, NOW, row
     from us_outbound.learn import kill_rules
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
     from us_outbound.settings import sync
 
     store, t, inst, sheets = _fallback_world(both_copy_versions_bad=both_bad)
@@ -368,7 +368,7 @@ def test_the_blackout_pauses_on_the_fallback_but_starts_nothing_after_it():
     and says the start waits for settings in force."""
     from tests.test_kill_rules import campaigns
     from tests.test_registry import C_HANNAH
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
     from us_outbound.registry import blackout
 
     store, t, inst, sheets = _fallback_world(both_copy_versions_bad=False)
@@ -479,7 +479,7 @@ def test_a_kill_rule_pause_on_an_earlier_mailboxes_version_never_puts_a_paused_m
     from tests.test_ramp import past_ramp
     from tests.test_registry import C_HARRY, HARRY, HARRY2, NOW, row
     from us_outbound.learn import kill_rules
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
     from us_outbound.registry import mailboxes as reg
     from us_outbound.settings import sync
 
@@ -511,7 +511,7 @@ def test_a_kill_rule_pause_on_an_earlier_mailboxes_version_never_raises_the_camp
     from tests.test_ramp import past_ramp
     from tests.test_registry import C_HARRY, HARRY, HARRY2, NOW
     from us_outbound.learn import kill_rules
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     store, t, inst, sheets = _mailboxes_fallback_world(harry_cap="15")
     past_ramp(store, SETTINGS.mailboxes, NOW)

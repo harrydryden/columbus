@@ -3,7 +3,7 @@
 lookup_pipeline() reads the "Spill 3.0" pipeline, its first stage and Harry's owner id,
 for Harry to paste into the General tab. It never writes settings itself.
 
-record_reply() is SPEC 11 "HubSpot writes" for one positive or referral reply item (replies/items.py):
+record_reply() is SPEC 11 "HubSpot writes" for one positive or referral reply item (replies/desk.py):
   1. the company by root domain: more than one → nothing is written, the account is held and a
      manual_merge item is opened (it closes itself once HubSpot has one company for the domain);
      none → created with the clean name and the domain;
@@ -40,7 +40,7 @@ from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, WARM_REPLY_CLASSES
 from us_outbound.clients.hubspot import COMPANY_PROPS, CONTACT_PROPS, DEAL_PROPS
 from us_outbound.context import Context
 from us_outbound.logs import clip, log
-from us_outbound.replies.items import ReplyItem, save_payload
+from us_outbound.replies.desk import ReplyItem, save_payload
 
 
 def lookup_pipeline(ctx: Context) -> dict:
@@ -304,7 +304,7 @@ def _close_merge(ctx: Context, account_id: str) -> None:
 
 
 def record_reply(ctx: Context, item: Any) -> dict:
-    """SPEC 11 HubSpot writes for one reply item (a replies.items.ReplyItem or its hitl_items row).
+    """SPEC 11 HubSpot writes for one reply item (a replies.desk.ReplyItem or its hitl_items row).
 
     Returns the item's hubspot block, also kept on the item (payload.hubspot) as each step is made:
     {status, company_id, contact_id, note_id, task_id, deal_id, link, why}. status is "written",

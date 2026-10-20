@@ -1,8 +1,18 @@
-"""poll_replies (SPEC 9, 11): every 15 minutes, each new reply is classified, routed, drafted and alerted.
+"""poll_replies (SPEC 9, 11): every 15 minutes, each new reply is recorded, classified, routed, drafted and alerted.
 
-It reads the emails the registry mailboxes received (GET /emails, email_type received, one request
-series per mailbox; SPEC 1.2), keeps those from our contacts or anyone at their accounts' domains
-(SPEC 2: a reply from anyone stops outreach to the whole account), and handles each one once.
+It is the one reader of received mail (W2-4, 20 Oct 2026; sync_outcomes listed it too until then). It reads the
+emails the registry mailboxes received (GET /emails, email_type received, one request series per mailbox; SPEC
+1.2), keeps those from our contacts or anyone at their accounts' domains (SPEC 2: a reply from anyone stops outreach
+to the whole account), and handles each one once.
+
+Recorded before it is classified (RS §2 W2-4): first, in one pass over everything read and in dry-run too, each
+new reply's events row (type replied, no class yet) is written and its account becomes engaged (unless Instantly
+flags the email as an automatic reply: an away message engages nobody until the model says otherwise). Only then is
+each reply classified, so a model outage, the Claude cap or the run's time budget leaves the reply on record (the
+kill rules, the send forecast, the account stop and every report see it) and the next run classifies it. A reply
+is done once its event carries a class and, for a class a person answers (or an out-of-office), once its item
+exists: the class is written first and the item after it, so a run that stops between the two leaves the reply to
+the next run, which writes the item.
 
 THE CONTRACT WITH THE REPLY DESK
 (replies/desk.py and crm/: approvals, sending the approved reply, HubSpot writes, escalation and
@@ -68,8 +78,9 @@ Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a h
       Instantly's lead pause, never confirmed, and went with W2-1, 20 Oct 2026.)
 Every email listed as received but not from outside Spill (a campaign send, our own mailbox, a system
 sender, a Spill address; outcomes.received_reason) is counted by why in the summary's dropped (W1-2;
-code-replies-crm M3: until then a misread field would have looked exactly like "no replies yet").
-Every reply but an out-of-office one engages its account (replies/outcomes.mark_engaged). The reply's
+code-replies-crm M3: until then a misread field would have looked exactly like "no replies yet"), and one from
+nobody of ours under unmatched. Every reply but an out-of-office one engages its account
+(replies/outcomes.mark_engaged). The reply's
 events row (type replied) carries the class, the stripped text (reply_text, purged after 90 days by
 the retention job, SPEC 6; the item's excerpt is reply text too), language_terms and competitor_named.
 
@@ -207,30 +218,21 @@ def may_continue(email: Mapping[str, Any]) -> bool:
 
 
 class _Seen:
-    """Replies already handled: their replied event has a class, or they have an item."""
+    """Replies already handled: the event carries a class and, for a class with an item, the item exists (the module
+    docstring). No repair write: a reply whose item is missing is simply handled again (W2-4)."""
+
+    NO_ITEM = frozenset({"unsubscribe"})  # the classes that open no item
 
     def __init__(self, ctx: Context):
-        self.ctx = ctx
-        self.classified = {str(e["event_id"]) for e in ctx.store.select("events", {"type": outcomes.REPLIED})
-                           if e.get("reply_class")}
+        self.classified = {str(e["event_id"]): str(e["reply_class"])
+                           for e in ctx.store.select("events", {"type": outcomes.REPLIED}) if e.get("reply_class")}
         self.items = {str(r["item_id"]): r for r in ctx.store.select("hitl_items", {"kind": [KIND, OOO_KIND]})}
 
     def done(self, email_id: str) -> bool:
-        if email_id in self.classified:
-            return True
-        item = self.items.get(f"{KIND}:{email_id}") or self.items.get(f"{OOO_KIND}:{email_id}")
-        if item is None:
+        cls = self.classified.get(email_id)
+        if cls is None:
             return False
-        # The item was written but the run stopped before the event: give the event its class.
-        payload = item.get("payload") if isinstance(item.get("payload"), Mapping) else {}
-        self.ctx.store.upsert("events", [{
-            "event_id": email_id, "contact_id": item.get("contact_id"), "account_id": item.get("account_id"),
-            "type": outcomes.REPLIED, "mailbox": payload.get("mailbox"),
-            "reply_class": payload.get("reply_class") or "other",
-            "occurred_at": utc(payload.get("received_at")) or self.ctx.now,
-        }])
-        self.classified.add(email_id)
-        return True
+        return cls in self.NO_ITEM or f"{KIND}:{email_id}" in self.items or f"{OOO_KIND}:{email_id}" in self.items
 
 
 # -- one reply ------------------------------------------------------------------------------------
@@ -412,20 +414,49 @@ def _opt_out(ctx: Context, email: Mapping[str, Any], m: Match, info: Mapping[str
     return result
 
 
-def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, done: set[str], out: dict) -> None:
+def record(ctx: Context, d: Directory, emails: list[Mapping[str, Any]], out: dict) -> list[tuple[dict, Match]]:
+    """The first pass (the module docstring): each email someone of ours sent us, with who it is from, and a replied
+    event (no class) for each new one, its account engaged unless Instantly took it for an automatic reply. The rest
+    are counted: dropped by why, unmatched. Database writes only, so dry-run does it too (SPEC 0.3)."""
+    registry = ctx.guard.bounds.registry_addresses
+    known = outcomes.event_ids(ctx, outcomes.REPLIED)
+    kept: list[tuple[dict, Match]] = []
+    rows: dict[str, dict] = {}
+    engaged: list[str] = []
+    for email in emails:
+        eid, mailbox = str(email.get("id") or ""), _lower(email.get("eaccount"))
+        if not eid:
+            continue
+        why = outcomes.received_reason(email, mailbox, registry)
+        if why is not None:  # counted (W1-2; code-replies-crm M3): a misread field shows here, not as "no replies"
+            out["dropped"][why] += 1
+            continue
+        m = d.match_reply(email)
+        if m is None:
+            out["unmatched"] += 1
+            continue
+        kept.append((dict(email), m))
+        if eid in known or eid in rows:
+            continue
+        rows[eid] = {"event_id": eid, "contact_id": m.contact["contact_id"], "account_id": m.contact.get("account_id"),
+                     "type": outcomes.REPLIED, "mailbox": mailbox, "occurred_at": outcomes.email_time(email) or ctx.now}
+        if not outcomes.is_auto_reply(email):
+            engaged.append(str(m.contact.get("account_id") or ""))
+    if rows:
+        sends = outcomes.sent_events(ctx, {r["contact_id"] for r in rows.values()})
+        for r in rows.values():
+            r["step"] = outcomes.step_before(sends.get(str(r["contact_id"]), []), utc(r["occurred_at"]))
+        ctx.store.upsert("events", list(rows.values()))  # only these columns: a class already set stays
+        outcomes.mark_engaged(ctx, engaged)
+    out["recorded"] = len(rows)
+    return kept
+
+
+def _process(ctx: Context, d: Directory, email: Mapping[str, Any], m: Match, seen: _Seen, done: set[str],
+             out: dict) -> None:
     eid, mailbox = str(email.get("id") or ""), _lower(email.get("eaccount"))
-    if not eid:
-        return
-    why = outcomes.received_reason(email, mailbox, ctx.guard.bounds.registry_addresses)
-    if why is not None:  # counted (W1-2; code-replies-crm M3): a misread field shows here, not as "no replies"
-        out["dropped"][why] += 1
-        return
     if seen.done(eid):
         out["already_handled"] += 1
-        return
-    m = d.match_reply(email)
-    if m is None:
-        out["unmatched"] += 1
         return
     email = _with_body(ctx, email, mailbox)
     text = classify.reply_text(email)
@@ -462,14 +493,13 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
         "reply_text": text[:STORED_TEXT_CHARS], "language_terms": verdict.language_terms,
         "competitor_named": verdict.competitor_named or None, "occurred_at": received,
     }
+    ctx.store.upsert("events", [event])  # the class on record first; an item, if any, after it (the module docstring)
     if cls == "unsubscribe":
-        ctx.store.upsert("events", [event])
         if result is None:  # the model's class alone (no asks_to_stop): opted out here
             result = _opt_out(ctx, email, m, info, received, done, out)
         _note(ctx, opt_out_note(info, from_is_contact=m.from_is_contact, by_rule=verdict.by_rule, result=result))
     elif cls == "out_of_office":
         _record_ooo(ctx, verdict, info, text)
-        ctx.store.upsert("events", [event])
     else:
         follow_up, given = None, False
         if cls == "not_now":
@@ -488,14 +518,13 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
             out["also_asked_to_stop"] += 1
         item = {"item_id": f"{KIND}:{eid}", "kind": KIND, "status": OPEN, "account_id": info["account_id"],
                 "contact_id": info["contact_id"], "event_id": eid, "payload": payload, "created_at": ctx.now}
-        ctx.store.upsert("hitl_items", [item])  # the item first: a run that stops here leaves no reply unseen
-        ctx.store.upsert("events", [event])
+        ctx.store.upsert("hitl_items", [item])  # a run that stopped before this line is done again next run
         if cls in INTERESTED_CLASSES:  # Instantly's interest status, once the class is on record (7 Oct 2026)
             payload["instantly_interest"] = _mark_interested(ctx, info, m, out)
             ctx.store.update("hitl_items", {"item_id": item["item_id"]}, {"payload": payload})
         seen.items[item["item_id"]] = item
         out["items"][cls] += 1
-    seen.classified.add(eid)
+    seen.classified[eid] = cls
     out["classified"][cls] += 1
     if cls != "out_of_office":
         outcomes.mark_engaged(ctx, [info["account_id"]])
@@ -675,23 +704,23 @@ def run(ctx: Context) -> dict:
     d = Directory(ctx)
     start = outcomes.since(ctx, JOB, live_only=True, earliest=d.earliest_enrolled())
     out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry", "dropped")}
-    out.update({k: 0 for k in ("unmatched", "already_handled", "retry_later", "claude_cap_reached", "would_classify",
-                               "would_opt_out", "alerts_posted", "slack_errors",
+    out.update({k: 0 for k in ("recorded", "unmatched", "already_handled", "retry_later", "claude_cap_reached",
+                               "would_classify", "would_opt_out", "alerts_posted", "slack_errors",
                                "left_for_next_run", "marked_interested", "also_asked_to_stop")})
     out["would_spend_usd_at_most"] = 0.0
     seen = _Seen(ctx)
     done = optout.done_markers(ctx.store)
     emails = ctx.clients.instantly.list_emails(registry, start, email_type="received")
-    ordered = sorted(emails, key=lambda e: outcomes.email_time(e) or ctx.now)
-    for i, email in enumerate(ordered):
+    ordered = record(ctx, d, sorted(emails, key=lambda e: outcomes.email_time(e) or ctx.now), out)
+    for i, (email, m) in enumerate(ordered):
         if _clock() >= stop:  # the rest wait for the next run, which reads from the first of them
-            rest = ordered[i:]
+            rest = [e for e, _ in ordered[i:]]
             out["left_for_next_run"] = len(rest)
             first = min((utc(e.get("timestamp_created")) or outcomes.email_time(e) or ctx.now) for e in rest)
             out["resume_from"] = first.isoformat()
             log("poll_replies_time_budget", run_id=ctx.run_id, left=len(rest), resume_from=out["resume_from"])
             break
-        _process(ctx, d, email, seen, done, out)
+        _process(ctx, d, email, m, seen, done, out)
     if ctx.live:
         _sweep_opt_outs(ctx, d, done, out)
         _post_pending(ctx, out)

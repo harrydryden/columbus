@@ -16,7 +16,7 @@ import pytest
 
 from us_outbound.context import UK, ConfigError
 from us_outbound.ops import cli
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.ops import schedule
 from us_outbound.ops import scheduler as sch
 from us_outbound.ops.schedule import SCHEDULE, ScheduledJob, by_name, enabled_names
@@ -686,7 +686,7 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
 
 
 def test_the_hand_check_draw_replaces_hand_check_post_everywhere():
-    """W1-5 (19 Oct 2026): hand_check_draw is registered everywhere hand_check_post was (cli.JOBS, heartbeat.EXPECTED,
+    """W1-5 (19 Oct 2026): hand_check_draw is registered everywhere hand_check_post was (cli.JOBS, health.EXPECTED,
     the job names Slack uses) and in IMPACT, and hand_check_post is gone from all of them. It runs Mondays at 05:45,
     after pick_contacts (05:30) and before enrol (12:00): 5 * 60 + 30 < 5 * 60 + 45 < 12 * 60."""
     from us_outbound.base import say

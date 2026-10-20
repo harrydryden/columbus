@@ -201,7 +201,7 @@ def world(settings, *, live: bool = True, now: datetime = NOW, row: dict | None 
 
 
 def item(ctx, item_id: str = "item-0001-aaaa"):
-    from us_outbound.replies.items import ReplyItem
+    from us_outbound.replies.desk import ReplyItem
 
     return ReplyItem(ctx.store.get("hitl_items", item_id=item_id))
 

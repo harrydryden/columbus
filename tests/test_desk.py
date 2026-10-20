@@ -14,7 +14,7 @@ from us_outbound.clients.http import Response
 from us_outbound.context import Secrets
 from us_outbound.ops import bootstrap, cli
 from us_outbound.replies import desk
-from us_outbound.replies.items import ReplyItem, claim
+from us_outbound.replies.desk import ReplyItem, claim
 
 ITEM = "item-0001-aaaa"
 ALERT_TS = "100.000100"
@@ -628,9 +628,9 @@ def test_the_reply_desk_failing_still_applies_the_hand_check_tab_then_fails_the_
     """The reply desk's own failure (escalate raising, after the scripted item was sent) does not stop the hand-check
     tab, and is then raised: run through the heartbeat, the poll_approvals row is status error with the desk's error,
     which heartbeat_check's failure_rate and missed rules count (an ok run with an errors line would be dropped as
-    transient by job_errors.passing for a job every 5 minutes)."""
+    transient by health.passing for a job every 5 minutes)."""
     from us_outbound.enrol import hand_check_tab
-    from us_outbound.ops import heartbeat as hb
+    from us_outbound.ops import health as hb
 
     ran = []
     monkeypatch.setattr(desk, "escalate", lambda *a: (_ for _ in ()).throw(RuntimeError("escalation broke")))
@@ -697,12 +697,12 @@ def test_the_send_approvals_left_open_are_closed_once_as_expired_and_never_escal
     again = poll(ctx)
     assert again["send_approvals"]["closed"] == [] and again["send_approvals"]["sending_errors"] == stuck
     # heartbeat_check reads the run as one "errors" finding with that line, and posts it (not an outage, so
-    # job_errors.passing keeps it for a job every 5 minutes)
-    from us_outbound.ops import job_errors
+    # health.passing keeps it for a job every 5 minutes)
+    from us_outbound.ops import health
 
-    [found] = job_errors.findings("poll_approvals", {"status": "ok", "detail": again})
+    [found] = health.findings("poll_approvals", {"status": "ok", "detail": again})
     assert (found.kind, found.texts) == ("errors", stuck)
-    assert job_errors.passing("poll_approvals", [found], None) == [found]
+    assert health.passing("poll_approvals", [found], None) == [found]
 
 
 def test_a_dry_run_says_which_send_approvals_it_would_close_and_closes_none(settings):

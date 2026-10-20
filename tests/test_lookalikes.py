@@ -588,14 +588,14 @@ def test_lookalikes_show_from_the_command_line(world, capsys):
 
 
 def test_the_job_is_registered_monthly_before_source_universe():
-    from us_outbound.ops import heartbeat, schedule
+    from us_outbound.ops import health, schedule
 
     assert cli.JOBS["lookalikes"] == "us_outbound.sources.lookalikes:run"
     job = schedule.by_name()["lookalikes"]
     # Harry, 5 Oct 2026: the 1st of each month at 02:30 UK; HubSpot and Apollo reads and database writes only.
     assert (job.cron, job.enabled, job.live) == ("30 2 1 * *", True, False)
     assert schedule.by_name()["source_universe"].cron.split()[1] == "3"  # 03:00, after it
-    assert heartbeat.EXPECTED["lookalikes"] == 32 * 24 * 60  # the longest month, and a day's grace
+    assert health.EXPECTED["lookalikes"] == 32 * 24 * 60  # the longest month, and a day's grace
     # A customer's suppression outlives one missed monthly run; an unchanged fit is rewritten inside its signals' days.
     assert lk.SUPPRESS_DAYS > 2 * 31
     settings, _ = validate_all(default_tabs())

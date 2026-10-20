@@ -1,4 +1,4 @@
-"""Errors the jobs caught, and rejected keys (ops/job_errors.py; Harry, 7 Oct 2026): heartbeat_check reads each job's
+"""Errors the jobs caught, and rejected keys (ops/health.py; Harry, 7 Oct 2026): heartbeat_check reads each job's
 latest heartbeat detail and says in Slack what went wrong, once a day per job and kind."""
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ import pytest
 from tests.fakes import TEST_SHEET_ID
 from tests.test_heartbeat import MON_NOON, beat
 from tests.test_watchdog import PING, pings, posts, world
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.base import say
-from us_outbound.ops import job_errors
+from us_outbound.ops import health
 
 SHEET = f"https://docs.google.com/spreadsheets/d/{TEST_SHEET_ID}/edit"  # say.sheet_link, no tab ids here
 JOBS = ["enrol", "poll_replies", "poll_approvals", "hubspot_readback", "kill_rules", "settings_sync", "pick_contacts",
@@ -24,7 +24,7 @@ def at(minutes):
 
 
 def check(ctx):
-    return job_errors.check(ctx, JOBS)
+    return health.report_errors(ctx, JOBS)
 
 
 def text(t) -> str:
@@ -61,14 +61,14 @@ def test_a_daily_job_s_failure_is_told_on_its_own_day_and_not_again_after_midnig
     jobs = [*JOBS, "read_pages"]
     nul = "UntranslatableCharacter: unsupported Unicode escape sequence DETAIL: \\u0000 cannot be converted to text."
     beat(ctx.store, "read_pages", MON_NOON - timedelta(hours=8, minutes=15), status="error", error=nul)
-    assert job_errors.check(ctx, jobs)["posted"] == ["job_error:read_pages:failed:2026-10-26"]
+    assert health.report_errors(ctx, jobs)["posted"] == ["job_error:read_pages:failed:2026-10-26"]
     assert "• *Reading company websites* failed (Mon 03:45 UK): “UntranslatableCharacter" in text(t)
     ctx.now = MON_NOON + timedelta(hours=12, minutes=5)  # Tuesday 00:05 UK: Monday's run is still the latest
-    out = job_errors.check(ctx, jobs)
+    out = health.report_errors(ctx, jobs)
     assert out["found"] == ["job_error:read_pages:failed"] and out["posted"] == [] and len(posts(t)) == 1
     beat(ctx.store, "read_pages", MON_NOON + timedelta(hours=15, minutes=45), status="error", error=nul)
     ctx.now = MON_NOON + timedelta(hours=16, minutes=5)  # Tuesday's run failed too: told on Tuesday
-    assert job_errors.check(ctx, jobs)["posted"] == ["job_error:read_pages:failed:2026-10-27"]
+    assert health.report_errors(ctx, jobs)["posted"] == ["job_error:read_pages:failed:2026-10-27"]
     assert len(posts(t)) == 2
 
 
@@ -242,8 +242,8 @@ def test_an_outage_a_frequent_job_meets_twice_running_is_posted_in_plain_words()
     ({"candidates": 25, "failures": {"x": 13}}, True),
 ])
 def test_one_reason_failing_enough_items_is_a_finding(detail, found):
-    got = [f for f in job_errors.findings("enrol", {"status": "ok", "started_at": MON_NOON, "detail": detail})
-           if f.kind == job_errors.FAILURES]
+    got = [f for f in health.findings("enrol", {"status": "ok", "started_at": MON_NOON, "detail": detail})
+           if f.kind == health.FAILURES]
     assert bool(got) is found
     if found:
         assert got[0].count == next(iter(detail["failures"].values()))
@@ -261,12 +261,12 @@ def test_a_text_under_a_key_named_error_is_a_finding_but_not_a_post_result_or_a_
     in 17 hours, 19 Oct 2026) and nothing read it."""
     run = {"status": "ok", "started_at": MON_NOON}
     bad_range = "ApiError: sheets HTTP 400 for /values:batchUpdate: bad range"
-    hit = job_errors.findings("poll_approvals", {**run, "detail": {"hand_check_tab": {"applied": [], "error": bad_range}}})
+    hit = health.findings("poll_approvals", {**run, "detail": {"hand_check_tab": {"applied": [], "error": bad_range}}})
     assert [(f.kind, f.texts) for f in hit] == [("error", [bad_range])]
-    assert [f.kind for f in job_errors.findings("x", {**run, "detail": {
+    assert [f.kind for f in health.findings("x", {**run, "detail": {
         "alert": {"posted": False, "error": "unknown outcome: ReadTimeout"}}})] == ["slack_post"]  # read as a post
     for detail in ({"definitions": {"error": "dry-run: no model asked"}}, {"error": None}, {"error": ""}):
-        assert job_errors.findings("x", {**run, "detail": detail}) == []
+        assert health.findings("x", {**run, "detail": detail}) == []
 
 
 def _readback_runs(store, failed_at: tuple[int, ...]):
@@ -285,7 +285,7 @@ def test_a_frequent_job_failing_3_of_its_last_12_runs_is_posted_once_a_day():
     ctx, t = world()
     _readback_runs(ctx.store, (1, 5, 9))
     assert check(ctx)["posted"] == ["job_error:hubspot_readback:failure_rate:2026-10-26"]
-    finding = job_errors.failure_rates(ctx, JOBS)[0]
+    finding = health.failure_rates(ctx, JOBS)[0]
     assert (finding.job, finding.count, finding.at) == ("hubspot_readback", 3, at(30))  # the latest error: 11:30
     assert "3 of its last 12 runs" in text(t)
     assert check(ctx)["posted"] == []  # once a day
@@ -299,15 +299,15 @@ def test_a_daily_job_is_not_held_to_the_failure_rate_rule():
     failure instead (failed). Here it was run 12 times in the last 24 hours (by hand, every 2 hours, all inside
     LOOKBACK's 26), 3 of them errors: a frequent job with that record is a finding (3 >= RATE_ERRORS in 12 runs);
     this daily one is not."""
-    from us_outbound.ops.job_errors import DAILY, EXPECTED
+    from us_outbound.ops.health import DAILY, EXPECTED
 
     assert EXPECTED["mailbox_health"] >= DAILY
     ctx, _ = world()
     for i in range(12):
         beat(ctx.store, "mailbox_health", at(120 * i + 30), status="error" if i in (1, 5, 9) else "ok",
              error="ApiError: instantly HTTP 502" if i in (1, 5, 9) else None, run_id=f"mh-{i}")
-    assert job_errors.failure_rates(ctx, ["mailbox_health"]) == []
-    assert job_errors.failure_rates(ctx, JOBS) == []
+    assert health.failure_rates(ctx, ["mailbox_health"]) == []
+    assert health.failure_rates(ctx, JOBS) == []
 
 
 def test_unusable_settings_are_not_told_again_as_each_job_s_failure_rate():
@@ -315,4 +315,4 @@ def test_unusable_settings_are_not_told_again_as_each_job_s_failure_rate():
     for i in range(4):
         beat(ctx.store, "poll_replies", at(15 * (i + 1)), status="error", detail={"unusable": ["Copy"]},
              error="settings are unusable (Copy); fix the sheet, then run `us-outbound settings sync`", run_id=f"p{i}")
-    assert job_errors.failure_rates(ctx, JOBS) == []
+    assert health.failure_rates(ctx, JOBS) == []
