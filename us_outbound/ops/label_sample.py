@@ -16,7 +16,6 @@ the tab.
 
 from __future__ import annotations
 
-import math
 import random
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -26,7 +25,7 @@ from us_outbound import fmt, labels
 from us_outbound.base import say
 from us_outbound.clients.sheets import read_tab, write_tab
 from us_outbound.context import Context
-from us_outbound.learn import definition_suggestions
+from us_outbound.learn import definition_suggestions, stats
 from us_outbound.logs import log
 from us_outbound.settings.model import Industry, Settings
 
@@ -110,14 +109,7 @@ def run(ctx: Context, size: int = SIZE) -> dict[str, Any]:
     return out
 
 
-def interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    """The Wilson 95% interval for k of n."""
-    if not n:
-        return 0.0, 0.0
-    p = k / n
-    mid = (p + z * z / (2 * n)) / (1 + z * z / n)
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
-    return max(0.0, mid - half), min(1.0, mid + half)
+interval = stats.wilson  # the Wilson 95% interval for k of n (learn/stats.py, W2-3: one copy)
 
 
 def _named(text: Any) -> str:

@@ -169,6 +169,77 @@ def test_a_bounced_lead_is_recorded_and_suppressed(world):
     assert len(world.events("bounced")) == 1
 
 
+def test_the_suppression_is_written_before_the_bounce_event(world, monkeypatch):
+    """W2-3: kill_rules no longer suppresses every bounced contact again each hour, so the bounced event (which tells
+    later runs the lead is done) must never exist without the suppression: a failure between the two leaves no event,
+    and the next run suppresses."""
+    from us_outbound import suppression
+
+    world.sent("S1", at=NOW - timedelta(days=1))
+    world.lead("L-jane", JANE, LEAD_BOUNCED)
+
+    def broken(*a, **k):
+        raise OSError("database went away")
+
+    real = suppression.add
+    monkeypatch.setattr(suppression, "add", broken)
+    with pytest.raises(OSError):
+        run(world)
+    assert world.events("bounced") == []
+    monkeypatch.setattr(suppression, "add", real)
+    world.at(NOW + timedelta(minutes=15))
+    run(world)
+    assert world.suppressed(JANE)[0]["reason"] == "bounce" and len(world.events("bounced")) == 1
+
+
+def _earlier_sends(world, n: int, bounced: int) -> None:
+    """n step-1 sends from Hannah's mailbox two days ago, as earlier runs recorded them; the first `bounced` bounced."""
+    rows = []
+    for i in range(n):
+        at = NOW - timedelta(days=2, minutes=i)
+        rows.append({"event_id": f"old-{i}", "type": "sent", "mailbox": HANNAH, "contact_id": f"c-old-{i}",
+                     "account_id": f"a-old-{i}", "step": 1, "occurred_at": at})
+        if i < bounced:
+            rows.append({"event_id": f"old-b-{i}", "type": "bounced", "mailbox": HANNAH, "contact_id": f"c-old-{i}",
+                         "account_id": f"a-old-{i}", "step": 1, "occurred_at": at + timedelta(minutes=1)})
+    world.ctx.store.insert("events", rows)
+
+
+def test_a_recorded_bounce_runs_the_bounce_kill_rules_within_the_run(default_settings):
+    """W2-3: sync_outcomes runs the bounce kill rules at its end when it recorded a bounce. 39 earlier sends from
+    Hannah with 1 bounce, then S1 to Jane bounces: 2 of 40 = 5% > 3%, with 2 bounces (MIN_BOUNCES), so her mailbox is
+    held within this run (dry-run: the hold and the item, no sheet or Instantly change). The hourly kill_rules the
+    same hour finds the hold open and fires nothing new (K4)."""
+    from us_outbound.base import holds
+    from us_outbound.learn import kill_rules
+
+    w = make_world(default_settings, live=False)
+    w.ctx.job = "sync_outcomes"
+    _earlier_sends(w, 39, bounced=1)
+    w.sent("S1", at=NOW - timedelta(days=1))
+    w.lead("L-jane", JANE, LEAD_BOUNCED)
+    out = outcomes.run(w.ctx)
+    assert out["bounced"] == 1
+    [fired] = out["kill_rules"]["fired"]
+    assert (fired["rule"], fired["target"]) == ("mailbox_bounce_rate", HANNAH)
+    assert "2 of its last 40 sends bounced (5.0%; the limit is 3%)" in fired["reason"]
+    assert holds.held_mailboxes(w.ctx.store) == {HANNAH: fired["reason"]}
+    assert "kill_rule_errors" not in out
+    assert kill_rules.run(w.ctx)["fired"] == []
+    assert len(w.ctx.store.select("hitl_items", {"kind": "kill_rule"})) == 1
+
+
+def test_no_bounce_recorded_runs_no_kill_rule(default_settings):
+    """The same 39 sends with 1 bounce and a delivered S1: nothing recorded, so the rules are not called (and 1 of
+    40 would not fire anyway)."""
+    w = make_world(default_settings, live=False)
+    w.ctx.job = "sync_outcomes"
+    _earlier_sends(w, 39, bounced=1)
+    w.sent("S1", at=NOW - timedelta(days=1))
+    out = outcomes.run(w.ctx)
+    assert out["bounced"] == 0 and "kill_rules" not in out
+
+
 def test_an_instantly_unsubscribe_is_recorded_everywhere_when_live(world):
     world.hubspot_contacts[JANE] = {"hs_email_optout": "false"}
     world.lead("L-jane", JANE, LEAD_UNSUBSCRIBED)

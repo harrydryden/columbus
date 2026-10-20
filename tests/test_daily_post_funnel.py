@@ -1,6 +1,6 @@
-"""The daily post's funnel sections (learn/daily_report.py; Harry, 2 Oct 2026): the headline, Found, Pipeline, and
-To improve with its thresholds. (The Approvals section and the ❌ and edit lines of To improve went with the send
-approvals: W2-1, 20 Oct 2026.)"""
+"""The daily post's funnel sections (learn/daily_post.py; learn/daily_report.py until W2-3; Harry, 2 Oct 2026): the
+headline, Found, Pipeline, and To improve with its thresholds. (The Approvals section and the ❌ and edit lines of To
+improve went with the send approvals: W2-1, 20 Oct 2026.)"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from tests.fakes import sendable_general_copy
 from tests.test_daily_post import MON, TUE_9, ev, world
 from tests.test_registry import HANNAH
-from us_outbound.learn import daily_post, daily_report
+from us_outbound.learn import daily_post
 from us_outbound.settings.model import Focus
 
 SAT_9 = datetime(2026, 10, 24, 8, 0, tzinfo=UTC)  # 09:00 UK (BST), Sat 24 Oct: the post covers Fri 23 alone
@@ -297,7 +297,7 @@ def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_no_tier_mix():
                                         "value": {"outcome": "none", "reason": "company size unknown"}}])
     lines, _ = daily_post.build(ctx)
     body = section(lines, "*To improve*")[1:]
-    assert len(body) == daily_report.MAX_IMPROVE
+    assert len(body) == daily_post.MAX_IMPROVE
     assert body[3].startswith("  No company size from Apollo: 1 of 1 companies ready to email and 0 still being checked.")
     assert body[4].startswith("  1 company ready to email has nobody we can write to")
     assert body[5].startswith("  Replies by angle")
@@ -305,7 +305,7 @@ def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_no_tier_mix():
 
 
 def test_the_reason_drops_per_account_detail():
-    assert daily_report.reason("no sendable email among the top 2 (email status unverified (2))") == (
+    assert daily_post.reason("no sendable email among the top 2 (email status unverified (2))") == (
         "no sendable email among the top candidates")
-    assert daily_report.reason("company size unknown") == "company size unknown"
-    assert daily_report.reason("") == "no reason recorded"
+    assert daily_post.reason("company size unknown") == "company size unknown"
+    assert daily_post.reason("") == "no reason recorded"

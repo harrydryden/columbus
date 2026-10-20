@@ -626,7 +626,8 @@ def _noteworthy(out: Mapping[str, Any]) -> list[str]:
     """Why the summary is worth a Slack post: what changed or is wrong today. Empty: only log it."""
     campaigns = out.get("campaigns") or {}
     starting = out.get("campaign_start") or {}
-    why = [k for k in ("promoted", "retired", "warmup_turned_on", "limit_set", "name_drift", "not_found", "no_sheet_row")
+    why = [k for k in ("promoted", "retired", "warmup_turned_on", "limit_set", "name_drift", "not_found", "no_sheet_row",
+                       "failing")
            if out.get(k)]
     if any(st.get("code") is not None for st in (out.get("campaign_status") or {}).values()):
         why.append("held_back")
@@ -713,6 +714,11 @@ def _todo(ctx: Context, out: Mapping[str, Any]) -> list[str]:
         if st.get("code") is not None and not st.get("at_limit"):
             lines.append(f"• Instantly is holding back {owner}'s campaign: {st['meaning']}. Look at the campaign in "
                          "Instantly.")
+    for address, why in (out.get("failing") or {}).items():
+        lines.append(f"• {address}: {why}, so it sends nothing and takes no new leads. Fix it in Instantly (reconnect "
+                     "it, for a lost connection), then run "
+                     f"{say.command('mailbox check --live')} so it counts again; the safety check pauses it within the "
+                     "hour meanwhile.")
     if out.get("not_found"):
         one = out["not_found"][0] if len(out["not_found"]) == 1 else "ADDRESS"
         lines.append(f"• Not found in Instantly: {_list(out['not_found'])}. Connect it in Instantly, or retire it with "
@@ -849,9 +855,15 @@ def mailbox_health(ctx: Context, *, fix_names: bool = False) -> dict:
     inst = ctx.clients.instantly
     today = ctx.today_uk()
     warmups = inst.warmup_status([m.address for m in registry])
+    from us_outbound.learn.kill_rules import failing
+
     out: dict[str, Any] = {
         "dry_run": ctx.dry_run, "mailboxes": len(registry), "promoted": [], "retired": [],
         "warmup_turned_on": [], "waiting_to_retire": [], "not_found": [], "no_sheet_row": [],
+        # Instantly reports these failing (disconnected, in error, warmup banned): enrol/capacity.py gives them no
+        # capacity from this summary, and the hourly kill rule pauses them (W2-3; code-learn-reporting B12).
+        "failing": {a: why for a, why in failing(warmups).items()
+                    if any(m.address.lower() == a and m.status == ACTIVE for m in registry)},
     }
     rows: list[dict] = []
     changes: list[tuple[Mailbox, str]] = []

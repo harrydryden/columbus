@@ -147,7 +147,7 @@ def test_the_monthly_post_links_the_definition_suggestions(monkeypatch):
     posts: list[str] = []
     monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
     # Both answer-key passes check every row (a pass cut short scores nothing: test_definition_suggestions).
-    monkeypatch.setattr(labels, "evaluate", lambda c, rows: {labels.ACCEPTABLE: len(rows) - 2, labels.WRONG: 2,
+    monkeypatch.setattr(labels, "evaluate", lambda c, rows, **kw: {labels.ACCEPTABLE: len(rows) - 2, labels.WRONG: 2,
                                                              labels.UNSAFE: 0, "asked": len(rows)})
     live = world(live=True)
     ls.run(live)

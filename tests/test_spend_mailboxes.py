@@ -1,5 +1,5 @@
-"""Mailbox capacity three weeks ahead (learn/capacity_ahead.py; Harry, 7 Oct 2026): on Mondays, ask for mailboxes
-while a new one still has the three weeks it needs to warm up."""
+"""Mailbox capacity three weeks ahead (learn/spend.py, from learn/capacity_ahead.py in W2-3; Harry, 7 Oct 2026): on
+Mondays, ask for mailboxes while a new one still has the three weeks it needs to warm up."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from tests.test_daily_post import world as post_world
 from tests.test_registry import SETTINGS, mailbox, slack_routes
-from us_outbound.learn import capacity_ahead, daily_post
+from us_outbound.learn import daily_post, spend
 
 MON_9 = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)  # Monday 09:00 UK (GMT), ISO week 2026-W44
 HEAD = ":warning: *Sending mailboxes: add more now, as a new one takes 3 weeks to warm up*"
@@ -43,7 +43,7 @@ def posts(ctx) -> list[str]:
 
 
 def test_the_arithmetic_is_the_ramp_s_and_the_capacity_code_s():
-    a = capacity_ahead.plan(world(weekly_enrol_cap=300), ready=600)
+    a = spend.mailbox_plan(world(weekly_enrol_cap=300), ready=600)
     # Full ramp is each mailbox's sheet cap (the ramp holds them at 10 a day today); each sender's steady pace is its
     # cap ÷ 4 rounded up (Hannah 8, Sam 8, Harry's two 15), over five send days.
     assert a.weekly == (8 + 8 + 15) * 5 == 155 and a.per_mailbox == 8 * 5
@@ -56,17 +56,17 @@ def test_the_recent_supply_counts_only_the_verified_accounts_a_contact_is_found_
     """code-learn-reporting B11 / metrics-audit M8, 19 Oct 2026: 60 ready and 128 verified a week read as a need of
     60 / 3 + 128 = 148 a week while about 35 were enrolled: pick found a contact at 21 of the 46 it tried. Now the
     128 count at that yield: 60 / 3 + 128 × 21 / 46 = 20 + 58.43 = 78.43 a week."""
-    a = capacity_ahead.plan(world(verified=256, picked=(21, 46)), ready=60)
+    a = spend.mailbox_plan(world(verified=256, picked=(21, 46)), ready=60)
     assert a.supply == pytest.approx(128 * 21 / 46) and a.need == pytest.approx(20 + 128 * 21 / 46)
     assert a.p_c_basis == "measured" and a.as_dict()["p_c"] == 0.457
     # With fewer than 20 tried the yield is loop L1's default, 0.46, and says so.
-    b = capacity_ahead.plan(world(verified=256, picked=(5, 10)), ready=60)
+    b = spend.mailbox_plan(world(verified=256, picked=(5, 10)), ready=60)
     assert (b.p_c, b.p_c_basis) == (0.46, "default") and b.supply == pytest.approx(128 * 0.46)
 
 
 def test_on_monday_it_asks_for_mailboxes_with_the_approvers_mentioned_once_that_week():
     ctx = world(weekly_enrol_cap=300)
-    out = capacity_ahead.check(ctx, ready=600)
+    out = spend.mailboxes_check(ctx, ready=600)
     [text] = posts(ctx)
     assert text == (
         f"<@U_HARRY> {HEAD}\n{ASK}\n*What to do:*\n1. Set up each new mailbox and connect it in Instantly.\n"
@@ -74,30 +74,30 @@ def test_on_monday_it_asks_for_mailboxes_with_the_approvers_mentioned_once_that_
         "named on the address). It warms up for 21 days, then its sending builds up week by week.\n"
         "_Without them, sending stays at about 155 new companies a week._")
     assert out["add"] == 2 and out["alert"]["keys"] == ["mailboxes:2026-W44"]
-    capacity_ahead.check(ctx, ready=600)  # a rerun that Monday
+    spend.mailboxes_check(ctx, ready=600)  # a rerun that Monday
     assert len(posts(ctx)) == 1
 
 
 def test_mailboxes_already_warming_count_towards_the_ask():
     boxes = (*SETTINGS.mailboxes, mailbox("new@meetspill.org", "Sam Jackson", status="Warming"))
     ctx = world(weekly_enrol_cap=300, mailboxes=boxes)
-    capacity_ahead.check(ctx, ready=600)
+    spend.mailboxes_check(ctx, ready=600)
     [text] = posts(ctx)
     assert "*Add 1 mailbox now.*" in text and "1 mailbox is already warming up, counted in." in text
 
 
 def test_nothing_is_posted_when_no_mailbox_is_needed():
     ctx = world()  # weekly_enrol_cap 150: the four mailboxes take 155 a week at full ramp
-    assert capacity_ahead.check(ctx, ready=600)["add"] == 0 and posts(ctx) == []
+    assert spend.mailboxes_check(ctx, ready=600)["add"] == 0 and posts(ctx) == []
     ctx = world(weekly_enrol_cap=300, verified=0)  # too few companies to fill more mailboxes
-    assert capacity_ahead.check(ctx, ready=60)["add"] == 0 and posts(ctx) == []
+    assert spend.mailboxes_check(ctx, ready=60)["add"] == 0 and posts(ctx) == []
     ctx = world(MON_9 + timedelta(days=1), weekly_enrol_cap=300)  # Tuesday: Mondays only
-    assert capacity_ahead.check(ctx, ready=600) == {"checked": False} and posts(ctx) == []
+    assert spend.mailboxes_check(ctx, ready=600) == {"checked": False} and posts(ctx) == []
 
 
 def test_with_no_active_mailbox_it_says_so():
     ctx = world(weekly_enrol_cap=150, mailboxes=())
-    capacity_ahead.check(ctx, ready=300)
+    spend.mailboxes_check(ctx, ready=300)
     [text] = posts(ctx)
     assert ("*Add 4 mailboxes now.* Fully warmed up, your 0 sending mailboxes take about 0 new companies a week; the "
             "weekly target (`weekly_enrol_cap`) is 150, and 300 companies are ready.\n") in text

@@ -31,7 +31,7 @@ from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
 SCHEMA = "us_outbound"
-VIEWS = ("v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
+VIEWS = ("v_account_outcomes", "v_queue", "v_readout_weekly", "v_mailbox_health",
          "v_budgets", "v_heartbeats")
 T0 = datetime(2026, 10, 1, 12, 30, tzinfo=UTC)
 
@@ -123,14 +123,14 @@ def test_a_second_apply_changes_nothing(db, dsn, store):
 def test_apply_over_views_an_older_version_left(db, dsn):
     """A deploy must apply over the views the last version made, even when their columns
     changed (CREATE OR REPLACE VIEW alone cannot rename a column): this failed on Railway
-    when v_account_outcomes.replied_21d became replied_in_window."""
+    when v_account_outcomes.replied_21d became replied_in_window. W2-3: v_signal_value, retired, still reads
+    v_account_outcomes in production; its DROP runs before the refresh, or v_account_outcomes' DROP would refuse."""
     before = catalog(db)
     db.execute(f"DROP VIEW {SCHEMA}.v_readout_weekly")
-    db.execute(f"DROP VIEW {SCHEMA}.v_signal_value")
     db.execute(f"DROP VIEW {SCHEMA}.v_account_outcomes")
     db.execute(f"DROP VIEW {SCHEMA}.v_budgets")
     db.execute(f"CREATE VIEW {SCHEMA}.v_account_outcomes AS SELECT 'x'::text AS account_id, true AS replied_21d")
-    db.execute(f"CREATE VIEW {SCHEMA}.v_signal_value AS SELECT replied_21d FROM {SCHEMA}.v_account_outcomes")
+    db.execute(f"CREATE VIEW {SCHEMA}.v_signal_value AS SELECT replied_21d FROM {SCHEMA}.v_account_outcomes")  # retired
     db.execute(f"CREATE VIEW {SCHEMA}.v_budgets AS SELECT 'clay'::text AS system, 'week'::text AS period")
     db.execute(f"CREATE VIEW {SCHEMA}.v_credits_month AS SELECT 1 AS n")  # retired, dropped by the apply
     ddl.apply(Guard(), dsn, dry_run=False)
@@ -313,11 +313,6 @@ def test_the_other_views_on_a_fixture(store, fixture_rows):
     assert outcomes["sent"]["window_closed"] is True
     assert outcomes["control"]["delivered"] is False and outcomes["control"]["window_closed"] is False
 
-    [signal] = q("v_signal_value")
-    assert (signal["signal"], signal["weight"], signal["max_weight"], signal["accounts"]) == ("eap_named", 25, 25, 1)
-    assert (signal["reply_rate"], signal["positive_rate"], signal["below_control"]) == (1.0, 1.0, False)
-    assert signal["control_accounts_delivered"] == 0 and signal["control_reply_rate"] is None
-
     [mailbox] = q("v_mailbox_health")
     assert (mailbox["address"], mailbox["daily_cap"], mailbox["sends_today"], mailbox["cap_left_today"]) == (
         "hannah@meetspill.org", 30, 1, 29)
@@ -339,22 +334,13 @@ def test_the_other_views_on_a_fixture(store, fixture_rows):
     assert {r["cut_value"] for r in copy} == {"v1"}
 
 
-def test_v_signal_value_judges_what_an_account_showed_when_it_was_enrolled(store, fixture_rows):
-    """Scoring rewrites the matches every run; the contact's snapshot at enrolment wins (Harry, 5 Oct 2026)."""
+def test_the_outcomes_view_keeps_the_enrolment_snapshot(store, fixture_rows):
+    """Scoring rewrites the matches every run; the contact's snapshot at enrolment is what the view carries (Harry, 5
+    Oct 2026), for learn/signal_review.py."""
     q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
-    # When it was enrolled, "sent" showed no signal and was in Control: today's eap_named match does not count.
     store.update("contacts", {"contact_id": "k-sent"}, {"signals_at_enrol": [], "tier_at_enrol": "Control"})
-    [signal] = q("v_signal_value")
-    assert (signal["signal"], signal["accounts"], signal["accounts_delivered"]) == ("eap_named", 0, 0)
-    assert (signal["control_accounts_delivered"], signal["control_reply_rate"]) == (1, 1.0)
     outcome = {r["account_id"]: r for r in q("v_account_outcomes")}["sent"]
     assert (outcome["signals_at_enrol"], outcome["tier_at_enrol"]) == ([], "Control")
-
-    store.update("contacts", {"contact_id": "k-sent"},
-                 {"signals_at_enrol": [{"signal": "eap_named", "weight": 25}], "tier_at_enrol": "Priority"})
-    [signal] = q("v_signal_value")
-    assert (signal["accounts"], signal["accounts_delivered"], signal["reply_rate"]) == (1, 1, 1.0)
-    assert signal["control_accounts_delivered"] == 0
 
 
 def learning_world(store) -> datetime:
@@ -408,9 +394,9 @@ def learning_world(store) -> datetime:
 
 
 def test_the_learning_loop_views(store):
-    """v_account_outcomes counts a meeting after step 1; v_signal_value compares with and without each signal, with
-    meetings and too_few; v_readout_weekly cuts by explore arm (W2-2, in place of the tier), angle, sender and step,
-    and counts a booking once."""
+    """v_account_outcomes counts a meeting after step 1 (any time, and within 45 days); v_readout_weekly cuts by
+    explore arm (W2-2, in place of the tier), angle, sender and step, and counts a booking once. (v_signal_value went
+    with W2-3: tests/test_signal_review.py and tests/test_readout.py read the signals from learn/outcomes.py.)"""
     learning_world(store)
     q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
     outcomes = {r["account_id"]: r for r in q("v_account_outcomes")}
@@ -418,16 +404,9 @@ def test_the_learning_loop_views(store):
     assert not outcomes["a01"]["meeting_booked"]  # booked before we wrote to them
     assert (outcomes["a00"]["angle"], outcomes["a00"]["copy_version"]) == ("Upgrade the EAP", "v1")
 
-    signals = {r["signal"]: r for r in q("v_signal_value")}
-    eap = signals["eap_named"]
-    assert (eap["accounts_enrolled"], eap["accounts_sent"], eap["accounts_delivered"]) == (36, 35, 35)
-    assert (eap["accounts_replied"], eap["accounts_positive"], eap["accounts_meeting"]) == (10, 3, 2)
-    assert (eap["without_delivered"], eap["without_replied"], eap["without_meeting"]) == (34, 2, 0)
-    assert eap["reply_rate"] == 10 / 35 and eap["without_reply_rate"] == 2 / 34 and eap["meeting_rate"] == 2 / 35
-    assert eap["too_few"] is False
-    hiring = signals["hiring"]
-    assert (hiring["accounts_enrolled"], hiring["accounts_sent"], hiring["without_delivered"]) == (0, 0, 69)
-    assert hiring["too_few"] is True and hiring["reply_rate"] is None
+    # a02 booked on day 35: in 45 days; a00 on day 1.
+    assert outcomes["a00"]["meeting_in_45"] and outcomes["a02"]["meeting_in_45"] and not outcomes["a01"]["meeting_in_45"]
+    assert v_signal_value_gone(store)
 
     readout = q("v_readout_weekly")
     cuts = {(r["cut"], r["cut_value"]) for r in readout}
@@ -1301,3 +1280,8 @@ def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
     assert row["value"] == {"title": "Acme", "text": ["ab", {"c": "d"}]}
     store.upsert("accounts", [{"account_id": "n2", "clean_name": "Nul\x00 Inc"}])
     assert store.get("accounts", account_id="n2")["clean_name"] == "Nul Inc"
+
+
+def v_signal_value_gone(store) -> bool:
+    return not store.query("SELECT 1 FROM information_schema.views WHERE table_schema = %(s)s AND table_name = %(v)s",
+                           {"s": SCHEMA, "v": "v_signal_value"})

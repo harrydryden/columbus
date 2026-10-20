@@ -5,7 +5,7 @@ email 1's subject, the rest the Copy row's s1_subject. The tests: the keys are v
 is stable per account, about half, and independent of the opener holdout; only email 1's subject changes; enrol
 sends the arm's subject and records contacts.subject_arm;
 `copy preview` shows it. `signals review` (tests/test_signal_review.py), the daily post
-(tests/test_daily_report.py) and `seed send --subject` (tests/test_seed.py) are tested with their own worlds.
+(tests/test_daily_post_funnel.py) and `seed send --subject` (tests/test_seed.py) are tested with their own worlds.
 """
 
 from __future__ import annotations

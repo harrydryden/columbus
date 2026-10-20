@@ -12,13 +12,16 @@ Each month, after the label sample is scored (ops/label_sample.monthly):
      Harry sets decision to approve; settings_sync then writes it to the Industries tab (settings/definitions.py).
 
 It asks the models only with --live (the monthly job's scheduled run): one writing call and two answer-key runs, about
-$0.01 a company each. A changed definition makes every stored verdict stale, so the queue is asked again after an
+$0.01 a company each. The draft and both answer-key passes share one deadline, SECONDS (10 minutes from the
+draft's start, inside the monthly job's 15-minute timeout; W2-3, code-learn-reporting B7): a pass that runs out stops
+short, and a short pass is never scored (incomplete), so the budget, not the scheduler's timeout, ends a slow month. A changed definition makes every stored verdict stale, so the queue is asked again after an
 approved change (labels_hash), which the Slack post says.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -32,6 +35,8 @@ from us_outbound.settings.definitions import COLUMNS, TAB
 from us_outbound.settings.model import Industry, Settings
 
 PURPOSE = "definition_suggestions"
+SECONDS = 600.0  # the draft and both answer-key passes together: 10 minutes, inside the monthly job's 15 (W2-3; B7)
+_clock = time.monotonic  # the deadline's clock (a test sets it)
 MAX_LABELS = 4
 MAX_CHARS = 320
 MAX_TOKENS, EFFORT, TIMEOUT = 2000, "medium", 120.0
@@ -161,12 +166,18 @@ def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: 
     if not ctx.live:
         out["error"] = "dry-run: no model asked"
         return out
+    deadline = _clock() + SECONDS
+
+    def left() -> float:
+        return max(0.0, deadline - _clock())
+
     try:
         drafts = draft(ctx, misses, chosen)
         if not drafts:
             return out
-        now = labels.evaluate(ctx, answer_key)
-        later = labels.evaluate(dataclasses.replace(ctx, settings=with_definitions(ctx.settings, drafts)), answer_key)
+        now = labels.evaluate(ctx, answer_key, seconds=left())
+        later = labels.evaluate(dataclasses.replace(ctx, settings=with_definitions(ctx.settings, drafts)), answer_key,
+                                seconds=left())
     except (ClaudeError, BudgetExceeded, ConfigError) as exc:
         out["error"] = f"the model could not be asked ({str(exc)[:160]})"
         log(PURPOSE + "_failed", run_id=ctx.run_id, error=out["error"])

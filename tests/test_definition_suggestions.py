@@ -62,7 +62,7 @@ def test_drafts_are_checked_scored_and_written_for_approval(monkeypatch):
     ])
     scored = []
 
-    def evaluate(c, rows):
+    def evaluate(c, rows, **kw):
         scored.append(c.settings.industry("Fintech").definition)
         better = len(scored) == 2
         return {labels.ACCEPTABLE: 9 if better else 7, labels.WRONG: 1 if better else 3, labels.UNSAFE: 0}
@@ -125,7 +125,7 @@ def _passes(monkeypatch, *passes):
     model error and returns what it had, with an error)."""
     calls = []
 
-    def evaluate(c, rows):
+    def evaluate(c, rows, **kw):
         out = passes[len(calls)]
         calls.append(len(rows))
         return dict(out)
@@ -144,6 +144,30 @@ def _live():
     ctx.clients.sheets = Sheet(ctx.guard, {})
     ctx.clients.claude = Writer(FINTECH_DRAFT)
     return ctx
+
+
+def test_both_passes_share_ten_minutes_and_one_that_runs_out_scores_nothing(monkeypatch):
+    """W2-3 (B7's fragility): the draft and both answer-key passes share one deadline, SECONDS (600) from the start,
+    so two passes can never run past the monthly job's 15-minute timeout (10 minutes each could reach 20). The clock
+    reads 1,000 at the start (deadline 1,600), 1,030 after the draft (570 s left for the first pass) and 1,450 after
+    the first pass (150 s left for the second). A pass that runs out stops with an error (labels.evaluate,
+    tests/test_labels.py), so, cut after 12 of the 40, nothing is scored or written."""
+    budgets = []
+    monkeypatch.setattr(ds, "_clock", iter([1000.0, 1030.0, 1450.0]).__next__)
+    tallies = iter([{labels.ACCEPTABLE: 10, labels.WRONG: 2, labels.UNSAFE: 0, "asked": 12,
+                     "error": "the answer key ran out of its 10 minutes"},
+                    {labels.ACCEPTABLE: 36, labels.WRONG: 4, labels.UNSAFE: 0, "asked": 40}])
+
+    def evaluate(c, rows, **kw):
+        budgets.append(kw.get("seconds"))
+        return dict(next(tallies))
+
+    monkeypatch.setattr(labels, "evaluate", evaluate)
+    ctx = _live()
+    out = ds.suggest(ctx, ROWS, KEY, "2026-11")
+    assert ds.SECONDS == 600.0 and budgets == [570.0, 150.0]
+    assert out["answer_key_incomplete"] == "12 of 40" and out["suggestions"] == [] and out["written"] is False
+    assert definitions.TAB not in ctx.clients.sheets.tabs
 
 
 def test_a_baseline_pass_cut_short_scores_nothing_and_writes_no_row(monkeypatch):

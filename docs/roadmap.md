@@ -165,7 +165,7 @@ email goes straight to Instantly. What follows is the record of what was built.*
   for a contact or verification, days of supply, in sequence) and To improve. To improve shows
   only once there is enough data: where ❌ concentrates, the copy rows most edited, opener vs
   holdout replies, bounces by email source, angles and copy versions, and data gaps
-  (`learn/daily_report.py`).
+  (`learn/daily_post.py`; `learn/daily_report.py` until W2-3).
 - **Watch:** `poll_approvals` reads two Slack calls per waiting card every 5 minutes. At about 60
   open cards that nears Slack's rate limits, though the client retries.
 
@@ -360,9 +360,9 @@ email goes straight to Instantly. What follows is the record of what was built.*
      12's funnel assumption and the stop rule; the five exit criteria, each met or not; the cuts by tier,
      angle, industry group, sender and step (`v_readout_weekly`); the signal table's headline; the tests at a
      look. A rate on under 30 companies reads "too few to read". `us-outbound report readout` prints it.
-   - The signal table (`v_signal_value`, `signals value` (removed in W2-4)): per signal, the companies enrolled
-     with it, sent, replied, positive and with a meeting, against those emailed without it, "too few to
-     read" under 30 on either side.
+   - The signals (`learn/signal_review.py`, `us-outbound report signals`; `v_signal_value` went in W2-3): per
+     signal, the companies emailed with it and without it, each side's replies within 28 days with a Jeffreys
+     interval, "too few" under 15 on either side, and no verdict (the z-test verdicts were chance at this volume).
    - Test reads at pre-registered looks: the Tests tab's `kind` (`ab`, or `holdout` for the opener holdout or
      email 1's subject) and `looks` (counts of closed reply windows, or dates; `read_date` last).
      `us-outbound test read ID` refuses before the first look, so nobody peeks.

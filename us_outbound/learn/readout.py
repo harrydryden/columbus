@@ -10,7 +10,8 @@ to bottom:
     positively (positive or referral), each company once however many times it wrote (metrics-audit H3; the reply
     emails are counted beside), meetings booked (companies with a meeting_booked event: crm/readback.py, a meeting on
     Harry's calendar or a Spill 3.0 deal at Demo requested or later), bounces and unsubscribes, from the events table.
-  * So far (target_line, from v_account_outcomes): only companies whose reply window has closed are judged
+  * So far (target_line, from learn/outcomes.per_company, the Python twin of v_account_outcomes since W2-3, so it reads
+    on any store): only companies whose reply window has closed are judged
     (metrics-audit H2: on 19 Oct every rate read "below" with 0 of 47 windows closed). Under MIN_COMPANIES matured
     companies it gives counts and how many have had the 28 days, and no rate; from 30, each rate with its Wilson 95%
     interval and SPEC 12's working assumption beside it (3 to 5%, about 1%, 0.5 to 1%), and no "on track" or
@@ -32,18 +33,19 @@ to bottom:
     step: last week's activity, and for each the companies emailed so far and how many replied (v_readout_weekly;
     the step has activity only). Monitoring only: the arms are read once, at 300 matured in the random arm (L8).
   * Cohorts (learn/cohorts.py; Harry, 7 Oct 2026): the last four enrolment weeks in a line each, at the latest age
-    their companies have reached after email 1; the latest two compared where both have 30 companies; and what
-    changed last week in the settings, the copy, the campaign constants and the code (config versions, and the
-    campaign changes made under leads in flight). `us-outbound report cohorts` has the full table.
+    their companies have reached after email 1, and what changed last week in the settings, the copy, the campaign
+    constants and the code (config versions, and the campaign changes made under leads in flight). No pair is judged
+    (W2-3: the verdicts were chance at these numbers). `us-outbound report cohorts` has the full table.
   * Industry labels (Harry, 7 Oct 2026; labels.py): last week's and all cards with the right industry against the 95%
     target (a rate from 30 cards), the approvers' corrections, how often the rules and the model agreed, and the
     companies held or disqualified.
   * Hand-check (enrol/hand_check.readout_lines; Harry's D5, 19 Oct 2026): last week's sample, how many were judged
     and each decision counted, the reasons for leaving out, and the companies sent unjudged (released 7 days after
     the draw) or still held. Counts only: at 10 to 20 rows a week a rate's interval would be about ±25 points.
-  * The signal table's headline (v_signal_value, learn/signal_value.py), as monitoring: a signal below the Control
-    tier is listed but is not a "Needs action" item (metrics-audit H5: with equal true rates it flags about 46% of
-    signals), and the raise or lower advice is left out.
+  * Signals (learn/signal_review.py, descriptive from W2-3): the explore arm and the signals with 15 companies a side,
+    replies with against without, each with its Jeffreys interval, as monitoring and never a "Needs action" item
+    (v_signal_value and its below_control flag went: with equal true rates it flagged about 46% of signals,
+    metrics-audit H5).
   * Tests: each running test that reached a pre-registered look in the last week, with its read, or how far it
     has got (learn/looks.py).
 Small numbers are shown as small: a company-level rate on under MIN_COMPANIES (30) companies is "too few to
@@ -54,7 +56,7 @@ without views (a MemoryStore with no handler) those sections say so and the rest
 reads and posts: it writes nothing but its heartbeat and, through base/notify.post_once, the record of an ask it
 made. The job (run) first makes Monday's asks, as the daily post does on the other days and there is no Monday post
 since 19 Oct 2026: the credit and spend asks (learn/spend.check) and the mailboxes to add three weeks ahead
-(learn/capacity_ahead.check), each once (post_once). The post goes to the dev channel until live_sending = yes.
+(learn/spend.mailboxes_check), each once (post_once). The post goes to the dev channel until live_sending = yes.
 `us-outbound report readout` prints it without posting.
 """
 
@@ -70,20 +72,19 @@ from us_outbound import budget, fmt, labels
 from us_outbound.base import notify, say
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
-from us_outbound.learn import capacity_ahead, cohorts, kill_rules, looks, signal_value, spend
+from us_outbound.learn import cohorts, kill_rules, looks, outcomes, signal_review, spend
+from us_outbound.learn.stats import wilson
 from us_outbound.logs import log
-from us_outbound.ops.label_sample import interval as wilson
 from us_outbound.replies import kinds
 from us_outbound.timeparse import iso_date, utc
 
 JOB = "monday_readout"
-MIN_COMPANIES = signal_value.MIN_TO_READ  # 30: a rate on fewer companies is "too few to read"
+MIN_COMPANIES = outcomes.MIN_MATURED  # 30: a rate on fewer companies is "too few to read"
 CAP_BINDING = 0.9  # last week's enrolments at 90% of weekly_enrol_cap or more: the limit held sending back
 MIN_CONTACTS = 100  # the bounce criterion is judged from 100 contacts sent email 1 (12 Oct 2026: 13 sends read "met")
 BOUNCE_LIMIT = 0.02  # exit criteria to scale (docs/roadmap.md §3): bounces under 2% of the contacts sent email 1
-REPLY_DAYS, MEETING_DAYS = 28, 45  # a company is judged on replies 28 days after email 1, on meetings 45 days after
-OUTCOMES_SQL = ("SELECT account_id, delivered, replied_in_window, positive_in_window, window_closed, step1_at, "
-                "first_meeting_at FROM {schema}.v_account_outcomes")
+REPLY_DAYS, MEETING_DAYS = outcomes.REPLY_DAYS, outcomes.MEETING_DAYS  # replies judged at 28 days, meetings at 45
+SIGNAL_LINES = 5  # signals named in the readout; `report signals` has every one
 # SPEC 12's working assumption for the funnel, printed beside each rate and never judged against it: (the key, what
 # it is called, the assumption as written).
 TARGETS = (("replies", "replies", "3–5%"), ("positive", "positive", "about 1%"), ("meetings", "meetings", "0.5–1%"))
@@ -112,7 +113,7 @@ def last_week(ctx: Context) -> tuple[datetime, datetime]:
 # -- the events, for last week's headline and the exit criteria ---------------------------------------------------
 
 
-class _Events:
+class Recorded:
     """The events the readout counts, read once."""
 
     def __init__(self, ctx: Context):
@@ -131,7 +132,7 @@ def _company(e: Mapping[str, Any]) -> str:
     return str(e.get("account_id") or f"event:{e.get('event_id')}")
 
 
-def week_numbers(ev: _Events, start: datetime, end: datetime) -> dict[str, int]:
+def week_numbers(ev: Recorded, start: datetime, end: datetime) -> dict[str, int]:
     """Last week's numbers. Replies and positive replies are companies, each once however many emails it sent
     (metrics-audit H3); reply_emails keeps the emails."""
     replies = [e for e in ev.between("replied", start, end) if kinds.is_human(e.get("reply_class"))]
@@ -192,34 +193,24 @@ class Matured:
                 "meetings": _estimate(self.meetings_45, self.at_45) if self.at_45 >= MIN_COMPANIES else None}
 
 
-def _true(v: Any) -> bool:
-    return v is True or str(v).lower() in ("true", "t", "1")
-
-
 def matured(ctx: Context) -> Matured | None:
-    """From v_account_outcomes (one row per company sent email 1), or None when the store has no views."""
-    try:
-        rows = ctx.store.query(OUTCOMES_SQL.format(schema=ctx.store.schema))
-    except NotImplementedError:
-        return None
+    """From learn/outcomes.per_company (one per company sent email 1; the view's Python twin, W2-3)."""
     m = Matured()
-    for r in rows:
+    for o in outcomes.per_company(ctx):
         m.emailed += 1
-        if not _true(r.get("delivered")):
+        if not o.delivered:
             continue
         m.delivered += 1
-        replied, positive = _true(r.get("replied_in_window")), _true(r.get("positive_in_window"))
-        step1, meeting = utc(r.get("step1_at")), utc(r.get("first_meeting_at"))
-        m.replied += replied
-        m.positive += positive
-        m.meetings += meeting is not None
-        if _true(r.get("window_closed")):
+        m.replied += o.replied_in_window
+        m.positive += o.positive_in_window
+        m.meetings += o.meeting_any
+        if o.window_closed_28:
             m.at_28 += 1
-            m.replied_28 += replied
-            m.positive_28 += positive
-        if step1 is not None and ctx.now >= step1 + timedelta(days=MEETING_DAYS):
+            m.replied_28 += o.replied_in_window
+            m.positive_28 += o.positive_in_window
+        if o.window_closed_45:
             m.at_45 += 1
-            m.meetings_45 += meeting is not None and meeting < step1 + timedelta(days=MEETING_DAYS)
+            m.meetings_45 += o.meeting_in_45
     return m
 
 
@@ -277,7 +268,7 @@ def criteria_lines(checks: Sequence[tuple[bool, str, str, str]]) -> list[str]:
     return out
 
 
-def exit_criteria(ctx: Context, ev: _Events, start: datetime, end: datetime, enrolled_last_week: int = 0
+def exit_criteria(ctx: Context, ev: Recorded, start: datetime, end: datetime, enrolled_last_week: int = 0
                   ) -> tuple[list[str], dict[str, bool], list[str]]:
     """(the section's lines, met by criterion, what needs someone in a few words each, for the summary)."""
     checks: list[tuple[bool, str, str, str]] = []  # (met, name, its numbers, what to do)
@@ -388,7 +379,7 @@ def _key(e: Mapping[str, Any]) -> str:
     return f"account:{e['account_id']}" if e.get("account_id") else f"event:{e.get('event_id')}"
 
 
-def bounce_contacts(ev: _Events) -> tuple[int, int]:
+def bounce_contacts(ev: Recorded) -> tuple[int, int]:
     """(contacts sent email 1, how many of them have bounced), all time: the exit criterion's per-contact count."""
     sent = {_key(e) for e in ev.by_type["sent"] if e.get("step") in (1, "1")}
     bounced = {_key(e) for e in ev.by_type["bounced"]} & sent
@@ -405,11 +396,11 @@ def source_lines(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     """Each email source's bounces over the kill rule's window, per contact sent email 1 beside the per-send rate
     source_bounce_rate pauses on (D19: whether the rule should count contacts is Harry's, a SPEC 12 change; at 4.2% per
     contact it would pause the only email source). Monitoring: it changes nothing."""
-    ev = kill_rules._Events(ctx.store, ctx.now)
     start = ctx.now - timedelta(days=kill_rules.WINDOW_DAYS)
-    recent = [s for s in ev.sends if s.at >= start]
-    source = {cid: kill_rules._lower(c.get("email_source"))
-              for cid, c in kill_rules._contacts(ctx, (s.contact_id for s in recent)).items()}
+    recent = kill_rules.recent_sends(ctx.store, ctx.now, start)
+    ids = sorted({s.contact_id for s in recent if s.contact_id})
+    source = {str(c["contact_id"]): str(c.get("email_source") or "").strip().lower()
+              for i in range(0, len(ids), 1000) for c in ctx.store.select("contacts", {"contact_id": ids[i : i + 1000]})}
     out: list[str] = []
     nums: dict[str, Any] = {}
     for src in kill_rules.SOURCES:
@@ -495,13 +486,29 @@ def cut_lines(rows: Sequence[Mapping[str, Any]], cut: str, title: str, about: st
     return out
 
 
+def signal_section(ctx: Context) -> tuple[list[str], int | None]:
+    """The Signals section's lines and how many signal splits are readable (None when it could not be built). The
+    review is monitoring, so a failure in it says so in its section and never stops the readout (W2-3 r1)."""
+    try:
+        signals = signal_review.review(ctx)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("readout_signals_failed", run_id=ctx.run_id, error=f"{type(exc).__name__}: {exc}"[:200])
+        return [f"  could not be built ({type(exc).__name__}); the rest of the readout is complete."], None
+    text = signal_review.lines(signals, SIGNAL_LINES)
+    # The first line is the review's own summary, which the readout says elsewhere; with nothing emailed it is the
+    # only line ("No company has been emailed yet"), so it stays.
+    return [f"  {x}" for x in (text[1:] if signals.companies else text)], sum(sp.readable for sp in signals.splits)
+
+
 # -- the job -------------------------------------------------------------------------------------------------------
 
 
 def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     """(the message lines, the numbers for the summary)."""
     start, end = last_week(ctx)
-    ev = _Events(ctx)
+    ev = Recorded(ctx)
     week = week_numbers(ev, start, end)
     rows = weekly_rows(ctx)
     total = so_far(rows)["all"] if rows is not None else None
@@ -524,15 +531,10 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
 
     checked, by_hand = hand_check.readout_lines(ctx, start)
     body += checked
-    table = signal_value.rows(ctx)
-    # Monitoring, not a decision (metrics-audit H5): below_control flags about 46% of signals by chance at these
-    # numbers, so it is not a "Needs action" item and the "lower its weight" advice is left out.
-    signal_lines = [line for line in signal_value.headline(table, signals_tab=say.sheet_link(ctx, "Signals"))
-                    if not line.lstrip().startswith("*What to do:*")]
-    body += ["", "*Signal value* (reply rate with each buying signal at enrolment, against without; p: the chance the "
-                 "gap is luck)", *signal_lines]
-    if signal_value.flagged(table):
-        body.append("  Monitoring only: at these numbers a gap like this is usually chance, so no weight changes on it.")
+    # Monitoring, not a decision (metrics-audit H5; W2-3): counts and intervals, no verdict, never a "Needs action".
+    signal_lines, signals_readable = signal_section(ctx)
+    body += ["", "*Signals* (replies with each buying signal at enrolment against without, and the random arm against "
+                 "the ranked, with 95% intervals)", *signal_lines]
     tests, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=7))
     body += ["", "*Tests* (copy tests, each read only at points fixed in advance on the Tests tab, called looks)",
              *tests]
@@ -558,8 +560,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "exit_criteria": met, "views": rows is not None, "to_act_on": todo,
         "bounces": {"contacts": n, "bounced": b, **({"interval": [round(x, 4) for x in wilson(b, n)]} if n else {})},
         "source_bounces": by_source,
-        "signals_readable": sum(signal_value.verdict(r) != signal_value.TOO_FEW for r in table or []
-                                if int(r.get("accounts_sent") or 0)),
+        "signals_readable": signals_readable,
         "tests_at_a_look": at_look,
         "hand_check": by_hand,
         **by_cohort,  # the counts by enrolment week, and how many settings changes last week
@@ -568,7 +569,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
 
 
 def mailboxes_ahead(ctx: Context) -> dict[str, Any]:
-    """Monday's ask for mailboxes three weeks ahead (learn/capacity_ahead.py), with the companies ready to email
+    """Monday's ask for mailboxes three weeks ahead (learn/spend.mailboxes_check), with the companies ready to email
     counted as the daily post counts them (enrol/today.py; campaigns not read, so no Instantly call). Never raises
     (but a GuardViolation): the readout still posts."""
     try:
@@ -580,7 +581,7 @@ def mailboxes_ahead(ctx: Context) -> dict[str, Any]:
     except Exception as exc:
         log("capacity_ahead_failed", error=str(exc)[:200])
         return {"checked": False, "capacity_error": f"{type(exc).__name__}: {str(exc)[:160]}"}
-    return capacity_ahead.check(ctx, ready)
+    return spend.mailboxes_check(ctx, ready)
 
 
 def run(ctx: Context) -> dict:

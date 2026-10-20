@@ -1,5 +1,6 @@
 """monday_readout (learn/readout.py; Harry, 6 Oct 2026): last week in plain words, the targets and exit criteria, the
-cuts and the signal table from the readout views, and the tests at a look. Small numbers read as small."""
+cuts from the readout views, the signals as monitoring, and the tests at a look. Small numbers read as small. The
+rates so far come from learn/outcomes.per_company (W2-3), so these worlds are events, not view rows."""
 
 from __future__ import annotations
 
@@ -11,7 +12,8 @@ from tests.test_db import db, dsn, learning_world, store  # noqa: F401  (Postgre
 from tests.test_registry import SETTINGS, slack_routes
 from us_outbound.base import say
 from us_outbound.clients.guard import Guard
-from us_outbound.learn import readout, signal_value
+from us_outbound.learn import readout
+from us_outbound.settings.model import Signal
 from us_outbound.ops import cli, health, schedule
 from us_outbound.clients.slack import dry_run_note
 
@@ -29,33 +31,39 @@ def week_row(cut: str, value: str, start: date = date(2026, 10, 5), **numbers) -
     return {"week_start": start, "cut": cut, "cut_value": value, **{c: 0 for c in cols}, **numbers}
 
 
-def world(settings=SETTINGS, *, live=False, now=MON, weekly=None, signals=None, outcomes=None):
+def world(settings=SETTINGS, *, live=False, now=MON, weekly=None, outcomes=None):
     t = slack_routes(FakeTransport())
     ctx = make_context(settings, live=live, transport=t, now=now, job=readout.JOB)
     if weekly is not None:
         ctx.store.query_handlers["v_readout_weekly"] = lambda s, p: [dict(r) for r in weekly]
-    if signals is not None:
-        ctx.store.query_handlers["v_signal_value"] = lambda s, p: [dict(r) for r in signals]
     if outcomes is not None:
-        ctx.store.query_handlers["v_account_outcomes"] = lambda s, p: [dict(r) for r in outcomes]
+        ctx.store.insert("events", outcomes)
     return ctx, t
 
 
 def outcome_rows(n: int, *, days_ago: float, replied: int = 0, positive: int = 0, bounced: int = 0,
                  meeting_day: dict[int, float] | None = None, now: datetime = MON) -> list[dict]:
-    """n v_account_outcomes rows, step 1 sent `days_ago` before now: the first `bounced` bounced; of the rest, the
-    first `replied` replied in the window, the first `positive` of those positively; meeting_day: row -> the day
-    after step 1 a meeting was booked. window_closed as the view sets it (28 days after step 1)."""
+    """The events of n companies, step 1 sent `days_ago` before now: the first `bounced` bounced; of the rest, the
+    first `replied` replied a day after step 1 (inside the 28 days), the first `positive` of those positively (the
+    others with an objection); meeting_day: company -> the day after step 1 a meeting was booked."""
     step1 = now - timedelta(days=days_ago)
     rows = []
     for i in range(n):
-        delivered = i >= bounced
+        aid, cid = f"o{days_ago:g}-{i}", f"ko{days_ago:g}-{i}"
+        rows.append({"event_id": f"s-{aid}", "type": "sent", "step": 1, "account_id": aid, "contact_id": cid,
+                     "occurred_at": step1})
         j = i - bounced  # the index among the delivered
+        if i < bounced:
+            rows.append({"event_id": f"b-{aid}", "type": "bounced", "step": 1, "account_id": aid, "contact_id": cid,
+                         "occurred_at": step1 + timedelta(minutes=5)})
+        elif j < replied:
+            rows.append({"event_id": f"r-{aid}", "type": "replied", "account_id": aid, "contact_id": cid,
+                         "reply_class": "positive" if j < positive else "objection",
+                         "occurred_at": step1 + timedelta(days=1)})
         meeting = (meeting_day or {}).get(i)
-        rows.append({"account_id": f"o{days_ago:g}-{i}", "delivered": delivered, "step1_at": step1,
-                     "replied_in_window": delivered and j < replied, "positive_in_window": delivered and j < positive,
-                     "window_closed": days_ago >= 28,
-                     "first_meeting_at": step1 + timedelta(days=meeting) if meeting is not None else None})
+        if meeting is not None:
+            rows.append({"event_id": f"m-{aid}", "type": "meeting_booked", "account_id": aid,
+                         "occurred_at": step1 + timedelta(days=meeting)})
     return rows
 
 
@@ -235,11 +243,14 @@ def test_the_cuts_show_last_week_and_so_far_busiest_first():
 
 
 def test_without_the_views_the_rest_still_posts():
-    ctx, _ = world()  # a MemoryStore with no view handlers
+    """A MemoryStore with no view handlers: the cuts need v_readout_weekly, and say nothing; the rates so far come
+    from the events (learn/outcomes.py, W2-3), so they read on any store."""
+    ctx, _ = world(outcomes=outcome_rows(3, days_ago=10, replied=1))
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
-    assert nums["views"] is False and "need the database's views" in out
-    assert "*Exit criteria to scale*" in out and "*Tests*" in out and "*Cuts*" not in out
+    assert nums["views"] is False and "*Cuts*" not in out
+    assert lines[2].startswith("*So far:* 0 of 3 companies emailed have had the full 28 days")
+    assert "*Exit criteria to scale*" in out and "*Tests*" in out
 
 
 # -- the exit criteria to scale ---------------------------------------------------------------------------------------
@@ -347,13 +358,13 @@ def test_complaints_are_not_measured_and_the_raise_line_needs_the_cap_to_bind():
     ctx, _ = world(LIVE, weekly=[])
     _contacts_sent(ctx, 100, 0)
     start, end = readout.last_week(ctx)
-    out, met, todo = readout.exit_criteria(ctx, readout._Events(ctx), start, end, 35)
+    out, met, todo = readout.exit_criteria(ctx, readout.Recorded(ctx), start, end, 35)
     assert met == {"bounces": True, "unsubscribes": True, "replies": True, "refusals": True}
     assert "complaints" not in met and todo == []
     assert not any("raise `weekly_enrol_cap`" in x for x in out)
     assert ("  All 4 measured are met. The weekly limit is not what holds sending back (35 of 150 last week): the "
             "mailboxes' warm-up is, and it rises by itself.") in out
-    out, met, todo = readout.exit_criteria(ctx, readout._Events(ctx), start, end, 140)
+    out, met, todo = readout.exit_criteria(ctx, readout.Recorded(ctx), start, end, 140)
     assert todo == ["decide whether to raise the weekly limit"]
     assert ("  *What to do:* all 4 measured are met and last week reached the weekly limit, so sending can grow: raise "
             f"`weekly_enrol_cap` (now 150) on the {say.sheet_link(ctx, 'General')} in step with the mailbox ramp") in out
@@ -419,45 +430,85 @@ def test_exit_criteria_not_met_say_why():
 # -- the signal table and the tests ---------------------------------------------------------------------------------
 
 
-def signal_row(name: str, **numbers) -> dict:
-    base = {"signal": name, "weight": 10, "below_control": False, "accounts_enrolled": 0, "accounts_sent": 0,
-            "accounts_delivered": 0, "accounts_replied": 0, "accounts_positive": 0, "accounts_meeting": 0,
-            "without_delivered": 0, "without_replied": 0}
-    return {**base, **numbers}
+def signals_world(settings=SETTINGS):
+    """40 companies emailed 30 days ago, all delivered: g0–g19 showed "EAP named" at enrolment and g0–g3 replied;
+    g20–g39 did not, and g20 replied; g0–g2 also showed "New People leader". The odd ones were drawn at random."""
+    s = dataclasses.replace(settings, signals=(
+        Signal("EAP named", ("careers_pages",), "eap", 10, "Score", 90, True),
+        Signal("New People leader", ("apollo_people",), "people", 30, "Score", 90, True),
+        Signal("Layoffs", ("layoffs",), "layoffs", -20, "Suppress", 90, True)))
+    ctx, t = world(s, weekly=[])
+    events, contacts = [], []
+    step1 = MON - timedelta(days=30)
+    for i in range(40):
+        aid, cid = f"g{i}", f"kg{i}"
+        eap = i < 20
+        events.append({"event_id": f"s-{aid}", "type": "sent", "step": 1, "account_id": aid, "contact_id": cid,
+                       "occurred_at": step1})
+        if (eap and i < 4) or i == 20:
+            events.append({"event_id": f"r-{aid}", "type": "replied", "account_id": aid, "reply_class": "objection",
+                           "occurred_at": step1 + timedelta(days=2)})
+        snap = [{"signal": "EAP named"}] if eap else []
+        if i < 3:
+            snap.append({"signal": "New People leader"})
+        contacts.append({"contact_id": cid, "account_id": aid, "signals_at_enrol": snap,
+                         "arm": "random" if i % 2 else "ranked"})
+    ctx.store.insert("events", events)
+    ctx.store.insert("contacts", contacts)
+    return ctx, t
 
 
-def test_the_signal_headline_says_too_few_and_reads_the_rest():
-    signals = [
-        signal_row("EAP named", accounts_enrolled=60, accounts_sent=60, accounts_delivered=60, accounts_replied=12,
-                   accounts_positive=3, accounts_meeting=2, without_delivered=100, without_replied=4),
-        signal_row("Hiring and growth", accounts_enrolled=40, accounts_sent=40, accounts_delivered=40,
-                   accounts_replied=2, without_delivered=120, without_replied=6),
-        signal_row("New People leader", accounts_enrolled=4, accounts_sent=3, accounts_delivered=3,
-                   accounts_replied=1, without_delivered=157, without_replied=17),
-        signal_row("Layoffs"),
-    ]
-    out = text(world(weekly=[], signals=signals)[0])
-    assert ("  EAP named: 20.0% of 60 replied, against 4.0% of 100 without · 3 positive, 2 meetings: replies more "
-            "(p = 0.00)") in out
-    assert ("  Hiring and growth: 5.0% of 40 replied, against 5.0% of 120 without · 0 positive, 0 meetings: no clear "
-            "difference yet (p = 1.00)") in out
-    assert "  Too few to read (under 30 companies emailed with or without it): New People leader (3)." in out
-    assert "33.3%" not in out and "Layoffs" not in out and "*What to do:* decide whether to lower" not in out
-    assert signal_value.verdict(signals[2]) == "too few to read"
-
-
-def test_a_signal_below_the_control_tier_is_monitoring_not_an_action():
-    """metrics-audit H5: below_control flags about 46% of signals by chance at these numbers, so it is listed but is
-    not a "Needs action" item, and no "lower its weight" advice is given."""
-    signals = [signal_row("Layoffs", weight=5, below_control=True, accounts_enrolled=220, accounts_sent=210,
-                          accounts_delivered=205, accounts_replied=2, without_delivered=300, without_replied=15)]
-    ctx, _ = world(LIVE, weekly=[], signals=signals)
+def test_the_signals_are_counts_with_intervals_and_too_few_is_said():
+    """EAP named: with it 4 of 20, without 1 of 20; Jeffreys 95% (stats.jeffreys, pinned in tests/test_stats.py):
+    4 of 20 → 7.2–40.8%, 1 of 20 → 0.5–21.1%. New People leader: 3 with it, under 15 a side: too few. Layoffs is a
+    Suppress row, not a score: not shown. The explore arm: the odd companies random (20, of whom g1, g3 replied: 2),
+    the even ranked (20: g0, g2, g20 replied: 3). No p, no verdict, nothing to act on."""
+    ctx, _ = signals_world(LIVE)
     lines, nums = readout.build(ctx)
-    at = lines.index("  Layoffs replies less than the comparison group (Control) after 200 companies")
-    assert lines[at + 1] == ("  Monitoring only: at these numbers a gap like this is usually chance, so no weight "
-                             "changes on it.")
-    assert nums["to_act_on"] == [] and lines[0].endswith("nothing to act on*")
-    assert not any("lower its weight" in x for x in lines)
+    out = "\n".join(lines)
+    at = lines.index("*Signals* (replies with each buying signal at enrolment against without, and the random arm "
+                     "against the ranked, with 95% intervals)")
+    body = lines[at + 1:lines.index("", at)]
+    assert "    EAP named (weight 10): 4 of 20 (20.0%; 95% 7.2–40.8%) vs 1 of 20 (5.0%; 95% 0.5–21.1%)" in body
+    assert "  Too few to show (under 15 emailed companies with or without it): New People leader (3)." in body
+    assert body[0].startswith("  Explore arm (read once, at 300 matured in the random arm): random 2 of 20 (10.0%")
+    assert "Layoffs" not in out.split("*Signals*")[1].split("*Tests*")[0]
+    assert " p = " not in out.split("*Signals*")[1].split("*Tests*")[0] and "raise" not in body[-1]
+    # Monitoring only: the only thing to act on is the five replies with no reply card (this world has none).
+    assert nums["signals_readable"] == 1 and nums["to_act_on"] == ["check 5 replies"]
+
+
+SIGNALS_HEAD = ("*Signals* (replies with each buying signal at enrolment against without, and the random arm against "
+                "the ranked, with 95% intervals)")
+
+
+def _signals_body(lines: list[str]) -> list[str]:
+    at = lines.index(SIGNALS_HEAD)
+    return lines[at + 1:lines.index("", at)]
+
+
+def test_with_nothing_emailed_the_signals_section_says_so():
+    """W2-3 r1: the readout drops the review's first (summary) line, but with no company emailed that line is the
+    whole review, so it stays rather than leaving the heading alone."""
+    ctx, _ = world(SETTINGS, weekly=[])
+    lines, nums = readout.build(ctx)
+    assert _signals_body(lines) == ["  No company has been emailed yet, so there is nothing to review."]
+    assert nums["signals_readable"] == 0
+
+
+def test_a_signal_review_that_fails_never_stops_the_readout(monkeypatch):
+    """W2-3 r1: the signal review is monitoring; if it raises, its section says it could not be built and the rest of
+    the readout (the tests below it, the numbers) is built as usual."""
+    from us_outbound.learn import signal_review
+
+    def broken(_ctx):
+        raise KeyError("signals_at_enrol")
+
+    monkeypatch.setattr(signal_review, "review", broken)
+    ctx, _ = signals_world(LIVE)
+    lines, nums = readout.build(ctx)
+    assert _signals_body(lines) == ["  could not be built (KeyError); the rest of the readout is complete."]
+    assert any(x.startswith("*Tests*") for x in lines) and nums["signals_readable"] is None
 
 
 def test_tests_at_a_look_are_listed_with_their_read(monkeypatch):
@@ -472,8 +523,11 @@ def test_tests_at_a_look_are_listed_with_their_read(monkeypatch):
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
     assert nums["tests_at_a_look"] == ["t1"] and "decide on test t1" in nums["to_act_on"]
+    # One look (the read date): its threshold is the whole alpha, 0.10; Fisher on 0 of 2 against 0 of 2 is 1; with
+    # no reply either side the Beta posteriors are the same, so P(general-v1 better) = 0.5.
     at = lines.index("  t1 (A/B copy test) reached look 1 (the read date): Thu 08 Oct 2026: eap-v1 0 of 2 replied "
-                     "(0.0%); general-v1 0 of 2 replied (0.0%) · p = 1.00")
+                     "(0.0%); general-v1 0 of 2 replied (0.0%) · Fisher p = 1.000 (this look's threshold 0.100) · "
+                     "P(general-v1 better) = 0.50")
     assert lines[at + 1] == ('    *What to do:* apply its decision rule ("reply rate") and write the outcome in the '
                              f"`result` column on the {say.sheet_link(ctx, 'Tests')}. `railway ssh -- us-outbound test "
                              "read t1` has the full read.")
@@ -518,27 +572,15 @@ def test_the_cli_prints_it_and_posts_nothing(capsys):
     assert not [r for r in h.transport.requests if r.url.endswith("chat.postMessage")]
 
 
-def test_the_signal_table_lines():
-    """The table's lines (its `signals value` command went in W2-4; learn/signal_value.py goes with W2-3)."""
-    from us_outbound.learn import signal_value
-
-    assert "reads the database's views" in signal_value.table_lines(None)[0]  # a MemoryStore has none
-    out = "\n".join(signal_value.table_lines([
-        signal_row("EAP named", accounts_enrolled=4, accounts_sent=3, accounts_delivered=3, accounts_replied=1,
-                   without_delivered=40, without_replied=2),
-        signal_row("Layoffs")]))
-    assert ("  EAP named (weight 10): 4 enrolled with it, 3 emailed, 1 replied, 0 positive, 0 meetings: too few to "
-            "read (under 30 emailed with it)") in out
-    assert "  No company enrolled with: Layoffs." in out and "%" not in out
-
-
 # -- end to end on Postgres: the views behind the readout --------------------------------------------------------------
 
 
 def test_the_readout_reads_the_views_on_postgres(store):  # noqa: F811
     now = learning_world(store)
     store.guard = Guard()
-    ctx = make_context(SETTINGS, store=store, now=now)
+    signals = (Signal("eap_named", ("careers_pages",), "eap", 10, "Score", 90, True),
+               Signal("hiring", ("apollo_org",), "hiring", 15, "Score", 90, True))
+    ctx = make_context(dataclasses.replace(SETTINGS, signals=signals), store=store, now=now)
     lines, nums = readout.build(ctx)
     out = "\n".join(lines)
     assert nums["views"] is True and nums["so_far"]["accounts_enrolled"] == 70
@@ -555,5 +597,8 @@ def test_the_readout_reads_the_views_on_postgres(store):  # noqa: F811
     # delivered, a35 and a36 replied: 2 / 34 = 5.9%. Nothing was sent last week.
     assert "  random: 0 sent · 35 emailed so far, 10 replied (28.6%)" in out
     assert "  ranked: 0 sent · 35 emailed so far, 2 replied (5.9%)" in out and "Top fit" not in out
-    assert "  eap_named: 28.6% of 35 replied, against 5.9% of 34 without · 3 positive, 2 meetings: replies more" in out
-    assert "hiring" not in out.split("*Signal value*")[1].split("*Tests*")[0]  # nobody emailed with it
+    # The signals from learn/outcomes.per_company on Postgres: eap_named is the random half (10 of 35; Jeffreys
+    # 15.7–44.8%) against 2 of 34 (1.2–17.6%); hiring, nobody emailed with it, is too few.
+    signals_block = out.split("*Signals*")[1].split("*Tests*")[0]
+    assert "    eap_named (weight 10): 10 of 35 (28.6%; 95% 15.7–44.8%) vs 2 of 34 (5.9%; 95% 1.2–17.6%)" in signals_block
+    assert "Too few to show (under 15 emailed companies with or without it): hiring (0)." in signals_block

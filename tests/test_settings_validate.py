@@ -316,14 +316,16 @@ W24_RETIRED_LIVE = {
     "score_cap": "100", "escalation_hours": "24", "apollo_enrich_groups": "Technology & Startups",
     "site_visit_domain": "spill.chat", "site_visit_us_paths": "/us", "site_visit_intent_paths": "/us/pricing, /us/demo, /us/book",
 }
-# The 17 live keys W2-1 retired, W1-C's control_share, W2-2's three tier keys and W2-4's six constants: the live
-# sheet's 18 + 3 + 6 = 27 warnings, in its row order (the fixture's).
+# The 17 live keys W2-1 retired, W1-C's control_share, W2-2's three tier keys, W2-4's six constants and W2-3's
+# stop_rule_complaint_rate (no input: nothing reports a complaint): the live sheet's 18 + 3 + 6 + 1 = 28 warnings, in
+# its row order (the fixture's).
 _RETIRED_BY = {"auto_send", "control_share", "priority_threshold", "standard_threshold", "auto_thresholds",
                "clay_monthly_credits", "recontact_person_months",
                "recontact_account_months", "hubspot_deal_stage", "clay_accounts_function_id", "clay_contacts_function_id",
                "clay_credits_per_account", "clay_verification", "clay_email_fallback", "clay_cross_check",
                "second_contact", "second_contact_min_employees", "second_contact_delay_days",
-               "apollo_credits_per_account", "opener_focus", "opener_focus_line", *W24_RETIRED_LIVE}
+               "apollo_credits_per_account", "opener_focus", "opener_focus_line", *W24_RETIRED_LIVE,
+               "stop_rule_complaint_rate"}
 LIVE_RETIRED = [k for k in LIVE_KEYS if k in _RETIRED_BY]
 
 
@@ -333,22 +335,22 @@ def _live_general() -> list[dict]:
     the tier keys W2-2 retired at theirs (auto_thresholds yes, standard_threshold 20, priority_threshold 40)."""
     build = {r["key"]: r["value"] for r in BASE["General"] if r.get("key")}
     values = {**W21_RETIRED_LIVE, **W24_RETIRED_LIVE, **build, "control_share": "0.15", "standard_threshold": "20",
-              "auto_thresholds": "yes", **LIVE_VALUES}
+              "auto_thresholds": "yes", "stop_rule_complaint_rate": "0.003", **LIVE_VALUES}
     return [{"key": k, "value": values[k], "note": ""} for k in LIVE_KEYS]
 
 
-def test_the_live_general_keys_less_the_retired_are_39_and_the_build_has_them_all():
-    """W2-1's acceptance (General has at most 48 keys), with W2-2's tier keys and W2-4's six constants in code: 66 live
-    keys less the 27 retired ones (W2-1's 18, W2-2's priority_threshold, standard_threshold and auto_thresholds, and
-    W2-4's 6) = 39, every one of them a build key; the build's others are the ones Wave 1 added (explore_share,
+def test_the_live_general_keys_less_the_retired_are_38_and_the_build_has_them_all():
+    """W2-1's acceptance (General has at most 48 keys), with W2-2's tier keys, W2-4's six constants in code and W2-3's
+    stop_rule_complaint_rate: 66 live keys less the 28 retired ones (W2-1's 18, W2-2's priority_threshold,
+    standard_threshold and auto_thresholds, W2-4's 6 and W2-3's 1) = 38, every one of them a build key; the build's others are the ones Wave 1 added (explore_share,
     hand_check_sample, early_warning_pause, hand_check_gate), which the sheet has no row for yet, so they take their
     code defaults."""
     from us_outbound.settings.validate import RETIRED_GENERAL
 
     build = [r["key"] for r in BASE["General"] if r.get("key")]
-    assert set(LIVE_RETIRED) <= set(RETIRED_GENERAL) and len(LIVE_RETIRED) == 18 + 3 + 6 == len(set(LIVE_RETIRED))
+    assert set(LIVE_RETIRED) <= set(RETIRED_GENERAL) and len(LIVE_RETIRED) == 18 + 3 + 6 + 1 == len(set(LIVE_RETIRED))
     kept = [k for k in LIVE_KEYS if k not in RETIRED_GENERAL]
-    assert len(kept) == 66 - 27 == 39 and set(kept) <= set(build)
+    assert len(kept) == 66 - 28 == 38 and set(kept) <= set(build)
     assert not set(build) & set(RETIRED_GENERAL)
     # W2-4: the constants are in code at the live sheet's values, and the General model no longer has them.
     from us_outbound.settings import model

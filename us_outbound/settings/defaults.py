@@ -112,12 +112,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Stop rule: enrollment also pauses when more than this share of the accounts sent step 1 in the last "
         "30 days bounced (at least 100 accounts; kill_rules, hourly). Added by the build.",
     ),
-    (
-        "stop_rule_complaint_rate",
-        "0.003",
-        "Stop rule: and when more than this share of them made a spam complaint (Google's 0.3% line). "
-        "Added by the build.",
-    ),
+    # stop_rule_complaint_rate is retired (settings/validate.RETIRED_GENERAL; W2-3): nothing reports a complaint.
     (
         "optout_tested",
         "no",

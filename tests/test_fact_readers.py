@@ -19,7 +19,7 @@ from tests.test_scoring import sig
 from us_outbound import labels, verify
 from us_outbound.contacts import pick
 from us_outbound.enrol import openers
-from us_outbound.learn import daily_report
+from us_outbound.learn import daily_post
 from us_outbound.ops import relabel
 from us_outbound.scoring import score
 from us_outbound.sources import apollo_enrich, apollo_people, lookalikes, pages, site_visits
@@ -223,7 +223,7 @@ def people_employees(ctx, specs):
 def daily_no_contact(ctx, specs):
     stored(ctx, [row(t, at, pick.SOURCE, pick.OUTCOME_FACT, {"outcome": pick.NO_CONTACT, "reason": t})
                  for t, at in specs])
-    return daily_report.no_contact_in(ctx.store, NOW - timedelta(days=30), NOW).get("a1")
+    return daily_post.no_contact_in(ctx.store, NOW - timedelta(days=30), NOW).get("a1")
 
 
 # reader -> (adapter, whether a row with no observed_at can be chosen)
@@ -255,7 +255,7 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "apollo_enrich.latest_run": (enrich_latest_run, False),
     "apollo_people.history": (people_history, False),
     "apollo_people.history employees": (people_employees, False),
-    "daily_report.no_contact_in": (daily_no_contact, False),
+    "daily_post.no_contact_in": (daily_no_contact, False),
 }
 
 

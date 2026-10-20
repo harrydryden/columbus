@@ -915,7 +915,7 @@ def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict
 
     Scoring rewrites these rows every run (scoring/score.py), so a contact keeps its own copy from the
     moment it is enrolled (contacts.signals_at_enrol): the readout then judges the signals an account had
-    when it was emailed, not the ones it has weeks later (v_signal_value; Harry, 5 Oct 2026).
+    when it was emailed, not the ones it has weeks later (learn/signal_review.py; Harry, 5 Oct 2026).
 
     Each account's rows of its latest rescore only (value.run_id; the newest row's run, a row from before W2-2 having
     none), so rows two rescores left could never be counted twice. An account with none (never scored, or its rows

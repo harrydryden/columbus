@@ -151,8 +151,9 @@ each cohort was enrolled under, and each change to what the leads in flight shar
 after its last step), and `config_version`, `code_sha` and `copy_hash` (what the
 contact's emails were rendered under; NULL, "unstamped", before 8 Oct 2026). `settings` also holds one `_order` row per
 tab, its keys in sheet order, so the jobs keep the sheet's order. General keys added by the build:
-`dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, `stop_rule_bounce_rate` and
-`stop_rule_complaint_rate` (the stop rule's account-level thresholds) and `optout_tested` (the
+`dev_channel`, `hubspot_pipeline_id`, `hubspot_deal_stage_id`, `hubspot_owner_id`, `stop_rule_bounce_rate` (the
+stop rule's account-level threshold; `stop_rule_complaint_rate` was retired in W2-3: nothing reports a complaint) and
+`optout_tested` (the
 seed-inbox test of the unsubscribe link, which enrol's live gate reads), and `email1_subject` and `email1_subject_share`
 (Harry, 5 Oct 2026: email 1's personal subject, "support for the {{company}} team", for half the
 companies by a hash of the account id; the rest keep the Copy row's `s1_subject`, and
