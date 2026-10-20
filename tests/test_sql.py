@@ -67,7 +67,8 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
     "events": {"source",  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
                "analytics_source",  # a booker's hs_analytics_source (crm/readback.py; W2-4, 20 Oct 2026)
                "amount",  # apollo_balance's balance (learn/spend.py; W2-3, 20 Oct 2026)
-               "ai_interest_value"},  # Instantly's interest read of a reply (replies/poll.py; W3-4, 21 Oct 2026)
+               "ai_interest_value",  # Instantly's interest read of a reply (replies/poll.py; W3-4, 21 Oct 2026)
+               "source_detail"},  # the form or workflow a created HubSpot record came from (crm/readback.py; 20 Oct)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
@@ -167,12 +168,19 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "follow_up",  # replies/follow_up.py: a not-now reply's date came and was told (W2-4)
         "apollo_balance",  # learn/spend.py: the day's Apollo balance, in amount (W2-3)
         "reply_class_corrected",  # learn/outcomes.py: a person's correction of a reply's class (W2-3)
+        # crm/readback.created: a record HubSpot made at a company we emailed (Harry, 20 Oct 2026)
+        "hubspot_contact_created", "hubspot_company_created",
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
                            "suppression",  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
                            "guard_refused",  # replies/account_stop.py: a stop the guard refused (W1-2)
                            "meeting_booked",  # crm/readback.py: a booked lead still active after stop_lead (W2-4)
-                           "unenrolled"},  # ops/campaigns.unenrol (W2-4, 20 Oct 2026)
+                           "unenrolled",  # ops/campaigns.unenrol (W2-4, 20 Oct 2026)
+                           # crm/readback.created (Harry, 20 Oct 2026): HubSpot's hs_object_source_label lower-cased,
+                           # the ones seen in the portal and the likely others (the comment says any other may come),
+                           # and columbus for a record Columbus made
+                           "form", "extension", "meetings", "crm_setting", "automation_platform", "integration",
+                           "crm_ui", "import", "columbus"},
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",

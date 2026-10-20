@@ -16,9 +16,10 @@ needs you today; the asks follow (from W3-1, 20 Oct 2026, three more after the r
 stalled" when no company and no contact was found on the last 3 send days while 50 or more wait; "Capture drift" or
 "Canary failed" from this week's reply-capture check; "Leads lost" when yesterday's enrolment was held by a gate or
 lost leads to errors: watch_asks), numbered, each with where to go or the command to paste; then yesterday in a few
-lines, today's number with what limits it and each sender's room, the pipeline, the one-line spend summary, and a
-"Worth a look" block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill rule, a campaign
-not sending, the To improve lines), ending with the areas checked that are fine. Every number is
+lines (with, from 20 Oct 2026, what is new in HubSpot at companies we emailed, as the full post has it), today's
+number with what limits it and each sender's room, the pipeline, the one-line spend summary, and a "Worth a look"
+block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill rule, a campaign not sending, the
+To improve lines), ending with the areas checked that are fine. Every number is
 gathered once (gather) and the full post below is kept as it was, for `us-outbound report daily --full`; the summary
 numbers in the heartbeat are the same either way. What follows describes the full post.
 
@@ -32,7 +33,11 @@ surface to make the system better over time". It covers the day before, and read
   * Sent and outcomes: sends by step, replies by class, positive and referral replies, bounces,
     unsubscribes, demos booked and held (the events table; sync_outcomes, poll_replies and
     hubspot_readback write it); objections, negatives and "other" replies, out-of-office replies,
-    and warm accounts: enrolled accounts that visited the US site (SPEC 11);
+    and warm accounts: enrolled accounts that visited the US site (SPEC 11); and, when there are any, what is new in
+    HubSpot at companies we emailed (Harry, 20 Oct 2026: "if a contact is created or a company/deal in HubSpot who
+    has been emailed by the columbus system"): each company's contacts, company record and deals HubSpot made after
+    its first email, with how (a website form, a booking, logged from an email, a workflow) and the day it was first
+    emailed, from hubspot_readback's step 5 (crm/readback.py). A company is named, a person never; it is no ask;
   * Found, Pipeline and To improve (below): the companies and contacts identified in the period,
     what is ready to send now and what stands behind it, and what the data says to tune, each line only once
     there is enough data;
@@ -574,6 +579,67 @@ def mailbox_last_100(ctx: Context) -> dict[str, tuple[int, int]]:
         return {a: (len(v), sum(v)) for a, v in out.items()}
 
 
+# What is new in HubSpot at companies we emailed (crm/readback.py step 5; Harry, 20 Oct 2026). How each was made, from
+# events.source (HubSpot's hs_object_source_label lower-cased, or columbus), in plain words; {detail} is the form's or
+# the workflow's name (events.source_detail). Another label is shown with its underscores as spaces.
+HUBSPOT_CREATED = ("hubspot_contact_created", "hubspot_company_created", "deal_created")
+HUBSPOT_WHERE = {"form": 'website form "{detail}"', "extension": "logged from email by someone at Spill",
+                 "meetings": "meeting booking", "crm_setting": "made from the new contact",
+                 "automation_platform": 'HubSpot workflow "{detail}"', "crm_ui": "added by hand", "import": "import",
+                 "integration": "an integration", "columbus": "by Columbus after their reply"}
+HUBSPOT_HEAD = "New in HubSpot at companies we emailed:"
+
+
+def _where(source: Any, detail: Any) -> str:
+    """"website form "Demo Form"", "meeting booking", ... or "" when HubSpot said nothing."""
+    s = _lower(source)
+    if s not in HUBSPOT_WHERE:
+        return s.replace("_", " ")
+    text, name = HUBSPOT_WHERE[s], " ".join(str(detail or "").split())
+    return text.replace("{detail}", name) if name else text.split(' "', 1)[0]
+
+
+def _what(e: Mapping[str, Any]) -> str:
+    kind = e.get("type")
+    if kind == "hubspot_contact_created":
+        what = "contact (the person we emailed)" if e.get("contact_id") else "contact (a colleague)"
+    else:
+        what = "company" if kind == "hubspot_company_created" else "deal"
+    where = _where(e.get("source"), e.get("source_detail"))
+    return f"{what} ({where})" if where else what
+
+
+def hubspot_created(ctx: Context, events: Iterable[Mapping[str, Any]], names: Mapping[str, str]
+                    ) -> tuple[list[str], dict[str, int]]:
+    """(one line per company, at most LIST_LIMIT, then "and N more"; nums["hubspot_created"]): the period's records
+    HubSpot made at companies we emailed, each after the company's first step 1 (a deal_created row from before it,
+    one steps 2 and 4 found on a company we hold, is left out). "Acme Creative: contact (the person we emailed)
+    (website form "Demo Form"), company (made from the new contact) · emailed 14 Oct". Companies are named, never a
+    person: no name, no email address."""
+    rows = [e for e in events if e.get("account_id")]
+    ids = sorted({str(e["account_id"]) for e in rows})
+    first: dict[str, datetime] = {}
+    for e in ctx.store.select("events", {"type": "sent", "step": 1, "account_id": ids}) if ids else []:
+        t, aid = utc(e.get("occurred_at")), str(e.get("account_id"))
+        if t is not None and (aid not in first or t < first[aid]):
+            first[aid] = t
+    by_account: dict[str, list[Mapping[str, Any]]] = {}
+    for e in sorted(rows, key=lambda e: (utc(e.get("occurred_at")) or ctx.now, str(e.get("event_id")))):
+        aid = str(e["account_id"])
+        t = utc(e.get("occurred_at"))
+        if aid in first and t is not None and t >= first[aid]:
+            by_account.setdefault(aid, []).append(e)
+    shown = [e for found in by_account.values() for e in found]
+    nums = {"contacts": sum(e.get("type") == "hubspot_contact_created" for e in shown),
+            "companies": sum(e.get("type") == "hubspot_company_created" for e in shown),
+            "deals": sum(e.get("type") == "deal_created" for e in shown), "companies_emailed": len(by_account)}
+    lines = [f"{names.get(aid, 'an account')}: {', '.join(_what(e) for e in found)} · emailed "
+             f"{first[aid].astimezone(UK):%-d %b}" for aid, found in list(by_account.items())[:LIST_LIMIT]]
+    if len(by_account) > LIST_LIMIT:
+        lines.append(f"and {len(by_account) - LIST_LIMIT} more")
+    return lines, nums
+
+
 def _names(ctx: Context, ids: set[str]) -> dict[str, str]:
     ids_ = sorted(i for i in ids if i)
     out: dict[str, str] = {}
@@ -744,6 +810,7 @@ class Day:
     warm: list[str] = field(default_factory=list)  # "Acme Creative (positive reply to hannah@…)"
     objections: list[str] = field(default_factory=list)  # the full post's quoted lines
     visited: list[str] = field(default_factory=list)  # enrolled accounts that visited the US site
+    hubspot: list[str] = field(default_factory=list)  # new in HubSpot at companies we emailed, one line per company
     groups: str = ""  # ready accounts by Focus share or industry group
     improve: list[str] = field(default_factory=list)  # To improve, "too early" and "nothing" left out
     mailboxes: list[tuple[str, int, int, int]] = field(default_factory=list)  # (address, sent, sends, bounces)
@@ -816,7 +883,8 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     """The day's numbers and the full post but its Sources and Labels (full adds them). spent: what learn/spend.py
     read (read here when not given)."""
     start, end, label = period(ctx)
-    types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit"]
+    types = ["sent", "replied", "bounced", "unsubscribed", "meeting_booked", "demo_held", "site_visit",
+             *HUBSPOT_CREATED]
     rows = ctx.store.select("events", {"type": types, "occurred_at": Range(start, end)})  # the period's only
     by_type: dict[str, list[dict]] = {}
     for e in rows:
@@ -874,6 +942,12 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     visited = sorted(names.get(a, a) for a in enrolled)[:LIST_LIMIT]
     if enrolled:
         lines.append("Warm accounts (enrolled, visited the US site): " + ", ".join(visited))
+    # New in HubSpot at companies we emailed (crm/readback.py step 5; Harry, 20 Oct 2026): no ask, nothing when none.
+    in_hubspot, nums["hubspot_created"] = hubspot_created(
+        ctx, [e for t in HUBSPOT_CREATED for e in by_type.get(t, [])], names)
+    if in_hubspot:
+        lines.append(HUBSPOT_HEAD)
+        lines += [f"  • {x}" for x in in_hubspot]
 
     # Today's number, its senders and the ready accounts exactly as enrol.run works them out.
     t = today.read(ctx)
@@ -979,7 +1053,8 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     nums.update(asks=[a.split(":")[0] for a in asks])
     warm_lines = [f"{who(e)} ({e.get('reply_class')} reply to {e.get('mailbox') or '?'})" for e in warm[:LIST_LIMIT]]
     return Day(start, end, label, head, nums, waiting_on, lim, why=why, warm=warm_lines, objections=objections,
-               tail=lines, visited=visited, groups=ready_groups(ready, ctx.settings) if ready else "",
+               tail=lines, visited=visited, hubspot=in_hubspot,
+               groups=ready_groups(ready, ctx.settings) if ready else "",
                improve=improve, mailboxes=boxes, ramping=ramping,
                fired=[str((i.get("payload") or {}).get("reason")) for i in fired], holds=len(in_force),
                retention=line or "", spend=spend_line, asks=asks)
@@ -1080,6 +1155,8 @@ def _yesterday(day: Day) -> list[str]:
     out += [f"• {x}" for x in day.objections]
     if day.visited:
         out.append("Visited the US site after we emailed: " + ", ".join(day.visited))
+    if day.hubspot:
+        out += [HUBSPOT_HEAD, *(f"• {x}" for x in day.hubspot)]
     return out
 
 

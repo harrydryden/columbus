@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from tests.test_hubspot_writes import ACCOUNT, NOW, world
+from tests.test_hubspot_writes import ACCOUNT, HANNAH, NOW, world
 from us_outbound.crm.readback import hubspot_readback
 
 JANE = "jane.doe@acmecreative.com"
@@ -331,3 +331,202 @@ def test_a_new_booking_records_where_the_booker_came_from(default_settings):
     meeting(crm2, contacts=[kid2], companies=[co])
     hubspot_readback(ctx2)
     assert [e["analytics_source"] for e in events(ctx2, "meeting_booked")] == ["OFFLINE"]
+
+
+# -- step 5: records HubSpot made at companies we emailed (Harry, 20 Oct 2026) ----------------------------------------
+# NOW is Mon 5 Oct 15:00 UTC; LOOKBACK_DAYS is 3, so the createdate searches reach back to Fri 2 Oct 15:00. acc-1
+# (acmecreative.com) is emailed once it has a sent event at step 1; its first one is its "emailed at".
+
+FORM = "#wf-form-Demo-Form .form-3"
+WORKFLOW = "[Sales] Demo Requested via Website"
+
+
+def emailed(ctx, account_id="acc-1", at=NOW - timedelta(days=5), step=1):
+    ctx.store.upsert("events", [{"event_id": f"sent:{account_id}:{step}:{at.isoformat()}", "type": "sent",
+                                 "step": step, "account_id": account_id, "contact_id": "con-1", "mailbox": HANNAH,
+                                 "occurred_at": at}])
+
+
+def made(label, detail=None, created=None, **props):
+    """A record's properties as HubSpot's createdate search returns them: createdate ISO text, how it was made."""
+    created = created or NOW - timedelta(hours=2)
+    return {"createdate": created.isoformat(), "hs_lastmodifieddate": ms(created), "hs_object_source_label": label,
+            **({"hs_object_source_detail_1": detail} if detail else {}), **props}
+
+
+def test_a_form_contact_after_step_1_is_recorded_for_the_person_we_emailed(default_settings):
+    """Jane (con-1, first emailed 30 Sep) fills the website's demo form 2 hours ago: her email hashes to con-1, so one
+    hubspot_contact_created for acc-1 with contact_id con-1, source "form" (FORM lower-cased), source_detail the form's
+    name, occurred_at HubSpot's createdate. A second run records nothing more."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    kid = crm.add("contacts", {"email": JANE, **made("FORM", FORM)})
+    out = hubspot_readback(ctx)
+    [e] = events(ctx, "hubspot_contact_created")
+    assert (e["event_id"], e["account_id"], e["contact_id"], e["source"], e["source_detail"], e["occurred_at"]) == (
+        f"hs-contact:{kid}", "acc-1", "con-1", "form", FORM, NOW - timedelta(hours=2))
+    assert (out["counts"]["created_contacts_seen"], out["counts"]["hubspot_contact_created"]) == (1, 1)
+    again = hubspot_readback(ctx)
+    assert len(events(ctx, "hubspot_contact_created")) == 1 and "hubspot_contact_created" not in again["counts"]
+    assert crm.writes(t) == []  # HubSpot is only read
+
+
+def test_a_colleague_at_the_emailed_company_counts_with_no_contact(default_settings):
+    """sam.lee@acmecreative.com is nobody we hold; the email's domain is acc-1's: account matched, contact_id None
+    (a colleague), source "extension" (logged from an email through the HubSpot sales extension, no detail)."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    kid = crm.add("contacts", {"email": "Sam.Lee@acmecreative.com", **made("EXTENSION")})
+    hubspot_readback(ctx)
+    [e] = events(ctx, "hubspot_contact_created")
+    assert (e["event_id"], e["account_id"], e["contact_id"], e["source"], e["source_detail"]) == (
+        f"hs-contact:{kid}", "acc-1", None, "extension", None)
+
+
+def test_personal_mail_a_company_never_emailed_and_a_stranger_count_for_nothing(default_settings):
+    """Three new contacts, none ours: someone@gmail.com (an emailed account row on gmail.com is here only so that the
+    personal-mail rule is what refuses it; admit never makes one), pat@brightfin.com (acc-2 is enrolled but has no
+    step-1 send) and pat@unrelated.org (no account): 3 seen, 3 not ours, 0 events."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    ctx.store.upsert("accounts", [
+        {"account_id": "acc-g", "domain": "gmail.com", "clean_name": "Gmail", "status": "enrolled"},
+        {"account_id": "acc-2", "domain": "brightfin.com", "clean_name": "Brightfin", "status": "enrolled"}])
+    emailed(ctx)
+    emailed(ctx, "acc-g")
+    for email in ("someone@gmail.com", "pat@brightfin.com", "pat@unrelated.org"):
+        crm.add("contacts", {"email": email, **made("FORM", FORM)})
+    out = hubspot_readback(ctx)
+    assert events(ctx, "hubspot_contact_created") == []
+    assert (out["counts"]["created_contacts_seen"], out["counts"]["created_not_ours"]) == (3, 3)
+
+
+def test_a_record_made_before_the_first_step_1_is_not_counted(default_settings):
+    """acc-1's first step 1 went 1 day ago (a later step 2 changes nothing); Jane's contact and the company were made 2
+    days ago, inside the 3-day window but before we emailed: 0 events, created_before_emailed 2."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx, at=NOW - timedelta(days=1))
+    emailed(ctx, at=NOW - timedelta(hours=12), step=2)
+    crm.add("contacts", {"email": JANE, **made("FORM", FORM, created=NOW - timedelta(days=2))})
+    crm.add("companies", {"name": "Acme Creative", "domain": "acmecreative.com",
+                          **made("CRM_SETTING", created=NOW - timedelta(days=2))})
+    out = hubspot_readback(ctx)
+    assert events(ctx, "hubspot_contact_created") == [] and events(ctx, "hubspot_company_created") == []
+    assert out["counts"]["created_before_emailed"] == 2
+
+
+def test_a_company_made_from_the_new_contact_matches_by_domain(default_settings):
+    """HubSpot's "Create and associate companies with contacts" setting made the company (www.acmecreative.com, root
+    acmecreative.com = acc-1's domain): one hubspot_company_created, source crm_setting, contact_id None."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    setting = '"Create and associate companies with contacts" setting'
+    co = crm.add("companies", {"name": "Acme Creative", "domain": "www.acmecreative.com",
+                               **made("CRM_SETTING", setting)})
+    out = hubspot_readback(ctx)
+    [e] = events(ctx, "hubspot_company_created")
+    assert (e["event_id"], e["account_id"], e["contact_id"], e["source"], e["source_detail"]) == (
+        f"hs-company:{co}", "acc-1", None, "crm_setting", setting)
+    assert out["counts"]["created_companies_seen"] == 1
+
+
+def test_a_workflow_deal_matched_through_its_company_is_recorded_once_and_read_once(default_settings):
+    """A HubSpot workflow made a deal in the sales pipeline (not Spill 3.0, so steps 2 and 4 never see it) on a
+    company with acc-1's domain: one get_record (associations), then _match reads the company's domain: deal_created
+    hs-deal:{id}, source automation_platform, detail the workflow's name. Run 2: the event exists, so 0 more reads of
+    the deal and still 1 event. A deal at a UK company is not ours: one read, a readback_seen row on its
+    hs_lastmodifieddate, and run 2 reads it 0 more times (created_deals_not_ours_before 1)."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    co = crm.add("companies", {"name": "Acme Creative", "domain": "acmecreative.com"})
+    did = crm.add("deals", {"dealname": "Acme Creative", "pipeline": "pipe-sales", "dealstage": "s1",
+                            **made("AUTOMATION_PLATFORM", WORKFLOW)}, companies=[co])
+    uk = crm.add("companies", {"name": "A UK customer", "domain": "ukcustomer.co.uk"})
+    other = crm.add("deals", {"dealname": "A UK customer", "pipeline": "pipe-sales", "dealstage": "s1",
+                              **made("AUTOMATION_PLATFORM", WORKFLOW)}, companies=[uk])
+    first = hubspot_readback(ctx)
+    [e] = events(ctx, "deal_created")
+    assert (e["event_id"], e["account_id"], e["contact_id"], e["source"], e["source_detail"]) == (
+        f"hs-deal:{did}", "acc-1", None, "automation_platform", WORKFLOW)
+    counts = first["counts"]
+    assert (counts["created_deals_seen"], counts["deal_created"], counts["created_not_ours"]) == (2, 1, 1)
+    [seen] = events(ctx, "readback_seen")
+    assert seen["event_id"] == f"seen:deal:{other}:{crm.objects['deals'][other]['hs_lastmodifieddate']}"
+    assert (len(lookups(t, "deals", did)), len(lookups(t, "deals", other))) == (1, 1)
+    second = hubspot_readback(ctx)
+    assert len(events(ctx, "deal_created")) == 1 and "deal_created" not in second["counts"]
+    assert (len(lookups(t, "deals", did)), len(lookups(t, "deals", other))) == (1, 1)
+    assert second["counts"]["created_deals_not_ours_before"] == 1
+    assert ctx.store.get("accounts", account_id="acc-1")["status"] == "enrolled"  # a signal only: no status moves
+
+
+def test_columbus_s_own_deal_and_company_are_labelled_not_counted_again(default_settings):
+    """ensure_deal made "US Outbound – Acme Creative" and recorded it (deal_created, no source); record_reply made the
+    company through our private app (INTEGRATION) and we hold its id. The deal is not recorded twice: its row gets
+    source "columbus" (created_source_filled 1, deal_created not counted, the deal never read); the company is
+    hubspot_company_created with source "columbus". A Spill 3.0 website deal step 4 records as a booking (its
+    deal_created with no source) is labelled the same way on the run that records it."""
+    from us_outbound.crm.hubspot_writes import record_deal
+
+    ctx, t, crm, stops = setup(default_settings, status="demo_requested", hubspot_company_id="co-x")
+    emailed(ctx)
+    crm.objects["companies"]["co-x"] = {"name": "Acme Creative", "domain": "acmecreative.com", **made("INTEGRATION")}
+    did = crm.add("deals", {"dealname": "US Outbound – Acme Creative", "pipeline": "pipe-spill3",
+                            "dealstage": "stage-first", **made("INTEGRATION")}, companies=["co-x"])
+    record_deal(ctx, "acc-1", None, did, NOW - timedelta(hours=2))
+    out = hubspot_readback(ctx)
+    [deal] = events(ctx, "deal_created")
+    assert (deal["event_id"], deal["source"], deal["source_detail"]) == (f"hs-deal:{did}", "columbus", None)
+    assert out["counts"]["created_source_filled"] == 1 and "deal_created" not in out["counts"]
+    [company] = events(ctx, "hubspot_company_created")
+    assert (company["event_id"], company["source"]) == ("hs-company:co-x", "columbus")
+    assert len(crm.objects["deals"]) == 1 and lookups(t, "deals", did) == []
+    web = crm.add("deals", {"dealname": "Acme Creative - Demo request", "pipeline": "pipe-spill3",
+                            "dealstage": "stage-first", **made("AUTOMATION_PLATFORM", WORKFLOW)}, companies=["co-x"])
+    hubspot_readback(ctx)
+    row = ctx.store.get("events", event_id=f"hs-deal:{web}")
+    assert (row["type"], row["source"], row["source_detail"]) == ("deal_created", "automation_platform", WORKFLOW)
+    assert len(events(ctx, "deal_created")) == 2
+
+
+def test_step_5_in_dry_run_reports_and_writes_nothing(default_settings):
+    """A form contact, a company made from it, a workflow deal on that company and a deal on no company, in dry-run:
+    counted 1, 1, 1 and 1 not ours, and listed in the summary's events; no event row, no readback_seen row, no
+    HubSpot write."""
+    ctx, t, crm, stops = setup(default_settings, live=False, status="enrolled")
+    emailed(ctx)
+    crm.add("contacts", {"email": JANE, **made("FORM", FORM)})
+    co = crm.add("companies", {"name": "Acme Creative", "domain": "acmecreative.com", **made("CRM_SETTING")})
+    crm.add("deals", {"dealname": "Acme Creative", "pipeline": "pipe-sales", **made("AUTOMATION_PLATFORM", WORKFLOW)},
+            companies=[co])
+    crm.add("deals", {"dealname": "Someone else", "pipeline": "pipe-sales", **made("AUTOMATION_PLATFORM", WORKFLOW)})
+    out = hubspot_readback(ctx)
+    c = out["counts"]
+    assert (c["hubspot_contact_created"], c["hubspot_company_created"], c["deal_created"], c["created_not_ours"]) == (
+        1, 1, 1, 1)
+    assert {e["event"] for e in out["events"]} == {"hubspot_contact_created", "hubspot_company_created", "deal_created"}
+    for type_ in ("hubspot_contact_created", "hubspot_company_created", "deal_created", "readback_seen"):
+        assert events(ctx, type_) == []
+    assert crm.writes(t) == []
+
+
+def test_a_failing_search_in_step_5_stops_nothing_else_and_the_reverse(default_settings):
+    """HubSpot answers 400 to the contacts search: steps 1 to 4 still record the booking, and the run says which step
+    failed. The other way round: the meetings search fails, and step 5 still records the form contact."""
+    from us_outbound.clients.http import Response
+
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    kid = crm.add("contacts", {"email": JANE, **made("FORM", FORM)})
+    meeting(crm, contacts=[kid])
+    t.route("POST", "/crm/v3/objects/contacts/search", fn=lambda r: Response(400, {"message": "bad"}))
+    out = hubspot_readback(ctx)
+    assert len(events(ctx, "meeting_booked")) == 1 and events(ctx, "hubspot_contact_created") == []
+    assert [e.split(":")[0] for e in out["errors"]] == ["created"]
+    ctx2, t2, crm2, _ = setup(default_settings, status="enrolled")
+    emailed(ctx2)
+    kid2 = crm2.add("contacts", {"email": JANE, **made("FORM", FORM)})
+    meeting(crm2, contacts=[kid2])
+    t2.route("POST", "/crm/v3/objects/meetings/search", fn=lambda r: Response(400, {"message": "bad"}))
+    out2 = hubspot_readback(ctx2)
+    assert events(ctx2, "meeting_booked") == [] and len(events(ctx2, "hubspot_contact_created")) == 1
+    assert [e.split(":")[0] for e in out2["errors"]] == ["meetings"]

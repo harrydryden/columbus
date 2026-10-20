@@ -543,3 +543,98 @@ def test_the_asks_come_after_the_replies_holds_and_hand_check_in_the_post():
     asks = [x for x in post.json["text"].splitlines() if x[:1].isdigit() and ". " in x[:4]]
     assert asks[-1].startswith(f"{len(asks)}. Capture drift: this week's check found")
     assert out["asks"] == ["Capture drift"]
+
+
+# -- new in HubSpot at companies we emailed (crm/readback.py step 5; Harry, 20 Oct 2026) ------------------------------
+
+FORM = "#wf-form-Demo-Form .form-3"
+SETTING = '"Create and associate companies with contacts" setting'
+WORKFLOW = "[Sales] Demo Requested via Website"
+
+
+def hubspot_world():
+    """The post of Tue 27 Oct covers Mon 26 Oct (UK). Acme Creative (a1) was first emailed Wed 14 Oct 16:00 UK (a
+    step 1 on 20 Oct changes nothing); Brightfin (a2) Mon 19 Oct. Yesterday Jane at a1 (con-a1: a name and an email
+    the post must never show) filled the demo form and HubSpot made the company from her contact; a workflow made a
+    deal at a2. Left out: a deal at Loop Studio (a3), never emailed, and a contact at Northwind (a4) made at 01:00 UK,
+    before its first email at 05:00 UK the same day."""
+    ctx, t = world()
+    ctx.store.insert("contacts", [{"contact_id": "con-a1", "account_id": "a1", "first_name": "Jane",
+                                   "last_name": "Doe", "email": "jane.doe@acmecreative.com"}])
+    ctx.store.insert("events", [
+        ev(50, "sent", step=1, account_id="a1", contact_id="con-a1", at=datetime(2026, 10, 14, 15, 0, tzinfo=UTC)),
+        ev(51, "sent", step=1, account_id="a1", contact_id="con-a1", at=datetime(2026, 10, 20, 15, 0, tzinfo=UTC)),
+        ev(52, "sent", step=1, account_id="a2", at=datetime(2026, 10, 19, 15, 0, tzinfo=UTC)),
+        ev(53, "sent", step=1, account_id="a4", at=datetime(2026, 10, 26, 5, 0, tzinfo=UTC)),
+        ev(60, "hubspot_contact_created", account_id="a1", contact_id="con-a1", source="form", source_detail=FORM),
+        ev(61, "hubspot_company_created", account_id="a1", source="crm_setting", source_detail=SETTING),
+        ev(62, "deal_created", account_id="a2", source="automation_platform", source_detail=WORKFLOW),
+        ev(63, "deal_created", account_id="a3", source="automation_platform", source_detail=WORKFLOW),
+        ev(64, "hubspot_contact_created", account_id="a4", source="extension",
+           at=datetime(2026, 10, 26, 1, 0, tzinfo=UTC)),
+    ])
+    return ctx, t
+
+
+HUBSPOT_LINES = [
+    "New in HubSpot at companies we emailed:",
+    '• Acme Creative: contact (the person we emailed) (website form "#wf-form-Demo-Form .form-3"), '
+    "company (made from the new contact) · emailed 14 Oct",
+    '• Brightfin: deal (HubSpot workflow "[Sales] Demo Requested via Website") · emailed 19 Oct',
+]
+
+
+def test_new_hubspot_records_at_companies_we_emailed_are_in_the_short_and_the_full_post():
+    """hubspot_world: 1 contact and 1 company at a1, 1 deal at a2, so 2 companies; a3 (never emailed) and a4 (made
+    before its first email) are left out. Each company on one line, in the order its first record came (a1 at 15:00
+    UTC + 60 min, a2 at + 62 min), emailed on its first step 1's UK date. No person: no name, no email address."""
+    ctx, t = hubspot_world()
+    out = daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    text = post.json["text"].splitlines()
+    at = text.index("Visited the US site after we emailed: Brightfin") + 1
+    assert text[at : at + 3] == HUBSPOT_LINES
+    assert text[at + 3] == ""  # then Today's number
+    assert out["hubspot_created"] == {"contacts": 1, "companies": 1, "deals": 1, "companies_emailed": 2}
+    shown = "\n".join(text[at : at + 3])
+    assert "Jane" not in shown and "Doe" not in shown and "@" not in shown and "Loop Studio" not in shown
+    assert "Northwind" not in post.json["text"]  # nor anywhere else in the post
+    lines, nums = daily_post.build(ctx)
+    at = lines.index("Warm accounts (enrolled, visited the US site): Brightfin") + 1
+    assert lines[at : at + 3] == [HUBSPOT_LINES[0], *(f"  {x}" for x in HUBSPOT_LINES[1:])]
+    assert nums["hubspot_created"] == out["hubspot_created"]
+    assert not any(x.startswith("New in HubSpot") for x in daily_post._needs(ctx, daily_post.for_you(ctx)))
+
+
+def test_no_new_hubspot_record_no_line_and_the_list_stops_at_the_limit():
+    """None in the period: no line in either post, and the numbers are 0. Then 12 companies, each emailed on Mon 19
+    Oct, each with a contact made yesterday by a meetings-link booking: LIST_LIMIT (10) lines, then "and 2 more"."""
+    ctx, t = world()
+    day = daily_post.gather(ctx)
+    assert day.hubspot == [] and not any(x.startswith("New in HubSpot") for x in daily_post.compact(ctx, day))
+    assert not any(x.startswith("New in HubSpot") for x in daily_post.full(ctx, day)[0])
+    assert day.nums["hubspot_created"] == {"contacts": 0, "companies": 0, "deals": 0, "companies_emailed": 0}
+    ctx.store.insert("accounts", [{"account_id": f"h{i:02}", "clean_name": f"Company {i:02}", "status": "enrolled"}
+                                  for i in range(12)])
+    ctx.store.insert("events", [ev(100 + i, "sent", step=1, account_id=f"h{i:02}",
+                                   at=datetime(2026, 10, 19, 15, 0, tzinfo=UTC)) for i in range(12)])
+    ctx.store.insert("events", [ev(200 + i, "hubspot_contact_created", account_id=f"h{i:02}", source="meetings")
+                                for i in range(12)])
+    day = daily_post.gather(ctx)
+    assert day.hubspot[:2] == ["Company 00: contact (a colleague) (meeting booking) · emailed 19 Oct",
+                               "Company 01: contact (a colleague) (meeting booking) · emailed 19 Oct"]
+    assert len(day.hubspot) == 11 and day.hubspot[-1] == "and 2 more"
+    assert day.nums["hubspot_created"] == {"contacts": 12, "companies": 0, "deals": 0, "companies_emailed": 12}
+
+
+def test_how_a_record_was_made_reads_in_plain_words():
+    """Each source in plain words; a form or workflow with no name drops the quotes; an unknown label keeps its words;
+    nothing when HubSpot said nothing."""
+    where = daily_post._where
+    assert where("form", None) == "website form"
+    assert where("automation_platform", "  [Sales]   Demo booked ") == 'HubSpot workflow "[Sales] Demo booked"'
+    assert where("columbus", None) == "by Columbus after their reply"
+    assert where("crm_ui", "x") == "added by hand"
+    assert where("BCC_TO_CRM", None) == "bcc to crm"
+    assert where(None, None) == ""
+    assert daily_post._what({"type": "deal_created"}) == "deal"

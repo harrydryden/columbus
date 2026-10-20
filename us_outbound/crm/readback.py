@@ -40,7 +40,22 @@ are read each run, so a missed run loses nothing.
      demo_requested (demo_booked from Demo created on), and its leads are stopped. A deal is looked up only
      once its stage and date make it a candidate, and not again once recorded. HubSpot is only read here; the
      guard allows no other write than SPEC 11's.
-events.source says where a booking came from: hubspot_meeting (step 1) or hubspot_deal (steps 2 and 4).
+  5. Records created at companies we emailed (Harry, 20 Oct 2026: "if a contact is created or a company/deal in
+     HubSpot who has been emailed by the columbus system"). The contacts, companies and deals HubSpot made in the last
+     LOOKBACK_DAYS (one createdate search each, about a page a run, so no watermark) are matched to accounts sent step
+     1: a contact by its email's hash (our contact: the person we emailed) or its email's domain (a colleague; never
+     a personal-mail domain, clean/domains.py), a company by its root domain or the id we hold, a deal by its
+     companies and contacts (as step 4: one get_record, behind the same negative cache). One made before the
+     account's first step 1 does not count (HubSpot knew them already, or it was not our doing). Each is recorded once
+     on its HubSpot id: hubspot_contact_created ("hs-contact:{id}"), hubspot_company_created ("hs-company:{id}") and,
+     for a deal, the deal_created that steps 2 and 4 and ensure_deal record ("hs-deal:{id}"), so no deal counts twice.
+     events.source says how HubSpot made it (its hs_object_source_label lower-cased: form, extension, meetings,
+     crm_setting, automation_platform, ...; "columbus" for our own deal, or for a contact or company our private app
+     made whose id we hold), and events.source_detail names it (hs_object_source_detail_1: the form, the workflow). A
+     deal_created row an earlier step recorded with no source gets one. They are engagement signals for the daily
+     post; the outcome definition (learn/outcomes.py) does not read them.
+events.source says where a booking came from: hubspot_meeting (step 1) or hubspot_deal (steps 2 and 4), or how a
+created record was made (step 5).
 A negative cache (W2-4): a meeting, or a step 4 deal, that turned out not to be ours is recorded as an events row of
 type readback_seen, event_id "seen:{object}:{id}:{hs_lastmodifieddate}", and not looked up again (no get_record) until
 HubSpot changes it: until then the same records were read again every 15 minutes, about 6,700 reads a week. Live only,
@@ -60,7 +75,8 @@ from typing import Any
 
 from us_outbound import parse
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation
-from us_outbound.clients.hubspot import CONTACT_PROPS, DEAL_PROPS, MEETING_PROPS
+from us_outbound.clean.domains import is_personal_domain
+from us_outbound.clients.hubspot import CONTACT_PROPS, CREATED_PROPS, DEAL_PROPS, MEETING_PROPS
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import LEAD_ACTIVE
 from us_outbound.context import Context
@@ -90,6 +106,7 @@ class _Run:
     events: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     stages: dict[str, tuple[int, str]] | None = None  # Spill 3.0's stages, read once a run
+    noted: set[str] = field(default_factory=set)  # event ids _event reported this run (dry-run writes none)
 
     def note(self, entry: dict) -> None:
         if len(self.events) < LIST_LIMIT:
@@ -98,19 +115,21 @@ class _Run:
 
 def _event(ctx: Context, run: _Run, event_id: str, type_: str, account_id: str, contact_id: str | None,
            occurred_at: Any, source: str | None = None,
-           analytics: Callable[[], str | None] | None = None) -> bool:
-    """Record the event once; True if it is new. Dry-run only reports it. source: where a booking came from.
-    analytics: reads the booker's hs_analytics_source, only for a new event (one HubSpot read)."""
+           analytics: Callable[[], str | None] | None = None, detail: str | None = None) -> bool:
+    """Record the event once; True if it is new. Dry-run only reports it. source: where a booking came from, or how
+    a created record was made (step 5), with detail its name. analytics: reads the booker's hs_analytics_source,
+    only for a new event (one HubSpot read)."""
     if ctx.store.get("events", event_id=event_id) is not None:
         return False
     run.counts[type_] += 1
+    run.noted.add(event_id)
     origin = analytics() if analytics is not None else None
     run.note({"event": type_, "account_id": account_id, "id": event_id, **({"source": source} if source else {}),
               **({"analytics_source": origin} if origin else {})})
     if ctx.live:
         ctx.store.upsert("events", [{"event_id": event_id, "type": type_, "account_id": account_id,
                                      "contact_id": contact_id or None, "occurred_at": utc(occurred_at) or ctx.now,
-                                     "source": source, "analytics_source": origin}])
+                                     "source": source, "analytics_source": origin, "source_detail": detail}])
     return True
 
 
@@ -438,10 +457,143 @@ def bookings(ctx: Context, run: _Run) -> None:
             log("demo_booking", account_id=aid, deal_id=d["id"], stage=label, new=new)
 
 
+# -- 5. records created at companies we emailed (Harry, 20 Oct 2026) --------------------------------------------------
+
+CONTACT_EVENT, COMPANY_EVENT = "hs-contact:", "hs-company:"
+CONTACT_CREATED, COMPANY_CREATED = "hubspot_contact_created", "hubspot_company_created"  # events.type
+SOURCE_COLUMBUS = "columbus"  # events.source of a record Columbus made itself
+OWN_APP_LABEL = "integration"  # hs_object_source_label (lower-cased) of a record made through a private app, ours too
+DETAIL_CHARS = 120  # of hs_object_source_detail_1, kept in events.source_detail
+
+
+def _origin(p: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """(events.source, events.source_detail): how HubSpot says the record was made, lower-cased, and its name."""
+    label = str(p.get("hs_object_source_label") or "").strip().lower() or None
+    detail = " ".join(str(p.get("hs_object_source_detail_1") or "").split())[:DETAIL_CHARS] or None
+    return label, detail
+
+
+def _step1(ctx: Context, memo: dict[str, datetime | None], account_id: str) -> datetime | None:
+    """The account's first step-1 send (its "emailed at"), read once a run per account; None: never emailed."""
+    if account_id not in memo:
+        times = [t for e in ctx.store.select("events", {"account_id": account_id, "type": "sent", "step": 1})
+                 if (t := utc(e.get("occurred_at"))) is not None]
+        memo[account_id] = min(times) if times else None
+    return memo[account_id]
+
+
+def _domain_accounts(ctx: Context, domain: str) -> list[dict]:
+    """The accounts on this root domain; none for a personal-mail domain (gmail.com is nobody's company)."""
+    if not domain or is_personal_domain(domain):
+        return []
+    return ctx.store.select("accounts", {"domain": domain})
+
+
+def _record_created(ctx: Context, run: _Run, memo: dict[str, datetime | None], event_id: str, type_: str,
+                    p: Mapping[str, Any], hits: Mapping[str, str | None], source: str | None,
+                    detail: str | None) -> bool:
+    """Record a created record for the first emailed account it belongs to (hits: account_id -> our contact_id, or
+    None for a colleague); True when it counts. One created before the account's first step 1 does not: HubSpot knew
+    them before we emailed, or it was not our doing."""
+    created = utc(p.get("createdate")) or ctx.now
+    emailed = {aid: first for aid in hits if (first := _step1(ctx, memo, aid)) is not None}
+    if not emailed:
+        run.counts["created_not_ours"] += 1
+        return False
+    after = sorted(aid for aid, first in emailed.items() if created >= first)
+    if not after:
+        run.counts["created_before_emailed"] += 1
+        return False
+    # One HubSpot record matching two accounts (a colleague's domain at one, our contact at another) is recorded for
+    # the first by account_id only: event_id, the HubSpot object id, is the events table's primary key.
+    aid = after[0]
+    _event(ctx, run, event_id, type_, aid, hits[aid], created, source, detail=detail)
+    return True
+
+
+def _created_contacts(ctx: Context, run: _Run, since: datetime, memo: dict[str, datetime | None]) -> None:
+    store = ctx.store
+    for r in ctx.clients.hubspot.search_created("contacts", since, CREATED_PROPS["contacts"]):
+        run.counts["created_contacts_seen"] += 1
+        rid, p = str(r["id"]), r.get("properties") or {}
+        event_id = f"{CONTACT_EVENT}{rid}"
+        if store.get("events", event_id=event_id) is not None:
+            continue
+        email = str(p.get("email") or "").strip().lower()
+        stored = store.select("contacts", {"hubspot_contact_id": rid})
+        ours = stored or (store.select("contacts", {"email_sha256": hash_email(email)}) if "@" in email else [])
+        hits: dict[str, str | None] = {}
+        for c in ours:  # the person we emailed
+            if c.get("account_id"):
+                hits.setdefault(str(c["account_id"]), str(c["contact_id"]))
+        domain = _root(email.rsplit("@", 1)[1] if "@" in email else p.get("hs_email_domain"))
+        for a in _domain_accounts(ctx, domain):  # a colleague at the company
+            hits.setdefault(str(a["account_id"]), None)
+        source, detail = _origin(p)
+        if source == OWN_APP_LABEL and stored:
+            source = SOURCE_COLUMBUS  # record_reply made it after a warm reply (crm/hubspot_writes.py)
+        _record_created(ctx, run, memo, event_id, CONTACT_CREATED, p, hits, source, detail)
+
+
+def _created_companies(ctx: Context, run: _Run, since: datetime, memo: dict[str, datetime | None]) -> None:
+    store = ctx.store
+    for r in ctx.clients.hubspot.search_created("companies", since, CREATED_PROPS["companies"]):
+        run.counts["created_companies_seen"] += 1
+        rid, p = str(r["id"]), r.get("properties") or {}
+        event_id = f"{COMPANY_EVENT}{rid}"
+        if store.get("events", event_id=event_id) is not None:
+            continue
+        stored = store.select("accounts", {"hubspot_company_id": rid})
+        hits: dict[str, str | None] = {str(a["account_id"]): None for a in stored}
+        for a in _domain_accounts(ctx, _root(p.get("domain"))):
+            hits.setdefault(str(a["account_id"]), None)
+        source, detail = _origin(p)
+        if source == OWN_APP_LABEL and stored:
+            source = SOURCE_COLUMBUS  # record_reply made it after a warm reply (crm/hubspot_writes.py)
+        _record_created(ctx, run, memo, event_id, COMPANY_CREATED, p, hits, source, detail)
+
+
+def _created_deals(ctx: Context, run: _Run, since: datetime, memo: dict[str, datetime | None]) -> None:
+    store, hs = ctx.store, ctx.clients.hubspot
+    for r in hs.search_created("deals", since, CREATED_PROPS["deals"]):
+        run.counts["created_deals_seen"] += 1
+        rid, p = str(r["id"]), r.get("properties") or {}
+        event_id = f"{DEAL_EVENT}{rid}"
+        own = str(p.get("dealname") or "").startswith(US_CAMPAIGN_PREFIX)
+        source, detail = (SOURCE_COLUMBUS, None) if own else _origin(p)
+        have = store.get("events", event_id=event_id)
+        if have is not None:  # steps 2 or 4, or ensure_deal, recorded it: labelled here, never counted twice
+            if not have.get("source") and source:
+                run.counts["created_source_filled"] += 1
+                if ctx.live:
+                    store.update("events", {"event_id": event_id}, {"source": source, "source_detail": detail})
+            continue
+        if event_id in run.noted:  # dry-run: an earlier step reported it this run and wrote nothing
+            continue
+        cache = seen_id("deal", rid, p.get("hs_lastmodifieddate"))  # bookings' key: either step's "not ours" holds
+        if _seen(ctx, cache):
+            run.counts["created_deals_not_ours_before"] += 1
+            continue
+        rec = hs.get_record("deals", rid, DEAL_PROPS, associations=("contacts", "companies"))
+        links = (rec or {}).get("associations") or {}
+        matched = _match(ctx, list(links.get("companies") or []), list(links.get("contacts") or []))
+        hits = {aid: hit["contact_id"] for aid, hit in matched.items()}
+        if not _record_created(ctx, run, memo, event_id, "deal_created", p, hits, source, detail):
+            _mark_seen(ctx, run, cache)  # not ours, or made before we emailed: not read again until it changes
+
+
+def created(ctx: Context, run: _Run) -> None:
+    """New HubSpot contacts, companies and deals at companies we emailed (step 5 of the module docstring)."""
+    since = ctx.now - timedelta(days=LOOKBACK_DAYS)
+    memo: dict[str, datetime | None] = {}  # account_id -> its first step-1 send
+    for part in (_created_contacts, _created_companies, _created_deals):
+        part(ctx, run, since, memo)
+
+
 def hubspot_readback(ctx: Context) -> dict:
     """The hubspot_readback job (JOB CONTRACT: run(ctx) -> summary)."""
     run = _Run()
-    for step in (meetings, deals, bookings):
+    for step in (meetings, deals, bookings, created):
         try:
             step(ctx, run)
         except ApiError as exc:  # the other step still runs; the next run reads the same window again
