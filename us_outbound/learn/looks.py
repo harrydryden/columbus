@@ -21,8 +21,9 @@ arms are uneven (share_a; Harry, 8 Oct 2026) counts N in its smaller arm and N s
 a count look, each arm's first N accounts (by step 1); for a date look, the accounts whose window had closed by
 that date. Replies count within each account's window and meetings until the look, so a read made a week late
 says what it would have said on time. Before the first look it refuses (exit 2) and says only how far each arm
-has got (accounts emailed, windows closed): never a reply, so nobody peeks. Reply rate decides (SPEC 12: the test
-detects a 2x difference); positive and meeting rates are for information. Harry writes the result on the Tests tab.
+has got (accounts emailed, windows closed): never a reply, so nobody peeks. The registered metric decides, by the
+registered test (below; the read's summary line and `test read` say which, and whether it crosses); the other rates
+are for information. Harry writes the result on the Tests tab.
 
 The test (W2-3, 20 Oct 2026; redteam-stats §3 L10), as the Tests tab pre-registers it (W3-4, 21 Oct 2026; settings/
 model.PRE_REGISTRATION): the metric (metric_id O4, any human reply within 28 days, or O3, a positive or referral one);
@@ -70,6 +71,7 @@ from us_outbound.timeparse import uk_midnight, utc
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
 ALPHA = DEFAULT_ALPHA  # two-sided (one-sided 0.05): a test with no alpha on the Tests tab (one started before W3-4)
 MEASURES = {"O4": "replied", "O3": "positive"}  # metric_id -> the count it is decided on
+METRIC_WORDS = {"O4": "any human reply within 28 days", "O3": "a positive or referral reply within 28 days"}
 
 
 class NotYet(Exception):
@@ -307,18 +309,35 @@ def look_threshold(test: Test, looks_n: int, number: int) -> float:
 
 
 def summary_line(result: Mapping[str, Any]) -> str:
-    """One line of a read: each arm's reply rate, Fisher's p against this look's threshold, and P(b > a)."""
-    arms_text = "; ".join(f"{name} {v['replied']} of {v['delivered']} replied ({fmt.pct(v['replied'], v['delivered'])})"
+    """One line of a read, as the test was registered (W3-4 r1): each arm's count of the measure it is decided on
+    (replied for O4, positive for O3), the decision statistic against this look's threshold (Fisher's p below it, or
+    P(b better) outside threshold/2 … 1 − threshold/2), whether it crosses, then the other statistic for information."""
+    measure = result.get("measure") or MEASURES["O4"]
+    arms_text = "; ".join(f"{name} {v[measure]} of {v['delivered']} {measure} ({fmt.pct(v[measure], v['delivered'])})"
                           for name, v in result["versions"].items())
-    p = result.get("reply_p")
-    out = arms_text
-    if p is not None:
-        out += f" · Fisher p = {p:.3f}"
-        if result.get("look_threshold") is not None:
-            out += f" (this look's threshold {result['look_threshold']:.3f})"
-    if result.get("p_b_better") is not None:
-        out += f" · P({result.get('version_b') or 'b'} better) = {result['p_b_better']:.2f}"
-    return out
+    p, b_better, t = result.get("reply_p"), result.get("p_b_better"), result.get("look_threshold")
+    b_name = result.get("version_b") or "b"
+    fisher = f"Fisher p = {p:.3f}" if p is not None else "Fisher p not computable (an arm has no company)"
+    posterior = f"P({b_name} better) = {b_better:.3f}" if b_better is not None else ""
+    crosses = "crosses" if result.get("crossed") else "does not cross"
+    if result.get("reply_test") == BETA_POSTERIOR:
+        decide = f"{posterior} (crosses outside {t / 2:.3f} … {1 - t / 2:.3f})" if t is not None else posterior
+        other = fisher
+    else:
+        decide = f"{fisher} (this look's threshold {t:.3f})" if t is not None and p is not None else fisher
+        other = posterior
+    return f"{arms_text} · {decide}: {crosses}" + (f" · {other}, for information" if other else "")
+
+
+def decides_line(result: Mapping[str, Any]) -> str:
+    """What decides the read, from its registration (`test read`; W3-4 r1): the metric, the test and the rule."""
+    metric = result.get("metric_id") or "O4"
+    how = (f"P({result.get('version_b') or 'b'} better) from Beta posteriors, crossing outside threshold/2 … "
+           "1 − threshold/2" if result.get("reply_test") == BETA_POSTERIOR
+           else "Fisher's exact two-sided p, crossing below this look's threshold")
+    rule = result.get("look_thresholds") or ""
+    return (f"{metric} ({METRIC_WORDS.get(metric, metric)}) decides, by {how} ({rule}, total alpha "
+            f"{result.get('alpha', ALPHA):.2f}); the other counts and meetings are for information.")
 
 
 KIND_WORDS = {AB_TEST: "A/B copy test", VARIANT_TEST: "one-change variant test", HOLDOUT_TEST: "holdout test"}

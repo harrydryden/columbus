@@ -346,12 +346,32 @@ def test_the_running_variant_draws_arms_only_while_live_split_lets_it(live_split
         assert not any(WARM in b for b in bodies)
 
 
+@pytest.mark.parametrize("live_split, in_test", [("both", False), ("test", True), ("opener", False),
+                                                 ("subject", False), ("none", False)])
+def test_a_test_started_from_21_oct_draws_arms_only_under_live_split_test(live_split, in_test):
+    """W3-4 r1: the same variant started 26 Oct (registered) draws only under live_split = test, as the one split; under
+    both it is paused (Settings.drawn_test is None), which validation no longer refuses, so a Tests row can never keep
+    General, and live_sending = no, back."""
+    accts, cons = agencies(8)
+    registered = dataclasses.replace(WARM_TEST, start_date=date(2026, 10, 26), **{**PREREG, "alpha": 0.10})
+    s = make_settings(live_sending=True, tests=(registered,), live_split=live_split)
+    assert (s.drawn_test() is not None) is in_test
+    ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
+    out = enrol.run(ctx)
+    contacts = ctx.store.select("contacts")
+    assert len(contacts) == 8
+    bodies = [lead["custom_variables"]["s1_body"] for r in instantly_posts(t) for lead in r.json["leads"]]
+    assert ({c.get("test_arm") or "" for c in contacts} == {"a", "b"}) is in_test
+    assert any(WARM in b for b in bodies) is in_test and (out.get("copy_test") is not None) is in_test
+
+
 def test_an_ab_test_records_its_arm_too():
     accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(6)]
     cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(6)]
     rows = make_settings().copy + (copy_row("agencies-v2", "Marketing & Creative Agencies"),)
-    ctx, _ = make(live=True, settings=make_settings(live_sending=True, tests=(FIRST_TEST,), copy=rows),
-                  accounts=accts, contacts=cons)
+    # FIRST_TEST has no start_date, so it reads as started from 21 Oct: it draws under live_split = test (W3-4 r1).
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=rows, live_split="test")
+    ctx, _ = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     for i in range(6):
         con = ctx.store.get("contacts", contact_id=f"c-{i}")
@@ -441,7 +461,8 @@ def test_a_variant_test_is_read_from_its_arms_since_its_start():
     # Fisher on 1 of 2 against 1 of 2 is 1; look 1 of 2 (the count look, then the read date) has the O'Brien-Fleming
     # threshold 0.011 at alpha 0.10 (tests/test_stats.py); equal data, so P(no intro better) = 0.5.
     assert looks.summary_line(result) == ("warm intro 1 of 2 replied (50.0%); no intro 1 of 2 replied (50.0%) "
-                                          "· Fisher p = 1.000 (this look's threshold 0.011) · P(no intro better) = 0.50")
+                                          "· Fisher p = 1.000 (this look's threshold 0.011): does not cross "
+                                          "· P(no intro better) = 0.500, for information")
     lines, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=60))
     assert at_look == ["warm-intro"] and lines[0].startswith(
         "  warm-intro (one-change variant test) reached look 1: 2 accounts")
@@ -571,8 +592,8 @@ def test_an_uneven_ab_test_splits_by_its_share():
     cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(40)]
     rows = make_settings().copy + (copy_row("agencies-v2", "Marketing & Creative Agencies"),)
     uneven = dataclasses.replace(FIRST_TEST, share_a=0.8)
-    ctx, _ = make(live=True, settings=make_settings(live_sending=True, tests=(uneven,), copy=rows),
-                  accounts=accts, contacts=cons)
+    s = make_settings(live_sending=True, tests=(uneven,), copy=rows, live_split="test")  # no start_date: W3-4 r1
+    ctx, _ = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     arms = {i: ctx.store.get("contacts", contact_id=f"c-{i}").get("test_arm") for i in range(40)}
     in_test = {i: arm for i, arm in arms.items() if arm}

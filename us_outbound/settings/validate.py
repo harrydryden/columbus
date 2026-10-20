@@ -1330,15 +1330,11 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None], *,
                 errors["Tests"].append(RowError("Tests", row, col, f"{version!r} is not a copy_version on the Copy tab", t.test_id))
             elif status != "approved":
                 errors["Tests"].append(RowError("Tests", row, col, f"a running test needs {version} approved", t.test_id))
-    # One randomised split draws arms (W3-4, 21 Oct 2026; design-final §5 L10): a test started from REGISTRY_FROM runs
-    # only while General live_split names its split alone (test for a copy test; opener or subject for a holdout).
-    # The error is the Tests tab's, which keeps General's version with its own (spec.EXTRA_DEPENDS).
-    split = values["General"].live_split
-    for t, row in tests:
-        if t.status == "running" and t.registered and split != t.split():
-            errors["Tests"].append(RowError(
-                "Tests", row, "status", f"a running test needs General live_split = {t.split()} (it is {split}), so "
-                                        "that it is the one split drawing arms", t.test_id))
+    # One randomised split draws arms (W3-4, 21 Oct 2026; design-final §5 L10). General live_split is not checked
+    # against the Tests tab here (W3-4 r1): the error would keep the Tests tab back, and General, with live_sending = no,
+    # could then be kept back with it. A test started from REGISTRY_FROM draws arms only while live_split names its
+    # split (Settings.drawn_test); settings_sync posts once a day while a running one does not (sync.split_mismatches),
+    # and `test start` refuses to start one under another split (learn/looks.start).
     values["Tests"] = tests
 
     # An Overrides industry names an Industries label and an industry_group a group, as written there (9 Oct 2026:

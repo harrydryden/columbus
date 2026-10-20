@@ -9,10 +9,12 @@ from __future__ import annotations
 import dataclasses
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import SETTINGS, slack_routes
 from us_outbound.base import holds
-from us_outbound.learn import early_warning, metrics
+from us_outbound.learn import early_warning, kill_rules, metrics
 from us_outbound.ops import health
 
 NOW = datetime(2026, 12, 7, 8, 50, tzinfo=UTC)
@@ -103,6 +105,43 @@ def test_early_warning_pause_yes_holds_new_enrolment_once():
         "kill_rule", "open", "pause_enrolment", False)  # not re-posted as a kill rule's alert
     assert early_warning.check(ctx)["held"] is None  # held already: no second item
     assert len(ctx.store.select("hitl_items", {"kind": "kill_rule"})) == 1
+
+
+def test_a_cleared_hold_does_not_come_back_the_next_day():
+    """W3-4 r1: with early_warning_pause = yes the warning holds; Harry clears it (`killrules clear`); the next
+    metrics_daily (a day later, the same ISO week, so its post went out already) still sees 0 of 100. It holds no
+    more (like the stop rule: one hold per warning, ever), so enrolment is not paused again silently; the post says
+    so the next week. The hold was recorded before its alert."""
+    ctx = world(100, pause=True)
+    first = early_warning.check(ctx)
+    item = ctx.store.get("hitl_items", item_id=first["held"])
+    assert item is not None and item["created_at"] == NOW and len(posts(ctx)) == 1
+    assert "New enrolment is paused until `us-outbound killrules clear" in posts(ctx)[0]
+    kill_rules.clear(ctx, first["held"], "Harry")
+    assert holds.enrolment_stop(ctx.store) is None
+    tomorrow = dataclasses.replace(ctx, now=NOW + timedelta(days=1))
+    TRANSPORTS[id(tomorrow)] = TRANSPORTS[id(ctx)]
+    again = early_warning.check(tomorrow)
+    assert [w["name"] for w in again["warnings"]] == ["no_human"] and again["held"] is None
+    assert holds.enrolment_stop(tomorrow.store) is None and len(posts(ctx)) == 1  # nothing new this week
+    assert len(ctx.store.select("hitl_items", {"kind": "kill_rule"})) == 1
+    next_week = dataclasses.replace(ctx, now=NOW + timedelta(days=7))
+    TRANSPORTS[id(next_week)] = TRANSPORTS[id(ctx)]
+    assert early_warning.check(next_week)["held"] is None and holds.enrolment_stop(ctx.store) is None
+    assert "its hold was cleared with `us-outbound killrules clear`" in posts(ctx)[-1]
+
+
+def test_the_hold_is_written_before_the_alert(monkeypatch):
+    """Holds are recorded before alerts: a post that fails leaves the hold in place."""
+    ctx = world(100, pause=True)
+
+    def down(*a, **k):
+        raise RuntimeError("slack is down")
+
+    monkeypatch.setattr(early_warning.notify, "post_once", down)
+    with pytest.raises(RuntimeError):
+        early_warning.check(ctx)
+    assert "No human reply from 100 companies" in holds.enrolment_stop(ctx.store)
 
 
 def test_it_runs_inside_metrics_daily():

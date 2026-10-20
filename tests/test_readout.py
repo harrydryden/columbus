@@ -551,8 +551,8 @@ def test_a_test_at_a_look_is_a_decision_waiting():
     # One look (the read date): its threshold is the whole alpha, 0.10; Fisher on 0 of 2 against 0 of 2 is 1; with
     # no reply either side the Beta posteriors are the same, so P(general-v1 better) = 0.5.
     at = lines.index("  t1 (A/B copy test) reached look 1 (the read date): Thu 08 Oct 2026: eap-v1 0 of 2 replied "
-                     "(0.0%); general-v1 0 of 2 replied (0.0%) · Fisher p = 1.000 (this look's threshold 0.100) · "
-                     "P(general-v1 better) = 0.50")
+                     "(0.0%); general-v1 0 of 2 replied (0.0%) · Fisher p = 1.000 (this look's threshold 0.100): does "
+                     "not cross · P(general-v1 better) = 0.500, for information")
     assert lines[at + 1].startswith('    *What to do:* apply its decision rule ("reply rate")')
 
 

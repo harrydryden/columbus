@@ -56,7 +56,7 @@ RATE_DAYS = 28  # the trailing window of the rate into the split
 ARMS_READ_AT = 300  # random-arm companies matured at 28 days before the explore arm is read once (L8)
 READ_AT = 0.95  # the pre-registered read: P(ranked > random) on O4 above this
 MIN_CELL = 15  # an arm's interval prints once each arm has this many matured (RT §1.5)
-METRIC_WORDS = {"O4": "any human reply within 28 days", "O3": "a positive or referral reply within 28 days"}
+METRIC_WORDS = looks.METRIC_WORDS
 SPLIT_WORDS = {SPLIT_OPENER: "the opener holdout", SPLIT_SUBJECT: "email 1's subject split"}
 KIND_WORDS = {"ab": "A/B copy test", "variant": "one-change variant test", HOLDOUT_TEST: "holdout"}
 SHARE_WEEKS = 4  # step-1 weeks shown in the realised-share line
@@ -171,6 +171,7 @@ def registry_lines(ctx: Context) -> list[str]:
     planned n, reached and matured per arm, rate and projected date."""
     split = ctx.settings.general.live_split
     entries = registry(ctx)
+    mismatched = ctx.settings.split_mismatches()  # started from 21 Oct, and live_split is not its split
     head = (f"  General live_split = {split}: " + {
         SPLIT_BOTH: "the opener holdout, the subject split and the running copy test all draw arms (as before; "
                     "one experiment once D8 names it)",
@@ -182,7 +183,12 @@ def registry_lines(ctx: Context) -> list[str]:
     for e in entries:
         t = e.test
         kind = KIND_WORDS.get(t.kind, t.kind) if t.test_id else SPLIT_WORDS.get(e.split, e.split)
-        state = "drawing arms" if e.drawing else f"paused: General live_split is {split}, not {e.split}"
+        if not e.drawing:  # a copy test started from 21 Oct draws only under its split (Settings.drawn_test)
+            state = f"paused: General live_split is {split}, not {e.split}"
+        elif any(t is m for m in mismatched):  # a holdout row whose split draws beside the others (both)
+            state = f"drawing arms, but not alone: General live_split is {split}, not {e.split}"
+        else:
+            state = "drawing arms"
         reg = (f"{t.metric} ({METRIC_WORDS[t.metric]}) · {t.method} at alpha {t.total_alpha:.2f} · looks "
                f"{_looks_text(t)} ({t.look_rule}) · definition {t.definition_version}") if e.row else (
             f"not pre-registered on the Tests tab: read as {t.metric} ({METRIC_WORDS[t.metric]}), {t.method} at alpha "

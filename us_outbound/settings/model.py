@@ -777,9 +777,22 @@ class Settings:
         return next((t for t in self.tests if t.status == "running" and t.kind in COPY_TEST_KINDS), None)
 
     def drawn_test(self) -> Test | None:
-        """The running copy test, when General live_split lets it draw arms (both or test); else None, and enrol gives
-        no new contact a test arm (W3-4)."""
-        return self.running_test() if self.general.live_split in (SPLIT_BOTH, SPLIT_TEST) else None
+        """The running copy test, when General live_split lets it draw arms; else None, and enrol gives no new contact
+        a test arm (W3-4). A test started from REGISTRY_FROM draws only under live_split = test, as the one split; one
+        started before (warm-intro-70) under both or test, as it did before live_split. Decided here, where arms are
+        drawn, and not in validation, so a Tests row never keeps General back (W3-4 r1, 21 Oct 2026)."""
+        t = self.running_test()
+        if t is None:
+            return None
+        allowed = (SPLIT_TEST,) if t.registered else (SPLIT_BOTH, SPLIT_TEST)
+        return t if self.general.live_split in allowed else None
+
+    def split_mismatches(self) -> list[Test]:
+        """The running tests started from REGISTRY_FROM whose split is not General live_split: a copy test's arms are
+        not drawn (drawn_test is None), and a holdout's split, if it draws, is not the one split (settings_sync posts
+        once a day; the readout's registry shows it)."""
+        split = self.general.live_split
+        return [t for t in self.tests if t.status == "running" and t.registered and t.split() != split]
 
     def draws_opener_holdout(self) -> bool:
         """Whether the opener holdout draws (General live_split both or opener; W3-4)."""

@@ -548,7 +548,7 @@ def test_anything_apply_approved_did_not_foresee_is_recorded_and_the_sync_goes_o
     assert _in_force(ctx, "States", "NC")["values"]["active"] == "yes"
 
 
-# -- W3-4 (21 Oct 2026): the ICP widening post; Tests keeps General's version with its own ------------------------------
+# -- W3-4 (21 Oct 2026): the ICP widening post; a Tests row never keeps General back (r1) ------------------------------
 
 
 def test_a_sync_that_activates_10_more_labels_posts_once_so_the_decision_log_can_say_why(ctx, sheet):
@@ -570,20 +570,41 @@ def test_a_sync_that_activates_10_more_labels_posts_once_so_the_decision_log_can
     assert sync.widening(narrower, before) == ["max_employees 200 → 249"]
 
 
-def test_a_tests_tab_kept_back_keeps_general_with_it(ctx, sheet):
-    """A test started from 21 Oct runs only while General live_split names its split (W3-4). The version in force has
-    a running copy test and live_split = test; the sheet then sets live_split back to both. The Tests tab in force
-    no longer fits, so it is rejected, and General (which it now depends on: spec.EXTRA_DEPENDS) is held back with
-    it: the settings in force stay usable, with live_split = test."""
+def _general(sheet, key: str, value: str) -> None:
+    next(r for r in sheet["General"] if r["key"] == key)["value"] = value
+
+
+def test_live_sending_no_comes_into_force_whatever_the_tests_tab_says(ctx, sheet):
+    """W3-4 r1 (the review's probe): in force, live_split = test, live_sending = yes and a copy test started from 21 Oct
+    running. Harry then sets live_split = none and live_sending = no, and leaves the Tests row on running. Before r1 the
+    Tests tab no longer validated and kept General back with it (spec.EXTRA_DEPENDS), so live_sending = yes stayed in
+    force. Now nothing is rejected: live_sending = no is in force, the Tests tab is in force with its test running, and
+    the test draws no arms (Settings.drawn_test is None under live_split none). One post a day says the test is
+    paused; the same sync again the same day posts nothing more."""
     for c in sheet["Copy"]:
         c.update(status="approved", approved_by="Harry")
-    next(r for r in sheet["General"] if r["key"] == "live_split")["value"] = "test"
+    _general(sheet, "live_split", "test")
+    _general(sheet, "live_sending", "yes")
+    _general(sheet, "approver_slack_ids", "U01HARRY")  # live_sending = yes needs one
     sheet["Tests"][0].update(status="running", start_date="2026-10-26", read_date="2027-02-01",
                              version_a=sheet["Copy"][0]["copy_version"], version_b=sheet["Copy"][1]["copy_version"])
     first = sync.run(ctx)
-    assert first["rejected"] == [], first
-    next(r for r in sheet["General"] if r["key"] == "live_split")["value"] = "both"
+    assert first["rejected"] == [] and first["split_mismatches"] == [], first
+    settings, _ = sync.load_current(ctx.store)
+    assert settings.general.live_sending is True and settings.drawn_test() is not None  # the one split, drawing
+
+    _general(sheet, "live_split", "none")
+    _general(sheet, "live_sending", "no")
     second = sync.run(dataclasses.replace(ctx, now=ctx.now + timedelta(hours=1)))
-    assert {"General", "Tests"} <= set(second["rejected"]) and second["unusable"] == []
+    assert second["rejected"] == [] and second["unusable"] == [], second
     settings, errors = sync.load_current(ctx.store)
-    assert settings is not None and settings.general.live_split == "test" and settings.running_test() is not None
+    assert not any(errors.values())
+    assert settings.general.live_sending is False and settings.general.live_split == "none"
+    test_id = sheet["Tests"][0]["test_id"]
+    assert settings.running_test().test_id == test_id and settings.drawn_test() is None
+    assert second["split_mismatches"] == [f"{test_id} needs General live_split = test (it is none): its arms are not "
+                                          "drawn for new contacts (paused)"]
+    told = [text for _, text in ctx.clients.slack.posts if sync.SPLIT_HEAD in text]
+    assert len(told) == 1 and test_id in told[0]
+    sync.run(dataclasses.replace(ctx, now=ctx.now + timedelta(hours=2)))
+    assert len([t for _, t in ctx.clients.slack.posts if sync.SPLIT_HEAD in t]) == 1  # once a day

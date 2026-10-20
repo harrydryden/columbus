@@ -510,6 +510,13 @@ def holding(ctx: Context, scope: str, target: str) -> bool:
     return _Fired(ctx.store).open(scope, target)
 
 
+def ever_fired(ctx: Context) -> set[str]:
+    """The rules a kill_rule item was ever recorded for, in any status (learn/early_warning.py holds a warning once,
+    as stop_rule_meetings fires once: _Fired.ever; W3-4 r1)."""
+    fired = _Fired(ctx.store)
+    return {str(fired._p(i).get("rule") or "") for i in fired.items} - {""}
+
+
 def hold(ctx: Context, f: Firing) -> None:
     """Record a hold another rule decided (learn/early_warning.py with early_warning_pause = yes; W3-4), as a firing
     of this module is recorded: in any mode, the safe direction. Its alert is the caller's (posted once a week), so

@@ -119,10 +119,12 @@ SPEC: dict[str, tuple[Col, ...]] = {
 assert tuple(SPEC) == TABS
 assert not any(c.optional and c.required for cols in SPEC.values() for c in cols)  # a missing column reads blank
 
-# A tab whose values name another tab's rows, beyond its columns' ref= (General's apollo_enrich_groups, which named
-# Industries groups, is a constant in code since W2-4). Tests reads General (W3-4, 21 Oct 2026): a test started from
-# 21 Oct 2026 runs only while General live_split names its split, so a Tests tab kept back keeps General's too.
-EXTRA_DEPENDS: dict[str, tuple[str, ...]] = {"Tests": ("General",)}
+# A tab whose values name another tab's rows, beyond its columns' ref= (none since W2-4, 20 Oct 2026: General's
+# apollo_enrich_groups, which named Industries groups, is a constant in code now). Never General: a tab kept back keeps
+# the tabs it depends on with it, and General carries live_sending = no and the brakes, which always come into force
+# (W0). So whether General live_split lets a Tests row draw arms is decided where arms are drawn
+# (Settings.drawn_test), not in validation (W3-4 r1, 21 Oct 2026).
+EXTRA_DEPENDS: dict[str, tuple[str, ...]] = {}
 
 
 def columns(tab: str) -> list[str]:

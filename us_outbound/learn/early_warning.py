@@ -16,8 +16,9 @@ is the mail delivered) and not the copy. Each warning reads companies once, inte
 check(ctx) runs inside metrics_daily (08:50 UK), after the series is written. Each warning is posted once an ISO week
 (notify.post_once) with its n and P, to the alert channel. It is an alert: it pauses new enrolment only when General
 early_warning_pause = yes (Harry's D13), and then as the stop rule pauses it, a kill_rule hold of action
-pause_enrolment (base/holds.py) that `us-outbound killrules clear <item> --live` lifts. The 5-in-1,500 stop rule stays
-as the brake until D13.
+pause_enrolment (base/holds.py) that `us-outbound killrules clear <item> --live` lifts. Each warning holds once, as the
+stop rule fires once: after a clear it goes on alerting weekly and does not hold again (W3-4 r1); another warning that
+fires later holds. The hold is recorded before its alert. The 5-in-1,500 stop rule stays as the brake until D13.
 """
 
 from __future__ import annotations
@@ -85,18 +86,30 @@ def check(ctx: Context, found: Sequence[Outcome] | None = None) -> dict[str, Any
                                "posted": [], "held": None}
     if not fired:
         return summary
-    lines = [(notify.once_key(ctx, "early_warning", w.name, per="week"), f"• {w.line}") for w in fired]
     pause = ctx.settings.general.early_warning_pause
-    foot = ("New enrolment is paused until `us-outbound killrules clear <item> --live` (General early_warning_pause = "
-            "yes)." if pause else "This is an alert only: nothing is paused (General early_warning_pause = no; the "
-            "stop rule of 5 meetings in the first stop_rule_accounts companies stays the brake).")
-    sent = notify.post_once(ctx, lines, head=f"{say.URGENT} *Early warning: outcomes far below plan*", foot=foot)
-    summary["posted"] = sent.get("keys") or []
-    if pause and not kill_rules.holding(ctx, SCOPE, TARGET):
-        first = fired[0]
-        f = kill_rules.Firing(f"early_warning_{first.name}", SCOPE, TARGET, PAUSE_ENROLMENT, first.line,
-                              numbers={"n": first.n, "k": first.k, "p": round(first.p, 4)})
+    # The hold first, then the alert (holds are recorded before alerts). A warning holds once: like the stop rule
+    # (kill_rules: fired.ever), a warning whose hold Harry cleared (`killrules clear`) never holds again, or the next
+    # metrics_daily would pause enrolment again, silently, as its post went out that week (W3-4 r1).
+    holding = pause and kill_rules.holding(ctx, SCOPE, TARGET)
+    fired_before = kill_rules.ever_fired(ctx)
+    new = next((w for w in fired if f"early_warning_{w.name}" not in fired_before), None)
+    if pause and not holding and new is not None:
+        f = kill_rules.Firing(f"early_warning_{new.name}", SCOPE, TARGET, PAUSE_ENROLMENT, new.line,
+                              numbers={"n": new.n, "k": new.k, "p": round(new.p, 4)})
         kill_rules.hold(ctx, f)
         summary["held"] = f.item_id
+        holding = True
+    lines = [(notify.once_key(ctx, "early_warning", w.name, per="week"), f"• {w.line}") for w in fired]
+    if holding:
+        foot = ("New enrolment is paused until `us-outbound killrules clear <item> --live` (General "
+                "early_warning_pause = yes).")
+    elif pause:
+        foot = ("This is an alert only: its hold was cleared with `us-outbound killrules clear`, and a warning holds "
+                "once (General early_warning_pause = yes).")
+    else:
+        foot = ("This is an alert only: nothing is paused (General early_warning_pause = no; the stop rule of 5 "
+                "meetings in the first stop_rule_accounts companies stays the brake).")
+    sent = notify.post_once(ctx, lines, head=f"{say.URGENT} *Early warning: outcomes far below plan*", foot=foot)
+    summary["posted"] = sent.get("keys") or []
     log("early_warning", run_id=ctx.run_id, **summary)
     return summary

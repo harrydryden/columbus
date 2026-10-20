@@ -874,8 +874,9 @@ def _prereg_tabs(tabs, **row):
 def test_a_test_started_from_21_oct_needs_its_pre_registration_and_its_split(tabs):
     """W3-4 (design-final §5 L10; RT §3): the Tests tab is the pre-registration. A test started on or after 21 Oct
     2026 runs only with metric_id (O3 or O4), definition_version, test, alpha and look_thresholds, and only while
-    General live_split names its split alone; one started before (warm-intro-70, 12 Oct) keeps the rules it started
-    under, so the live sheet's Tests tab still validates with live_split = both."""
+    General live_split names its split alone (drawn_test; not a validation error since r1); one started before
+    (warm-intro-70, 12 Oct) keeps the rules it started under, so the live sheet's Tests tab still validates and draws
+    with live_split = both."""
     settings, errors = validate_all(_prereg_tabs(tabs))
     assert not any(errors.values())
     t = settings.running_test()
@@ -889,14 +890,17 @@ def test_a_test_started_from_21_oct_needs_its_pre_registration_and_its_split(tab
     of = _prereg_tabs(tabs, look_thresholds="obrien_fleming")
     assert "needs at least one look before the read_date" in _one(of, "Tests", "looks").message
     assert not any(validate_all(_prereg_tabs(tabs, look_thresholds="obrien_fleming", looks="2026-12-01"))[1].values())
-    # The split: a copy test needs live_split = test; both (today's draws) refuses it, on the Tests tab.
-    wrong = _one(_prereg_tabs(tabs, live_split="both"), "Tests", "status")
-    assert "needs General live_split = test (it is both)" in wrong.message
+    # The split is not checked here (W3-4 r1): an error would keep General back with the Tests tab, live_sending = no
+    # with it. Under both the test validates and draws no arms (Settings.drawn_test; settings_sync says so daily).
+    settings, errors = validate_all(_prereg_tabs(tabs, live_split="both"))
+    assert not any(errors.values()) and settings.drawn_test() is None
+    assert [t.test_id for t in settings.split_mismatches()] == ["t1-eap-opener"]
     # Started before 21 Oct: no pre-registration needed, and it runs beside both, as warm-intro-70 does.
     legacy = _prereg_tabs(tabs, live_split="both", start_date="2026-10-12", metric_id="", definition_version="",
                           test="", alpha="", look_thresholds="")
     settings, errors = validate_all(legacy)
     assert not any(errors.values()) and settings.running_test().registered is False
+    assert settings.drawn_test() is settings.running_test() and settings.split_mismatches() == []
     assert (settings.running_test().metric, settings.running_test().method) == ("O4", "fisher_exact")  # the defaults
 
 

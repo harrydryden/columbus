@@ -337,9 +337,18 @@ def test_a_pre_registered_test_is_decided_on_its_own_metric():
     o3 = run(_registered())
     assert (o3["metric_id"], o3["measure"], o3["reply_p"], o3["look_threshold"]) == ("O3", "positive", 0.2373, 0.1)
     assert o3["crossed"] is False and o3["pre_registered"] is True
+    # The line shows the counts the read decided on (positive, 3 and 0, not the 5 human replies) and says it does not
+    # cross (W3-4 r1: it printed "replied" counts beside the positive p before).
+    line = looks.summary_line(o3)
+    assert line.startswith("eap-v1 3 of 30 positive (10.0%); general-v1 0 of 30 positive (0.0%) · Fisher p = 0.237 "
+                           "(this look's threshold 0.100): does not cross · P(general-v1 better) = ")
+    assert "replied" not in line and line.endswith(", for information")
+    assert looks.decides_line(o3).startswith("O3 (a positive or referral reply within 28 days) decides, by Fisher's")
     old = run(ab_test(read_date=date(2026, 11, 20)))  # started 28 Sep, no pre-registration: O4, Fisher, 0.10, O'Brien-Fleming over one look
     assert (old["metric_id"], old["reply_p"], old["look_threshold"], old["crossed"]) == ("O4", 0.0522, 0.1, True)
     assert old["pre_registered"] is False
+    assert "eap-v1 5 of 30 replied (16.7%)" in looks.summary_line(old)
+    assert "Fisher p = 0.052 (this look's threshold 0.100): crosses ·" in looks.summary_line(old)
 
 
 def test_a_beta_posterior_test_crosses_on_p_b_better_beyond_half_the_threshold_each_side():
@@ -350,6 +359,30 @@ def test_a_beta_posterior_test_crosses_on_p_b_better_beyond_half_the_threshold_e
         emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0, reply="objection" if i < 5 else None)
     result = looks.read(ctx, "t1")
     assert result["reply_test"] == "beta_posterior" and result["p_b_better"] == 0.005 and result["crossed"] is True
+    line = looks.summary_line(result)
+    assert ("· P(general-v1 better) = 0.005 (crosses outside 0.050 … 0.950): crosses · Fisher p = 0.052, for "
+            "information") in line
+    assert "beta posteriors" in looks.decides_line(result).casefold()
+
+
+def test_a_beta_posterior_between_half_the_threshold_and_the_threshold_does_not_cross():
+    """4 of 30 replied with eap-v1 (a), 1 of 30 with general-v1 (b). P(b > a) from Beta(1.5, 29.5) against Beta(4.5,
+    26.5): stats.beta_posterior_gt gives 0.078 (a normal approximation, means 0.048 and 0.145, sd of the difference
+    √(0.00144 + 0.00388) = 0.0729, gives Φ(−0.097 ÷ 0.0729) = Φ(−1.33) ≈ 0.09; the right skew of the smaller arm's
+    posterior lowers it).
+    It is above 0.10 / 2 = 0.05 and below 0.95, so the two-sided rule at alpha 0.10 does not cross; the mutation that
+    drops the halving (crossing below 0.10) would call it. Fisher's p, for information: 5 successes in 60, 30 a side,
+    C(60, 5) = 5,461,512; tables as or less likely than x = 4: x = 4 and 1 (27,405 × 30 = 822,150 each), x = 5 and 0
+    (142,506 each), so p = 1,929,312 / 5,461,512 = 0.353."""
+    ctx = world(_registered(metric_id="O4", test="beta_posterior"))
+    for i in range(60):
+        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0, reply="objection" if i in (0, 1, 2, 3, 30) else None)
+    result = looks.read(ctx, "t1")
+    assert (result["versions"]["eap-v1"]["replied"], result["versions"]["general-v1"]["replied"]) == (4, 1)
+    assert 0.05 < result["p_b_better"] < 0.10 and result["p_b_better"] == 0.078
+    assert result["reply_p"] == 0.3533 and result["crossed"] is False
+    assert ("P(general-v1 better) = 0.078 (crosses outside 0.050 … 0.950): does not cross · Fisher p = 0.353, for "
+            "information") in looks.summary_line(result)
 
 
 def test_the_first_look_at_145_calls_nothing_at_6_against_2():

@@ -174,7 +174,10 @@ companies each side needs (589 a side to tell 3% from 6%), how many it has, and 
 current pace. A test started from 21 Oct needs, on the Tests tab before `us-outbound test start`, `metric_id` (O4: any
 human reply within 28 days; O3: a positive one), `definition_version` (the metrics' version, 2026-10-20), `test`
 (`fisher_exact` or `beta_posterior`), `alpha` (like 0.10) and `look_thresholds` (`one_look`, or `obrien_fleming` with
-looks), and runs alone, with `live_split` naming its split. `warm-intro-70` runs on as it started.
+looks), and runs alone, with `live_split` naming its split. While a running test's split is not `live_split`, it
+draws no arms (a copy test) or draws beside the others (a holdout under `both`): the registry line says "paused" or
+"not alone", and one post a day says so. The sync never holds General back for it, so `live_sending` = no always
+comes into force. `warm-intro-70` runs on as it started.
 
 **The early warning** (from 21 Oct 2026; `metrics_daily`). One post a week, only when it fires: no human reply from
 100 companies that have had 28 days (P = 0.048 if the true rate were 3%), or a meeting or positive-reply rate very

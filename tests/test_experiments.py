@@ -77,6 +77,34 @@ def test_live_split_both_lists_the_three_splits_drawing_and_a_paused_test_stays_
                                                "  No split is drawing arms and no test is running."]
 
 
+def test_a_test_started_from_21_oct_under_another_split_is_shown_paused_or_not_alone():
+    """W3-4 r1: a mismatch is no validation error, so the registry says it. A pre-registered ab test started 26 Oct
+    under live_split = both draws no arms (Settings.drawn_test): paused. A pre-registered opener holdout under both
+    still has its arms drawn (the opener holdout draws under both), beside the subject split: not alone. Under
+    live_split = opener, the holdout is the one split: drawing arms, nothing more."""
+    prereg = {"metric_id": "O4", "definition_version": "2026-10-20", "test": "fisher_exact", "alpha": 0.10,
+              "look_thresholds": "one_look"}
+    ab = CopyTest("short-email-1", "", "agencies-v1", "agencies-v2", 589, "running", start_date=date(2026, 10, 26),
+                  read_date=date(2027, 4, 26), **prereg)
+    ctx = ctx_with()
+    ctx.settings = dataclasses.replace(ctx.settings, tests=(ab,))
+    assert ctx.settings.drawn_test() is None
+    got = [(e.split, e.name, e.drawing) for e in experiments.registry(ctx)]
+    assert got == [("opener", "the opener holdout", True), ("subject", "email 1's subject split", True),
+                   ("test", "short-email-1", False)]
+    assert "short-email-1 (A/B copy test; paused: General live_split is both, not test)" in \
+        experiments.registry_lines(ctx)[3]
+    holdout = CopyTest("opener-holdout", "", "opener", "holdout", 589, "running", start_date=date(2026, 10, 26),
+                       read_date=date(2027, 4, 26), kind="holdout", **prereg)
+    ctx.settings = dataclasses.replace(ctx.settings, tests=(holdout,))
+    lines = experiments.registry_lines(ctx)
+    assert ("opener-holdout (holdout; drawing arms, but not alone: General live_split is both, not opener)"
+            in lines[1])
+    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
+                                                                                 live_split="opener"))
+    assert "opener-holdout (holdout; drawing arms)" in experiments.registry_lines(ctx)[1]
+
+
 def test_a_registered_test_prints_its_fields_reached_matured_and_a_date():
     """A pre-registered ab test, live_split = test. 60 companies in it: 20 a side matured (step 1 60 days ago) and 10
     a side sent in the last 14 days, so the rate into it is 20 companies in the last 28 days over min(28, 60) days =

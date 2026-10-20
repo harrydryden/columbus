@@ -49,7 +49,7 @@ from us_outbound.logs import log
 from us_outbound.settings.definitions import apply_approved
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings import spec
-from us_outbound.settings.model import OPTIONAL_TABS, TABS, Settings
+from us_outbound.settings.model import OPTIONAL_TABS, SPLIT_BOTH, SPLIT_TEST, TABS, Settings
 from us_outbound.settings.validate import (
     HEADER_ROW,
     KEY_COLUMNS,
@@ -477,6 +477,7 @@ def run(ctx: Context) -> dict:
         lookalike = _lookalikes(current)
         rescored = _rescore(current)
     widened = _post_widening(ctx, ctx.settings, settings) if settings is not None else []
+    split_paused = _post_split_mismatches(ctx, settings) if settings is not None else []
 
     summary = {
         "sheet_id": sheet_id,
@@ -495,6 +496,7 @@ def run(ctx: Context) -> dict:
         "warnings_posted": warned,
         "fallback": fallback,
         "icp_widened": widened,
+        "split_mismatches": split_paused,
     }
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
         summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
@@ -555,6 +557,48 @@ def _post_widening(ctx: Context, before: Settings | None, after: Settings) -> li
         raise
     except Exception as exc:
         log("icp_widening_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
+
+
+SPLIT_HEAD = "A running test is not the split General live_split names"
+
+
+def split_mismatches(settings: Settings) -> list[str]:
+    """One line per running test started from 21 Oct 2026 whose split is not General live_split (W3-4 r1;
+    Settings.split_mismatches): a copy test's arms are not drawn for new contacts, and a holdout's split, if it draws,
+    is not the one split. Validation does not refuse this (spec.EXTRA_DEPENDS: the Tests tab never keeps General back,
+    so live_sending = no always comes into force); this says so instead."""
+    return [line for _, line in _mismatches(settings)]
+
+
+def _mismatches(settings: Settings) -> list[tuple[str, str]]:
+    split = settings.general.live_split
+    out = []
+    for t in settings.split_mismatches():
+        state = ("its arms are not drawn for new contacts (paused)" if t.split() == SPLIT_TEST or split not in
+                 (SPLIT_BOTH, t.split()) else "its split draws beside the others, so it is not the one split")
+        out.append((t.test_id, f"{t.test_id} needs General live_split = {t.split()} (it is {split}): {state}"))
+    return out
+
+
+def _post_split_mismatches(ctx: Context, settings: Settings) -> list[str]:
+    """Once a day per test while its split is not General live_split (split_mismatches). Never raises."""
+    from us_outbound.base import notify, say
+
+    try:
+        found = _mismatches(settings)
+        if not found:
+            return []
+        lines = [line for _, line in found]
+        pairs = [(notify.once_key(ctx, "test_split", test_id), f"• {_slack_escape(line)}") for test_id, line in found]
+        notify.post_once(ctx, pairs, head=f"{say.ACTION} *{SPLIT_HEAD}*",
+                         foot=f"_Set General live_split to the test's split, or stop the test, on the "
+                              f"{say.sheet_link(ctx, 'General')}; contacts already enrolled keep their arms._")
+        return lines
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("test_split_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         return []
 
 

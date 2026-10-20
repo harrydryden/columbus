@@ -619,6 +619,9 @@ def test_test_read_reports_reply_rate_per_version_at_the_read_date(capsys):
                                             "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
     assert result["versions"]["general-v1"]["delivered"] == 2 and result["versions"]["general-v1"]["reply_rate"] == 0.0
     assert result["look"]["final"] and "Read at look 1 (the read date)" in out and "Harry writes the result" in out
+    # What decides comes from the test's registration (W3-4 r1): t1 has none, so the defaults (O4, Fisher, 0.10).
+    assert ("O4 (any human reply within 28 days) decides, by Fisher's exact two-sided p, crossing below this look's "
+            "threshold (obrien_fleming, total alpha 0.10)") in out and "Reply rate decides" not in out
     assert h.store.tables["heartbeats"] == []  # a read writes nothing
 
 

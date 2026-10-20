@@ -298,7 +298,8 @@ TEST_COPY = COPY + (copy_row("agencies-v2", AGENCIES, subjects=V2_SUBJECTS),)
 def test_running_test_splits_version_a_accounts_and_records_the_test():
     accts = [account(account_id=f"ag-{i}", domain=f"ag{i}.com", clean_name=f"Agency {i}") for i in range(8)]
     cons = [contact(contact_id=f"c-{i}", account_id=f"ag-{i}", email=f"p{i}@ag{i}.com") for i in range(8)]
-    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
+    # FIRST_TEST has no start_date, so it reads as started from 21 Oct: it draws under live_split = test (W3-4 r1).
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY, live_split="test")
     ctx, t = make(live=True, settings=s, accounts=accts, contacts=cons)
     enrol.run(ctx)
     leads = {lead["email"]: lead for r in instantly_posts(t) for lead in r.json["leads"]}
@@ -317,7 +318,7 @@ def test_running_test_splits_version_a_accounts_and_records_the_test():
 def test_other_copy_stays_out_of_the_test_and_a_former_control_account_is_in_it():
     """The test takes the accounts that would get its version_a. The Control tier's were left out until the tiers
     went (W2-2): acc-3, still tiered Control as a rescore has not reached it, is now in the test like any other."""
-    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
+    s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY, live_split="test")  # W3-4 r1
     ctx, _ = make(live=True, settings=s)
     enrol.run(ctx)
     assert ctx.store.get("accounts", account_id="acc-3")["tier"] == "Control"
