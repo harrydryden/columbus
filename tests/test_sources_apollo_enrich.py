@@ -146,6 +146,20 @@ def test_no_enrich_group_enriches_nothing(monkeypatch):
     assert out["skipped"] is True and "APOLLO_ENRICH_GROUPS is empty" in out["reason"] and t.requests == []
 
 
+def test_a_group_renamed_on_the_industries_tab_fails_the_run_before_any_apollo_call(monkeypatch):
+    """The sync-time check that the groups name Industries groups went with the General key (W2-4); in its place the
+    run itself refuses: "Tech & Startups" (a rename of TECH on the tab, say) matches no group on BASE's Industries
+    tab, so the run raises naming it and Apollo is never asked (the error heartbeat is what heartbeat_check reports).
+    The group's own name in another case still matches (the comparison is casefold, as candidates' is)."""
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", ("Tech & Startups",))
+    ctx, t, _ = make([acct("a1")], settings=settings_with())
+    with pytest.raises(ValueError, match="'Tech & Startups', not an industry_group on the Industries tab"):
+        enrich.run(ctx)
+    assert t.requests == []
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", (TECH.upper(),))
+    assert "groups" in enrich.run(ctx)
+
+
 def test_nothing_due_spends_nothing():
     ctx, t, _ = make([acct("a1")])
     ctx.store.insert("signal_events", [marker("a1", 10)])

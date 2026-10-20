@@ -61,8 +61,11 @@ campaign's last one finishes.
    it holds it (`scheduler_lock_held`). Past 3 minutes it pings the outside watchdog's /fail and keeps waiting:
    look for a second worker or a stuck old container. `heartbeat_check` at :05 shows the jobs ran.
    **Dry-run first**, then `us-outbound status` (its go-live checks: Copy, Campaigns, Watchdog; `golive` went with
-   W2-1, 20 Oct 2026). A deploy while enrol (12:00 UK) or poll_approvals runs is
-   fine: jobs are idempotent and the scheduler drains for 30 seconds. **Not from 06:55 to 07:15 UK**
+   W2-1, 20 Oct 2026). A deploy while a frequent job runs (poll_replies, sync_outcomes) is
+   fine: jobs are idempotent, the scheduler drains for 30 seconds and the next run is minutes away. **Not from
+   11:55 UK until enrol's 12:00 heartbeat reads ok** (it is stopped at 15 minutes): an enrol cut off has its error
+   row, so the catch-up below does not run it again and that day's enrol is lost; if a deploy lands then anyway, run
+   `us-outbound run enrol --live` by hand once the new worker holds its lock. **Not from 06:55 to 07:15 UK**
    (whole-wave review, 20 Oct 2026): mailbox_health runs only at 07:00, and a run cut off after 25 s stops part-way
    through its Instantly writes (warmup, daily limits, sender names). The new scheduler catches up a daily job
    whose time fell in the 90 minutes before it started only when no run of it began since (W2-4, 20 Oct 2026): a

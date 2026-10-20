@@ -455,6 +455,32 @@ def test_a_row_the_job_finished_itself_is_left_as_it_is():
     assert (row["status"], row["exit_code"], row["duration_s"]) == ("error", 143, 60.0) and len(_beats(store, "enrol")) == 3
 
 
+def test_a_claimed_run_killed_at_its_timeout_sets_its_own_claim_row_not_a_later_skip_row():
+    """Reviewer's case: the scheduled enrol claims 11:00 (its row "running"); an operator's `run enrol` at 11:10 is
+    skipped behind it (a "skipped" row, the latest of the job); the scheduled run is killed at its timeout. Before the
+    fix the latest row (the skip) was taken as the run's own, so it returned "left" and the claim row stayed
+    "running". The claim row is the run's own: it is set to error; the skip row is untouched."""
+    from us_outbound.clients.db import MemoryStore
+    from us_outbound.clients.guard import Guard
+
+    store = MemoryStore(Guard())
+    launch = utc(2026, 10, 20, 11, 0)
+    claim = "enrol:2026-10-20T11:00"
+    store.upsert("heartbeats", [
+        {"run_id": claim, "job": "enrol", "started_at": launch + SEC, "finished_at": None, "status": "running",
+         "dry_run": False, "detail": None, "error": None},
+        {"run_id": "op-1", "job": "enrol", "started_at": launch + 10 * MIN, "finished_at": launch + 10 * MIN,
+         "status": "skipped", "dry_run": False, "detail": {"skipped": True}, "error": None}])
+    # Killed 15 minutes after launch (enrol's timeout): 900.0 s, exit -9.
+    assert hb.record_failed_run(store, "enrol", launch, launch + 15 * MIN, -9, "timeout", 900.0,
+                                run_id=claim) == "updated"
+    row = store.get("heartbeats", run_id=claim)
+    assert (row["status"], row["exit_code"], row["duration_s"], row["error"]) == ("error", -9, 900.0,
+                                                                                 "exited -9 (timeout)")
+    skip = store.get("heartbeats", run_id="op-1")
+    assert skip["status"] == "skipped" and skip["error"] is None and len(_beats(store, "enrol")) == 2
+
+
 def test_a_store_that_fails_inside_reap_never_stops_the_loop(capsys):
     start = utc(2026, 10, 6, 9, 0)
     clock = FakeClock(start)
@@ -631,6 +657,20 @@ def test_nothing_runs_until_the_lock_is_held_and_a_long_wait_tells_the_watchdog(
     assert len([w for w in waits if w["waited_seconds"] < sch.LOCK_WAIT_SECONDS]) == 90
     assert all(w["reason"] == "another scheduler holds the lock" for w in waits)
     assert _log_lines(out, "scheduler_lock_held")[0]["tries"] == 101
+
+
+def test_a_minute_that_begins_while_the_lock_is_awaited_is_still_run():
+    """A deploy launched at 09:04:55 whose lock is refused three times (tries at :55, :57, :59, 2 s apart) holds it at
+    09:05:01: the 09:05 start of a */5 job still runs, for that minute (before the fix the clock was read after the
+    wait, so 09:05 counted as the start minute and was never run: the first start was 09:10). The launch minute 09:04
+    is not run; then 09:10 on schedule."""
+    start = utc(2026, 10, 6, 9, 4, 55)
+    lock = FakeLock([False] * 3)
+    s, launcher = drive([job("polls", cron="*/5 * * * *")], start, utc(2026, 10, 6, 9, 11), lock=lock)
+    assert lock.tries == 4
+    assert [t.replace(second=0) for t in launcher.starts("polls")] == [utc(2026, 10, 6, 9, 5), utc(2026, 10, 6, 9, 10)]
+    assert launcher.starts("polls")[0] >= start + 6 * SEC  # nothing before the lock is held
+    assert [d for n, d in launcher.dues if n == "polls"] == [utc(2026, 10, 6, 9, 5), utc(2026, 10, 6, 9, 10)]
 
 
 def test_a_database_down_at_start_is_retried_with_backoff_and_the_watchdog_hears_at_5_minutes(capsys):

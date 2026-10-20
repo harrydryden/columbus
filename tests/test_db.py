@@ -24,6 +24,7 @@ from psycopg.rows import dict_row
 
 from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
+import us_outbound
 from us_outbound import budget
 from us_outbound.ops import health
 from us_outbound.ops import ddl, erase
@@ -976,7 +977,11 @@ def test_two_scheduler_processes_one_runs_the_other_waits_and_takes_over_after_s
         "from us_outbound.ops import scheduler as sch\n"
         "lock = SessionLock(Guard(), sys.argv[1], sch.SCHEDULER_KEY)\n"
         "sys.exit(sch.Scheduler([], lock=lock, fail=lambda r: print('FAIL', r, flush=True)).run())\n")
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    # The child imports the us_outbound this test imported (the tree under test), not whatever an editable
+    # install in the venv points at: the script runs from tmp_path, so the tree is not on its path otherwise.
+    tree = os.path.dirname(os.path.dirname(os.path.abspath(us_outbound.__file__)))
+    env = {**os.environ, "PYTHONUNBUFFERED": "1",
+           "PYTHONPATH": os.pathsep.join(p for p in (tree, os.environ.get("PYTHONPATH")) if p)}
 
     def start():
         return subprocess.Popen([sys.executable, str(script), dsn], stdout=subprocess.PIPE, text=True, env=env)

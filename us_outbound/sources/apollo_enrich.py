@@ -379,6 +379,14 @@ def run(ctx: Context) -> dict:
     if not APOLLO_ENRICH_GROUPS:
         summary.update(skipped=True, reason="APOLLO_ENRICH_GROUPS is empty, so no industry group is enriched")
         return _done(ctx, summary)
+    # The groups were a General key checked against the Industries tab at each sync; as a constant, a group renamed
+    # on the tab would match no account and enrich nothing without a word. It fails the run instead (an error
+    # heartbeat that heartbeat_check reports), before any Apollo call.
+    on_tab = {i.industry_group.casefold() for i in s.industries}
+    unknown = [g for g in APOLLO_ENRICH_GROUPS if g.casefold() not in on_tab]
+    if unknown:
+        raise ValueError(f"APOLLO_ENRICH_GROUPS (settings/model.py) names {', '.join(map(repr, unknown))}, not an "
+                         "industry_group on the Industries tab: rename it in the code to the tab's group")
     todo, stored = candidates(ctx)
     if not todo:
         summary.update(status="ok", candidates=0, stopped_by="no account in these groups is due an enrich")

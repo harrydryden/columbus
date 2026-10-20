@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -109,9 +110,13 @@ def test_a_due_minute_is_written_as_the_scheduler_writes_it(capsys):
     h = Harness()
     assert h.run("run", "suppression_load", "--due", "20 Oct 11:00") == 2
     assert "--due is the minute it was due" in capsys.readouterr().err and h.contexts == []
+    capsys.readouterr()
     assert h.run("run", "suppression_load", "--due", "2026-10-20T00:30") == 0
     [beat] = h.beats("suppression_load")
     assert beat["run_id"] == "suppression_load:2026-10-20T00:30" and beat["status"] == "ok"
+    # The claim id replaces the context's run id; one log line names both, so the "context" line can be matched up.
+    [claim] = [json.loads(line) for line in capsys.readouterr().out.splitlines() if '"run_claim"' in line]
+    assert claim["run_id"] == beat["run_id"] and claim["context_run_id"] not in ("", None, beat["run_id"])
     assert h.run("run", "suppression_load", "--due", "2026-10-20T00:30") == 0  # the same minute again: nothing runs
     assert len(h.beats("suppression_load")) == 1
 

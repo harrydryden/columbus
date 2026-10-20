@@ -32,8 +32,10 @@ The loop:
     SIGTERM ends its connection. Still waiting after LOCK_WAIT_SECONDS, it pings the outside watchdog's /fail and
     waits on: it never runs beside another, and never exits for want of the lock (a scheduler that exited left
     production with none). With Postgres out of reach it retries with backoff, and pings /fail after
-    DB_DOWN_FAIL_SECONDS; never a silent exit. A session lock dies with its connection, so before each minute's
-    tick the loop checks it still holds it, and takes it again (the same wait) before it starts anything more;
+    DB_DOWN_FAIL_SECONDS; never a silent exit. A minute that began during the wait is ticked once the lock is held
+    (the minute it was launched in is not), so a hand-over across a minute boundary drops no start. A session lock
+    dies with its connection, so before each minute's tick the loop checks it still holds it, and takes it again
+    (the same wait) before it starts anything more;
   * catches up (W2-4; code-platform-ops B7): when it starts, or takes the lock back, each job that runs daily or
     less often (health.EXPECTED of a day or more: its next try is hours away) whose time fell in the last
     CATCH_UP_MINUTES with no heartbeat since is started once, for that minute. A frequent job is not caught up: its
@@ -526,11 +528,16 @@ class Scheduler:
         previous = self._install_signal_handlers()
         try:
             log("scheduler_start", jobs=[j.name for j, _ in self.jobs], max_parallel=self.max_parallel, pid=os.getpid())
+            launched = self.clock()
             if not self.acquire_lock():
                 self.shutdown()
                 return 0
             start = self.clock()
-            next_minute = _floor(start) + MINUTE  # the minute it starts in is caught up, not ticked
+            # The minute it was launched in is caught up, not ticked. A minute that began during the wait for the lock
+            # is ticked (a deploy launched at 12:04:55 that holds the lock at 12:05:05 still runs 12:05's polls, as
+            # before the lock): the old container ticked it only if it was still running then, and if it did, the
+            # claim row makes this second start a skip.
+            next_minute = _floor(launched) + MINUTE
             by_name = {j.name: j for j, _ in self.jobs}
             self.pending.extend((by_name[name], start, False) for name in self.at_start)
             self.catch_up(start)

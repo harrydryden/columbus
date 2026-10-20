@@ -331,6 +331,10 @@ def _stages(ctx: Context, run: _Run) -> dict[str, tuple[int, str]]:
 
 
 def deals(ctx: Context, run: _Run) -> None:
+    """Each enrolled account's deals with a HubSpot company, one read per account (step 2 of the module docstring).
+    It stays beside bookings' one pipeline search (W2-4 kept it; the plan's "one pipeline search per run" folds only
+    the bookings): that search finds deals created in the last LOOKBACK_DAYS, so a later stage change on an older
+    deal (booked, held) is seen only here, and here a demo_requested account with no deal gets one."""
     g, hs = ctx.settings.general, ctx.clients.hubspot
     pipeline = g.hubspot_pipeline_id.strip()
     if not pipeline:

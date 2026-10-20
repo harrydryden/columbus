@@ -315,14 +315,16 @@ def summary_status(summary: Mapping[str, Any]) -> str:
 def record_failed_run(store: Any, name: str, started: datetime, now: datetime, code: int, status: str,
                       seconds: float, run_id: str | None = None) -> str:
     """The error row for a run the scheduler saw exit non-zero or stopped at its timeout (W1-1, 19 Oct 2026): the
-    run's own row still "running" (the latest of this job started at or after the launch) set to error, or a new row
-    (run_id: its claim id) when the run wrote none. A row the run finished itself keeps its own status and error.
-    Returns what it did: "left", "updated" or "written"."""
+    run's own row still "running" set to error, or a new row (run_id: its claim id) when the run wrote none. A
+    claimed start's own row is its claim row (run_id); an unclaimed one's is the latest of this job started at or
+    after the launch. A row the run finished itself keeps its own status and error. Returns what it did: "left",
+    "updated" or "written"."""
     error = f"exited {code} ({status})"
     detail = {"exit_code": code, "seconds": seconds}
-    rows = store.select(TABLE, {"job": name, "started_at": Range(lo=started)})
-    if run_id and not any(r.get("run_id") == run_id for r in rows):
-        rows += store.select(TABLE, {"run_id": run_id})  # a claim row written before the launch time was read
+    # A claim row is the run's own even when another run of the job (an operator's skip, say) started later.
+    rows = store.select(TABLE, {"run_id": run_id}) if run_id else []
+    if not rows:
+        rows = store.select(TABLE, {"job": name, "started_at": Range(lo=started)})
     rows.sort(key=lambda r: (utc_strict_or_none(r.get("started_at")) or started, str(r.get("run_id"))))
     if rows and rows[-1].get("status") != RUNNING:
         return "left"

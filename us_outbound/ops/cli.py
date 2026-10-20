@@ -82,7 +82,7 @@ from us_outbound import fmt
 from us_outbound.base.holds import held_mailboxes
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
-from us_outbound.logs import redact
+from us_outbound.logs import log, redact
 from us_outbound.learn import copy_tests
 from us_outbound.ops import bootstrap, campaigns, health
 from us_outbound.ops.health import (ERROR, OPERATOR_START, OPERATOR_STOP, Terminated, enrolment_paused, latest_runs,
@@ -256,7 +256,10 @@ def _job(name: str, live_flag: bool, factory: Factory, *, one_line: bool = False
         raise
     if when is not None:
         ctx.due = when
-        ctx.run_id = health.due_run_id(name, when)
+        # The claim id replaces the run id the "context" line logged; this line ties the two together.
+        claim = health.due_run_id(name, when)
+        log("run_claim", job=name, context_run_id=ctx.run_id, run_id=claim)
+        ctx.run_id = claim
     if live_flag and ctx.dry_run:
         print(_live_sending_note(ctx))
     with _sigterm_ends_the_run():
