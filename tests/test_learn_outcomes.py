@@ -147,7 +147,9 @@ def parity_world() -> list[dict]:
     """The 50-day world, with what tells the definitions apart if either drifts: K a meeting at day 50 (any = 1,
     in_45 = 0); L a reply with no account_id (its contact's send names the account); M a reply 29 days after step 1
     (outside the window); N a reply a day before its step 1 (not counted); D's negative corrected to positive; P's
-    step 1 sent twice (the earlier one counts) and bounced at step 2 (still delivered)."""
+    step 1 sent twice (the earlier one counts: an objection at day 0.5, between the two, is in its window) and bounced
+    at step 2 (still delivered); R an objection 25 days after step 1 (inside the 28-day window: replies to step 4, sent
+    day 21, arrive from day 21 to 28, so a window read as 21 days loses them)."""
     rows = world(50)
     rows += [_sent("K"), {"event_id": "m-K", "type": "meeting_booked", "account_id": "a-K",
                           "occurred_at": T0 + timedelta(days=50)}]
@@ -156,9 +158,11 @@ def parity_world() -> list[dict]:
     rows += [_sent("N", day=2), _reply("N", "r-N", "positive", 1)]
     rows += [{"event_id": "fix-D", "type": "reply_class_corrected", "source": "r-D", "reply_class": "positive",
               "occurred_at": T0 + timedelta(days=6)}]
-    rows += [_sent("P"), {**_sent("P", day=1), "event_id": "s1-again-P"}, _sent("P", day=7, step=2),
+    rows += [_sent("P"), _reply("P", "r-P", "objection", 0.5), {**_sent("P", day=1), "event_id": "s1-again-P"},
+             _sent("P", day=7, step=2),
              {"event_id": "b-P", "type": "bounced", "account_id": "a-P", "contact_id": "c-P", "step": 2,
               "occurred_at": T0 + timedelta(days=7, minutes=5)}]
+    rows += [_sent("R"), _reply("R", "r-R", "objection", 25)]
     return rows
 
 
@@ -171,7 +175,7 @@ PARITY_EXPECTED = {
     "a-I": (True, False, False, False, False), "a-J": (True, False, False, False, False),
     "a-K": (True, False, False, True, False), "a-L": (True, True, True, False, False),
     "a-M": (True, False, False, False, False), "a-N": (True, False, False, False, False),
-    "a-P": (True, False, False, False, False),
+    "a-P": (True, True, False, False, False), "a-R": (True, True, False, False, False),
 }
 COLUMNS = ("delivered", "replied_in_window", "positive_in_window", "meeting_any", "meeting_in_45")
 
@@ -204,13 +208,25 @@ def test_the_view_and_per_company_agree(store, default_settings):  # noqa: F811
     assert q["window_closed"] is True and q["window_closed_45"] is False
 
 
-@pytest.mark.parametrize("mutation", ["drop_correction", "meeting_any_as_45"])
+@pytest.mark.parametrize("mutation", ["drop_correction", "meeting_any_as_45", "reply_window_21", "last_step_1"])
 def test_a_drift_in_either_definition_fails_parity(default_settings, monkeypatch, mutation):
-    """The parity's teeth without a database: a Python twin that ignored corrections, or read meeting_in_45 as any
-    booking, would no longer match the hand count the view is held to."""
+    """The parity's teeth without a database: a Python twin that ignored corrections, read meeting_in_45 as any
+    booking, read the reply window as 21 days (R's day-25 objection lost) or let a later step-1 send replace the first
+    (P's day-0.5 objection then comes before its step 1) would no longer match the hand count the view is held to."""
     if mutation == "drop_correction":
         monkeypatch.setattr(outcomes, "CORRECTED", "no_such_type")
-    else:
+    elif mutation == "meeting_any_as_45":
         monkeypatch.setattr(outcomes.Outcome, "meeting_in_45", property(lambda self: self.first_meeting_at is not None))
+    elif mutation == "reply_window_21":
+        monkeypatch.setattr(outcomes, "REPLY_DAYS", 21)
+    else:  # per_company with its first-send-wins test removed, compiled in a copy of the module's namespace
+        import inspect
+
+        src = inspect.getsource(outcomes.per_company)
+        mutated = src.replace(" and aid not in out:", ":")
+        assert mutated != src
+        space = dict(vars(outcomes))
+        exec(compile(mutated, outcomes.__file__, "exec"), space)  # noqa: S102
+        monkeypatch.setattr(outcomes, "per_company", space["per_company"])
     _, found = companies(default_settings, parity_world(), 55)
     assert {o.account_id: tuple(o.as_row()[c] for c in COLUMNS) for o in found} != PARITY_EXPECTED
