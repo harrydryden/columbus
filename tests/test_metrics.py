@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from tests.fakes import make_context
+from tests.test_db import db, dsn, store  # noqa: F401  (the Postgres fixtures, for the end-to-end run)
 from tests.test_learn_outcomes import world as ten_companies
 from tests.test_precision import judgement
 from tests.test_throughput import NOW as THROUGHPUT_NOW
@@ -20,8 +21,8 @@ from us_outbound.settings.validate import validate_all
 BASE, _ = validate_all(default_tabs())
 
 
-def one(store, metric: str, segment: str = "all") -> dict:
-    [r] = [r for r in metrics.latest(store, metric, segment)]
+def one(st, metric: str, segment: str = "all") -> dict:
+    [r] = [r for r in metrics.latest(st, metric, segment)]
     return r
 
 
@@ -345,3 +346,21 @@ def test_registered_on_the_schedule_heartbeat_and_cli():
     assert metrics.JOB in health.IMPACT and say.job_name(metrics.JOB) == "keeping the daily numbers"
     # After the Monday readout (08:30), which scores last week's forecasts itself, before the daily post (09:00).
     assert schedule.by_name()["monday_readout"].cron.split()[:2] == ["30", "8"]
+
+
+def test_metrics_daily_writes_and_upserts_on_postgres(store):  # noqa: F811
+    """End to end on Postgres (tests/test_db.py's learning_world): 70 companies sent step 1 48 or more days ago, all
+    past 45 days; engaged a00-a02 (positive replies; a00 and a02 also booked within 45 days) = 3 of 70. A second run
+    the same day upserts the same keys (and writes no second forecast: one a week)."""
+    from tests.test_db import learning_world
+    from us_outbound.clients.guard import Guard
+
+    now = learning_world(store)
+    store.guard = Guard()
+    ctx = make_context(BASE, store=store, now=now, job=metrics.JOB)
+    out = run(ctx)
+    r = one(store, "engaged_rate_45")
+    assert (r["k"], r["n"], round(r["value"], 4)) == (3, 70, 0.0429)
+    before = len(store.select("metrics"))
+    again = run(ctx)
+    assert out["forecasts"] and again["forecasts"] == [] and len(store.select("metrics")) == before
