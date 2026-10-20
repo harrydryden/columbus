@@ -392,6 +392,7 @@ EXPECTED: dict[str, int] = {
     "lookalikes": 32 * _DAY,  # the 1st at 02:30
     # lookalike_leads is parked (W0, 19 Oct 2026: enabled=False in ops/schedule.py), so it is not expected.
     "label_sample_monthly": 32 * _DAY,  # the 1st at 09:15
+    "segment_prior_monthly": 32 * _DAY,  # the 1st at 02:20 (W3-4, 21 Oct 2026; learn/segments.py)
     "hand_check_draw": 8 * _DAY,  # Mon 05:45 (W1-5, 19 Oct 2026)
     "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
@@ -420,6 +421,8 @@ IMPACT: dict[str, str] = {
     "retention": "old personal data is not being deleted on time",
     "hand_check_draw": "nobody is checking by hand that the companies about to be emailed are the right ones",
     "follow_up": "replies that said “not now” are not being followed up on the date they gave",
+    "segment_prior_monthly": "the industry groups' conversion in Spill's own HubSpot history is not being refreshed "
+                             "for the lookalike fit and the segment proposals",
 }
 UNUSABLE_RE = re.compile(r"settings are unusable \(([^)]*)\)")  # bootstrap.SettingsUnusable's text
 FAULT_LINES = 3  # the settings errors shown in an alert

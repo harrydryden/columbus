@@ -132,6 +132,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # the day of the month alone decides (ops/scheduler.Cron.matches). It reads HubSpot and Apollo and writes
     # only the database, so it needs no --live.
     ScheduledJob("lookalikes", "30 2 1 * *", live=False, enabled=True, timeout_minutes=30, phase=1),
+    # W3-4, 21 Oct 2026 (loop L9; learn/segments.py): the segment prior from Spill 3.0's decided HubSpot deals (one
+    # paged read-only search), the 1st at 02:20, after settings_sync (02:00) and before lookalikes (02:30), whose
+    # lookalike fit reads it; then the segment value's Suggestions-tab rows, which write the sheet, so --live.
+    ScheduledJob("segment_prior_monthly", "20 2 1 * *", live=True, enabled=True, timeout_minutes=10, phase=3),
     # Harry, 5 Oct 2026: new US accounts like Spill's customers, from Apollo's lookalike search, monthly as the
     # customer base is fairly static. The 1st at 02:50, after lookalikes (02:30), so customer domains are already
     # suppressed, and before source_universe (03:00 on weekdays). HubSpot and Apollo reads and database writes only.

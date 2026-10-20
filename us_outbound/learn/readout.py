@@ -32,7 +32,8 @@ Top to bottom:
   * splits: the explore arm against ranked (learn/experiments.arms_table, W3-4: O2-O4 with Jeffreys intervals, the
     realised share by step-1 week, and the one read at 300 random companies matured) and the A/A sham arm (a label
     that changes nothing: a difference outside its interval is pipeline bias), industry group and size band on human
-    replies within 28 days, and last week's activity by cut (v_readout_weekly), counts only;
+    replies within 28 days, and last week's activity by cut (v_readout_weekly), counts only; the segment value
+    (learn/segments.readout_line: the HubSpot prior in force, each Focus group's matured n toward 300);
   * the tests: the registry (learn/experiments.registry_lines, W3-4: General live_split, each split's
     pre-registration, planned n, reached, matured and projected date), then each running test at its looks
     (learn/looks.py); the signals (learn/signal_review.py), as monitoring;
@@ -297,6 +298,15 @@ def split_lines(ctx: Context, found: Sequence[Outcome], counts: dict[str, Any] |
         out.append(split_line(label, cells))
     out.append(sham_line(*sham_counts(m28)))
     return out
+
+
+def segment_lines(ctx: Context, found: Sequence[Outcome]) -> list[str]:
+    """Loop L9 (W3-4: learn/segments.py): the HubSpot prior in force and how far each Focus group is from the 300
+    matured a proposal waits for; monitoring, with its n."""
+    from us_outbound.learn import segments
+
+    return ["", "*Segment value* (Spill's HubSpot history as the prior; Columbus's own replies move it as they "
+                "mature)", segments.readout_line(ctx, found)]
 
 
 def sham_counts(m28: Sequence[Outcome]) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -678,6 +688,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     body += delivery
     arm_nums: dict[str, Any] = {}
     body += _guarded(ctx, "splits", "*Splits*", lambda: split_lines(ctx, found, arm_nums))
+    body += _guarded(ctx, "segments", "*Segment value*", lambda: segment_lines(ctx, found))
     if rows is not None:
         cut_block = [line for cut, title, about in CUTS for line in cut_lines(rows, cut, title, about, start)]
         if cut_block:

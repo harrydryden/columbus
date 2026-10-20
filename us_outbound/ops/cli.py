@@ -121,6 +121,8 @@ JOBS: dict[str, str] = {
     "heartbeat_check": "us_outbound.ops.health:run",  # missed jobs, caught errors, the outside watchdog (W2-4)
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
+    # W3-4, 21 Oct 2026 (loop L9): Spill's HubSpot deals as the segment prior, then the segment value's proposals.
+    "segment_prior_monthly": "us_outbound.learn.segments:run",
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
     "hand_check_draw": "us_outbound.enrol.hand_check:run",  # SPEC 11 weekly hand-check, Mondays (W1-5)
     "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
