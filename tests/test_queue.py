@@ -151,6 +151,26 @@ def test_a_group_short_of_its_places_gives_what_it_has_and_never_borrows():
     assert len(rest) == len(rows) - 8
 
 
+def test_strata_give_each_group_its_places_and_its_whole_pool_in_a_random_order():
+    """pick_contacts tries each stratum's pool in order until its places have a kept contact, so each pool is the
+    whole group, not only its places: 9 places over 50/30/20 (4/3/2), and the 160 Tech, 96 Creative and 64 Legal
+    accounts of probe P1's world, each in an order the seed sets. split's draw is each pool's first places."""
+    s = make_settings(explore_share=0.15, focus=FOCUS_50_30_20)
+    rows, group = p1_world()
+    st = queue.strata(rows, s, "pick:x", 9)
+    assert [(places, len(pool), {group[r["account_id"]] for r in pool}) for _, places, pool in st] == [
+        (4, 160, {"T"}), (3, 96, {"C"}), (2, 64, {"L"})]
+    assert [r["account_id"] for _, p, pool in st for r in pool[:p]] == \
+        [r["account_id"] for r in queue.split(rows, s, "pick:x", 9)[0]]
+    again = queue.strata(rows, s, "pick:x", 9)
+    assert [[r["account_id"] for r in pool] for _, _, pool in st] == [[r["account_id"] for r in pool] for _, _, pool in again]
+    other = queue.strata(rows, s, "pick:y", 9)
+    assert [r["account_id"] for r in st[0][2]] != [r["account_id"] for r in other[0][2]]
+    assert queue.strata(rows, s, "pick:x", 0) == []
+    no_focus = queue.strata(rows, make_settings(explore_share=0.15), "pick:x", 9)
+    assert [(g, p, len(pool)) for g, p, pool in no_focus] == [("", 9, 320)]
+
+
 def test_without_focus_rows_the_draw_is_uniform_over_all():
     s = make_settings(explore_share=0.15)
     rows, _ = p1_world()

@@ -131,30 +131,43 @@ def apportion(k: int, shares: Mapping[str, float]) -> dict[str, int]:
     return out
 
 
-def split(rows: Sequence[Mapping[str, Any]], settings: Settings, seed: str, k: int) -> tuple[list[dict], list[dict]]:
-    """(the random arm, the rest in order): k of rows drawn at random, stratified by Focus group, and the others
-    sorted by order_key.
+def strata(rows: Sequence[Mapping[str, Any]], settings: Settings, seed: str, k: int) -> list[tuple[str, int, list[dict]]]:
+    """The random arm's strata: (group, its places, all of the group's rows in a random order), for each group with a
+    place. With Focus rows, each group's places are apportion(k, its share) (focus.shares: a group not on the Focus tab
+    is in "other", which holds what the listed groups leave); with none, one stratum of all the rows with k places.
 
-    With Focus rows, each group's places are apportion(k, its share) (focus.shares: a group not on the Focus tab is in
-    "other", which holds what the listed groups leave), drawn uniformly within the group. A group with fewer rows than
-    places gives what it has, and the places it cannot fill go to the ranked rest, never to another group, so the
-    random arm's mix is the Focus mix and a difference between the arms is the ranking, not the mix (RT §4.1). With
-    no Focus rows, k are drawn uniformly from all of them. random.Random(seed): a rerun on the same day draws the same.
-    The random arm keeps the order it was drawn in."""
+    pick_contacts tries each stratum's rows in this order until its places each have a kept contact, or the group
+    runs out (the whole-wave review, 20 Oct 2026: a drawn account with nobody to contact was not replaced, so the arm
+    kept about p_contact × explore_share). The order is random and when to stop depends only on the rows already
+    tried, so the accounts kept are a uniform random draw from the group's accounts that have a contact. A group with
+    fewer such accounts than places gives what it has, and the places it cannot fill go to the ranked rest, never to
+    another group, so the random arm's mix is the Focus mix and a difference between the arms is the ranking, not the
+    mix (RT §4.1). random.Random(seed): a rerun on the same day draws the same order."""
     ordered = sorted((dict(r) for r in rows), key=lambda r: order_key(r, settings))
     k = max(0, min(k, len(ordered)))
     rng = random.Random(seed)
-    picked: list[dict] = []
-    if k and not settings.focus:
-        picked = rng.sample(ordered, k)
-    elif k:
-        by_group: dict[str, list[dict]] = defaultdict(list)
-        for r in ordered:
-            by_group[focus.key_for(r, settings)].append(r)
-        for group, places in apportion(k, focus.shares(settings)).items():
-            pool = by_group.get(group, [])
-            picked += rng.sample(pool, min(places, len(pool)))
+    if not k:
+        return []
+    if not settings.focus:
+        return [("", k, rng.sample(ordered, len(ordered)))]
+    by_group: dict[str, list[dict]] = defaultdict(list)
+    for r in ordered:
+        by_group[focus.key_for(r, settings)].append(r)
+    out = []
+    for group, places in apportion(k, focus.shares(settings)).items():
+        pool = by_group.get(group, [])
+        if places and pool:
+            out.append((group, places, rng.sample(pool, len(pool))))
+    return out
+
+
+def split(rows: Sequence[Mapping[str, Any]], settings: Settings, seed: str, k: int) -> tuple[list[dict], list[dict]]:
+    """(the random arm, the rest in order): the first places of each stratum (strata, the same seed), and the others
+    sorted by order_key: the draw pick_contacts makes when every account drawn has a contact. The random arm keeps the
+    order it was drawn in."""
+    picked = [r for _, places, pool in strata(rows, settings, seed, k) for r in pool[:places]]
     drawn = {str(r.get("account_id")) for r in picked}
+    ordered = sorted((dict(r) for r in rows), key=lambda r: order_key(r, settings))
     return picked, [r for r in ordered if str(r.get("account_id")) not in drawn]
 
 

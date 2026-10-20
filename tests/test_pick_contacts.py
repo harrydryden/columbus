@@ -447,7 +447,7 @@ def test_explore_share_0_picks_in_queue_order_and_stamps_ranked(ctx, transport, 
     out = pick.run(ctx)
     assert (out["wanted"], out["picked"]) == (10, 10)
     assert searched(apollo) == [f"co{i:02d}.com" for i in range(10)]
-    assert out["explore"] == {"share": 0.0, "drawn": 0, "picked": 0, "by_group": {}}
+    assert out["explore"] == {"share": 0.0, "target": 0, "drawn": 0, "picked": 0, "realised": None, "by_group": {}}
     arms = {a["account_id"]: a.get("arm") for a in ctx.store.select("accounts")}
     assert {arms[f"acc-{i:02d}"] for i in range(10)} == {"ranked"}
     assert {arms[f"acc-{i:02d}"] for i in range(10, 30)} == {None}  # not picked: no arm
@@ -474,6 +474,41 @@ def test_the_random_arm_is_drawn_first_within_the_focus_shares(ctx, transport, m
 
     drawn, _ = queue.split(list(by_id.values()), ctx.settings, "pick:2026-10-27", 2)
     assert sorted(a["account_id"] for a in drawn) == random_ids
+
+
+def test_a_random_account_with_nobody_to_contact_is_replaced_from_its_own_group(ctx, transport, monkeypatch):
+    """The whole-wave review's scenario 5: half of each group's accounts have nobody at Apollo. explore_share
+    0.15, want 10: k = 2 places, 1 Tech and 1 Creative (as above). Before, the 2 drawn were tried once each and an
+    account with nobody was not replaced, so the arm kept about p_contact × 2 (2 in only a quarter of days). Now each
+    stratum's accounts are tried in their random order (queue.strata, seed "pick:2026-10-27") until its place has a
+    contact: the arm keeps exactly 2, one of each group, each the first account with a contact in its group's order,
+    and the accounts tried before it are the ones with nobody (recorded, so they cool off like any). The other 8
+    contacts are ranked; the summary reports the realised share, 2 of 10."""
+    from us_outbound.enrol import queue
+
+    apollo, by_id = arm_world(ctx, transport, monkeypatch, explore_share=0.15)
+    def has_contact(i: int) -> bool:  # arm_world alternates Tech (even i) and Creative (odd i): half of each
+        return (i // 2) % 2 == 0
+
+    for i in range(30):
+        if not has_contact(i):
+            apollo.people[f"co{i:02d}.com"] = []
+    out = pick.run(ctx)
+    assert out["picked"] == 10
+    ex = out["explore"]
+    assert (ex["target"], ex["picked"], ex["realised"]) == (2, 2, 0.2)
+    assert ex["by_group"] == {"Technology & Startups": 1, "Marketing & Creative Agencies": 1}
+    random_ids = sorted(a["account_id"] for a in ctx.store.select("accounts") if a.get("arm") == "random")
+    expected, tried = [], set()
+    for _, places, pool in queue.strata(list(by_id.values()), ctx.settings, "pick:2026-10-27", 2):
+        assert places == 1
+        firsts = [a for a in pool if has_contact(int(a["account_id"][-2:]))]
+        expected.append(firsts[0]["account_id"])
+        tried |= {a["account_id"] for a in pool[: pool.index(firsts[0]) + 1]}
+    assert random_ids == sorted(expected)
+    assert ex["drawn"] == len(tried)
+    assert {f"acc-{d[2:4]}" for d in searched(apollo)[: len(tried)]} == tried  # the random lane is searched first
+    assert sum(a.get("arm") == "ranked" for a in ctx.store.select("accounts")) == 8
 
 
 def test_a_kill_rule_stopping_a_group_frees_the_lookahead_for_the_others(ctx, transport, monkeypatch):

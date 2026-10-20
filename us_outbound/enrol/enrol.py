@@ -1194,6 +1194,7 @@ def run(ctx: Context) -> dict:
     # Second contacts last, from what the first contacts of new accounts left of today's number and of their
     # senders' slots; outside the industry focus, which shares out new accounts.
     n_first = len(prepared)
+    n_random_prepared = sum(in_random_arm(p.account) for p in prepared)
     prepared += _walk(ctx, iter(seconds), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
     for p in prepared:
         p.config_version, p.code_sha = cv.id, cv.code_sha
@@ -1281,8 +1282,11 @@ def run(ctx: Context) -> dict:
         focus=quota.describe() if quota.active else None,
         candidates=len(cands),
         failures=_failures(r.skipped),
+        # realised: the random arm's share of today's first contacts, which falls short of the share when pick kept
+        # too few random-arm contacts (drawn_ready below target), so a short arm is seen, not only filled from ranked.
         explore={"share": s.general.explore_share, "drawn_ready": len(drawn), "target": n_random,
-                 "prepared": sum(p.arm == queue.RANDOM for p in prepared[:n_first])},
+                 "prepared": n_random_prepared,
+                 "realised": round(n_random_prepared / n_first, 3) if exploring and n_first else None},
         # The Control tier's places while explore_share is 0 (control_count); None once the random arm has them.
         control=None if exploring else {
             "share": s.general.control_share, "ready": len(first), "target": n_lead,

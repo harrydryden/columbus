@@ -10,9 +10,11 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      (docs/pipeline.md change 5, approved 30 Sep 2026). An account where nobody suitable was
      found is tried again after RETRY_DAYS. "Could take" is enrol's own check (enrol.eligible: a kill rule's
      stopped group or paused email source, and a sendable Copy row, besides the domain and industry; W1-6).
-     The random explore arm (General explore_share, 0 by default; Harry's D7) is explore_share of the accounts
-     wanted, drawn at random from the accounts due within the Focus shares (queue.split) and tried first; each
-     account whose contact is kept is stamped accounts.arm, random or ranked, which enrol reads.
+     The random explore arm (General explore_share, 0 by default; Harry's D7) is explore_share of the contacts
+     wanted, from the accounts due within the Focus shares (queue.strata): each group's accounts are tried first,
+     in a random order, until its places each have a kept contact or it runs out; each account whose contact is
+     kept is stamped accounts.arm, random or ranked, which enrol reads. The summary's explore.realised is the arm's
+     share of the contacts kept.
   2. Budget (SPEC 1.6): before the batch, today's share of the month's Apollo budget (budget.py)
      and Apollo's own balance against apollo_floor; before each reveal, what is left of both.
      The batch stops when either runs out. And no reveal at all while a kill rule pauses the apollo
@@ -861,33 +863,67 @@ def run(ctx: Context) -> dict:
     batch.clay_off, batch.clay_left = clay_room(ctx)
     domains, hashes = enrol.suppressed(ctx)
     known = {str(c["email_sha256"]) for c in store.select("contacts") if c.get("email_sha256")}
-    # The random explore arm (Harry's D7; queue.split): explore_share of today's want drawn at random from the
-    # accounts due, within the Focus shares, and tried first; then the rest in queue order. Drawn here, before any
-    # later ordering by contactability, so the arm is a random draw from the eligible queue and not from the accounts
+    # The random explore arm (Harry's D7; queue.strata): explore_share of today's want, counted in kept contacts,
+    # from the accounts due, within the Focus shares, tried first: each stratum's accounts in a random order until
+    # its places each have a contact or it runs out (a drawn account with nobody to contact is replaced by the next
+    # in that order, so the arm is not cut to the share of accounts with a contact; the whole-wave review, 20 Oct
+    # 2026). The strata take turns, so a budget that stops the run part-way leaves the arm's mix near the Focus mix.
+    # Then the rest in queue order, those the random lane did not reach included. Drawn here, before any later
+    # ordering by contactability, so the arm is a random draw from the eligible queue and not from the accounts
     # easiest to find a contact at (RS §2 W1-6). 0 by default: no draw, every account in order, as before.
     k = queue.explore_count(want, s, len(due))
-    drawn, rest = queue.split(due, s, f"pick:{ctx.today_uk().isoformat()}", k)
-    arms = [(a, queue.RANDOM) for a in drawn] + [(a, queue.RANKED) for a in rest]
-    picked_random = 0
-    for account, arm in arms:
-        if len(batch.picked) >= want or batch.stopped:
-            break
+    lanes = [[places, iter(pool)] for _, places, pool in queue.strata(due, s, f"pick:{ctx.today_uk().isoformat()}", k)]
+    tried_random: set[str] = set()
+    kept_random: list[dict] = []
+    done = False
+
+    def attempt(account: dict, arm: str) -> str | None:
+        """Search and reveal for one account; its outcome, or None after an Apollo error."""
         try:
             out = pick_account(ctx, account, batch, past.revealed[account["account_id"]], domains, hashes, known)
         except ApiError as exc:
             batch.errors.append(f"{account.get('domain')}: {str(exc)[:200]}")
             if len(batch.errors) >= MAX_ERRORS:
                 batch.stopped = f"{MAX_ERRORS} Apollo errors"
-            continue
+            return None
         if out.outcome == STOPPED:
-            break
+            return STOPPED
         batch.tried += 1
         _record(ctx, account, out, batch)
         if out.outcome == PICKED:  # the arm enrol reads (accounts.arm), set when the account's contact is kept
             store.upsert("accounts", [{"account_id": account["account_id"], "arm": arm}])
-            picked_random += arm == queue.RANDOM
-    summary["explore"] = {"share": s.general.explore_share, "drawn": len(drawn), "picked": picked_random,
-                          "by_group": dict(Counter(s.industry_group_of(a) for a in drawn))}
+        return out.outcome
+
+    while lanes and not done:
+        for lane in list(lanes):
+            if len(batch.picked) >= want or batch.stopped:
+                done = True
+                break
+            account = next(lane[1], None)
+            if account is None:  # the group ran out: its places left go to the ranked rest
+                lanes.remove(lane)
+                continue
+            tried_random.add(str(account["account_id"]))
+            outcome = attempt(account, queue.RANDOM)
+            if outcome == STOPPED:
+                done = True
+                break
+            if outcome == PICKED:
+                kept_random.append(account)
+                lane[0] -= 1
+                if lane[0] <= 0:
+                    lanes.remove(lane)
+    rest = [a for a in due if str(a["account_id"]) not in tried_random]  # due is in queue order (waiting())
+    for account in rest:
+        if done or len(batch.picked) >= want or batch.stopped:
+            break
+        if attempt(account, queue.RANKED) == STOPPED:
+            break
+    picked = len(batch.picked)
+    summary["explore"] = {"share": s.general.explore_share, "target": k, "drawn": len(tried_random),
+                          "picked": len(kept_random),
+                          "realised": round(len(kept_random) / picked, 3) if k and picked else None,
+                          "by_group": dict(Counter(s.industry_group_of(a) for a in kept_random))}
     # Then second contacts, with what is left of the lookahead once the first contacts are counted: the first
     # contacts of new accounts come first when capacity is short (Harry, 6 Oct 2026).
     room2 = max(0, lookahead(s) - ready - len(batch.picked) - ready2)

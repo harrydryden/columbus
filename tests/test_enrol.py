@@ -1014,7 +1014,8 @@ def test_explore_share_0_the_default_walks_today_s_queue_order():
     out = enrol.run(ctx)
     assert (out["number"], out["prepared"], out["enrolled"]) == (25, 25, 25)
     assert sorted(ids_of(posted)) == sorted([f"rnd{i}" for i in range(1, 5)] + [a["account_id"] for a in ordered[:21]])
-    assert out["explore"] == {"share": 0.0, "drawn_ready": 0, "target": 0, "prepared": 0}
+    assert out["explore"] == {"share": 0.0, "drawn_ready": 0, "target": 0, "prepared": 0,
+                              "realised": None}
     assert out["control"] == {"share": 0.15, "ready": 4, "target": 4, "prepared": 4}
     enrolled = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
     assert len(enrolled) == 25 and "rnd0" in enrolled and set(enrolled.values()) == {queue.RANKED}
@@ -1028,7 +1029,8 @@ def test_the_random_arm_takes_its_share_and_the_rest_go_in_queue_order():
     ctx, posted, ordered = explore_world(5, 60, live=True, explore_share=0.15)
     out = enrol.run(ctx)
     assert (out["prepared"], out["enrolled"]) == (25, 25)
-    assert out["explore"] == {"share": 0.15, "drawn_ready": 5, "target": 4, "prepared": 4}
+    assert out["explore"] == {"share": 0.15, "drawn_ready": 5, "target": 4, "prepared": 4,
+                              "realised": 0.16}
     want = {f"rnd{i}" for i in (4, 3, 2, 1)} | {f"rank{i:02d}" for i in range(59, 38, -1)}
     assert set(ids_of(posted)) == want
     arms = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
@@ -1049,6 +1051,8 @@ def test_a_short_random_arm_is_filled_from_the_ranked_and_a_short_ranked_from_th
     ctx, posted, _ = explore_world(1, 40, explore_share=0.15, weekly_enrol_cap=120)
     out = enrol.run(ctx)
     assert out["prepared"] == 30 and sum(i.startswith("rnd") for i in ids_of(posted)) == 1
+    # The shortfall is reported: the realised share, 1 of 30, against the 0.15 asked (the whole-wave review).
+    assert (out["explore"]["target"], out["explore"]["realised"]) == (1, 0.033)
     # 10 random-arm accounts and 2 ranked, n = 3 (weekly 12 ÷ 4): explore_count(3, 0.15, 10) = 0 (0.45 rounds to 0
     # and 3 < 4), the 2 ranked, then the shortfall of 1 from the random arm: 3 prepared.
     ctx, posted, _ = explore_world(10, 2, explore_share=0.15, weekly_enrol_cap=12)
@@ -1090,7 +1094,8 @@ def test_the_random_walk_counts_against_the_focus_quota():
     ctx.clients.instantly.add_leads = lambda campaign, leads: posted.extend(leads) or add_leads(campaign, leads)
     out = enrol.run(ctx)
     assert (out["number"], out["prepared"]) == (25, 25)
-    assert out["explore"] == {"share": 0.15, "drawn_ready": 5, "target": 4, "prepared": 4}
+    assert out["explore"] == {"share": 0.15, "drawn_ready": 5, "target": 4, "prepared": 4,
+                              "realised": 0.16}
     got = set(ids_of(posted))
     assert got == ({f"rnd{i}" for i in (4, 3, 2, 1)} | {f"tech{i:02d}" for i in range(29, 20, -1)}
                    | {f"agen{i:02d}" for i in range(29, 17, -1)})
