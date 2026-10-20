@@ -55,13 +55,15 @@ def explore(share: float):
     return make_settings(explore_share=share)
 
 
-def test_explore_share_0_the_default_means_no_random_arm():
-    """explore_share has default 0 (the W1-C contracts; RS P0-2: a new key, not a rename of control_share), so a sheet
-    without the row draws nobody at random, however many are wanted or waiting."""
-    assert S.general.explore_share == 0.0
-    assert queue.explore_count(25, S, 60) == 0
-    assert queue.explore_count(4, S, 60) == 0  # not even the at-least-one from 4 a day
-    assert queue.split([row(i, "Priority", 90 - i) for i in range(10)], S, "pick:2026-10-27", 0)[0] == []
+def test_explore_share_0_means_no_random_arm_and_the_default_is_harry_s_0_15():
+    """explore_share 0 on the sheet draws nobody at random, however many are wanted or waiting. Its code default is
+    0.15 from W2-2 (Harry's D7, 19 Oct 2026: "Rank + 15% random arm"), which retired the tiers and the Control tier's
+    0.15, so a sheet without the row keeps a comparison arm: 0.15 × 25 = 3.75 → 4."""
+    assert S.general.explore_share == 0.15 and queue.explore_count(25, S, 60) == 4
+    off = explore(0.0)
+    assert queue.explore_count(25, off, 60) == 0
+    assert queue.explore_count(4, off, 60) == 0  # not even the at-least-one from 4 a day
+    assert queue.split([row(i, "Queue", 90 - i) for i in range(10)], off, "pick:2026-10-27", 0)[0] == []
 
 
 def test_explore_count_rounds_half_up_with_one_from_four_and_never_more_than_available():
@@ -74,17 +76,6 @@ def test_explore_count_rounds_half_up_with_one_from_four_and_never_more_than_ava
     assert queue.explore_count(30, explore(0.15), 100) == 5
     assert queue.explore_count(0, explore(0.15), 100) == 0
     assert queue.explore_count(30, explore(0.15), 0) == 0
-
-
-def test_control_count_is_control_share_by_the_same_rule():
-    """The Control tier's places while explore_share is 0 (as at ef2ce5f): control_share's code default 0.15."""
-    assert S.general.control_share == 0.15
-    assert queue.control_count(30, S, 100) == 5  # 15% of 30 is 4.5
-    assert queue.control_count(20, S, 100) == 3
-    assert queue.control_count(4, S, 100) == 1  # 0.6 rounds to 1
-    assert queue.control_count(3, S, 100) == 0  # 0.45 rounds to 0, and 3 is under 4
-    assert queue.control_count(30, S, 2) == 2  # never more than there are
-    assert queue.control_count(30, S, 0) == 0
 
 
 def test_apportion_gives_the_largest_remainders_the_places_left():
@@ -205,6 +196,15 @@ def test_order_is_score_then_size_band_then_industry_priority():
     ]
     ids = [r["account_id"] for r in sorted(rows, key=lambda r: queue.order_key(r, S))]
     assert ids == ["a006", "a005", "a004", "a003", "a007", "a002", "a001"]
+
+
+def test_the_order_has_no_tier():
+    """W2-2's plan case: scores 45, 40 and 40 (bands 20-49 and 10-19) give the 45, then the 20-49 one, then the 10-19
+    one; and a tier never moves an account (a Control 45 before a Priority 40, as the tiers are retired)."""
+    rows = [row(1, "Priority", 40, "10-19"), row(2, "Priority", 40, "20-49"), row(3, "Control", 45, "10-19")]
+    assert [r["account_id"] for r in sorted(rows, key=lambda r: queue.order_key(r, S))] == ["a003", "a002", "a001"]
+    assert queue.order_key(row(1, "Priority", 40), S) == queue.order_key(row(1, "Control", 40), S) \
+        == queue.order_key(row(1, "Queue", 40), S)
 
 
 # -- test versions ----------------------------------------------------------------------------

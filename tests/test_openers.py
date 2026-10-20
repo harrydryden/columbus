@@ -51,13 +51,13 @@ def fact(source, name, value, days=2, *, quote="", account_id="acc-1") -> dict:
 def acct(**kw) -> dict:
     return {"account_id": "acc-1", "domain": "brightline.com", "clean_name": "Brightline", "hq_city": "Austin",
             "hq_state": "TX", "industry": "Fintech", "industry_group": "Technology & Startups", "employees": 40,
-            "size_band": "20-49", "tier": "Standard", **kw}
+            "size_band": "20-49", "tier": "Queue", **kw}
 
 
 def opener(facts, role="People leader", settings=S, person=None, **kw) -> openers.Opener:
-    """The account's opener; its angle as scoring sets it for its tier (Standard, unless given)."""
+    """The account's opener; its angle as scoring sets it (unless given)."""
     a = acct(**kw)
-    a.setdefault("angle", choose_angle(a["tier"], score_account(a, facts, settings, TODAY).matches, settings).angle)
+    a.setdefault("angle", choose_angle(score_account(a, facts, settings, TODAY).matches, settings))
     return openers.choose(a, person or {"contact_id": "con-1", "role": role}, facts, settings, TODAY, check=check)
 
 
@@ -393,9 +393,10 @@ def test_no_signal_line_and_no_plain_opener_means_the_generic_line_and_with_none
     assert (op.text, op.arm, op.source) == ("", openers.NONE, "")
 
 
-def test_the_general_angle_and_control_get_the_generic_line_never_a_signal_line():
-    # A Control account is signal-blind (SPEC 5): General angle, so the generic line, even with funding facts.
-    op = opener(FUNDING, FOUNDER, tier="Control", angle="General")
+def test_the_general_angle_gets_the_generic_line_never_a_signal_line():
+    # The General angle has no signal line: the generic line, even with funding facts. (The Control tier, which always
+    # had it, went with W2-2: an account now gets the angle its signals suggest.)
+    op = opener(FUNDING, FOUNDER, angle="General")
     assert (op.text, op.arm, op.source) == (GENERIC[FOUNDER], openers.OPENER, "opener_generic_founder")
     assert opener([], FOUNDER).source == "opener_generic_founder"  # no signal at all
 
@@ -971,7 +972,7 @@ def test_enrol_fills_the_opener_for_the_contact_and_records_the_arm():
     s = dataclasses.replace(make_settings(live_sending=True), signals=signals)
     # acc-1 gets its signal's line; acc-2 has no signal, so the generic line; acc-3 is in the 30% holdout by
     # its hash, so its email 1 has none.
-    accounts = [acct(account_id=a, domain=f"{a}.com", clean_name=f"Bright {a[-1]}", tier="Standard", score=30,
+    accounts = [acct(account_id=a, domain=f"{a}.com", clean_name=f"Bright {a[-1]}", tier="Queue", score=30,
                      angle="Growing team" if a != "acc-2" else "General", status="verified",
                      industry="Advertising agencies", industry_group="Marketing & Creative Agencies")
                 for a in ("acc-1", "acc-2", "acc-3")]

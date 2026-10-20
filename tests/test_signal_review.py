@@ -43,13 +43,13 @@ def test_a_signal_whose_companies_reply_more_is_marked_raise_and_one_with_too_fe
         rows.append((f"a{i}", 20, ["New People leader", "Team of 10–49"], "Priority", "positive" if i % 2 else None))
     for i in range(40):  # without it: one in ten replied
         rows.append((f"b{i}", 20, ["Team of 10–49"], "Control", "objection" if i % 10 == 0 else None))
-    rows.append(("c0", 20, ["Named by Harry", "Team of 10–49"], "Standard", None))
+    rows.append(("c0", 20, ["Visited the US site", "Team of 10–49"], "Standard", None))
     r = signal_review.review(world(rows))
     v = {x.signal: x for x in r.verdicts}
     leader = v["New People leader"]
     assert (leader.with_n, leader.with_replied, leader.without_n, leader.without_replied) == (40, 20, 41, 4)
     assert leader.verdict == "raise" and leader.p < 0.001
-    assert v["Named by Harry"].verdict == "too few"
+    assert v["Visited the US site"].verdict == "too few"
     assert v["Team of 10–49"].verdict == "too few"  # every company has it: nobody to compare with
     assert r.tiers == {"Priority": (40, 20), "Standard": (1, 0), "Control": (40, 4)}
     text = signal_review.lines(r)

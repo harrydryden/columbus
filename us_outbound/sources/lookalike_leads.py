@@ -75,7 +75,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, ledger
+from us_outbound import budget, icp, ledger
 from us_outbound.clean.domains import root_domain
 from us_outbound.clean.people import state_code
 from us_outbound.clients.apollo import LOOKALIKE_SEEDS_MAX, MAX_PER_PAGE, organizations_in
@@ -109,7 +109,7 @@ POST_HOURS = 36  # the daily post mentions a run this recent (the 1st's post)
 # PHASE0-CONFIRM: organization_locations takes a country ("United States"), and organization_not_locations
 # takes states written as source_universe writes them ("California, US"), on the lookalike search too.
 US_LOCATION = "United States"
-NOT_LOCATIONS = tuple(uni.location(s) for s in sorted(uni.NEVER_STATES))  # never CA or WA (SPEC 1.3)
+NOT_LOCATIONS = tuple(uni.location(s) for s in sorted(icp.NEVER_STATES))  # never CA or WA (SPEC 1.3)
 def cell_bands(settings: Settings, cell: str) -> tuple[str, ...]:
     """A cell's size bands (lookalikes.TARGET_BANDS) as Apollo's search bands within the General size range: the
     bands the range touches that read as this cell (lookalikes.PROSPECT_BANDS), so 5-9 searches with 10-49's seeds
@@ -265,7 +265,7 @@ def us_hq(org: Mapping[str, Any]) -> bool:
     """
     country = " ".join(str(org.get("country") or "").split()).casefold()
     if country:
-        return country in uni.US_COUNTRIES
+        return country in icp.US_COUNTRIES
     return bool(state_code(str(org.get("state") or "")))
 
 

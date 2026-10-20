@@ -50,9 +50,6 @@ data to say something, and as counts, not conclusions:
   * data gaps: verified accounts with no size band, accounts waiting for verification with none,
     the main reason pick_contacts found nobody suitable, and a pointer to the page reader's own
     section rather than its numbers again;
-  * the tier mix of this month's queue when top fit is under 5% or a group over 60% (score.tier_share, the
-    score job's own check), as after the first live sourcing run (2 Oct 2026: 425 of 432 Control). Only while
-    auto_thresholds is no: with yes the thresholds keep the mix (scoring/balance.py).
 What cannot be compared yet goes in one last line, with how many it needs.
 """
 
@@ -79,7 +76,7 @@ from us_outbound.facts import newest_by
 from us_outbound.learn import kill_rules
 from us_outbound.limits import Limits
 from us_outbound.replies import kinds
-from us_outbound.scoring import score, tiers
+from us_outbound.scoring import tiers
 from us_outbound.settings.model import TIERS, Settings
 from us_outbound.timeparse import utc, utc_strict
 
@@ -91,7 +88,7 @@ MAX_IMPROVE = 6  # lines at most, the "too early" line last
 MIN_PER_ARM = 50  # contacts emailed per arm (opener, holdout; personal, copy; an angle, a copy version, an email source)
 TOP = 3  # values named per list
 
-QUEUE_OUT_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})  # not in the queue (sources/apollo_universe.py)
+QUEUE_OUT_TIERS = tiers.OUT_OF_QUEUE_TIERS  # not in the queue
 NOT_SCORED = "not scored yet"
 IN_SEQUENCE, FINISHED, STOPPED = "in_sequence", "finished", "stopped"
 _TOP_REVEALS = re.compile(r"^no sendable email among the top \d+ \(.*\)$")
@@ -186,7 +183,9 @@ def found(ctx: Context, rows: Rows, start: datetime, end: datetime, label: str) 
     lines = [f"*Found* · {label}"]
     line = f"  Companies: {len(new)} new"
     if new:
-        line += f" ({fmt.counts(by_source)}); tiers now: {fmt.counts(by_tier, order=(*TIERS, NOT_SCORED))}"
+        # A tier from before W2-2 (Priority, Standard, Control) is named as it is until a rescore writes Queue.
+        order = (*TIERS, *tiers.LEGACY_QUEUE_TIERS, NOT_SCORED)
+        line += f" ({fmt.counts(by_source)}); tiers now: {fmt.counts(by_tier, order=order)}"
     lines.append(line)
     verified = verified_in(ctx.store, start, end)
     if verified is None:
@@ -273,8 +272,9 @@ def parked_line(parked: Mapping[str, int]) -> str:
 def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], lim: Limits) -> tuple[list[str], dict[str, Any]]:
     """The Pipeline section: what is ready to send now, and what stands behind it."""
     s = ctx.settings
-    tiers_ = Counter(str(c.account.get("tier")) for c in ready)
-    line = f"  Ready to send: {len(ready)} (" + ", ".join(f"{t} {tiers_.get(t, 0)}" for t in queue.QUEUE_TIERS) + ")"
+    # The tiers went with W2-2 (Harry's D7): the split that matters now is the random arm pick drew (accounts.arm).
+    drawn = sum(c.account.get("arm") == queue.RANDOM for c in ready)
+    line = f"  Ready to send: {len(ready)} ({drawn} drawn for the random arm)"
     lines = ["*Pipeline* · now", line]
     if ready:
         lines.append(f"    {_groups(ready, s)}")
@@ -300,7 +300,7 @@ def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], lim: Limits) 
     seq = sequence_states(ctx, rows.contacts)
     lines.append(f"  In sequence: {fmt.plural(seq[IN_SEQUENCE], 'account')} with follow-ups to come · finished {seq[FINISHED]}"
                  f" · stopped {seq[STOPPED]} (reply, bounce or unsubscribe)")
-    nums = {"ready_to_send": len(ready), "ready_by_tier": dict(tiers_),
+    nums = {"ready_to_send": len(ready), "ready_random_arm": drawn,
             "supply_days": supply, "supply_pace": pace, "waiting_for_contact": len(need), "no_suitable_contact": stuck,
             "waiting_for_verification": len(unverified), "doubtful_facts": doubtful, "in_sequence": seq[IN_SEQUENCE],
             "parked": sum(parked.values()), "parked_by_reason": dict(parked),
@@ -438,20 +438,6 @@ def _review_ready(ctx: Context) -> list[str]:
     return [line] if line else []
 
 
-def _tier_mix(ctx: Context, rows: Rows) -> list[str]:
-    if ctx.settings.general.auto_thresholds:
-        return []
-    check = score.tier_share(rows.accounts, ctx.today_uk())
-    if not check or not check["off"]:
-        return []
-    # The score job's alert in short (scoring/score.py _share_alert): the same words for the groups, the same fix.
-    mix = ", ".join(f"{score.TIER_WORDS[t]} {s:.0%}" for t, s in check["shares"].items())
-    fixes = " ".join(score._share_fixes(ctx.settings, check["off"]))
-    return [f"  This month's list of companies to email is unbalanced ({check['accounts']} companies): {mix}; top "
-            f"fit should be at least {score.SHARE_MIN:.0%} and no group over {score.SHARE_MAX:.0%}. *What to do,* on "
-            f"the General tab: {fixes}"]
-
-
 def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:
     """The To improve section: what the data says to tune, once there is enough of it."""
     since = ctx.now - timedelta(days=LEARN_DAYS)
@@ -464,7 +450,7 @@ def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:
         opener, cuts, bounces = [], [], []
         early.append(f"no email sent in the last {LEARN_DAYS} days")
     # In this order, so that past MAX_IMPROVE the cuts by angle and copy version go first, then "too early".
-    body = [*_review_ready(ctx), *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
+    body = [*_review_ready(ctx), *opener, *bounces, *_gaps(rows), *cuts]
     if early:
         body.append("  Too early to compare: " + "; ".join(early) + ".")
     body = body[:MAX_IMPROVE]

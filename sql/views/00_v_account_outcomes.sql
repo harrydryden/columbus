@@ -19,6 +19,8 @@
 --   subject_arm: that contact's email 1 subject arm at enrollment, personal (General email1_subject) or copy
 --               (the Copy row's s1_subject), so a readout can compare the two (Harry, 5 Oct 2026).
 --   angle, copy_version, test_id: that contact's at enrollment, for the readout's cuts (6 Oct 2026).
+--   arm: that contact's explore arm, random or ranked (contacts.arm, stamped at enrolment; W1-6), NULL before it
+--               existed, which reads as ranked: v_readout_weekly's arm cut (W2-2, 20 Oct 2026).
 CREATE OR REPLACE VIEW us_outbound.v_account_outcomes AS
 WITH step1 AS (
   SELECT DISTINCT ON (account_id)
@@ -76,7 +78,8 @@ SELECT
   mt.account_id IS NOT NULL AS meeting_booked,
   c.angle,
   c.copy_version,
-  c.test_id
+  c.test_id,
+  c.arm
 FROM step1 AS s
 LEFT JOIN bounced AS b
   ON b.contact_id = s.contact_id
@@ -86,4 +89,4 @@ LEFT JOIN meetings AS mt
   ON mt.account_id = s.account_id
 LEFT JOIN us_outbound.contacts AS c
   ON c.contact_id = s.contact_id;
-COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12), and whether a meeting was booked after it; the opener arm, to compare opener against none; the subject arm, to compare email 1''s personal subject against the Copy row''s; and the account''s signals, score, tier, angle, copy version and test at enrollment.';
+COMMENT ON VIEW us_outbound.v_account_outcomes IS 'One row per account sent step 1 (helper for v_signal_value and v_readout_weekly): delivered, and whether a human or positive reply came within 28 days of step 1 (SPEC 12), and whether a meeting was booked after it; the opener arm, to compare opener against none; the subject arm, to compare email 1''s personal subject against the Copy row''s; and the account''s signals, score, tier, angle, copy version, test and explore arm at enrollment.';

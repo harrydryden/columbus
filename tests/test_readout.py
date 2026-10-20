@@ -73,15 +73,17 @@ def text(ctx) -> str:
 def test_small_numbers_read_too_few_to_read_never_a_rate():
     weekly = [week_row("all", "all", accounts_enrolled=12, accounts_delivered=12, accounts_replied=2,
                        accounts_positive=1, sends=12, replies=2, positive_replies=1),
-              week_row("tier", "Priority", accounts_enrolled=3, accounts_delivered=3, accounts_replied=1, sends=3,
+              week_row("arm", "random", accounts_enrolled=3, accounts_delivered=3, accounts_replied=1, sends=3,
                        replies=1)]
     ctx, _ = world(weekly=weekly, outcomes=outcome_rows(12, days_ago=10, replied=2, positive=1))
     out = text(ctx)
     assert ("*So far:* 0 of 12 companies emailed have had the full 28 days after email 1 to reply, too few to give a "
             "rate (it takes 30). Counts so far, windows still open: 2 replied · 1 positive · 0 meetings.") in out
     assert "  Companies emailed so far: 12 (12 delivered) · 2 replied · 1 positive · 0 meetings" in out
-    [tier] = [line for line in out.splitlines() if line.startswith("  Top fit (Priority):")]
-    assert tier == "  Top fit (Priority): 3 sent, 1 reply · 3 emailed so far, 1 replied (too few to read)"
+    # The explore arm cut in place of the tiers (W2-2): 1 replied of 3 is too few to give a rate.
+    [arm] = [line for line in out.splitlines() if line.startswith("  random:")]
+    assert arm == "  random: 3 sent, 1 reply · 3 emailed so far, 1 replied (too few to read)"
+    assert "_By explore arm_ (random: picked at random from the queue; ranked: in score order)" in out
     assert "16.7%" not in out and "33" not in out  # 2 of 12 is never given as a rate
 
 
@@ -218,7 +220,7 @@ def test_the_cuts_show_last_week_and_so_far_busiest_first():
                  accounts_replied=3),
         week_row("sender", "Hannah Spalding", sends=40),
         week_row("step", "step 2", sends=15, replies=1), week_row("step", "step 1", sends=25, replies=2, bounces=1),
-        week_row("tier", "Held", start=date(2026, 9, 28)),  # nothing in it: not listed
+        week_row("arm", "random", start=date(2026, 9, 28)),  # nothing in it: not listed
     ]
     out = text(world(weekly=weekly)[0]).splitlines()
     assert "*Cuts* (the numbers split several ways: last week · companies emailed so far)" in out
@@ -228,7 +230,8 @@ def test_the_cuts_show_last_week_and_so_far_busiest_first():
     assert out[angle + 2] == "  General: 10 sent, 1 reply · 40 emailed so far, 2 replied (5.0%)"  # no zeros
     step = out.index("_By step_ (which email of the sequence)")
     assert out[step + 1:step + 3] == ["  step 1: 25 sent, 2 replies, 1 bounce", "  step 2: 15 sent, 1 reply"]
-    assert not any(x.startswith("_By tier_") for x in out) and "_By sender_ (whose mailbox sent it)" in out
+    assert not any(x.startswith(("_By tier_", "_By explore arm_")) for x in out)
+    assert "_By sender_ (whose mailbox sent it)" in out
 
 
 def test_without_the_views_the_rest_still_posts():

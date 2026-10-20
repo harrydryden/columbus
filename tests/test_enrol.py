@@ -314,13 +314,16 @@ def test_running_test_splits_version_a_accounts_and_records_the_test():
     assert versions == {"agencies-v1", "agencies-v2"}
 
 
-def test_control_and_other_copy_stay_out_of_the_test():
+def test_other_copy_stays_out_of_the_test_and_a_former_control_account_is_in_it():
+    """The test takes the accounts that would get its version_a. The Control tier's were left out until the tiers
+    went (W2-2): acc-3, still tiered Control as a rescore has not reached it, is now in the test like any other."""
     s = make_settings(live_sending=True, tests=(FIRST_TEST,), copy=TEST_COPY)
     ctx, _ = make(live=True, settings=s)
     enrol.run(ctx)
+    assert ctx.store.get("accounts", account_id="acc-3")["tier"] == "Control"
     assert ctx.store.get("contacts", contact_id="con-1")["test_id"] == FIRST_TEST.test_id
     assert ctx.store.get("contacts", contact_id="con-2")["test_id"] is None  # General copy
-    assert ctx.store.get("contacts", contact_id="con-3")["test_id"] is None  # Control
+    assert ctx.store.get("contacts", contact_id="con-3")["test_id"] == FIRST_TEST.test_id
 
 
 def test_no_approved_copy_skips_the_account_and_says_what_waits():
@@ -558,40 +561,35 @@ def tiers_of(posted: list[dict]) -> list[str]:
     return [lead["email"].split("@")[1].split(".")[0].rstrip("0123456789").capitalize() for lead in posted]
 
 
-def test_control_share_and_queue_order_while_explore_share_is_0():
-    """explore_share 0 (no General row, as the live sheet is on deploy): the Control tier keeps control_share of the
-    day first, as before W1-6, so the comparison arm does not stop before the random arm starts (the whole-wave
-    review, 20 Oct 2026). 30 Priority and 10 Control accounts, 30 today (weekly 120 ÷ 4 send days left): 5 Control
-    (15% of 30 is 4.5, rounded half up) and 25 Priority. Each contact is stamped ranked: the arm column is the random
-    arm's, and tier_at_enrol says Control."""
+def test_the_queue_is_taken_by_score_and_the_control_tier_has_no_lane():
+    """The tiers went with W2-2 (Harry's D7): 30 Priority (scores 60-89) and 10 Control (0-9) accounts, still tiered as
+    before W2-2, 30 today (weekly 120 ÷ 4 send days left), explore_share 0.15 (the code default) but no account drawn
+    into the random arm yet: the 30 highest scores, the 30 Priority, and no Control lane (it took 15%, 5, before)."""
     ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120)
     out = enrol.run(ctx)
     assert out["number"] == 30 and out["prepared"] == 30
     # In proportion to each owner's pace (cap ÷ 4, rounded up): Harry 15, Hannah 8, Sam 8.
     assert out["by_owner"] == {"Harry Dryden": 14, "Hannah Spalding": 8, "Sam Jackson": 8}
-    assert tiers_of(posted).count("Control") == 5
-    assert out["control"] == {"share": 0.15, "ready": 10, "target": 5, "prepared": 5}
+    assert tiers_of(posted).count("Control") == 0 and "control" not in out
+    assert out["explore"]["share"] == 0.15 and out["explore"]["target"] == 0
 
 
-def test_a_short_control_tier_is_filled_from_standard():
-    ctx, posted = queue_of({"Control": 1, "Standard": 40}, weekly_enrol_cap=120)
+def test_a_retired_tier_never_orders_the_queue():
+    """The same queue with the 10 Control accounts at score 99: they come first now (the score orders), so the 30 are
+    the 10 Control and the 20 best Priority (scores 89 down to 70). Before, the tier came first: 30 Priority."""
+    ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120)
+    for i in range(10):
+        ctx.store.update("accounts", {"account_id": f"Control{i}"}, {"score": 99})
     assert enrol.run(ctx)["prepared"] == 30
-    assert tiers_of(posted).count("Control") == 1 and len(posted) == 30
+    assert tiers_of(posted).count("Control") == 10
+    assert sorted(lead["email"] for lead in posted if "priority" in lead["email"]) == sorted(
+        f"x@priority{i}.com" for i in range(10, 30))
 
 
-def test_the_random_arm_replaces_the_control_tier_once_explore_share_is_set():
-    """explore_share 0.15 with no random-arm account ready (pick has not drawn one yet): the Control tier has no lane
-    of its own, so the 30 are the 30 Priority in queue order, and the summary says the Control lane is off."""
-    ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120, explore_share=0.15)
-    out = enrol.run(ctx)
-    assert out["prepared"] == 30 and tiers_of(posted).count("Control") == 0
-    assert out["control"] is None and out["explore"]["target"] == 0
-
-
-def test_short_priority_and_standard_are_filled_from_control():
+def test_a_short_queue_is_filled_by_score():
     ctx, posted = queue_of({"Control": 10, "Priority": 2}, weekly_enrol_cap=12)  # 12 ÷ 4 send days left
-    assert enrol.run(ctx)["prepared"] == 3  # 15% of 3 rounds to no Control, but only 2 others wait
-    assert sorted(tiers_of(posted)) == ["Control", "Priority", "Priority"]
+    assert enrol.run(ctx)["prepared"] == 3  # the 2 Priority (60, 61), then the best Control (9)
+    assert sorted(lead["email"] for lead in posted) == ["x@control9.com", "x@priority0.com", "x@priority1.com"]
 
 
 # -- candidates ---------------------------------------------------------------------------------------
@@ -664,7 +662,7 @@ def test_account_filters():
     ctx.store.insert("partners", [{"domain": "broker.com", "name": "Broker", "reason": "broker"}])
     out = enrol.run(ctx)
     assert out["candidates"] == 1 and out["prepared"] == 1
-    assert out["skipped"] == {"domain suppressed": 2, "partner domain": 1, "industry switched off": 1}
+    assert out["skipped"] == {"domain suppressed": 2, "a partner, never prospected": 1, "industry switched off": 1}
 
 
 def test_contact_picks_the_first_sendable_one():
@@ -1003,23 +1001,24 @@ def ids_of(posted: list[dict]) -> list[str]:
     return [lead["email"].split("@")[1].removesuffix(".com") for lead in posted]
 
 
-def test_explore_share_0_the_default_walks_today_s_queue_order():
-    """explore_share 0 (no General row): no random walk, so the walk is today's (ef2ce5f's): control_share of the 25
-    from the Control tier first (0.15 × 25 = 3.75 → 4), then the first 21 others in queue order, and every contact is
-    stamped ranked. 60 ranked and 5 random-arm accounts ready (drawn while the share was above 0); rnd0 is Priority
-    with the top score, so it is first in queue order and walked there; the other four (Control, scores 1-4) are the
-    Control tier's 4. Each contact is ranked, not random: none was chosen at random, so the readout must not count it
-    in the random arm (the round-1 review found rnd0 stamped random, and summary.explore.prepared 1, at share 0)."""
-    ctx, posted, ordered = explore_world(5, 60, live=True)
+def test_explore_share_0_on_the_sheet_walks_the_queue_by_score():
+    """explore_share 0 (a General row; the code default is 0.15 from W2-2): no random walk, and no Control lane (it
+    went with the tiers), so the 25 are the first 25 in queue order, by score, and every contact is stamped ranked.
+    60 ranked and 5 random-arm accounts ready (drawn while the share was above 0); rnd0 has the top score, so it is
+    first in queue order and walked there; the other four (scores 1-4) are not reached. Each contact is ranked, not
+    random: none was chosen at random, so the readout must not count it in the random arm (the round-1 review found
+    rnd0 stamped random, and summary.explore.prepared 1, at share 0)."""
+    ctx, posted, ordered = explore_world(5, 60, live=True, explore_share=0.0)
     ctx.store.update("accounts", {"account_id": "rnd0"}, {"tier": "Priority", "score": 999})
     ordered = sorted(ctx.store.select("accounts"), key=lambda a: queue.order_key(a, ctx.settings))
     assert ctx.settings.general.explore_share == 0.0 and ordered[0]["account_id"] == "rnd0"
     out = enrol.run(ctx)
     assert (out["number"], out["prepared"], out["enrolled"]) == (25, 25, 25)
-    assert sorted(ids_of(posted)) == sorted([f"rnd{i}" for i in range(1, 5)] + [a["account_id"] for a in ordered[:21]])
+    assert sorted(ids_of(posted)) == sorted(a["account_id"] for a in ordered[:25])
+    assert not {f"rnd{i}" for i in range(1, 5)} & set(ids_of(posted))
     assert out["explore"] == {"share": 0.0, "drawn_ready": 0, "target": 0, "prepared": 0,
                               "realised": None}
-    assert out["control"] == {"share": 0.15, "ready": 4, "target": 4, "prepared": 4}
+    assert "control" not in out
     enrolled = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
     assert len(enrolled) == 25 and "rnd0" in enrolled and set(enrolled.values()) == {queue.RANKED}
     assert ctx.store.get("accounts", account_id="rnd0")["arm"] == queue.RANDOM  # pick's draw is left as it was
@@ -1261,19 +1260,19 @@ def test_account_block_holds_the_general_size_range_as_it_is_today():
     """verify judges size once; a range narrowed later must still keep the accounts it no longer takes out of the
     queue. 300 staff at max 249: blocked; at max 350 (the sheet before D1): not. With no count, the band decides
     (250-499 is outside 10 to 249); with neither, verify already left it out, so nothing is added here. An Overrides
-    row of 120 staff brings it back, as it does at verify."""
+    row of 120 staff brings it back, as it does at verify. The reason is the ICP gate's size reason (icp.SEND)."""
     from us_outbound.settings.model import Override
 
     narrow, wide = make_settings(max_employees=249), make_settings(max_employees=350)
+    outside = "outside 10 to 249 employees"
     big = account(employees=300, size_band="250-499")
-    assert enrol.account_block(big, narrow, (), (), frozenset()) == enrol.SIZE_SKIP
+    assert enrol.account_block(big, narrow, (), (), frozenset()) == outside
     assert enrol.account_block(big, wide, (), (), frozenset()) is None
     assert enrol.account_block(account(), narrow, (), (), frozenset()) is None  # 64 staff
-    assert enrol.account_block(account(employees=None, size_band="250-499"), narrow, (), (), frozenset()) \
-        == enrol.SIZE_SKIP
+    assert enrol.account_block(account(employees=None, size_band="250-499"), narrow, (), (), frozenset()) == outside
     assert enrol.account_block(account(employees=None, size_band="100-249"), narrow, (), (), frozenset()) is None
     assert enrol.account_block(account(employees=None, size_band=None), narrow, (), (), frozenset()) is None
-    assert enrol.account_block(account(employees=5, size_band="1-9"), narrow, (), (), frozenset()) == enrol.SIZE_SKIP
+    assert enrol.account_block(account(employees=5, size_band="1-9"), narrow, (), (), frozenset()) == outside
     fixed = make_settings(max_employees=249, overrides=(Override("acmecreative.com", "employees", "120"),))
     assert enrol.account_block(big, fixed, (), (), frozenset()) is None
 

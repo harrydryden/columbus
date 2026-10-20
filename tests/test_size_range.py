@@ -147,7 +147,7 @@ def test_a_visitor_in_any_us_state_is_verified_and_tiered_but_an_account_from_a_
     assert verify.check(visitor, {}, BASE, set(), set()) is None
     assert "HQ" not in (tiers.hard_exclusion(visitor, {}, BASE) or "")
     searched = account(hq_state=state)
-    assert verify.check(searched, {}, BASE, set(), set()) in (("state", "HQ in CA or WA"), ("state", "HQ state not active"))
+    assert verify.check(searched, {}, BASE, set(), set())[0] == "state"
     assert "HQ" in (tiers.hard_exclusion(searched, {}, BASE) or "")
 
 

@@ -34,7 +34,7 @@ enrol at 12:00, whose tiers the rescore at the end of the run sets.
      is surely not for us stays out at no cost: no website, a personal domain, a country outside
      the US, an industry no active label fits, an insurer or broker. Never its HQ state (Harry,
      6 Oct 2026: "I never want to exclude a website visitor on their state, as long as they're in the
-     US"; accounts.any_us_state): any state, CA and WA and the inactive ones included, and an unknown
+     US"; icp.any_us_state): any state, CA and WA and the inactive ones included, and an unknown
      state once Apollo puts the HQ in the US. A contact located in CA or WA is still never emailed
      (SPEC 1.3). Every other one is looked up in Apollo's organization enrich
      (MAX_ENRICH_PER_RUN a run, BULK_ENRICH_MAX a call), since search rows carry no employee count,
@@ -82,7 +82,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import accounts, budget, ledger, verify
+from us_outbound import accounts, budget, icp, ledger, verify
 from us_outbound.clean.domains import canonical_domain, is_personal_domain
 from us_outbound.clean.people import state_code
 from us_outbound.clients.apollo import BULK_ENRICH_MAX, MAX_PER_PAGE, enriched_in, organizations_in, total_entries
@@ -342,15 +342,20 @@ def judge(ctx: Context, org: Mapping[str, Any]) -> Verdict:
     if label is not None and s.placeable(label) is None:
         return Verdict("its best Industries label is switched off")
     label = s.placeable(label)  # a switched-off label in a group we prospect: the group's own label
-    if tiers.partner_match({"naics": list(inp.codes), "industry": label.industry if label else "",
-                            "keywords": list(inp.tags), "apollo_industry": org.get("industry")}, {}):
-        return Verdict("a partner, never prospected")
+    # The ICP gate's partner rule (icp.gate; never the state, for a visitor), on what the organization says.
+    if icp.gate({"domain": domain, "naics": list(inp.codes), "industry": label.industry if label else "",
+                 "keywords": list(inp.tags), "apollo_industry": org.get("industry")}, {}, s, checks={icp.PARTNER}):
+        return Verdict(icp.PARTNER_TEXT)
     state = state_code(str(org.get("state") or ""))
     acct = verify.with_overrides({**universe.columns(org, label, state, ""), "domain": domain,
                                   "source": ACCOUNT_SOURCE}, s)
+    # And its size rule on the employee count, when Apollo gave one (a band alone is left to verify, as before). A
+    # count within EDGE_MARGIN of a size edge is let through: the hand-check's doubts see it (verify.doubts).
     n = tiers.as_number(acct.get("employees"))
-    if n is not None and not s.size_in_range(n) and verify.near_edge(int(n), s) is None:
-        return Verdict(verify.outside(s))
+    if n is not None and verify.near_edge(int(n), s) is None:
+        why = icp.gate({"domain": domain, "employees": n}, {}, s, checks={icp.SIZE})
+        if why:
+            return Verdict(why.text)
     return Verdict(label=label, state=state, doubts=tuple(verify.doubts(acct, s)))
 
 

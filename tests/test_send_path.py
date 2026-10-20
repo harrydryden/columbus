@@ -70,7 +70,7 @@ def test_candidates_and_pick_agree_on_every_gate():
     cands, skipped = enrol.candidates(ctx, pulled)
     assert sorted(c.account["account_id"] for c in cands) == ["acc-expired", "acc-ok"]  # expired: holds nothing
     assert skipped == {
-        "domain suppressed": 2, "partner domain": 1, "industry switched off": 1, enrol.HAND_CHECK_SKIP: 1,
+        "domain suppressed": 2, "a partner, never prospected": 1, "industry switched off": 1, enrol.HAND_CHECK_SKIP: 1,
         "industry group stopped by a kill rule": 1, "email source paused by a kill rule": 1, "contact suppressed": 2,
         "email domain suppressed": 1, "contact in CA or WA": 1, "email status invalid": 1,
     }
@@ -96,7 +96,7 @@ def test_candidates_and_pick_agree_on_every_gate():
     assert pick.waiting(ctx) == (need, len(ready))
     # Neither: the account reasons.
     neither = set(got) - want_ready - want_need
-    assert {got[a] for a in neither} == {"domain suppressed", "partner domain", "industry switched off",
+    assert {got[a] for a in neither} == {"domain suppressed", "a partner, never prospected", "industry switched off",
                                          "industry group stopped by a kill rule"}
 
 

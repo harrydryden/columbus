@@ -16,16 +16,16 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      whose campaign is not active (only `us-outbound start --live` activates one), is missing, or
      cannot be read has no slots, so no lead is added for them; a dry run counts
      them and says so (enrol/capacity.campaigns_not_sending; summary campaigns_not_sending).
-  3. Candidates: verified accounts in Priority, Standard or Control whose domain is not
-     suppressed or a partner, whose industry is on, and with one sendable contact: a verified
+  3. Candidates: verified accounts in the queue (tier Queue: scoring/tiers.py) that pass the ICP gate's send
+     checks (icp.SEND: domain not suppressed or a partner, industry on, size in the General range, not held at the
+     hand-check), and with one sendable contact: a verified
      email, not suppressed, located in a known state other than CA or WA, not a personal
      domain or shared inbox, not enrolled before. Of several, the best-ranked one, as
      pick_contacts ranks them (Harry, 1 Oct 2026; clean/people.rank_person). A kill rule may
      hold back an industry group or an email source (base/holds.py). This is one check (eligible).
   4. explore_share of today's number from the random arm pick_contacts drew (accounts.arm = random; Harry's D7,
-     in place of the Control tier's share), the rest in queue order (queue.order_key); while explore_share is 0
-     (the default, so no random arm) control_share from the Control tier first, as before W1-6 (queue.control_count),
-     each account gets: its sender (kept for life; a paused sender's accounts
+     0.15, in place of the Control tier's share, which went with the tiers in W2-2), the rest in queue order
+     (queue.order_key: by score); each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
      contact's role, else its group's, else General; a running ab test's hash split takes
      half of version_a's accounts), its opener for that contact (enrol/openers.py: the angle
@@ -78,14 +78,13 @@ from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
-from us_outbound import budget, config_version, labels, parse
+from us_outbound import budget, config_version, icp, labels
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render, variants
 from us_outbound.logs import hash_email, log
-from us_outbound.scoring.angle import legal_overlay
-from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
-from us_outbound.settings.model import AB_TEST, GENERAL_COPY, SIZE_BANDS, CopyRow, CopyStep, Mailbox, Settings
-from us_outbound.settings.overrides import effective
+from us_outbound.scoring import tiers
+from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE, score_account
+from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
 from us_outbound.timeparse import utc
 
 
@@ -93,7 +92,6 @@ JOB = "enrol"
 ENROLLED = "enrolled"
 EXCLUDED = "Excluded"
 SENDABLE_EMAIL_STATUSES = frozenset({"verified", "valid", "catch_all_valid"})  # Apollo verified (SPEC 8)
-NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.5
 WAITING = ("open", "escalated")  # hitl_items still waiting for Harry
 HUBSPOT_SOURCE = "hubspot"
 # signal_events facts that scoring/tiers.py reads as hard exclusions, so a rescore keeps them.
@@ -172,11 +170,7 @@ def _item_week(item: Mapping[str, Any]) -> str:
     return iso_week(t.astimezone(UK).date()) if t else ""
 
 
-HAND_CHECK_SKIP = "held or pulled at this week's hand-check"  # account_block's reason for hand_check()'s accounts
-# account_block's reason for a verified account whose size the General range no longer takes (size_in_range), and the
-# Overrides fields it reads.
-SIZE_SKIP = "size outside the General range"
-SIZE_FIELDS = ("employees", "size_band")
+HAND_CHECK_SKIP = icp.HELD_TEXT  # account_block's reason for hand_check()'s accounts
 
 
 def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
@@ -313,39 +307,15 @@ def account_block(
     account: Mapping[str, Any], settings: Settings, domains: Collection[str], partners: Collection[str],
     pulled: Collection[str],
 ) -> str | None:
-    domain = _lower(account.get("domain"))
-    if not domain:
-        return "no domain"
-    if is_public_body(domain):
-        return "a public body, never prospected"
-    if domain in domains:
-        return "domain suppressed"
-    if domain in partners:
-        return "partner domain"
-    if str(account.get("account_id")) in pulled:
-        return HAND_CHECK_SKIP
-    ind = settings.industry(str(account.get("industry") or ""))
-    if ind is not None and not ind.active:
-        return "industry switched off"
-    if not size_in_range(account, settings):
-        return SIZE_SKIP
-    return None
-
-
-def size_in_range(account: Mapping[str, Any], settings: Settings) -> bool:
-    """Whether the account's size (its Overrides rows applied, as verify judged it) is in the General range today: its
-    employee count when known, else its size band; True when neither is known (verify left out any account with
-    neither, so this gate adds nothing there).
-
-    verify judges size once, when an account is checked; this keeps a narrower range (General max_employees 350 ->
-    249, Harry's D1) from leaving accounts verified at the old range in the queue: pick, enrol, the contactable supply,
-    and the hand-check pool all go through account_block (whole-wave review, 20 Oct 2026)."""
-    eff = effective(account, settings, fields=SIZE_FIELDS)
-    n = parse.number(eff.get("employees"))
-    if n is not None:
-        return settings.size_in_range(n)
-    band = str(eff.get("size_band") or "")
-    return band not in SIZE_BANDS or settings.band_in_range(band)
+    """Why a verified account may not be emailed now, or None: the ICP gate's send checks (icp.SEND), on what is
+    stored now. A domain, public body, suppression, partner (the partners table, or by NAICS or keywords), the
+    hand-check's hold, an industry switched off, and a size the General range no longer takes (its Overrides applied;
+    verify judges size once, so a narrower range, Harry's D1 349 -> 249, would otherwise leave accounts verified at
+    the old range in the queue: the whole-wave review, 20 Oct 2026). A fact nobody can now supply (no size, no label)
+    passes: verify left out any account missing one. pick, enrol, the contactable supply and the hand-check pool all
+    go through it."""
+    why = icp.gate(account, {}, settings, suppressed=domains, partners=partners, held=pulled, checks=icp.SEND)
+    return why.text if why else None
 
 
 def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: Collection[str]) -> str | None:
@@ -363,7 +333,7 @@ def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: 
     state = state_code(str(contact.get("person_state") or ""))
     if state is None:  # blank, or not a US state ("Ontario", "London")
         return "contact state unknown"
-    if state in NEVER_STATES:  # "CA", "California", "Calif.", "WA", "Washington"
+    if state in icp.NEVER_STATES:  # "CA", "California", "Calif.", "WA", "Washington"
         return "contact in CA or WA"
     domain = email.rsplit("@", 1)[1]
     if is_personal_domain(domain):
@@ -433,7 +403,7 @@ def candidates(ctx: Context, pulled: frozenset[str]) -> tuple[list[Candidate], C
     """Every account that could be enrolled today, with its contact; and why the others cannot."""
     store = ctx.store
     skipped: Counter[str] = Counter()
-    accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
+    accounts = store.select("accounts", {"status": "verified", "tier": list(tiers.QUEUE_TIERS)})
     g = gates(ctx, pulled)
     contacts: dict[str, list[dict]] = defaultdict(list)
     for chunk in _chunks([a["account_id"] for a in accounts]):
@@ -528,8 +498,8 @@ def choose_copy(
     """(Copy row, test_id or "", its arm "a" or "b" or "", why there is none, fallback note).
 
     The account gets the most specific sendable row for its industry and its contact's role
-    (copy_targets). A running ab test takes accounts that would get its version_a, other than
-    Control, and sends some of them (by account hash; share_a stay on version_a) version_b instead, while
+    (copy_targets). A running ab test takes accounts that would get its version_a (the Control tier's were left out
+    until the tiers went, W2-2), and sends some of them (by account hash; share_a stay on version_a) version_b instead, while
     each arm has fewer than its cap (accounts_per_version, scaled to its share: Test.cap). (A variant test
     changes the row's emails instead: variants.choose.)
     """
@@ -542,7 +512,7 @@ def choose_copy(
                  labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
         return None, "", "", f"no approved copy that has passed QA for {where}", note
     t = settings.running_test()
-    if t and t.kind == AB_TEST and account.get("tier") != queue.CONTROL and row.copy_version == t.version_a:
+    if t and t.kind == AB_TEST and row.copy_version == t.version_a:
         arm = queue.test_version(str(account["account_id"]), t.test_id, t.share_a)
         chosen = rows.get(t.arm_name(arm))
         if chosen is not None and (t.accounts_per_version <= 0 or counts.get(arm, 0) < t.cap(arm)):
@@ -561,13 +531,13 @@ def account_opener(
     The opener is worked out at enrol time, when the contact and their copy role are known: the
     angle setter's line for the role, filled with the account's stored facts, else the signal's
     plain opener; a deterministic share of accounts is held out with none. The General angle
-    (Control among it) has no signal line. An account with no line by then gets the generic line for the contact's role, then the plain
+    has no signal line. An account with no line by then gets the generic line for the contact's role, then the plain
     generic line (General opener_generic_*; Harry, 2 Oct 2026), else none, and email 1's opener
     line disappears. check(text) is the copy-rule check each filled line must pass.
     """
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
     op = openers.for_account(ctx, account, contact, events, check=check)
-    return op, legal_overlay(ctx.settings.industry_group_of(account))
+    return op, openers.legal_overlay(ctx.settings.industry_group_of(account))
 
 
 # -- HubSpot re-check (SPEC 9 enrol "re-checks HubSpot"; hard exclusions) ---------------------------
@@ -614,8 +584,8 @@ def mark_excluded(ctx: Context, account: Mapping[str, Any], fact: str, reason: s
                   source: str = HUBSPOT_SOURCE) -> None:
     """Tier Excluded now, and a fact so the next rescore keeps it excluded (the database, so dry-run too).
 
-    fact is one scoring/tiers.py reads as a hard exclusion: a hubspot one (declined_in_slack, an approver's 🚫 at a
-    send approval before they were removed, stays one too).
+    fact is one the ICP gate reads as a hard exclusion (icp.HUBSPOT_EXCLUSIONS): a hubspot one (declined_in_slack,
+    an approver's 🚫 at a send approval before they were removed, stays one too).
     """
     aid = account["account_id"]
     ctx.store.upsert("accounts", [{"account_id": aid, "tier": EXCLUDED, "tier_reason": reason}])
@@ -946,16 +916,36 @@ def signals_now(ctx: Context, account_ids: Sequence[str]) -> dict[str, list[dict
     Scoring rewrites these rows every run (scoring/score.py), so a contact keeps its own copy from the
     moment it is enrolled (contacts.signals_at_enrol): the readout then judges the signals an account had
     when it was emailed, not the ones it has weeks later (v_signal_value; Harry, 5 Oct 2026).
+
+    Each account's rows of its latest rescore only (value.run_id; the newest row's run, a row from before W2-2 having
+    none), so rows two rescores left could never be counted twice. An account with none (never scored, or its rows
+    lost) is scored here from its facts (score.score_account), so a contact is never stamped with no signals because
+    of a rescore that went wrong (W2-2; code-scoring B4).
     """
     out: dict[str, list[dict[str, Any]]] = {a: [] for a in account_ids}
     if not account_ids:
         return out
     rows = ctx.store.select("signal_events", {"account_id": list(account_ids), "source": SCORING_SOURCE,
                                               "fact": MATCH_FACT})
+    by_account: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
-        v = r.get("value") if isinstance(r.get("value"), Mapping) else {}
-        if v.get("signal"):
-            out.setdefault(str(r["account_id"]), []).append({"signal": str(v["signal"]), "weight": v.get("weight")})
+        if isinstance(r.get("value"), Mapping) and r["value"].get("signal"):
+            by_account[str(r["account_id"])].append(r)
+    for aid, found in by_account.items():
+        latest = max(found, key=lambda r: (utc(r.get("observed_at")) is not None, str(utc(r.get("observed_at")))))
+        run = latest["value"].get("run_id")
+        out[aid] = [{"signal": str(r["value"]["signal"]), "weight": r["value"].get("weight")}
+                    for r in found if r["value"].get("run_id") == run]
+    missing = [a for a in account_ids if not by_account.get(str(a))]
+    if missing:
+        accounts = {str(a["account_id"]): a for a in ctx.store.select("accounts", {"account_id": list(missing)})}
+        events: dict[str, list[dict]] = defaultdict(list)
+        for e in ctx.store.select("signal_events", {"account_id": list(missing)}):
+            events[str(e["account_id"])].append(e)
+        for aid in missing:
+            if str(aid) in accounts:
+                r = score_account(accounts[str(aid)], events.get(str(aid), []), ctx.settings, ctx.today_uk())
+                out[aid] = [{"signal": m.signal.signal, "weight": m.weight_applied} for m in r.matches]
     for matches in out.values():
         matches.sort(key=lambda m: (-(m["weight"] if isinstance(m["weight"], (int, float)) else 0), m["signal"]))
     return out
@@ -1094,44 +1084,35 @@ def run(ctx: Context) -> dict:
 
     # explore_share from the random arm pick_contacts drew (accounts.arm = random; Harry's D7), the rest in queue
     # order, and a shortfall in either (too few, or skipped on the way) filled from the other (queue.py docstring).
-    # The random walk ignores tier and the Focus quota's allows(): pick drew it within the Focus shares already, so
-    # holding it to today's quota would bend the arm towards whichever group the ranked accounts left room in. Its
-    # accounts still count against the quota, so the day's groups keep their shares. With explore_share 0 (the
-    # default) there is no random walk: the Control tier keeps its control_share first, as before W1-6, and the rest
-    # are walked in queue order, those pick drew while the share was above 0 included, so a sheet without the row is
-    # today's walk exactly (the plan's W1-6 acceptance; the whole-wave review, 20 Oct 2026); their contacts are
-    # stamped ranked. The Control lane goes through the quota, as it did.
+    # The random walk ignores the Focus quota's allows(): pick drew it within the Focus shares already, so holding it
+    # to today's quota would bend the arm towards whichever group the ranked accounts left room in. Its accounts
+    # still count against the quota, so the day's groups keep their shares. With explore_share 0 on the sheet there
+    # is no random walk: every account is walked in queue order, those pick drew while the share was above 0
+    # included, and their contacts are stamped ranked. (The Control tier's lane, which kept its share while
+    # explore_share was 0, went with the tiers: W2-2.)
     in_order = sorted(cands, key=lambda c: queue.order_key(c.account, s))
     exploring = s.general.explore_share > 0
 
     def in_random_arm(account: Mapping[str, Any]) -> bool:
         return exploring and account.get("arm") == queue.RANDOM
 
-    def in_first_lane(account: Mapping[str, Any]) -> bool:
-        return in_random_arm(account) if exploring else account.get("tier") == queue.CONTROL
-
     drawn = [c for c in in_order if in_random_arm(c.account)]
-    first = [c for c in in_order if in_first_lane(c.account)]
-    first_lane = iter(first)
-    ranked_lane = iter([c for c in in_order if not in_first_lane(c.account)])
+    random_lane = iter(drawn)
+    ranked_lane = iter([c for c in in_order if not in_random_arm(c.account)])
     n_random = queue.explore_count(n, s, len(drawn))
-    n_lead = n_random if exploring else queue.control_count(n, s, len(first))
     counts, approved = running_test_counts(ctx), sendable_copy(s)
     # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
     # accounts, the rest of the day in queue order whatever the group.
     quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
     held_ranked: list[Candidate] = []
-    held_first: list[Candidate] = []  # the first lane's: the random arm's, or (explore_share 0) the Control tier's
-    if exploring:
-        prepared = _walk(ctx, first_lane, n_lead, free, counts, approved, r, pace, not_sending=stopped)
-        for p in prepared:
-            quota.take(p.account)
-    else:
-        prepared = _walk(ctx, first_lane, n_lead, free, counts, approved, r, pace, quota, held_first, stopped)
+    held_random: list[Candidate] = []
+    prepared = _walk(ctx, random_lane, n_random, free, counts, approved, r, pace, not_sending=stopped)
+    for p in prepared:
+        quota.take(p.account)
     prepared += _walk(ctx, ranked_lane, n - len(prepared), free, counts, approved, r, pace, quota, held_ranked, stopped)
-    prepared += _walk(ctx, first_lane, n - len(prepared), free, counts, approved, r, pace, quota, held_first,
+    prepared += _walk(ctx, random_lane, n - len(prepared), free, counts, approved, r, pace, quota, held_random,
                       stopped)
-    for held in (held_ranked, held_first):
+    for held in (held_ranked, held_random):
         fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
         for p in fill:
             quota.take(p.account)
@@ -1223,10 +1204,6 @@ def run(ctx: Context) -> dict:
         explore={"share": s.general.explore_share, "drawn_ready": len(drawn), "target": n_random,
                  "prepared": n_random_prepared,
                  "realised": round(n_random_prepared / n_first, 3) if exploring and n_first else None},
-        # The Control tier's places while explore_share is 0 (control_count); None once the random arm has them.
-        control=None if exploring else {
-            "share": s.general.control_share, "ready": len(first), "target": n_lead,
-            "prepared": sum(p.account.get("tier") == queue.CONTROL for p in prepared[:n_first])},
         prepared=len(prepared),
         enrolled=sum(enrolled.values()),
         by_owner=dict(enrolled) if ctx.live else dict(would),

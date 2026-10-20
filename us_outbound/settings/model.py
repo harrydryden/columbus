@@ -61,7 +61,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     # (Harry, 5 Oct 2026), so a People leader count of 0 is read only where Apollo's data is deep enough.
     "apollo_people": frozenset(
         {"people_leader_count", "people_leader_days_in_title", "people_search_coverage", "people_found",
-         "us_headcount", "ca_wa_share", "fl_share", "states_with_staff"}
+         "states_with_staff"}
     ),
     "apollo_jobs": frozenset({"open_people_roles", "open_roles", "posting_titles"}),  # sources/apollo_jobs.py
     "site_visits": frozenset({"us_visits_30d", "pricing_or_demo_visits_30d", "top_paths", "days_since_first_visit"}),
@@ -88,7 +88,9 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
 AGED_FACTS = frozenset({"days_since_funding", "people_leader_days_in_title", "days_since_layoff", "days_since_first_visit"})
 
 ACTIONS = ("Score", "Hold", "Exclude", "Suppress")
-TIERS = ("Priority", "Standard", "Control", "Held", "Excluded")
+# accounts.tier (scoring/tiers.py; W2-2, 20 Oct 2026, Harry's D7): Queue, Held or Excluded. The tiers before it,
+# Priority, Standard and Control, are read as Queue until a rescore writes it; contacts.tier_at_enrol keeps them.
+TIERS = ("Queue", "Held", "Excluded")
 MAILBOX_STATUSES = ("Warming", "Active", "Paused", "Retired")
 # USPS codes: the 50 states and DC (the States tab's rows).
 US_STATES = (
@@ -195,17 +197,12 @@ class General:
 
     live_sending: bool = False
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
-    # Retired from the sheet (RETIRED_GENERAL; the W1-C contracts commit, 19 Oct 2026; Harry's D7: rank by score plus
-    # a random explore arm in place of the Control tier). A control_share row is no longer read, so this is always the
-    # code default, the live sheet's value. Enrol reads it only while explore_share is 0 (queue.control_count: the
-    # Control tier keeps its places until the random arm takes them, so a sheet without an explore_share row is
-    # today's walk); scoring/balance.py's thresholds read it until W2-2 retires the tiers.
-    control_share: float = 0.15
-    # (build) The W1-C contracts commit (19 Oct 2026): keys later Wave 1 packages read, defined once. Each default is
-    # today's behaviour, so a sheet without the row, and code that does not read the key yet, change nothing.
+    # (build) The W1-C contracts commit (19 Oct 2026): keys later Wave 1 packages read, defined once.
     # The share of each day's picks and sends drawn at random from the eligible queue, within the Focus shares, in
-    # place of the Control tier (Harry's D7). 0, the default: no random arm. At most MAX_EXPLORE_SHARE.
-    explore_share: float = 0.0
+    # place of the Control tier (Harry's D7: "Rank + 15% random arm"). 0.15 from W2-2 (20 Oct 2026), which retired
+    # the tiers and with them the Control tier's control_share (also 0.15), so the comparison goes on with no sheet
+    # row; 0 on the sheet: none, every company in score order. At most MAX_EXPLORE_SHARE.
+    explore_share: float = 0.15
     # The weekly hand-check's sample size; 10, the default, is the draw's constant today (enrol/hand_check.py).
     hand_check_sample: int = 10
     # (build) W1-5 (19 Oct 2026): whether the weekly hand-check gates the whole day's enrolment. yes, the default, is
@@ -215,10 +212,6 @@ class General:
     # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
     # no, the default: it only alerts (Harry's D13 decides).
     early_warning_pause: bool = False
-    priority_threshold: int = 50
-    standard_threshold: int = 20
-    # (build) Harry, 19 Oct 2026: the two thresholds follow the queue each day (scoring/balance.py); no: as typed
-    auto_thresholds: bool = True
     score_cap: int = 100
     apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)
     apollo_floor: int = 5000

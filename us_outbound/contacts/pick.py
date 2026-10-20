@@ -4,13 +4,13 @@ Harry, 1 Oct 2026: "Targeting the right contact is paramount... the closer to se
 decision maker the better, whilst also having the time to engage in understanding Spill."
 Runs at 05:30 UK on weekdays, before enrol at 12:00.
 
-  1. Accounts: verified, in Priority, Standard or Control, that enrol could take (domain not
-     suppressed or a partner, industry on), with no sendable contact; in enrol's queue order,
+  1. Accounts: verified, in the queue (tier Queue), that enrol could take (the ICP gate's send checks:
+     domain not suppressed or a partner, industry on, size in range), with no sendable contact; in enrol's queue order,
      and only as many as the next two send days need at the weekly target's pace
      (docs/pipeline.md change 5, approved 30 Sep 2026). An account where nobody suitable was
      found is tried again after RETRY_DAYS. "Could take" is enrol's own check (enrol.eligible: a kill rule's
      stopped group or paused email source, and a sendable Copy row, besides the domain and industry; W1-6).
-     The random explore arm (General explore_share, 0 by default; Harry's D7) is explore_share of the contacts
+     The random explore arm (General explore_share, 0.15; Harry's D7) is explore_share of the contacts
      wanted, from the accounts due within the Focus shares (queue.strata): each group's accounts are tried first,
      in a random order, until its places each have a kept contact or it runs out; each account whose contact is
      kept is stamped accounts.arm, random or ranked, which enrol reads. The summary's explore.realised is the arm's
@@ -60,7 +60,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, ledger
+from us_outbound import budget, icp, ledger
 from us_outbound.base import holds
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
@@ -72,6 +72,7 @@ from us_outbound.context import Context
 from us_outbound.enrol import enrol, queue
 from us_outbound.facts import newest_by
 from us_outbound.logs import hash_email, log
+from us_outbound.scoring import tiers
 from us_outbound.settings.model import Role, Settings
 from us_outbound.timeparse import iso_date, utc, utc_strict
 
@@ -105,7 +106,6 @@ LEDGER_NOTE = "email reveal (people/bulk_match)"
 # after the search (when it gives a state) and after the reveal (always).
 US_LOCATION = "United States"
 SEARCH_EMAIL_STATUSES = ("verified",)
-US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
 
 
 def _lower(v: Any) -> str:
@@ -146,7 +146,7 @@ def _split(ctx: Context) -> tuple[list[dict], list[dict]]:
     are emailed once judged.
     """
     s, store = ctx.settings, ctx.store
-    accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
+    accounts = store.select("accounts", {"status": "verified", "tier": list(tiers.QUEUE_TIERS)})
     g = enrol.gates(ctx)
     rows = enrol.sendable_copy(s)
     contacts: dict[str, list[dict]] = defaultdict(list)
@@ -287,9 +287,9 @@ def days_in_role(person: Mapping[str, Any], today: date) -> int | None:
 def location_block(person: Mapping[str, Any]) -> str | None:
     """Why the person may not be emailed for where they are (SPEC 1.5), when Apollo says; None otherwise."""
     country = _lower(person.get("country"))
-    if country and country not in US_COUNTRIES:
+    if country and country not in icp.US_COUNTRIES:
         return "located outside the US"
-    if person.get("state") and state_code(str(person["state"])) in enrol.NEVER_STATES:
+    if person.get("state") and state_code(str(person["state"])) in icp.NEVER_STATES:
         return "contact in CA or WA"
     return None
 
@@ -498,7 +498,7 @@ def why_not_keep(
     if why:
         return why
     country = _lower(match.get("country"))
-    if country and country not in US_COUNTRIES:
+    if country and country not in icp.US_COUNTRIES:
         return "located outside the US"
     if canonical_domain(ctx.store, row["email"].rsplit("@", 1)[1]) != _lower(account.get("domain")):
         return "email not at the company's domain"

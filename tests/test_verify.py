@@ -13,13 +13,13 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from tests.test_client_claude import FakeSDK
 from tests.test_sources_apollo import FakeApollo, org, settings_with
-from us_outbound import labels, suppression, verify
+from us_outbound import icp, labels, suppression, verify
 from us_outbound.clients.apollo import Apollo
 from us_outbound.clients.guard import Boundaries, Guard
 from us_outbound.clients.hubspot import HubSpot
 from us_outbound.context import Secrets
 from us_outbound.ops import cli
-from us_outbound.scoring import score, tiers
+from us_outbound.scoring import score
 from us_outbound.settings.model import Focus, Override
 from us_outbound.sources import apollo_jobs, apollo_universe
 
@@ -64,7 +64,7 @@ def test_an_account_that_passes_every_check_is_verified_and_scored():
     assert (out["verified"], out["checked"]) == (2, 2) and "clay_verification" not in out
     assert status(ctx, "a1") == status(ctx, "a2") == "verified"
     a = ctx.store.get("accounts", account_id="a1")
-    assert a["tier"] in ("Priority", "Standard", "Control") and a["last_scored"] == NOW  # the rescore ran
+    assert a["tier"] == "Queue" and a["last_scored"] == NOW  # the rescore ran
     bodies = [r.json for r in hubspot_requests(t)]
     assert {"propertyName": "domain", "operator": "EQ", "value": "a1co.com"} in [g["filters"][0] for g in bodies[0]["filterGroups"]]
     assert any(f == {"propertyName": "hs_email_domain", "operator": "EQ", "value": "a1co.com"}
@@ -78,14 +78,15 @@ def test_an_account_that_passes_every_check_is_verified_and_scored():
     # queue. Terminal: disqualified for good. An industry switched off: parked, for when it is switched on again.
     ({"domain": None}, "incomplete", "no domain", "disqualified"),
     ({"domain": "gmail.com"}, "suppressed", "a personal email domain", "disqualified"),
-    ({"hq_state": "CA"}, "state", "HQ in CA or WA", "disqualified"),
-    ({"hq_state": "Washington"}, "state", "HQ in CA or WA", "disqualified"),
-    ({"hq_state": "OH"}, "state", "HQ state not active", "disqualified"),
+    # The texts are the ICP gate's (icp.gate, W2-2), which names the state: "HQ in CA or WA" before.
+    ({"hq_state": "CA"}, "state", "HQ in CA, which is never contacted", "disqualified"),
+    ({"hq_state": "Washington"}, "state", "HQ in WA, which is never contacted", "disqualified"),
+    ({"hq_state": "OH"}, "state", "HQ state OH is not active", "disqualified"),
     ({"employees": 300, "size_band": None}, "size", "outside 10 to 249 employees", "disqualified"),
     ({"employees": 6}, "size", "outside 10 to 249 employees", "disqualified"),
     ({"industry": "Staffing agencies"}, "industry_off", "industry switched off", "parked"),
     ({"industry": "Underwater basket weaving"}, "no_label", "no Industries label", "disqualified"),
-    ({"naics": "561330"}, "partner", "a partner, never prospected", "disqualified"),  # a PEO
+    ({"naics": "561330"}, "partner", "PEO, a partner (NAICS 561330)", "disqualified"),
 ])
 def test_a_failed_check_is_recorded_by_its_code_and_does_what_the_code_says(change, code, text, after):
     ctx, t = make([account(**change)])
@@ -651,24 +652,27 @@ def test_the_reason_codes_contract_splits_every_code_into_one_kind():
     defined before the packages that write them. A transient failure (no label call left, a HubSpot error) must never
     be filed as terminal, and an industry switched off is parked, never disqualified for good: those are the two
     mistakes that would lose companies for good (the ~50 of 13 Oct). W1-4 added clay_pending (Clay's answer not in
-    yet), which went with Clay (W2-1). 15 terminal + 2 parked + 2 re-checkable + 2 transient = 21 codes."""
+    yet), which went with Clay (W2-1). W2-2's ICP gate added founded (terminal) and held (the hand-check's hold,
+    which only enrol's send checks make: transient, nothing written). 16 terminal + 2 parked + 2 re-checkable + 3
+    transient = 23 codes, and every code the gate returns is one of them."""
     by_kind: dict[str, set[str]] = {}
     for code, kind in verify.REASON_CODES.items():
         by_kind.setdefault(kind, set()).add(code)
     assert by_kind == {
         verify.TERMINAL: {"size", "state", "state_unknown", "partner", "suppressed", "public_body", "association",
                           "label_other", "no_label", "incomplete", "hubspot_customer", "hubspot_opted_out",
-                          "hubspot_bounced", "hand_check", "declined"},
+                          "hubspot_bounced", "hand_check", "declined", "founded"},
         verify.PARKED: {"industry_off", "label_failed"},
         verify.RECHECK: {"hubspot_open_deal", "hubspot_owner"},
-        verify.TRANSIENT: {"label_not_checked", "hubspot_check_failed"},
+        verify.TRANSIENT: {"label_not_checked", "hubspot_check_failed", "held"},
     }
-    assert len(verify.REASON_CODES) == 21
+    assert len(verify.REASON_CODES) == 23
+    assert icp.CODES <= set(verify.REASON_CODES)
     # Every code the label check and the HubSpot facts produce is in the contract, of the kind it should be.
     assert {verify.REASON_CODES[c] for c in (labels.PUBLIC_BODY_CODE, labels.ASSOCIATION_CODE, labels.OTHER_CODE,
                                               labels.NO_LABEL_CODE)} == {verify.TERMINAL}
     assert verify.REASON_CODES[labels.INDUSTRY_OFF] == verify.REASON_CODES[labels.FAILED_CODE] == verify.PARKED
-    assert set(verify.HUBSPOT_CODES) == {f for f, _ in tiers.HUBSPOT_EXCLUSIONS}
+    assert set(verify.HUBSPOT_CODES) == {f for f, _ in icp.HUBSPOT_EXCLUSIONS}
     assert {f: verify.REASON_CODES[c] for f, c in verify.HUBSPOT_CODES.items()} == {
         "hubspot_customer": verify.TERMINAL, "hubspot_former_customer": verify.TERMINAL,
         "hubspot_open_deal": verify.RECHECK, "hubspot_active_sequence": verify.RECHECK,

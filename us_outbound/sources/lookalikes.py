@@ -72,7 +72,7 @@ happen on a monthly cadence." It:
   6. Rescores, so the exclusions and facts are in force before verify_accounts runs.
 
 Also here: report() for `us-outbound lookalikes show`, fit_report() for `us-outbound lookalikes fit` (the
-fits, and the tier mix the build's lookalike rows would give, scored in memory: nothing is written), and
+fits, and the scores the build's lookalike rows would give, worked out in memory: nothing is written), and
 lookalike_priorities(), for the sourcing job to order industries by how many customers Spill has like them.
 
 Not here: the "former Spill buyer now at this company" signal (design review D17). It re-purposes
@@ -114,7 +114,7 @@ ACTIVE_FACT, STRENGTH_FACT = "lookalike_active", "lookalike_strength"
 FIT_FACT = "lookalike_fit"
 INDUSTRY_FIT_FACT, SIZE_FIT_FACT, GROWTH_FIT_FACT = "lookalike_industry_fit", "lookalike_size_fit", "lookalike_growth_fit"
 HUBSPOT_SOURCE = "hubspot"  # the source enrol's HubSpot re-check writes its facts under
-CUSTOMER_FACT, FORMER_FACT = "hubspot_customer", "hubspot_former_customer"  # scoring/tiers.HUBSPOT_EXCLUSIONS
+CUSTOMER_FACT, FORMER_FACT = "hubspot_customer", "hubspot_former_customer"  # icp.HUBSPOT_EXCLUSIONS
 SUPPRESS_SOURCE = "lookalikes"
 SUPPRESS_DAYS = 70  # ten weeks: the monthly job may miss one run (31 + 31 days) before a customer's entry lapses
 REFRESH_DAYS = 90  # an unchanged lookalike fact is written again after this, inside the signals' 120 days
@@ -1166,7 +1166,7 @@ def report(settings: Settings, store: Any, *, top: int = 20, all_bands: bool = F
         state = "" if s.active else ", inactive on the Signals tab"
         lines.append(f'Signal "{s.signal}" ({s.weight:+d}{state}): {s.looks_for}.')
     if signals:
-        lines.append("`us-outbound lookalikes fit` shows the accounts' fits and the tier mix the build's rows give.")
+        lines.append("`us-outbound lookalikes fit` shows the accounts' fits and the scores the build's rows give.")
     return lines
 
 
@@ -1188,8 +1188,8 @@ def growth_line(store: Any) -> str:
 # -- `us-outbound lookalikes fit`: judging the weights before the sheet changes -----------------------------
 
 FIT_BANDS = tuple((lo, lo + 9 if lo < 90 else 100) for lo in range(0, 100, 10))
-TIER_ORDER = ("Priority", "Standard", "Control", "Held", "Excluded")
-QUEUE_TIERS = ("Priority", "Standard", "Control")
+TIER_ORDER = ("Queue", "Held", "Excluded")  # scoring/tiers.py (W2-2: the queue is one tier, taken by score)
+QUEUE_TIER = TIER_ORDER[0]
 
 
 CLOSE_ROW = "Close match to Spill's customers"
@@ -1231,15 +1231,6 @@ def with_build_lookalike_rows(settings: Settings, close: tuple[int, int] | None 
     return dataclasses.replace(settings, signals=(*(s for s in settings.signals if SOURCE not in s.sources), *rows))
 
 
-def _mix(counts: Counter[str], tier: str) -> str:
-    queue = sum(counts[t] for t in QUEUE_TIERS)
-    if tier not in QUEUE_TIERS or not queue:
-        return f"{counts[tier]}"
-    share = counts[tier] / queue
-    flag = "" if 0.05 <= share <= 0.40 else " !"
-    return f"{counts[tier]} ({share:.0%}){flag}"
-
-
 def fit_report(ctx: Context, close: tuple[int, int] | None = None,
                some: tuple[int, int] | None | bool = None) -> list[str]:
     """The lines `us-outbound lookalikes fit` prints. Read-only: the database, no outside call, nothing written.
@@ -1271,6 +1262,7 @@ def fit_report(ctx: Context, close: tuple[int, int] | None = None,
     fired: Counter[str] = Counter()
     before: Counter[str] = Counter()
     after: Counter[str] = Counter()
+    moved = 0  # accounts in the queue whose score the new rows change: their place in it, which is by score
     for a in accounts:
         aid = a["account_id"]
         band = account_growth(growth, aid, today)
@@ -1282,9 +1274,11 @@ def fit_report(ctx: Context, close: tuple[int, int] | None = None,
             fits[next(b for b in FIT_BANDS if b[0] <= fit <= b[1])] += 1
             with_growth += want[GROWTH_FIT_FACT][0] is not None
         evs = [*events.get(aid, []), *_fact_rows(aid, want, now)]
-        before[score_account(a, evs, settings, today).tier] += 1
+        was = score_account(a, evs, settings, today)
+        before[was.tier] += 1
         r = score_account(a, evs, new, today)
         after[r.tier] += 1
+        moved += r.tier == was.tier == QUEUE_TIER and r.score != was.score
         fired.update(m.signal.signal for m in r.matches if m.signal.signal in names)
     fitted = len(accounts) - no_fit
     cells = [c.get("computed_at") for c in store.select(TABLE) if c.get("computed_at")]
@@ -1299,9 +1293,9 @@ def fit_report(ctx: Context, close: tuple[int, int] | None = None,
     lines += [f'"{s.signal}" ({s.looks_for}, {s.weight:+d}): {fired[s.signal]} '
               f'{"account" if fired[s.signal] == 1 else "accounts"}.' for s in rows]
     lines += ["", f"  {'Tier':<10} {'Now':>12} {'With the new rows':>18}"]
-    lines += [f"  {t:<10} {_mix(before, t):>12} {_mix(after, t):>18}" for t in TIER_ORDER]
-    lines += ["Shares are of Priority, Standard and Control together; ! marks one outside 5-40%, the tier-mix check's "
-              "range (it reads the month's queue).",
+    lines += [f"  {t:<10} {before[t]:>12} {after[t]:>18}" for t in TIER_ORDER]
+    lines += [f"The new rows change the score of {moved} of the {before[QUEUE_TIER]} accounts in the queue, and so "
+              "their place in it: it is taken by score.",
               "Nothing was written. " + (
                   "These rows were tried in memory only: to use them, set their looks_for and weight on the Signals "
                   "tab, then `us-outbound sync`." if close is not None or some is not None else

@@ -4,16 +4,17 @@ SPEC 2 said every account passes through Clay before it can be emailed (verify_i
 never built, and Clay was removed (Harry's D18; W2-1, 20 Oct 2026), so this job moves accounts from new or queued to
 verified once the checks below pass, and the enrol job can then take them.
 
-The checks, cheapest first. A failed check says why as a code (REASON_CODES, written to accounts.status_reason), and
+The checks, cheapest first: the ICP gate's VERIFY checks (icp.gate; the rules are written there once, W2-2), then
+HubSpot live. A failed check says why as a code (REASON_CODES, written to accounts.status_reason), and
 the code says what happens (W1-4, 19 Oct 2026; the same 6 never-pass accounts were checked every run, and one sized
 out held sourcing back as queue): a terminal failure leaves the company out for good (disqualified, tiered
 Excluded); an industry switched off parks it (parked) until the industry is switched on (redecide_parked); an open
 HubSpot deal or another owner leaves it out until recheck_after, 30 days on, when only HubSpot is asked again (D22);
 a transient failure (no label call left this run, a HubSpot error) changes nothing and the next run tries again.
   1. The domain is present, not a personal email domain and not suppressed (aliases included).
-  2. Not a partner: on the partners table, or by NAICS or keywords (scoring/tiers.partner_match).
+  2. Not a partner: on the partners table, or by NAICS or keywords (icp.partner_match).
   3. The HQ state is active on the States tab, and never CA or WA (SPEC 1.3). Not for a website
-     visitor (Harry, 6 Oct 2026; accounts.any_us_state): any US state will do, and an unknown one
+     visitor (Harry, 6 Oct 2026; icp.any_us_state): any US state will do, and an unknown one
      too once Apollo puts the HQ in the US.
   4. Inside the General size range, min_employees to max_employees (SPEC 2: 10 to 249; Harry,
      6 Oct 2026); when Apollo gave no count, a size band from its size filter that the range touches.
@@ -75,9 +76,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from us_outbound import labels, parse
-from us_outbound.accounts import any_us_state, us_country
-from us_outbound.clean.domains import is_personal_domain, is_public_body
+from us_outbound import icp, labels, parse
 from us_outbound.clean.people import size_band, state_code
 from us_outbound.clients.db import Range, new_id
 from us_outbound.clients.http import ApiError
@@ -93,7 +92,6 @@ from us_outbound.settings.model import SIZE_BANDS, General, Settings
 JOB = "verify_accounts"
 VERIFIED = "verified"
 WAITING_STATUSES = ("new", "queued")
-NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_ACCOUNTS_PER_RUN = 1000  # about three HubSpot searches each, inside the 30-minute timeout
 FLUSH_EVERY = 100  # verified accounts written as the run goes, so a stopped run keeps its work
 LIST_LIMIT = 100
@@ -117,7 +115,7 @@ NO_INDUSTRY = "Apollo gives no industry"
 MISSING = frozenset({NO_STATE, NO_SIZE, NO_INDUSTRY})
 # check() codes the label check can settle: it sets the label, so the account is checked again after it.
 LABEL_REASONS = frozenset({labels.NO_LABEL_CODE, labels.INDUSTRY_OFF})
-OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
+OUT_OF_QUEUE_TIERS = tiers.OUT_OF_QUEUE_TIERS
 
 # Why an account was not verified, as a code for accounts.status_reason (the W1-C contracts commit, 19 Oct 2026),
 # each with what the code does to the account (W1-4 writes them; settle). Before, a failed check only counted, so
@@ -132,21 +130,16 @@ TERMINAL, PARKED, RECHECK, TRANSIENT = "terminal", "parked", "recheck", "transie
 REASON_CODES: dict[str, str] = {
     **dict.fromkeys(("size", "state", "state_unknown", "partner", "suppressed", "public_body", "association",
                      "label_other", "no_label", "incomplete", "hubspot_customer", "hubspot_opted_out",
-                     "hubspot_bounced", "hand_check", "declined"), TERMINAL),
+                     "hubspot_bounced", "hand_check", "declined", "founded"), TERMINAL),
+    # held (sampled or pulled at the hand-check): only enrol's send checks hold it (icp.SEND); nothing to write.
+    "held": TRANSIENT,
     **dict.fromkeys(("industry_off", "label_failed"), PARKED),
     **dict.fromkeys(("hubspot_open_deal", "hubspot_owner"), RECHECK),
     **dict.fromkeys(("label_not_checked", "hubspot_check_failed"), TRANSIENT),
 }
-# The code of each HubSpot fact the rescore reads (scoring/tiers.HUBSPOT_EXCLUSIONS). A former customer is a
-# customer; a contact in another user's sequence, or another user's activity, is another owner's, which can end.
-# The stored opted-out-or-bounced fact cannot say which (the live check can: hubspot_check), so it reads as opted out:
-# both are for good.
-HUBSPOT_CODES: dict[str, str] = {
-    enrol.HS_CUSTOMER: "hubspot_customer", "hubspot_former_customer": "hubspot_customer",
-    enrol.HS_OPEN_DEAL: "hubspot_open_deal", "hubspot_active_sequence": "hubspot_owner",
-    enrol.HS_OPTED_OUT: "hubspot_opted_out", enrol.HS_OTHER_OWNER: "hubspot_owner",
-    "hubspot_other_activity_90d": "hubspot_owner",
-}
+# The code of each HubSpot fact the gate reads (icp.HUBSPOT_EXCLUSIONS; a former customer is a customer, another
+# user's sequence or activity is another owner's, which can end).
+HUBSPOT_CODES = icp.HUBSPOT_CODES
 # The HubSpot facts a clear re-check sets false, so the next check and the rescore let the company back in.
 RECHECK_FACTS = tuple(f for f, code in HUBSPOT_CODES.items() if REASON_CODES[code] == RECHECK)
 
@@ -161,46 +154,12 @@ def with_overrides(account: Mapping[str, Any], settings: Settings) -> dict:
 
 
 def check(account: Mapping[str, Any], facts: Mapping[str, Any], settings: Settings,
-          suppressed: Collection[str], partners: Collection[str]) -> tuple[str, str] | None:
-    """Why the account cannot be verified on what is already known (checks 1 to 5, and earlier HubSpot facts), as
-    (code, text): the code one of REASON_CODES, for accounts.status_reason; the text in words. None: it passes.
-    No domain is a missing fact (incomplete), and a personal email domain is never prospected, like a suppressed
-    one."""
-    domain = _lower(account.get("domain"))
-    if not domain:
-        return "incomplete", "no domain"
-    if is_personal_domain(domain):
-        return "suppressed", "a personal email domain"
-    if is_public_body(domain):
-        return "public_body", "a public body, never prospected"
-    if domain in suppressed:
-        return "suppressed", "domain suppressed"
-    if domain in partners or tiers.partner_match(account, facts):
-        return "partner", "a partner, never prospected"
-    state = state_code(str(account.get("hq_state") or ""))
-    visitor = any_us_state(account)
-    if not state and not (visitor and us_country(account.get("hq_country"))):
-        return "state_unknown", "HQ state unknown"
-    if state and not visitor:
-        if state in NEVER_STATES:
-            return "state", "HQ in CA or WA"
-        if state not in settings.active_states():
-            return "state", "HQ state not active"
-    employees = tiers.as_number(account.get("employees"))
-    band = account.get("size_band")
-    if employees is None and band not in SIZE_BANDS:
-        return "incomplete", "employee count unknown"
-    if not (settings.size_in_range(employees) if employees is not None else settings.band_in_range(band)):
-        return "size", outside(settings)
-    ind = settings.industry(str(account.get("industry") or ""))
-    if ind is None:
-        return labels.NO_LABEL_CODE, "no Industries label"
-    if not ind.active:
-        return labels.INDUSTRY_OFF, "industry switched off"
-    for fact, reason in tiers.HUBSPOT_EXCLUSIONS:
-        if parse.truthy(facts.get(fact)):
-            return HUBSPOT_CODES[fact], reason
-    return None
+          suppressed: Collection[str], partners: Collection[str]) -> icp.Reason | None:
+    """Why the account cannot be verified on what is already known (checks 1 to 5, and earlier HubSpot facts): the
+    ICP gate's VERIFY checks (icp.gate), as (code, text): the code one of REASON_CODES, for accounts.status_reason;
+    the text in words. None: it passes. No domain is a missing fact (incomplete), and a personal email domain is
+    never prospected, like a suppressed one."""
+    return icp.gate(account, facts, settings, suppressed=suppressed, partners=partners, checks=icp.VERIFY)
 
 
 def outside(settings: Settings) -> str:
@@ -231,7 +190,7 @@ def doubts(account: Mapping[str, Any], settings: Settings | None = None) -> list
     settings gives the size edges (the General range); without it, SPEC 2's 10 to 249."""
     out: list[str] = []
     if not state_code(str(account.get("hq_state") or "")) and not (
-            any_us_state(account) and us_country(account.get("hq_country"))):
+            icp.any_us_state(account) and icp.us_country(account.get("hq_country"))):
         out.append(NO_STATE)
     if not str(account.get("industry") or "").strip():
         out.append(NO_INDUSTRY)
@@ -335,7 +294,7 @@ def clear_doubts(ctx: Context, items: Iterable[Mapping[str, Any]], by: str, week
 
 def hubspot_check(ctx: Context, account: Mapping[str, Any]) -> tuple[str, str, str] | None:
     """(fact, reason, code) when HubSpot excludes the company; None when it is clear. The fact is the one the rescore
-    reads (scoring/tiers.HUBSPOT_EXCLUSIONS); the code says whether that is for good or looked up again
+    reads (icp.HUBSPOT_EXCLUSIONS); the code says whether that is for good or looked up again
     (REASON_CODES). The opted-out search matches a contact who opted out or one who hard-bounced; the contact's
     hs_email_optout says which."""
     block = enrol.hubspot_company_block(ctx, account)

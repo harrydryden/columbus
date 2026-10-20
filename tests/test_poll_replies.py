@@ -74,7 +74,8 @@ def test_a_positive_reply_becomes_an_item_with_a_draft_and_an_alert(world):
     # Harry, 12 Oct 2026: a newcomer sees who replied, what they said, what it is, the draft and what each
     # reaction or reply does.
     assert text.startswith(":raised_hand: *Jane Doe at Acme Creative replied: Interested* <@U_HARRY>\n")
-    assert ("*Who:* Jane Doe, Head of People · Acme Creative (Chicago, IL) · Marketing agencies · top fit (Priority)"
+    # No tier: the tiers were retired (W2-2), so the line ends at the industry.
+    assert ("*Who:* Jane Doe, Head of People · Acme Creative (Chicago, IL) · Marketing agencies\n"
             in text)
     assert "*They wrote to:* hannah@meetspill.org (Hannah Spalding's mailbox)" in text
     assert "*What they said:*\n> Sounds good" in text
@@ -754,7 +755,7 @@ def test_the_alert_says_what_each_note_means(default_settings):
                           competitor_named="Lyra", follow_up_date="2027-01-11", follow_up_source="reply",
                           sequence_may_continue=True, sequence_paused=True)
     assert text.startswith(":raised_hand: *Jane Doe at Acme Creative replied: Objection*\n")  # no mention: not warm
-    assert "· good fit (Standard)" in text
+    assert "(Standard)" not in text and "good fit" not in text  # no tier in the alert: the tiers went (W2-2)
     assert "*What they said:*\n> Busy now.\n> Try me in January?" in text
     assert "*What the system thinks it is:* Objection: they gave a reason not to go ahead." in text
     assert "*Worth knowing:*\n• Why we emailed them: 3 open HR roles\n• Their objection: has eap" in text

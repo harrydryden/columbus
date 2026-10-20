@@ -806,7 +806,7 @@ def live_sheet(settings):
         for s in settings.signals if not s.signal.endswith("match to Spill's customers")))
 
 
-def test_lookalikes_fit_shows_the_fits_and_the_tier_mix_and_writes_nothing(world, apollo, capsys):
+def test_lookalikes_fit_shows_the_fits_and_the_scores_they_move_and_writes_nothing(world, apollo, capsys):
     ctx, _ = world
     lk.run(ctx)
     ctx.store.upsert("accounts", [
@@ -825,10 +825,11 @@ def test_lookalikes_fit_shows_the_fits_and_the_tier_mix_and_writes_nothing(world
     assert "Growth known for 1 of 7; the rest are fitted on industry and size alone." in out
     assert "\"Close match to Spill's customers\" (lookalike_fit >= 70, +10): 5 accounts." in out
     assert "\"Some match to Spill's customers\" (lookalike_fit >= 45 AND lookalike_fit < 70, +3): 1 account." in out
-    # Today the 10-49 Tech accounts score 15 + 4 = 19 (Control); with the graded rows 30 (Standard).
-    assert "  Standard       0 (0%) !          4 (80%) !" in out
-    assert "  Control      5 (100%) !            1 (20%)" in out
+    # Today the four 10-49 Tech accounts in the queue score 15 + 4 = 19; with the graded rows 30. The tiers no
+    # longer split the queue by score (W2-2), so the table shows 5 in the queue either way and the scores that move.
+    assert "  Queue                 5                  5" in out
     assert "  Excluded              2                  2" in out
+    assert "The new rows change the score of 4 of the 5 accounts in the queue" in out
     assert "Nothing was written." in out
     assert {name: [dict(r) for r in rows] for name, rows in ctx.store.tables.items()} == snapshot
     assert all(not c.write for c in ctx.guard.calls[calls:])  # reads only, and only the database
@@ -850,8 +851,8 @@ def test_lookalikes_fit_tries_other_cut_offs_and_weights_in_memory(world, apollo
     out = capsys.readouterr().out
     assert "\"Close match to Spill's customers\" (lookalike_fit >= 90, +5): 5 accounts." in out
     assert "Some match" not in out
-    # 15 for 10-49 and 5 for the close match: 20, Standard, as with +10; the sheet is not touched.
-    assert "  Standard       0 (0%) !          4 (80%) !" in out
+    # 15 for 10-49 and 5 for the close match: 20 against today's 19, so the same four move; the sheet is not touched.
+    assert "The new rows change the score of 4 of the 5 accounts in the queue" in out
     assert "tried in memory only" in out
     assert cli.main(["lookalikes", "fit", "--close", "90:10", "--some", "60:4"], context_factory=factory) == 0
     out = capsys.readouterr().out

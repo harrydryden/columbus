@@ -258,7 +258,8 @@ def test_a_lookalike_lead_scores_the_signal(default_settings, monkeypatch):
     r = score_account(account, events, ctx.settings, ctx.today_uk())
     matched = {m.signal.signal: m.weight_applied for m in r.matches}
     assert matched["Found as a lookalike of a customer"] == 10
-    assert matched["Team of 10–49"] == 15 and r.tier == "Standard"  # measured on the company: out of Control
+    # Measured on the company: 15 + 10 = 25, in the queue (the tiers no longer split it by score: W2-2).
+    assert matched["Team of 10–49"] == 15 and (r.score, r.tier) == (25, "Queue")
     [m] = [m for m in r.matches if m.signal.signal == "Found as a lookalike of a customer"]
     assert "Found by Apollo's search by likeness as like an active Spill customer in the US" in m.evidence[0].text
 

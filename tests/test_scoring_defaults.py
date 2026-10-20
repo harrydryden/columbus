@@ -45,15 +45,16 @@ def scored(settings, events, **acct):
 
 def test_nothing_known_scores_nothing_in_october(settings):
     r, matched = scored(settings, [])
-    assert (r.score, r.tier, matched) == (0, "Control", {})  # Q4 no longer adds 10 to everyone
+    assert (r.score, r.tier, matched) == (0, "Queue", {})  # Q4 no longer adds 10 to everyone
 
 
-def test_a_carrier_eap_alone_is_a_modest_plus_not_standard(settings):
-    """Appendix A: it scored 25 + 10 (+10 in Q4), so 45 and Standard; a values page made it Priority."""
+def test_a_carrier_eap_alone_is_a_modest_plus(settings):
+    """Appendix A: it scored 25 + 10 (+10 in Q4), so 45; a values page added more. Now 5 (the tiers and their
+    thresholds went with W2-2: the score orders the queue)."""
     eap = fact("clay_careers", "mental_health_provision", {"type": "carrier_eap", "provider": "ComPsych"},
                quote="Employee assistance program through ComPsych")
     r, matched = scored(settings, [eap, fact("clay_careers", "values_page", True)])
-    assert matched == {"EAP named": 5} and (r.score, r.tier) == (5, "Control")
+    assert matched == {"EAP named": 5} and (r.score, r.tier) == (5, "Queue")
 
 
 def test_a_medical_carrier_is_not_read_as_an_eap(settings):
@@ -68,13 +69,13 @@ def test_a_medical_carrier_is_not_read_as_an_eap(settings):
     assert matched == {"EAP named": 5} and [e.term for e in m.evidence] == ["Cigna"]
 
 
-def test_a_us_site_visit_with_a_pricing_view_is_priority(settings):
+def test_a_us_site_visit_with_a_pricing_view_scores_60(settings):
     visit = fact("site_visits", "us_visits_30d", 2, days_ago=1)
     pricing = fact("site_visits", "pricing_or_demo_visits_30d", 1, days_ago=1)
     r, _ = scored(settings, [visit])
-    assert (r.score, r.tier) == (35, "Standard")
+    assert r.score == 35  # +35
     r, _ = scored(settings, [visit, pricing])
-    assert (r.score, r.tier, r.angle) == (60, "Priority", "General")  # the copy never mentions the visit
+    assert (r.score, r.tier, r.angle) == (60, "Queue", "General")  # 35 + 25; the copy never mentions the visit
 
 
 def test_hiring_counts_open_roles_from_apollo_jobs(settings):
@@ -128,31 +129,30 @@ def test_progressive_benefits_are_worth_less_and_read_plurals(settings):
     assert matched["Progressive benefits"] == 15  # +5 each, at most +15 (was +10 each, at most +30)
 
 
-@pytest.mark.parametrize("fit, want, tier", [
-    (100, {"Close match to Spill's customers": 10}, "Standard"),
-    (70, {"Close match to Spill's customers": 10}, "Standard"),  # 70 is a close match
-    (69, {"Some match to Spill's customers": 3}, "Control"),  # orders within a tier, lifts none on its own
-    (45, {"Some match to Spill's customers": 3}, "Control"),  # 45 is some match
-    (44, {}, "Control"),
-    (0, {}, "Control"),
+@pytest.mark.parametrize("fit, want", [
+    (100, {"Close match to Spill's customers": 10}),
+    (70, {"Close match to Spill's customers": 10}),  # 70 is a close match
+    (69, {"Some match to Spill's customers": 3}),
+    (45, {"Some match to Spill's customers": 3}),  # 45 is some match
+    (44, {}),
+    (0, {}),
 ])
-def test_the_lookalike_fit_is_graded_and_ends_the_cliff_at_10_to_49(settings, fit, want, tier):
-    """Harry, 5 Oct 2026: the old +4 left a 10-49 account at 15 + 4 = 19, one under standard_threshold (20), so
-    most of the queue sat in Control. Graded by lookalike_fit, a close fit at 10-49 is Standard (25); a middling
-    one is 18, Control (at +8 it was 23, and 61% of the queue was Standard on 5 Oct)."""
+def test_the_lookalike_fit_is_graded(settings, fit, want):
+    """Harry, 5 Oct 2026: graded by lookalike_fit, a close fit at 10-49 scores 15 + 10 = 25 and a middling one
+    15 + 3 = 18, so the grade orders the queue (taken by score since the tiers went, W2-2)."""
     events = [fact("apollo_org", "employees", 30), fact("lookalike", "lookalike_fit", fit),
               # the old row's facts are still written, but its row is off, so they add nothing
               fact("lookalike", "lookalike_active", 80), fact("lookalike", "lookalike_strength", 110.0)]
     r, matched = scored(settings, events, size_band="20-49")
-    assert matched == {"Team of 10–49": 15, **want} and r.tier == tier
+    assert matched == {"Team of 10–49": 15, **want} and r.tier == "Queue"
     assert r.score == 15 + sum(want.values())
 
 
-def test_some_match_at_50_to_99_stays_control_and_a_stale_fit_counts_for_nothing(settings):
+def test_some_match_at_50_to_99_scores_13_and_a_stale_fit_counts_for_nothing(settings):
     r, matched = scored(settings, [fact("apollo_org", "employees", 75), fact("lookalike", "lookalike_fit", 60)],
                         size_band="50-99")
     assert matched == {"Team of 50–99": 10, "Some match to Spill's customers": 3}
-    assert r.score == 13 < settings.general.standard_threshold and r.tier == "Control"
+    assert (r.score, r.tier) == (13, "Queue")  # 10 + 3
     r, matched = scored(settings, [fact("lookalike", "lookalike_fit", 90, days_ago=121)])
     assert matched == {}  # counts for 120 days; apply() rewrites an unchanged fit every 90
 

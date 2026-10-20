@@ -62,7 +62,7 @@ SPEC: dict[str, tuple[Col, ...]] = {
         Col("counts_for_days"), Col("active"), NOTE,
     ),
     "Angles": (Col("angle", key=True, required=True), Col("order", parse=p.parse_int, required=True),
-               Col("argument", required=True), Col("default_opener"),  # required while the angle is active
+               Col("argument", required=True), Col("default_opener"),  # read by nothing since W2-2: optional
                Col("landing_page_override", parse=p.https), Col("active", parse=p.parse_bool, required=True), NOTE),
     "Industries": (
         Col("industry", key=True, required=True), Col("industry_group", required=True),

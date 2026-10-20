@@ -22,6 +22,8 @@ from us_outbound.clients.public import USER_AGENT, Public
 from us_outbound.learn import daily_post
 from us_outbound.ops import cli
 from us_outbound.ops.schedule import by_name
+from us_outbound.enrol import openers
+from us_outbound.scoring.angle import angle_setter
 from us_outbound.scoring.score import match_signal, score_account
 from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs
@@ -230,9 +232,13 @@ def test_the_opener_names_nothing_the_page_said(world):
     ctx.store.insert("accounts", [account()])
     pages.run(ctx)
     r = score_account(account(), events(ctx), ctx.settings, NOW.date())
-    assert (r.score, r.tier, r.angle) == (35, "Standard", "Progressive employer")  # 15 + 5, + Team of 10–49 (its band)
-    # Harry, 2 Oct 2026: the benefits-page lines are context too, never "your careers page mentions counseling".
-    assert r.opener == "Most teams know pressure from work and home adds up, and the hard part is making help easy to use."
+    assert (r.score, r.tier, r.angle) == (35, "Queue", "Progressive employer")  # 15 + 5, + Team of 10–49 (its band)
+    # Harry, 2 Oct 2026: the benefits-page lines are context too, never "your careers page mentions counseling". The
+    # angle setter's plain opener (enrol/openers.py's fallback) has no evidence placeholder, so it is used as written.
+    setter = angle_setter(r.angle, r.matches)
+    assert setter.signal.signal == "Mental health support listed" and not openers.has_placeholder(setter.signal.opener)
+    assert setter.signal.opener == ("Most teams know pressure from work and home adds up, and the hard part is making "
+                                    "help easy to use.")
 
 
 def test_robots_disallow_reads_nothing_and_a_failed_read_adds_no_points_and_keeps_a_hold(world):

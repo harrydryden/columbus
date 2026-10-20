@@ -186,7 +186,7 @@ def test_a_matched_account_gets_both_facts_an_event_and_the_default_signals_fire
                                                                NOW - timedelta(days=1))
     # The rescore at the end: the visit signals count before the 12:00 enrol (the default Signals rows).
     assert {"Visited the US site", "Viewed US pricing or demo page"} <= matched_signals(ctx, aid)
-    assert ctx.store.get("accounts", account_id=aid)["tier"] == "Priority"
+    assert ctx.store.get("accounts", account_id=aid)["tier"] == "Queue"
     assert out["credits"] == 3.0 and len(ledger(ctx)) == 3 and out["matched"] == {"us_today": 1, "us": 1, "intent": 1}
     assert [r["key"] for r in ctx.store.select("raw_site_visits")] == ["org001"]  # once a run, as received
     assert ctx.store.select("raw_site_visits")[0]["payload"]["searches"] == ["us_today", "us", "intent"]

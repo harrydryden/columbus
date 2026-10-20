@@ -15,7 +15,6 @@ from tests.test_render import account, contact, make_settings
 from us_outbound import accounts, suppression
 from us_outbound.clients.http import ApiError
 from us_outbound.enrol import enrol, focus
-from us_outbound.scoring.score import score_account
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import Focus
 from us_outbound.settings.validate import parse_share, validate_all
@@ -123,24 +122,6 @@ def test_the_front_door_finds_by_root_domain_and_alias_and_refuses_suppressed_an
     assert new.outcome == "created"
     row = st.get("accounts", account_id=new.account_id)
     assert (row["domain"], row["clean_name"], row["source"], row["status"]) == ("newco.io", "NewCo", "named", "new")
-
-
-def test_the_named_signal_scores_a_named_account():
-    """The Signals tab's "named" row still scores a named fact on file (none is written since W2-1)."""
-    settings, _ = validate_all(default_tabs())
-    events = [{"event_id": "e1", "account_id": "a1", "source": "named", "fact": "named", "value": True,
-               "quote": "On the Named accounts tab", "observed_at": NOW}]
-    acct = {"account_id": "a1", "domain": "acme.com", "hq_state": "NY"}
-    base = score_account(acct, [], settings, NOW.date()).score
-    assert base == 0  # October, and the Q4 plan-year window is off (design review Appendix A, 1 Oct 2026)
-    r = score_account(acct, events, settings, NOW.date())
-    assert "Named by Harry" in [m.signal.signal for m in r.matches] and r.score == base + 30
-    events.append({"event_id": "e2", "account_id": "a1", "source": "named", "fact": "named", "value": False,
-                   "observed_at": NOW + timedelta(hours=1)})
-    assert score_account(acct, events, settings, NOW.date()).score == base
-
-
-# -- focus in the enrol job ---------------------------------------------------------------------------
 
 
 def two_groups(n_agency: int, n_tech: int):

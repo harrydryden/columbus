@@ -485,8 +485,9 @@ def test_v_queue_orders_for_enrollment(views):
     sql = views["v_queue"][1].sql("postgres")
     for status in ("'verified'", "'queued'"):
         assert status in sql
-    for tier in ("'Priority'", "'Standard'", "'Control'"):
+    for tier in ("'Queue'", "'Priority'", "'Standard'", "'Control'"):  # Queue, and the tiers before W2-2 until rescored
         assert tier in sql
+    assert "PARTITION BY" not in sql  # one queue, by score (W2-2)
     # Size bands 20-49 and 50-99 first, then 100-249, then 10-19 (SPEC 9).
     ranks = dict(re.findall(r"WHEN '(\d+-\d+)' THEN (\d)", sql))
     assert ranks == {"20-49": "1", "50-99": "1", "100-249": "2", "10-19": "3"}

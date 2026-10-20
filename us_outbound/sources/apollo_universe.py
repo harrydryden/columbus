@@ -96,6 +96,7 @@ from us_outbound.clients.apollo import MAX_PAGE, MAX_PER_PAGE, organizations_in,
 from us_outbound.clients.apollo import org_id as apollo_org_id
 from us_outbound.clients.db import Range, new_id
 from us_outbound.clients.http import ApiError, AuthError
+from us_outbound import icp
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus
 from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity, texts
@@ -130,8 +131,7 @@ FAILED_STATUSES = ("disqualified", "parked")
 NO_CANDIDATES = "no_contact_candidates"  # accounts.status_reason: nobody at Apollo to try (the contact pre-check)
 SOURCED_BY = "sourced_by"  # the fact naming the search that found an account (source JOB)
 OPEN_STATUSES = ("new", "queued", "verified")  # waiting to be enrolled
-OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
-NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
+OUT_OF_QUEUE_TIERS = tiers.OUT_OF_QUEUE_TIERS
 # organization_naics_codes takes 2 to 5 digits (Apollo's docs), so a 6-digit code is sent as its 5-digit
 # prefix and Python checks the full code. Confirmed live 2 Oct 2026: the active industries' searches by
 # 5-digit prefixes found the 432 accounts. Whether six digits work is untried (it would only narrow a search).
@@ -148,7 +148,6 @@ APOLLO_ORG_URL = "https://app.apollo.io/#/organizations/{}"
 USD = frozenset({"$", "USD", "US$"})  # funding_events[].currency read as dollars
 AMOUNT = re.compile(r"\$?\s*(\d[\d,]*(?:\.\d+)?)\s*([KMB])?", re.I)  # "8M", "$1.5B", "750K", "2,500,000"
 AMOUNT_UNITS = {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
-US_COUNTRIES = frozenset({"united states", "united states of america", "us", "usa"})
 # Account columns an Overrides row may set (SPEC 5: an override wins over every source).
 OVERRIDABLE = ("clean_name", "legal_name", "hq_city", "hq_state", "industry", "industry_group", "naics",
                "employees", "size_band", "founded_year")
@@ -166,7 +165,7 @@ def _prefixes(codes: Iterable[str]) -> list[str]:
     return [c for c in cut if not any(p != c and c.startswith(p) for p in cut)]
 
 
-PARTNER_FILTER = _prefixes(c for c in tiers.PARTNER_NAICS if len(c) <= NAICS_DIGITS)  # ["524"]
+PARTNER_FILTER = _prefixes(c for c in icp.PARTNER_NAICS if len(c) <= NAICS_DIGITS)  # ["524"]
 
 
 # -- the sheet: states, groups, searches ---------------------------------------------------------
@@ -174,7 +173,7 @@ PARTNER_FILTER = _prefixes(c for c in tiers.PARTNER_NAICS if len(c) <= NAICS_DIG
 
 def allowed_states(settings: Settings) -> tuple[str, ...]:
     """Active states on the States tab, never CA or WA."""
-    return tuple(s for s in settings.active_states() if s not in NEVER_STATES)
+    return tuple(s for s in settings.active_states() if s not in icp.NEVER_STATES)
 
 
 def location(state: str) -> str:
@@ -530,7 +529,7 @@ def org_description(org: Mapping[str, Any]) -> str:
 
 def in_us(org: Mapping[str, Any]) -> bool:
     country = str(org.get("country") or "").strip().casefold()
-    return not country or country in US_COUNTRIES
+    return not country or country in icp.US_COUNTRIES
 
 
 def funding_usd(event: Mapping[str, Any]) -> int | None:
@@ -746,20 +745,25 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     if not domain:
         run.skipped["no website"] += 1
         return
-    if is_personal_domain(domain):
-        run.skipped["a personal email domain"] += 1
+    personal = icp.gate({"domain": domain}, {}, s, checks={icp.PERSONAL})
+    if personal:
+        run.skipped[personal.text] += 1
         return
     again = domain in run.seen
     if again and (run.seen[domain] or not sl.band):
         return  # found by two searches this run; a size-band search still gives a size band
     run.seen[domain] = sl.band
     state = state_code(str(org.get("state") or "")) or sl.state
-    if not in_us(org) or state not in run.states:
+    employees = parse.integer(org.get("estimated_num_employees"))
+    # The ICP gate's state and size rules (icp.SOURCE), on what the search row says; a size it does not give passes,
+    # as the band searched is in the range. The size rule reads the domain's Overrides rows, as verify does (W2-2).
+    why = icp.gate({"domain": domain, "hq_state": state, "employees": employees}, {}, s,
+                   checks={icp.STATE, icp.SIZE})
+    if not in_us(org) or state not in run.states or (why and why.code in ("state", "state_unknown")):
         run.skipped["HQ outside the active states"] += 1
         return
-    employees = parse.integer(org.get("estimated_num_employees"))
-    if employees is not None and not s.size_in_range(employees):
-        run.skipped[f"outside {s.size_range_text()} employees"] += 1
+    if why:
+        run.skipped[why.text] += 1
         return
     inp = RulesInput.from_org(org)
     kind = entity(inp, s)
@@ -775,10 +779,10 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
         run.skipped["its best Industries label is switched off"] += 1
         return
     label = s.placeable(label)
-    partner = tiers.partner_match({"naics": codes, "industry": label.industry, "keywords": list(inp.tags),
-                                   "apollo_industry": org.get("industry")}, {})
+    partner = icp.partner_match({"naics": codes, "industry": label.industry, "keywords": list(inp.tags),
+                                 "apollo_industry": org.get("industry")}, {})
     if partner:
-        run.skipped["a partner, never prospected"] += 1
+        run.skipped[icp.PARTNER_TEXT] += 1
         if not store.get("partners", domain=domain):
             partners[domain] = {"domain": domain, "name": str(org.get("name") or domain), "reason": partner[0],
                                 "naics": ", ".join(codes) or None, "added_at": now}

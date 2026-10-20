@@ -1,4 +1,4 @@
-"""Tiers and hard exclusions (SPEC 9 "Scoring" step 2, "Hard exclusions")."""
+"""Tiers and the hard exclusions the rescore applies (SPEC 9 "Scoring" step 2, "Hard exclusions"; icp.SCORE)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pytest
 from tests.test_scoring import (
     EAP_NAMED,
     PROGRESSIVE,
-    SPEC_STATES,
     TODAY,
     VENDOR,
     account,
@@ -18,9 +17,10 @@ from tests.test_scoring import (
     make_settings,
     sig,
 )
+from us_outbound import icp
 from us_outbound.scoring import tiers
-from us_outbound.scoring.score import score_account
-from us_outbound.scoring.tiers import hard_exclusion, partner_category, tier
+from us_outbound.scoring.score import score_account, tier
+from us_outbound.scoring.tiers import hard_exclusion
 from us_outbound.settings.model import State
 
 SETTINGS = make_settings()
@@ -32,7 +32,16 @@ def excluded(acct: dict | None = None, facts: dict | None = None, settings=SETTI
 
 def test_a_clean_account_is_not_excluded():
     assert excluded() is None
-    assert excluded(facts={"ca_wa_share": 0.10, "fl_share": 0.1, "us_headcount": 5, "hubspot_customer": False}) is None
+    assert excluded(facts={"hubspot_customer": False}) is None
+
+
+def test_the_dead_exclusions_are_gone():
+    """W2-2 (code-scoring B5): no source writes ca_wa_share, fl_share or us_headcount, so their rules went. Each of
+    these excluded the account before."""
+    assert excluded(facts={"ca_wa_share": 0.25}) is None
+    assert excluded(facts={"ca_wa_share": 0.15, "fl_share": 0.10}) is None
+    assert excluded(facts={"us_headcount": 3}) is None
+    assert excluded({"us_employees": 4}) is None
 
 
 # -- partners ----------------------------------------------------------------------
@@ -53,7 +62,7 @@ def test_a_clean_account_is_not_excluded():
     ],
 )
 def test_partner_naics(naics, category):
-    assert partner_category(account(naics=naics), {}) == category
+    assert icp.partner_category(account(naics=naics), {}) == category
     assert excluded({"naics": naics}).endswith("a partner (NAICS " + str(naics[-1] if isinstance(naics, list) else naics) + ")")
 
 
@@ -67,31 +76,34 @@ def test_peo_reason_reads_plainly():
         ("industry", "HR software", "hr_tech"),
         ("industry", "Employee Benefits Broker", "broker"),
         ("industry", "HR consulting", "hr_consultancy"),
-        ("apollo_keywords", ["saas", "payroll", "compliance"], "hr_tech"),
         ("apollo_keywords", ["professional employer organization"], "peo"),
         ("keywords", "behavioral health; telehealth", "behavioral_health"),
         ("apollo_industry", "mental health care", "behavioral_health"),
     ],
 )
 def test_partner_keywords(where, value, category):
-    in_account = partner_category(account(naics=None, **{where: value}), {})
-    in_facts = partner_category(account(naics=None, industry="Software"), {where: value})
+    in_account = icp.partner_category(account(naics=None, **{where: value}), {})
+    in_facts = icp.partner_category(account(naics=None, industry="Software"), {where: value})
     assert category in (in_account, in_facts)
 
 
 def test_insurtech_and_mental_health_words_on_their_own_are_not_partners():
-    assert partner_category(account(industry="Insurtech", naics="541511"), {}) is None
-    assert partner_category(account(industry="Digital health", naics=None), {"apollo_keywords": ["mental health"]}) is None
+    assert icp.partner_category(account(industry="Insurtech", naics="541511"), {}) is None
+    assert icp.partner_category(account(industry="Digital health", naics=None), {"apollo_keywords": ["mental health"]}) is None
 
 
-# -- HubSpot, states, size, age -------------------------------------------------------------
+# -- HubSpot, states, age -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fact_name", [f for f, _ in tiers.HUBSPOT_EXCLUSIONS])
+@pytest.mark.parametrize("fact_name", [f for f, _ in icp.HUBSPOT_EXCLUSIONS])
 def test_any_hubspot_flag_excludes(fact_name):
-    assert excluded(facts={fact_name: True}) == dict(tiers.HUBSPOT_EXCLUSIONS)[fact_name]
+    assert excluded(facts={fact_name: True}) == dict(icp.HUBSPOT_EXCLUSIONS)[fact_name]
     assert excluded(facts={fact_name: "true"}) is not None
     assert excluded(facts={fact_name: False}) is None
+
+
+def test_an_approver_s_decision_excludes():
+    assert excluded(facts={icp.DECLINED_IN_SLACK: True}) == icp.DECLINED_TEXT
 
 
 def test_hubspot_customer_via_score_account():
@@ -100,42 +112,17 @@ def test_hubspot_customer_via_score_account():
     assert r.partner is None
 
 
-def test_ca_or_wa_share_over_20_percent():
-    assert excluded(facts={"ca_wa_share": 0.25}) == "25% of US staff are in CA or WA (over 20%)"
-    assert excluded(facts={"ca_wa_share": 0.2}) is None
-
-
-def test_fl_share_counts_only_while_fl_is_off():
-    assert excluded(facts={"fl_share": 0.3}) == "30% of US staff are in CA, WA or FL, which is not active (over 20%)"
-    fl_on = make_settings(states=(*SPEC_STATES[:7], State("FL", True)))
-    assert excluded({"hq_state": "FL"}, {"fl_share": 0.3}, settings=fl_on) is None
-
-
-def test_fl_joins_the_ca_wa_share_while_it_is_off():
-    """SPEC 9: "more than 20% ... in CA or WA (or in FL, until it is switched on)"."""
-    both = {"ca_wa_share": 0.15, "fl_share": 0.10}
-    assert excluded(facts=both) == "25% of US staff are in CA, WA or FL, which is not active (over 20%)"
-    assert excluded(facts={"ca_wa_share": 0.10, "fl_share": 0.10}) is None  # exactly 20%
-    fl_on = make_settings(states=(*SPEC_STATES[:7], State("FL", True)))
-    assert excluded({"hq_state": "FL"}, both, settings=fl_on) is None
-
-
 def test_hq_state_rules():
     assert excluded({"hq_state": "CA"}) == "HQ in CA, which is never contacted"
     assert excluded({"hq_state": "wa"}) == "HQ in WA, which is never contacted"
     assert excluded({"hq_state": "NC"}) == "HQ state NC is not active"
     assert excluded({"hq_state": "FL"}) == "HQ state FL is not active"
     assert excluded({"hq_state": None}) == "HQ state unknown"
+    # A state written out is read as its code (it was "HQ state NEW YORK is not active" before the one gate).
+    assert excluded({"hq_state": "New York"}) is None
     # CA stays excluded even if someone switches it on in the sheet (SPEC 1.3)
     ca_on = make_settings(states=(State("CA", True), State("NY", True)))
     assert excluded({"hq_state": "CA"}, settings=ca_on) == "HQ in CA, which is never contacted"
-
-
-def test_fewer_than_five_us_people():
-    assert excluded(facts={"us_headcount": 3}) == "fewer than 5 US-located people found (3)"
-    assert excluded({"us_employees": 4}) == "fewer than 5 US-located people found (4)"
-    assert excluded({"us_employees": 4}, {"us_headcount": 12}) is None  # Apollo's people count wins
-    assert excluded({"us_employees": None}) is None  # unknown is not "fewer than 5"
 
 
 def test_founded_less_than_two_years_ago():
@@ -149,11 +136,17 @@ def test_founded_less_than_two_years_ago():
 # -- tier order ------------------------------------------------------------------------------
 
 
-def test_thresholds():
-    assert tier(50, [], None, SETTINGS)[0] == "Priority"
-    assert tier(49, [], None, SETTINGS)[0] == "Standard"
-    assert tier(20, [], None, SETTINGS)[0] == "Standard"
-    assert tier(19, [], None, SETTINGS) == ("Control", "Control: no scoring signals found")
+def test_every_score_is_the_queue():
+    """No thresholds (Harry's D7): 0, 19, 20, 49 and 50 points, Control, Standard and Priority before, are all Queue,
+    taken by score (enrol/queue.order_key)."""
+    for score in (0, 19, 20, 49, 50, 100):
+        assert tier(score, [], None)[0] == tiers.QUEUE
+    assert tier(0, [], None) == ("Queue", "Queue: no scoring signals found")
+
+
+def test_the_retired_tiers_read_as_the_queue_until_a_rescore_writes_it():
+    assert tiers.QUEUE_TIERS == ("Queue", "Priority", "Standard", "Control")
+    assert tiers.OUT_OF_QUEUE_TIERS == {"Held", "Excluded"}
 
 
 def test_hold_via_vendor_named_beats_a_high_score():
@@ -189,5 +182,5 @@ def test_reason_lists_weights_in_sheet_order():
     settings = make_settings((EAP_NAMED, PROGRESSIVE))
     facts = [benefit("sabbatical"), benefit("parental leave"), benefit("EAP")]
     r = score_account(account(), facts, settings, TODAY)
-    assert (r.score, r.tier) == (30, "Standard")
-    assert r.tier_reason == "Standard: EAP named (+10), Progressive benefits (+20)"
+    assert (r.score, r.tier) == (30, "Queue")
+    assert r.tier_reason == "Queue: EAP named (+10), Progressive benefits (+20)"

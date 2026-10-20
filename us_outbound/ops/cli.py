@@ -70,7 +70,7 @@ What Harry uses (`us-outbound --help` lists these, in this order):
 Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
 (remove that month's leads), rescore (the score job), dry-run <job>, db apply, hubspot ids,
 suppression load, lookalikes show [--top N] [--all]
-(the cells the lookalikes job last stored), lookalikes fit (the accounts' lookalike fits and the tier mix the
+(the cells the lookalikes job last stored), lookalikes fit (the accounts' lookalike fits and the scores the
 build's lookalike rows would give, scored in memory), pages show (the careers and benefits page reader's
 coverage), data show (what the sources have stored, in aggregate), and scheduler (the always-on
 Railway worker, ops/scheduler.py). On Railway, run a command inside the worker with
@@ -1251,7 +1251,7 @@ def _fit_row(value: str | None, flag: str) -> tuple[int, int] | bool | None:
 
 def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
     """show: the lookalike cells from the last lookalikes run, for the Focus tab and sourcing. fit: the accounts'
-    lookalike fits and the tier mix the build's lookalike rows would give, scored in memory (Harry's check before
+    lookalike fits and the scores the build's lookalike rows would give, worked out in memory (Harry's check before
     the Signals tab changes). Both read the database only and write nothing."""
     from us_outbound.sources import lookalikes
 
@@ -1584,7 +1584,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="only companies with this status (repeat it, or a comma list): new, queued, verified, "
                          "enrolled, engaged, demo_requested, demo_booked, disqualified or parked")
     ac.add_argument("--tier", action="append", metavar="TIER",
-                    help="only this tier (repeat it, or a comma list): Priority, Standard, Control, Held or Excluded")
+                    help="only this tier (repeat it, or a comma list): Queue, Held or Excluded")
     ac.add_argument("--industry", metavar="TEXT",
                     help="only companies whose industry or industry group contains this (any case)")
     ac.add_argument("--limit", type=int, metavar="N",

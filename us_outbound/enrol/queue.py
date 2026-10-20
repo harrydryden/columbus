@@ -8,13 +8,13 @@ Today's number is the smallest of (Harry, 30 Sep 2026):
   * ready accounts: verified accounts with a sendable contact.
 SPEC 9 also listed the credit budgets here. The enrol job spends none, so they are applied where credits are spent
 (source_universe, pick_contacts); when they bind, it shows up here as too few ready accounts, and limits.py says so.
-Of that number, explore_share comes from the random explore arm (Harry's D7, 19 Oct 2026, in place of the Control
-tier's control_share): the accounts pick_contacts drew at random from the eligible queue, within the Focus shares
-(split), and stamped accounts.arm = random. The rest are taken in order: tier (until the tiers are retired), score,
-size band (20 to 99 first), then industry priority. A shortfall in either is filled from the other, so capacity is
-never left idle while verified accounts wait. explore_share is 0 until Harry sets it on the General tab, and while
-it is 0 there is no random arm: control_share of the number comes from the Control tier first, as before W1-6, and
-the rest in order (control_count), so a sheet without the row changes nothing.
+Of that number, explore_share (0.15, Harry's D7, 19 Oct 2026) comes from the random explore arm: the accounts
+pick_contacts drew at random from the eligible queue, within the Focus shares (strata), and stamped accounts.arm =
+random. The rest are taken in order: score, size band (20 to 99 first), then industry priority (order_key). A
+shortfall in either is filled from the other, so capacity is never left idle while verified accounts wait. The
+tiers that came first in the order (Priority, Standard, Control) and the Control tier's share of the number went
+with W2-2 (20 Oct 2026): they were score ranges, so the order by score is the same, and the random arm is the
+comparison the Control tier was meant to be. explore_share 0 on the General tab: no random arm, all in order.
 
 SPEC 9 "Test assignment": the version is hash(account_id + test_id) % 2, so an account's
 version never changes and both contacts at an account get the same one.
@@ -39,15 +39,12 @@ from us_outbound.enrol import focus
 from us_outbound.settings.model import Settings
 
 MIN_N_FOR_EXPLORE = 4  # from 4 a day, at least one random-arm account while the share is above 0 and there are any
-QUEUE_TIERS = ("Priority", "Standard", "Control")
-CONTROL = "Control"
 # accounts.arm and contacts.arm (the W1-C columns): drawn at random from the eligible queue, or taken in score order.
 # NULL (picked or enrolled before the arm existed) reads as ranked.
 RANDOM, RANKED = "random", "ranked"
 # The A/A label's key (RT §4.3): fresh, and hashed with a prefix no other split uses (test_version, the opener holdout
 # and the subject arm each hash the account id with their own), so the sham arms cut across every real split.
 SHAM_PREFIX, SHAM_KEY = "sham:", "2026-10-19"
-TIER_RANK = {"Priority": 0, "Standard": 1, "Control": 2}
 # SPEC 9: size band 20 to 99 first; then 100-249, then 10-19 (as v_queue orders them).
 SIZE_BAND_RANK = {"20-49": 0, "50-99": 0, "100-249": 1, "10-19": 2}
 DEFAULT_INDUSTRY_PRIORITY = 99
@@ -75,9 +72,8 @@ def industry_priority(row: Mapping[str, Any], settings: Settings) -> int:
 
 
 def order_key(row: Mapping[str, Any], settings: Settings) -> tuple:
-    """Tier, score (high first), size band (20 to 99 first), industry priority; then first_seen, id."""
+    """Score (high first), size band (20 to 99 first), industry priority; then first_seen, id. (No tier: W2-2.)"""
     return (
-        TIER_RANK.get(str(row.get("tier")), 9),
         -(parse.number(row.get("score")) or 0.0),
         SIZE_BAND_RANK.get(str(row.get("size_band") or ""), 3),
         industry_priority(row, settings),
@@ -88,22 +84,10 @@ def order_key(row: Mapping[str, Any], settings: Settings) -> tuple:
 
 def explore_count(n: int, settings: Settings, available: int) -> int:
     """explore_share of n, rounded half up; at least 1 once n >= 4 while the share is above 0; never more than are
-    available, nor more than n; 0 while the share is 0 (the default: no random arm).
+    available, nor more than n; 0 while the share is 0 (no random arm).
 
-    The Control tier's count, on the new key: a new key with default 0, not a rename of control_share, which is
-    retired, so a sheet without the row (or a rollback) changes nothing (RS P0-2)."""
-    return _share_of(n, settings.general.explore_share, available)
-
-
-def control_count(n: int, settings: Settings, available: int) -> int:
-    """control_share of n (the retired key's code default, 0.15), by explore_count's rule: the Control tier's places
-    while explore_share is 0, so that a sheet without an explore_share row keeps today's comparison arm (enrol.run;
-    the whole-wave review, 20 Oct 2026). Once explore_share is above 0 the random arm takes its place."""
-    return _share_of(n, settings.general.control_share, available)
-
-
-def _share_of(n: int, share_value: float, available: int) -> int:
-    share = Decimal(str(share_value))
+    The Control tier's count (control_count, on control_share), on the new key (RS P0-2)."""
+    share = Decimal(str(settings.general.explore_share))
     if n <= 0 or available <= 0 or share <= 0:
         return 0
     want = int((share * n).quantize(Decimal(1), rounding=ROUND_HALF_UP))

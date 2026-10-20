@@ -121,7 +121,7 @@ from us_outbound.replies import optout
 from us_outbound.replies.items import REPLY_KINDS, WAITING
 from us_outbound.replies.poll import OOO_KIND
 from us_outbound.scoring.score import SCORING_SOURCE
-from us_outbound.scoring.tiers import DECLINED_IN_SLACK
+from us_outbound.icp import DECLINED_IN_SLACK
 from us_outbound.sources.lookalikes import SOURCE as LOOKALIKE_SOURCE
 from us_outbound.timeparse import et_day, utc
 from us_outbound.verify import DOUBT_SOURCE

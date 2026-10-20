@@ -66,7 +66,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from us_outbound import labels, verify
+from us_outbound import icp, labels, verify
 from us_outbound.base import notify, say
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
@@ -83,8 +83,6 @@ DRAW_AT = time(5, 45)  # Monday 05:45 UK, the hand_check_draw job's time (ops/sc
 # How long after DRAW_AT poll_approvals waits before drawing a week with no item itself (catch_up): past the job's own
 # 10-minute timeout, so the two never draw side by side (two notices, the rows written twice).
 DRAW_GRACE = timedelta(minutes=30)
-# The ICP rules' part of the gate version: "legacy" until W2-2's one ICP gate has a hash of its own (the plan, §8).
-ICP_RULES_HASH = "legacy"
 EVIDENCE_LIMIT = 3
 QUOTE_LIMIT = 160
 
@@ -119,9 +117,10 @@ def week_monday(week: str) -> date | None:
 
 
 def gate_version(ctx: Context) -> str:
-    """Which gate let the sampled companies through: the labels' hash and the ICP rules' (so precision can be read
-    per version of the gate, T1)."""
-    return f"{labels.labels_hash(ctx.settings)}:{ICP_RULES_HASH}"
+    """Which gate let the sampled companies through: the labels' hash and the ICP rules' (icp.rules_hash: the gate's
+    rules, the active states and the size range), so precision can be read per version of the gate (T1). Weeks
+    drawn before W2-2 carry "legacy" for the rules."""
+    return f"{labels.labels_hash(ctx.settings)}:{icp.rules_hash(ctx.settings)}"
 
 
 def _clip(text: Any, n: int = QUOTE_LIMIT) -> str:

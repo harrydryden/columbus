@@ -7,6 +7,12 @@ job ever handles JSON text or a naive time. The tables are created by ops/ddl.py
 sql/ddl; TABLE_KEYS, JSON_COLUMNS, TIMESTAMP_COLUMNS, DATE_COLUMNS and COLUMNS here are what that DDL
 must match (tests/test_sql.py).
 
+A run that must not be seen half done (the rescore: W2-2, 20 Oct 2026) writes inside store.transaction(), which
+commits on leaving it and rolls back on an exception, and may take store.advisory_lock(key) inside it: held until
+the transaction ends, so a second run asking for the same key waits for the first (up to wait_seconds, then
+LockTimeout). PostgresStore uses pg_advisory_xact_lock; MemoryStore a process-wide lock per key and a copy of its
+tables to roll back to.
+
 MemoryStore stores a timestamp as Postgres does (9 Oct 2026): ISO text, a naive datetime
 (UTC) and a date (UTC midnight) become an aware UTC datetime, and text that is no time
 raises, as Postgres refuses it. A date column (DATE_COLUMNS) likewise keeps a date: an aware
@@ -19,9 +25,11 @@ from __future__ import annotations
 import copy
 import json
 import re
+import threading
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from itertools import groupby
@@ -203,6 +211,13 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+class LockTimeout(Exception):
+    """advisory_lock waited wait_seconds and another run still holds the key."""
+
+
+IN_TRANSACTION_QUERY = "Store.query is not run inside store.transaction(): read with select there"
+
+
 def _check_table(table: str) -> None:
     if table not in TABLE_KEYS:
         raise GuardViolation(f"unknown table {table!r}; add it to sql/ddl and TABLE_KEYS first")
@@ -240,6 +255,20 @@ class Store(ABC):
 
         Tests register handlers on MemoryStore.
         """
+
+    @abstractmethod
+    def transaction(self) -> Any:
+        """A context manager: the writes inside it commit together on leaving it, or none on an exception. One
+        inside another is a savepoint of it. query() is refused inside it: on Postgres its SET TRANSACTION READ ONLY
+        would outlast its savepoint and fail every later write in the transaction."""
+
+    @abstractmethod
+    def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
+        """Take the lock on key until the transaction it is taken in ends, waiting at most wait_seconds for a run
+        that holds it (then LockTimeout). Only inside transaction()."""
+
+    def _lock_op(self) -> None:
+        self.guard.authorize("db", Op("advisory_lock", target=f"{self.schema}.advisory_lock", write=False))
 
     def get(self, table: str, **key: Any) -> dict | None:
         rows = self.select(table, key)
@@ -317,12 +346,54 @@ def _stored(table: str, row: Mapping[str, Any]) -> dict:
 
 
 class MemoryStore(Store):
-    """Dict-of-lists store with the database's write rules enforced by the same guard."""
+    """Dict-of-lists store with the database's write rules enforced by the same guard.
+
+    transaction() keeps a copy of the tables to roll back to, per thread; advisory_lock() takes a process-wide lock
+    per key (LOCKS), held until the thread's outermost transaction ends, and the copy is taken again once the lock is
+    held, so a run that waited for another rolls back to what that one committed, never past it. Writes made in the
+    transaction before the lock was taken are not rolled back (the rescore takes it first)."""
+
+    LOCKS: dict[int, threading.Lock] = {}
+    _LOCKS_GUARD = threading.Lock()
 
     def __init__(self, guard: Guard):
         super().__init__(guard)
         self.tables: dict[str, list[dict]] = {t: [] for t in TABLE_KEYS}
         self.query_handlers: dict[str, Callable[..., list[dict]]] = {}
+        self._local = threading.local()
+
+    def _state(self) -> Any:
+        st = self._local
+        if not hasattr(st, "saved"):
+            st.saved, st.held = [], []
+        return st
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        st = self._state()
+        st.saved.append(copy.deepcopy(self.tables))
+        try:
+            yield
+        except BaseException:
+            self.tables = st.saved[-1]
+            raise
+        finally:
+            st.saved.pop()
+            if not st.saved:
+                while st.held:
+                    st.held.pop().release()
+
+    def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
+        st = self._state()
+        if not st.saved:
+            raise RuntimeError("advisory_lock is taken inside store.transaction()")
+        self._lock_op()
+        with self._LOCKS_GUARD:
+            lock = self.LOCKS.setdefault(key, threading.Lock())
+        if not lock.acquire(timeout=max(0.0, wait_seconds)):
+            raise LockTimeout(f"advisory lock {key} is held by another run")
+        st.held.append(lock)
+        st.saved[0] = copy.deepcopy(self.tables)
 
     def _where(self, table: str, where: Where | None) -> Where:
         """where with its columns checked against the table and a timestamptz column's values stored as Postgres
@@ -387,6 +458,8 @@ class MemoryStore(Store):
         return n
 
     def query(self, sql, params=None):
+        if self._state().saved:
+            raise RuntimeError(IN_TRANSACTION_QUERY)
         for name, handler in self.query_handlers.items():
             if name in sql:
                 return handler(self, params or {})
@@ -454,6 +527,28 @@ class PostgresStore(Store):
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """psycopg's: BEGIN, COMMIT on leaving, ROLLBACK on an exception; the one-statement transactions of the
+        methods inside it become savepoints of it."""
+        with self._connection().transaction():
+            yield
+
+    def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
+        """pg_advisory_xact_lock(key) with lock_timeout wait_seconds for this statement only (restored after), so a
+        held key raises LockTimeout rather than waiting for ever; released at COMMIT or ROLLBACK."""
+        conn = self._connection()
+        if conn.info.transaction_status != psycopg.pq.TransactionStatus.INTRANS:
+            raise RuntimeError("advisory_lock is taken inside store.transaction()")
+        self._lock_op()
+        before = conn.execute("SELECT current_setting('lock_timeout') AS t").fetchone()["t"]
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", [f"{max(1, int(wait_seconds * 1000))}ms"])
+        try:
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+        except psycopg.errors.LockNotAvailable as exc:
+            raise LockTimeout(f"advisory lock {key} is held by another run") from exc
+        conn.execute("SELECT set_config('lock_timeout', %s, true)", [before])
 
     def _table(self, table: str) -> Identifier:
         return Identifier(self.schema, table)
@@ -586,6 +681,8 @@ class PostgresStore(Store):
             raise GuardViolation("Store.query is read only; use insert/upsert/update/delete")
         self.guard.authorize("db", Op("query", target=f"{self.schema}.query", write=False))
         conn = self._connection()
+        if conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS:
+            raise RuntimeError(IN_TRANSACTION_QUERY)
         try:
             with conn.transaction():
                 conn.execute("SET TRANSACTION READ ONLY")

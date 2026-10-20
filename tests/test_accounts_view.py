@@ -97,14 +97,15 @@ def test_summary_counts_then_the_companies_in_queue_order(capsys):
         view.WHERE,
         "Companies: 5",
         "  By status: new 1, queued 1, verified 1, enrolled 1, disqualified 1",
-        "  By tier: Priority 1, Standard 1, Control 1, Excluded 1, not scored yet 1",
+        # Queue, Held and Excluded first (W2-2), then the tiers a rescore has not rewritten yet, by name.
+        "  By tier: Excluded 1, Control 1, Priority 1, Standard 1, not scored yet 1",
         "Contacts: 4",
         "  With an email: 4 (by source: apollo 3, clay 1)",
         "  Suppressed: 1",
         "  Enrolled: 1",
         "Ready to email: 1 (verified, with a sendable contact, as the enrol job counts them)",
     ]
-    assert lines[10] == "Companies, in queue order (tier, then score): all 5:"
+    assert lines[10] == "Companies, in queue order (by score): all 5:"
     rows = lines[11:16]
     assert [r.split()[0] for r in rows] == ["acme.com", "bright.org", "calm.io", "dull.net", "fresh.com"]
     assert rows[0] == ("  acme.com    Acme · Software · 50-99 staff · NY · Priority 72 · verified · "
@@ -167,10 +168,10 @@ def test_filters(capsys):
 def test_the_list_head_says_what_it_shows(capsys):
     h = harness()
     assert h.run("accounts", "--limit", "2") == 0
-    assert "Companies, in queue order (tier, then score): the first 2 of 5 (`--limit 0` lists them all):" in printed(
+    assert "Companies, in queue order (by score): the first 2 of 5 (`--limit 0` lists them all):" in printed(
         capsys.readouterr().out)
     assert h.run("accounts", "--status", "verified,enrolled", "--tier", "Standard") == 0
-    assert "Companies with status verified or enrolled, tier Standard, in queue order (tier, then score): all 1:" in (
+    assert "Companies with status verified or enrolled, tier Standard, in queue order (by score): all 1:" in (
         printed(capsys.readouterr().out))
     assert h.run("accounts", "--industry", "mining") == 0
     assert printed(capsys.readouterr().out)[-1] == 'No company with industry or group containing "mining".'
@@ -178,7 +179,7 @@ def test_the_list_head_says_what_it_shows(capsys):
 
 @pytest.mark.parametrize("argv, error", [
     (["--status", "enroled"], "no status 'enroled'; the statuses are: new, queued, verified, enrolled"),
-    (["--tier", "Gold"], "no tier 'Gold'; the tiers are: Priority, Standard, Control, Held, Excluded"),
+    (["--tier", "Gold"], "no tier 'Gold'; the tiers are: Queue, Held, Excluded, Priority, Standard, Control"),
     (["--limit", "-1"], "--limit takes 0 (all) or more"),
     (["acme.com", "--tier", "Priority"], "a domain shows one company; --status, --tier, --industry and --limit"),
 ])
