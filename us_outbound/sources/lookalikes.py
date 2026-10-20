@@ -90,6 +90,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -1073,10 +1074,16 @@ def apply(ctx: Context) -> dict[str, int]:
         return {"cells": 0, "accounts": 0, "written": 0}
     accounts, latest, growth = _open_accounts(store)
     facts, written = [], 0
+    edges = fit_edges(ctx.settings)
+    moved: Counter[str] = Counter()  # accounts whose lookalike_fit crossed a Signals threshold, up or down
     for a in accounts:
         aid = a["account_id"]
         want = model.wanted(ctx.settings, a, account_growth(growth, aid, today))
         have = {f: latest.get((aid, f)) for f in want}
+        if FIT_FACT in want and have.get(FIT_FACT) is not None:
+            was, now_ = _band(have[FIT_FACT][1], edges), _band(want[FIT_FACT][0], edges)
+            if was != now_:
+                moved["up" if now_ > was else "down"] += 1
         if not any(v for v, _ in want.values()) and all(h is None or not h[1] for h in have.values()):
             continue  # nothing that scores, and no earlier fact that still does
         same = all(h is not None and h[1] == want[f][0] for f, h in have.items())
@@ -1087,7 +1094,30 @@ def apply(ctx: Context) -> dict[str, int]:
         facts += _fact_rows(aid, want, now)
     if facts:
         store.insert("signal_events", facts)
-    return {"cells": model.cells, "accounts": len(accounts), "written": written}
+    if moved:  # W3-4 r1: the segment prior rescales the industry part, so say how many accounts change band
+        log("lookalike_fit_bands_moved", run_id=ctx.run_id, up=moved["up"], down=moved["down"], edges=list(edges))
+    return {"cells": model.cells, "accounts": len(accounts), "written": written,
+            "bands_moved": {"up": moved["up"], "down": moved["down"]}}
+
+
+_FIT_EDGE = re.compile(rf"{FIT_FACT}\s*>=\s*(\d+(?:\.\d+)?)")
+
+
+def fit_edges(settings: Settings) -> tuple[float, ...]:
+    """The lookalike_fit thresholds the active Signals rows score at ("lookalike_fit >= 70": 70 and 45 today),
+    highest first."""
+    found = {float(m) for s in lookalike_signals(settings) if s.active
+             for m in _FIT_EDGE.findall(f"{s.looks_for} {s.context_rule}")}
+    return tuple(sorted(found, reverse=True))
+
+
+def _band(value: Any, edges: Sequence[float]) -> int:
+    """How many of the edges a lookalike_fit value reaches (0 below them all)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return sum(v >= e for e in edges)
 
 
 # -- the job ------------------------------------------------------------------------------------------------

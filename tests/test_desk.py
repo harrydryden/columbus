@@ -878,6 +878,34 @@ def test_class_needs_an_approver_and_a_known_class(settings):
     assert poll_desk.parse_command("class: maybe") is None
 
 
+def test_class_unsubscribe_opts_the_person_out(settings):
+    """W3-4 r1: `class: unsubscribe` says the reply asked to stop, so beside the correction the person is opted out as a
+    reply read so is (replies/optout.opt_out, marker unsubscribed:em-1): the contact's address suppressed, the contact
+    marked, one unsubscribed event; the card stays open, and its draft cannot go (suppressed_since). A second poll
+    opts out nothing more. A dry run says it would and writes nothing."""
+    from us_outbound import suppression
+
+    dry, *_, dry_sl, _ = desk_world(settings, live=False)
+    dry_sl.say(HARRY_ID, "class: unsubscribe")
+    out = poll(dry)
+    assert {"item": "item-000", "action": "opt_out"} in out["would"]
+    assert dry.store.select("events", {"type": "unsubscribed"}) == [] and dry.store.select("suppression") == []
+
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "class: unsubscribe")
+    out = poll(ctx)
+    assert out["opted_out"] == [{"item": "item-000", "result": "done"}]
+    email = ctx.store.get("contacts", contact_id="con-1")["email"]
+    assert suppression.is_suppressed(ctx.store, email=email)
+    [event] = ctx.store.select("events", {"type": "unsubscribed"})
+    assert (event["event_id"], event["contact_id"]) == ("unsubscribed:em-1", "con-1")
+    assert row_of(ctx)["status"] == "open" and any("They are opted out everywhere" in x for x in sl.texts())
+    sl.say(HARRY_ID, "send")
+    out = poll(ctx)
+    assert inst.replies == [] and out["not_sent"][0]["why"] == "suppressed_since"
+    assert len(ctx.store.select("events", {"type": "unsubscribed"})) == 1
+
+
 def test_a_correction_then_send_in_one_thread_does_both(settings):
     ctx, t, crm, sl, inst = desk_world(settings)
     sl.say(HARRY_ID, "class: referral")

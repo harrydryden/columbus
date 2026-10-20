@@ -608,6 +608,23 @@ def correct_class(ctx: Context, item: ReplyItem, reply_class: str, *, by: str, r
     return out
 
 
+def opt_out_corrected(ctx: Context, item: ReplyItem) -> str:
+    """`class: unsubscribe` (W3-4 r1): the person asked to stop, so they are opted out as poll_replies opts out a reply
+    it reads so (replies/optout.opt_out, under the same marker, so never twice): the reply's sender and the contact,
+    the card left open for the person to close. "done", "pending" (a call failed; the next live run retries), or ""
+    when the item names no address. Live only: the caller reports a dry run."""
+    from us_outbound.replies import optout
+
+    contact = ctx.store.get("contacts", contact_id=item.contact_id) if item.contact_id else None
+    addresses = [a for a in (_text(item.payload.get("from_address")), _text((contact or {}).get("email"))) if a]
+    if not addresses:
+        log("reply_class_unsubscribe_no_address", item_id=item.id)
+        return ""
+    return optout.opt_out(ctx, marker=optout.reply_marker(item.email_id), addresses=addresses, contact=contact,
+                          account_id=item.account_id or None, mailbox=item.mailbox or None,
+                          occurred_at=item.received_at or ctx.now, source="reply", keep_item=item.id)
+
+
 def correction_table(ctx: Context) -> list[str]:
     """The monthly agreement and confidence-calibration table (L11), once CORRECTION_TABLE_FROM corrections exist:
     of the reply items a person has handled, the share whose class nobody corrected, by the model's confidence."""

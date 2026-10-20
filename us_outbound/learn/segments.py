@@ -219,7 +219,9 @@ def value(ctx: Context, found: Sequence[Outcome] | None = None, *, draws: int = 
         out.append(Cell(kind, key, n, k, a / (a + b), wa / (wa + wb), float(gbp) if gbp is not None else None,
                         retained, statistics.fmean(draws_)))
     groups = [c for c in out if c.kind == GROUP and c.key in focus]
-    if groups:
+    # Shares only when every Focus group has a median £ (W3-4 r1): a group without one draws 0 every time, so max()
+    # would hand the first group every draw (100/0/0 before the floor), which says nothing about value.
+    if groups and all(c.median_gbp is not None for c in groups):
         best = [max(groups, key=lambda c: samples[(GROUP, c.key)][i]).key for i in range(draws)]
         raw = {c.key: best.count(c.key) / draws for c in groups}
         shares = floor_shares(raw, FLOOR_SHARE)

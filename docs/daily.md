@@ -105,7 +105,7 @@ one click decides.
 | ❌ or `skip` (or `no`, `reject`, `don't send`) | The card is closed, and nothing is sent |
 | `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
 | `send: …` | Sends that text instead of the draft |
-| `class: …` (for example `class: referral`, `class: not now`) | Records the class the reply should have had. Nothing is sent and the card stays open; every report counts the reply as you said. Once 10 corrections exist, the first readout of each month shows how often the model's class stood |
+| `class: …` (for example `class: referral`, `class: not now`) | Records the class the reply should have had. Nothing is sent and the card stays open; every report counts the reply as you said. `class: unsubscribe` also opts them out everywhere, as a reply asking to stop is (the card stays open: close it with `skip`). Once 10 corrections exist, the first readout of each month shows how often the model's class stood |
 
 A card that says *Instantly thinks this reply is interested; our model does not* is one where Instantly's own read
 of the email disagrees with ours: read it yourself. An away message Instantly reads as interested gets a card too

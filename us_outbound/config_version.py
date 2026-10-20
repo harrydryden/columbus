@@ -16,11 +16,12 @@ was enrolled under, so the cohort report (learn/cohorts.py) can compare like wit
                      each contact records already (sender, copy_version, test_id) and the weekly cuts show; of the
                      Tests tab, only the running copy test changes what is sent, and it is in by value (copy_test);
   copy_hashes        copy_version -> CopyRow.content_hash for every sendable Copy row (approved, QA passed);
-  general            the General content keys (CONTENT_KEYS) as text, so a report can say "0.5 → 0.3";
+  general            the General content keys (CONTENT_KEYS) as text, so a report can say "0.5 → 0.3"; and live_split
+                     once it is not both (W3-4 r1: it decides which splits a new contact is drawn into);
   signature_hash     templates/copy/signature.txt;
   labels_hash        the industry label check's prompt version, label list and definitions (labels.labels_hash;
                      Harry, 7 Oct 2026): they decide which label, and so which copy, a new company earns;
-  copy_test          the running copy test (copy_test; Harry, 7 Oct 2026: A/B tests of email copy), ab or variant:
+  copy_test          the copy test drawing arms (copy_test, Settings.drawn_test; Harry, 7 Oct 2026), ab or variant:
                      its id, kind, arms, start and size, and a variant's email, change, texts and find. It decides
                      what part of a new contact's emails say, so a test starting, stopping or changing starts a new
                      version and `cohorts changes` says so; null while none runs;
@@ -56,7 +57,7 @@ from us_outbound.clients.db import new_id
 from us_outbound.clients.instantly import CAMPAIGN_SETTINGS, STEP_DAYS
 from us_outbound.context import Context
 from us_outbound.logs import log
-from us_outbound.settings.model import VARIANT_TEST, General, SendWindow, Settings
+from us_outbound.settings.model import SPLIT_BOTH, VARIANT_TEST, General, SendWindow, Settings
 
 TABLE, LOG_TABLE = "config_versions", "config_log"
 CODE_SHA_ENV = "RAILWAY_GIT_COMMIT_SHA"  # set by Railway on a deploy from GitHub; not a secret
@@ -139,8 +140,9 @@ def _iso(v: Any) -> str:
 
 def copy_test(settings: Settings) -> dict[str, Any] | None:
     """The running copy test as the snapshot keeps it (module docstring), or None while none runs. A contact records
-    its own arm (contacts.test_id, test_arm); this says which test, and what it changed, was in force."""
-    t = settings.running_test()
+    its own arm (contacts.test_id, test_arm); this says which test, and what it changed, was in force. The test that
+    draws arms (Settings.drawn_test; W3-4 r1): a running test General live_split leaves out changes nothing sent."""
+    t = settings.drawn_test()
     if t is None:
         return None
     out: dict[str, Any] = {"test_id": t.test_id, "kind": t.kind, "version_a": t.version_a, "version_b": t.version_b,
@@ -170,6 +172,10 @@ def snapshot(settings: Settings, label_policy: Mapping[str, str] | None = None) 
     general = general_values(settings.general)
     if label_policy:
         general["copy_level_policy"] = ", ".join(f"{s}: {label_policy[s]}" for s in sorted(label_policy))
+    # General live_split (W3-4 r1) decides which splits a new contact is drawn into, so its opener and subject: content.
+    # In only when it is not both, the default and today's draws, so no id changes until Harry names a split.
+    if settings.general.live_split != SPLIT_BOTH:
+        general["live_split"] = settings.general.live_split
     return {
         "settings_versions": {t: _iso(settings.versions[t]) for t in CONTENT_TABS if settings.versions.get(t)},
         "copy_hashes": sendable_hashes(settings),

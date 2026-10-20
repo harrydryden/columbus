@@ -111,6 +111,7 @@ IDS: dict[str, str] = {
     "step1_bounce_contact": "D1", "mailbox_bounce_last_100": "D2", "capture_verified": "D3", "capture_drift": "D3",
     "job_runs": "S1", "job_errors": "S1", "item_failures": "S2", "spend_drift": "S3",
     "forecast": "F1", "forecast_score": "F1",
+    "explore_read": "O4",  # the explore arm's one read (learn/experiments.read_rows; W3-4 r1)
 }
 # The design-final §4 ids that can be read now (D4, complaints, is "not measured" until a feed exists: D11).
 READABLE_NOW = frozenset(IDS.values())
@@ -678,6 +679,13 @@ def run(ctx: Context) -> dict:
         guarded("contacted_week", lambda: contacted_week(ctx, day, found))
         guarded("cost", lambda: cost_block(ctx, day, found))
         guarded("forecasts", forecast_part)
+
+        def explore_read() -> list[dict]:  # made once, the first day it is due (W3-4 r1: L8 reads once at 300)
+            from us_outbound.learn import experiments
+
+            return experiments.read_rows(ctx, day, found)
+
+        guarded("explore_read", explore_read)
     for name, block in (("throughput", throughput_block), ("bounces", bounce_block), ("capture", capture_block),
                         ("precision", precision_block), ("supply", supply_block), ("responses", response_block),
                         ("jobs", jobs_block), ("spend", spend_block)):

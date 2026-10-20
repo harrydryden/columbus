@@ -63,6 +63,7 @@ from us_outbound.replies.desk import (
     approvers_for,
     class_label,
     correct_class,
+    opt_out_corrected,
     describe_item,
     esc,
     mentions,
@@ -305,6 +306,7 @@ class _Run:
     blocked: list[dict] = field(default_factory=list)
     edited: list[str] = field(default_factory=list)
     corrected: list[dict] = field(default_factory=list)  # class: X (W3-4)
+    opted_out: list[dict] = field(default_factory=list)  # class: unsubscribe (W3-4 r1)
     reposted: list[str] = field(default_factory=list)
     escalated: list[dict] = field(default_factory=list)
     by_hand: list[dict] = field(default_factory=list)
@@ -351,6 +353,8 @@ def _work(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
     if ctx.dry_run:
         for user, cls, ts in d.classes:
             run.add("would", correct_class(ctx, item, cls, by=user, ref=ts))
+            if cls == "unsubscribe":
+                run.add("would", {"item": item.short_id, "action": "opt_out"})
         if d.action or d.edits:
             run.add("would", {"item": item.short_id, "action": d.action or "edit", "by": d.by, "via": d.via,
                               "edited": d.edited})
@@ -361,9 +365,17 @@ def _work(ctx: Context, item: ReplyItem, slack: Any, run: _Run) -> None:
         run.add("edited", item.short_id)
     for user, cls, ts in d.classes:
         run.add("corrected", correct_class(ctx, item, cls, by=user, ref=ts))
+        stopped = ""
+        if cls == "unsubscribe":  # they asked to stop: opted out, as a reply read so is (W3-4 r1)
+            result = opt_out_corrected(ctx, item)
+            run.add("opted_out", {"item": item.short_id, "result": result})
+            stopped = {"done": " They are opted out everywhere: no more emails, and this card's draft cannot go.",
+                       "pending": " They are on our do-not-contact list; Instantly's blocklist or HubSpot did not "
+                                  "answer, and the next run tries again."}.get(
+                result, " No address is on this card, so nobody was opted out: opt them out by hand.")
         post_in_thread(slack, item, f"{say.INFO} Class recorded as *{esc(class_label(cls))}* (it was "
                                     f"{esc(class_label(item.reply_class))}), by <@{user}>: the reports count it so. "
-                                    "Nothing was sent.")
+                                    f"Nothing was sent.{stopped}")
     item = _apply_reading(ctx, item, d, slack)
     if d.action == "send":
         res = send_reply(ctx, item, d.text, by=d.by, edited=d.edited, via=d.via, slack=slack)
@@ -459,6 +471,7 @@ def poll_desk(ctx: Context) -> dict:
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "slack": slack is not None, "items": len(items),
         "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited, "corrected": run.corrected,
+        "opted_out": run.opted_out,
         "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck, "by_hand": run.by_hand,
         "hubspot": dict(run.hubspot), "ignored_non_approvers": sum(run.ignored.values()), "errors": run.errors,
         "send_approvals": sends, "hand_check": checked, "hand_check_errors": hand_check_errors,

@@ -540,7 +540,9 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], m: Match, see
         if cls == "not_now":
             given = verdict.not_now_date is not None
             follow_up = verdict.not_now_date or (received.astimezone(ET).date() + NOT_NOW_DEFAULT)
-        cont, paused = _pause_if_needed(ctx, email, info)
+        # An away message (here only because Instantly read it as interested) never pauses the lead's sequence: the
+        # next email may go when they are back (W3-4 r1; inert while LEAD_PAUSE_CONFIRMED is False).
+        cont, paused = (may_continue(email), False) if cls == "out_of_office" else _pause_if_needed(ctx, email, info)
         payload = {
             **info, **verdict.as_payload(), "reply_excerpt": text[:EXCERPT_CHARS],
             **({"draft": "", "draft_problems": ["our model read an out-of-office, so there is no draft"],

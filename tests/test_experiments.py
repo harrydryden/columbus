@@ -156,18 +156,53 @@ def test_the_arms_table_before_the_read():
 def test_the_one_pre_registered_read_at_300_random_matured():
     """Random 300 and ranked 1,700 matured, human replies 9 (3%) and 102 (6%). P(ranked > random) from Jeffreys
     posteriors Beta(102.5, 1,598.5) against Beta(9.5, 291.5): 0.987 by numerical integration (stats.beta_posterior_gt),
-    printed once against 0.95; O3 is printed above it and not decided on."""
+    printed once against 0.95; O3 is printed above it and not decided on.
+    W3-4 r1: the read is made once, by metrics_daily the first day it is due, stored in the metrics table, and printed
+    from there: before that the readout says it is due and prints no P; after it, 300 more random companies with
+    replies change nothing printed as the read, and metrics_daily stores no second read."""
+    from us_outbound.learn import metrics
+
     ctx = ctx_with()
     for i in range(2000):
         random_ = i < 300
         human = (i < 9) if random_ else (300 <= i < 402)
         company(ctx, i, arm="random" if random_ else "ranked", reply="objection" if human else None)
     lines, nums = experiments.arms_table(ctx)
+    assert nums["read"] is None and not any("P(ranked > random)" in x for x in lines)
+    assert lines[-1].startswith("    The random arm has 300 companies matured at 28 days: the one read is made by "
+                                "metrics_daily")
+    ctx.job = metrics.JOB
+    metrics.run(ctx)
+    stored = [r for r in ctx.store.select("metrics") if r["metric"] == "explore_read"]
+    assert sorted((r["segment_key"], r["k"], r["n"], r["value"]) for r in stored) == [
+        ("arm=random", 9, 300, 0.9868), ("arm=ranked", 102, 1700, 0.9868)]
+    lines, nums = experiments.arms_table(ctx)
     assert nums["read"] == 0.987
-    assert lines[-1] == ("    The pre-registered read (O4, any human reply within 28 days; once): P(ranked > random) = "
-                         "0.987, against 0.95 (ranked 102 of 1,700, random 9 of 300); O3 is printed above and not "
-                         "decided on.")
+    assert lines[-1] == ("    The pre-registered read (O4, any human reply within 28 days; made once, on 06 Dec 2026, at "
+                         "300 random-arm companies matured): P(ranked > random) = 0.987, against 0.95 (ranked 102 of "
+                         "1,700, random 9 of 300); the numbers above are monitoring since, and O3 is not decided on.")
     assert sum("P(ranked > random)" in x for x in lines) == 1
+    for i in range(2000, 2300):  # 300 more random companies, a third of them replying
+        company(ctx, i, arm="random", reply="objection" if i % 3 == 0 else None)
+    metrics.run(dataclasses.replace(ctx, now=NOW + timedelta(days=1)))
+    assert len([r for r in ctx.store.select("metrics") if r["metric"] == "explore_read"]) == 2  # no second read
+    assert experiments.arms_table(ctx)[1]["read"] == 0.987
+
+
+def test_the_arms_compare_only_the_step_1_weeks_with_random_companies():
+    """W3-4 r1: 20 random and 30 ranked companies in one week, and 100 ranked a month earlier (before the arm, as
+    the companies contacted before W1-6 were) with 10 replies. The table compares 20 against 30, the same weeks; the
+    earlier 100 are in the realised share (20 of 150, 13.3%) but not in the comparison."""
+    ctx = ctx_with()
+    for i in range(50):
+        company(ctx, i, arm="random" if i < 20 else "ranked", reply="objection" if i in (0, 20) else None)
+    for i in range(50, 150):
+        company(ctx, i, at=OLD - timedelta(days=28), arm="ranked", reply="objection" if i < 60 else None)
+    lines, _ = experiments.arms_table(ctx)
+    assert ("    O4 any human reply within 28 days: random 5.0% (1 of 20; 0.5–21.1%), ranked 3.3% (1 of 30; "
+            f"{stats.jeffreys(1, 30)[0] * 100:.1f}–{stats.jeffreys(1, 30)[1] * 100:.1f}%).") in lines
+    assert any(x.startswith("    Realised explore share: 20 of 150 companies contacted (13.3%;") for x in lines)
+    assert len(experiments.concurrent(experiments.outcomes.per_company(ctx))) == 50
 
 
 def test_the_readout_prints_the_registry_with_a_date_and_no_n_of_1500_advice():

@@ -893,6 +893,19 @@ def test_an_away_message_instantly_calls_interested_opens_an_item_for_a_person(w
     assert f"*{poll.INSTANTLY_SAYS}*" in text
 
 
+def test_an_away_message_instantly_calls_interested_never_pauses_the_lead(world, monkeypatch):
+    """W3-4 r1: once phase 0 confirms the lead pause, a reply a person answers pauses the lead's sequence
+    (test_a_flagged_lead_is_paused_once_phase0_confirms). An away message is here only because Instantly read it as
+    interested: its lead is not paused, so the next email may go when they are back."""
+    monkeypatch.setattr(instantly_client, "LEAD_PAUSE_CONFIRMED", True)
+    world.sdk.answer = classification("out_of_office", ooo_return_date="2026-11-02")
+    world.reply("E1", text="Out until 2 Nov, keen to chat after.", ai_interest_value=1, is_auto_reply=1)
+    run(world)
+    [item] = world.items("reply")
+    assert world.lead_patches == [] and item["payload"]["sequence_paused"] is False
+    assert item["payload"]["sequence_may_continue"] is True
+
+
 def test_an_objection_instantly_calls_interested_is_flagged(world):
     world.sdk.answer = classification("objection", objection="price")
     world.reply("E1", text="Too pricey for us right now.", ai_interest_value="2")

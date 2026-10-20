@@ -514,9 +514,28 @@ def test_the_running_copy_test_is_in_the_config_version(monkeypatch):
         "text_b": "", "find": ""}
     assert current(dataclasses.replace(WARM_TEST, text_a="Great to be connected.")).id != warm.id
     assert current(dataclasses.replace(WARM_TEST, status="read")).id == none.id  # stopped: as before it started
-    assert current(FIRST_TEST).snapshot["copy_test"]["kind"] == "ab"
     config_version.record(ctx, warm)
     assert ctx.store.get("config_versions", config_version=warm.id)["copy_test"]["text_a"] == WARM
+    ctx.settings = make_settings(tests=(FIRST_TEST,), live_split="test")  # no start_date: it draws under test alone
+    assert config_version.current(ctx).snapshot["copy_test"]["kind"] == "ab"
+
+
+def test_live_split_is_in_the_config_version_once_it_is_not_both(monkeypatch):
+    """W3-4 r1: under live_split = none a contact gets no test arm, the opener for every account and the Copy row's
+    subject, so its config id differs from one enrolled under both: live_split is in `general`, and copy_test is the
+    test that draws (Settings.drawn_test), None here. both, the default, adds nothing, so today's ids do not change."""
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    ctx = make_context(make_settings())
+
+    def current(split: str, *tests):
+        ctx.settings = make_settings(tests=tests, live_split=split)
+        return config_version.current(ctx)
+
+    both, none = current("both", WARM_TEST), current("none", WARM_TEST)
+    assert "live_split" not in both.snapshot["general"] and both.snapshot["copy_test"]["test_id"] == "warm-intro"
+    assert none.snapshot["general"]["live_split"] == "none" and none.snapshot["copy_test"] is None
+    assert none.id != both.id and current("both").id != current("opener").id
+    assert current("test", WARM_TEST).snapshot["copy_test"]["test_id"] == "warm-intro"
 
 
 def test_cohorts_changes_say_when_a_copy_test_started_changed_or_stopped():

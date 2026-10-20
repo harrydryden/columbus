@@ -458,8 +458,11 @@ def test_a_fit_that_falls_to_nothing_is_written_once(world):
     ctx.store.insert("signal_events", [{"event_id": "old-fit", "account_id": "acc-hotel", "source": "lookalike",
                                         "fact": "lookalike_fit", "value": 60, "quote": "", "source_url": "",
                                         "observed_at": NOW - timedelta(days=1)}])
-    assert lk.apply(ctx)["written"] == 1
+    out = lk.apply(ctx)
+    assert out["written"] == 1
     assert latest_facts(ctx, "acc-hotel")["lookalike_fit"]["value"] == 0
+    # W3-4 r1: 60 met the Signals tab's 45 and not its 70; 0 meets neither: one account down a band, none up.
+    assert lk.fit_edges(ctx.settings) == (70.0, 45.0) and out["bands_moved"] == {"up": 0, "down": 1}
     n = len(facts(ctx, "acc-hotel", "lookalike"))
     lk.apply(dataclasses.replace(ctx, now=NOW + timedelta(days=400)))
     assert len(facts(ctx, "acc-hotel", "lookalike")) == n  # zeros are not written again

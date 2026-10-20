@@ -159,6 +159,19 @@ def test_value_samples_the_win_rate_and_gives_focus_shares_with_a_floor(ctx):
     assert segments.floor_shares({"a": 0.95, "b": 0.05}, 0.10) == {"b": 0.10, "a": 0.90}
 
 
+def test_no_focus_shares_while_a_focus_group_has_no_median_pound(ctx):
+    """W3-4 r1: Tech's won deals carry no amount, so its median £ is unknown and every draw of its value is 0; max()
+    would then give Legal every draw (100/0 before the floor). So no Focus group gets a share until each has a median
+    £, and no Focus-share row can be proposed."""
+    no_amount = [{**d, "properties": {**d["properties"], "amount_in_home_currency": ""}}
+                 for d in deals("Tech", 72, 167, days=62)]
+    ctx.clients.hubspot.iter_deals = lambda groups, properties: iter([*deals("Law", 9, 15, amount=275), *no_amount])
+    segments.refresh(ctx)
+    cells = {c.key: c for c in segments.value(ctx, [], draws=500) if c.kind == segments.GROUP}
+    assert cells[TECH].median_gbp is None and cells[LEGAL].median_gbp == 275.0
+    assert all(c.share is None for c in cells.values())
+
+
 def test_the_job_refreshes_then_proposes_and_writes_nothing_in_a_dry_run(ctx):
     out = segments.run(ctx)
     assert out["stored"] and out["proposals"] == 0 and out["suggestions"] == {"rows": 0, "written": False}
