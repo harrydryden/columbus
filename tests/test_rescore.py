@@ -85,7 +85,7 @@ def test_two_rescores_in_one_job_run_leave_one_row_per_signal():
 
 def test_an_enrolled_account_keeps_its_match_rows_and_its_score_through_rescores():
     """Enrolled and engaged accounts are rescored for exclusions only (code-scoring §6): their signal_matched rows
-    are neither written nor replaced, so v_signal_value still reads what an enrolled account without a
+    are neither written nor replaced, so the signal review (learn/signal_review.py) still reads what an enrolled account without a
     signals_at_enrol snapshot showed.
 
     a00, a01 and a02 have 25 staff each, so Team of 10–49 (+15) fires once on each. a02 is enrolled (score 15,

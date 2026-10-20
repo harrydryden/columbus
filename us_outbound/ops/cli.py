@@ -83,7 +83,6 @@ from us_outbound.base.holds import held_mailboxes
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.logs import log, redact
-from us_outbound.learn import copy_tests
 from us_outbound.ops import bootstrap, campaigns, health
 from us_outbound.ops.health import (ERROR, OPERATOR_START, OPERATOR_STOP, Terminated, enrolment_paused, latest_runs,
                                     overdue_minutes, run_job, scheduled_jobs)
@@ -634,15 +633,17 @@ def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def read_test(ctx: Context, test_id: str) -> dict:
-    """The test at its latest pre-registered look (learn/copy_tests.read)."""
-    return copy_tests.read(ctx, test_id)
+    """The test at its latest pre-registered look (learn/looks.read)."""
+    from us_outbound.learn import looks
+
+    return looks.read(ctx, test_id)
 
 
 def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.learn import looks
 
     if args.action == "start":
-        ctx, _ = _operate(factory, "test_start", args.live, lambda c: copy_tests.start(c, args.test_id),
+        ctx, _ = _operate(factory, "test_start", args.live, lambda c: looks.start(c, args.test_id),
                          operator=True, dry_note="the Tests tab was not changed.")
         return 0
     _only_reads(args)
@@ -1055,7 +1056,7 @@ def cmd_report(args: argparse.Namespace, factory: Factory) -> int:
 
         ctx = factory("daily_preview", False)
         day = daily_post.gather(ctx)
-        lines = day.lines if args.full else daily_post.compact(ctx, day)
+        lines = daily_post.full(ctx, day)[0] if args.full else daily_post.compact(ctx, day)
     for line in lines:
         print(line)
     return 0

@@ -258,3 +258,35 @@ def test_a_holdout_starts_without_copy_and_beside_the_running_copy_test(capsys):
     h3 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [_tests_tab(looks="soon")]})
     assert h3.run("test", "start", "t1", "--live") == 2
     assert "looks on the Tests tab" in capsys.readouterr().err
+
+
+# -- the exact test at a look (W2-3; redteam-stats §3 L10) ------------------------------------------------------------
+
+
+def test_a_read_uses_fisher_s_exact_test_against_the_look_s_threshold():
+    """3 of 30 replied with eap-v1, 0 of 30 with general-v1, all matured, read at the read date with no interim look.
+    Fisher's two-sided p: margins 3 successes in 60, 30 a side; P(x) = C(30, x)·C(30, 3 − x)/C(60, 3) with C(60, 3) =
+    34,220: x = 0 and x = 3 are 4,060/34,220 = 0.11864 each, as likely as the table seen; p = 0.237. The pooled z-test
+    this replaced read 0.076 (tests/test_stats.py), below 0.10: a swap back fails here. One look: its threshold is the
+    whole alpha, 0.10, so the read does not pass it."""
+    ctx = world(ab_test(read_date=date(2026, 11, 20)))
+    for i in range(60):
+        arm = "eap-v1" if i < 30 else "general-v1"
+        emailed(ctx, i, arm, T0, reply="objection" if i < 3 else None)
+    result = looks.read(ctx, "t1")
+    assert result["reply_test"] == "fisher_exact" and result["reply_p"] == 0.2373
+    assert result["look_threshold"] == 0.1 and result["below_threshold"] is False
+    assert result["p_b_better"] < 0.05  # general-v1 replied less: P(general-v1 better) is small
+    assert "Fisher p = 0.237 (this look's threshold 0.100)" in looks.summary_line(result)
+
+
+def test_two_looks_use_the_o_brien_fleming_thresholds():
+    """A count look at 30 a side and the read date: two looks at alpha 0.10. The first's threshold is 0.0111 (each side
+    spends 2 − 2Φ(1.96/√½) = 0.0056; tests/test_stats.py), the read date's 0.0965."""
+    ctx = world(ab_test(looks=(30,), read_date=date(2026, 12, 21)))
+    for i in range(60):
+        emailed(ctx, i, "eap-v1" if i < 30 else "general-v1", T0)
+    first = looks.read(ctx, "t1")
+    assert first["look"]["number"] == 1 and first["look_threshold"] == 0.0111
+    later = looks.read(dataclasses.replace(ctx, now=datetime(2026, 12, 22, tzinfo=UTC)), "t1")
+    assert later["look"]["number"] == 2 and later["look_threshold"] == 0.0965

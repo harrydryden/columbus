@@ -400,3 +400,42 @@ def test_the_daily_command_prints_the_short_or_the_full_post_and_posts_nothing(c
     out = capsys.readouterr().out
     assert "*Daily post, " in out and "*Sources*" in out
     assert not [r for r in h.transport.requests if r.url.endswith("chat.postMessage")]
+
+
+# -- a failing section never stops the post (W2-3; code-learn-reporting B6) ---------------------------------------
+
+
+def test_a_failing_page_reader_never_stops_the_short_post_and_the_full_post_says_so(monkeypatch):
+    """probe_learn2 §3: pages.post_lines raising (a malformed careers_pages fact) used to fail the 09:00 job with no
+    post, although the short post never shows Sources. Now the short post goes, and `report daily --full` prints the
+    Sources section as "could not be built" with the rest of the post complete."""
+    from us_outbound.sources import pages
+
+    def broken(ctx):
+        raise ValueError("a malformed careers_pages fact")
+
+    monkeypatch.setattr(pages, "post_lines", broken)
+    ctx, t = world()
+    summary = daily_post.run(ctx)
+    [post] = [r.json["text"] for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "*Daily summary, " in post and summary["sent"] == 8
+    lines, nums = daily_post.build(ctx)
+    at = lines.index("*Sources*")
+    assert lines[at + 1] == "  could not be built (ValueError); the rest of the post is complete."
+    assert nums["sections_failed"] == ["Sources"]
+    assert "*Labels*" in lines and "*Mailboxes*" in lines and "*Kill rules and items waiting*" in lines
+
+
+def test_a_failing_to_improve_section_still_posts_the_rest(monkeypatch):
+    """To improve reads every company's outcome; if it fails, its title says so, the short post leaves it out of
+    "Worth a look", and the rest is posted."""
+    def broken(ctx, rows):
+        raise KeyError("stamps")
+
+    monkeypatch.setattr(daily_post, "to_improve", broken)
+    ctx, t = world()
+    daily_post.run(ctx)
+    [post] = [r.json["text"] for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "could not be built" not in post and "*Pipeline*" in post
+    lines, nums = daily_post.build(ctx)
+    assert "*To improve*" in lines and nums["sections_failed"] == ["To improve"]

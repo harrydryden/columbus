@@ -26,7 +26,8 @@ Each mailbox's sends a day are the lowest of:
     week, 20 in its second, then its cap;
   * the Mailboxes tab's daily_cap;
   * Instantly's own daily limit on the account, when mailbox_health last saw one.
-A mailbox a kill rule holds (base/holds.py) has no capacity, even before the sheet syncs.
+A mailbox a kill rule holds (base/holds.py) has no capacity, even before the sheet syncs; nor has one the latest
+mailbox_health found failing in Instantly (disconnected, in error, its warmup banned: W2-3).
 
 What Instantly reports back, from the latest mailbox_health run (registry/mailboxes.py):
   * each mailbox's own daily limit (the lower of it and the sheet's cap is used);
@@ -53,6 +54,7 @@ step_days has always assumed.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -182,6 +184,18 @@ def instantly_report(store: Store) -> Mapping[str, Any]:
     if not runs:
         return {}
     return max(runs, key=lambda r: utc(r.get("started_at")) or datetime.min.replace(tzinfo=UTC))["detail"]
+
+
+def without_failing(settings: Settings, report: Mapping[str, Any]) -> Settings:
+    """settings with each mailbox Instantly last reported failing (mailbox_health's failing: disconnected, in error or
+    its warmup banned; learn/kill_rules.failing) shown as Paused: it sends nothing, so it has no capacity, even before
+    the hourly kill rule holds it (W2-3; code-learn-reporting B12)."""
+    failing = {str(a).lower() for a in (report.get("failing") or {})}
+    if not failing:
+        return settings
+    boxes = tuple(dataclasses.replace(m, status="Paused") if m.address.lower() in failing and m.status == ACTIVE else m
+                  for m in settings.mailboxes)
+    return dataclasses.replace(settings, mailboxes=boxes)
 
 
 def instantly_limits(store: Store, report: Mapping[str, Any] | None = None) -> dict[str, int]:
@@ -321,7 +335,7 @@ class SenderCapacity:
 
 def steady_pace(cap: int) -> int:
     """New leads a day that keep `cap` sends a day steady: each lead sends 4 emails (STEP_DELAYS), so cap ÷ 4,
-    rounded up. free_slots' pace, and learn/capacity_ahead.py's capacity at full ramp."""
+    rounded up. free_slots' pace, and learn/spend.mailbox_plan's capacity at full ramp."""
     return math.ceil(max(0, cap) / len(STEP_DELAYS))
 
 
@@ -396,8 +410,8 @@ def in_flight(store: Store, settings: Settings, today: date) -> list[dict]:
 
 def sending_capacity(store: Store, settings: Settings, today: date) -> dict[str, SenderCapacity]:
     """Today's new leads per sender, from the enrolled leads, the stop events, the ramp and what Instantly reported."""
-    settings = holds.with_holds(store, settings)
     report = instantly_report(store)
+    settings = without_failing(holds.with_holds(store, settings), report)
     contacts = [c for c in store.select("contacts") if c.get("enrolled_at")]
     stopped = stopped_contacts(store)
     committed = committed_steps(contacts, stopped, settings, today)

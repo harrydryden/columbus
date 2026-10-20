@@ -261,3 +261,54 @@ def test_the_spend_line_with_the_balance_unknown_or_far_from_the_floor():
     t.route("POST", "/usage_stats/credit_usage_stats", body={"credit_usage_stats": {}})
     assert spend.summary_line(spend.read(ctx)).startswith(
         "Spend: Apollo balance unknown (Apollo's answer had no lead-credit balance) · Claude")
+
+
+# -- the balance's pace and the ledger's drift (W2-3; code-learn-reporting B10) ---------------------------------------
+
+
+def readings(ctx, balances: dict[int, float]) -> None:
+    """Kept daily balances (events type apollo_balance): days ago -> the balance that day."""
+    ctx.store.insert("events", [{"event_id": f"apollo_balance:{d}", "type": spend.BALANCE, "source": "apollo",
+                                 "occurred_at": ctx.now - timedelta(days=d), "amount": float(v)}
+                                for d, v in balances.items()])
+
+
+def test_the_pace_is_the_balance_s_fall_once_seven_readings_are_kept():
+    """13–19 Oct: the balance fell from 29,677 to 29,435, 242 credits in 7 days, while the ledger recorded 132.
+    Pace = 242 ÷ 7 = 34.57 a day (the ledger's would be 132 ÷ 14 = 9.4); drift = (242 − 132) ÷ 242 = 45.5%, over
+    the 10% limit, so it is asked about once that week and the spend line names both."""
+    ctx, t = world(balance=29_435)
+    readings(ctx, {7: 29_677, 6: 29_640, 5: 29_600, 4: 29_560, 3: 29_520, 2: 29_490, 1: 29_460})  # 7 kept
+    spent(ctx, "apollo", 132, days_ago=3)
+    sp = spend.read(ctx)
+    assert sp.pace_basis == "balance" and round(sp.apollo_pace, 1) == 34.6
+    assert (sp.balance_fell, sp.ledger_spent, round(sp.drift, 3)) == (242.0, 132.0, 0.455)
+    assert sp.as_dict()["ledger_drift"] == 0.455
+    line = spend.summary_line(sp)
+    assert "at 35 a day" in line and "the balance fell 242 in 7 days, our records 132" in line
+    [ask] = [text for key, text in spend.asks(ctx, sp) if key.startswith("apollo_ledger_drift:")]
+    assert "the jobs recorded 132 (45% not recorded)" in ask
+
+
+def test_before_seven_readings_or_across_a_purchase_the_pace_is_the_ledger_s():
+    """6 readings: the ledger's 14-day pace, 140 ÷ 14 = 10 a day. A balance that rose (29,000 to 31,000: a purchase)
+    has no fall to read, so the ledger's pace stands in too. No drift either way."""
+    ctx, _ = world(balance=29_435)
+    readings(ctx, {d: 29_700 - 10 * d for d in range(7, 1, -1)})  # days 7 to 2: six readings
+    spent(ctx, "apollo", 140, days_ago=5)
+    sp = spend.read(ctx)
+    assert (sp.pace_basis, sp.apollo_pace, sp.drift) == ("ledger", 10.0, None)
+    ctx, _ = world(balance=31_000)
+    readings(ctx, {d: 29_000 for d in range(8, 1, -1)})
+    sp = spend.read(ctx)
+    assert sp.pace_basis == "ledger" and not [k for k, _ in spend.asks(ctx, sp) if k.startswith("apollo_ledger_drift")]
+
+
+def test_check_keeps_one_balance_a_uk_day_and_a_read_only_report_keeps_none():
+    ctx, _ = world(balance=29_435)
+    spend.read(ctx)  # `report daily` reads; it keeps nothing
+    assert ctx.store.select("events", {"type": spend.BALANCE}) == []
+    spend.check(ctx)
+    spend.check(ctx)  # a rerun the same day replaces the reading
+    [row] = ctx.store.select("events", {"type": spend.BALANCE})
+    assert (row["event_id"], row["amount"]) == ("apollo_balance:2026-10-27", 29_435.0)

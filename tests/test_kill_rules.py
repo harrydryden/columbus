@@ -25,7 +25,6 @@ from us_outbound.base import holds, notify
 from us_outbound.context import Secrets
 from us_outbound.enrol import capacity, enrol
 from us_outbound.learn import kill_rules
-from us_outbound.logs import hash_email
 from us_outbound.registry import mailboxes as reg
 
 RECENT = NOW - timedelta(days=2)
@@ -117,11 +116,10 @@ def test_a_mailbox_over_3_percent_is_paused_through_the_registry_path():
         "_Why it matters: too many bounces or spam complaints make mail providers treat all our email as spam._",
     ]
     assert item["slack_ts"] == "1.1"
-    # Bounced contacts are suppressed.
-    assert out["suppressed"] == 2
-    hashes = {r["email_sha256"] for r in ctx.store.select("suppression")}
-    assert {hash_email(f"p{i}@hannah-meetspill-{RECENT:%m%d}.com") for i in range(2)} <= hashes
-    assert all(ctx.store.get("contacts", contact_id=c)["suppressed"] for c in bounced)
+    # Bounced contacts are suppressed by sync_outcomes as it records each bounce (tests/test_outcomes.py), not again
+    # here every hour (W2-3: suppress_bounced went, code-learn-reporting B16).
+    assert "suppressed" not in out and ctx.store.select("suppression") == []
+    assert not any(ctx.store.get("contacts", contact_id=c).get("suppressed") for c in bounced)
 
 
 def test_the_rule_does_not_fire_twice_and_old_bounces_never_count_again():
@@ -156,7 +154,7 @@ def test_one_bounce_never_pauses_a_mailbox():
     campaigns(inst)
     sends(ctx, HANNAH, 10, bounced=1)  # 10% on the ramp's 10 a day, but one bounce
     out = kill_rules.run(ctx)
-    assert out["fired"] == [] and out["suppressed"] == 1
+    assert out["fired"] == []
     assert row(sheets, HANNAH)["status"] == "Active" and slack_posts(t) == []
 
 
@@ -212,30 +210,6 @@ def test_bounces_older_than_the_window_do_not_count():
 # -- block signals: 14 days ---------------------------------------------------------------------------------
 
 
-def test_a_block_bounce_pauses_for_14_days_and_the_hold_ends_by_itself():
-    ctx, t, inst, sheets = setup()
-    campaigns(inst)
-    sends(ctx, SAM, 50, bounced=1, block="550 5.7.1 Message rejected: sender blocked")
-    out = kill_rules.run(ctx)
-    [fired] = out["fired"]
-    assert (fired["rule"], fired["target"], fired["until"]) == ("block_bounce", SAM, "2026-11-10")
-    assert "1 block bounce (5.7.1)" in fired["reason"]
-    assert row(sheets, SAM)["status"] == "Paused"
-    text = slack_posts(t)[0].json["text"]
-    assert text.startswith("<@U_HARRY> :rotating_light: *Safety stop: Sam's mailbox has stopped sending for 14 days*\n"
-                           "sam@meetspill.org: a receiving mail server refused its email (1 block bounce, code 5.7.1).")
-    assert "the stop lifts by itself after Tue 10 Nov (or sooner with `railway ssh -- us-outbound killrules" in text
-    # 14 days on, the hold lifts; the sheet still says Paused until Harry sets it Active.
-    out = kill_rules.run(later(ctx, t, 14))
-    assert [e["mailboxes"] for e in out["expired"]] == [[SAM]] and holds.held_mailboxes(ctx.store) == {}
-    head, line, do = slack_posts(t)[-1].json["text"].splitlines()
-    assert head == "<@U_HARRY> :warning: *Safety stop over: a mailbox can send again*"
-    assert line == ("• Sam's mailbox sam@meetspill.org: the 14-day pause after a block bounce is over, but the Mailboxes tab "
-                    "still says Paused, so it sends nothing yet.")
-    assert do.startswith(f"*What to do:* Once you are happy the cause is fixed, set it to Active on the {MAILBOXES_TAB}.")
-    assert row(sheets, SAM)["status"] == "Paused"
-
-
 def test_instantly_vitals_failing_pauses_for_14_days():
     ctx, t, inst, sheets = setup()
     campaigns(inst)
@@ -254,6 +228,61 @@ def test_instantly_vitals_failing_pauses_for_14_days():
         "• To resume once the cause is fixed: the stop lifts by itself after Tue 10 Nov (or sooner with "
         f"`railway ssh -- us-outbound killrules clear {fired['item_id']} --live`); then set it to Active on the "
         f"{MAILBOXES_TAB}.")
+
+
+def test_a_disconnected_mailbox_is_paused_and_the_hold_ends_by_itself_after_14_days():
+    """code-learn-reporting B12: Instantly's connection_error (an expired OAuth grant) sends nothing, so it is a
+    failing status like sending_error. The vitals read the account GET only (B17: no warmup-analytics POST)."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    inst.accounts[SAM]["status"] = -1  # connection_error
+    out = kill_rules.run(ctx)
+    [fired] = out["fired"]
+    assert (fired["rule"], fired["target"], fired["until"]) == ("vitals", SAM, "2026-11-10")  # 27 Oct + 14 days
+    assert fired["reason"] == f"{SAM}: Instantly reports the account as connection_error"
+    assert row(sheets, SAM)["status"] == "Paused"
+    assert not [r for r in t.requests if r.url.endswith("/warmup-analytics")]
+    # 14 days on, with the account fixed, the hold lifts; the sheet still says Paused until Harry sets it Active.
+    inst.accounts[SAM]["status"] = 1
+    out = kill_rules.run(later(ctx, t, 14))
+    assert [e["mailboxes"] for e in out["expired"]] == [[SAM]] and holds.held_mailboxes(ctx.store) == {}
+    head, line, do = slack_posts(t)[-1].json["text"].splitlines()
+    assert head == "<@U_HARRY> :warning: *Safety stop over: a mailbox can send again*"
+    assert line == ("• Sam's mailbox sam@meetspill.org: the 14-day pause after Instantly's account checks is over, but "
+                    "the Mailboxes tab still says Paused, so it sends nothing yet.")
+    assert do.startswith(f"*What to do:* Once you are happy the cause is fixed, set it to Active on the {MAILBOXES_TAB}.")
+    assert row(sheets, SAM)["status"] == "Paused"
+
+
+def test_the_removed_rules_have_no_inputs_and_fire_nothing():
+    """block_bounce, spam_complaint, seed_spam and stop_rule_complaint_rate went (W2-3; code-learn-reporting B2): no
+    writer gives them an input. A 5.7.1 bounce is one bounce, counted by the rate rule like any other."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, SAM, 50, bounced=1, block="550 5.7.1 Message rejected: sender blocked")
+    ctx.store.insert("events", [{"event_id": "x-1", "type": "complained", "mailbox": HANNAH, "occurred_at": RECENT},
+                                {"event_id": "x-2", "type": "seed_spam", "mailbox": HANNAH, "occurred_at": RECENT}])
+    assert kill_rules.run(ctx)["fired"] == []
+    assert not hasattr(kill_rules, "suppress_bounced") and not hasattr(kill_rules, "BLOCK_CODE")
+    assert "stop_rule_complaint_rate" not in {f.name for f in dataclasses.fields(SETTINGS.general)}
+
+
+def test_the_group_rule_reads_every_company_ever_not_a_window():
+    """RS P0-7: only the bounce reads are windowed. 400 delivered 60 days ago with no reply still stop the group:
+    each has had its 28 days (60 > 28), and the group rule reads outcomes.per_company with full history."""
+    ctx, t, inst, sheets = setup()
+    campaigns(inst)
+    sends(ctx, HANNAH, 400, at=NOW - timedelta(days=60), group_account={"industry_group": "Marketing & Creative Agencies"})
+    [fired] = _rules(kill_rules.run(ctx), "group_reply_rate")
+    assert fired["reason"].startswith("Marketing & Creative Agencies: 0 human replies from 400 accounts delivered")
+
+
+def test_kill_rules_stays_hourly():
+    """RS P0-7: kill_rules keeps its hourly cadence (24 scheduled runs a day), as before W2-3."""
+    from us_outbound.ops import schedule
+
+    [job] = [j for j in schedule.SCHEDULE if j.name == "kill_rules"]
+    assert job.cron == "0 * * * *"
 
 
 def test_the_group_and_stop_rule_alerts_say_what_still_goes_and_how_to_resume():
@@ -305,22 +334,6 @@ def test_the_alert_names_each_address_once_and_cites_no_spec():
     for line in text.splitlines()[1:]:
         for box in (HANNAH, HARRY, SAM):
             assert line.count(box) <= 1, line
-
-
-def test_a_spam_complaint_or_a_seed_inbox_in_spam_pauses_for_14_days():
-    ctx, t, inst, sheets = setup()
-    campaigns(inst)
-    sends(ctx, HANNAH, 5)
-    ctx.store.insert("events", [
-        {"event_id": "cmp-1", "type": "complained", "contact_id": f"c-hannah-meetspill-{RECENT:%m%d}-0", "step": 1,
-         "occurred_at": RECENT + timedelta(hours=1)},
-        {"event_id": "seed-1", "type": "seed_spam", "mailbox": SAM, "occurred_at": RECENT},
-    ])
-    rules = {f["target"]: f["rule"] for f in kill_rules.run(ctx)["fired"]}
-    assert rules == {HANNAH: "spam_complaint", SAM: "seed_spam"}
-
-
-# -- the domain and the source ---------------------------------------------------------------------------
 
 
 def test_a_domain_over_3_percent_on_100_sends_pauses_its_mailboxes():

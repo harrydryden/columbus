@@ -26,7 +26,8 @@ fails the deploy instead of queueing every query on the table behind it. An ADD 
 information_schema already has is skipped: ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column exists,
 and every column the DDL adds is in production already but the newest. Tables and indexes are IF NOT EXISTS, so
 applying again changes no table. Every view is dropped and created again (dependents first), because CREATE OR
-REPLACE VIEW cannot change a view's columns; readers never see the gap, as the whole apply is one transaction.
+REPLACE VIEW cannot change a view's columns; readers never see the gap, as the whole apply is one transaction. A
+retired view's DROP runs before that refresh, since the retired view may read one being dropped.
 Dry-run (the default) returns the statements and connects to nothing.
 """
 
@@ -180,12 +181,18 @@ def _checked(root: Path) -> list[tuple[str, str, str]]:
     # changed view would fail against a database made by an older version. Views hold no
     # data: drop every view first, dependents before what they read (the reverse of file
     # order), and create them all again, inside the one transaction apply() uses.
+    # A retired view's DROP (a view file's DROP VIEW IF EXISTS) goes first of all: it may read one of the views
+    # dropped here, and a DROP without CASCADE refuses while a view still reads it (W2-3: v_signal_value read
+    # v_account_outcomes when its file went).
     views = [t for name, s, t in checked if name.startswith("views/") and FORMS["view"].match(_code_only(s).strip())]
+    retired = [(name, s, t) for name, s, t in checked
+               if name.startswith("views/") and FORMS["drop_view"].match(_code_only(s).strip().removesuffix(";").rstrip())]
     drops = [(REFRESH_FILE, f"DROP VIEW IF EXISTS {t}", t) for t in reversed(views)]
     for d in drops:
         check_statement(d[1])
-    first_view = next((i for i, (name, _, _) in enumerate(checked) if name.startswith("views/")), len(checked))
-    return checked[:first_view] + drops + checked[first_view:]
+    rest = [c for c in checked if c not in retired]
+    first_view = next((i for i, (name, _, _) in enumerate(rest) if name.startswith("views/")), len(rest))
+    return rest[:first_view] + retired + drops + rest[first_view:]
 
 
 def statements(root: Path = SQL_DIR) -> list[tuple[str, str]]:

@@ -12,7 +12,8 @@ Each month, after the label sample is scored (ops/label_sample.monthly):
      Harry sets decision to approve; settings_sync then writes it to the Industries tab (settings/definitions.py).
 
 It asks the models only with --live (the monthly job's scheduled run): one writing call and two answer-key runs, about
-$0.01 a company each. A changed definition makes every stored verdict stale, so the queue is asked again after an
+$0.01 a company each. Each answer-key pass has PASS_SECONDS (10 minutes; W2-3, code-learn-reporting B7): a pass that
+runs out stops short, and a short pass is never scored (incomplete). A changed definition makes every stored verdict stale, so the queue is asked again after an
 approved change (labels_hash), which the Slack post says.
 """
 
@@ -32,6 +33,7 @@ from us_outbound.settings.definitions import COLUMNS, TAB
 from us_outbound.settings.model import Industry, Settings
 
 PURPOSE = "definition_suggestions"
+PASS_SECONDS = 600.0  # each answer-key pass's time budget: 10 minutes, inside the monthly job's 15 (W2-3; B7)
 MAX_LABELS = 4
 MAX_CHARS = 320
 MAX_TOKENS, EFFORT, TIMEOUT = 2000, "medium", 120.0
@@ -165,8 +167,9 @@ def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: 
         drafts = draft(ctx, misses, chosen)
         if not drafts:
             return out
-        now = labels.evaluate(ctx, answer_key)
-        later = labels.evaluate(dataclasses.replace(ctx, settings=with_definitions(ctx.settings, drafts)), answer_key)
+        now = labels.evaluate(ctx, answer_key, seconds=PASS_SECONDS)
+        later = labels.evaluate(dataclasses.replace(ctx, settings=with_definitions(ctx.settings, drafts)), answer_key,
+                                seconds=PASS_SECONDS)
     except (ClaudeError, BudgetExceeded, ConfigError) as exc:
         out["error"] = f"the model could not be asked ({str(exc)[:160]})"
         log(PURPOSE + "_failed", run_id=ctx.run_id, error=out["error"])

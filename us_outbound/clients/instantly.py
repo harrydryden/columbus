@@ -461,12 +461,15 @@ class Instantly(HttpClient):
             return None
         return body
 
-    def warmup_status(self, emails: Iterable[str]) -> dict[str, dict]:
-        """Per email: warmup_enabled, warmup_status, warmup_score, health_score(_label), status."""
+    def warmup_status(self, emails: Iterable[str], *, analytics: bool = True) -> dict[str, dict]:
+        """Per email: warmup_enabled, warmup_status, warmup_score, health_score(_label), status.
+
+        analytics=False reads the account GET alone (no /accounts/warmup-analytics POST), so health_score and
+        health_score_label are None: what the hourly kill rules' vitals read (W2-3; code-learn-reporting B17)."""
         accs = self._registry("account.get", emails)
         found = {e: self._get_account(e) for e in accs}
         # Analytics only for accounts Instantly has: an unknown email could fail the whole call.
-        present = [e for e, a in found.items() if a is not None]
+        present = [e for e, a in found.items() if a is not None] if analytics else []
         health: dict[str, dict] = {}
         for chunk in _chunks(present, ACCOUNTS_PER_CALL):
             chunk = list(chunk)

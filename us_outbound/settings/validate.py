@@ -457,6 +457,9 @@ RETIRED_GENERAL = {
     "apollo_credits_per_account": "never read (W2-1, 20 Oct 2026)",
     "opener_focus": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
     "opener_focus_line": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
+    # W2-3 (20 Oct 2026): the complaint stop rule had no input (code-learn-reporting B2).
+    "stop_rule_complaint_rate": "nothing reports a spam complaint to us yet, so the rule never had an input; the "
+                                "readout says complaints are not measured (W2-3, 20 Oct 2026)",
     # W2-4 (20 Oct 2026): constants Harry never edits, now in code at the live sheet's values (settings/model.py).
     "score_cap": "a constant in code now, 100 (settings/model.SCORE_CAP; W2-4, 20 Oct 2026)",
     "escalation_hours": "a constant in code now, 24 (settings/model.ESCALATION_HOURS; W2-4, 20 Oct 2026)",
@@ -541,7 +544,7 @@ def _check_general_value(key: str, value: Any) -> None:
     if key == "hand_check_sample" and not HAND_CHECK_SAMPLE_MIN <= value <= HAND_CHECK_SAMPLE_MAX:
         raise ValueError(f"is the number of companies in the weekly hand-check: {HAND_CHECK_SAMPLE_MIN} to "
                          f"{HAND_CHECK_SAMPLE_MAX}, like 20")
-    if key in ("stop_rule_bounce_rate", "stop_rule_complaint_rate") and not 0 <= value <= 1:
+    if key == "stop_rule_bounce_rate" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.03 for 3%")
     if key == "opener_holdout_share" and not 0 <= value <= 1:
         raise ValueError("is a share: between 0 and 1, like 0.3 for 30% of accounts with no opener")

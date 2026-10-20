@@ -335,49 +335,13 @@ def test_a_copy_row_reworded_names_the_columns_from_the_settings_history():
         "Copy general-v1: qa pass aaaa1111 → pass bbbb2222, s2_subject Quick one → A quick one"]
 
 
-# -- insights --------------------------------------------------------------------------------------------------------
+# -- no insights (W2-3) ------------------------------------------------------------------------------------------------
 
 
-def test_two_readable_cohorts_are_compared_and_what_changed_is_named():
-    w = World()
-    w.version("v1", datetime(2026, 9, 28, 11, tzinfo=UTC))
-    w.version("v2", datetime(2026, 10, 5, 11, tzinfo=UTC), general={"price_from": "250", "email1_subject_share": "0.5"})
-    w.cohort(W40, 30, 9, version="v1")
-    w.cohort(W41, 30, 2, version="v2")
-    out = cohorts.insights(w.ctx, cohorts.rows(w.ctx))
-    assert out == ["W41 replies less than W40 at 28 days (6.7% vs 30.0%, p = 0.02).",
-                   "Between them: General price_from: 195 → 250. A coincidence to test, not a cause."]
-
-
-def test_nothing_changed_between_them_is_said_too():
-    w = World()
-    w.version("v1", datetime(2026, 9, 28, 11, tzinfo=UTC))
-    w.cohort(W40, 30, 9, version="v1", positive=9)
-    w.cohort(W41, 30, 2, version="v1")
-    out = cohorts.insights(w.ctx, cohorts.rows(w.ctx))
-    assert out[1] == "W41 has positive replies less than W40 at 28 days (0.0% vs 30.0%, p = 0.00)."
-    assert out[-1] == "Nothing changed between them."
-
-
-def test_no_clear_difference_and_too_few_are_said_as_such():
-    w = World()
-    w.cohort(W40, 30, 3)
-    w.cohort(W41, 30, 4)
-    assert cohorts.insights(w.ctx, cohorts.rows(w.ctx)) == [
-        "No clear difference in replies between W41 and W40 at 28 days (13.3% vs 10.0%, p = 0.69)."]
-    w = World()
-    w.cohort(W40, 30, 9)
-    w.cohort(W41, 29, 2)
-    assert cohorts.insights(w.ctx, cohorts.rows(w.ctx)) == [
-        "Too few to read: W41 has 29 companies at 28 days (30 needed on each side to compare W41 with W40)."]
-
-
-def test_a_week_enrolled_across_days_is_compared_at_the_age_both_have_30_at():
-    """metrics-audit M1: a week's companies reach 14 days on different days, so on a Monday the newer week has a
-    handful at 14 days. At NOW (Mon 9 Nov 12:00): W43, 40 enrolled Mon 19 Oct, has 40 at 7 and at 14 days; W44 has 3
-    enrolled Mon 26 Oct 11:00 (14 days 1 hour) and 37 on Thu 29 Oct (10 days), so 40 at 7 days and 3 at 14.
-    Compared at 14 days it read "too few"; at 7 days, the latest age with 30 a side, 8 of 40 against 0 of 40:
-    pooled p = 8/80 = 0.1, se = √(0.1 × 0.9 × 2/40) = 0.0671, z = 0.2/0.0671 = 2.98, p = 0.003."""
+def test_a_week_enrolled_across_days_counts_each_company_at_the_ages_it_has_reached():
+    """metrics-audit M1's world: a week's companies reach 14 days on different days. At NOW (Mon 9 Nov 12:00): W43, 40
+    enrolled Mon 19 Oct, has 40 at 7 and at 14 days; W44 has 3 enrolled Mon 26 Oct 11:00 (14 days 1 hour) and 37 on
+    Thu 29 Oct (10 days), so 40 at 7 days and 3 at 14."""
     w = World()
     for i in range(40):
         w.company(datetime(2026, 10, 19, 15, tzinfo=UTC), reply_day=2 if i < 8 else None, cls="objection")
@@ -385,37 +349,35 @@ def test_a_week_enrolled_across_days_is_compared_at_the_age_both_have_30_at():
         w.company(datetime(2026, 10, 26, 11, tzinfo=UTC) if i < 3 else datetime(2026, 10, 29, 15, tzinfo=UTC))
     w43, w44 = cohorts.rows(w.ctx)
     assert (w43.ages[7].matured, w43.ages[14].matured, w44.ages[7].matured, w44.ages[14].matured) == (40, 40, 40, 3)
-    assert cohorts.common_age(w43, w44) == 7
-    assert cohorts.insights(w.ctx, [w43, w44])[0] == "W44 replies less than W43 at 7 days (0.0% vs 20.0%, p = 0.00)."
+    assert (w43.ages[7].replied, w44.ages[7].replied) == (8, 0)
 
 
-def test_unstamped_cohorts_never_break_a_comparison():
+def test_the_report_judges_no_pair_of_cohorts():
+    """W2-3 (metrics-audit M1, M2): the pairwise verdicts on the pooled z-test and the three-cohorts-running line were
+    chance at these numbers, and a cohort is not a randomised arm. 9 of 30 against 2 of 30, which used to read "W41
+    replies less than W40 (p = 0.02)", is shown as two rows of counts and nothing more."""
     w = World()
-    w.version("v2", datetime(2026, 10, 5, 11, tzinfo=UTC))
-    w.cohort(W40, 30, 9)  # enrolled before the stamp
-    w.cohort(W41, 30, 2, version="v2")
-    out = cohorts.insights(w.ctx, cohorts.rows(w.ctx))
-    assert out[0].startswith("W41 replies less than W40")
-    assert out[1] == "What changed between them is not recorded: contacts enrolled before 8 Oct 2026 are unstamped."
+    w.cohort(W40, 30, 9)
+    w.cohort(W41, 30, 2)
+    out = "\n".join(cohorts.lines(w.ctx))
+    assert "28 days: 9 of 30 replied (30.0%)" in out and "28 days: 2 of 30 replied (6.7%)" in out
+    assert " less than " not in out and "p = " not in out and "Insights" not in out
+    for gone in ("insights", "compare", "run_of_three", "within_week", "common_age"):
+        assert not hasattr(cohorts, gone), gone
 
 
-def test_two_versions_inside_one_week_are_compared():
+def test_a_corrected_reply_class_counts_in_the_cohort():
+    """The cohort reads learn/outcomes.py's classes: an out-of-office reply a person corrected to an objection is a
+    human reply at every age it falls in."""
     w = World()
-    w.version("v1", datetime(2026, 10, 5, 11, tzinfo=UTC))
-    w.version("v2", datetime(2026, 10, 7, 11, tzinfo=UTC), code_sha="a4c5c27bbbbb")
-    w.cohort(W41, 30, 9, version="v1")
-    w.cohort(W41, 30, 1, version="v2")
-    out = cohorts.within_week(w.ctx, ["2026-W41"])
-    assert out[0].startswith("W41 version v2 replies less than W41 version v1 at 28 days (3.3% vs 30.0%")
-    assert out[1] == "Between them: code 4fbfec5 → a4c5c27. A coincidence to test, not a cause."
-
-
-def test_a_reply_rate_falling_three_cohorts_running_is_said():
-    w = World(now=datetime(2026, 11, 2, 12, tzinfo=UTC))
-    for monday, replied in ((W40, 9), (W41, 6), (W42, 3)):
-        w.cohort(monday, 30, replied)
-    assert cohorts.run_of_three(cohorts.rows(w.ctx)) == (
-        "The 14-day reply rate has fallen three cohorts running: W40 30.0%, W41 20.0%, W42 10.0%.")
+    aid = w.company(datetime(2026, 10, 19, 15, tzinfo=UTC), reply_day=2, cls="out_of_office")
+    [reply] = [e for e in w.ctx.store.select("events", {"type": "replied"}) if e["account_id"] == aid]
+    [c] = cohorts.rows(w.ctx)
+    assert c.ages[7].replied == 0
+    w.ctx.store.insert("events", [{"event_id": "fix", "type": "reply_class_corrected", "source": reply["event_id"],
+                                   "reply_class": "objection", "occurred_at": datetime(2026, 10, 25, tzinfo=UTC)}])
+    [c] = cohorts.rows(w.ctx)
+    assert c.ages[7].replied == 1
 
 
 # -- in flight --------------------------------------------------------------------------------------------------------
@@ -453,7 +415,7 @@ def test_the_readout_has_the_cohort_section_under_20_lines():
     assert section[1] == "  W45 (2–8 Nov): 1 emailed · under 7 days since email 1"
     assert section[3] == ("  W40 (28 Sep–4 Oct): 30 emailed · at 28 days 9 of 30 replied (30.0%) · 0 meetings · "
                           "0 of 30 sends bounced")
-    assert "  W41 replies less than W40 at 28 days (6.7% vs 30.0%, p = 0.02)." in section
+    assert not any(" less than " in x or "p = " in x for x in section)  # no pair is judged (W2-3)
     changes = section.index("*Changes last week* (settings, copy, campaign and code)")
     assert section[changes + 1] == "  General price_from: 195 → 250"
     assert nums["cohorts"]["2026-W41"]["replied"][28] == [2, 30] and nums["settings_changes"] == 1

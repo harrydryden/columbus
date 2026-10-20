@@ -18,7 +18,9 @@ an unsubscribe click is read within the hour. Each run:
                   Both jobs listed received mail on an endpoint limited to 20 requests a minute; this one no longer
                   does, and the two-writer contract that kept their rows apart went with it.
   * bounced:      each lead in a US Outbound campaign whose status is bounced. The address also goes
-                  on suppression (reason bounce), so a later re-contact cannot use it.
+                  on suppression (reason bounce), before the event is written, so a later re-contact cannot use
+                  it. A run that recorded a bounce then runs the bounce kill rules (learn/kill_rules.after_bounce;
+                  W2-3): a mailbox over the limit is paused within the run, the hourly kill_rules the backstop.
   * unsubscribed: each lead whose status is unsubscribed, which is what a click on Instantly's own
                   unsubscribe link does (Harry, 1 Oct 2026: that link is the opt-out every email
                   carries). replies/optout.py records it everywhere SPEC 11 asks; it is a go-live
@@ -446,17 +448,24 @@ def _record_bounce(ctx: Context, contact: dict, lead: Mapping[str, Any], known: 
     sends = sent_events(ctx, [contact["contact_id"]]).get(str(contact["contact_id"]), [])
     last = sends[-1] if sends else {}
     at = utc(last.get("occurred_at")) or utc(lead.get("timestamp_last_contact")) or ctx.now
+    # The suppression first, then the event (W2-3): the bounced event is how a later run knows this lead is done, so
+    # it must never exist without the suppression. kill_rules no longer suppresses every bounced contact again each
+    # hour (its suppress_bounced went: code-learn-reporting B16), and a run that stopped between the two now
+    # suppresses again next time rather than never.
+    address = _lower(lead.get("email")) or _lower(contact.get("email"))
+    if address:
+        suppression.add(ctx.store, email=address, reason=BOUNCE_REASON, source=INSTANTLY_SOURCE, now=ctx.now)
+    if contact.get("email") and _lower(contact.get("email")) != address:
+        suppression.add(ctx.store, email=_lower(contact["email"]), reason=BOUNCE_REASON, source=INSTANTLY_SOURCE,
+                        now=ctx.now)
+    if not contact.get("suppressed"):
+        ctx.store.update("contacts", {"contact_id": contact["contact_id"]},
+                         {"suppressed": True, "suppressed_reason": BOUNCE_REASON})
     ctx.store.upsert("events", [{
         "event_id": event_id, "contact_id": contact["contact_id"], "account_id": contact.get("account_id"),
         "type": BOUNCED, "step": parse.integer(last.get("step")),
         "mailbox": last.get("mailbox") or contact.get("mailbox"), "occurred_at": at,
     }])
-    address = _lower(lead.get("email")) or _lower(contact.get("email"))
-    if address:
-        suppression.add(ctx.store, email=address, reason=BOUNCE_REASON, source=INSTANTLY_SOURCE, now=ctx.now)
-    if not contact.get("suppressed"):
-        ctx.store.update("contacts", {"contact_id": contact["contact_id"]},
-                         {"suppressed": True, "suppressed_reason": BOUNCE_REASON})
     known.add(event_id)
     return True
 
@@ -548,6 +557,14 @@ def run(ctx: Context) -> dict:
     from us_outbound.replies import account_stop
 
     out["account_stops"] = account_stop.sweep(ctx)
+    # A recorded bounce runs the bounce kill rules now (W2-3): a mailbox over the limit is paused in this run, not at
+    # the next hourly kill_rules, which stays the backstop.
+    if out["bounced"]:
+        from us_outbound.learn import kill_rules
+
+        out["kill_rules"] = kill_rules.after_bounce(ctx)
+        if out["kill_rules"].get("error"):
+            out["kill_rule_errors"] = [out["kill_rules"]["error"]]
 
     out.update(sent=sent, contacts_with_new_sends=len(touched), unsubscribed=dict(out["unsubscribed"]),
                dropped=dict(dropped))

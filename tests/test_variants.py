@@ -413,8 +413,10 @@ def test_a_variant_test_is_read_from_its_arms_since_its_start():
     warm, none = result["versions"]["warm intro"], result["versions"]["no intro"]
     assert (warm["accounts"], warm["delivered"], warm["replied"], warm["positive"]) == (2, 2, 1, 1)
     assert (none["accounts"], none["delivered"], none["replied"], none["positive"]) == (2, 2, 1, 0)
+    # Fisher on 1 of 2 against 1 of 2 is 1; look 1 of 2 (the count look, then the read date) has the O'Brien-Fleming
+    # threshold 0.011 at alpha 0.10 (tests/test_stats.py); equal data, so P(no intro better) = 0.5.
     assert looks.summary_line(result) == ("warm intro 1 of 2 replied (50.0%); no intro 1 of 2 replied (50.0%) "
-                                          "· p = 1.00")
+                                          "· Fisher p = 1.000 (this look's threshold 0.011) · P(no intro better) = 0.50")
     lines, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=60))
     assert at_look == ["warm-intro"] and lines[0].startswith(
         "  warm-intro (one-change variant test) reached look 1: 2 accounts")

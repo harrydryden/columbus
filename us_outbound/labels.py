@@ -955,11 +955,12 @@ def score(d: Decision, expect: Mapping[str, Any]) -> str:
     return ACCEPTABLE if ok else WRONG
 
 
-def evaluate(ctx: Context, rows: Sequence[Mapping[str, Any]]) -> dict:
+def evaluate(ctx: Context, rows: Sequence[Mapping[str, Any]], *, seconds: float = float("inf")) -> dict:
     """`labels eval`: each row's rules label, the model asked (live only), the decision and its score. A dry run says
     how many and what they would cost at most, and asks nothing. passed: at least EVAL_PASS acceptable and none
-    unsafe (live)."""
-    checker = Checker(ctx, spend=ctx.live, budget=Budget(calls=len(rows), seconds=float("inf")), purpose=EVAL_JOB)
+    unsafe (live). seconds: a time budget (definition_suggestions gives each pass one, W2-3): once it is spent the
+    pass stops with an error, as at a model error, and what it had is returned."""
+    checker = Checker(ctx, spend=ctx.live, budget=Budget(calls=len(rows), seconds=seconds), purpose=EVAL_JOB)
     s = ctx.settings
     out: dict[str, Any] = {"dry_run": ctx.dry_run, "rows": len(rows), "model": checker.model,
                            "labels_hash": checker.hash, "results": []}
@@ -969,11 +970,15 @@ def evaluate(ctx: Context, rows: Sequence[Mapping[str, Any]]) -> dict:
         out["most_usd"] = round(most, 4)
         return out
     tally: dict[str, int] = {ACCEPTABLE: 0, WRONG: 0, UNSAFE: 0}
+    began = time.monotonic()
     for r in rows:
         account = {"account_id": f"gold:{r['domain']}", "domain": r["domain"], "clean_name": r.get("name"),
                    "industry": r.get("went_out_as")}
         events = gold_events(r)
         rules = rules_label(account, events, s)
+        if time.monotonic() - began >= seconds:
+            out["error"] = f"the answer key ran out of its {seconds / 60:.0f} minutes"
+            break
         try:
             v = checker.ask(Material.of(account, events))
         except (ClaudeError, ConfigError) as exc:

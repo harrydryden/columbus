@@ -603,6 +603,28 @@ def test_the_eval_scores_the_gold_set_and_passes_with_right_answers():
     assert ctx.store.select("signal_events") == [] and ctx.store.select("accounts") == []  # it changes nothing
 
 
+def test_an_eval_with_a_time_budget_stops_when_it_is_spent(monkeypatch):
+    """W2-3: evaluate(seconds=...) stops a pass once its time is spent, with an error, as at a model error, and returns
+    what it had. The clock moves 301 seconds with each of the model's answers, so with 600 seconds the third row finds
+    602 spent: 2 of the 13 gold rows are checked."""
+    import time as time_
+
+    clock = [1000.0]
+    monkeypatch.setattr(time_, "monotonic", lambda: clock[0])
+    sdk = gold_sdk()
+    real_ask = labels.Checker.ask
+
+    def ask(self, material):
+        clock[0] += 301
+        return real_ask(self, material)
+
+    monkeypatch.setattr(labels.Checker, "ask", ask)
+    out = labels.evaluate(eval_ctx(sdk, True), labels.gold_rows(), seconds=600)
+    assert out["acceptable"] + out["wrong"] + out["unsafe"] == 2 and len(sdk.calls) == 2
+    assert out["error"] == "the answer key ran out of its 10 minutes" and out["passed"] is False
+    assert labels.evaluate(eval_ctx(gold_sdk(), True), labels.gold_rows())["acceptable"] == 13  # no budget: all 13
+
+
 def test_a_specific_pitch_to_the_wrong_company_is_unsafe_and_fails_the_eval(capsys):
     from us_outbound.ops import cli
 

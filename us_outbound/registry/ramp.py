@@ -87,7 +87,7 @@ class Ramp:
 
     @property
     def full_cap(self) -> int:
-        """What it may send a day once the ramp is over (learn/capacity_ahead.py plans three weeks out with it)."""
+        """What it may send a day once the ramp is over (learn/spend.mailbox_plan plans three weeks out with it)."""
         return self._cap_in_week(len(RAMP_CAPS) + 1)
 
     def next_step(self) -> tuple[date, int] | None:

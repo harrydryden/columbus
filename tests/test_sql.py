@@ -65,7 +65,8 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
                  *W1C_COLUMNS["contacts"]},
     "suppression": {"expires_at"},
     "events": {"source",  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
-               "analytics_source"},  # a booker's hs_analytics_source (crm/readback.py; W2-4, 20 Oct 2026)
+               "analytics_source",  # a booker's hs_analytics_source (crm/readback.py; W2-4, 20 Oct 2026)
+               "amount"},  # apollo_balance's balance (learn/spend.py; W2-3, 20 Oct 2026)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
@@ -100,10 +101,11 @@ BUILD_TABLES: dict[str, set[str]] = {
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}
 
-VIEWS = {"v_account_outcomes", "v_queue", "v_signal_value", "v_readout_weekly", "v_mailbox_health",
-         "v_budgets", "v_heartbeats"}
+VIEWS = {"v_account_outcomes", "v_queue", "v_readout_weekly", "v_mailbox_health", "v_budgets", "v_heartbeats"}
 SPEC_VIEWS = VIEWS - {"v_account_outcomes"}
-RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became weekly; dropped if it exists
+# Dropped if they exist: v_credits_month, replaced by v_budgets when budgets became weekly; v_signal_value, whose
+# below_control was chance at these numbers (W2-3, 20 Oct 2026).
+RETIRED_VIEWS = {"v_credits_month", "v_signal_value"}
 
 # Types by column name (the brief's rules), as sqlglot prints them; every other column is TEXT.
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
@@ -111,7 +113,8 @@ DATES = {"recheck_after"}  # a re-check falls due on a day (W1-C, 19 Oct 2026)
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
         "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight",
         "exit_code"}  # heartbeats.exit_code (W2-4, 20 Oct 2026; ops/health.py)
-FLOATS = {"clay_credits_used", "credits", "usd", "strength", "duration_s"}  # duration_s: heartbeats (W2-4)
+FLOATS = {"clay_credits_used", "credits", "usd", "strength", "duration_s",  # duration_s: heartbeats (W2-4)
+          "amount"}  # events.amount (W2-3)
 BOOLS = {"suppressed", "dry_run"}
 
 # Indexes the brief asks for (table -> leading columns); more are fine.
@@ -155,6 +158,8 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "alert",  # base/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
         "readback_seen",  # crm/readback.py: the negative cache of "not ours" records (W2-4, 20 Oct 2026)
         "follow_up",  # replies/follow_up.py: a not-now reply's date came and was told (W2-4)
+        "apollo_balance",  # learn/spend.py: the day's Apollo balance, in amount (W2-3)
+        "reply_class_corrected",  # learn/outcomes.py: a person's correction of a reply's class (W2-3)
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
                            "suppression",  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
@@ -285,9 +290,14 @@ def test_files_are_numbered_ddl_then_views():
         assert len(numbers) == len(set(numbers)), f"duplicate numbers in sql/{kind}"
 
 
+def retired(sql: str) -> bool:
+    """A retired view's DROP, which apply moves ahead of the refresh (ops/ddl.py, W2-3)."""
+    return bool(ddl.FORMS["drop_view"].match(ddl._code_only(sql).strip().removesuffix(";").rstrip()))
+
+
 def test_statements_come_in_file_order_and_hold_no_semicolon():
     order = [f"{p.parent.name}/{p.name}" for p in ddl.files()]
-    names = [name for name, _ in ddl.statements() if name != ddl.REFRESH_FILE]
+    names = [name for name, sql in ddl.statements() if name != ddl.REFRESH_FILE and not retired(sql)]
     assert sorted(set(names), key=order.index) == order, "every file holds a statement"
     assert names == sorted(names, key=order.index)
     for _, sql in ddl.statements():
@@ -298,8 +308,11 @@ def test_every_view_is_dropped_before_the_views_are_created_again():
     """CREATE OR REPLACE VIEW cannot change a view's columns, so apply drops every view first,
     dependents before what they read (the reverse of file order)."""
     stmts = ddl.statements()
-    kinds = [("drop" if name == ddl.REFRESH_FILE else name.split("/")[0]) for name, _ in stmts]
-    assert kinds == sorted(kinds, key=["ddl", "drop", "views"].index)
+    kinds = [("drop" if name == ddl.REFRESH_FILE else "retired" if retired(sql) else name.split("/")[0])
+             for name, sql in stmts]
+    assert kinds == sorted(kinds, key=["ddl", "retired", "drop", "views"].index)
+    assert {sql.rsplit(".", 1)[1].rstrip(";") for name, sql in stmts if retired(sql) and name != ddl.REFRESH_FILE} \
+        == RETIRED_VIEWS
     drops = [sql.rsplit(".", 1)[1] for name, sql in stmts if name == ddl.REFRESH_FILE]
     created = [ddl.check_statement(sql).split(".", 1)[1] for name, sql in stmts
                if name.startswith("views/0") and ddl.FORMS["view"].match(ddl._code_only(sql).strip())]
