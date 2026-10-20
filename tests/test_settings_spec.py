@@ -16,7 +16,7 @@ def test_every_derived_list_comes_from_the_spec():
     for tab in TABS:
         assert COLUMNS[tab] == spec.columns(tab) and KEY_COLUMNS[tab] == spec.keys(tab)
         assert TAB_OPTIONAL_COLUMNS[tab] == spec.optional(tab)
-    assert DEPENDS_ON["Copy"] == ("Industries", "Roles") and DEPENDS_ON["Tests"] == ("Copy",)
+    assert DEPENDS_ON["Copy"] == ("Industries", "Roles") and DEPENDS_ON["Tests"] == ("Copy", "General")
     # General named Industries groups in apollo_enrich_groups until W2-4 (20 Oct 2026) made it a constant in code.
     assert "General" not in DEPENDS_ON and DEPENDS_ON["Overrides"] == ("Industries",)
 

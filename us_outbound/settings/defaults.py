@@ -68,6 +68,14 @@ _GENERAL: list[tuple[str, str, str]] = [
         "enrolment pauses as well as the alert. no: the alert only. Added by the build (Harry, 19 Oct 2026).",
     ),
     (
+        "live_split",
+        "both",
+        "Which random split new contacts are drawn into, so that one experiment runs at a time. both: as today, the "
+        "opener holdout, the email 1 subject split and the running test on the Tests tab. opener: the opener holdout "
+        "alone. subject: the subject split alone. test: the running test on the Tests tab alone. none: no split. "
+        "Contacts already enrolled keep theirs. Added by the build (21 Oct 2026).",
+    ),
+    (
         "copy_level_policy",
         "no",
         "yes: a company's emails use its industry label's own copy only when the monthly label sample shows labels "
@@ -742,6 +750,11 @@ _FIRST_TEST = {
     "text_b": "",
     "find": "",
     "share_a": "",
+    "metric_id": "O4",
+    "definition_version": "2026-10-20",  # learn/metrics.DEFINITION_VERSION
+    "test": "fisher_exact",
+    "alpha": "0.10",
+    "look_thresholds": "one_look",
 }
 
 

@@ -483,7 +483,7 @@ def copy_possible(account: Mapping[str, Any], settings: Settings, rows: Mapping[
 def running_test_counts(ctx: Context) -> Counter[str]:
     """Accounts already in the running copy test, per arm ("a" or "b"). A contact enrolled in an ab test before
     test_arm existed (8 Oct 2026) is placed by its copy version."""
-    t = ctx.settings.running_test()
+    t = ctx.settings.drawn_test()  # W3-4: only while live_split lets it draw
     if t is None:
         return Counter()
     seen: dict[str, set[str]] = defaultdict(set)
@@ -516,7 +516,7 @@ def choose_copy(
                  labels.GROUP_COPY: f"{label}'s group or General (its label earns the group's copy)",
                  labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
         return None, "", "", f"no approved copy that has passed QA for {where}", note
-    t = settings.running_test()
+    t = settings.drawn_test()  # W3-4: only while General live_split lets it draw
     if t and t.kind == AB_TEST and row.copy_version == t.version_a:
         arm = queue.test_version(str(account["account_id"]), t.test_id, t.share_a)
         chosen = rows.get(t.arm_name(arm))
@@ -696,7 +696,7 @@ def prepare(
                                        subject=first_subject if n == render.SUBJECT_STEP else "").violations)
 
     # A variant test (Harry, 7 Oct 2026): the account's arm, made in its Copy row's email, or why it is not in the test.
-    variant = variants.choose(s.running_test(), a, row, today=ctx.today_uk(), subject_arm=arm, counts=counts,
+    variant = variants.choose(s.drawn_test(), a, row, today=ctx.today_uk(), subject_arm=arm, counts=counts,
                               check=email_problems)
     if variant is not None and variant.arm:
         test_id, test_arm = variant.test_id, variant.arm
@@ -1052,7 +1052,7 @@ def _failures(skipped: Mapping[str, int]) -> dict[str, int]:
 def _copy_test_summary(s: Settings, r: _Run) -> dict[str, Any] | None:
     """The enrol summary's copy_test: the running copy test, today's contacts in each arm, and why others were not in
     it (a variant whose change could not be made, or whose arm is full)."""
-    t = s.running_test()
+    t = s.drawn_test()
     if t is None:
         return None
     return {"test_id": t.test_id, "kind": t.kind, "arms": {t.arm_name(a): r.test_arms[a] for a in ("a", "b")},

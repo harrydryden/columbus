@@ -530,11 +530,22 @@ def test_retention_runs_by_hand_and_shows_in_status(capsys):
 # -- copy tests -------------------------------------------------------------------------------------------
 
 
+# The Tests tab's pre-registration (W3-4, 21 Oct 2026; settings/model.PRE_REGISTRATION): a test started from 21 Oct
+# 2026 runs only with every field.
+PREREG = {"metric_id": "O4", "definition_version": "2026-10-20", "test": "fisher_exact", "alpha": "0.10",
+          "look_thresholds": "one_look"}
+
+
 def _tests_tab(**over):
     row = {"test_id": "t1", "hypothesis": "EAP opener wins", "version_a": "eap-v1", "version_b": "general-v1",
            "accounts_per_version": "400", "start_date": "", "read_date": "2026-12-15", "decision_rule": "reply rate",
-           "status": "planned", "result": ""}
+           "status": "planned", "result": "", **PREREG}
     return {**row, **over}
+
+
+def _split(settings, split: str = "test"):
+    """The settings with General live_split set: a test started from 21 Oct 2026 needs its split named (W3-4)."""
+    return dataclasses.replace(settings, general=dataclasses.replace(settings.general, live_split=split))
 
 
 def _approved():
@@ -544,7 +555,7 @@ def _approved():
 
 
 def test_test_start_sets_running_and_refuses_a_second():
-    settings = dataclasses.replace(SETTINGS, copy=_approved())
+    settings = _split(dataclasses.replace(SETTINGS, copy=_approved()))
     h = Harness(settings, sheet_tabs={"Tests": [_tests_tab(), _tests_tab(test_id="t2")]})
     assert h.run("test", "start", "t1") == 0  # dry-run
     assert h.sheet_tabs["Tests"][0]["status"] == "planned"
@@ -555,10 +566,10 @@ def test_test_start_sets_running_and_refuses_a_second():
 
 
 def test_test_start_needs_a_read_date_and_approved_copy(capsys):
-    h = Harness(SETTINGS, sheet_tabs={"Tests": [_tests_tab()]})
+    h = Harness(_split(SETTINGS), sheet_tabs={"Tests": [_tests_tab()]})
     assert h.run("test", "start", "t1", "--live") == 2
     assert "not approved" in capsys.readouterr().err
-    h2 = Harness(dataclasses.replace(SETTINGS, copy=_approved()), sheet_tabs={"Tests": [_tests_tab(read_date="")]})
+    h2 = Harness(_split(dataclasses.replace(SETTINGS, copy=_approved())), sheet_tabs={"Tests": [_tests_tab(read_date="")]})
     assert h2.run("test", "start", "t1", "--live") == 2
     assert "pre-register" in capsys.readouterr().err
 
@@ -566,7 +577,7 @@ def test_test_start_needs_a_read_date_and_approved_copy(capsys):
 def test_test_start_checks_the_row_as_it_will_be_written(capsys):
     """9 Oct 2026: a read_date of 2026-9-30 passed a comparison of text; the sheet said running and the next
     settings_sync refused the Tests tab, so the test the operator was told is running was not."""
-    settings = dataclasses.replace(SETTINGS, copy=_approved())
+    settings = _split(dataclasses.replace(SETTINGS, copy=_approved()))
     for bad, says in (("2026-9-30", "read_date"), ("30/11/2026", "read_date"), ("2026-10-01", "must be after")):
         h = Harness(settings, sheet_tabs={"Tests": [_tests_tab(read_date=bad)]})
         assert h.run("test", "start", "t1", "--live") == 2

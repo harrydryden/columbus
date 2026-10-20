@@ -24,12 +24,17 @@ says what it would have said on time. Before the first look it refuses (exit 2) 
 has got (accounts emailed, windows closed): never a reply, so nobody peeks. Reply rate decides (SPEC 12: the test
 detects a 2x difference); positive and meeting rates are for information. Harry writes the result on the Tests tab.
 
-The test (W2-3, 20 Oct 2026; redteam-stats §3 L10): Fisher's exact two-sided p (learn/stats.fisher_exact), against
-this look's threshold, the O'Brien-Fleming nominal p for the test's looks at a total two-sided alpha of ALPHA
-(stats.obrien_fleming: with one look, ALPHA itself; at the half-way look of two, 0.011, and 0.096 at the end), and
-P(version_b > version_a) from Jeffreys Beta posteriors (stats.beta_posterior_gt) beside it. The pooled z-test it used
-before (signal_review's, gone) was anti-conservative at these rates: 3 of 30 against 0 of 30 read p = 0.076
-where Fisher's is 0.237. W3-4 wires the Tests tab's own alpha and test fields; until then every test is read this way.
+The test (W2-3, 20 Oct 2026; redteam-stats §3 L10), as the Tests tab pre-registers it (W3-4, 21 Oct 2026; settings/
+model.PRE_REGISTRATION): the metric (metric_id O4, any human reply within 28 days, or O3, a positive or referral one);
+the test (test fisher_exact: Fisher's exact two-sided p, learn/stats.fisher_exact, against this look's threshold; or
+beta_posterior: P(version_b > version_a) from Jeffreys Beta posteriors, stats.beta_posterior_gt, which crosses when it
+is above 1 - threshold/2 or below threshold/2, the two-sided equivalent); the total two-sided alpha; and the per-look
+thresholds (look_thresholds one_look: alpha at the read date, which is then the only look; obrien_fleming: the
+O'Brien-Fleming nominal p for the test's looks, stats.obrien_fleming: at the half-way look of two at 0.10, 0.011, and
+0.096 at the end). The other measure is printed beside it, never decided on. A test started before the registry
+(model.REGISTRY_FROM: warm-intro-70) is read as every test was until then: O4, Fisher, 0.10, O'Brien-Fleming (the
+model's DEFAULT_*). The pooled z-test used before W2-3 (signal_review's, gone) was anti-conservative at these rates:
+3 of 30 against 0 of 30 read p = 0.076 where Fisher's is 0.237.
 
 Each outcome is learn/outcomes.py's (the one definition, W2-3): an account's first step 1, delivered, a human reply
 within 28 days (the latest correction of a reply's class counting), meetings until the look.
@@ -58,11 +63,13 @@ from us_outbound.base import say
 from us_outbound.clients.instantly import REPLY_WINDOW_DAYS
 from us_outbound.context import UK, Context
 from us_outbound.learn import outcomes, stats
-from us_outbound.settings.model import AB_TEST, HOLDOUT_ARMS, HOLDOUT_TEST, VARIANT_ARMS, VARIANT_TEST, Test
+from us_outbound.settings.model import (AB_TEST, BETA_POSTERIOR, DEFAULT_ALPHA, HOLDOUT_ARMS, HOLDOUT_TEST, ONE_LOOK,
+                                        VARIANT_ARMS, VARIANT_TEST, Test)
 from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
-ALPHA = 0.10  # two-sided (one-sided 0.05): the plan's L10 default until W3-4 reads the Tests tab's alpha
+ALPHA = DEFAULT_ALPHA  # two-sided (one-sided 0.05): a test with no alpha on the Tests tab (one started before W3-4)
+MEASURES = {"O4": "replied", "O3": "positive"}  # metric_id -> the count it is decided on
 
 
 class NotYet(Exception):
@@ -265,10 +272,15 @@ def read(ctx: Context, test_id: str) -> dict:
                           "positive_rate": _rate(s["positive"], s["delivered"]),
                           "meeting_rate": _rate(s["meetings"], s["delivered"])}
     a, b = (versions[n] for n in arm_names(test))
-    p = stats.fisher_exact(a["replied"], a["delivered"], b["replied"], b["delivered"]) if a["delivered"] and \
+    measure = MEASURES[test.metric]
+    threshold = look_threshold(test, len(all_looks), look.number)
+    p = stats.fisher_exact(a[measure], a["delivered"], b[measure], b["delivered"]) if a["delivered"] and \
         b["delivered"] else None
-    threshold = stats.obrien_fleming(len(all_looks), ALPHA)[look.number - 1]
-    b_better = stats.beta_posterior_gt(b["replied"], b["delivered"], a["replied"], a["delivered"])
+    b_better = stats.beta_posterior_gt(b[measure], b["delivered"], a[measure], a["delivered"])
+    if test.method == BETA_POSTERIOR:
+        crossed = b_better > 1 - threshold / 2 or b_better < threshold / 2
+    else:
+        crossed = p is not None and p < threshold
     nxt = upcoming(all_looks, ctx.now)
     return {
         "test_id": test.test_id, "kind": test.kind, "version_a": test.version_a, "version_b": test.version_b,
@@ -277,11 +289,21 @@ def read(ctx: Context, test_id: str) -> dict:
         "next_look": nxt.label if nxt else None,
         "looks": [{"label": lk.label, "reached": lk in reached(all_looks, ctx.now)} for lk in all_looks],
         "versions": versions, "reply_p": round(p, 4) if p is not None else None,
-        "reply_test": "fisher_exact", "look_threshold": round(threshold, 4), "alpha": ALPHA,
-        "below_threshold": p is not None and p < threshold,
+        "metric_id": test.metric, "measure": measure, "reply_test": test.method,
+        "look_threshold": round(threshold, 4), "alpha": test.total_alpha, "look_thresholds": test.look_rule,
+        "pre_registered": test.pre_registered,
+        "below_threshold": p is not None and p < threshold, "crossed": crossed,
         "p_b_better": round(b_better, 3),
         "decision_rule": test.decision_rule, "status": test.status,
     }
+
+
+def look_threshold(test: Test, looks_n: int, number: int) -> float:
+    """The nominal two-sided p look `number` (1-based) of `looks_n` must beat, by the test's look_thresholds: one_look,
+    the alpha itself (the read date is the one look); obrien_fleming, stats.obrien_fleming at the test's alpha."""
+    if test.look_rule == ONE_LOOK:
+        return test.total_alpha
+    return stats.obrien_fleming(looks_n, test.total_alpha)[number - 1]
 
 
 def summary_line(result: Mapping[str, Any]) -> str:
@@ -389,10 +411,21 @@ def start(ctx: Context, test_id: str) -> dict:
     start = row.get("start_date", "").strip() or ctx.today_uk().isoformat()
     # The row as it will be written, checked as settings_sync will read it, whatever its kind (9 Oct 2026: a read_date
     # of 2026-9-30 passed a comparison of text, the sheet said running, and the next sync refused the tab).
-    _, errors = validate_tab("Tests", [{**row, "status": "running", "start_date": start}])
+    checked_row, errors = validate_tab("Tests", [{**row, "status": "running", "start_date": start}])
     if errors:
         raise ValueError("the Tests tab's row would not pass the checks settings_sync makes once it is running: "
                       + "; ".join(f"{e.column}: {e.message}" for e in errors[:6]))
+    # From REGISTRY_FROM (W3-4, 21 Oct 2026; design-final §5 L10): the one test running, and the one split drawing arms.
+    t = checked_row[0]
+    if t.registered:
+        running = [r["test_id"] for r in rows if r.get("status", "").strip().lower() == "running"
+                   and r.get("test_id", "").strip() != test_id]
+        if running:
+            raise ValueError(f"only one test runs at a time: {', '.join(running)} is running; stop it first")
+        split_now = ctx.settings.general.live_split
+        if split_now != t.split():
+            raise ValueError(f"set General live_split to {t.split()} first (it is {split_now}), so that this test is "
+                             "the one split drawing arms")
     split: dict[str, str] = {}
     if (row.get("share_a") or "").strip():  # version_a's share of the accounts (Harry, 8 Oct 2026)
         try:

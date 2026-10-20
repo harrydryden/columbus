@@ -596,7 +596,8 @@ def choose(account: Mapping[str, Any], contact: Mapping[str, Any], events: Seque
     line, and records the one it would have had (the generic line costs nothing to work out).
     """
     check = check or (lambda text: "")
-    held = in_holdout(account.get("account_id"), settings.general.opener_holdout_share)
+    # The holdout draws only while General live_split lets it (both or opener; W3-4): otherwise every account its line.
+    held = settings.draws_opener_holdout() and in_holdout(account.get("account_id"), settings.general.opener_holdout_share)
     match = setter(account, events, settings, today)
     if match is not None:  # a firing signal: its lines, then the generic line
         op = signal_opener(account, contact, match.signal, match, events, settings, today, check)

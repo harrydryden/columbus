@@ -150,6 +150,27 @@ VARIANT_ARMS = ("a", "b")  # contacts.test_arm: version_a's accounts and version
 # (enrol/openers.py: opener or holdout) and email 1's subject split (render.subject_arm: personal or copy).
 HOLDOUT_ARMS: dict[str, str] = {"opener": "opener_arm", "holdout": "opener_arm",
                                 "personal": "subject_arm", "copy": "subject_arm"}
+# The Tests tab's pre-registration (W3-4, 21 Oct 2026; design-final §5 L10, RT §3): before a test runs, the row names
+# the metric it is decided on (O3 positive or O4 human reply within 28 days of email 1: design-final §4.1), the outcomes
+# definition_version it reads (learn/metrics.DEFINITION_VERSION), the test (Fisher's exact, or P(b > a) from Beta
+# posteriors), its total two-sided alpha, and its per-look thresholds (one look at the read date, or O'Brien-Fleming
+# over the looks and the read date). A test started before the registry existed (start_date before REGISTRY_FROM:
+# warm-intro-70, 12 Oct 2026) is read with the defaults it was read with until then (looks.py): O4, Fisher, 0.10,
+# O'Brien-Fleming; nothing it decides changes.
+METRIC_IDS = ("O3", "O4")
+FISHER_EXACT, BETA_POSTERIOR = TEST_METHODS = ("fisher_exact", "beta_posterior")
+ONE_LOOK, OBRIEN_FLEMING = LOOK_RULES = ("one_look", "obrien_fleming")
+PRE_REGISTRATION = ("metric_id", "definition_version", "test", "alpha", "look_thresholds")
+REGISTRY_FROM = date(2026, 10, 21)
+DEFAULT_METRIC, DEFAULT_TEST, DEFAULT_ALPHA, DEFAULT_LOOK_RULE = "O4", FISHER_EXACT, 0.10, OBRIEN_FLEMING
+# General live_split (W3-4; design-final §5 L10, D8): which randomised split draws arms for new contacts, so exactly
+# one does once Harry names it. both, the default, is today's draws until D8: the opener holdout, email 1's subject
+# split and the running copy test, side by side. opener: the opener holdout alone (subject_arm n/a, the Copy row's
+# subject; no copy test arm). subject: the subject split alone (every account its opener). test: the Tests tab's
+# running test alone (every account its opener and the Copy row's subject). none: no split. Contacts in flight keep
+# the arms they were given (content is fixed per lead at enrolment).
+SPLIT_BOTH, SPLIT_OPENER, SPLIT_SUBJECT, SPLIT_TEST, SPLIT_NONE = LIVE_SPLITS = (
+    "both", "opener", "subject", "test", "none")
 # Company size bands: SPEC 2's four (10-19 to 100-249) inside a ladder that runs further each way, so the
 # General min_employees and max_employees can move (Harry, 6 Oct 2026: "update that to say 5-500 easily").
 # A band's label never changes; Apollo is searched with the band clipped to the General range.
@@ -230,6 +251,9 @@ class General:
     # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
     # no, the default: it only alerts (Harry's D13 decides).
     early_warning_pause: bool = False
+    # (build) W3-4 (21 Oct 2026): which randomised split draws arms (LIVE_SPLITS). both, the default, is today's draws
+    # (the opener holdout, the subject split and the running copy test) until Harry's D8 names the one experiment.
+    live_split: str = SPLIT_BOTH
     # (build) W3-2 (20 Oct 2026): whether the label policy (labels.policy, from the label sample) decides which label
     # sources earn a label's own copy. no, the default, changes nothing (Harry's D20 is not decided): the policy is
     # computed and reported monthly, and applied only with yes.
@@ -562,6 +586,46 @@ class Test:
     text_b: str = ""
     find: str = ""
     share_a: float = 0.5
+    # The pre-registration (PRE_REGISTRATION; W3-4): blank on a row written before the columns existed.
+    metric_id: str = ""
+    definition_version: str = ""
+    test: str = ""
+    alpha: float | None = None
+    look_thresholds: str = ""
+
+    @property
+    def registered(self) -> bool:
+        """Started on or after REGISTRY_FROM, so its pre-registration fields are required to run (validate.py)."""
+        return self.start_date is None or self.start_date >= REGISTRY_FROM
+
+    @property
+    def pre_registered(self) -> bool:
+        """Every pre-registration field is on the row (a test started before REGISTRY_FROM may have none)."""
+        return bool(self.metric_id and self.definition_version and self.test and self.alpha is not None
+                    and self.look_thresholds)
+
+    @property
+    def metric(self) -> str:
+        return self.metric_id or DEFAULT_METRIC
+
+    @property
+    def method(self) -> str:
+        return self.test or DEFAULT_TEST
+
+    @property
+    def total_alpha(self) -> float:
+        return self.alpha if self.alpha is not None else DEFAULT_ALPHA
+
+    @property
+    def look_rule(self) -> str:
+        return self.look_thresholds or DEFAULT_LOOK_RULE
+
+    def split(self) -> str:
+        """The live_split this test needs to draw its arms alone: test for a copy test; opener or subject for a
+        holdout, by the column its arms are in."""
+        if self.kind in COPY_TEST_KINDS:
+            return SPLIT_TEST
+        return SPLIT_OPENER if HOLDOUT_ARMS.get(self.version_a.casefold()) == "opener_arm" else SPLIT_SUBJECT
 
     def arm_name(self, arm: str) -> str:
         """The name of arm "a" or "b": version_a or version_b ("warm intro", "no intro")."""
@@ -711,6 +775,19 @@ class Settings:
         """The copy test enrol assigns arms for: the running test of kind ab or variant, one at a time (a holdout
         assigns nothing)."""
         return next((t for t in self.tests if t.status == "running" and t.kind in COPY_TEST_KINDS), None)
+
+    def drawn_test(self) -> Test | None:
+        """The running copy test, when General live_split lets it draw arms (both or test); else None, and enrol gives
+        no new contact a test arm (W3-4)."""
+        return self.running_test() if self.general.live_split in (SPLIT_BOTH, SPLIT_TEST) else None
+
+    def draws_opener_holdout(self) -> bool:
+        """Whether the opener holdout draws (General live_split both or opener; W3-4)."""
+        return self.general.live_split in (SPLIT_BOTH, SPLIT_OPENER)
+
+    def draws_subject_split(self) -> bool:
+        """Whether email 1's subject split draws (General live_split both or subject; W3-4)."""
+        return self.general.live_split in (SPLIT_BOTH, SPLIT_SUBJECT)
 
     def copy_row(self, copy_version: str) -> CopyRow | None:
         return next((c for c in self.copy if c.copy_version == copy_version), None)

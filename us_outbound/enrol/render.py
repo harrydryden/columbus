@@ -95,6 +95,9 @@ LAWFUL_BASIS = "legitimate interests: telling businesses about Spill"
 # Email 1's subject arm (contacts.subject_arm; Harry, 5 Oct 2026): General email1_subject, or the Copy row's s1_subject.
 PERSONAL_SUBJECT, COPY_SUBJECT = "personal", "copy"
 SUBJECT_ARMS = (PERSONAL_SUBJECT, COPY_SUBJECT)
+# Not drawn (W3-4, 21 Oct 2026): General live_split names another split, so email 1 has the Copy row's s1_subject and
+# the contact is in neither arm.
+NO_SUBJECT_ARM = "n/a"
 SUBJECT_SALT = "email1-subject:"  # not openers.HOLDOUT_SALT: the two splits never line up
 SUBJECT_STEP = 1  # only email 1's subject changes
 
@@ -239,8 +242,11 @@ def pick_opener(
 
 def subject_arm(account_id: Any, settings: Settings) -> str:
     """personal or copy, for the account: personal when sha256 of the salted account id falls below General
-    email1_subject_share (openers.in_holdout's rule, with its own salt), and email1_subject is not blank."""
+    email1_subject_share (openers.in_holdout's rule, with its own salt), and email1_subject is not blank; n/a
+    (NO_SUBJECT_ARM: the Copy row's subject) while General live_split names a split other than both or subject."""
     g = settings.general
+    if not settings.draws_subject_split():  # General live_split names another split (W3-4)
+        return NO_SUBJECT_ARM
     if not g.email1_subject.strip():
         return COPY_SUBJECT
     h = int(hashlib.sha256((SUBJECT_SALT + str(account_id)).encode()).hexdigest()[:15], 16)
