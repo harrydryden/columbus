@@ -133,7 +133,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert not {"public_signals", "verify_in_clay"} & set(cli.JOBS)
     assert not any(target.startswith("not built") for target in cli.JOBS.values())
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
-                                               "hand_check_draw", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
+                                               "hand_check_draw", "read_pages", "apollo_enrich", "contact_precheck", "lookalike_leads",
                                                "blackout", "retention", "label_sample_monthly", "capture", "follow_up"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"

@@ -64,7 +64,7 @@ def test_accounts_waiting_to_be_verified_wait_for_verify_accounts():
     assert set(lim.budgets) == {"apollo"} and "clay" not in lim.terms["budgets"]
     lim = limits.today(ctx_with(), TUE, ready_accounts=0)
     assert lim.detail[-1] == ("Behind it: no accounts are waiting to be verified, so the universe or the free checks "
-                              "are the limit (source_universe, apollo_people).")
+                              "are the limit (source_universe, verify_accounts).")
 
 
 def test_a_full_sender_with_accounts_waiting_says_add_a_mailbox():

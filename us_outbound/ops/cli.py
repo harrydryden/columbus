@@ -96,7 +96,9 @@ JOBS: dict[str, str] = {
     "apollo_signals": "us_outbound.sources.apollo_jobs:run",
     "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages, and home pages
     "apollo_enrich": "us_outbound.sources.apollo_enrich:run",  # Harry, 2 Oct 2026: funding and headcount from enrich
-    "apollo_people": "us_outbound.sources.apollo_people:run",  # Harry, 5 Oct 2026: People leaders at every account
+    # W3-3, 20 Oct 2026: who Apollo has to contact at each verified account, and its People leaders (apollo_people's
+    # facts; the 04:20 job went into this one).
+    "contact_precheck": "us_outbound.contacts.precheck:run",
     "site_visits": "us_outbound.sources.site_visits:run",  # Harry, 5 Oct 2026: Apollo's visitors to the US site
     # Build addition: verified on Apollo data and HubSpot (Harry, 1 Oct 2026; Clay's verify_in_clay was never built
     # and went with public_signals, both never scheduled, in W2-1, 20 Oct 2026).

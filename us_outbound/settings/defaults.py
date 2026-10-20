@@ -387,7 +387,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "open_people_roles >= 1 AND people_leader_count = 0 AND people_search_coverage >= 0.5",
         "", "20", "", "Score", "Growing team", _PEOPLE_ROLE_LINES[0], "60", "yes",
         "Harry, 5 Oct 2026: replaces First People hire, which could never fire, as nothing wrote a count of 0. "
-        "apollo_people (weekdays 04:20) writes people_leader_count = 0 only where Apollo holds at least half the "
+        "contact_precheck (weekdays 05:15) writes people_leader_count = 0 only where Apollo holds at least half the "
         "company's headcount (people_search_coverage), so finding no People leader there likely means there is none; "
         "the coverage is in the condition too, so a later thin search turns it off. +20, not +25: it is an inference. "
         f"People role open fires with it. {_CONTEXT_NOTE}",

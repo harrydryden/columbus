@@ -59,7 +59,7 @@ share the run's share of calls (labels.MAX_LABEL_CALLS_PER_RUN, LABEL_SECONDS): 
 order; the rest wait for the next run. A verdict is a paid read that reaches no prospect, like an Apollo
 search page, so it is asked in dry-run too (each call is about $0.01, within the Claude cap).
 
-Weekdays at 04:30 UK, after source_universe (03:00), read_pages (03:45) and apollo_people (04:20). The paid
+Weekdays at 04:30 UK, after source_universe (03:00) and read_pages (03:45). The paid
 enrichment comes after it, for the accounts it verified (W1-3a, 19 Oct 2026): apollo_enrich at 05:00, whose
 exact headcount is the last size check, and apollo_signals at 05:10.
 

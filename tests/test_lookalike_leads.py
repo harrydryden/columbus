@@ -19,8 +19,10 @@ from tests.fakes import FakeTransport, make_context
 from us_outbound.clients.http import ApiError
 from us_outbound.ops import cli, health, schedule
 from us_outbound.ops import scheduler as sch
+from us_outbound.clean.people import USPS_STATES
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import SOURCE_FIELDS
+from us_outbound.sources import apollo_universe as uni
 from us_outbound.sources import lookalike_leads as ll
 from us_outbound.sources import lookalikes as lk
 from us_outbound.sources.lookalikes import Customer
@@ -217,11 +219,13 @@ def test_uk_seeds_bring_only_us_companies_in_active_states(default_settings, mon
     assert ctx.store.select("signal_events", {"account_id": a7, "source": "apollo_org", "fact": "hq_state"})[0]["value"] == "TX"
     assert not ctx.store.select("signal_events", {"account_id": "acc-old", "source": ll.SOURCE})  # found again: no fact
 
-    # Every lookalike search asks for the US, never CA or WA, the band, no insurers, and alike seeds, 5 at most.
+    # Every lookalike search asks for the active states (W3-3; code-sources B6: never the whole US, never CA or WA),
+    # the band, no insurers, and alike seeds, 5 at most.
     bodies = apollo.lookalike_bodies()
+    active = [f"{USPS_STATES[s]}, US" for s in uni.allowed_states(ctx.settings)]
     for b in bodies:
-        assert b["organization_locations"] == ["United States"]
-        assert b["organization_not_locations"] == ["California, US", "Washington, US"]
+        assert b["organization_locations"] == active and "organization_not_locations" not in b
+        assert not {"California, US", "Washington, US"} & set(b["organization_locations"])
         assert b["not_organization_naics_codes"] == ["524"] and len(b["organization_num_employees_ranges"]) == 1
         assert 1 <= len(b["lookalike_organization_ids"]) <= 5
         assert not ({"o-us1"} & set(b["lookalike_organization_ids"]) and len(b["lookalike_organization_ids"]) > 1)

@@ -526,6 +526,8 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
             body += ["", "*Cuts* (the numbers split several ways: last week · companies emailed so far)", *cut_block]
     section, by_cohort = cohorts.readout_lines(ctx, start, end)
     body += section
+    body += ["", "*Sourcing and throughput* (where sourcing looks this week, and what held last week's enrolment)",
+             *sourcing_lines(ctx)]
     body += labels.readout_lines(ctx, start, end)  # the industry label check (labels.py; Harry, 7 Oct 2026)
     from us_outbound.enrol import hand_check  # imported when used, as mailboxes_ahead imports enrol/today
 
@@ -584,6 +586,50 @@ def mailboxes_ahead(ctx: Context) -> dict[str, Any]:
     return spend.mailboxes_check(ctx, ready)
 
 
+def sourcing_lines(ctx: Context) -> list[str]:
+    """The week's allocation plan (sources/allocation.py, loop L2) and last week's throughput (learn/throughput.py,
+    loop L6), each in its own guard: a failure is one line, never the readout."""
+    from us_outbound.learn import throughput
+    from us_outbound.sources import allocation
+
+    out: list[str] = []
+    for name, fn in (("the sourcing plan", lambda: [allocation.readout_line(ctx)]),
+                     ("throughput", lambda: throughput.lines(throughput.report(ctx)))):
+        try:
+            out += fn()
+        except GuardViolation:
+            raise
+        except Exception as exc:
+            log("readout_section_failed", section=name, error=f"{type(exc).__name__}: {str(exc)[:160]}")
+            out.append(f"  {name[:1].upper()}{name[1:]} could not be read ({type(exc).__name__}).")
+    return out
+
+
+def contact_suggestions(ctx: Context) -> dict[str, Any]:
+    """The week's contactability proposals (loop L5, W3-3: pick.suggestions) onto the Suggestions tab, each once
+    (settings/suggestions.write, live only), and one line for the readout. Never raises (but a GuardViolation): the
+    readout posts whatever happens here."""
+    from us_outbound.contacts import pick
+    from us_outbound.settings import suggestions as tab
+
+    try:
+        rows = pick.suggestions(ctx)
+        wrote = tab.write(ctx, rows)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("readout_suggestions_failed", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    kinds = Counter(r["kind"] for r in rows)
+    if not rows:
+        return {**wrote, "kinds": {}}
+    added = wrote.get("added", 0 if wrote.get("written") else len(rows))
+    what = ", ".join(f"{n} {k}" for k, n in sorted(kinds.items()))
+    line = (f"*Suggestions* (contactability, for you to approve on the {say.sheet_link(ctx, tab.TAB)}): {what}; "
+            f"{added} new this week" + ("" if wrote.get("written") else " (not written: a dry run)") + ".")
+    return {**wrote, "kinds": dict(kinds), "line": line}
+
+
 def run(ctx: Context) -> dict:
     """The monday_readout job (JOB CONTRACT: run(ctx) -> summary): the numbers, not the text.
 
@@ -593,8 +639,11 @@ def run(ctx: Context) -> dict:
     _, asked = spend.check(ctx)
     mailboxes = mailboxes_ahead(ctx)
     lines, nums = build(ctx)
+    proposed = contact_suggestions(ctx)
+    if proposed.get("line"):
+        lines += ["", proposed["line"]]
     sent = notify.alert(ctx, "\n".join(lines))
     summary = {"job": JOB, "dry_run": ctx.dry_run, **nums, "alert": sent, "spend_alert": asked,
-               "mailboxes_ahead": mailboxes}
+               "mailboxes_ahead": mailboxes, "suggestions": proposed}
     log("monday_readout_done", run_id=ctx.run_id, **{k: v for k, v in summary.items() if k != "so_far"})
     return summary

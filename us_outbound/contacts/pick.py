@@ -22,11 +22,13 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
   3. Search (0 credits): Apollo People API Search at the organization, for the titles of every
      Roles-tab row contacted at the account's size, for people in the United States with an
      email Apollo has verified. The People leaders it finds are written as apollo_people facts,
-     unless apollo_people's own fuller search (sources/apollo_people.py) is less than 30 days old.
-  4. Rank (clean/people.rank_person): the Roles-tab order for the size, then seniority, then
-     how well the title matches, then the newest in role. Left out: titles never contacted at
-     this size, junior titles as a People leader, people located in CA, WA or outside the US
-     (SPEC 1.5), and people already revealed for the account.
+     unless contact_precheck's own fuller search (contacts/precheck.py) is less than 30 days old.
+  4. Rank (clean/people.rank_person): the Roles-tab order for the size, then a known US state before
+     none (W3-3: a person with no state on Apollo may be anywhere, CA and WA included, and a reveal
+     there is a credit spent on someone not emailed), then seniority, then how well the title matches,
+     then the newest in role. Left out: titles never contacted at this size (counted by title, for
+     the weekly Roles proposals), junior titles as a People leader, people located in CA, WA or
+     outside the US (SPEC 1.5), and people already revealed for the account.
   5. Reveal: people/bulk_match on the top candidate, one at a time (1 credit each; written to
      credit_ledger before the call and settled after it). Kept only if Apollo calls the email
      verified, it is at the company's own domain, enrol could send to it (enrol.contact_block:
@@ -35,7 +37,16 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
   6. Write: one contact per account (v1); or, when nobody suitable exists, a contact_pick fact
      saying why, which limits.py reports as "no suitable contact".
 Every reveal and every outcome is a signal_events fact with source pick_contacts (no names or
-emails), so nobody is paid for twice. SOURCE is not a SPEC 7 source key, so no Signals row can
+emails), so nobody is paid for twice. A reveal whose email is not at the company's domain carries
+rejected_email_domain, the email's domain (W3-3; loop L5: a domain seen twice for one account is
+proposed as an alias, suggestions()).
+
+Contactability (W3-3, 20 Oct 2026; loop L5). contact_precheck (05:15) counts, for each account
+waiting for a contact, the people this job could contact there (contactable_candidates). An account
+with none (accounts.status_reason no_contact_candidates) is not tried until its next precheck; after
+the random arm is drawn, the ranked accounts are tried most candidates first, then those not
+prechecked, each in queue order. The arm is drawn before that ordering, so it stays a random draw from
+the eligible queue, whatever its accounts' candidate counts. SOURCE is not a SPEC 7 source key, so no Signals row can
 score these facts.
 
 Dry-run and live are the same: the job writes only to the database and its Apollo calls are
@@ -53,6 +64,7 @@ switched on) and second contacts (General second_contact) were removed with W2-1
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter, defaultdict
 from collections.abc import Container, Iterator, Mapping, Sequence
@@ -70,9 +82,10 @@ from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import Context
 from us_outbound.enrol import enrol, queue
-from us_outbound.facts import newest_by
+from us_outbound.facts import load, newest, newest_by
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring import tiers
+from us_outbound.settings import suggestions as tab
 from us_outbound.settings.model import Role, Settings
 from us_outbound.timeparse import iso_date, utc, utc_strict
 
@@ -98,6 +111,8 @@ MAX_ERRORS = 3  # Apollo errors before the batch stops
 LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
 LEDGER_NOTE = "email reveal (people/bulk_match)"
+NOT_AT_DOMAIN = "email not at the company's domain"
+MISSED_TITLES = 10  # titles left out as not contacted at the size, kept on an outcome fact
 
 # api_search reads "United States" in person_locations as the whole country, and honours
 # contact_email_status: confirmed live 2 Oct 2026 (CA and WA people came back, and every reveal was
@@ -239,8 +254,8 @@ def search_filters(account: Mapping[str, Any], titles: Sequence[str], *, verifie
     """People API Search at the account's organization, for these titles: people in the US with a verified email.
 
     Similar titles stay in (Apollo's default): the search is free, and every title is checked
-    against the Roles tab here. verified_only=False drops the email filter, for apollo_people's
-    count of everyone in a People role (sources/apollo_people.py), not only those we could email.
+    against the Roles tab here. verified_only=False drops the email filter, for contact_precheck's
+    count of everyone in a People role (contacts/precheck.py), not only those we could email.
     """
     f: dict[str, Any] = {
         "person_titles": list(titles),
@@ -319,7 +334,7 @@ def people_leaders(account: Mapping[str, Any], people: Sequence[Mapping[str, Any
 
     A People leader is someone this job would contact as one at the account's size (rank_person: a
     Roles-tab row whose copy role is People leader, never on a junior title), not located outside the
-    US or in CA or WA (location_block). apollo_people counts them the same way, so the People signals
+    US or in CA or WA (location_block). contact_precheck counts them the same way, so the People signals
     mean the same whichever job wrote them.
     """
     size, group = account_size(account), settings.industry_group_of(account)
@@ -368,7 +383,7 @@ def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]]
     """apollo_people facts from the search pick_contacts already makes (no credits; 1 Oct 2026).
 
     Only positive evidence is written: this search returns people with a verified email only, so a
-    count of 0 would not mean there is no People leader. apollo_people's full search (weekdays 04:20)
+    count of 0 would not mean there is no People leader. contact_precheck's full search (weekdays 05:15)
     is the one that may write 0, and pick_account keeps its result: these facts are written only when
     that search has not been made within its REFRESH_DAYS.
     """
@@ -379,17 +394,19 @@ def people_facts(account: Mapping[str, Any], people: Sequence[Mapping[str, Any]]
 
 
 def full_search_is_fresh(ctx: Context, account_id: str) -> bool:
-    """apollo_people searched the account within its REFRESH_DAYS, so its facts stand over this narrower view."""
-    from us_outbound.sources import apollo_people
+    """contact_precheck searched the account's People leaders within its REFRESH_DAYS, so its facts stand over this
+    narrower view."""
+    from us_outbound.contacts import precheck
 
-    return apollo_people.searched_recently(ctx.store, account_id, ctx.now)
+    return precheck.searched_recently(ctx.store, account_id, ctx.now)
 
 
 def rank_candidates(
     people: Sequence[Mapping[str, Any]], account: Mapping[str, Any], settings: Settings, today: date,
-    revealed: Container[str] = frozenset(),
+    revealed: Container[str] = frozenset(), missed: Counter[str] | None = None,
 ) -> tuple[list[Candidate], Counter[str]]:
-    """(the people who may be contacted, best first; how many were left out and why)."""
+    """(the people who may be contacted, best first; how many were left out and why). missed: the titles left out as
+    not contacted at this size, counted (the weekly roles_title proposals, suggestions())."""
     size, group = account_size(account), settings.industry_group_of(account)
     out: list[Candidate] = []
     left_out: Counter[str] = Counter()
@@ -404,10 +421,19 @@ def rank_candidates(
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is None:
             left_out["title not contacted at this size"] += 1
+            if missed is not None and (title := " ".join(str(p.get("title") or "").split())):
+                missed[title] += 1
             continue
         out.append(Candidate(dict(p), r))
-    out.sort(key=lambda c: (c.ranked.key, c.id))
+    out.sort(key=candidate_order)
     return out, left_out
+
+
+def candidate_order(c: Candidate) -> tuple:
+    """Ranked.key with a known US state before none inside a role rank (W3-3; loop L5): (junior, the Roles-tab order,
+    no state, seniority, title cover, newest in role), then the Apollo id."""
+    junior, order, *rest = c.ranked.key
+    return (junior, order, not state_code(str(c.person.get("state") or "")), *rest, c.id)
 
 
 # -- reveal and check ---------------------------------------------------------------------------
@@ -501,7 +527,7 @@ def why_not_keep(
     if country and country not in icp.US_COUNTRIES:
         return "located outside the US"
     if canonical_domain(ctx.store, row["email"].rsplit("@", 1)[1]) != _lower(account.get("domain")):
-        return "email not at the company's domain"
+        return NOT_AT_DOMAIN
     if row["email_sha256"] in known:
         return "already a contact"
     if not row["first_name"]:
@@ -510,11 +536,14 @@ def why_not_keep(
 
 
 def _reveal_value(cand: Candidate, row: Mapping[str, Any] | None, credits: float, why: str | None) -> dict:
-    return {
+    out = {
         "apollo_person_id": cand.id, "row": cand.ranked.role.role, "role": cand.ranked.role.writes_as,
         "title": str(cand.person.get("title") or ""), "seniority": SENIORITY[cand.ranked.seniority],
         "email_status": (row or {}).get("email_status") or None, "kept": why is None, "reason": why, "credits": credits,
     }
+    if why == NOT_AT_DOMAIN and row and "@" in str(row.get("email") or ""):
+        out["rejected_email_domain"] = str(row["email"]).rsplit("@", 1)[1].lower()  # the domain only, never the address
+    return out
 
 
 # -- one account ----------------------------------------------------------------------------------
@@ -547,15 +576,19 @@ def pick_account(
         return Outcome(NO_CONTACT, "no Roles-tab row is contacted at its size")
     people = search(ctx, account, titles)
     facts = people_facts(account, people, s, ctx.today_uk(), ctx.now)
-    # Read by the next rescore (settings_sync, 11:30 on weekdays). Not over apollo_people's fuller search, whose
+    # Read by the next rescore (settings_sync, 11:30 on weekdays). Not over contact_precheck's fuller search, whose
     # count of 0 and days in title this verified-email view could otherwise replace.
     if facts and not full_search_is_fresh(ctx, account["account_id"]):
         ctx.store.insert("signal_events", facts)
     if not people:
         return Outcome(NO_CONTACT, "nobody at Apollo with a Roles-tab title for its size, in the US, with a verified email",
                        detail={"found": 0})
-    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed)
+    missed: Counter[str] = Counter()
+    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed, missed)
     detail: dict[str, Any] = {"found": len(people), "candidates": len(cands), "left_out": dict(left_out)}
+    if missed:
+        detail["missed_titles"] = [t for t, _ in missed.most_common(MISSED_TITLES)]
+        detail["size_range"] = role_range(size)
     if not cands:
         return Outcome(NO_CONTACT, f"nobody suitable ({_most(left_out)})", detail=detail)
     rejected: Counter[str] = Counter()
@@ -577,6 +610,89 @@ def pick_account(
     detail["reveals"] = sum(rejected.values())
     reasons = ", ".join(f"{why} ({n})" if n > 1 else why for why, n in rejected.items())
     return Outcome(NO_CONTACT, f"no sendable email among the top {detail['reveals']} ({reasons})", detail=detail)
+
+
+# -- contactability (W3-3, 20 Oct 2026; loop L5) ---------------------------------------------------------
+
+NO_CANDIDATES = "no_contact_candidates"  # accounts.status_reason (apollo_universe.NO_CANDIDATES; contacts/precheck.py)
+PRECHECK_JOB, CANDIDATES_FACT = "contact_precheck", "contactable_candidates"
+
+
+def candidate_counts(store: Store, account_ids: Sequence[str]) -> dict[str, int]:
+    """account_id -> the candidates contact_precheck last counted there (none: not prechecked)."""
+    out: dict[str, int] = {}
+    for aid, rows in load(store, account_ids, PRECHECK_JOB, CANDIDATES_FACT).items():
+        e = newest(rows, dated=True)
+        if e is not None and isinstance(e.get("value"), Mapping):
+            out[aid] = int(e["value"].get("count") or 0)
+    return out
+
+
+def by_candidates(store: Store, accounts: Sequence[dict]) -> list[dict]:
+    """The accounts with the most candidates first, then those not prechecked, each kept in the order given."""
+    counts = candidate_counts(store, [str(a["account_id"]) for a in accounts])
+    return sorted(accounts, key=lambda a: (str(a["account_id"]) not in counts, -counts.get(str(a["account_id"]), 0)))
+
+
+SUGGEST_DAYS = 28  # the window the weekly proposals read pick_contacts' facts over
+
+
+def suggestions(ctx: Context, days: int = SUGGEST_DAYS) -> list[dict[str, str]]:
+    """The week's contactability proposals for the Suggestions tab (loop L5; settings/suggestions.py), from this
+    job's facts of the last `days`:
+      * domain_alias: an email domain revealed ALIAS_SEEN or more times for one account and rejected as not at the
+        company's domain (rejected_email_domain);
+      * roles_title: a title left out as not contacted at the size at TITLE_MISSES or more accounts in one Roles-tab
+        size range (an outcome's missed_titles, each account counted once).
+    Each row's id names what it proposes, so the tab holds one row per proposal however many weeks it is made."""
+    since = ctx.now - timedelta(days=days)
+    rows = [e for e in ctx.store.select("signal_events", {"source": SOURCE, "fact": [REVEAL_FACT, OUTCOME_FACT]})
+            if isinstance(e.get("value"), Mapping) and (t := utc(e.get("observed_at"))) is not None and t >= since]
+    domains = {str(a["account_id"]): str(a.get("domain") or "") for a in ctx.store.select(
+        "accounts", {"account_id": sorted({str(e["account_id"]) for e in rows if e.get("account_id")})})} if rows else {}
+    seen: Counter[tuple[str, str]] = Counter()
+    missed: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for e in rows:
+        v, aid = e["value"], str(e.get("account_id") or "")
+        if e["fact"] == REVEAL_FACT and v.get("rejected_email_domain"):
+            seen[(aid, str(v["rejected_email_domain"]))] += 1
+        elif e["fact"] == OUTCOME_FACT and v.get("size_range"):
+            for title in v.get("missed_titles") or ():
+                missed[(str(v["size_range"]), " ".join(str(title).split()))].add(aid)
+    out: list[dict[str, str]] = []
+    for (aid, alias), n in sorted(seen.items()):
+        root = domains.get(aid, "")
+        if n < tab.ALIAS_SEEN or not root or alias == root:
+            continue
+        out.append({"id": f"{tab.DOMAIN_ALIAS}:{root}:{alias}", "kind": tab.DOMAIN_ALIAS, "target": root, "text": alias,
+                    "evidence": f"{n} emails revealed at {alias} for {root} in {days} days, each rejected as not at "
+                                "the company's domain",
+                    "snapshot": json.dumps({"n": n, "days": days, "account_id": aid}), "status": tab.PROPOSED,
+                    "applied": ""})
+    by_title: dict[tuple[str, str], tuple[str, set[str]]] = {}
+    for (rng, title), accounts in sorted(missed.items()):  # a title in any letter case counts as one
+        _, have = by_title.setdefault((rng, title.casefold()), (title, set()))
+        have |= accounts
+    for (rng, folded), (title, accounts) in sorted(by_title.items()):
+        if len(accounts) < tab.TITLE_MISSES:
+            continue
+        out.append({"id": f"{tab.ROLES_TITLE}:{rng}:{folded}", "kind": tab.ROLES_TITLE, "target": rng, "text": title,
+                    "evidence": f"left out as not contacted at {rng} staff at {len(accounts)} accounts in {days} days",
+                    "snapshot": json.dumps({"accounts": len(accounts), "days": days}), "status": tab.PROPOSED,
+                    "applied": ""})
+    return out
+
+
+def role_range(size: int | None) -> str:
+    """The Roles-tab size range (ROLE_ORDER_COLUMNS) a company of this size is ordered under: "10-49", "50-249"."""
+    from us_outbound.settings.model import ROLE_ORDER_COLUMNS, band_bounds
+
+    if size is None:
+        return ""
+    spans = [(rng, *band_bounds(rng)) for rng in ROLE_ORDER_COLUMNS.values()]
+    lo, hi = min(s[1] for s in spans), max(s[2] for s in spans)
+    size = min(max(size, lo), hi)
+    return next((rng for rng, a, b in spans if a <= size <= b), "")
 
 
 # -- the job --------------------------------------------------------------------------------------
@@ -646,8 +762,11 @@ def run(ctx: Context) -> dict:
     need, ready = waiting(ctx)
     past = history(store, ctx.now)
     due = [a for a in need if not past.cooling(a["account_id"], ctx.now)]
+    no_candidates = [a for a in due if a.get("status_reason") == NO_CANDIDATES]
+    due = [a for a in due if a.get("status_reason") != NO_CANDIDATES]  # contact_precheck found nobody (W3-3)
     want = max(0, lookahead(s) - ready)
-    summary.update(ready_before=ready, wanted=want, waiting=len(need), tried_recently=len(need) - len(due))
+    summary.update(ready_before=ready, wanted=want, waiting=len(need), tried_recently=len(need) - len(due)
+                   - len(no_candidates), no_contact_candidates=len(no_candidates))
 
     month = budget.monthly(store, s, "apollo", ctx.now)
     batch = _Run(left=month.left_today, balance=None, floor=s.general.apollo_floor)
@@ -724,7 +843,8 @@ def run(ctx: Context) -> dict:
                 lane[0] -= 1
                 if lane[0] <= 0:
                     lanes.remove(lane)
-    rest = [a for a in due if str(a["account_id"]) not in tried_random]  # due is in queue order (waiting())
+    # The ranked rest, most contactable first (W3-3; loop L5): due is in queue order (waiting()), and the sort is stable.
+    rest = by_candidates(store, [a for a in due if str(a["account_id"]) not in tried_random])
     for account in rest:
         if done or len(batch.picked) >= want or batch.stopped:
             break

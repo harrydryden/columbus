@@ -45,7 +45,7 @@ JOB_NAMES: dict[str, str] = {
     "apollo_signals": "collecting buying signals from Apollo",
     "read_pages": "reading company websites",
     "apollo_enrich": "filling in company facts from Apollo",
-    "apollo_people": "finding contacts at each company",
+    "contact_precheck": "checking who there is to email at each company",
     "site_visits": "checking who visited spill.chat",
     "verify_accounts": "checking company facts",
     "score": "scoring companies",

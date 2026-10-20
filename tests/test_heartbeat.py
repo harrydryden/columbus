@@ -209,7 +209,8 @@ def test_expected_matches_the_spec9_schedules():
     assert hb.EXPECTED["monday_readout"] == hb.EXPECTED["hand_check_draw"] == 8 * 24 * 60
     assert not {"public_signals", "verify_in_clay"} & (set(hb.EXPECTED) | set(hb.IMPACT))  # removed with W2-1
     # Build, 1 Oct 2026: the sources and verify_accounts run each weekday (ops/schedule.py), in weekday time.
-    for job in ("source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people", "verify_accounts"):
+    for job in ("source_universe", "apollo_signals", "read_pages", "apollo_enrich", "contact_precheck",
+                "verify_accounts"):
         assert hb.EXPECTED[job] == 26 * 60 and job in hb.WEEKDAY_JOBS
     assert "score" not in hb.EXPECTED  # no schedule of its own
 

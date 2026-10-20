@@ -16,9 +16,11 @@ call goes in as it is made, in dry-run too: the read happened, so its credits we
     A call that fails, is cut off or gives no answer keeps its reservation, so the budget never under-counts.
     Charge.fail() settles a failed call at 0 only when the server refused it unprocessed (an HTTP 4xx answer).
 
-Some jobs read their own rows' notes back as their place in a search (apollo_universe.cursors,
-site_visits.quiet_runs and judged_recently). A reservation's note (reserved_note) keeps what it was for under one
-key, "reserved", so a call that was never settled moves no cursor.
+The ledger records money only (W3-3, 20 Oct 2026; code-sources B11). Until then some jobs read their own rows' notes
+back as their place in a search (apollo_universe's cursors, site_visits' quiet runs and judged visitors); that state
+is in source_state now (sources/source_state.py), which copied the notes' state in once. A reservation's note
+(reserved_note) still keeps what it was for under one key, "reserved", so a reader of the notes can tell a call
+never answered from one settled.
 """
 
 from __future__ import annotations
