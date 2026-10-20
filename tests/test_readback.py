@@ -815,3 +815,24 @@ def test_a_contact_a_reply_item_holds_is_the_person_we_emailed_when_her_email_sa
     hubspot_readback(ctx)
     assert [(e["event_id"], e["account_id"], e["contact_id"], e["source"])
             for e in events(ctx, "hubspot_contact_created")] == [(f"hs-contact:{kid}", "acc-1", "con-1", "form")]
+
+
+def test_a_company_id_an_accounts_row_holds_counts_there_not_at_another_account_s_reply_item(default_settings):
+    """acc-1's accounts row holds co-x (domain other.co, no account's). acc-0 (acmeholdings.com, also sent step 1 5
+    days ago) holds co-x only on a reply item (record_reply found it for a reply there). The accounts row comes first
+    and the reply item's account is not added: hubspot_company_created for acc-1. Were acc-0 kept as well, the first
+    by account_id would be acc-0; were the reply item to replace the row, acc-0 alone."""
+    from tests.test_hubspot_writes import reply_row
+
+    ctx, t, crm, stops = setup(default_settings, status="enrolled", hubspot_company_id="co-x")
+    ctx.store.upsert("accounts", [{"account_id": "acc-0", "domain": "acmeholdings.com", "clean_name": "Acme Holdings",
+                                   "status": "engaged"}])
+    row = reply_row(account_id="acc-0", contact_id=None, hubspot={"status": "written", "company_id": "co-x"})
+    ctx.store.upsert("hitl_items", [{**row, "item_id": "item-0002-bbbb", "account_id": "acc-0", "contact_id": None,
+                                     "event_id": "em-2"}])
+    emailed(ctx)
+    emailed(ctx, "acc-0", contact_id="con-0")
+    crm.objects["companies"]["co-x"] = {"name": "Acme Creative", "domain": "other.co", **made("CRM_UI")}
+    hubspot_readback(ctx)
+    assert [(e["event_id"], e["account_id"], e["contact_id"], e["source"])
+            for e in events(ctx, "hubspot_company_created")] == [("hs-company:co-x", "acc-1", None, "crm_ui")]

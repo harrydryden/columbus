@@ -627,6 +627,82 @@ def test_no_new_hubspot_record_no_line_and_the_list_stops_at_the_limit():
     assert day.nums["hubspot_created"] == {"contacts": 12, "companies": 0, "deals": 0, "companies_emailed": 12}
 
 
+MIN = timedelta(minutes=1)
+
+
+def _emailed_19_oct(ctx, aid, name):
+    ctx.store.insert("accounts", [{"account_id": aid, "clean_name": name, "status": "enrolled"}])
+    ctx.store.insert("events", [ev(999, "sent", step=1, account_id=aid,
+                                   at=datetime(2026, 10, 19, 15, 0, tzinfo=UTC))])
+
+
+def test_alike_records_at_one_company_are_counted_on_its_line_in_the_order_each_kind_came():
+    """g1, emailed Mon 19 Oct; yesterday, in this order: a colleague by form "F", the company (made from the new
+    contact), two more colleagues by form "F". Three alike contacts are one entry, "3 × ...", kept where the first came
+    (before the company); nums still counts each record: 3 contacts, 1 company, 1 company emailed."""
+    ctx, _ = world()
+    _emailed_19_oct(ctx, "g1", "Grove Partners")
+    ctx.store.insert("events", [
+        ev(1000, "hubspot_contact_created", account_id="g1", source="form", source_detail="F", at=MON + MIN * 40),
+        ev(1001, "hubspot_company_created", account_id="g1", source="crm_setting", at=MON + MIN * 41),
+        ev(1002, "hubspot_contact_created", account_id="g1", source="form", source_detail="F", at=MON + MIN * 42),
+        ev(1003, "hubspot_contact_created", account_id="g1", source="form", source_detail="F", at=MON + MIN * 43),
+    ])
+    day = daily_post.gather(ctx)
+    assert day.hubspot == ['Grove Partners: 3 × contact (a colleague) (website form "F"), '
+                           "company (made from the new contact) · emailed 19 Oct"]
+    assert day.nums["hubspot_created"] == {"contacts": 3, "companies": 1, "deals": 0, "companies_emailed": 1}
+
+
+def test_a_bulk_import_at_one_company_is_one_short_line():
+    """500 contacts an integration made yesterday at g1 (MON + 0..499 seconds), all colleagues: one entry,
+    "500 × contact (a colleague) (an integration)", where one entry each would be a line of about 20,000 characters
+    (Slack cuts a text at 40,000, the whole post with it). nums counts all 500."""
+    ctx, t = world()
+    _emailed_19_oct(ctx, "g1", "Grove Partners")
+    ctx.store.insert("events", [ev(2000 + i, "hubspot_contact_created", account_id="g1", source="integration",
+                                   at=MON + timedelta(seconds=i)) for i in range(500)])
+    day = daily_post.gather(ctx)
+    assert day.hubspot == ["Grove Partners: 500 × contact (a colleague) (an integration) · emailed 19 Oct"]
+    assert len(day.hubspot[0]) < 200
+    assert day.nums["hubspot_created"] == {"contacts": 500, "companies": 0, "deals": 0, "companies_emailed": 1}
+    daily_post.run(ctx)
+    [post] = [r for r in t.requests if r.url.endswith("chat.postMessage")]
+    assert "• Grove Partners: 500 × contact (a colleague) (an integration) · emailed 19 Oct" in post.json["text"]
+
+
+def test_a_company_s_line_lists_at_most_five_kinds_then_how_many_more_records():
+    """g1: 9 colleagues by 7 forms, F1 and F6 twice (F1 first and last), the others once. KINDS_LIMIT (5) kinds are
+    listed: 2 × F1, F2, F3, F4, F5, which is 6 records; 9 - 6 = 3 more records (F6 twice, F7), in 2 more kinds."""
+    ctx, _ = world()
+    _emailed_19_oct(ctx, "g1", "Grove Partners")
+    forms = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F6", "F1"]
+    ctx.store.insert("events", [ev(3000 + i, "hubspot_contact_created", account_id="g1", source="form",
+                                   source_detail=f, at=MON + MIN * (40 + i)) for i, f in enumerate(forms)])
+    day = daily_post.gather(ctx)
+    colleague = 'contact (a colleague) (website form "{}")'.format
+    assert day.hubspot == [f"Grove Partners: 2 × {colleague('F1')}, " + ", ".join(colleague(f) for f in forms[1:5])
+                           + " and 3 more records · emailed 19 Oct"]
+    assert day.nums["hubspot_created"]["contacts"] == 9
+
+
+def test_a_record_made_at_the_moment_of_the_first_email_counts():
+    """g1's first step 1 is at MON + 10 min (yesterday). A contact made at that same instant counts (readback's step 5
+    keeps the same boundary); one made a microsecond before is HubSpot's already, left out: 1 contact."""
+    ctx, _ = world()
+    first = MON + timedelta(minutes=10)
+    ctx.store.insert("accounts", [{"account_id": "g1", "clean_name": "Grove Partners", "status": "enrolled"}])
+    ctx.store.insert("events", [
+        ev(4000, "sent", step=1, account_id="g1", at=first),
+        ev(4001, "hubspot_contact_created", account_id="g1", source="meetings", at=first),
+        ev(4002, "hubspot_company_created", account_id="g1", source="crm_setting",
+           at=first - timedelta(microseconds=1)),
+    ])
+    day = daily_post.gather(ctx)
+    assert day.hubspot == ["Grove Partners: contact (a colleague) (meeting booking) · emailed 26 Oct"]
+    assert day.nums["hubspot_created"] == {"contacts": 1, "companies": 0, "deals": 0, "companies_emailed": 1}
+
+
 def test_how_a_record_was_made_reads_in_plain_words():
     """Each source in plain words; a form or workflow with no name drops the quotes; an unknown label keeps its words;
     nothing when HubSpot said nothing."""
