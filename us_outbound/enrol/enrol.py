@@ -92,13 +92,14 @@ from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
 from us_outbound.clients.http import ApiError, AuthError
 from us_outbound.context import UK, Context
-from us_outbound import budget, config_version, labels
+from us_outbound import budget, config_version, labels, parse
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.enrol import capacity, focus, openers, plan, queue, render, variants
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring.angle import legal_overlay
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE
-from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.settings.model import AB_TEST, GENERAL_COPY, SIZE_BANDS, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.settings.overrides import effective
 from us_outbound.timeparse import utc
 
 
@@ -187,6 +188,10 @@ def _item_week(item: Mapping[str, Any]) -> str:
 
 
 HAND_CHECK_SKIP = "held or pulled at this week's hand-check"  # account_block's reason for hand_check()'s accounts
+# account_block's reason for a verified account whose size the General range no longer takes (size_in_range), and the
+# Overrides fields it reads.
+SIZE_SKIP = "size outside the General range"
+SIZE_FIELDS = ("employees", "size_band")
 
 
 def hand_check(ctx: Context, today: date) -> tuple[str | None, frozenset[str]]:
@@ -340,7 +345,25 @@ def account_block(
     ind = settings.industry(str(account.get("industry") or ""))
     if ind is not None and not ind.active:
         return "industry switched off"
+    if not size_in_range(account, settings):
+        return SIZE_SKIP
     return None
+
+
+def size_in_range(account: Mapping[str, Any], settings: Settings) -> bool:
+    """Whether the account's size (its Overrides rows applied, as verify judged it) is in the General range today: its
+    employee count when known, else its size band; True when neither is known (verify left out any account with
+    neither, so this gate adds nothing there).
+
+    verify judges size once, when an account is checked; this keeps a narrower range (General max_employees 350 ->
+    249, Harry's D1) from leaving accounts verified at the old range in the queue: pick, enrol, the contactable supply,
+    the hand-check pool and a send approval's re-check all go through account_block (whole-wave review, 20 Oct 2026)."""
+    eff = effective(account, settings, fields=SIZE_FIELDS)
+    n = parse.number(eff.get("employees"))
+    if n is not None:
+        return settings.size_in_range(n)
+    band = str(eff.get("size_band") or "")
+    return band not in SIZE_BANDS or settings.band_in_range(band)
 
 
 def contact_block(contact: Mapping[str, Any], domains: Collection[str], hashes: Collection[str]) -> str | None:

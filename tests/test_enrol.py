@@ -1226,3 +1226,52 @@ def test_enrol_stamps_config_version_code_sha_and_copy_hash(monkeypatch):
     ctx.now += timedelta(days=1)  # the next run, on the same settings and code: no second row
     assert enrol.run(ctx)["config_version"] == version["config_version"]
     assert len(ctx.store.select("config_versions")) == 1
+
+
+# -- the size range at enrol (the whole-wave review, 20 Oct 2026: D1 narrows max_employees 350 -> 249) ---------------
+
+
+def test_account_block_holds_the_general_size_range_as_it_is_today():
+    """verify judges size once; a range narrowed later must still keep the accounts it no longer takes out of the
+    queue. 300 staff at max 249: blocked; at max 350 (the sheet before D1): not. With no count, the band decides
+    (250-499 is outside 10 to 249); with neither, verify already left it out, so nothing is added here. An Overrides
+    row of 120 staff brings it back, as it does at verify."""
+    from us_outbound.settings.model import Override
+
+    narrow, wide = make_settings(max_employees=249), make_settings(max_employees=350)
+    big = account(employees=300, size_band="250-499")
+    assert enrol.account_block(big, narrow, (), (), frozenset()) == enrol.SIZE_SKIP
+    assert enrol.account_block(big, wide, (), (), frozenset()) is None
+    assert enrol.account_block(account(), narrow, (), (), frozenset()) is None  # 64 staff
+    assert enrol.account_block(account(employees=None, size_band="250-499"), narrow, (), (), frozenset()) \
+        == enrol.SIZE_SKIP
+    assert enrol.account_block(account(employees=None, size_band="100-249"), narrow, (), (), frozenset()) is None
+    assert enrol.account_block(account(employees=None, size_band=None), narrow, (), (), frozenset()) is None
+    assert enrol.account_block(account(employees=5, size_band="1-9"), narrow, (), (), frozenset()) == enrol.SIZE_SKIP
+    fixed = make_settings(max_employees=249, overrides=(Override("acmecreative.com", "employees", "120"),))
+    assert enrol.account_block(big, fixed, (), (), frozenset()) is None
+
+
+def test_accounts_verified_at_a_wider_range_are_not_enrolled_or_picked_for_once_it_narrows():
+    """The review's scenario 2: 10 companies of 300 staff and 10 of 64 were verified and given contacts at max 350;
+    the sheet then goes to 249. Enrol takes the 10 of 64 staff only (weekly 100 ÷ 4 send days left = 25 today, so the
+    number is the 10 ready), each 300-staff account is skipped for its size, and pick_contacts neither counts them
+    ready nor reveals for them."""
+    from us_outbound.contacts import pick
+
+    accts = [account(account_id=f"big{i}", domain=f"big{i}.com", employees=300, size_band="250-499", score=90 + i)
+             for i in range(10)]
+    accts += [account(account_id=f"fit{i}", domain=f"fit{i}.com", score=60 + i) for i in range(10)]
+    accts += [account(account_id=f"new{i}", domain=f"new{i}.com", employees=300, size_band="250-499")
+              for i in range(3)]  # no contact yet: pick would reveal for them
+    cons = [contact(contact_id=f"k-{a['account_id']}", account_id=a["account_id"], email=f"x@{a['domain']}")
+            for a in accts[:20]]
+    ctx, _ = make(live=True, accounts=accts, contacts=cons,
+                  settings=make_settings(live_sending=True, weekly_enrol_cap=100, max_employees=249))
+    need, ready = pick.waiting(ctx)
+    assert need == [] and ready == 10
+    out = enrol.run(ctx)
+    assert (out["number"], out["enrolled"]) == (10, 10)
+    enrolled = {c["account_id"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
+    assert enrolled == {f"fit{i}" for i in range(10)}
+    assert {c["size_band_at_enrol"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")} == {"50-99"}
