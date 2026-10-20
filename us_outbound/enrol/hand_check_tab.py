@@ -510,6 +510,18 @@ def apply(ctx: Context) -> dict[str, Any]:
         return out
     week = hand_check.this_week(ctx)
     if ctx.live:
+        # Before the catch-up draw, which could record a new week and so keep migrate() refusing: a tab still under
+        # the old 15 columns moves to COLUMNS by itself the first time no week is open (20 Oct 2026), so no one has
+        # to remember `handcheck migrate-tab --live` before the next Monday draw appends rows under the new header.
+        try:
+            moved = migrate_when_due(ctx, sheet_id)
+            if moved is not None:
+                out["migrated"] = moved
+        except GuardViolation:
+            raise
+        except Exception as exc:  # migrate() keeps every row on its backup tab and says where; the poll goes on
+            errors.append(f"moving the {TAB} tab to its new columns: {type(exc).__name__}: {str(exc)[:160]}")
+            log("hand_check_tab_migrate_failed", error=errors[-1])
         try:
             drew = hand_check.catch_up(ctx)
             if drew is not None:
@@ -683,6 +695,21 @@ def _backup_tab(ctx: Context, sheet_id: str) -> tuple[str, list[dict[str, str]] 
             return name, there
     raise ValueError(f"the tabs {' and '.join(repr(n) for n in names)} both hold rows already: none is written "
                      "over, so run migrate-tab again in a minute")
+
+
+def migrate_when_due(ctx: Context, sheet_id: str) -> dict[str, Any] | None:
+    """Run migrate() once, live, when the tab still has the old header and no week's hand-check is open; None when
+    there is nothing to move or a week is open (the next poll after it closes moves it). Returns migrate's summary."""
+    from us_outbound.enrol import hand_check
+
+    tab = read_tab(ctx.clients.sheets, sheet_id, TAB)
+    if not tab or list(tab[0])[: len(COLUMNS)] == COLUMNS:
+        return None
+    item = hand_check.current(ctx)
+    if item is not None and item.get("status") != "handled":
+        return None
+    out = migrate(ctx)
+    return {"rows": out.get("rows"), "backup": out.get("backup"), "written": out.get("written")}
 
 
 def migrate(ctx: Context) -> dict[str, Any]:

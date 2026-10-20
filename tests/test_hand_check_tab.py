@@ -961,3 +961,35 @@ def test_handcheck_export_from_the_command_line(capsys):
                                          ("franchise", "other")])
 def test_the_reason_is_read_whichever_way_it_is_typed(typed, code):
     assert tab._reason({"reason": typed}) == code
+
+
+# -- the move to the new columns happens by itself (20 Oct 2026) -------------------------------------------------------
+
+
+def test_the_poll_moves_an_old_header_tab_once_no_week_is_open_and_only_once():
+    """W43's 49 rows under the old 15 columns and no open week: the first live poll backs the tab up and moves it to
+    COLUMNS (as migrate-tab --live would), the next poll moves nothing; a dry poll never moves it."""
+    dry, _ = w43_world(live=False)
+    assert "migrated" not in tab.apply(dry) and list(sheet_rows(dry)[0])[:5] == HEADER[:5]
+    ctx, _ = w43_world()
+    old = [dict(r) for r in sheet_rows(ctx)]
+    out = tab.apply(ctx)
+    assert out["migrated"] == {"rows": 49, "backup": BACKUP, "written": True} and out["hand_check_errors"] == []
+    rows = sheet_rows(ctx)
+    assert len(rows) == 49 and all(list(r)[: len(tab.COLUMNS)] == tab.COLUMNS for r in rows)
+    assert [r["name"] for r in rows] == [r["company"] for r in old]  # every value under its new column
+    assert ctx.clients.sheets.tabs[BACKUP] == as_backed_up(old)
+    assert "migrated" not in tab.apply(ctx)
+
+
+def test_the_poll_waits_while_a_week_is_open_and_a_failed_move_is_an_error_not_a_crash():
+    ctx, companies = w43_world()
+    ctx.store.insert("hitl_items", [{"item_id": "hand_check-2026-W43", "kind": "hand_check", "status": "open",
+                                     "payload": {"iso_week": W43}, "created_at": EXPORT_AT}])
+    assert "migrated" not in tab.apply(ctx) and list(sheet_rows(ctx)[0])[:5] == HEADER[:5]
+
+    ctx, _ = w43_world()
+    ctx.clients.sheets = ClearThenFailSheet(ctx.guard, ctx.clients.sheets.tabs)
+    out = tab.apply(ctx)  # never raises: the replies and the rest of the poll go on
+    assert "migrated" not in out
+    assert out["hand_check_errors"][0].startswith(f"moving the {tab.TAB} tab to its new columns: ApiError")
