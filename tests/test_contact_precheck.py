@@ -1,8 +1,9 @@
-"""apollo_people (sources/apollo_people.py; Harry, 5 Oct 2026): the People leaders at every queue account from Apollo's
-free people search, against a fake Apollo. Which accounts and in what order, the two searches' filters, coverage and the
-rule that a count of 0 is written only at coverage 0.5 or more, the days in title from the time-in-title filter, facts
-written only on change, the caps, pacing and a 429, dry-run, and the People signals firing in the rescore that follows,
-for accounts nobody has contacted."""
+"""contact_precheck (contacts/precheck.py; W3-3, 20 Oct 2026, from apollo_people, Harry, 5 Oct 2026): who Apollo has
+to contact at each verified account waiting for a contact, and its People leaders, from Apollo's free people search,
+against a fake Apollo. Which accounts and in what order, the searches' filters, the candidates count and the
+no_contact_candidates reason, coverage and the rule that a count of 0 is written only at coverage 0.5 or more, the days
+in title from the time-in-title filter, facts written only on change, the caps, pacing and a 429, dry-run, and the
+People signals firing in the rescore that follows, for accounts nobody has contacted."""
 
 from __future__ import annotations
 
@@ -11,7 +12,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.fakes import make_context
+from tests.fakes import make_context, sendable_general_copy
+from us_outbound.contacts import pick
+from us_outbound.contacts import precheck as people
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
 from us_outbound.clients.http import Response
 from us_outbound.ops import cli, schedule
@@ -21,10 +24,12 @@ from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import SOURCE_FIELDS, Focus, Override
 from us_outbound.settings.validate import validate_all
-from us_outbound.sources import apollo_people as people
+from us_outbound.sources import apollo_universe
 
-NOW = datetime(2026, 10, 6, 3, 20, tzinfo=UTC)  # Tuesday 6 Oct, 04:20 UK
+NOW = datetime(2026, 10, 6, 4, 15, tzinfo=UTC)  # Tuesday 6 Oct, 05:15 UK
 BASE, _ = validate_all(default_tabs())
+# The General Copy rows sendable, as on the live sheet: the accounts waiting are those enrol could email (pick.waiting).
+BASE = dataclasses.replace(BASE, copy=sendable_general_copy(BASE.copy))
 TECH, AGENCIES = "Technology & Startups", "Marketing & Creative Agencies"
 SHOWN = ("id", "first_name", "last_name_obfuscated", "title", "employment_history")  # what a search row carries
 
@@ -72,18 +77,26 @@ class FakeApollo:
         return Response(200, out)
 
     def kinds(self) -> list[str]:
-        """Each search as "leaders", "coverage" or "days<=N"."""
+        """Each search as "candidates" (titled, verified emails), "leaders", "coverage" or "days<=N"."""
         out = []
         for b in self.searches:
             rng = b.get("person_days_in_current_title_range")
-            out.append(f"days<={rng['max']}" if rng else "leaders" if "person_titles" in b else "coverage")
+            out.append(f"days<={rng['max']}" if rng else "candidates" if "contact_email_status" in b
+                       else "leaders" if "person_titles" in b else "coverage")
         return out
 
 
-def acct(aid: str, *, group=TECH, industry="Fintech", status="new", band="50-99", **kw) -> dict:
-    return {"account_id": aid, "domain": f"{aid}.com", "apollo_org_id": f"org-{aid}", "status": status,
+def acct(aid: str, *, group=TECH, industry="Fintech", status="verified", band="50-99", **kw) -> dict:
+    return {"account_id": aid, "domain": f"{aid}.com", "apollo_org_id": f"org-{aid}", "status": status, "tier": "Queue",
             "industry": industry, "industry_group": group, "size_band": band, "employees": None, "hq_state": "NY",
             "first_seen": NOW - timedelta(days=1), **kw}
+
+
+def checked(aid, days_ago, count=1) -> dict:
+    """An earlier precheck's contactable_candidates fact."""
+    return {"event_id": f"c-{aid}-{days_ago}", "account_id": aid, "source": people.JOB, "fact": people.CANDIDATES_FACT,
+            "value": {"count": count, "titles": [], "run_id": "earlier"}, "quote": "", "source_url": "",
+            "observed_at": NOW - timedelta(days=days_ago)}
 
 
 def make(accounts=(), orgs=None, *, settings=None, now=NOW, live=False, fail=None):
@@ -122,42 +135,87 @@ def no_waiting(monkeypatch):
 # -- which accounts, in what order -------------------------------------------------------------------------------
 
 
-def test_every_queue_account_is_searched_never_searched_first_then_focus_then_queue_order():
+def test_the_verified_accounts_waiting_for_a_contact_are_checked_in_queue_order_unless_checked_in_30_days():
+    """Only what pick_contacts would try (verified, in the queue, no sendable contact; pick.waiting), in its queue
+    order (score high first); one checked 40 days ago is due again, one checked 10 days ago is not."""
     ctx, fake = make([
-        acct("standard", tier="Standard", score=30),
-        acct("priority", status="queued", tier="Priority", score=60),
-        acct("control", status="verified", tier="Control", score=0),
-        acct("agency", group=AGENCIES, industry="Advertising agencies", tier="Priority", score=90),
-        acct("old", tier="Priority", score=90),  # searched 40 days ago: due again, after the never-searched
-        acct("recent", tier="Priority", score=90),  # searched 10 days ago: not due
-        acct("excluded", tier="Excluded"), acct("held", tier="Held"), acct("enrolled", status="enrolled"),
-        acct("nodomain", domain=""), acct("unsized", band=None),
+        acct("a30", score=30), acct("a60", score=60), acct("a0", score=0),
+        acct("agency", group=AGENCIES, industry="Advertising agencies", score=90),
+        acct("old", score=80),  # checked 40 days ago: due again
+        acct("recent", score=95),  # checked 10 days ago: not due
+        acct("new", status="new"), acct("queued", status="queued"), acct("held", tier="Held"),
+        acct("enrolled", status="enrolled"), acct("nodomain", domain=""), acct("unsized", band=None),
     ], settings=dataclasses.replace(BASE, focus=(Focus(TECH, 0.6), Focus(AGENCIES, 0.4))))
-    ctx.store.insert("signal_events", [marker("old", 40), marker("recent", 10)])
+    ctx.store.insert("signal_events", [checked("old", 40), checked("recent", 10)])
     todo = people.candidates(ctx)
-    assert [a["account_id"] for a in todo.accounts] == ["priority", "standard", "control", "agency", "old"]
+    assert [a["account_id"] for a in todo.accounts] == ["agency", "old", "a60", "a30", "a0"]
     assert dict(todo.left_out) == {"company size unknown": 1}
     out = people.run(ctx)
     assert out["searched"] == 5 and out["left_out"] == {"company size unknown": 1}
-    assert [b.get("organization_ids") for b in fake.searches[::2]] == [
-        ["org-priority"], ["org-standard"], ["org-control"], ["org-agency"], ["org-old"]]
-    assert out["credits"] == 0 and out["requests"] == 10  # two searches an account with nobody found
+    assert [b.get("organization_ids") for b in fake.searches[::3]] == [
+        ["org-agency"], ["org-old"], ["org-a60"], ["org-a30"], ["org-a0"]]
+    # Three searches an account with nobody found: the candidates, the leaders, the coverage.
+    assert out["credits"] == 0 and out["requests"] == 15
 
 
 def test_nothing_due_sends_nothing():
     ctx, fake = make([acct("recent")])
-    ctx.store.insert("signal_events", [marker("recent", 3)])
+    ctx.store.insert("signal_events", [checked("recent", 3)])
     out = people.run(ctx)
-    assert (out["candidates"], out["stopped_by"]) == (0, "no account is due a People search") and fake.searches == []
+    assert (out["due"], out["stopped_by"]) == (0, "no account is due a precheck") and fake.searches == []
+
+
+# -- the candidates ------------------------------------------------------------------------------------------------
+
+
+def test_no_titled_us_verified_person_marks_the_account_and_takes_it_out_of_findable_supply():
+    """none.com: Apollo holds a Head of People with no verified email, a CEO outside the US and a Brand Lead (no
+    Roles-tab title): 0 candidates, so status_reason no_contact_candidates and contactable supply's findable leaves it
+    out. three.com: three titled US people with verified emails: 3, counted findable. one.com: 1."""
+    team = [person("p1", "Head of People", verified=False), person("p2", "CEO", us=False), person("p3", "Brand Lead")]
+    ctx, _ = make([acct("none", score=90), acct("three", score=80), acct("one", score=70)], {
+        "org-none": {"people": team, "total": 40},
+        "org-three": {"people": [person("a", "CEO"), person("b", "COO"), person("c", "Head of People")], "total": 40},
+        "org-one": {"people": [person("d", "CEO")], "total": 40}})
+    before = apollo_universe.contactable_supply(ctx).findable
+    out = people.run(ctx)
+    counts = {aid: next(e["value"]["count"] for e in ctx.store.select("signal_events", {"account_id": aid})
+                        if e["fact"] == people.CANDIDATES_FACT) for aid in ("none", "three", "one")}
+    assert counts == {"none": 0, "three": 3, "one": 1}
+    assert ctx.store.get("accounts", account_id="none")["status_reason"] == "no_contact_candidates"
+    assert ctx.store.get("accounts", account_id="three").get("status_reason") is None
+    assert out["no_contact_candidates"] == 1 and out["candidates"] == {"0": 1, "1": 1, "3 or more": 1}
+    assert (before, apollo_universe.contactable_supply(ctx).findable) == (3, 2)
+
+
+def test_after_30_days_the_account_is_checked_again_and_a_candidate_clears_the_reason():
+    ctx, _ = make([acct("acme", status_reason="no_contact_candidates")],
+                  {"org-acme": {"people": [person("d", "CEO")], "total": 40}})
+    ctx.store.insert("signal_events", [checked("acme", 29, count=0)])
+    assert people.candidates(ctx).accounts == []  # 29 days: not yet
+    ctx.now = NOW + timedelta(days=2)  # 31 days since the check
+    people.run(ctx)
+    assert ctx.store.get("accounts", account_id="acme")["status_reason"] is None
+
+
+def test_a_status_reason_another_job_wrote_is_left_alone():
+    ctx, _ = make([acct("acme", status_reason="unenrolled")], {"org-acme": {"people": [], "total": 40}})
+    people.run(ctx)
+    assert ctx.store.get("accounts", account_id="acme")["status_reason"] == "unenrolled"
 
 
 # -- the two searches ---------------------------------------------------------------------------------------------
 
 
 def test_the_leaders_search_has_the_people_titles_in_the_us_without_the_email_filter():
-    ctx, fake = make([acct("mid", band="50-99"), acct("small", band="20-49", apollo_org_id="")])
+    ctx, fake = make([acct("mid", band="50-99", score=10), acct("small", band="20-49", apollo_org_id="")])
     people.run(ctx)
-    leaders, coverage, small, small_coverage = fake.searches
+    cands, leaders, coverage, small_cands, small, small_coverage = fake.searches
+    # The candidates search is pick_contacts' own: every Roles-tab title at the size, in the US, verified emails.
+    assert cands == {**pick.search_filters(acct("mid"), pick.search_titles(BASE.roles, 99, TECH)), "page": 1,
+                     "per_page": 100}
+    assert cands["contact_email_status"] == ["verified"] and "CEO" in cands["person_titles"]
+    assert small_cands["q_organization_domains_list"] == ["small.com"]
     assert leaders["organization_ids"] == ["org-mid"] and leaders["person_locations"] == ["United States"]
     assert "contact_email_status" not in leaders and leaders["include_similar_titles"] is True
     assert leaders["per_page"] == 100 and leaders["page"] == 1
@@ -223,8 +281,8 @@ def test_a_new_leader_s_days_in_title_come_from_the_time_in_title_filter():
     assert 40 <= v["people_leader_days_in_title"] <= 40 + people.PRECISION_DAYS
     assert v["people_leader_newest"] == {"apollo_person_id": "p-hop", "title": "Head of People",
                                          "days_in_title": v["people_leader_days_in_title"]}
-    assert fake.kinds()[:3] == ["leaders", "coverage", f"days<={people.HORIZON_DAYS}"]
-    assert all(k.startswith("days<=") for k in fake.kinds()[3:]) and len(fake.searches) <= 8
+    assert fake.kinds()[:4] == ["candidates", "leaders", "coverage", f"days<={people.HORIZON_DAYS}"]
+    assert all(k.startswith("days<=") for k in fake.kinds()[4:]) and len(fake.searches) <= 9
     assert out["leader_new_in_title"] == 1 and out["requests"] == len(fake.searches)
     mark = facts_of(ctx, "acme")[people.MARKER]["value"]
     assert mark["leader_titles"] == ["HR Director", "Head of People"] and mark["leaders"] == 2
@@ -233,7 +291,7 @@ def test_a_new_leader_s_days_in_title_come_from_the_time_in_title_filter():
 def test_a_leader_in_title_longer_than_the_horizon_takes_one_more_search_and_is_not_new():
     ctx, fake = make([acct("acme", employees=80)], {"org-acme": {"people": [person("p", "Head of HR", 700)], "total": 20}})
     people.run(ctx)
-    assert fake.kinds() == ["leaders", "coverage", f"days<={people.HORIZON_DAYS}"]
+    assert fake.kinds() == ["candidates", "leaders", "coverage", f"days<={people.HORIZON_DAYS}"]
     # A leader found: the count stands at any coverage (0.25 here); nobody new, and no newest leader named.
     assert values(ctx, "acme") == {"people_leader_count": 1, "people_leader_days_in_title": people.HORIZON_DAYS + 1,
                                    "people_search_coverage": 0.25, "people_found": 20}
@@ -244,7 +302,7 @@ def test_a_row_with_employment_history_is_read_directly():
     row = person("p", "Chief People Officer", 12, employment_history=[{"current": True, "start_date": started}])
     ctx, fake = make([acct("acme", employees=80)], {"org-acme": {"people": [row], "total": 50}})
     people.run(ctx)
-    assert fake.kinds() == ["leaders", "coverage"]
+    assert fake.kinds() == ["candidates", "leaders", "coverage"]
     assert values(ctx, "acme")["people_leader_days_in_title"] == 12
 
 
@@ -270,7 +328,7 @@ def test_facts_are_written_only_when_they_change_or_are_refresh_days_old():
                if e["observed_at"] == NOW}
     # The same leader, count and days: not again. The coverage is as it was but 31 days old: again. 60 found, not 50.
     assert written == {people.MARKER, "people_search_coverage", "people_found"}
-    assert out["unchanged"] == 3 and out["facts"] == 3
+    assert out["unchanged"] == 3 and out["facts"] == 4  # and the contactable_candidates fact, written every check
 
 
 # -- caps, pacing, errors -----------------------------------------------------------------------------------------
@@ -285,16 +343,16 @@ def test_the_run_stops_at_its_caps_and_paces_its_requests(monkeypatch, no_waitin
     assert no_waiting == [people.PACE_SECONDS] * (len(fake.searches) - 1)  # between requests, never before the first
 
     monkeypatch.setattr(people, "MAX_ACCOUNTS_PER_RUN", 150)
-    monkeypatch.setattr(people, "MAX_REQUESTS_PER_RUN", 3)
-    out = people.run(ctx)  # the two searched above are not due; the next two start before 3 requests are sent
-    assert (out["searched"], out["stopped_by"]) == (2, "the run's cap of 3 requests")
+    monkeypatch.setattr(people, "MAX_REQUESTS_PER_RUN", 4)
+    out = people.run(ctx)  # the two checked above are not due; the next two start before 4 requests are sent (3 each)
+    assert (out["searched"], out["stopped_by"]) == (2, "the run's cap of 4 requests")
 
     clock = iter([0.0, 0.0, people.RUN_SECONDS + 1, people.RUN_SECONDS + 1])  # start, 1st account, 2nd, the summary
     monkeypatch.setattr(people, "_clock", lambda: next(clock))
     monkeypatch.setattr(people, "MAX_REQUESTS_PER_RUN", 300)
     ctx, _ = make(accounts)
     out = people.run(ctx)
-    assert out["searched"] == 1 and out["stopped_by"].startswith("9 minutes")
+    assert out["searched"] == 1 and out["stopped_by"].startswith("12 minutes")
 
 
 def test_a_429_stops_the_run_and_its_account_waits_for_the_next():
@@ -404,21 +462,24 @@ def test_a_signals_load_switches_the_old_row_off_and_brings_the_new_one():
 # -- the schedule, the registry and the CLI -------------------------------------------------------------------------
 
 
-def test_it_runs_weekdays_at_04_20_after_read_pages_and_before_verify_accounts():
+def test_it_runs_weekdays_at_05_15_after_verify_and_the_enrichment_and_before_pick_contacts():
+    """W3-3: contact_precheck in place of apollo_people (04:20), registered everywhere a job is (cli.JOBS, EXPECTED,
+    WEEKDAY_JOBS, IMPACT, the schedule); apollo_people is in none of them."""
     table = schedule.by_name()
-    job = table["apollo_people"]
-    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("20 4 * * 1-5", False, True, 20)
+    job = table["contact_precheck"]
+    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("15 5 * * 1-5", False, True, 15)
 
     def at(name):
         minute, hour = table[name].cron.split()[:2]
         return int(hour) * 60 + int(minute)
 
-    # apollo_enrich moved after verify_accounts (W1-3a, 19 Oct 2026): it enriches verified accounts only.
-    assert at("read_pages") < at("apollo_people") < at("verify_accounts") < at("apollo_enrich") < at("pick_contacts")
-    assert at("apollo_people") + people.RUN_SECONDS // 60 < at("verify_accounts")  # no account starts after 04:29
-    assert cli.resolve_job("apollo_people") is people.run
-    assert hb.EXPECTED["apollo_people"] == 26 * 60 and "apollo_people" in hb.WEEKDAY_JOBS
-    assert "apollo_people" in schedule.enabled_names()
+    assert at("verify_accounts") < at("apollo_enrich") < at("contact_precheck") < at("pick_contacts")
+    assert at("contact_precheck") + people.RUN_SECONDS // 60 < at("pick_contacts")  # no account starts after 05:27
+    assert people.RUN_SECONDS // 60 < job.timeout_minutes
+    assert cli.resolve_job("contact_precheck") is people.run
+    assert hb.EXPECTED["contact_precheck"] == 26 * 60 and "contact_precheck" in hb.WEEKDAY_JOBS
+    assert "contact_precheck" in hb.IMPACT and "contact_precheck" in schedule.enabled_names()
+    assert "apollo_people" not in set(cli.JOBS) | set(hb.EXPECTED) | set(hb.IMPACT) | set(schedule.enabled_names())
 
 
 def test_harry_can_run_it_by_hand():
@@ -435,8 +496,8 @@ def test_harry_can_run_it_by_hand():
         contexts.append(ctx)
         return ctx
 
-    assert cli.main(["run", "apollo_people"], context_factory=factory) == 0
-    assert cli.main(["run", "apollo_people"], context_factory=factory) == 0
+    assert cli.main(["run", "contact_precheck"], context_factory=factory) == 0
+    assert cli.main(["run", "contact_precheck"], context_factory=factory) == 0
     first, second = (store.get("heartbeats", run_id=c.run_id) for c in contexts)
     assert first["status"] == second["status"] == "ok"
-    assert first["detail"]["with_people_leader"] == 1 and second["detail"]["candidates"] == 0  # not again for 30 days
+    assert first["detail"]["with_people_leader"] == 1 and second["detail"]["due"] == 0  # not again for 30 days

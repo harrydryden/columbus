@@ -290,6 +290,23 @@ def test_the_pace_is_the_balance_s_fall_once_seven_readings_are_kept():
     assert "the jobs recorded 132 (45% not recorded)" in ask
 
 
+def test_a_balance_fall_within_ten_percent_of_the_ledger_is_no_drift_ask():
+    """W3-3's case (S3): the balance fell 140 in 7 days and the ledger recorded 132: (140 − 132) ÷ 140 = 5.7%, under
+    the 10% limit, so no ask; 242 against 132 (45.5%) is one, keyed once an ISO week (post_once)."""
+    ctx, _ = world(balance=29_537)
+    readings(ctx, {7: 29_677, 6: 29_660, 5: 29_640, 4: 29_620, 3: 29_600, 2: 29_580, 1: 29_560})
+    spent(ctx, "apollo", 132, days_ago=3)
+    sp = spend.read(ctx)
+    assert (sp.balance_fell, sp.ledger_spent, round(sp.drift, 3)) == (140.0, 132.0, 0.057)
+    assert not [k for k, _ in spend.asks(ctx, sp) if k.startswith("apollo_ledger_drift")]
+    ctx, _ = world(balance=29_435)
+    readings(ctx, {7: 29_677, 6: 29_640, 5: 29_600, 4: 29_560, 3: 29_520, 2: 29_490, 1: 29_460})
+    spent(ctx, "apollo", 132, days_ago=3)
+    [key] = [k for k, _ in spend.asks(ctx, spend.read(ctx)) if k.startswith("apollo_ledger_drift")]
+    year, week, _ = ctx.today_uk().isocalendar()
+    assert key == f"apollo_ledger_drift:{year}-W{week:02d}"
+
+
 def test_before_seven_readings_or_across_a_purchase_the_pace_is_the_ledger_s():
     """6 readings: the ledger's 14-day pace, 140 ÷ 14 = 10 a day. A balance that rose (29,000 to 31,000: a purchase)
     has no fall to read, so the ledger's pace stands in too. No drift either way."""

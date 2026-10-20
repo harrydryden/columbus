@@ -57,7 +57,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
          # Apollo's search by growth range (sources/lookalikes.py; Harry, 5 Oct 2026).
          "headcount_growth_band"}
     ),
-    # people_search_coverage (the people Apollo holds over the employees) and people_found: sources/apollo_people.py
+    # people_search_coverage (the people Apollo holds over the employees) and people_found: contacts/precheck.py
     # (Harry, 5 Oct 2026), so a People leader count of 0 is read only where Apollo's data is deep enough.
     "apollo_people": frozenset(
         {"people_leader_count", "people_leader_days_in_title", "people_search_coverage", "people_found",

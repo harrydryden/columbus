@@ -109,7 +109,7 @@ then [docs/phase0-runbook.md](docs/phase0-runbook.md).
 | Phase | State |
 | :- | :- |
 | 0 Foundations | Built and running on Railway: clients, guard, settings sync (02:00, and 11:30 on weekdays), DDL, registry, heartbeats, suppression, HubSpot setup, CLI, the scheduler |
-| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders at every account (`apollo_people`), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts`. (Public signals and `verify_in_clay` were never built, and went with Clay in W2-1, 20 Oct 2026) |
+| 1 Universe | Built: scoring, the Apollo universe, job postings, the careers and benefits page reader (`read_pages`), Apollo's organization enrich (`apollo_enrich`), People leaders and contactable candidates (`contact_precheck`, W3-3; `apollo_people` until then), lookalikes, site visits (`site_visits`, 5 Oct), and `verify_accounts`. (Public signals and `verify_in_clay` were never built, and went with Clay in W2-1, 20 Oct 2026) |
 | 2 First sends | Built; the pilot sends from Mon 5 Oct 2026: enrollment (send approvals in Slack until W2-1, 20 Oct 2026, removed them with `auto_send`), the sending ramp, the go-live checks in `status`, reply ingest (`sync_outcomes`, `poll_replies`), the reply desk (`poll_approvals`, `replies` commands), the reply HubSpot writes and `hubspot_readback`; `retention` (7 Oct 2026: SPEC 6's retention rules and SPEC 13's 31 days) |
 | 3 Learning loop | Kill rules and the daily post (with its "Needs you" line) built early (Harry, 1 Oct 2026); the Monday readout, the signal table, tests read at pre-registered looks, UTM tags and demo bookings read back (6 Oct 2026; docs/pipeline.md "How the system learns"); cohorts by enrolment week with the config version each contact was enrolled under (7 Oct 2026; docs/developing-while-live.md) |
 
@@ -239,12 +239,13 @@ Startups; a General key until W2-4), 1 credit per company found, within 15% of `
 count replaces the searched size band unless an Overrides row or Clay says otherwise; a count outside
 the General size range leaves the company out (`status_reason` `size`).
 
-People leaders at every account (Harry, 5 Oct 2026): `apollo_people` (weekdays 04:20, before
-`verify_accounts`' rescore) searches Apollo's free people search for the People leaders at each
-queue account, with no email filter, and for how many people Apollo holds there, so "New People
-leader" and "People leader in place" score before the queue is sorted rather than only for accounts
-`pick_contacts` reaches. A count of 0 is written only where Apollo holds at least half the headcount,
-which the new "First People hire (likely)" row reads (`sources/apollo_people.py`).
+People leaders (Harry, 5 Oct 2026): `contact_precheck` (weekdays 05:15, before `pick_contacts`' rescore; W3-3,
+in place of `apollo_people` at 04:20) searches Apollo's free people search for the People leaders at each verified
+account waiting for a contact, with no email filter, and for how many people Apollo holds there, so "New People
+leader" and "People leader in place" score before anyone is contacted; and counts the people pick_contacts could
+contact there, so an account with nobody is set aside before a credit is spent. A count of 0 is written only where
+Apollo holds at least half the headcount, which the new "First People hire (likely)" row reads
+(`contacts/precheck.py`).
 
 `sync_outcomes` runs every 15 minutes inside Instantly's US Eastern send window (13:00 to 22:59 UK on weekdays)
 and hourly otherwise (W2-4; SPEC 9: 01:00 daily), so the kill rules, the send forecast and same-day opt-outs (SPEC

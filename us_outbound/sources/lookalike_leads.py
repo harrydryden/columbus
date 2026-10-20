@@ -25,8 +25,10 @@ The lookalike_leads job (the 1st of each month, 02:50 UK, after lookalikes at 02
      reads it), and companies of the seeds' own size are the lookalikes wanted. Across the cells the
      searches cover the General size range (10 to 249 by default; cell_bands). The results are US only,
      three times over:
-       a. in the request: HQ in the United States, never California or Washington (the wording
-          source_universe's filters use), the size band, and insurers and brokers left out, as there;
+       a. in the request: HQ in the States tab's active states, never California or Washington (the wording
+          source_universe's filters use: apollo_universe.location), the size band, and insurers and brokers left
+          out, as there. Until W3-3 (20 Oct 2026; code-sources B6) it asked for the whole US and take() kept the
+          active states only, so most of each paid page was dropped;
        b. on each row before the door: Apollo's HQ country must be the US (a row without one is counted
           "not US"), and source_universe's take() then wants an HQ state active on the States tab (never
           CA or WA; FL only when switched on), a size inside the General range when the row gives one, an active
@@ -106,10 +108,8 @@ PAGES_PER_SEARCH = 1  # Apollo ranks by likeness: the first 100 in a band are th
 MAX_NEW_PER_RUN = 1000  # what verify_accounts checks in one run (verify.MAX_ACCOUNTS_PER_RUN)
 DOMAIN_CHUNK = MAX_PER_PAGE  # seeds looked up by domain 100 at a time: one page answers them all
 POST_HOURS = 36  # the daily post mentions a run this recent (the 1st's post)
-# PHASE0-CONFIRM: organization_locations takes a country ("United States"), and organization_not_locations
-# takes states written as source_universe writes them ("California, US"), on the lookalike search too.
-US_LOCATION = "United States"
-NOT_LOCATIONS = tuple(uni.location(s) for s in sorted(icp.NEVER_STATES))  # never CA or WA (SPEC 1.3)
+# organization_locations takes states written as source_universe writes them ("Texas, US"), on the lookalike search
+# too (W3-3: the active states, as source_universe asks; PHASE0-CONFIRM on the lookalike search itself).
 def cell_bands(settings: Settings, cell: str) -> tuple[str, ...]:
     """A cell's size bands (lookalikes.TARGET_BANDS) as Apollo's search bands within the General size range: the
     bands the range touches that read as this cell (lookalikes.PROSPECT_BANDS), so 5-9 searches with 10-49's seeds
@@ -245,11 +245,10 @@ class _Leads:
 
 
 def us_filters(band: str, settings: Settings) -> dict[str, Any]:
-    """source_universe's filters for one size band (clipped to the General size range), over the whole US at
-    once, never CA or WA."""
+    """source_universe's filters for one size band (clipped to the General size range), over the States tab's active
+    states at once (apollo_universe.allowed_states: never CA or WA)."""
     f: dict[str, Any] = {
-        "organization_locations": [US_LOCATION],
-        "organization_not_locations": list(NOT_LOCATIONS),
+        "organization_locations": [uni.location(s) for s in uni.allowed_states(settings)],
         "organization_num_employees_ranges": [settings.employee_range(band)],
     }
     if uni.PARTNER_FILTER:

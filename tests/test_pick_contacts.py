@@ -353,6 +353,104 @@ def test_a_revealed_email_that_may_not_be_sent_is_not_kept(ctx, transport, chang
     assert r["value"]["reason"] == reason
 
 
+# -- contactability (W3-3, 20 Oct 2026; loop L5) ------------------------------------------------------------------
+
+
+def test_at_equal_rank_a_known_us_state_comes_before_none(ctx):
+    """Two Heads of People at 120 staff: the same Roles-tab order, seniority and title cover. The one Apollo puts in
+    New York is ranked first; with no state, a person may be in CA or WA, found only at the reveal."""
+    acct = account(employees=120, size_band="100-249")
+    people = [person("p-a", "Head of People"), person("p-b", "Head of People", state="New York")]
+    cands, _ = pick.rank_candidates(people, acct, ctx.settings, ctx.today_uk())
+    assert [c.id for c in cands] == ["p-b", "p-a"]
+    # Not across role ranks: the senior People leader with no state still comes before an HR Manager in New York.
+    cands, _ = pick.rank_candidates([person("p-hr", "HR Manager", state="New York"), person("p-a", "Head of People")],
+                                    acct, ctx.settings, ctx.today_uk())
+    assert [c.id for c in cands] == ["p-a", "p-hr"]
+
+
+def test_a_reveal_not_at_the_company_s_domain_writes_the_domain_and_two_make_one_alias_row(ctx, transport):
+    """Two CEOs at brightfin.com revealed at example-mail.com: each reveal fact carries rejected_email_domain (the
+    domain, never the address); the weekly proposals make one domain_alias row (seen 2 ≥ ALIAS_SEEN 2)."""
+    team = [person("p-ceo", "CEO"), person("p-coo", "COO")]
+    setup(ctx, transport, [account()], {ORG: team}, {"p-ceo": match("p-ceo", "omar@example-mail.com"),
+                                                     "p-coo": match("p-coo", "ana@Example-Mail.com")})
+    out = pick.run(ctx)
+    assert out["picked"] == 0
+    reveals = facts(ctx, pick.REVEAL_FACT)
+    assert [r["value"]["rejected_email_domain"] for r in reveals] == ["example-mail.com", "example-mail.com"]
+    assert "omar" not in str(reveals)
+    [row] = pick.suggestions(ctx)
+    assert {k: row[k] for k in ("id", "kind", "target", "text", "status")} == {
+        "id": "domain_alias:brightfin.com:example-mail.com", "kind": "domain_alias", "target": "brightfin.com",
+        "text": "example-mail.com", "status": "proposed"}
+
+
+def test_one_rejected_domain_is_no_alias_row(ctx, transport):
+    setup(ctx, transport, [account()], {ORG: [person("p-ceo", "CEO")]}, {"p-ceo": match("p-ceo", "omar@example-mail.com")})
+    pick.run(ctx)
+    assert pick.suggestions(ctx) == []
+
+
+def missed(ctx, n: int, title: str, size_range: str = "50-249"):
+    """n accounts' pick outcomes this week, each with the title left out as not contacted at the size."""
+    ctx.store.insert("accounts", [{"account_id": f"m{i}", "domain": f"m{i}.com"} for i in range(n)])
+    ctx.store.insert("signal_events", [{
+        "event_id": f"o{i}", "account_id": f"m{i}", "source": pick.SOURCE, "fact": pick.OUTCOME_FACT,
+        "value": {"outcome": "none", "missed_titles": [title], "size_range": size_range},
+        "observed_at": ctx.now - timedelta(days=1)} for i in range(n)])
+
+
+def test_twelve_misses_of_a_title_in_a_size_range_make_one_roles_title_row_and_nine_none(ctx):
+    missed(ctx, 12, "Head of Employee Experience")
+    [row] = pick.suggestions(ctx)
+    assert (row["kind"], row["target"], row["text"]) == ("roles_title", "50-249", "Head of Employee Experience")
+    assert row["evidence"] == "left out as not contacted at 50-249 staff at 12 accounts in 28 days"
+    ctx2 = dataclasses.replace(ctx, store=type(ctx.store)(ctx.guard))
+    missed(ctx2, 9, "Head of Employee Experience")
+    assert pick.suggestions(ctx2) == []
+
+
+def test_the_search_records_the_titles_it_left_out_for_the_proposals(ctx, transport):
+    """A Brand Lead is not on the Roles tab at 120 staff: the outcome keeps the title and the Roles-tab size range."""
+    setup(ctx, transport, [account(employees=120, size_band="100-249")], {ORG: [person("p-x", "Brand Lead")]}, {})
+    pick.run(ctx)
+    [outcome] = facts(ctx, pick.OUTCOME_FACT)
+    assert (outcome["value"]["missed_titles"], outcome["value"]["size_range"]) == (["Brand Lead"], "50-249")
+
+
+def candidates_fact(aid: str, n: int, ctx) -> dict:
+    return {"event_id": f"cand-{aid}", "account_id": aid, "source": "contact_precheck",
+            "fact": "contactable_candidates", "value": {"count": n, "titles": [], "run_id": "r"},
+            "observed_at": ctx.now - timedelta(hours=1)}
+
+
+def test_accounts_with_more_candidates_are_tried_first_and_none_are_skipped(ctx, transport, monkeypatch):
+    """explore_share 0: the ranked accounts only. acc-00 (score 100) has 1 candidate, acc-01 (99) 3, acc-02 (98) no
+    precheck yet, acc-03 (97) none (status_reason no_contact_candidates). Tried: acc-01 (3) before acc-00 (1), then
+    acc-02 (not prechecked); acc-03 not at all."""
+    apollo, _ = arm_world(ctx, transport, monkeypatch, n_tech=2, n_creative=2, explore_share=0.0)
+    ctx.store.update("accounts", {"account_id": "acc-03"}, {"status_reason": "no_contact_candidates"})
+    ctx.store.insert("signal_events", [candidates_fact("acc-00", 1, ctx), candidates_fact("acc-01", 3, ctx)])
+    out = pick.run(ctx)
+    assert searched(apollo) == ["co01.com", "co00.com", "co02.com"]
+    assert out["no_contact_candidates"] == 1 and out["picked"] == 3
+
+
+def test_the_random_arm_keeps_its_draw_whatever_the_candidate_counts(ctx, transport, monkeypatch):
+    """The arm is drawn before the candidate order: with every other account at 3 candidates and the random draw's at 1,
+    the drawn accounts are still searched first and stamped random (the same draw as with no counts at all)."""
+    apollo, by_id = arm_world(ctx, transport, monkeypatch, explore_share=0.15)
+    from us_outbound.enrol import queue
+
+    drawn, _ = queue.split(list(by_id.values()), ctx.settings, "pick:2026-10-27", 2)
+    ids = {a["account_id"] for a in drawn}
+    ctx.store.insert("signal_events", [candidates_fact(aid, 1 if aid in ids else 3, ctx) for aid in by_id])
+    pick.run(ctx)
+    assert {f"acc-{d[2:4]}" for d in searched(apollo)[:2]} == ids
+    assert {a["account_id"] for a in ctx.store.select("accounts") if a.get("arm") == "random"} == ids
+
+
 def test_an_alias_of_the_company_domain_is_its_own(ctx, transport):
     ctx.store.insert("domain_aliases", [{"alias": "brightfin.io", "root_domain": "brightfin.com", "source": "redirect"}])
     setup(ctx, transport, [account()], {ORG: [person("p-ceo", "CEO")]}, {"p-ceo": match("p-ceo", "omar@brightfin.io")})
@@ -645,10 +743,11 @@ def test_the_search_writes_people_leader_facts_for_the_people_signals(ctx, trans
 
 
 @pytest.mark.parametrize("searched_days_ago, written", [(None, True), (5, False), (31, True)])
-def test_the_pick_leaves_apollo_people_s_fresher_full_search_alone(ctx, transport, searched_days_ago, written):
-    """Harry, 5 Oct 2026: apollo_people searches every account without the email filter, and may write a count of 0
-    and the days in title. pick_contacts' narrower view does not overwrite that within its 30 days."""
-    from us_outbound.sources import apollo_people
+def test_the_pick_leaves_the_precheck_s_fresher_full_search_alone(ctx, transport, searched_days_ago, written):
+    """Harry, 5 Oct 2026: the People search without the email filter (apollo_people's; contact_precheck's from W3-3)
+    may write a count of 0 and the days in title. pick_contacts' narrower view does not overwrite that within its 30
+    days."""
+    from us_outbound.contacts import precheck as apollo_people
 
     setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
     if searched_days_ago is not None:

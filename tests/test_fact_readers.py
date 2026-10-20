@@ -22,7 +22,8 @@ from us_outbound.enrol import openers
 from us_outbound.learn import daily_post
 from us_outbound.ops import relabel
 from us_outbound.scoring import score
-from us_outbound.sources import apollo_enrich, apollo_people, lookalikes, pages, site_visits
+from us_outbound.contacts import precheck as apollo_people
+from us_outbound.sources import apollo_enrich, lookalikes, pages, site_visits
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)  # the ctx fixture's now
 TODAY = date(2026, 10, 27)

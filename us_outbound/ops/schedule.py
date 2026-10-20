@@ -15,8 +15,8 @@ timeout:  minutes before the scheduler stops a run, and how long a run's "runnin
           the run's observed time (code-platform-ops §2: 1 to 260 s): verify_accounts 15, enrol 15,
           pick_contacts 10, suppression_load 10, mailbox_health 5, and 5 for the light jobs that run hourly or
           daily (kill_rules, blackout, hubspot_readback, daily_post, heartbeat_check, follow_up). A job with a
-          time budget of its own keeps a timeout above it (poll_replies 6 minutes, read_pages 30, apollo_people
-          9), and the rest keep theirs until heartbeats.duration_s (persisted from W2-4) shows their p95 at
+          time budget of its own keeps a timeout above it (poll_replies 6 minutes, read_pages 30, contact_precheck
+          12), and the rest keep theirs until heartbeats.duration_s (persisted from W2-4) shows their p95 at
           production volume.
 phase:    the SPEC 14 phase the job belongs to.
 
@@ -47,8 +47,8 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("settings_sync", "30 11 * * 1-5", live=True, enabled=True, timeout_minutes=15, phase=0),
     # Build, 1 Oct 2026, for the 5 Oct pilot: source_universe and apollo_signals run each weekday, not
     # on the 1st and on Mondays (SPEC 9), to keep the queue two weeks deep with the credits paced by the
-    # weekday (sources/apollo_universe.py); then read_pages, apollo_people and verify_accounts, then the paid
-    # enrichment of the verified accounts (apollo_enrich, apollo_signals), all before pick_contacts at 05:30.
+    # weekday (sources/apollo_universe.py); then read_pages and verify_accounts, then the paid enrichment of the
+    # verified accounts (apollo_enrich, apollo_signals) and the contact pre-check, all before pick_contacts at 05:30.
     ScheduledJob("source_universe", "0 3 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=1),
     # W1-3a, 19 Oct 2026 (code-sources B4): after verify_accounts and apollo_enrich, for verified accounts only, so no
     # posting is paid for at a company the label check leaves out; it was 03:30, for every new account. No rescore of
@@ -64,10 +64,12 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # pick_contacts' rescore at 05:30 scores its facts. Apollo reads and database writes only, so no --live. At most
     # 500 accounts a run, inside the timeout.
     ScheduledJob("apollo_enrich", "0 5 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
-    # Harry, 5 Oct 2026: the People leaders at every queue account, from Apollo's free people search, so the People
-    # signals score in verify_accounts' rescore, before pick_contacts. It starts no account after 9 minutes
-    # (sources/apollo_people.py RUN_SECONDS); Apollo reads and database writes only, so no --live.
-    ScheduledJob("apollo_people", "20 4 * * 1-5", live=False, enabled=True, timeout_minutes=20, phase=1),
+    # W3-3, 20 Oct 2026 (code-contacts-enrol §7; loop L5): who Apollo has to contact at each verified account waiting
+    # for a contact, from its free people search, before pick_contacts (05:30) spends a credit; with the People-leader
+    # facts apollo_people wrote at 04:20 for every queue account until then (Harry, 5 Oct 2026), which pick's rescore
+    # scores. It starts no account after 12 minutes (contacts/precheck.py RUN_SECONDS); Apollo reads and database writes
+    # only, so no --live.
+    ScheduledJob("contact_precheck", "15 5 * * 1-5", live=False, enabled=True, timeout_minutes=15, phase=2),
     # Harry, 5 Oct 2026: the website-visit signals, daily (a visit not read today drops out of Apollo's one-day
     # list). After pick_contacts and before enrol, whose tiers its rescore sets; Apollo reads and database writes
     # only, so no --live (sources/site_visits.py).

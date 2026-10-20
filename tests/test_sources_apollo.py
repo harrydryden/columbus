@@ -184,20 +184,26 @@ def test_the_states_alternate_from_a_start_that_moves_each_iso_week():
     assert uni.rotated(SEVEN, 49) == list(SEVEN)  # 49 = 7 × 7: back to GA
 
 
-def test_the_run_reads_the_states_in_turn_and_stamps_each_account_with_the_search_that_found_it():
-    """Mon 19 Oct 2026 is ISO week 43. One company in each of the seven states, all 20-49 staff: the run reads the
-    10-19 band of every state first (empty), then 20-49 from IL round to GA, and each company it creates carries
-    one sourced_by fact naming the search, its state and band."""
+def test_the_run_reads_the_states_in_plan_order_and_stamps_each_account_with_the_search_that_found_it():
+    """Mon 19 Oct 2026 is ISO week 43. One company in each of the seven states, all 20-49 staff. The week's plan
+    (sources/allocation.py, W3-3) gives every state at least one page; the run first reads one search of each state,
+    the state with the largest plan first (each starts with all its pages left, so the ties go to the larger plan, then
+    the week's turn from IL), so all seven states' 10-19 band before any state's second search; and each company it
+    creates carries one sourced_by fact naming the search, its state and band."""
     monday = datetime(2026, 10, 19, 2, 0, tzinfo=UTC)
     names = {code: USPS_STATES[code] for code in SEVEN}
     orgs = [org(i, state=names[st], employees=None, _band="20-49") for i, st in enumerate(SEVEN, start=1)]
     ctx, _, fake = make(orgs, settings=settings_with(states=SEVEN), now=monday)
     out = uni.run(ctx)
+    plan = ctx.store.get("source_state", key="plan:2026-W43")["value"]
+    turn = ["IL", "MA", "NJ", "NY", "PA", "TX", "GA"]  # week 43 mod 7 = 1: from IL (uni.rotated)
+    want = sorted(SEVEN, key=lambda st: (-plan["pages"][st], turn.index(st)))
     tech = [(STATE_OF[b["organization_locations"][0]], b["organization_num_employees_ranges"][0])
             for b in fake.searches if "5415" in b.get("organization_naics_codes", ())]
-    assert tech[:8] == [("IL", "10,19"), ("MA", "10,19"), ("NJ", "10,19"), ("NY", "10,19"), ("PA", "10,19"),
-                        ("TX", "10,19"), ("GA", "10,19"), ("IL", "20,49")]
-    assert out["created"] == 7
+    assert tech[:7] == [(st, "10,19") for st in want]
+    assert min(plan["pages"].values()) >= 1 and sum(plan["pages"].values()) == 100
+    assert max(plan["pages"].values()) <= 40  # cap max(0.40, 1/7) of 100
+    assert out["created"] == 7 and out["allocation"]["week"] == "2026-W43"
     by_account = {}
     for e in ctx.store.select("signal_events", {"fact": "sourced_by"}):
         by_account.setdefault(e["account_id"], []).append(e["value"])
@@ -511,7 +517,8 @@ def test_p_v_is_distinct_companies_on_their_first_check_not_heartbeat_sums():
 def test_the_weekly_ceiling_lets_thursday_create_only_what_monday_to_wednesday_left():
     """3 × 150 = 450 raw accounts a week (RS §2 W1-3). 400 created Monday to Wednesday leave 50 for Thursday. Its first
     page carries 100 companies: the 50 after the 50th wait, and the next run reads the page again (its note says
-    "cut"), so none is lost for the month. Friday has nothing left; the next Monday takes the other 50 and the rest."""
+    cursor stays on the page before it: source_state, W3-3), so none is lost for the month. Friday has nothing left; the
+    next Monday takes the other 50 and the rest."""
     thursday = datetime(2026, 10, 8, 2, 0, tzinfo=UTC)  # Thu 8 Oct, 03:00 UK
     ctx, _, fake = make([org(i) for i in range(1, 151)], now=thursday)
     ctx.store.insert("accounts", [
@@ -523,8 +530,9 @@ def test_the_weekly_ceiling_lets_thursday_create_only_what_monday_to_wednesday_l
         400, 50, 50, 50)
     assert out["stopped_by"].startswith("the ceiling of 3 × weekly_enrol_cap (450) raw accounts a week, 400 created "
                                         "already this week; contactable supply")
-    [cut] = [json.loads(r["note"]) for r in ledger(ctx) if '"cut"' in (r["note"] or "")]
-    assert (cut["page"], cut["cut"]) == (1, 50)
+    cut = [k for k, c in uni.cursors(ctx).items() if c.page == 0 and c.pages == 2]  # page 1 cut: read again
+    assert len(cut) == 1 and "|NY|50-99|" in cut[0]
+    assert all("cut" not in (r["note"] or "") and "slice" not in (r["note"] or "") for r in ledger(ctx))
     ctx.now = datetime(2026, 10, 9, 2, 0, tzinfo=UTC)  # Friday: 450 this week
     before = len(fake.searches)
     friday = uni.run(dataclasses.replace(ctx, run_id="fri"))
@@ -550,7 +558,9 @@ def test_the_next_run_carries_on_from_the_next_page_and_a_new_month_starts_again
           and "5415" in b.get("organization_naics_codes", ()) and b["organization_num_employees_ranges"] == ["50,99"]]
     assert ny == [1, 2]
     [first] = [n for n in (json.loads(r["note"]) for r in ledger(ctx)) if n["page"] == 1 and n["results"]]
-    assert first["pages"] == 2 and first["results"] == 100 and first["total"] == 150
+    assert first["results"] == 100 and first["total"] == 150 and "slice" not in first  # what was paid for only
+    [ny] = [c for k, c in uni.cursors(ctx).items() if "|NY|50-99|" in k]
+    assert (ny.page, ny.pages, ny.done) == (2, 2, True)  # the place lives in source_state (W3-3)
     ctx.store.update("accounts", {}, {"status": "enrolled"})
     ctx.now = datetime(2026, 11, 2, 3, 0, tzinfo=UTC)  # a new month: the universe is read again from page 1
     before = len(fake.searches)

@@ -79,7 +79,7 @@ eight weeks and any test's read date.
 
 Universe rows not refreshed in 12 months (SPEC 6). A company row is refreshed when a source sees the company again:
 source_universe's monthly pass from page 1 writes Apollo's facts for every company it finds again, as do
-apollo_enrich, apollo_people, apollo_signals, the page reader, site visits and the HubSpot checks. last_scored is no
+apollo_enrich, contact_precheck, apollo_signals, the page reader, site visits and the HubSpot checks. last_scored is no
 sign of it (every nightly rescore moves it), and neither are the facts the system derives from what it already holds
 (DERIVED_SOURCES: scoring's matches, the lookalike fit, verify's doubts, the opener's focus phrase). So an account is
 deleted, with its signal_events, when it was first seen more than UNIVERSE_MONTHS ago and no source has observed it

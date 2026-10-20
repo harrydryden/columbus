@@ -60,6 +60,7 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "lookalike_growth": ("cell_id",),  # sources/lookalikes.py: customers by growth band (Harry, 5 Oct 2026)
     "config_versions": ("config_version",),  # config_version.py: what a cohort was enrolled under (Harry, 7 Oct 2026)
     "config_log": ("log_id",),  # changes to what in-flight leads share (registry/mailboxes.py; Harry, 7 Oct 2026)
+    "source_state": ("key",),  # the sources' cursors, plan and visitor state (sources/source_state.py; W3-3)
     "raw_irs_bmf": None,
     "raw_job_posts": None,
     "raw_clay_accounts": None,
@@ -67,6 +68,11 @@ TABLE_KEYS: dict[str, tuple[str, ...] | None] = {
     "raw_site_visits": None,
     "raw_layoffs": None,
 }
+
+# Unique indexes besides the primary key, as insert_new honours them (MemoryStore; Postgres has the index). accounts'
+# domain: one account per root domain (SPEC 13), unique once `accounts dedupe --live` has applied
+# sql/deferred/01_accounts_domain_unique.sql (W3-3; code-sources B7). A NULL never conflicts, as in Postgres.
+UNIQUE_COLUMNS: dict[str, tuple[tuple[str, ...], ...]] = {"accounts": (("domain",),)}
 
 # Columns stored as jsonb.
 JSON_COLUMNS: dict[str, frozenset[str]] = {
@@ -86,6 +92,7 @@ JSON_COLUMNS: dict[str, frozenset[str]] = {
     "config_versions": frozenset({"step_days", "settings_versions", "copy_hashes", "general",  # 7 Oct 2026
                                   "copy_test"}),  # the running copy test (config_version.copy_test; 7 Oct 2026)
     "config_log": frozenset({"changed_keys", "detail"}),
+    "source_state": frozenset({"value"}),
 }
 
 # Columns stored as timestamptz (the date columns are DATE_COLUMNS).
@@ -111,6 +118,7 @@ TIMESTAMP_COLUMNS: dict[str, frozenset[str]] = {
     "lookalike_growth": frozenset({"computed_at"}),
     "config_versions": frozenset({"first_seen"}),
     "config_log": frozenset({"changed_at"}),
+    "source_state": frozenset({"updated_at"}),
 }
 
 # Columns stored as date (the W1-C contracts commit, 19 Oct 2026): a re-check falls due on a day, not at an instant.
@@ -171,6 +179,7 @@ COLUMNS: dict[str, frozenset[str]] = {
     "config_log": frozenset({
         "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
         "changed_by", "run_id"}),
+    "source_state": frozenset({"key", "value", "updated_at"}),
 }
 
 Where = dict[str, Any]  # {col: value} equality; a list, tuple or set: IN; None: IS NULL; Range: lo <= col < hi
@@ -247,6 +256,13 @@ class Store(ABC):
     def claim(self, table: str, row: dict) -> bool:
         """Insert the row unless one with its primary key exists; True if it was inserted. One statement, so of two
         callers with the same key exactly one gets True (the scheduler's claim row, ops/health.run_job)."""
+
+    @abstractmethod
+    def insert_new(self, table: str, row: dict) -> bool:
+        """Insert the row unless it would break any unique rule of the table (its primary key, or a unique index such
+        as accounts' domain once `accounts dedupe` has made it: W3-3); True if it was inserted. One statement (Postgres
+        INSERT ... ON CONFLICT DO NOTHING with no conflict target), so of two runs admitting one domain at once exactly
+        one makes the row (code-sources B7). MemoryStore holds UNIQUE_COLUMNS as the index does."""
 
     @abstractmethod
     def select(self, table: str, where: Where | None = None) -> list[dict]: ...
@@ -451,6 +467,17 @@ class MemoryStore(Store):
         k = tuple(row.get(c) for c in key)
         if any(tuple(old.get(c) for c in key) == k for old in self.tables[table]):
             return False
+        self.tables[table].append(row)
+        return True
+
+    def insert_new(self, table, row):
+        row = _stored(table, row)
+        self._authorize("insert", table, write=True)
+        keys = [k for k in (TABLE_KEYS[table], *UNIQUE_COLUMNS.get(table, ())) if k]
+        for key in keys:
+            k = tuple(row.get(c) for c in key)
+            if None not in k and any(tuple(old.get(c) for c in key) == k for old in self.tables[table]):
+                return False
         self.tables[table].append(row)
         return True
 
@@ -659,6 +686,13 @@ class PostgresStore(Store):
         cols = sorted(set(row) | set(key))
         query = SQL("{} ON CONFLICT ({}) DO NOTHING").format(
             self._insert_sql(table, cols), SQL(", ").join(Identifier(c) for c in key))
+        return self._connection().execute(query, self._row(table, cols, row)).rowcount == 1
+
+    def insert_new(self, table, row):
+        row = dict(row)
+        self._authorize("insert", table, write=True)
+        cols = sorted(row)
+        query = SQL("{} ON CONFLICT DO NOTHING").format(self._insert_sql(table, cols))
         return self._connection().execute(query, self._row(table, cols, row)).rowcount == 1
 
     def _upsert_sql(self, table: str, key: tuple[str, ...], cols: list[str]) -> Composable:

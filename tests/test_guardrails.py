@@ -470,6 +470,8 @@ def _store_exercises() -> dict[str, Ex]:
         "close": lambda s, w: s.close(),
         "claim": lambda s, w: s.claim("heartbeats", {"run_id": "enrol:2026-10-20T11:00", "job": "enrol",
                                                      "status": "running", "started_at": NOW}),
+        # The front door's insert (W3-3): a row for a domain no account holds.
+        "insert_new": lambda s, w: s.insert_new("accounts", {"account_id": "acc-new", "domain": "new-domain.com"}),
     }
 
 
@@ -757,8 +759,12 @@ def test_db_writes_only_to_us_outbound(live_world):
 def test_db_upsert_sets_only_each_rows_columns(live_world):
     """One statement per column set: a row sets only the columns it carries (MemoryStore keeps the rest)."""
     upserts = [(text, params) for text, params in live_world.pg.calls
-               if text.startswith('INSERT INTO "us_outbound"."accounts"') and "ON CONFLICT" in text]
+               if text.startswith('INSERT INTO "us_outbound"."accounts"') and 'ON CONFLICT ("account_id")' in text]
     assert [len(params) for _, params in upserts] == [len(r) for r in ACCOUNT_ROWS]
+    # The front door's insert (W3-3): no conflict target, so the unique domain index refuses a second row too.
+    [new] = [text for text, _ in live_world.pg.calls
+             if text.startswith('INSERT INTO "us_outbound"."accounts"') and "ON CONFLICT DO NOTHING" in text]
+    assert new.endswith("ON CONFLICT DO NOTHING")
     for (text, _), row in zip(upserts, ACCOUNT_ROWS):
         cols = re.search(r"\(([^)]*)\) VALUES", text).group(1)
         assert {c.strip().strip('"') for c in cols.split(",")} == set(row)

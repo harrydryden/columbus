@@ -1,8 +1,8 @@
 """The site_visits job (sources/site_visits.py; Harry, 5 Oct 2026), against a fake Apollo: the visitor searches and
 their bodies, credits and caps, matching through aliases and Apollo ids, facts written only when they change and
-cleared when visits stop, one site_visit event a day, new US visitors of 10 to 249 people by the front door, the
-tracker message when Apollo has no data, and the default Signals then scoring the visit. New visitors are looked
-up in Apollo's organization enrich; one Apollo leaves in doubt comes in held for the weekly hand-check (6 Oct 2026)."""
+cleared when visits stop, a site_visit event for a company's first appearance on the 30-day list since the last run
+(W3-3), new US visitors of 10 to 249 people by the front door (and no longer held for the hand-check), weekly runs
+while quiet, the tracker message when Apollo has no data, and the default Signals then scoring the visit."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from us_outbound.settings.validate import validate_all
 from us_outbound.sources import site_visits as sv
 
 NOW = datetime(2026, 10, 5, 5, 0, tzinfo=UTC)  # Monday 5 Oct, 06:00 UK: the job's time
-YESTERDAY = "2026-10-04"  # the UK day Apollo's one-day window starts on
+YESTERDAY = "2026-10-04"  # the UK day of the last run's list (seen())
 BASE, _ = validate_all(default_tabs())
 MESSAGE = ("No website-visitor data from Apollo for spill.chat: check that Apollo's website tracker is installed on "
            "spill.chat (Apollo → Settings → Website Visitors) and that the plan includes website visitors.")
@@ -127,27 +127,34 @@ def ledger(ctx) -> list[dict]:
     return ctx.store.select("credit_ledger", {"job": sv.JOB})
 
 
+def seen(ctx, keys=(), days_ago=1):
+    """The last run's 30-day list, as source_state keeps it: these row keys, read days_ago."""
+    ctx.store.upsert("source_state", [{"key": sv.LIST_KEY, "value": {"keys": list(keys), "at": (
+        NOW - timedelta(days=days_ago)).isoformat()}, "updated_at": NOW}])
+
+
 # -- the searches -------------------------------------------------------------------------------------
 
 
-def test_three_read_only_visitor_searches_for_the_tracked_domain():
+def test_two_read_only_visitor_searches_for_the_tracked_domain():
+    """The 30-day lists of the US pages and of the pricing and demo pages; the one-day search went with W3-3."""
     ctx, t, fake = make()  # nobody visited: every page is empty and free
     out = sv.run(ctx)
-    assert out["status"] == "ok" and out["credits"] == 0.0 and out["tracker_check"] == ""
+    assert out["status"] == "ok" and out["credits"] == 0.0
     assert [(b["website_visitors_from_past"], b["website_visitors_domain_pages"]) for b in fake.visitor_searches] == [
-        (1, ["/us"]), (30, ["/us"]), (30, ["/us/pricing", "/us/demo", "/us/book"])]
+        (30, ["/us"]), (30, ["/us/pricing", "/us/demo", "/us/book"])]
     assert all((b["page"], b["per_page"]) == (1, 100) for b in fake.visitor_searches)
     assert fake.enriches == []  # no visitor without an account: nothing looked up
     apollo = [c for c in ctx.guard.calls if c.system == "apollo"]
     assert {c.action for c in apollo} == {"usage.credits", "website_visitors.search"} <= APOLLO_READ_ACTIONS
     assert not any(c.write for c in apollo)
     assert not any("tracker" in r.url for r in t.requests)  # the tracker's settings are never read or changed
-    assert [r["credits"] for r in ledger(ctx)] == [0.0, 0.0, 0.0]  # recorded all the same (the quiet-run count)
+    assert [r["credits"] for r in ledger(ctx)] == [0.0, 0.0]  # recorded all the same: what was asked for
 
 
 def test_the_constants_choose_the_domain_and_the_pages(monkeypatch):
     """The domain and pages are constants in code since W2-4 (settings/model.SITE_VISIT_*, at the live sheet's
-    values); the three searches follow them, and no intent paths means no intent search."""
+    values); the searches follow them, and no intent paths means no intent search."""
     assert (sv.SITE_VISIT_DOMAIN, sv.SITE_VISIT_US_PATHS, sv.SITE_VISIT_INTENT_PATHS) == (
         "spill.chat", ("/us",), ("/us/pricing", "/us/demo", "/us/book"))
     for path in sv.SITE_VISIT_US_PATHS + sv.SITE_VISIT_INTENT_PATHS:
@@ -156,7 +163,7 @@ def test_the_constants_choose_the_domain_and_the_pages(monkeypatch):
     monkeypatch.setattr(sv, "SITE_VISIT_INTENT_PATHS", ())
     ctx, _, fake = make()
     sv.run(ctx)
-    assert [b["website_visitors_domain_pages"] for b in fake.visitor_searches] == [["/us/", "/en-us"]] * 2  # no intent search
+    assert [b["website_visitors_domain_pages"] for b in fake.visitor_searches] == [["/us/", "/en-us"]]  # no intent search
     monkeypatch.setattr(sv, "SITE_VISIT_DOMAIN", "")
     ctx, _, fake = make()
     out = sv.run(ctx)
@@ -167,8 +174,10 @@ def test_the_constants_choose_the_domain_and_the_pages(monkeypatch):
 
 
 def test_a_matched_account_gets_both_facts_an_event_and_the_default_signals_fire():
+    """acme.com was not on yesterday's list: its first appearance is a visit, dated at yesterday's read."""
     ctx, _, _ = make([visitor(1, domain="acme.com", paths=("/us", "/us/pricing"))])
     aid = account(ctx, "acme.com")
+    seen(ctx)
     out = sv.run(ctx)
     assert [(e["fact"], e["value"]) for e in facts(ctx, aid)] == [("us_visits_30d", 1), ("pricing_or_demo_visits_30d", 1)]
     us = facts(ctx, aid, "us_visits_30d")[0]
@@ -180,9 +189,41 @@ def test_a_matched_account_gets_both_facts_an_event_and_the_default_signals_fire
     # The rescore at the end: the visit signals count before the 12:00 enrol (the default Signals rows).
     assert {"Visited the US site", "Viewed US pricing or demo page"} <= matched_signals(ctx, aid)
     assert ctx.store.get("accounts", account_id=aid)["tier"] == "Queue"
-    assert out["credits"] == 3.0 and len(ledger(ctx)) == 3 and out["matched"] == {"us_today": 1, "us": 1, "intent": 1}
+    assert out["credits"] == 2.0 and len(ledger(ctx)) == 2 and out["matched"] == {"us": 1, "intent": 1}
+    assert (out["new_visits"], out["events"]) == (1, 1)
     assert [r["key"] for r in ctx.store.select("raw_site_visits")] == ["org001"]  # once a run, as received
-    assert ctx.store.select("raw_site_visits")[0]["payload"]["searches"] == ["us_today", "us", "intent"]
+    assert ctx.store.select("raw_site_visits")[0]["payload"]["searches"] == ["us", "intent"]
+    assert ctx.store.get("source_state", key=sv.LIST_KEY)["value"]["keys"] == ["org001"]
+
+
+def test_a_visit_is_a_first_appearance_on_the_30_day_list_since_the_last_run():
+    """W3-3 (code-sources B9): Monday's list holds acme; Tuesday's holds acme and newco (an account of ours): one event,
+    newco's, dated at Monday's read; Wednesday's is unchanged: none. The first look of all (no list kept, no earlier
+    raw rows) only keeps the list."""
+    ctx, _, fake = make([visitor(1, domain="acme.com")])
+    acme, newco = account(ctx, "acme.com"), account(ctx, "newco.com")
+    first = sv.run(ctx)
+    assert (first["first_look"], first["new_visits"], first["events"]) == (True, 0, 0)
+    fake.visitors.append(visitor(2, domain="newco.com", ago=0))
+    tue = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=1), run_id="tue"))
+    assert (tue["new_visits"], tue["events"]) == (1, 1)
+    [ev] = ctx.store.select("events", {"type": "site_visit"})
+    assert (ev["account_id"], ev["occurred_at"], ev["event_id"]) == (newco, NOW, f"site-visit:{newco}:2026-10-05")
+    wed = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=2), run_id="wed"))
+    assert (wed["new_visits"], wed["events"]) == (0, 0) and acme not in {e["account_id"] for e in ctx.store.select("events")}
+
+
+def test_with_no_list_kept_the_last_run_s_raw_rows_are_the_list():
+    """The first run after W3-3 deploys: no site_visits:list yet, so the earlier run's raw_site_visits rows (the us
+    search's) are the last list. acme was on it; newco was not, so newco is the one visit."""
+    ctx, _, _ = make([visitor(1, domain="acme.com"), visitor(2, domain="newco.com")])
+    account(ctx, "acme.com")
+    newco = account(ctx, "newco.com")
+    ctx.store.insert("raw_site_visits", [{"loaded_at": NOW - timedelta(days=1), "run_id": "before", "key": "org001",
+                                          "payload": {"searches": ["us_today", "us"], "record": {}}}])
+    out = sv.run(ctx)
+    assert (out["new_visits"], out["first_look"]) == (1, False)
+    assert [e["account_id"] for e in ctx.store.select("events", {"type": "site_visit"})] == [newco]
 
 
 def test_matching_goes_through_aliases_the_accounts_bucket_and_apollo_ids():
@@ -201,12 +242,13 @@ def test_matching_goes_through_aliases_the_accounts_bucket_and_apollo_ids():
 def test_facts_are_written_only_when_they_change_and_cleared_when_the_visits_stop():
     ctx, _, fake = make([visitor(1, domain="acme.com", paths=("/us", "/us/demo"))])
     aid = account(ctx, "acme.com")
+    seen(ctx)
     sv.run(ctx)
     again = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(hours=4), run_id="rerun"))  # a rerun the same morning
     assert again["facts_written"] == 0 and again["events"] == 0
     assert len(facts(ctx, aid)) == 2 and len(ctx.store.select("events")) == 1  # one event a day, whatever the reruns
     next_day = dataclasses.replace(ctx, now=NOW + timedelta(days=1), run_id="tuesday")
-    fake.visitors[0]["_ago"] = 1  # no visit since: off the one-day list, still in the 30-day window
+    fake.visitors[0]["_ago"] = 1  # no visit since: still in the 30-day window, so no new visit
     out = sv.run(next_day)
     assert out["facts_written"] == 0 and out["events"] == 0
     fake.visitors.clear()  # out of Apollo's window
@@ -246,14 +288,14 @@ def test_a_search_not_read_to_its_end_clears_nothing(monkeypatch):
 
 
 def test_credits_are_recorded_and_capped(monkeypatch):
-    monkeypatch.setattr(sv, "MAX_CREDITS_PER_RUN", 2)
+    monkeypatch.setattr(sv, "MAX_CREDITS_PER_RUN", 1)
     ctx, _, fake = make([visitor(1, domain="acme.com", paths=("/us", "/us/pricing"))])
     account(ctx, "acme.com")
     out = sv.run(ctx)
-    assert out["credits"] == 2.0 and out["credit_cap"] == 2.0
-    assert [b["website_visitors_from_past"] for b in fake.visitor_searches] == [1, 30]  # the one-day list first
-    assert out["searches"]["intent"]["stopped"] == "the run's cap of 2 credits"
-    assert [(r["credits"], r["job"], r["run_id"]) for r in ledger(ctx)] == [(1.0, "site_visits", ctx.run_id)] * 2
+    assert out["credits"] == 1.0 and out["credit_cap"] == 1.0
+    assert [b["website_visitors_domain_pages"] for b in fake.visitor_searches] == [["/us"]]  # the US list first
+    assert out["searches"]["intent"]["stopped"] == "the run's cap of 1 credits"
+    assert [(r["credits"], r["job"], r["run_id"]) for r in ledger(ctx)] == [(1.0, "site_visits", ctx.run_id)]
 
 
 def test_nothing_is_spent_below_the_floor_or_once_the_month_is_used():
@@ -271,8 +313,10 @@ def test_dry_run_reads_and_writes_only_the_database():
     ctx, t, _ = make([visitor(1, domain="acme.com")])
     assert ctx.dry_run
     aid = account(ctx, "acme.com")
+    seen(ctx)
     sv.run(ctx)
     assert facts(ctx, aid) and ctx.store.select("events")  # database writes, as every source makes in dry-run
+    assert ctx.store.select("source_state")
     outside = [c for c in ctx.guard.calls if c.system != "db" and c.write]
     assert outside == [] and {r.url.rsplit("/", 1)[-1] for r in t.requests} <= {"credit_usage_stats", "search"}
 
@@ -288,8 +332,8 @@ def test_a_new_us_visitor_of_10_to_249_comes_in_by_the_front_door():
     assert (new["domain"], new["source"], new["status"], new["apollo_org_id"]) == ("newco.com", "site_visit", "new", "org001")
     assert (new["hq_state"], new["industry"], new["industry_group"]) == ("NY", "Fintech", "Technology & Startups")
     assert (new["employees"], new["size_band"]) == (60, "50-99")
-    assert out["created"] == ["newco.com"] and out["held_for_hand_check"] == []
-    assert out["credits"] == 4.0 and out["enriched"] == 1  # three searches and the one company Apollo found
+    assert out["created"] == ["newco.com"]
+    assert out["credits"] == 3.0 and out["enriched"] == 1  # two searches and the one company Apollo found
     org_facts = {e["fact"] for e in ctx.store.select("signal_events", {"account_id": new["account_id"], "source": "apollo_org"})}
     assert {"naics", "hq_state", "keywords", "employees"} <= org_facts
     assert ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE}) == []
@@ -311,9 +355,9 @@ def test_visitors_surely_not_for_us_never_come_in_and_are_not_judged_again():
     assert len(fake.enriches) == 2 and later["not_admitted"]["outside the US"] == 1
 
 
-def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_check():
-    from us_outbound.enrol import hand_check
-
+def test_a_visitor_apollo_leaves_in_doubt_comes_in_as_any_other_for_verify_to_decide():
+    """W3-3 (code-sources B10): no doubtful_facts fact and no hold for the hand-check. Each comes in new, and
+    verify_accounts leaves out the ones missing a fact (Harry, 14 Oct 2026)."""
     ctx, _, fake = make([
         visitor(1, domain="nostate.com", state="", country="", enriched={"state": None, "country": None}),
         visitor(2, domain="nosize.com", employees=None),
@@ -322,30 +366,19 @@ def test_a_visitor_apollo_leaves_in_doubt_comes_in_held_for_the_weekly_hand_chec
         visitor(5, domain="bare.com", naics_codes=[], keywords=[], industry=""),
     ])
     out = sv.run(ctx)
-    assert sorted(out["held_for_hand_check"]) == ["bare.com", "edgeco.com", "nosize.com", "nostate.com", "unknown.com"]
-    assert out["credits"] == 6.0  # two searches with visitors (the pricing pages had none) and the four Apollo found
-    reasons = {d["domain"]: d["reasons"] for d in verify.open_doubts(ctx)}
-    assert reasons == {
-        "nostate.com": [verify.NO_STATE], "nosize.com": [verify.NO_SIZE], "unknown.com": [verify.NO_SIZE],
-        "edgeco.com": ["Apollo's estimate of 251 staff is within 2 of the 250-staff edge"],
-        "bare.com": [verify.NO_INDUSTRY]}
-    assert {d["source"] for d in verify.open_doubts(ctx)} == {"site_visit"}
+    assert sorted(out["created"]) == ["bare.com", "edgeco.com", "nosize.com", "nostate.com", "unknown.com"]
+    assert "held_for_hand_check" not in out
+    assert out["credits"] == 5.0  # the US list (the pricing pages had none) and the four Apollo found
+    assert ctx.store.select("signal_events", {"source": verify.DOUBT_SOURCE}) == [] and verify.open_doubts(ctx) == []
     bare = ctx.store.get("accounts", domain="bare.com")
     assert (bare["industry"], bare["industry_group"], bare["status"]) == (None, None, "new")
-    _, payload = hand_check.show(ctx)
-    words = "\n".join(hand_check.lines(payload))
-    assert "(nostate.com) · Apollo gives no HQ state · id " in words
-    from us_outbound.enrol import hand_check_tab
-
-    why = {r["domain"]: r["why"] for r in hand_check_tab.rows(ctx, payload)}
-    assert why["nostate.com"] == f"{verify.NO_STATE} (add the missing fact on the Overrides tab: hq_state or employees)"
 
 
-def test_an_overrides_row_fills_a_visitor_s_missing_fact_so_it_comes_in_unheld():
+def test_an_overrides_row_fills_a_visitor_s_missing_fact():
     s = dataclasses.replace(BASE, overrides=(Override("nostate.com", "hq_state", "TX"),))
     ctx, _, _ = make([visitor(1, domain="nostate.com", state="", country="")], settings=s)
     out = sv.run(ctx)
-    assert out["created"] == ["nostate.com"] and out["held_for_hand_check"] == []
+    assert out["created"] == ["nostate.com"]
     assert ctx.store.get("accounts", domain="nostate.com")["hq_state"] == "TX"
 
 
@@ -365,7 +398,7 @@ def test_a_lookup_apollo_did_not_answer_is_reserved_first_kept_and_asked_again()
     ctx, t, fake = make([visitor(1, domain="newco.com"), visitor(2, domain="other.com")])
     t.route("POST", "/organizations/bulk_enrich", status=503, body={"error": "unavailable"})
     out = sv.run(ctx)
-    assert out["created"] == [] and out["credits"] == 4.0  # two searches with results, and the lookup's 2
+    assert out["created"] == [] and out["credits"] == 3.0  # the US list with results, and the lookup's 2
     [lookup] = [r for r in ledger(ctx) if "enrich" in json.loads(r["note"]).get("reserved", {})]
     assert lookup["credits"] == 2.0 and json.loads(lookup["note"])["failed"] == 503
     assert sv.judged_recently(ctx) == set()
@@ -373,7 +406,8 @@ def test_a_lookup_apollo_did_not_answer_is_reserved_first_kept_and_asked_again()
     nxt = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=1), run_id="tuesday"))
     assert nxt["created"] == ["newco.com", "other.com"]
     settled = [json.loads(r["note"]) for r in ledger(ctx) if r["run_id"] == "tuesday"]
-    assert {"enrich": 2, "found": 2, "judged": ["org001", "org002"]} in settled
+    assert {"enrich": 2, "found": 2} in settled  # what was paid for; the ledger holds no job state (W3-3)
+    assert sv.judged_recently(dataclasses.replace(ctx, now=NOW + timedelta(days=1))) == {"org001", "org002"}
 
 
 def test_visitors_the_old_screen_turned_away_are_judged_again():
@@ -382,7 +416,7 @@ def test_visitors_the_old_screen_turned_away_are_judged_again():
                                         "occurred_at": NOW - timedelta(days=1), "run_id": "old",
                                         "note": '{"screen": 1, "asked": ["org001"], "kept": ["org001"]}'}])
     out = sv.run(ctx)
-    assert fake.enriches == [["nostate.com"]] and out["held_for_hand_check"] == ["nostate.com"]
+    assert fake.enriches == [["nostate.com"]] and out["created"] == ["nostate.com"]
 
 
 def test_a_visitor_in_any_us_state_comes_in_and_the_front_door_refuses_suppressed_and_partners():
@@ -393,7 +427,6 @@ def test_a_visitor_in_any_us_state_comes_in_and_the_front_door_refuses_suppresse
                                    "added_at": NOW}])
     out = sv.run(ctx)
     assert out["created"] == ["calco.com", "txco.com"]  # never excluded on its state (Harry, 6 Oct 2026)
-    assert out["held_for_hand_check"] == []
     assert out["not_admitted"] == {"suppressed": 1, "a partner, never prospected": 1}
     assert sorted(d for call in fake.enriches for d in call) == ["broker.com", "calco.com", "hushed.com", "txco.com"]
     calco = ctx.store.get("accounts", domain="calco.com")
@@ -417,22 +450,41 @@ def test_apollo_refusing_the_visitor_filters_ends_ok_with_the_tracker_message():
     assert sv.post_line(ctx) == MESSAGE  # the daily post's Sources section
 
 
-def test_seven_runs_with_an_empty_one_day_list_bring_the_tracker_message():
-    ctx, _, fake = make()
-    for day in range(sv.NO_DATA_RUNS):
-        out = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=day), run_id=f"day{day}"))
-        assert out["quiet_runs"] == day + 1
-        assert out["tracker_check"] == (MESSAGE if day + 1 == sv.NO_DATA_RUNS else ""), day
-    fake.visitors.append(visitor(1))
-    out = sv.run(dataclasses.replace(ctx, now=NOW + timedelta(days=8), run_id="back"))
-    assert out["quiet_runs"] == 0 and out["tracker_check"] == ""
+def test_an_empty_30_day_list_brings_the_tracker_message():
+    ctx, _, _ = make()
+    assert sv.run(ctx)["tracker_check"] == MESSAGE
+
+
+def test_five_quiet_runs_make_it_weekly_and_seven_bring_the_tracker_message():
+    """One visitor that stays on the list: no new visit, so every run is quiet. Runs on days 0 to 4 make 5 quiet runs;
+    from then a start less than 7 days after the last read is skipped (alive for heartbeat_check): days 5 to 10. Day 11
+    reads (6), day 18 reads (7: the tracker message). A new visitor on day 25's read ends the quiet."""
+    ctx, _, fake = make([visitor(1, domain="acme.com")])
+    account(ctx, "acme.com")
+
+    def on(day):
+        return run_job(dataclasses.replace(ctx, now=NOW + timedelta(days=day), run_id=f"day{day}"), sv.run)
+
+    for day in range(5):
+        assert on(day)["quiet_runs"] == day + 1
+    for day in range(5, 11):
+        out = on(day)
+        assert out["skipped"] and out["reason"].startswith("quiet: 5 runs in a row found no new visitor"), day
+    assert ctx.store.latest("heartbeats", "started_at", {"job": sv.JOB})["status"] == "skipped"
+    assert (on(11)["quiet_runs"], on(12)["skipped"]) == (6, True)
+    out = on(18)
+    assert out["quiet_runs"] == 7 and out["tracker_check"] == MESSAGE
+    fake.visitors.append(visitor(2, domain="newco.com"))
+    out = on(25)
+    assert (out["quiet_runs"], out["new_visits"], out["tracker_check"]) == (0, 1, "")
+    assert not on(26).get("skipped")  # daily again
 
 
 def test_an_implausible_total_means_the_filters_were_ignored_and_nothing_is_used():
     ctx, _, fake = make([visitor(1, domain="acme.com")], total=2_000_000)
     aid = account(ctx, "acme.com")
     out = sv.run(ctx)
-    assert out["searches"]["us_today"]["problem"].startswith("implausible: Apollo says 2,000,000 companies visited")
+    assert out["searches"]["us"]["problem"].startswith("implausible: Apollo says 2,000,000 companies visited")
     assert len(fake.visitor_searches) == 1 and out["credits"] == 1.0  # the others would be ignored the same way
     assert facts(ctx, aid) == [] and ctx.store.select("events") == [] and fake.enriches == []
     assert ctx.store.select("raw_site_visits") == [] and out["created"] == []
@@ -448,7 +500,8 @@ def test_the_daily_post_line():
     account(ctx, "acme.com")
     run_job(ctx, sv.run)
     assert sv.post_line(ctx) == ("Site visits (spill.chat, Apollo): 2 companies on the US pages in the last 30 days "
-                                 "(2 of them ours, 1 on pricing or demo pages); 1 in the last day; 1 new account.")
+                                 "(2 of them ours, 1 on pricing or demo pages); 0 new to the list since the last run; "
+                                 "1 new account.")
 
 
 @pytest.mark.parametrize("days, want", [(30, 7), (5, 4), (1, 1)])

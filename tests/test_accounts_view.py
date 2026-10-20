@@ -328,9 +328,10 @@ def test_every_mode_only_reads_the_database(capsys):
     assert {r.system for c in h.contexts for r in c.guard.calls} == {"db"}
 
 
-def test_accounts_takes_no_live_flag_and_is_in_help():
-    with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["accounts", "--live"])
+def test_accounts_is_read_only_whatever_live_says_and_is_in_help():
+    """--live is for `accounts dedupe` (W3-3); on the view it parses and changes nothing (cmd_accounts says so)."""
+    args = cli.build_parser().parse_args(["accounts", "--live"])
+    assert (args.domain, args.live) == (None, True)
     text = " ".join(cli.build_parser().format_help().split())
     assert "accounts the companies and contacts we hold: a summary, a list, one company, or a CSV" in text
     sub = " ".join(cli.build_parser()._subparsers._group_actions[0].choices["accounts"].format_help().split())

@@ -96,6 +96,10 @@ class Harness:
         (["scheduler", "--list"], {"command": "scheduler", "list": True}),
         (["verify", "migrate-parked"], {"command": "verify", "action": "migrate-parked", "live": False}),
         (["verify", "migrate-parked", "--live"], {"action": "migrate-parked", "live": True}),
+        (["source", "migrate-state"], {"command": "source", "action": "migrate-state", "live": False}),  # W3-3
+        (["source", "migrate-state", "--live"], {"action": "migrate-state", "live": True}),
+        (["accounts", "dedupe"], {"command": "accounts", "domain": "dedupe", "live": False}),  # W3-3
+        (["accounts", "dedupe", "--live"], {"command": "accounts", "domain": "dedupe", "live": True}),
     ],
 )
 def test_every_command_parses(argv, expected):
@@ -129,7 +133,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert not {"public_signals", "verify_in_clay"} & set(cli.JOBS)
     assert not any(target.startswith("not built") for target in cli.JOBS.values())
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
-                                               "hand_check_draw", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
+                                               "hand_check_draw", "read_pages", "apollo_enrich", "contact_precheck", "lookalike_leads",
                                                "blackout", "retention", "label_sample_monthly", "capture", "follow_up"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
@@ -733,7 +737,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # deploy) and scheduler (the worker's start command).
 KEEP = {"run", "status", "sync", "start", "stop", "unenrol", "erase", "db", "schedule", "replies", "handcheck",
         "labels", "accounts", "killrules", "campaigns", "mailbox", "cohorts", "test", "settings", "seed", "report"}
-ALSO_KEPT = {"copy", "verify", "scheduler"}
+ALSO_KEPT = {"copy", "verify", "scheduler",
+             "source"}  # W3-3 (20 Oct 2026): `source migrate-state`, once after the deploy
 # Records of their day, not runbooks: they name commands as they were then, under a header that says so.
 HISTORICAL = {"build-plan.md", "open-questions.md", "phase0-confirm.md", "phase0-facts.md", "phase0-runbook.md",
               "system-review-2026-10-04.md"}

@@ -364,7 +364,7 @@ EXPECTED: dict[str, int] = {
     "apollo_signals": 26 * _H,  # 05:10 weekdays (weekday time; 03:30 until W1-3a, 19 Oct 2026)
     "read_pages": 26 * _H,  # 03:45 weekdays (weekday time; build addition, Harry, 2 Oct 2026)
     "apollo_enrich": 26 * _H,  # 05:00 weekdays (weekday time; 04:10 until W1-3a)
-    "apollo_people": 26 * _H,  # 04:20 weekdays (weekday time; build addition, Harry, 5 Oct 2026)
+    "contact_precheck": 26 * _H,  # 05:15 weekdays (weekday time; W3-3, 20 Oct 2026, in place of apollo_people)
     "site_visits": 26 * _H,  # 06:00 daily
     "verify_accounts": 26 * _H,  # 04:30 weekdays (weekday time; build addition)
     "pick_contacts": 26 * _H,  # 05:30 weekdays (weekday time)
@@ -395,7 +395,7 @@ EXPECTED: dict[str, int] = {
     "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
 # score has no schedule of its own: it runs inside settings_sync, verify_accounts, pick_contacts and site_visits.
-WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people",
+WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "contact_precheck",
                           "verify_accounts", "pick_contacts", "enrol"})
 # What stops happening when a job stops, for a reader who does not know the job (say.job_name names it).
 IMPACT: dict[str, str] = {
@@ -406,6 +406,7 @@ IMPACT: dict[str, str] = {
     "sync_outcomes": "bounces, opt-outs and other email results are not being recorded",
     "enrol": "nobody new is being added to the email campaign",
     "pick_contacts": "no new contacts are being chosen",
+    "contact_precheck": "companies with nobody to email are not being found before contacts are paid for",
     "apollo_enrich": "verified companies' exact headcounts and funding are not being read from Apollo",
     "apollo_signals": "verified companies' open job postings are not being read from Apollo",
     "kill_rules": "bounce and complaint limits are not being checked",

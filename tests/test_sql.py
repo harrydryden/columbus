@@ -97,6 +97,7 @@ BUILD_TABLES: dict[str, set[str]] = {
         "log_id", "changed_at", "kind", "campaign", "changed_keys", "detail", "leads_in_flight", "code_sha",
         "changed_by", "run_id",
     },
+    "source_state": {"key", "value", "updated_at"},  # W3-3 (20 Oct 2026): the sources' state, out of the ledger
 }
 RAW_TABLES = ("raw_irs_bmf", "raw_job_posts", "raw_clay_accounts", "raw_clay_contacts", "raw_site_visits", "raw_layoffs")
 RAW_COLUMNS = {"loaded_at", "run_id", "key", "payload"}

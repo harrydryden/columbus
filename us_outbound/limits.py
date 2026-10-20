@@ -192,4 +192,4 @@ def behind_ready(ctx: Context, ready: int, budgets: dict[str, budget.Budget]) ->
     if waiting:
         return f"Behind it: {waiting} accounts are waiting for verify_accounts (weekdays 04:30 UK)."
     return ("Behind it: no accounts are waiting to be verified, so the universe or the free checks are the limit "
-            "(source_universe, apollo_people).")
+            "(source_universe, verify_accounts).")

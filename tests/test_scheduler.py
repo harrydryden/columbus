@@ -877,7 +877,8 @@ SPEC9_CRONS = {
     "hand_check_draw": "45 5 * * 1",  # W1-5, 19 Oct 2026: the draw, after pick_contacts (hand_check_post at 08:00)
     "read_pages": "45 3 * * 1-5",  # Harry, 2 Oct 2026: after source_universe, before verify_accounts (04:30)
     "apollo_enrich": "0 5 * * 1-5",  # W1-3a, 19 Oct 2026: after verify_accounts, for verified accounts (04:10 before)
-    "apollo_people": "20 4 * * 1-5",  # Harry, 5 Oct 2026: after read_pages, before verify_accounts' rescore
+    # W3-3, 20 Oct 2026: in place of apollo_people (04:20): after the enrichment, before pick_contacts' rescore.
+    "contact_precheck": "15 5 * * 1-5",
     "retention": "40 0 * * *",  # SPEC 6 and 13 (SPEC 9 had the lead deletions in sync_outcomes at 01:00)
     "label_sample_monthly": "15 9 1 * *",  # Harry, 11 Oct 2026: the labels judged by hand, a batch a month
     "capture": "30 7 * * 1",  # W1-2, 19 Oct 2026: the reply read checked, Mondays before the readout
@@ -937,7 +938,7 @@ def test_the_morning_runs_source_verify_then_paid_enrichment_then_pick():
 def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     enabled = enabled_names()
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
-                       "apollo_people", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
+                       "contact_precheck", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "capture",
                        "monday_readout", "heartbeat_check",
                        "suppression_load", "lookalikes", "hand_check_draw", "retention", "label_sample_monthly",
