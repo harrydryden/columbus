@@ -64,8 +64,6 @@ from us_outbound.timeparse import iso_date, utc
 JOB = "monday_readout"
 MIN_MATURED = outcomes.MIN_MATURED  # 30: a rate is shown only from this many matured companies
 MIN_CELL = 15  # a split prints only when every cell has this many (RT §1.5)
-MIN_CONTACTS = 100  # the exit criterion's bounce share is read from 100 contacts sent email 1
-BOUNCE_LIMIT = 0.02  # exit criteria to scale (docs/roadmap.md §3): bounces under 2% of the contacts sent email 1
 REPLY_DAYS, MEETING_DAYS = outcomes.REPLY_DAYS, outcomes.MEETING_DAYS
 POOL_WEEKS = 4  # the operating metric's delivered share and T1 are pooled over these weeks
 HELD_CAVEAT = 2  # points the operating metric can overstate by (the hand-check holds its sample: RT §1.4)
@@ -314,9 +312,10 @@ def _key(e: Mapping[str, Any]) -> str:
 
 
 def bounce_contacts(ev: Recorded) -> tuple[int, int]:
-    """(contacts sent email 1, how many of them have bounced), all time: D1 per contact (metrics-audit H4)."""
+    """(contacts sent email 1, how many of them bounced at step 1), all time: D1 per contact (metrics-audit H4). A
+    bounce with no step counts as step 1, as learn/metrics.bounce_block counts it; a later step's bounce does not."""
     sent = {_key(e) for e in ev.by_type["sent"] if e.get("step") in (1, "1")}
-    bounced = {_key(e) for e in ev.by_type["bounced"]} & sent
+    bounced = {_key(e) for e in ev.by_type["bounced"] if e.get("step") in (1, "1", None)} & sent
     return len(sent), len(bounced)
 
 
@@ -337,7 +336,7 @@ def source_lines(ctx: Context) -> tuple[list[str], dict[str, Any]]:
             continue
         sends, bounced_sends = len(mine), sum(s.bounced for s in mine)
         first = {s.contact_id for s in mine if s.step in (1, "1")}
-        bounced = {s.contact_id for s in mine if s.bounced} & first
+        bounced = {s.contact_id for s in mine if s.bounced and s.step in (1, "1")} & first  # at step 1 (D1)
         n, b = len(first), len(bounced)
         per_contact = (f"{b:,} of {fmt.plural(n, 'contact')} sent email 1 bounced ({fmt.pct(b, n)}; 95% {_span(b, n)})"
                        if n else "no contact sent email 1")
@@ -420,8 +419,7 @@ def delivery_lines(ctx: Context, ev: Recorded, start: datetime, end: datetime
     out = ["", "*Delivery and capture*"]
     if n:
         out.append(f"  Step-1 bounces per contact: {b:,} of {fmt.plural(n, 'contact')} sent email 1 ({fmt.pct(b, n)}; "
-                   f"95% {_span(b, n)}). The exit criterion to scale is under {BOUNCE_LIMIT:.0%} on {MIN_CONTACTS} "
-                   "or more contacts.")
+                   f"95% {_span(b, n)}).")
     else:
         out.append("  Step-1 bounces per contact: no email sent yet.")
     sources, by_source = source_lines(ctx)

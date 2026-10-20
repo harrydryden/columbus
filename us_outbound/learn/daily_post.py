@@ -697,7 +697,8 @@ def canary_kept(ctx: Context, checked_at: datetime) -> bool:
 
 def lost_ask(ctx: Context, start: datetime, end: datetime) -> str | None:
     """Yesterday's enrol run lost leads to a gate (it did not run: a hold, a pause) or to errors (prepared, not
-    enrolled), from its run summary as learn/throughput.read_day reads it (L6: looked at the same day)."""
+    enrolled), from its run summary as learn/throughput.read_day reads it (L6: looked at the same day). An operator's
+    own stop (`us-outbound stop`) is no ask: it is the pause someone chose, and throughput still counts its leads."""
     from us_outbound.learn import throughput
 
     runs = ctx.store.select("heartbeats", {"job": throughput.ENROL, "started_at": Range(start, end)})
@@ -708,6 +709,8 @@ def lost_ask(ctx: Context, start: datetime, end: datetime) -> str | None:
     errors = day.lost.get("errors", 0)
     if day.binding == "gate":
         why = str((row.get("detail") or {}).get("reason") or "a gate").rstrip(".")
+        if why.startswith(enrol.OPERATOR_STOPPED):
+            return None
         return (f"Leads lost: enrolment did not run yesterday ({why}), about {day.lost.get('gate', 0)} leads: "
                 f"{say.command('status')}")
     if errors:

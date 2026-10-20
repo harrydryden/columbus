@@ -329,23 +329,22 @@ def _contacts_sent(ctx, n: int, bounced: int, *, bounce_step: dict[int, int] | N
 
 
 def test_bounces_are_counted_per_contact_not_per_send():
-    """metrics-audit H4: 2 of 48 contacts bounced (4.2%), which per send read about 1.1% once the sequences finished.
-    k0 bounced at step 1 (1 send), k1 at step 2 (2 sends), the other 46 got all 4 emails (184): 187 sends. Wilson
-    2 of 48: z²/n = 0.080033, centre (0.041667 + 0.040017) / 1.080033 = 0.075631, half-width 1.96 × 0.035337 /
-    1.080033 = 0.064129: 1.2-14.0%."""
+    """metrics-audit H4: 2 of 48 contacts bounced at step 1 (4.2%), which per send read about 1.6% once the sequences
+    finished. k0 and k1 bounced at step 1 (1 send each), k2 at step 2 (2 sends: not a step-1 bounce, as metrics D1
+    counts it), the other 45 got all 4 emails (180): 184 sends, 3 bounced. Wilson 2 of 48: z²/n = 0.080033, centre
+    (0.041667 + 0.040017) / 1.080033 = 0.075631, half-width 1.96 × 0.035337 / 1.080033 = 0.064129: 1.2-14.0%."""
     ctx, _ = world(LIVE, weekly=[])
-    _contacts_sent(ctx, 48, 2, bounce_step={1: 2}, later_steps=3)
-    assert len(ctx.store.select("events", {"type": "sent"})) == 187
+    _contacts_sent(ctx, 48, 3, bounce_step={2: 2}, later_steps=3)
+    assert len(ctx.store.select("events", {"type": "sent"})) == 184
     lines, nums = readout.build(ctx)
     assert nums["bounces"] == {"contacts": 48, "bounced": 2, "interval": [0.0115, 0.1398]}
-    assert ("  Step-1 bounces per contact: 2 of 48 contacts sent email 1 (4.2%; 95% 1.2–14.0%). The exit criterion "
-            "to scale is under 2% on 100 or more contacts.") in lines
+    assert "  Step-1 bounces per contact: 2 of 48 contacts sent email 1 (4.2%; 95% 1.2–14.0%)." in lines
 
 
 def test_each_source_s_bounces_per_contact_beside_the_per_send_rule():
     """D19: source_bounce_rate stays per send; the readout prints the per-contact figure beside it. 48 apollo contacts
-    emailed in the last 7 days, 2 bounced at step 1, 46 with a second email: 94 sends, 2 bounced (2.1%); per contact 2
-    of 48 (4.2%; Wilson 1.2-14.0%, as above)."""
+    emailed in the last 7 days, 2 bounced at step 1, 46 with a second email, k2's of which bounced: 94 sends, 3
+    bounced (3.2%); per contact at step 1 2 of 48 (4.2%; Wilson 1.2-14.0%, as above): k2's bounce is at step 2."""
     ctx, _ = world(LIVE, weekly=[])
     rows, contacts = [], []
     for i in range(48):
@@ -356,14 +355,17 @@ def test_each_source_s_bounces_per_contact_beside_the_per_send_rule():
         else:
             rows.append(ev(10 * i + 2, "sent", step=2, at=at + timedelta(days=1), account_id=f"a{i}",
                            contact_id=f"k{i}", mailbox="h@x.org"))
+        if i == 2:
+            rows.append(ev(10 * i + 3, "bounced", step=2, at=at + timedelta(days=1, minutes=5), account_id=f"a{i}",
+                           contact_id=f"k{i}"))
         contacts.append({"contact_id": f"k{i}", "account_id": f"a{i}", "email_source": "apollo"})
     ctx.store.insert("events", rows)
     ctx.store.insert("contacts", contacts)
     lines, nums = readout.build(ctx)
     assert nums["source_bounces"] == {"apollo": {"contacts": 48, "bounced_contacts": 2, "sends": 94,
-                                                 "bounced_sends": 2}}
+                                                 "bounced_sends": 3}}
     assert ("  Emails found by apollo, last 7 days: 2 of 48 contacts sent email 1 bounced (4.2%; 95% 1.2–14.0%) · the "
-            "safety pause counts sends: 2 of 94 sends (2.1%), and pauses the source over 3% from 100 sends") in lines
+            "safety pause counts sends: 3 of 94 sends (3.2%), and pauses the source over 3% from 100 sends") in lines
 
 
 def test_the_checks_say_what_is_not_dealt_with_and_what_to_do():

@@ -288,6 +288,141 @@ def test_o9_counts_the_month_of_the_rows_day():
     assert (claude["n"], claude["value"]) == (4, 0.5)
 
 
+# -- the day's process numbers, by hand (each read on Wed 21 Oct 2026 08:50 UK = 07:50 UTC, BST; the row is Tue 20) ---
+
+WED = datetime(2026, 10, 21, 7, 50, tzinfo=UTC)
+
+
+def test_p1_counts_the_uk_iso_week_from_its_monday_to_the_end_of_yesterday():
+    """The row's day is Tue 20 Oct; its UK week starts Mon 19 Oct 00:00 BST = Sun 18 Oct 23:00 UTC and the count ends
+    at Wed 21 Oct 00:00 BST = Tue 20 Oct 23:00 UTC.
+      in: 3 sent Mon 19 Oct 14:00 UTC; 1 Tue 20 Oct 15:00 UTC; 1 Sun 18 Oct 23:30 UTC (00:30 Monday in the UK) = 5.
+      out: 1 Sun 18 Oct 22:30 UTC (23:30 Sunday UK, last week); 1 Wed 21 Oct 07:00 UTC (today, after the row's day).
+    contacted_week k 5, n weekly_enrol_cap 150, value 5 ÷ 150. (Counted from the row's own midnight it would be 1.)"""
+    ev = [sent(f"mon{i}", datetime(2026, 10, 19, 14, tzinfo=UTC)) for i in range(3)]
+    ev += [sent("tue", datetime(2026, 10, 20, 15, tzinfo=UTC)), sent("mon-early", datetime(2026, 10, 18, 23, 30, tzinfo=UTC)),
+           sent("sun-late", datetime(2026, 10, 18, 22, 30, tzinfo=UTC)), sent("wed", datetime(2026, 10, 21, 7, tzinfo=UTC))]
+    ctx = make_context(BASE, now=WED, job=metrics.JOB)
+    ctx.store.insert("events", ev)
+    run(ctx)
+    r = one(ctx.store, "contacted_week")
+    assert BASE.general.weekly_enrol_cap == 150
+    assert (r["day"], r["k"], r["n"], r["value"]) == (date(2026, 10, 20), 5, 150, 5 / 150)
+
+
+def test_s1_and_s2_count_a_jobs_runs_errors_and_item_failures_on_the_rows_uk_day():
+    """poll_replies' heartbeats; the row's UK day Tue 20 Oct runs from Mon 19 Oct 23:00 UTC to Tue 20 Oct 23:00 UTC.
+      in: Mon 19 Oct 23:30 UTC ok (no errors); Tue 10:00 ok with detail.errors of 2 items; Tue 12:00 error (its 1
+        listed item is not S2's: S2 counts failures inside runs that finished ok).
+      out: Mon 19 Oct 22:30 UTC ok with 1 item (Monday in the UK); Tue 20 Oct 23:00 UTC error (Wednesday 00:00 UK).
+    S1: job_runs k 2 ok of n 3, job_errors 1; S2: item_failures 2. enrol, enabled and with no run that day: job_runs
+    0 of 0 (value None), job_errors 0, item_failures 0."""
+    def beat(i: int, at: datetime, status: str, errors: list) -> dict:
+        return {"run_id": f"pr-{i}", "job": "poll_replies", "status": status, "dry_run": False, "started_at": at,
+                "finished_at": at + timedelta(minutes=1), "detail": {"errors": errors}}
+
+    ctx = make_context(BASE, now=WED, job=metrics.JOB)
+    ctx.store.insert("heartbeats", [
+        beat(1, datetime(2026, 10, 19, 23, 30, tzinfo=UTC), "ok", []),
+        beat(2, datetime(2026, 10, 20, 10, tzinfo=UTC), "ok", ["c-1: timeout", "c-2: 500"]),
+        beat(3, datetime(2026, 10, 20, 12, tzinfo=UTC), "error", ["c-3: 500"]),
+        beat(4, datetime(2026, 10, 19, 22, 30, tzinfo=UTC), "ok", ["c-4: 500"]),
+        beat(5, datetime(2026, 10, 20, 23, tzinfo=UTC), "error", [])])
+    run(ctx)
+    runs = one(ctx.store, "job_runs", "job=poll_replies")
+    assert (runs["k"], runs["n"], runs["value"]) == (2, 3, 2 / 3)
+    assert one(ctx.store, "job_errors", "job=poll_replies")["k"] == 1
+    assert one(ctx.store, "item_failures", "job=poll_replies")["k"] == 2
+    idle = one(ctx.store, "job_runs", "job=enrol")
+    assert (idle["k"], idle["n"], idle["value"]) == (0, 0, None)
+    assert (one(ctx.store, "job_errors", "job=enrol")["k"], one(ctx.store, "item_failures", "job=enrol")["k"]) == (0, 0)
+
+
+def test_o7_the_realised_explore_share_and_the_arm_cut():
+    """20 companies sent step 1 on Sun 11 Oct 10:00 UTC (cohort 2026-W41): 3 contacts stamped arm=random, 10
+    arm=ranked, 7 with no stamp (enrolled before it existed: NULL reads as ranked). explore_share 3 of 20 = 0.15 for
+    `all` and the cohort row; the arm cut: random contacted 3 (explore share 3 of 3), ranked contacted 17 (0 of 17)."""
+    at = datetime(2026, 10, 11, 10, tzinfo=UTC)
+    ids = [f"x{i:02d}" for i in range(20)]
+    ctx = make_context(BASE, now=WED, job=metrics.JOB)
+    ctx.store.insert("events", [sent(a, at) for a in ids])
+    ctx.store.insert("contacts", [{"contact_id": f"c-{a}", "account_id": a,
+                                   "arm": "random" if i < 3 else "ranked" if i < 13 else None} for i, a in enumerate(ids)])
+    run(ctx)
+
+    def kn(metric: str, segment: str = "all") -> tuple[int, int]:
+        r = one(ctx.store, metric, segment)
+        return r["k"], r["n"]
+
+    assert kn("explore_share") == (3, 20) and one(ctx.store, "explore_share")["value"] == 0.15
+    assert kn("explore_share", "cohort=2026-W41") == (3, 20)
+    assert (kn("contacted", "arm=random")[0], kn("contacted", "arm=ranked")[0]) == (3, 17)
+    assert kn("explore_share", "arm=random") == (3, 3) and kn("explore_share", "arm=ranked") == (0, 17)
+
+
+def test_o8_positive_replies_answered_within_24_hours_and_the_median():
+    """Warm (positive or referral) replies of the 28 days to Wed 21 Oct 07:50 UTC, each with the first reply_sent to
+    the same contact at or after it:
+      w1 positive 5 days ago, answered 23 hours later (a reply_sent 2 hours before it does not count);
+      w2 referral 6 days ago, answered 25 hours later; w3 positive 3 days ago, not answered.
+      Not counted: an objection 4 days ago answered after 1 hour (not warm); a positive 30 days ago answered after 2
+      hours (outside the 28 days).
+    positive_response_24h k 1 (w1) of n 3; the median of the answered, 23 and 25 hours, 24.0 over k 2."""
+    def reply(aid: str, at: datetime, cls: str) -> dict:
+        return {"event_id": f"r-{aid}", "type": "replied", "account_id": aid, "contact_id": f"c-{aid}",
+                "reply_class": cls, "occurred_at": at}
+
+    def answer(aid: str, at: datetime, n: int = 0) -> dict:
+        return {"event_id": f"rs-{aid}-{n}", "type": "reply_sent", "account_id": aid, "contact_id": f"c-{aid}",
+                "occurred_at": at}
+
+    w1, w2, w3 = WED - timedelta(days=5), WED - timedelta(days=6), WED - timedelta(days=3)
+    old, objection = WED - timedelta(days=30), WED - timedelta(days=4)
+    ctx = make_context(BASE, now=WED, job=metrics.JOB)
+    ctx.store.insert("events", [
+        reply("w1", w1, "positive"), answer("w1", w1 - timedelta(hours=2)), answer("w1", w1 + timedelta(hours=23), 1),
+        reply("w2", w2, "referral"), answer("w2", w2 + timedelta(hours=25)),
+        reply("w3", w3, "positive"),
+        reply("o1", objection, "objection"), answer("o1", objection + timedelta(hours=1)),
+        reply("p0", old, "positive"), answer("p0", old + timedelta(hours=2))])
+    run(ctx)
+    r = one(ctx.store, "positive_response_24h")
+    assert (r["k"], r["n"]) == (1, 3)
+    m = one(ctx.store, "positive_response_median_hours")
+    assert (m["k"], m["value"]) == (2, 24.0)
+
+
+def test_t6_supply_days_is_the_contactable_supply_over_the_steady_pace():
+    """100 raw accounts (status new, tier unset) and 10 tiered Excluded (out of the queue, not counted); nothing ready
+    or findable. No account was first checked in the last 28 days and pick_contacts has no runs, so both yields are
+    their defaults: p_v 0.60, p_c 0.46. Contactable = 100 × 0.60 × 0.46 = 27.6. The pace is ceil(150 ÷ 5 send days)
+    = 30. supply_days value 27.6 ÷ 30 = 0.92, k round(27.6) = 28, n 30."""
+    ctx = make_context(BASE, now=WED, job=metrics.JOB)
+    ctx.store.insert("accounts", [{"account_id": f"raw{i}", "domain": f"raw{i}.com", "status": "new"} for i in range(100)]
+                     + [{"account_id": f"ex{i}", "domain": f"ex{i}.com", "status": "new", "tier": "Excluded"}
+                        for i in range(10)])
+    run(ctx)
+    r = one(ctx.store, "supply_days")
+    assert (r["k"], r["n"], r["value"]) == (28, 30, pytest.approx(0.92))
+
+
+def test_d2_each_mailboxs_bounces_over_its_last_100_sends():
+    """dee@meetspill.org sent step 1 to 102 contacts, d000 to d101, one an hour up to 2 hours before the run; d000
+    (its oldest, outside the last 100), d050 and d101 bounced. eve@spillhq.org sent 3, none bounced.
+    mailbox_bounce_last_100: dee k 2 (d050, d101) of n 100; eve 0 of 3."""
+    first = WED - timedelta(hours=2 + 101)
+    ev = [sent(f"d{i:03d}", first + timedelta(hours=i), mailbox="dee@meetspill.org") for i in range(102)]
+    ev += [sent(f"e{i}", WED - timedelta(days=1), mailbox="eve@spillhq.org") for i in range(3)]
+    ev += [{"event_id": f"b-d{i:03d}", "type": "bounced", "account_id": f"d{i:03d}", "contact_id": f"c-d{i:03d}",
+            "step": 1, "occurred_at": first + timedelta(hours=i, minutes=5)} for i in (0, 50, 101)]
+    ctx = make_context(BASE, now=WED, job=metrics.JOB)
+    ctx.store.insert("events", ev)
+    run(ctx)
+    dee, eve = (one(ctx.store, "mailbox_bounce_last_100", f"mailbox={m}") for m in ("dee@meetspill.org", "eve@spillhq.org"))
+    assert (dee["k"], dee["n"], dee["value"]) == (2, 100, 0.02)
+    assert (eve["k"], eve["n"]) == (0, 3)
+
+
 # -- forecasts -------------------------------------------------------------------------------------------------------
 
 

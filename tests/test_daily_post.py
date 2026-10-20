@@ -507,7 +507,9 @@ def test_a_canary_not_sent_is_an_ask_only_once_its_lead_is_given_up():
 
 def test_leads_lost_to_a_gate_or_to_errors_yesterday():
     """Yesterday (Mon 26 Oct) enrol was held by the hand-check: the day's share of the weekly cap, ceil(150 ÷ 5) =
-    30, is lost. A run that prepared 20 and enrolled 17 lost 3 to errors. A run with nothing lost: no ask."""
+    30, is lost. A run that prepared 20 and enrolled 17 lost 3 to errors. A run with nothing lost: no ask. A run an
+    operator's stop held: no ask (the pause someone chose), though throughput counts the day's share as lost to a
+    gate; the stop rule's pause still asks."""
     at = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 
     def enrol_run(status, detail):
@@ -526,6 +528,11 @@ def test_leads_lost_to_a_gate_or_to_errors_yesterday():
         "Leads lost: 3 leads prepared yesterday and not enrolled (errors): read the error with "
         "`railway ssh -- us-outbound status`")
     assert enrol_run("ok", {"number": 20, "enrolled": 20, "number_terms": terms}) is None
+    stopped = ("enrollment is stopped by an operator (stop at 2026-10-23 16:00:00+00:00); run `us-outbound start "
+               "--live` to resume")
+    assert enrol_run("skipped", {"reason": stopped}) is None
+    assert enrol_run("skipped", {"reason": "enrollment is paused by the stop rule (bounce)"}).startswith(
+        "Leads lost: enrolment did not run yesterday (enrollment is paused by the stop rule (bounce)), about 30 leads")
 
 
 def test_the_asks_come_after_the_replies_holds_and_hand_check_in_the_post():
