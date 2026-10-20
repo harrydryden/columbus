@@ -16,7 +16,7 @@ opener is chosen here, once the contact and their copy role are known (enrol.pre
           (people_leader_newest, contacts/pick.py people_facts). Never a guess from the title;
        b. otherwise the contact's copy-role line (opener_people, opener_founder, opener_ops), each
           alternative in the cell in turn;
-       c. the signal's plain opener, filled with {evidence} as scoring fills it (angle.fill_opener);
+       c. the signal's plain opener, filled with {evidence} (fill_opener);
        d. the generic line (step 5).
   4. No firing signal (the General angle): the generic line. (General opener_focus, a "what they do" line for
      these, was removed while off: W2-1, 20 Oct 2026.)
@@ -70,10 +70,11 @@ from typing import Any
 from us_outbound import facts, parse
 from us_outbound.copy import copy_rules
 from us_outbound.scoring import angle as angles
-from us_outbound.scoring.score import Evidence, Match, fresh_facts, score_account
+from us_outbound.scoring.score import Evidence, Match, evidence_display, fresh_facts, score_account
 from us_outbound.settings.model import (
     GENERIC_OPENER_KEY,
     GENERIC_OPENER_KEYS,
+    LEGAL_GROUP,
     OPENER_COLUMNS,
     OPENER_SELF_COLUMN,
     Settings,
@@ -85,6 +86,27 @@ from us_outbound.settings.overrides import effective
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
 PLAIN_COLUMN = "opener"
 HOLDOUT_SALT = "opener-holdout:"
+
+LEGAL_OVERLAY = "The bar's Lawyer Assistance Program covers attorneys. Who covers paralegals and staff?"
+# Placeholders a signal's plain opener may use. validate.py allows only {evidence} on the sheet today.
+_PLACEHOLDER = re.compile(r"(?<!\{)\{\s*(evidence|quote|url)\s*\}(?!\})")
+
+
+def legal_overlay(industry_group: str | None) -> str:
+    """The Legal Teams overlay line (copy variable {{legal_overlay}}): "" for any other group."""
+    return LEGAL_OVERLAY if (industry_group or "").strip().casefold() == LEGAL_GROUP.casefold() else ""
+
+
+def has_placeholder(template: str) -> bool:
+    """Whether a plain opener needs evidence to be filled ({evidence}, {quote} or {url})."""
+    return bool(_PLACEHOLDER.search(template))
+
+
+def fill_opener(template: str, ev: Evidence) -> str:
+    """A plain opener filled with one piece of evidence: the term as it reads mid-sentence, its quote, its URL."""
+    values = {"evidence": evidence_display(ev), "quote": ev.quote, "url": ev.url}
+    return _PLACEHOLDER.sub(lambda m: values[m.group(1)], template).strip()
+
 
 OPEN_ROLES_MIN, OPEN_ROLES_MAX = 2, 99  # "has one roles open" never; a count past 99 is not believed
 GROWTH_MIN = 0.10  # the Hiring and growth threshold: below it the growth is not worth a line
@@ -391,7 +413,7 @@ def tokens(account: Mapping[str, Any], signal: Signal | None, match: Match | Non
 def evidence_text(ev: Evidence) -> str:
     """A term match as it reads mid-sentence, spelled the American way, a benefit in its plural or mass form
     (BENEFIT_FORMS: "wellness stipends", "parental leave"); "" when the copy rules would block it."""
-    text = BENEFIT_FORMS.get(ev.term.strip().casefold()) or _american(angles.evidence_display(ev))
+    text = BENEFIT_FORMS.get(ev.term.strip().casefold()) or _american(evidence_display(ev))
     if not text or len(text) > EVIDENCE_MAX_CHARS or "\n" in text:
         return ""
     if (copy_rules.content_violations(text) or copy_rules.structure_violations(text)
@@ -511,12 +533,12 @@ def signal_opener(account: Mapping[str, Any], contact: Mapping[str, Any], signal
     plain = signal.opener.strip()
     if plain:
         text = ""
-        if not angles.has_placeholder(plain):
+        if not has_placeholder(plain):
             text = plain
         elif values.get("evidence") and set(_TOKEN.findall(plain)) <= {"evidence"}:
             text = fill(plain, values)[0] or ""  # the first term the rules let through, in its sentence form
         elif ev := next((e for e in match.evidence if e.term or e.quote), None):
-            text = angles.fill_opener(plain, ev)
+            text = fill_opener(plain, ev)
         if not text:
             notes.append(f"{signal.signal} opener: no evidence that reads as prose")
         elif problem := check(text):

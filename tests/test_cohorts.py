@@ -87,8 +87,8 @@ def test_config_version_changes_only_for_content_tabs(monkeypatch):
     # How many are enrolled, and which arm a contact is in, change nothing a contact is sent (W1-6): the same version.
     g = base.general
     assert vid(dataclasses.replace(base, general=dataclasses.replace(g, weekly_enrol_cap=300))) == first.id
-    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, explore_share=0.15))) == first.id
-    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, control_share=0.4))) == first.id
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, explore_share=0.0))) == first.id
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, explore_share=0.25))) == first.id
     # A deploy alone starts no version (W1-6; code-contacts-enrol M7): code_sha is kept beside the id, not hashed.
     # Before, this asserted deployed.id != first.id, so every one of 50 deploys in 12 days split the cohorts.
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "a4c5c27f00ba7e1234567890")

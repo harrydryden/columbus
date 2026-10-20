@@ -387,11 +387,12 @@ def _lookalikes(ctx: Context) -> dict:
 
 
 def _rescore(ctx: Context) -> bool:
-    """Rescore the queue with the settings now in force (SPEC 5). Imported here, as tests replace the module."""
+    """Rescore the queue with the settings now in force (SPEC 5); False when another rescore was running and this one
+    skipped after waiting LOCK_WAIT_SECONDS for it (scoring/score.py); the next rescore (verify_accounts,
+    pick_contacts or the next sync) scores with these settings. Imported here, as tests replace the module."""
     from us_outbound.scoring import score
 
-    score.rescore(ctx)
-    return True
+    return not (score.rescore(ctx) or {}).get("skipped")
 
 
 def read_sheet(ctx: Context, sheet_id: str) -> dict[str, Rows]:

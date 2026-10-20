@@ -133,9 +133,6 @@ OOO_KIND = "out_of_office"  # hitl_items.kind for an out-of-office record (statu
 OPEN, HANDLED = "open", "handled"
 REPLY_SOURCE = "reply"  # suppression.source for an opt-out by reply
 LABELS = {cls: label for cls, (label, _) in desk.CLASS_WORDS.items()}  # "Interested", "Not now", "Wrong person"
-# Each tier in plain words (scoring/tiers.py), for the alert's "Who" line.
-TIER_WORDS = {"Priority": "top fit (Priority)", "Standard": "good fit (Standard)",
-              "Control": "comparison group (Control)"}
 EXCERPT_CHARS = 500  # the payload's reply_excerpt (the contract)
 SLACK_EXCERPT_CHARS = 300
 STORED_TEXT_CHARS = 5000  # events.reply_text
@@ -604,8 +601,8 @@ def alert(payload: Mapping[str, Any], settings: Settings) -> tuple[str, list[dic
         replier = f"Someone else at {company or 'the company'}"
         who = f"someone else at {company or 'the company'}, not the person we emailed ({contact})"
     where = f"{company} ({p['place']})" if p.get("place") else company
-    account = " · ".join(str(x) for x in (where, p.get("industry"), TIER_WORDS.get(str(p.get("tier")), p.get("tier")))
-                         if x)
+    # The tier is no longer in the line: the tiers were retired (W2-2, Harry's D7), and Queue says nothing here.
+    account = " · ".join(str(x) for x in (where, p.get("industry")) if x)
     mention = " ".join(f"<@{u}>" for u in settings.general.approver_slack_ids) if cls in WARM_REPLY_CLASSES else ""
     excerpt = str(p.get("reply_excerpt") or "")[:SLACK_EXCERPT_CHARS]
     owner = str(p.get("owner") or "")

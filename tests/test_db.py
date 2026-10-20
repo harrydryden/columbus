@@ -22,7 +22,7 @@ from psycopg import sql
 from psycopg.conninfo import make_conninfo
 from psycopg.rows import dict_row
 
-from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, MemoryStore, PostgresStore
+from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, LockTimeout, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
 from us_outbound import budget
 from us_outbound.base import heartbeats
@@ -188,7 +188,7 @@ def fixture_rows(store) -> datetime:
                                                             "status": "Active", "daily_cap": "30"}),
     ])
     store.insert("accounts", [
-        account("law", tier="Priority", score=40, industry="Law firm"),
+        account("law", tier="Queue", score=40, industry="Law firm"),  # a rescore since W2-2 wrote Queue
         account("agency", tier="Priority", score=40, size_band="100-249"),
         account("queued", tier="Standard", score=30, status="queued"),
         account("noscore", tier="Standard", score=None),
@@ -252,13 +252,14 @@ def fixture_rows(store) -> datetime:
 def test_v_queue_on_a_fixture(store, fixture_rows):
     rows = sorted(store.query(f"SELECT * FROM {SCHEMA}.v_queue"), key=lambda r: (r["tier_rank"], r["rank_in_tier"]))
     order = [(r["account_id"], r["tier"], r["rank_in_tier"]) for r in rows]
-    # Priority: equal scores, so size band (20-49 before 100-249); casino's industry is off,
-    # suppressed / aliased / partner are left out; Standard: the unscored account comes last.
+    # One queue taken by score since W2-2 (Harry's D7), whatever tier a row still carries: law and agency 40 (equal,
+    # so size band: 20-49 before 100-249), queued 30, control 0, and the unscored account last. casino's industry is
+    # off, suppressed / aliased / partner are left out, held is Held.
     assert order == [
-        ("law", "Priority", 1), ("agency", "Priority", 2),
-        ("queued", "Standard", 1), ("noscore", "Standard", 2),
-        ("control", "Control", 1),
+        ("law", "Queue", 1), ("agency", "Priority", 2), ("queued", "Standard", 3), ("control", "Control", 4),
+        ("noscore", "Standard", 5),
     ]
+    assert {r["tier_rank"] for r in rows} == {1}
     law = rows[0]
     assert law["verified"] is True and law["industry_priority"] == 1 and law["size_band_rank"] == 1
     assert rows[2]["verified"] is False and rows[2]["industry_priority"] == 2
@@ -271,7 +272,8 @@ def test_v_queue_leaves_out_parked_and_disqualified_accounts(store, fixture_rows
     """W1-4: parked (its industry switched off) and disqualified are out of the queue by status, whatever their tier
     and score: the fixture's five rows, in the same order, and neither of the two added."""
     store.insert("accounts", [account("parked", tier="Priority", score=99, status="parked"),
-                              account("left-out", tier="Priority", score=99, status="disqualified")])
+                              account("left-out", tier="Priority", score=99, status="disqualified"),
+                              account("unscored", tier=None, score=99)])  # W2-2: a NULL tier is not in the queue
     rows = store.query(f"SELECT account_id FROM {SCHEMA}.v_queue")
     assert sorted(r["account_id"] for r in rows) == ["agency", "control", "law", "noscore", "queued"]
 
@@ -375,6 +377,9 @@ def learning_world(store) -> datetime:
         contacts.append({"contact_id": f"k{i:02d}", "account_id": aid, "email_sha256": f"h{i}", "copy_version": "v1",
                          "enrolled_at": sent_at - timedelta(hours=1), "angle": accounts[-1]["angle"],
                          "tier_at_enrol": accounts[-1]["tier"],
+                         # The explore arm (W1-6): the eap_named half drawn at random; the rest enrolled before the
+                         # arm existed (NULL, read as ranked).
+                         "arm": "random" if with_it else None,
                          "signals_at_enrol": [{"signal": "eap_named", "weight": 10}] if with_it else []})
         if i == 70:
             continue  # enrolled, step 1 not sent yet
@@ -403,7 +408,8 @@ def learning_world(store) -> datetime:
 
 def test_the_learning_loop_views(store):
     """v_account_outcomes counts a meeting after step 1; v_signal_value compares with and without each signal, with
-    meetings and too_few; v_readout_weekly cuts by tier, angle, sender and step, and counts a booking once."""
+    meetings and too_few; v_readout_weekly cuts by explore arm (W2-2, in place of the tier), angle, sender and step,
+    and counts a booking once."""
     learning_world(store)
     q = lambda view: store.query(f"SELECT * FROM {SCHEMA}.{view}")  # noqa: E731
     outcomes = {r["account_id"]: r for r in q("v_account_outcomes")}
@@ -424,7 +430,8 @@ def test_the_learning_loop_views(store):
 
     readout = q("v_readout_weekly")
     cuts = {(r["cut"], r["cut_value"]) for r in readout}
-    assert {("tier", "Priority"), ("tier", "Control"), ("angle", "General"), ("sender", "Hannah Spalding"),
+    assert not any(cut == "tier" for cut, _ in cuts)
+    assert {("arm", "random"), ("arm", "ranked"), ("angle", "General"), ("sender", "Hannah Spalding"),
             ("industry_group", "Marketing & Creative Agencies"), ("step", "step 1"), ("all", "all")} <= cuts
     alls = [r for r in readout if r["cut"] == "all"]
     assert sum(r["sends"] for r in alls) == 70 and sum(r["bounces"] for r in alls) == 1
@@ -435,8 +442,12 @@ def test_the_learning_loop_views(store):
     step = [r for r in readout if r["cut"] == "step"]
     assert sum(r["sends"] for r in step) == 70 and sum(r["replies"] for r in step) == 12
     assert all(r["accounts_enrolled"] == 0 for r in step)  # the step cut has activity only
-    priority = [r for r in readout if (r["cut"], r["cut_value"]) == ("tier", "Priority")]
-    assert sum(r["accounts_enrolled"] for r in priority) == 35 and sum(r["accounts_replied"] for r in priority) == 10
+    # random: a00 to a34 sent step 1 (a70 not yet), a00 to a09 replied; ranked (NULL arm): a35 to a69, a35 and a36.
+    random_ = [r for r in readout if (r["cut"], r["cut_value"]) == ("arm", "random")]
+    assert sum(r["accounts_enrolled"] for r in random_) == 35 and sum(r["accounts_replied"] for r in random_) == 10
+    ranked = [r for r in readout if (r["cut"], r["cut_value"]) == ("arm", "ranked")]
+    assert sum(r["accounts_enrolled"] for r in ranked) == 35 and sum(r["accounts_replied"] for r in ranked) == 2
+    assert {r["arm"] for r in outcomes.values()} == {"random", None}  # v_account_outcomes carries the contact's arm
 
 
 def test_v_readout_weekly_counts_replies_by_company(store):
@@ -730,6 +741,142 @@ def test_query_is_read_only(db, store):
         store.query(f"SELECT * FROM {SCHEMA}.accounts FOR UPDATE")
     assert [r["account_id"] for r in store.select("accounts")] == ["a1"]
     assert store.select("accounts", {"account_id": "a1"})  # the connection is still usable
+
+
+# -- the rescore's transaction and lock (W2-2) ----------------------------------------------------------------
+
+
+def test_a_transaction_commits_together_or_not_at_all(store, dsn):
+    """store.transaction(): the writes inside it are seen by another connection only at COMMIT, and an exception
+    rolls them all back; a write inside a nested one is a savepoint of it."""
+    store.insert("accounts", [{"account_id": "x", "score": 1}])
+    other = PostgresStore(Guard(), dsn)
+    try:
+        with pytest.raises(ValueError):
+            with store.transaction():
+                store.update("accounts", {"account_id": "x"}, {"score": 2})
+                store.insert("accounts", [{"account_id": "y"}])
+                assert other.get("accounts", account_id="x")["score"] == 1  # not yet committed
+                raise ValueError("stop")
+        assert [(r["account_id"], r["score"]) for r in other.select("accounts")] == [("x", 1)]
+        with store.transaction():
+            store.update("accounts", {"account_id": "x"}, {"score": 3})
+            store.upsert("accounts", [{"account_id": "x", "score": 4}])  # its own transaction(): a savepoint
+        assert other.get("accounts", account_id="x")["score"] == 4
+    finally:
+        other.close()
+
+
+def test_the_advisory_lock_waits_then_times_out_and_is_released_at_the_end_of_the_transaction(store, dsn):
+    other = PostgresStore(Guard(), dsn)
+    try:
+        with pytest.raises(RuntimeError, match="inside store.transaction"):
+            store.advisory_lock(20261020)
+        with store.transaction():
+            store.advisory_lock(20261020)
+            with pytest.raises(LockTimeout):
+                with other.transaction():
+                    other.advisory_lock(20261020, wait_seconds=0.2)
+        with other.transaction():  # free once the first transaction committed
+            other.advisory_lock(20261020, wait_seconds=0.2)
+            # lock_timeout is back to what it was for the rest of the transaction
+            assert other._connection().execute("SELECT current_setting('lock_timeout') AS t").fetchone()["t"] == "0"
+    finally:
+        other.close()
+
+
+RESCORE_ACCOUNTS = [f"a{i:02d}" for i in range(20)]
+
+
+def _rescore_process(dsn: str, name: str, hour: int, inserted, go, results) -> None:
+    """One rescore in its own process, as two workers would run them. With `inserted` and `go`, it stops between its
+    insert and its delete, holding the lock, until the test says go."""
+    import time as _time
+
+    from tests.fakes import make_context
+    from us_outbound.scoring import score
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    settings = validate_all(default_tabs())[0]
+    store = PostgresStore(Guard(), dsn)
+    ctx = make_context(settings, now=datetime(2026, 10, 27, hour, tzinfo=UTC), store=store, job=name)
+    real = store.insert
+
+    def insert(table, rows):
+        n = real(table, rows)
+        if table == "signal_events" and inserted is not None and not inserted.is_set():
+            inserted.set()
+            go.wait(60)
+        return n
+
+    store.insert = insert
+    started = _time.monotonic()
+    out = score.rescore(ctx)
+    results.put({"name": name, "run_id": ctx.run_id, "replaced": out.get("replaced"), "skipped": out.get("skipped"),
+                 "seconds": _time.monotonic() - started})
+    store.close()
+
+
+def _rows_per_signal(db) -> dict[tuple[str, str], int]:
+    rows = db.execute(f"SELECT account_id, value ->> 'signal' AS signal, count(*) AS n FROM {SCHEMA}.signal_events "
+                      "WHERE source = 'scoring' AND fact = 'signal_matched' GROUP BY 1, 2").fetchall()
+    return {(r["account_id"], r["signal"]): r["n"] for r in rows}
+
+
+def test_two_rescores_in_two_processes_run_in_series_and_never_leave_an_account_without_its_rows(db, store, dsn):
+    """RS P0-8: two workers rescoring at once. A inserts and stops holding the lock; B starts and waits for it
+    (pg_locks shows its advisory lock not granted); meanwhile another connection, as enrol's signals_now would,
+    sees each account's earlier rows, one per signal; A commits, B reads A's rows and replaces them. At the end
+    every account has exactly one row per matched signal, all of B's run, and B waited for A."""
+    import multiprocessing
+    import time
+
+    from tests.fakes import make_context
+    from us_outbound.enrol import enrol
+    from us_outbound.scoring import score
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    settings = validate_all(default_tabs())[0]
+    store.insert("accounts", [
+        {"account_id": aid, "domain": f"{aid}.com", "status": "verified", "tier": "Queue", "hq_state": "NY",
+         "industry": "Fintech", "employees": 25 if i < 12 else 64, "size_band": "20-49" if i < 12 else "50-99"}
+        for i, aid in enumerate(RESCORE_ACCOUNTS)])
+    first = make_context(settings, now=datetime(2026, 10, 27, 5, tzinfo=UTC), store=store)
+    score.rescore(first)  # the rows A replaces: 12 Team of 10–49, 8 Team of 50–99
+    assert set(_rows_per_signal(db).values()) == {1} and len(_rows_per_signal(db)) == 20
+
+    mp = multiprocessing.get_context("spawn")
+    inserted, go, results = mp.Event(), mp.Event(), mp.Queue()
+    a = mp.Process(target=_rescore_process, args=(dsn, "A", 6, inserted, go, results))
+    b = mp.Process(target=_rescore_process, args=(dsn, "B", 7, None, None, results))
+    a.start()
+    try:
+        assert inserted.wait(60), "A never reached its insert"
+        b.start()
+        waiting = []
+        for _ in range(100):  # B blocked on the advisory lock A holds
+            waiting = db.execute("SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+                                 ).fetchone()["n"]
+            if waiting:
+                break
+            time.sleep(0.1)
+        assert waiting == 1
+        seen = _rows_per_signal(db)  # A has not committed: the first run's rows, one per signal
+        assert set(seen.values()) == {1} and {aid for aid, _ in seen} == set(RESCORE_ACCOUNTS)
+        snapshot = enrol.signals_now(make_context(settings, store=store), RESCORE_ACCOUNTS)
+        assert all(snapshot.values()) and snapshot["a00"] == [{"signal": "Team of 10–49", "weight": 15}]
+    finally:
+        go.set()
+        a.join(60)
+        b.join(60)
+    done = {r["name"]: r for r in (results.get(timeout=10), results.get(timeout=10))}
+    assert (done["A"]["replaced"], done["B"]["replaced"]) == (20, 20) and not done["B"]["skipped"]
+    final = db.execute(f"SELECT account_id, value FROM {SCHEMA}.signal_events "
+                       "WHERE source = 'scoring' AND fact = 'signal_matched'").fetchall()
+    assert len(final) == 20 and {r["value"]["run_id"] for r in final} == {done["B"]["run_id"]}
+    assert set(_rows_per_signal(db).values()) == {1}
 
 
 def test_close_and_reconnect(store):

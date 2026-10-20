@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import psycopg
 import pytest
 
 import us_outbound.clients
@@ -263,6 +264,8 @@ class FakePostgres:
         self.autocommit = False
         self.row_factory = None
         self.rowcount = 0
+        # Inside a transaction, as store.transaction() leaves it (W2-2: advisory_lock is taken only in one).
+        self.info = SimpleNamespace(transaction_status=psycopg.pq.TransactionStatus.INTRANS)
 
     def connect(self) -> FakePostgres:
         self.connects += 1
@@ -295,7 +298,7 @@ class FakePostgres:
         return []
 
     def fetchone(self):
-        return {"n": 0}
+        return {"n": 0, "t": "0"}  # a count; current_setting's lock_timeout
 
     def close(self):
         self.closed = True
@@ -454,8 +457,17 @@ def _store_exercises() -> dict[str, Ex]:
         "update": lambda s, w: s.update("accounts", {"account_id": "acc-1"}, {"score": 55}),
         "delete": lambda s, w: s.delete("signal_events", {"account_id": "acc-1", "source": "scoring"}),
         "query": lambda s, w: s.query("SELECT * FROM us_outbound.v_queue"),
+        "transaction": lambda s, w: _locked(s),
+        "advisory_lock": lambda s, w: _locked(s),
         "close": lambda s, w: s.close(),
     }
+
+
+def _locked(store: Any) -> None:
+    """The rescore's pattern (scoring/score.py): a transaction, the advisory lock taken in it, a write."""
+    with store.transaction():
+        store.advisory_lock(20261020, wait_seconds=1)
+        store.update("accounts", {"account_id": "acc-1"}, {"score": 56})
 
 
 EXERCISES: dict[str, dict[str, Ex]] = {

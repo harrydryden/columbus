@@ -127,7 +127,7 @@ NEVER_ACTIVE_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
 MAX_DAILY_CAP = 30  # SPEC 13: 30 sends per mailbox per day
 CLAUDE_CAP_USD = 100.0  # a guard against a typo; the sheet's value is the cap (SPEC 1.1 set $10; Harry, 7 Oct 2026: $50)
 SPILL_DOMAIN = "spill.chat"  # SPEC 1.2: spill.chat never sends cold email
-CONTROL_ANGLE = "General"  # SPEC 5: Control-tier accounts always get this angle
+GENERAL_ANGLE = "General"  # SPEC 5: the angle of an account no other active angle suits (scoring/angle.py)
 COPY_VARIABLES = frozenset(VARIABLES)  # the variables a copy row may use (copy/variables.py; style.md)
 OPENER_PLACEHOLDERS = frozenset(PLAIN_OPENER_TOKENS)  # SPEC 5: "Saw your benefits page mentions {evidence}"
 # The tokens each opener column may use (enrol/openers.py fills them from stored facts).
@@ -429,11 +429,15 @@ RENAMED_GENERAL = {
 RETIRED_GENERAL = {
     "postal_address": "emails carry no postal address (Harry, 1 Oct 2026)",
     "privacy_url": "emails carry no privacy link; the opt-out is Instantly's unsubscribe link (Harry, 1 Oct 2026)",
-    # The one exception to "in the same commit as its deletion" (the W1-C contracts commit, 19 Oct 2026; RS P0-2):
-    # Harry's D7 replaces the Control tier with a random arm under a new key, explore_share, rather than renaming
-    # this one, which would carry 0.15 into the new key and put the arm live on deploy. General.control_share stays
-    # until the package that removes its reader, at its code default, 0.15, the live sheet's value: nothing moves.
+    # Harry's D7 replaced the Control tier with a random arm under a new key, explore_share, rather than renaming
+    # this one (the W1-C contracts commit, 19 Oct 2026; RS P0-2). W2-2 (20 Oct 2026) removed General.control_share,
+    # and the tiers and thresholds with it.
     "control_share": "the Control tier gives way to a random explore arm, explore_share (Harry, 19 Oct 2026)",
+    "priority_threshold": "the tiers were retired: accounts are taken by score, with a random explore arm "
+                          "(Harry's D7, 19 Oct 2026)",
+    "standard_threshold": "the tiers were retired: accounts are taken by score, with a random explore arm "
+                          "(Harry's D7, 19 Oct 2026)",
+    "auto_thresholds": "the tiers and their self-balancing thresholds were retired (Harry's D7, 19 Oct 2026)",
     # W2-1 (20 Oct 2026): the dormant code went, and with it the keys it read (design-final §3.3).
     "auto_send": "send approvals were removed: enrol adds each day's leads to Instantly (Harry's D6, 19 Oct 2026)",
     "second_contact": "second contacts were removed (Harry, 19 Oct 2026); one contact per company",
@@ -635,8 +639,6 @@ def _general(rows: list[_Row], strict: bool = True, warnings: list[RowError] | N
             rows[0].errors.append(RowError("General", HEADER_ROW, "value", f"{key}: {message}"))
 
     g = General(**values)
-    if g.standard_threshold > g.priority_threshold:
-        err("standard_threshold", f"must not be above priority_threshold ({g.priority_threshold})")
     if g.dev_channel.lstrip("#").lower() == g.alert_channel.lstrip("#").lower():
         err("dev_channel", "must differ from alert_channel: dry-run posts only to the dev channel (SPEC 0.3)")
     if g.live_sending and not g.approver_slack_ids:
@@ -757,16 +759,15 @@ def _angles(rows: list[_Row]) -> list[tuple[Angle, int]]:
         if order is not None and order < 1:
             r.fail("order", "must be 1 or more")
         _unique(r, "order", order, orders, f"order {order}")
-        if active and not v["default_opener"]:
-            r.fail("default_opener", "is required")
-        if name == CONTROL_ANGLE and active is False:
-            r.fail("active", f"{CONTROL_ANGLE} must stay active: Control-tier accounts always get it")
+        if name == GENERAL_ANGLE and active is False:
+            r.fail("active", f"{GENERAL_ANGLE} must stay active: an account no other angle suits gets it")
         if r.ok:
             out.append((Angle(angle=name, order=order, argument=v["argument"], default_opener=v["default_opener"],
                               active=active, landing_page_override=v["landing_page_override"]), r.number))
-    if rows and CONTROL_ANGLE.casefold() not in names:
+    if rows and GENERAL_ANGLE.casefold() not in names:
         rows[0].errors.append(
-            RowError("Angles", HEADER_ROW, "angle", f"the {CONTROL_ANGLE} angle is missing; Control-tier accounts always get it")
+            RowError("Angles", HEADER_ROW, "angle",
+                     f"the {GENERAL_ANGLE} angle is missing; an account no other angle suits gets it")
         )
     return out
 

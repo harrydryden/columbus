@@ -136,9 +136,9 @@ def test_ten_decisions_make_ten_facts_and_a_changed_one_is_applied_again(monkeyp
     out = tab.apply(ctx)
     assert out["applied"] == [tab.row_id(WEEK, d[7])]
     back = account(ctx, d[7])
-    # Scored again at once: no signal evidence gives score 0, below standard_threshold (20), so Control, a queue tier
-    # (IL is active), and the next enrol can take it.
-    assert (back["status"], back["status_reason"], back["tier"], back["score"]) == ("verified", None, "Control", 0)
+    # Scored again at once: no signal evidence gives score 0, in the queue (tier Queue: IL is active, and the tiers
+    # are no longer score ranges, W2-2), and the next enrol can take it.
+    assert (back["status"], back["status_reason"], back["tier"], back["score"]) == ("verified", None, "Queue", 0)
     assert len(judgements(ctx)) == 10 and hand_check.tally(ctx, WEEK) == (8, 10)
     assert back["account_id"] not in hand_check.current(ctx)["payload"]["pulled_account_ids"]
     applied = next(r["applied"] for r in sheet_rows(ctx) if r["domain"] == d[7])

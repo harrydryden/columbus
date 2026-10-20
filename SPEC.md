@@ -394,6 +394,7 @@ All times are UK time. Every job writes a heartbeat row; a missed heartbeat aler
 3.  **Suppress.** A Suppress signal adds the domain to suppression for its counts_for_days.
 4.  **Angle.** Use the first angle, in Angles-tab order, that any fresh signal suggests. Control accounts always get General.
 5.  **Opener.** Use the opener template of the signal that set the angle, filled with its evidence. If that signal has no opener, use the angle's default_opener.
+  - Harry's D7 (19 Oct 2026; W2-2, 20 Oct 2026): rules 3 to 5 of the tier are one, Queue: the queue is taken by score, with the random explore arm (General `explore_share`) in place of the Control tier, and the thresholds are retired. Every account gets its angle by step 4 (no Control rule). The opener is chosen at enrol time (enrol/openers.py). The hard exclusions below and verify's checks are one ICP gate (`us_outbound/icp.py`); the CA/WA and FL staff shares and the fewer-than-5-US-people rule went, as nothing measured them.
 ### Hard exclusions (fixed in code)
   - Brokers, insurers, HR-tech vendors, PEOs (NAICS 561330), HR consultancies (541612) and behavioural-health providers. These go on a partner list and are never prospected.
   - Anything in HubSpot matching any of these:
@@ -414,7 +415,7 @@ It is the smallest of:
   - the same calculation for Apollo;
   - the size of the verified queue.
 Of that number, control_share comes from the Control tier. The rest comes from Priority, then Standard, ordered by score, then by size band (20 to 99 first), then by industry priority.
-  - Harry's D7 (19 Oct 2026; W1-6): the Control tier's share gives way to a random explore arm. General `explore_share` (0 by default, at most 0.25; D7 chose 0.15) of the accounts pick_contacts wants is drawn at random from the accounts due, within the Focus shares, and stamped `arm = random`; enrol takes `explore_share` of its number from them, the rest in queue order, a shortfall in either filled from the other. Each contact is stamped with its arm, an A/A sham arm, its industry, group and size band, copy level, email 1's subject and a hash of each email. While `explore_share` is 0 every account is taken in queue order.
+  - Harry's D7 (19 Oct 2026; W1-6): the Control tier's share gives way to a random explore arm. General `explore_share` (0.15 by default from W2-2, D7's choice; at most 0.25; 0 switches it off) of the accounts pick_contacts wants is drawn at random from the accounts due, within the Focus shares, and stamped `arm = random`; enrol takes `explore_share` of its number from them, the rest in queue order, a shortfall in either filled from the other. Each contact is stamped with its arm, an A/A sham arm, its industry, group and size band, copy level, email 1's subject and a hash of each email. While `explore_share` is 0 every account is taken in queue order.
 ### Test assignment
   - The version is hash(account_id + test_id) % 2. This is deterministic, so each account's version never changes.
   - Both contacts at an account get the same version.

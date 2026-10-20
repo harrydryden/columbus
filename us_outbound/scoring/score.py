@@ -5,9 +5,9 @@ observed_at} (SPEC 7). Two kinds:
   * field facts: fact is a field name (model.SOURCE_FIELDS), value a scalar or a list;
   * text facts from the text sources (model.TEXT_SOURCES): fact is one of TEXT_FACTS, and
     the text is value (a str, or a dict with item / type / provider) plus quote.
-Calendar facts (month, days_to_fiscal_year_start) are computed at score time from the UK
-date and are always fresh; days_to_fiscal_year_start needs the account's latest irs_bmf
-fiscal_year_end_month.
+The calendar and irs_bmf virtual facts (month, days_to_fiscal_year_start) went with W2-2 (20 Oct 2026): no source
+writes irs_bmf facts, and the one calendar row is switched off (code-scoring B5). A Signals row on either source
+still validates, and never matches.
 
 SPEC 9 steps:
   1. Score: the sum of every active Score signal with a fact fresher than its
@@ -15,28 +15,37 @@ SPEC 9 steps:
      A term signal with max_weight counts weight once per DISTINCT term found; without
      max_weight it counts weight once. Negative weights are allowed and the total is not
      floored at 0.
-  2. Tier (tiers.py). 3. Suppress: the domain goes on suppression for counts_for_days.
-  4-5. Angle and opener (angle.py).
+  2. Tier (tier(): Excluded, Held or Queue; tiers.py). 3. Suppress: the domain goes on suppression for
+     counts_for_days. 4. Angle (angle.py). The opener is chosen at enrol time (enrol/openers.py).
 
 "Not read" (SPEC 8): when a source's latest read_status is blocked or error, that source's
 facts add no points. Hold, Exclude and Suppress signals still count matches from any fresh
 read, so a failed read never clears a Hold.
 
 An Overrides row for the account's domain wins over every source (SPEC 5).
+
+The score job (rescore) runs in one transaction under an advisory lock (W2-2; code-scoring B4, RS P0-8): a second
+rescore waits for the first, up to LOCK_WAIT_SECONDS, then skips with "rescore already running". It inserts the new
+signal_matched rows, each stamped with its run (value.run_id), before it deletes the rows it read at its start, and
+commits; a rescore killed part-way rolls back and the old rows stand, so no account is left with none
+(enrol.signals_now reads them for the snapshot each contact keeps).
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from us_outbound.base import notify, say
-from us_outbound.clients.db import new_id
+from us_outbound import icp
+from us_outbound.clients.db import LockTimeout, new_id
 from us_outbound.context import UK, Context
-from us_outbound.facts import history, latest_by_fact, newest, newest_by
+from us_outbound.facts import history, latest_by_fact, newest_by
+from us_outbound.industry.material import naics_codes
 from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
@@ -55,14 +64,12 @@ QUOTE_LIMIT = 300  # SPEC 6: quote at most 300 characters
 # The score job (SPEC 9).
 SCORED_STATUSES = ("new", "queued", "verified", "enrolled", "engaged")
 ANGLE_FIXED_STATUSES = frozenset({"enrolled", "engaged"})  # the angle is fixed at enrollment
-QUEUE_STATUSES = frozenset({"queued", "verified"})
-SHARE_TIERS = (tiers.PRIORITY, tiers.STANDARD, tiers.CONTROL)
-# Harry, 19 Oct 2026: alert only when the mix matters: too few top-fit companies, or one group swamping the rest
-# (it was 5-40% for every group, which three groups can only meet at 20% or more each).
-SHARE_MIN, SHARE_MAX = 0.05, 0.60
-POOL_STATUSES = ("new", "queued", "verified")  # the open queue the automatic thresholds are set from (balance.py)
-SHARE_MIN_ACCOUNTS = 20  # too few accounts to judge the mix below this
 ID_CHUNK = 1000
+# The rescore's advisory lock (clients/db.Store.advisory_lock): one key for every process, and how long a second
+# rescore waits for the first before it skips.
+RESCORE_LOCK = int.from_bytes(hashlib.sha256(b"us_outbound:rescore").digest()[:8], "big", signed=True)
+LOCK_WAIT_SECONDS = 60
+ALREADY_RUNNING = "rescore already running"
 
 
 @dataclass(frozen=True)
@@ -89,9 +96,7 @@ class ScoreResult:
     tier: str
     tier_reason: str
     angle: str
-    opener: str
     suppress_days: int | None
-    legal_overlay: str = ""
     suppress_signal: str | None = None  # the Suppress signal with the longest window
     exclusion: str | None = None
     partner: str | None = None  # partners.reason code when the account is a partner
@@ -130,26 +135,6 @@ def latest_facts(events: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """The latest value of each field fact, whatever its source or age (for hard exclusions)."""
     rows = (e for e in events if e.get("source") != SCORING_SOURCE)
     return {f: e.get("value") for f, e in latest_by_fact(rows, skip_facts=TEXT_FACTS).items()}
-
-
-def days_to_fiscal_year_start(fiscal_year_end_month: int, today: date) -> int:
-    """Days from today to the first day of the month after the fiscal year-end month, next occurrence."""
-    start_month = fiscal_year_end_month % 12 + 1
-    start = date(today.year, start_month, 1)
-    if start < today:
-        start = date(today.year + 1, start_month, 1)
-    return (start - today).days
-
-
-def calendar_facts(events: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any]:
-    """The virtual calendar facts, computed from the UK date (SPEC 7: calendar, daily)."""
-    out: dict[str, Any] = {"month": today.month}
-    fye = newest(events, "fiscal_year_end_month", "irs_bmf")
-    if fye:
-        month = tiers.as_number(fye.get("value"))
-        if month is not None and 1 <= month <= 12:
-            out["days_to_fiscal_year_start"] = days_to_fiscal_year_start(int(month), today)
-    return out
 
 
 def fact_text(event: Mapping[str, Any]) -> str:
@@ -214,7 +199,6 @@ def aged_value(fact: str, event: Mapping[str, Any], today: date) -> Any:
 def _match_condition(
     signal: Signal,
     events: list[Mapping[str, Any]],
-    all_events: Sequence[Mapping[str, Any]],
     today: date,
     overrides: Mapping[str, Any],
     columns: Mapping[str, Any] | None = None,
@@ -223,12 +207,6 @@ def _match_condition(
     assert cond is not None
     latest = latest_by_fact(events, skip_facts=TEXT_FACTS)
     values: dict[str, Any] = {f: aged_value(f, e, today) for f, e in latest.items()}
-    virtual: dict[str, Any] = {}
-    if {"calendar", "irs_bmf"} & set(signal.sources):
-        virtual = calendar_facts(all_events, today)
-        if "calendar" not in signal.sources:
-            virtual.pop("month", None)
-    values.update(virtual)
     # Only when no size is known from a fact: a band column never overrules an employee count.
     sized = any(f in values for f in ACCOUNT_FACTS)
     from_columns = {} if sized else {f: v for f, v in (columns or {}).items() if f in cond.fields}
@@ -243,8 +221,6 @@ def _match_condition(
     for f in sorted(cond.fields, key=lambda f: (cond.text.find(f), f)):
         if f in forced:
             evidence.append(Evidence(f"{f} = {_fmt(forced[f])}", source="override", observed_at=today))
-        elif f in virtual:
-            evidence.append(Evidence(f"{f} = {_fmt(virtual[f])}", source="calendar", observed_at=today))
         elif f in from_columns:
             evidence.append(Evidence(f"{f} = {_fmt(from_columns[f])}", source=ACCOUNT_FACT_SOURCE, observed_at=today))
         elif f in latest:
@@ -320,7 +296,7 @@ def match_signal(
             events = [e for e in events if e.get("source") not in unread]
     if signal.is_condition:
         columns = account_facts(account or {}) if ACCOUNT_FACT_SOURCE in signal.sources else {}
-        return _match_condition(signal, events, facts, today, overrides or {}, columns)
+        return _match_condition(signal, events, today, overrides or {}, columns)
     if signal.terms:
         return _match_terms(signal, events)
     return None
@@ -328,6 +304,78 @@ def match_signal(
 
 def total_score(matches: Iterable[Match], score_cap: int) -> int:
     return min(sum(m.weight_applied for m in matches if m.signal.action == "Score"), score_cap)
+
+
+# -- evidence, tiers ----------------------------------------------------------------------------
+
+
+def _is_acronym(word: str) -> bool:
+    """EAP, PTO, HRIS; or a capital after the first letter, as in ComPsych or BetterUp.
+
+    Each hyphen or slash part is judged on its own, so "Employer-Paid" is not a brand.
+    """
+    for part in re.split(r"[-/]", word):
+        letters = [c for c in part if c.isalpha()]
+        if len(letters) >= 2 and (all(c.isupper() for c in letters) or any(c.isupper() for c in part[1:])):
+            return True
+    return False
+
+
+def evidence_display(ev: Evidence) -> str:
+    """Evidence text as it reads mid-sentence (a tier reason; enrol/openers.py's lines).
+
+    A term match is lower-cased word by word, except where the sheet term has capitals
+    (a brand or acronym: its sheet spelling is used) or the page word is an acronym.
+    Other evidence (a quote, or "field = value") is used as it is.
+    """
+    if not ev.term:
+        return ev.text
+    got, want = ev.text.split(), ev.term.split()
+    if len(want) != len(got):
+        want = [""] * len(got)
+    out = []
+    for g, w in zip(got, want):
+        if any(c.isupper() for c in w):
+            out.append(w)
+        elif _is_acronym(g):
+            out.append(g)
+        else:
+            out.append(g.lower())
+    return " ".join(out)
+
+
+def _evidence_summary(m: Match, limit: int = 3) -> str:
+    shown: list[str] = []
+    for ev in m.evidence:
+        t = evidence_display(ev)
+        if t and t not in shown:
+            shown.append(t)
+    text = "; ".join(shown[:limit])
+    return f"{m.signal.signal} ({text})" if text else m.signal.signal
+
+
+def score_parts(matches: Iterable[Match], score: int) -> str:
+    """ "Mental health support listed (+25), New People leader (+30)", noting a cap."""
+    scored = [m for m in matches if m.signal.action == "Score"]
+    parts = [f"{m.signal.signal} ({m.weight_applied:+d})" for m in scored if m.weight_applied]
+    text = ", ".join(parts) or "no scoring signals found"
+    raw = sum(m.weight_applied for m in scored)
+    if raw > score:
+        text += f"; capped at {score}"
+    return text
+
+
+def tier(score: int, matches: list[Match], exclusion: str | None) -> tuple[str, str]:
+    """(tier, tier_reason) by SPEC 9's first-rule-wins order: Excluded, Held, else Queue (tiers.py)."""
+    if exclusion:
+        return tiers.EXCLUDED, f"{tiers.EXCLUDED}: {exclusion}"
+    excludes = [m for m in matches if m.signal.action == "Exclude"]
+    if excludes:
+        return tiers.EXCLUDED, f"{tiers.EXCLUDED}: " + ", ".join(_evidence_summary(m) for m in excludes)
+    holds = [m for m in matches if m.signal.action == "Hold"]
+    if holds:
+        return tiers.HELD, f"{tiers.HELD}: " + ", ".join(_evidence_summary(m) for m in holds)
+    return tiers.QUEUE, f"{tiers.QUEUE}: {score_parts(matches, score)}"
 
 
 # -- one account ---------------------------------------------------------------------
@@ -345,20 +393,17 @@ def score_account(
                if (m := match_signal(s, events, today, overrides=overrides, account=acct))]
     score = total_score(matches, settings.general.score_cap)
     exclusion = tiers.hard_exclusion(acct, facts, settings, today)
-    partner = tiers.partner_category(acct, facts)
-    tier, reason = tiers.tier(score, matches, exclusion, settings)
-    choice = angles.choose_angle(tier, matches, settings, acct.get("industry_group"))
+    partner = icp.partner_category(acct, facts)
+    tier_name, reason = tier(score, matches, exclusion)
     suppress = [m for m in matches if m.signal.action == "Suppress"]
     longest = max(suppress, key=lambda m: m.signal.counts_for_days) if suppress else None
     return ScoreResult(
         score=score,
         matches=matches,
-        tier=tier,
+        tier=tier_name,
         tier_reason=reason,
-        angle=choice.angle,
-        opener=choice.opener,
+        angle=angles.choose_angle(matches, settings),
         suppress_days=longest.signal.counts_for_days if longest else None,
-        legal_overlay=choice.legal_overlay,
         suppress_signal=longest.signal.signal if longest else None,
         exclusion=exclusion,
         partner=partner,
@@ -373,14 +418,16 @@ def _chunks(items: list[str], n: int = ID_CHUNK) -> Iterator[list[str]]:
         yield items[i : i + n]
 
 
-def _match_row(account_id: str, m: Match, now: datetime) -> dict:
+def _match_row(account_id: str, m: Match, now: datetime, run_id: str) -> dict:
+    """A signal_matched row, stamped with the rescore that wrote it (value.run_id; observed_at its start)."""
     first = m.evidence[0] if m.evidence else None
     return {
         "event_id": new_id(),
         "account_id": account_id,
         "source": SCORING_SOURCE,
         "fact": MATCH_FACT,
-        "value": {"signal": m.signal.signal, "weight": m.weight_applied, "evidence": [ev.text for ev in m.evidence]},
+        "value": {"signal": m.signal.signal, "weight": m.weight_applied, "evidence": [ev.text for ev in m.evidence],
+                  "run_id": run_id},
         "quote": first.quote if first else "",
         "source_url": first.url if first else "",
         "observed_at": now,
@@ -428,121 +475,23 @@ def _add_partners(ctx: Context, wanted: dict[str, dict]) -> int:
     return len(rows)
 
 
-def _in_month(v: Any, today: date) -> bool:
-    d = uk_day(v)
-    return d is not None and (d.year, d.month) == (today.year, today.month)
-
-
-def tier_share(accounts: Iterable[Mapping[str, Any]], today: date) -> dict[str, Any] | None:
-    """Each tier's share of this month's queue; None when there are too few accounts to judge.
-
-    The month's queue: accounts first seen this calendar month (UK), status queued or
-    verified, tier Priority, Standard or Control.
-    """
-    queue = [
-        a for a in accounts
-        if a.get("status") in QUEUE_STATUSES and a.get("tier") in SHARE_TIERS and _in_month(a.get("first_seen"), today)
-    ]
-    if len(queue) < SHARE_MIN_ACCOUNTS:
-        return None
-    counts = Counter(a["tier"] for a in queue)
-    shares = {t: counts.get(t, 0) / len(queue) for t in SHARE_TIERS}
-    off = {t: s for t, s in shares.items() if not SHARE_MIN <= s <= SHARE_MAX}
-    return {"accounts": len(queue), "shares": shares, "off": off}
-
-
-# The tiers in plain words, for the alert (Harry, 12 Oct 2026: messages a newcomer can follow).
-TIER_WORDS = {tiers.PRIORITY: "Top fit (Priority)", tiers.STANDARD: "Good fit (Standard)",
-              tiers.CONTROL: "Comparison group (Control)"}
-
-
-def _share_fixes(settings: Settings, off: Mapping[str, float]) -> list[str]:
-    """What to change for the tiers outside the range: the two score thresholds on the General tab decide them."""
-    g = settings.general
-    fixes = []
-    if tiers.PRIORITY in off:
-        way = "lower" if off[tiers.PRIORITY] < SHARE_MIN else "raise"
-        fixes.append(f"{way.capitalize()} `priority_threshold` (now {g.priority_threshold}), the score a company needs "
-                     "to count as top fit.")
-    if tiers.CONTROL in off:
-        way = "lower" if off[tiers.CONTROL] > SHARE_MAX else "raise"
-        fixes.append(f"{way.capitalize()} `standard_threshold` (now {g.standard_threshold}); companies scoring below "
-                     "it go to the comparison group.")
-    if not fixes:  # only Standard is off: it sits between the two thresholds
-        way = "Move them closer together" if off[tiers.STANDARD] > SHARE_MAX else "Move them further apart"
-        fixes.append(f"{way}: `priority_threshold` (now {g.priority_threshold}) and `standard_threshold` "
-                     f"(now {g.standard_threshold}).")
-    return [*fixes, "Or set `auto_thresholds` to yes, and the thresholds follow the queue each day."]
-
-
-def _share_alert(ctx: Context, check: dict[str, Any], today: date, settings: Settings) -> None:
-    """Once a week at most while the mix stays off (the score job runs several times a day). Only while
-    auto_thresholds is no: with yes, the thresholds keep the mix (balance.py)."""
-    off = check["off"]
-    rows = [f"• {TIER_WORDS[t]}: {s:.0%}"
-            + (f"  ← {'below' if s < SHARE_MIN else 'above'} {SHARE_MIN if s < SHARE_MIN else SHARE_MAX:.0%}"
-               if t in off else "")
-            for t, s in check["shares"].items()]
-    fixes = _share_fixes(settings, off)
-    text = say.compose(
-        say.ACTION, f"{today:%B}'s list of companies to email is unbalanced",
-        [f"{check['accounts']} companies were added to the queue this month. How they split by score:", *rows,
-         f"Top fit should be at least {SHARE_MIN:.0%}, and no group more than {SHARE_MAX:.0%}."],
-        do=[f"Open the {say.sheet_link(ctx, 'General')} of the settings sheet.", *fixes,
-            "Wait for the next settings sync (02:00 and 11:30 UK); the companies are then scored again."],
-        why="the comparison group shows whether scoring finds better companies; if one group swamps the others, the "
-            "comparison means little.",
-    )
-    head, _, body = text.partition("\n")
-    notify.post_once(ctx, [(notify.once_key(ctx, "tier_mix", per="week", on=today), body)], head=head)
-
-
-def _balanced(ctx: Context, accounts: Sequence[Mapping[str, Any]], results: Mapping[str, ScoreResult],
-              today: date) -> tuple[Settings, dict[str, Any] | None]:
-    """(the settings to tier with, the day's automatic thresholds or None) (balance.py). The first rescore of a UK
-    day sets them from the open queue; later ones that day use what it set."""
-    from us_outbound.scoring import balance
-
-    settings = ctx.settings
-    if not settings.general.auto_thresholds:
-        return settings, None
-    fit = balance.stored(ctx.store, today)
-    if fit is None:
-        pool = [results[a["account_id"]].score for a in accounts
-                if a.get("status") in POOL_STATUSES and results[a["account_id"]].tier in SHARE_TIERS]
-        t = balance.balance(pool, settings.general)
-        if t is None:
-            return settings, None
-        fit = balance.record(ctx.store, t, today, ctx.now).value()
-        log("auto_thresholds", run_id=ctx.run_id, **fit)
-    moved = balance.with_thresholds(settings, fit)
-    same = (moved.general.priority_threshold, moved.general.standard_threshold) == (
-        settings.general.priority_threshold, settings.general.standard_threshold)
-    return (settings if same else moved), fit
-
-
-def _short_alert(ctx: Context, fit: Mapping[str, Any], today: date) -> None:
-    """Once a week at most: the queue is too small for the good-fit pool and the comparison group both."""
-    from us_outbound.scoring import balance
-
-    text = say.compose(
-        say.ACTION, "Not enough companies in the queue for the next two weeks",
-        [f"{fit['pool']:,} companies are waiting. {fit['good_fit']:,} of them are a good fit "
-         f"({fit['standard']}+ points), about {fit.get('weeks', 0)} weeks of sending at `weekly_enrol_cap`; "
-         f"{balance.COVER_WEEKS} weeks needs {fit['need']:,}.",
-         "To keep good-fit companies coming, the comparison group is smaller than it should be. Thresholds cannot "
-         "add companies."],
-        do=[f"Widen what is found: add industry groups on the {say.sheet_link(ctx, 'Focus')}, or switch on more "
-            f"industries on the {say.sheet_link(ctx, 'Industries')}.",
-            f"Or lower `weekly_enrol_cap` on the {say.sheet_link(ctx, 'General')} to what the queue can sustain."],
-        why="when the good-fit companies run out, the days that follow send weaker ones or none.",
-    )
-    head, _, body = text.partition("\n")
-    notify.post_once(ctx, [(notify.once_key(ctx, "queue_short", per="week", on=today), body)], head=head)
-
-
 def rescore(ctx: Context) -> dict:
-    """The score job (SPEC 9): score, tier and angle every open account; returns counts per tier."""
+    """The score job (SPEC 9): score, tier and angle every open account, in one transaction under the rescore lock;
+    returns counts per tier and how often each signal fired. A second rescore while one runs waits up to
+    LOCK_WAIT_SECONDS, then skips (the one running writes the scores)."""
+    try:
+        with ctx.store.transaction():
+            ctx.store.advisory_lock(RESCORE_LOCK, wait_seconds=LOCK_WAIT_SECONDS)
+            summary = _rescore(ctx)
+    except LockTimeout:
+        summary = {"skipped": True, "reason": ALREADY_RUNNING}  # the job contract's skip (ops/heartbeat.py)
+        log("score_skipped", run_id=ctx.run_id, reason=ALREADY_RUNNING)
+        return summary
+    log("score_done", run_id=ctx.run_id, dry_run=ctx.dry_run, **summary)
+    return summary
+
+
+def _rescore(ctx: Context) -> dict:
     settings, store, now = ctx.settings, ctx.store, ctx.now
     today = ctx.today_uk()
 
@@ -552,36 +501,40 @@ def rescore(ctx: Context) -> dict:
     for chunk in _chunks(ids):
         for e in store.select("signal_events", {"account_id": chunk}):
             events[e["account_id"]].append(e)
+    # Enrolled and engaged accounts are rescored for exclusions only (W2-2; code-scoring §6): their tier and its
+    # reason, and the suppression and partner rows a match brings; their score, angle and match rows stay as they
+    # were when they were enrolled (contacts keep the snapshot: tier_at_enrol, signals_at_enrol).
+    fixed = {a["account_id"] for a in accounts if a.get("status") in ANGLE_FIXED_STATUSES}
+    # The match rows this rescore replaces: every open account's row it read, by id (under the lock, so no other
+    # rescore writes in between; an earlier rescore in the same job run, settings_sync's lookalikes then its own,
+    # included). Rows another rescore commits after this one are never among them.
+    old_rows = [str(e["event_id"]) for aid, evs in events.items() if aid not in fixed for e in evs
+                if e.get("source") == SCORING_SOURCE and e.get("fact") == MATCH_FACT]
 
     updates: list[dict] = []
     match_rows: list[dict] = []
     suppress: dict[str, tuple[str, int]] = {}
     partners: dict[str, dict] = {}
     tier_counts: Counter[str] = Counter()
+    fired: Counter[str] = Counter()
     changed = 0
-    scored: list[dict] = []
-    results = {a["account_id"]: score_account(a, events.get(a["account_id"], []), settings, today) for a in accounts}
-    settings, fit = _balanced(ctx, accounts, results, today)
-    if settings is not ctx.settings:  # the day's thresholds moved: the accounts that change tier, again
-        for a in accounts:
-            r = results[a["account_id"]]
-            if r.tier in SHARE_TIERS and tiers.band(r.score, settings) != r.tier:
-                results[a["account_id"]] = score_account(a, events.get(a["account_id"], []), settings, today)
     for a in accounts:
         aid = a["account_id"]
-        r = results[aid]
+        r = score_account(a, events.get(aid, []), settings, today)
         tier_counts[r.tier] += 1
-        new: dict[str, Any] = {"score": r.score, "tier": r.tier, "tier_reason": r.tier_reason}
-        if a.get("status") not in ANGLE_FIXED_STATUSES:
-            new["angle"] = r.angle
+        new: dict[str, Any] = {"tier": r.tier, "tier_reason": r.tier_reason}
+        if aid not in fixed:
+            new.update(score=r.score, angle=r.angle)
+            fired.update(m.signal.signal for m in r.matches)
+            match_rows.extend(_match_row(aid, m, now, ctx.run_id) for m in r.matches)
         diff = {k: v for k, v in new.items() if a.get(k) != v}
         if diff:
             changed += 1
-            if a.get("status") in ANGLE_FIXED_STATUSES and "tier" in diff:
+            # A tier the rescore writes for the first time since W2-2 (a retired name becoming Queue) is no change.
+            moved = "tier" in diff and not (a.get("tier") in tiers.LEGACY_QUEUE_TIERS and r.tier == tiers.QUEUE)
+            if aid in fixed and moved:
                 log("score_enrolled_tier_change", account_id=aid, old=a.get("tier"), new=r.tier)
         updates.append({"account_id": aid, **diff, "last_scored": now})
-        scored.append({**a, **diff})
-        match_rows.extend(_match_row(aid, m, now) for m in r.matches)
         domain = str(a.get("domain") or "").strip().lower()
         if domain and r.suppress_signal and r.suppress_days:
             suppress[domain] = (r.suppress_signal, r.suppress_days)
@@ -590,41 +543,30 @@ def rescore(ctx: Context) -> dict:
                 "domain": domain,
                 "name": a.get("clean_name") or a.get("legal_name") or domain,
                 "reason": r.partner,
-                "naics": ", ".join(tiers.naics_codes(a.get("naics"))) or None,
+                "naics": ", ".join(naics_codes(a.get("naics"))) or None,
                 "added_at": now,
             }
 
     if updates:
         store.upsert("accounts", updates)  # partial rows: upsert leaves absent columns alone
-    for chunk in _chunks(ids):
-        store.delete("signal_events", {"account_id": chunk, "source": SCORING_SOURCE, "fact": MATCH_FACT})
-    if match_rows:
+    if match_rows:  # the new rows first, then the old ones go: in no order is an account left with none
         store.insert("signal_events", match_rows)
+    for chunk in _chunks(old_rows):
+        store.delete("signal_events", {"event_id": chunk})
     n_suppressed = _apply_suppression(ctx, suppress)
     n_partners = _add_partners(ctx, partners)
 
-    check = tier_share(scored, today)
-    if fit is not None:  # automatic thresholds: the mix is set; what matters is whether the queue lasts
-        if fit.get("short"):
-            _short_alert(ctx, fit, today)
-    elif check and check["off"]:
-        _share_alert(ctx, check, today, settings)
-
-    summary = {
+    return {
         "accounts": len(accounts),
-        "tiers": {t: tier_counts.get(t, 0) for t in (*SHARE_TIERS, tiers.HELD, tiers.EXCLUDED)},
+        "tiers": {t: tier_counts.get(t, 0) for t in (tiers.QUEUE, tiers.HELD, tiers.EXCLUDED)},
         "changed": changed,
         "signal_matches": len(match_rows),
+        "replaced": len(old_rows),
+        # How many open accounts each signal fired on (W2-2), most first: what moves the order, and what never fires.
+        "fired": dict(sorted(fired.items(), key=lambda kv: (-kv[1], kv[0]))),
         "suppressed": n_suppressed,
         "partners": n_partners,
-        "tier_share": None if check is None else {t: round(s, 3) for t, s in check["shares"].items()},
-        "tier_share_alert": bool(fit is None and check and check["off"]),
-        "thresholds": {"auto": fit is not None, "priority": settings.general.priority_threshold,
-                       "standard": settings.general.standard_threshold, **({"short": fit.get("short"),
-                                                                           "weeks": fit.get("weeks")} if fit else {})},
     }
-    log("score_done", run_id=ctx.run_id, dry_run=ctx.dry_run, **summary)
-    return summary
 
 
 run = rescore  # JOB CONTRACT: run(ctx) -> dict

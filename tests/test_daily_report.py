@@ -42,17 +42,19 @@ def funnel(now=TUE_9):
     # The General Copy rows sendable, as on the live sheet: pick.waiting counts only accounts enrol could email (W1-6).
     ctx.settings = dataclasses.replace(ctx.settings, copy=sendable_general_copy(default_settings_copy()))
     ctx.store.insert("accounts", [
-        # Found yesterday: two from Apollo, one named; tiers as the rescore left them.
-        acct("n1", source="apollo", tier="Priority", status="queued", size_band="20-49", first_seen=MON),
+        # Found yesterday: two from Apollo, one named; tiers as the rescore left them (n2's a tier from before W2-2,
+        # which a rescore has not reached yet).
+        acct("n1", source="apollo", tier="Queue", status="queued", size_band="20-49", first_seen=MON),
         acct("n2", source="apollo", tier="Control", status="new", size_band="50-99", first_seen=MON),
         acct("n3", source="named", status="new", first_seen=MON + timedelta(hours=1)),
         acct("old", source="apollo", tier="Control", status="new", size_band="10-19"),  # found before yesterday
         acct("q1", source="apollo", tier="Standard", status="queued"),  # no size band; doubtful facts
         acct("e1", source="apollo", tier="Excluded", status="new"),  # not in the queue
-        # Ready: verified, in a queue tier, with a sendable contact.
-        acct("r1", tier="Priority", status="verified", industry_group="Legal Teams", size_band="20-49"),
-        acct("r2", tier="Standard", status="verified", industry_group="Legal Teams", size_band="50-99"),
-        acct("r3", tier="Control", status="verified", size_band="20-49"),
+        # Ready: verified, in the queue (r4 under a tier from before W2-2, read as Queue), with a sendable contact;
+        # pick drew r3 for the random arm.
+        acct("r1", tier="Queue", status="verified", industry_group="Legal Teams", size_band="20-49"),
+        acct("r2", tier="Queue", status="verified", industry_group="Legal Teams", size_band="50-99"),
+        acct("r3", tier="Queue", status="verified", size_band="20-49", arm="random"),
         acct("r4", tier="Standard", status="verified", size_band="20-49"),
         # Verified, waiting for a contact; at w2 nobody suitable was found yesterday.
         acct("w1", tier="Standard", status="verified", size_band="20-49"),
@@ -125,7 +127,7 @@ def test_found_counts_the_period():
     lines, nums = daily_post.build(ctx)
     assert section(lines, "*Found*") == [
         "*Found* · Yesterday, Mon 26 Oct",
-        "  Companies: 3 new (apollo 2, named 1); tiers now: Priority 1, Control 1, not scored yet 1",
+        "  Companies: 3 new (apollo 2, named 1); tiers now: Queue 1, Control 1, not scored yet 1",
         "  Verified: 4",
         "  Contacts: 2 new (apollo 1, clay 1; Founder or executive 1, People leader 1)",
         "  No suitable contact: 2 accounts (company size unknown 1, no sendable email among the top candidates 1)",
@@ -152,15 +154,15 @@ def test_pipeline_counts_now():
                                   "accounts 4).")
     assert section(lines, "*Pipeline*") == [
         "*Pipeline* · now",
-        "  Ready to send: 4 (Priority 1, Standard 2, Control 1)",
+        "  Ready to send: 4 (1 drawn for the random arm)",
         "    By group: Legal Teams 2, no group 2",
         f"  Supply: {round(4 / pace, 1)} send days at {pace} a day",  # 4 ÷ 11 = 0.36, 0.4
         "  Waiting for a contact: 2 (1 where nobody suitable was found; searched again after 14 days)",
         "  Waiting for verification: 5 (1 with doubtful Apollo facts, for the hand-check)",
         "  In sequence: 1 account with follow-ups to come · finished 1 · stopped 1 (reply, bounce or unsubscribe)",
     ]
-    assert (nums["ready_by_tier"], nums["waiting_for_contact"], nums["waiting_for_verification"]) == (
-        {"Priority": 1, "Standard": 2, "Control": 1}, 2, 5)
+    assert (nums["ready_random_arm"], nums["waiting_for_contact"], nums["waiting_for_verification"]) == (1, 2, 5)
+    assert "ready_by_tier" not in nums  # the tiers went with W2-2 (Harry's D7)
     assert (nums["in_sequence"], nums["finished"], nums["stopped"]) == (1, 1, 1)
     assert nums["ready_accounts"] == 4 and "awaiting_approval" not in nums  # the enrol job's own candidates
 
@@ -282,15 +284,14 @@ def test_to_improve_before_any_send():
                        "Roles tab.")
 
 
-def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
-    """Seven lines are due: the opener and subject splits, bounces by source, two data gaps (no size at v0, and nobody
-    found at v0) and the tier mix, then the angles; at MAX_IMPROVE (6) the angles, last in line, are left out."""
+def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_no_tier_mix():
+    """Six lines are due: the opener and subject splits, bounces by source, two data gaps (no size at v0, and nobody
+    found at v0), then the angles, which MAX_IMPROVE (6) now has room for. The tier mix line went with the tiers
+    (W2-2, Harry's D7): 21 companies all in one tier, which used to read as "unbalanced", say nothing."""
     ctx, _ = learning(subjects=True)
-    ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
-                                                                                 auto_thresholds=False))
     month = TUE_9 - timedelta(days=2)
-    ctx.store.insert("accounts", [acct(f"q{i}", tier="Control", status="queued", size_band="20-49", first_seen=month)
-                                  for i in range(20)] + [acct("v0", tier="Control", status="verified")])
+    ctx.store.insert("accounts", [acct(f"q{i}", tier="Queue", status="queued", size_band="20-49", first_seen=month)
+                                  for i in range(20)] + [acct("v0", tier="Queue", status="verified")])
     ctx.store.insert("signal_events", [{"event_id": "nc", "account_id": "v0", "source": "pick_contacts",
                                         "fact": "contact_pick", "observed_at": MON,
                                         "value": {"outcome": "none", "reason": "company size unknown"}}])
@@ -299,14 +300,8 @@ def test_to_improve_keeps_to_six_lines_with_the_data_gaps_and_tier_mix():
     assert len(body) == daily_report.MAX_IMPROVE
     assert body[3].startswith("  No company size from Apollo: 1 of 1 companies ready to email and 0 still being checked.")
     assert body[4].startswith("  1 company ready to email has nobody we can write to")
-    # In the words of the score job's tier mix alert (scoring/score.py), with the same fix.
-    assert body[5] == ("  This month's list of companies to email is unbalanced (21 companies): Top fit (Priority) 0%, "
-                       "Good fit (Standard) 0%, Comparison group (Control) 100%; top fit should be at least 5% and no "
-                       "group over 60%. *What to do,* on the General tab: Lower `priority_threshold` (now 50), the score "
-                       "a company needs to count as top fit. Lower `standard_threshold` (now 20); companies scoring "
-                       "below it go to the comparison group. Or set `auto_thresholds` to yes, and the thresholds follow "
-                       "the queue each day.")
-    assert not any(line.startswith("  Replies by angle") for line in body)  # last in line, so the first left out
+    assert body[5].startswith("  Replies by angle")
+    assert not any("unbalanced" in line or "threshold" in line for line in lines)
 
 
 def test_the_reason_drops_per_account_detail():

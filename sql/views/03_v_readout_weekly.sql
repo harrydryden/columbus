@@ -2,11 +2,13 @@
 -- SPEC 12: "accounts enrolled; reply rate by industry group and by copy version;
 -- meetings booked; site visits before and after the first email." Harry, 6 Oct 2026 ("push ahead
 -- with building"): last week's sends, replies, positive replies, meetings, bounces and unsubscribes,
--- by tier, angle, industry group, sender and step (learn/readout.py reads this view).
+-- by explore arm, angle, industry group, sender and step (learn/readout.py reads this view).
 -- Weeks are ISO weeks (Monday start) in UK time (SPEC 9: all times are UK time).
--- One row per (week, cut, cut_value). cut is 'all' (cut_value 'all'), 'tier', 'angle',
+-- One row per (week, cut, cut_value). cut is 'all' (cut_value 'all'), 'arm', 'angle',
 -- 'industry_group', 'sender', 'copy_version' or 'step'; a missing value shows as '(none)'.
---   Account cuts: tier is the step-1 contact's tier_at_enrol, else the account's tier now; angle is
+--   Account cuts: arm is the step-1 contact's explore arm, random or ranked (contacts.arm; NULL, enrolled before
+--     the arm existed, reads as ranked), in place of the tier cut, as the tiers were retired (W2-2, Harry's D7,
+--     20 Oct 2026; contacts.tier_at_enrol keeps the old tiers); angle is
 --     the step-1 contact's, else the account's; industry_group and sender (the mailbox owner,
 --     accounts.sender) are the account's; copy_version is the step-1 contact's.
 --   step: activity only, for the events that carry one ('step 1' to 'step 4'): sends, bounces and
@@ -33,7 +35,7 @@ WITH account_cuts AS (
   CROSS JOIN LATERAL (
     VALUES
       ('all', 'all'),
-      ('tier', COALESCE(f.tier_at_enrol, a.tier, '(none)')),
+      ('arm', CASE WHEN f.account_id IS NULL THEN '(none)' ELSE COALESCE(f.arm, 'ranked') END),
       ('angle', COALESCE(f.angle, a.angle, '(none)')),
       ('industry_group', COALESCE(a.industry_group, '(none)')),
       ('sender', COALESCE(a.sender, '(none)')),
@@ -123,4 +125,4 @@ FROM cohort AS c
 FULL OUTER JOIN activity AS v
   USING (week_start, cut, cut_value)
 ORDER BY week_start DESC NULLS LAST, cut, cut_value;
-COMMENT ON VIEW us_outbound.v_readout_weekly IS 'Per ISO week (UK time), overall and by tier, angle, industry group, sender, copy version and step: accounts sent step 1 and their reply, positive and meeting rates (replies within 28 days of step 1); and the week''s sends, bounces, replies, positive replies, meetings booked, unsubscribes, complaints, and site visits before and after the first email (SPEC 12).';
+COMMENT ON VIEW us_outbound.v_readout_weekly IS 'Per ISO week (UK time), overall and by explore arm, angle, industry group, sender, copy version and step: accounts sent step 1 and their reply, positive and meeting rates (replies within 28 days of step 1); and the week''s sends, bounces, replies, positive replies, meetings booked, unsubscribes, complaints, and site visits before and after the first email (SPEC 12).';

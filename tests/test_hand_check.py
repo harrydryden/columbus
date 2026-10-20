@@ -13,7 +13,7 @@ from tests.fakes import FakeTransport, make_context
 from tests.test_registry import slack_routes
 from tests.test_render import AGENCIES, TECH, make_settings
 from tests.test_scoring import EAP_NAMED
-from us_outbound import suppression
+from us_outbound import icp, labels, suppression
 from us_outbound.contacts import pick
 from us_outbound.enrol import enrol, hand_check
 from us_outbound.settings.model import State
@@ -145,7 +145,9 @@ def test_the_job_records_this_week_s_sample_writes_the_tab_and_posts_the_notice(
     item = ctx.store.get("hitl_items", item_id=f"hand_check-{WEEK}")
     assert item["kind"] == "hand_check" and item["status"] == "open"
     p = item["payload"]
-    assert p["drawn_at"] == NOW.isoformat() and p["gate_version"].endswith(":legacy") and p["posted"] is True
+    # The gate version: the labels' hash and the ICP gate's (icp.rules_hash, W2-2; "legacy" before it).
+    assert p["gate_version"] == f"{labels.labels_hash(ctx.settings)}:{icp.rules_hash(ctx.settings)}"
+    assert p["drawn_at"] == NOW.isoformat() and p["posted"] is True
     sampled = {a["account_id"] for a in p["accounts"]}
     assert len(sampled) == 10 and not sampled & {"mar-000", "mar-001"}  # today's two are never held
     # The tab: one row per company, the new columns filled from the facts.

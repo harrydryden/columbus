@@ -440,9 +440,9 @@ def searched(apollo) -> list[str]:
 
 
 def test_explore_share_0_picks_in_queue_order_and_stamps_ranked(ctx, transport, monkeypatch):
-    """No explore_share row (default 0): the lookahead's 10 are the top 10 by score, as before W1-6, and each picked
-    account's arm is ranked."""
-    apollo, _ = arm_world(ctx, transport, monkeypatch)
+    """explore_share 0 on the sheet (no random arm; the code default is 0.15 since W2-2): the lookahead's 10 are the
+    top 10 by score, as before W1-6, and each picked account's arm is ranked."""
+    apollo, _ = arm_world(ctx, transport, monkeypatch, explore_share=0.0)
     out = pick.run(ctx)
     assert (out["wanted"], out["picked"]) == (10, 10)
     assert searched(apollo) == [f"co{i:02d}.com" for i in range(10)]

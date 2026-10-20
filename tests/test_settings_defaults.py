@@ -37,11 +37,12 @@ def test_defaults_are_fresh_copies(tabs):
 
 
 def test_general_has_every_model_key_once(tabs, settings):
-    """Every General field has one row, except a retired key whose field stays until its reader goes: control_share
-    (W1-C, 19 Oct 2026), so `settings load` removes its row from the sheet and never adds it back."""
+    """Every General field has one row, and no retired key has one, so `settings load` removes its row from the sheet
+    and never adds it back (control_share, W1-C; the tier thresholds, W2-2)."""
     keys = [r["key"] for r in tabs["General"]]
-    assert sorted(keys) == sorted(f.name for f in dataclasses.fields(General) if f.name not in RETIRED_GENERAL)
-    assert "control_share" in RETIRED_GENERAL and "explore_share" in keys
+    assert sorted(keys) == sorted(f.name for f in dataclasses.fields(General))
+    assert not set(keys) & set(RETIRED_GENERAL) and "explore_share" in keys
+    assert {"control_share", "priority_threshold", "standard_threshold", "auto_thresholds"} <= set(RETIRED_GENERAL)
     assert len(keys) == len(set(keys))
     # Every value reads back as the model default: a key missing from the tab takes the same value.
     assert settings.general == General()
@@ -62,10 +63,10 @@ def test_general_spec_values(tabs, settings):
     assert g.live_sending is False
     assert g.send_window == SendWindow((0, 1, 2, 3, 4), time(9), time(16), "America/New_York")
     # Harry, 30 Sep 2026: a weekly enrolment target (SPEC's 30 a day is 150 a week), monthly credits.
-    assert (g.weekly_enrol_cap, g.control_share, g.priority_threshold, g.standard_threshold) == (150, 0.15, 50, 20)
-    # The W1-C keys at today's behaviour: no random arm, the hand-check's 10, the early warning alerts only.
-    assert (raw["explore_share"], raw["hand_check_sample"], raw["early_warning_pause"]) == ("0", "10", "no")
-    assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.0, 10, False)
+    assert g.weekly_enrol_cap == 150
+    # The W1-C keys: the random arm at Harry's 0.15 (D7, from W2-2), the hand-check's 10, the early warning alerts only.
+    assert (raw["explore_share"], raw["hand_check_sample"], raw["early_warning_pause"]) == ("0.15", "10", "no")
+    assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 10, False)
     assert (g.apollo_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 5000, 24)
     assert g.claude_monthly_cap_usd == 10.0
 
@@ -115,13 +116,12 @@ DEFAULT_SIGNALS = [
     ("Hiring and growth", 15, None, "Score", "Growing team", 90, True),
     ("Visited the US site", 35, None, "Score", "", 30, True),  # was +20
     ("Viewed US pricing or demo page", 25, None, "Score", "", 30, True),  # was +15
-    ("Nonprofit budget", 15, None, "Score", "", 400, True),
-    ("Nonprofit fiscal year ahead", 20, None, "Score", "", 1, True),
-    ("Q4 plan-year window", 10, None, "Score", "", 1, False),  # inactive
+    # W2-2: Nonprofit budget and Nonprofit fiscal year ahead (irs_bmf) went; no source writes their facts.
+    ("Q4 plan-year window", 10, None, "Score", "", 1, False),  # inactive, and never matches (no calendar facts)
     ("Team of 10–49", 15, None, "Score", "", 365, True),  # new: the size signal
     ("Team of 50–99", 10, None, "Score", "", 365, True),
     ("Layoffs", 0, None, "Suppress", "", 90, True),
-    ("Named by Harry", 30, None, "Score", "", 365, True),  # build addition (Harry, 30 Sep 2026)
+    # W2-2: Named by Harry went with the Named accounts tab (W2-1); nothing writes the named fact.
     # Harry, 5 Oct 2026: the lookalike graded by lookalike_fit; the old row stays, off, so a load switches it off.
     ("Close match to Spill's customers", 10, None, "Score", "", 120, True),
     ("Some match to Spill's customers", 3, None, "Score", "", 120, True),

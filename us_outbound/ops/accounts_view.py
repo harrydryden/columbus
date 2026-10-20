@@ -9,7 +9,7 @@ public access, so this command is how Harry looks at them, inside the worker:
 
   accounts               a summary (companies by status and tier; contacts with an email, by source,
                          suppressed and enrolled; ready to email, as the enrol job counts them), then the
-                         companies in queue order (tier, then score, as enrol/queue.order_key), one line
+                         companies in queue order (by score, as enrol/queue.order_key), one line
                          each with its first contact's role and title (the enrolled one, else the one
                          pick_contacts ranks first). The list never prints an email address.
   accounts DOMAIN        everything held on one company (a domain, a web address or a "www." form, through
@@ -39,6 +39,7 @@ from us_outbound.clean.domains import canonical_domain, root_domain
 from us_outbound.context import UK, Context
 from us_outbound.enrol import enrol, queue
 from us_outbound.logs import clip, hash_email, redact
+from us_outbound.scoring.tiers import LEGACY_QUEUE_TIERS, QUEUE_TIERS
 from us_outbound.settings.model import TIERS, Settings
 from us_outbound.timeparse import utc
 
@@ -122,7 +123,7 @@ class Filters:
             return tuple(dict.fromkeys(by_fold[g.casefold()] for g in given))
 
         return cls(known(_split(statuses), STATUSES, "status", "statuses"),
-                   known(_split(tiers), TIERS, "tier", "tiers"), _text(industry))
+                   known(_split(tiers), (*TIERS, *LEGACY_QUEUE_TIERS), "tier", "tiers"), _text(industry))
 
     def __bool__(self) -> bool:
         return bool(self.statuses or self.tiers or self.industry)
@@ -170,7 +171,7 @@ def _read(ctx: Context) -> Stored:
 
 
 def _in_order(ctx: Context, stored: Stored, f: Filters) -> list[dict]:
-    """The matching accounts in queue order (enrol/queue.order_key: tier, score, size band, industry priority)."""
+    """The matching accounts in queue order (enrol/queue.order_key: score, size band, industry priority)."""
     rows = [a for a in stored.accounts if f.match(a, ctx.settings)]
     return sorted(rows, key=lambda a: queue.order_key(a, ctx.settings))
 
@@ -250,7 +251,7 @@ def companies(ctx: Context, stored: Stored, f: Filters, limit: int) -> list[str]
     if not rows:
         return [f"No company{which} is stored yet." if not f else f"No company{which}."]
     shown = rows if limit == 0 else rows[:limit]
-    head = f"Companies{which}, in queue order (tier, then score): "
+    head = f"Companies{which}, in queue order (by score): "
     head += (f"all {len(rows)}:" if len(shown) == len(rows)
              else f"the first {len(shown)} of {len(rows)} (`--limit 0` lists them all):")
     width = min(DOMAIN_WIDTH, max(len(_text(a.get("domain"))) for a in shown))
@@ -314,7 +315,7 @@ def _ready_for(ctx: Context, account: Mapping[str, Any], contacts: Sequence[Mapp
     status, tier = _text(account.get("status")), _text(account.get("tier"))
     if status != "verified":
         return f"no: enrol takes verified companies, and this one is {status or 'without a status'}"
-    if tier not in queue.QUEUE_TIERS:
+    if tier not in QUEUE_TIERS:
         return f"no: the {tier or 'missing'} tier is not in the queue"
     try:
         emails = [_text(c.get("email")).lower() for c in contacts]

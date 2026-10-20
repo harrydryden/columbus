@@ -223,7 +223,6 @@ class Day:
     holds: int = 0  # kill-rule holds in force
     retention: str = ""
     spend: str = ""  # "Spend: Apollo balance …" (spend.summary_line)
-    fit: str = ""  # the day's automatic thresholds (scoring/balance.describe), while auto_thresholds is yes
 
 
 def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], dict[str, Any]]:
@@ -408,14 +407,7 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
                visited=visited, groups=daily_report.ready_groups(ready, ctx.settings) if ready else "",
                improve=improve, mailboxes=boxes, ramping=ramping,
                fired=[str((i.get("payload") or {}).get("reason")) for i in fired], holds=len(in_force),
-               retention=line or "", spend=spend_line, fit=_fit(ctx))
-
-
-def _fit(ctx: Context) -> str:
-    """The day's automatic thresholds, in one line (scoring/balance.py); nothing while auto_thresholds is no."""
-    from us_outbound.scoring import balance
-
-    return balance.describe(balance.stored(ctx.store)) if ctx.settings.general.auto_thresholds else ""
+               retention=line or "", spend=spend_line)
 
 
 # -- the short post (Harry, 9 Oct 2026: "a more readable pithier version of the daily report") -------------------
@@ -557,7 +549,7 @@ def _pipeline(day: Day) -> list[str]:
     behind = [f"{n.get('waiting_for_contact', 0):,} need a contact",
               f"{n.get('waiting_for_verification', 0):,} need their facts checked"
               + (f" ({n['doubtful_facts']} in the weekly hand-check)" if n.get("doubtful_facts") else "")]
-    out = [line, "Being prepared: " + " · ".join(behind), *([day.fit] if day.fit else [])]
+    out = [line, "Being prepared: " + " · ".join(behind)]
     if n.get("parked"):  # out of the queue while a setting keeps them out (W1-4): not being prepared
         out.append(daily_report.parked_line(n.get("parked_by_reason") or {labels.INDUSTRY_OFF: n["parked"]}))
     if n.get("in_sequence") or n.get("finished") or n.get("stopped"):

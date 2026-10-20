@@ -111,13 +111,6 @@ def score_latest_facts(ctx, specs):
     return score.latest_facts([row(t, at, "apollo_org", "employees", t) for t, at in specs]).get("employees")
 
 
-def score_calendar(ctx, specs):
-    months = {t: i + 1 for i, (t, _) in enumerate(specs)}
-    got = score.calendar_facts([row(t, at, "irs_bmf", "fiscal_year_end_month", months[t]) for t, at in specs], TODAY)
-    days = got.get("days_to_fiscal_year_start")
-    return next((t for t, m in months.items() if score.days_to_fiscal_year_start(m, TODAY) == days), None)
-
-
 def score_unread(ctx, specs):
     return which(specs, lambda marked: "clay_careers" in score.unread_sources(
         [row(t, at, "clay_careers", "read_status", "blocked" if marked(t) else "read") for t, at in specs]))
@@ -125,7 +118,7 @@ def score_unread(ctx, specs):
 
 def score_condition(ctx, specs):
     rows = [row(t, at, "apollo_org", "employees", 100, quote=t) for t, at in specs]
-    m = score._match_condition(sig("Big", "apollo_org", "employees >= 50", 10), rows, rows, TODAY, {})
+    m = score._match_condition(sig("Big", "apollo_org", "employees >= 50", 10), rows, TODAY, {})
     return m.evidence[0].quote if m else None
 
 
@@ -244,7 +237,6 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "labels.gap_codes": (labels_gap_codes, True),
     "labels.corrected_rows": (labels_corrected_rows, True),
     "score.latest_facts": (score_latest_facts, True),
-    "score.calendar_facts": (score_calendar, True),
     "score.unread_sources": (score_unread, True),
     "score._match_condition": (score_condition, True),
     "score._match_terms": (score_terms, True),

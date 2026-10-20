@@ -28,8 +28,9 @@ to bottom:
     (metrics-audit H1). The "raise weekly_enrol_cap" line comes only when every measured criterion is met and last
     week's enrolment reached CAP_BINDING of the cap. Beside them, each email source's bounces per contact over the
     kill rule's 7 days, next to the per-send figure source_bounce_rate pauses on (D19 decides which it should use).
-  * By tier, angle, industry group, sender and step: last week's activity, and for each the companies emailed so
-    far and how many replied (v_readout_weekly; the step has activity only).
+  * By explore arm (random or ranked: Harry's D7, in place of the tiers, W2-2), angle, industry group, sender and
+    step: last week's activity, and for each the companies emailed so far and how many replied (v_readout_weekly;
+    the step has activity only). Monitoring only: the arms are read once, at 300 matured in the random arm (L8).
   * Cohorts (learn/cohorts.py; Harry, 7 Oct 2026): the last four enrolment weeks in a line each, at the latest age
     their companies have reached after email 1; the latest two compared where both have 30 companies; and what
     changed last week in the settings, the copy, the campaign constants and the code (config versions, and the
@@ -73,7 +74,6 @@ from us_outbound.learn import capacity_ahead, cohorts, kill_rules, looks, signal
 from us_outbound.logs import log
 from us_outbound.ops.label_sample import interval as wilson
 from us_outbound.replies import kinds
-from us_outbound.scoring.score import TIER_WORDS
 from us_outbound.timeparse import iso_date, utc
 
 JOB = "monday_readout"
@@ -90,7 +90,8 @@ TARGETS = (("replies", "replies", "3–5%"), ("positive", "positive", "about 1%"
 UNCLASSIFIED_AFTER = timedelta(hours=1)  # poll_replies classifies a reply within 15 minutes
 WEEKLY_SQL = "SELECT * FROM {schema}.v_readout_weekly"
 # Each cut, and what it splits by in a few words for a reader who has not seen it.
-CUTS = (("tier", "By tier", "how well the company fits our profile"), ("angle", "By angle", "the pitch of the copy"),
+CUTS = (("arm", "By explore arm", "random: picked at random from the queue; ranked: in score order"),
+        ("angle", "By angle", "the pitch of the copy"),
         ("industry_group", "By industry group", ""), ("sender", "By sender", "whose mailbox sent it"),
         ("step", "By step", "which email of the sequence"))
 CUT_LIMIT = 8  # values listed per cut, the busiest first
@@ -487,8 +488,7 @@ def cut_lines(rows: Sequence[Mapping[str, Any]], cut: str, title: str, about: st
     for v in values[:CUT_LIMIT]:
         t = total[v]
         d, k = t["accounts_delivered"], t["accounts_replied"]
-        name = TIER_WORDS.get(v, v) if cut == "tier" else v
-        out.append(f"  {name}: {activity(week[v])} · {t['accounts_enrolled']:,} emailed so far, {k:,} replied "
+        out.append(f"  {v}: {activity(week[v])} · {t['accounts_enrolled']:,} emailed so far, {k:,} replied "
                    f"({rate(k, d)})")
     if len(values) > CUT_LIMIT:
         out.append(f"  and {len(values) - CUT_LIMIT} more")

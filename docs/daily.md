@@ -9,7 +9,6 @@ worker: `railway ssh -- us-outbound <command>`. Nothing changes without `--live`
 | :- | :- | :- |
 | `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry | Emails go out: each send day's leads go straight to Instantly. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
 | `hand_check_gate` | Your D5 (19 Oct 2026): the hand-check is a measure. Only the companies it picked wait for your decision, for 7 days at most; everyone else is emailed as usual | The default until you set no: no new leads go to Instantly in a week until every company picked at random has a decision |
-| `auto_thresholds` | `priority_threshold` and `standard_threshold` are used as typed; an alert says when top fit is under 5% or a group over 60% | The default (Harry, 19 Oct 2026). Each day the thresholds follow the queue: top fit is its best fifth (30 points at least), and the good-fit pool is kept big enough for two weeks of sending at `weekly_enrol_cap`, the rest being the comparison group (about 30%). The daily post's *Pipeline* shows the day's values; an alert comes only when the queue is too small for two weeks |
 
 **Company size (General `min_employees`, `max_employees`; 10 and 249 by default).** To contact companies of 5
 to 500, set 5 and 500. From the next sync every search covers the new range (new size bands are searched
@@ -25,6 +24,15 @@ the never-read `recontact_*`, `hubspot_deal_stage`, `apollo_credits_per_account`
 `opener_focus_line`) are no longer read; the sync lists them, and you can delete the rows (`us-outbound settings
 load --tab General --live` takes them off). `us-outbound status` now ends with the three go-live checks that still
 matter: Copy, Campaigns and Watchdog.
+
+**Removed on 20 Oct 2026 (W2-2; your D7 of 19 Oct):** the Priority, Standard and Control tiers and their
+thresholds. Companies are taken by score (then size band, then industry priority), and `explore_share` of each
+day's are picked at random from the queue within the Focus shares instead, to show whether the score helps: 0.15
+by default (your "Rank + 15% random arm"), so it runs with no row; 0 on the General tab switches it off. The rows
+`priority_threshold`, `standard_threshold` and `auto_thresholds` are no longer read (the sync lists them; `settings
+load --tab General --live` takes them off), and the tier-mix alerts went with them. A company's tier is now Queue,
+Held or Excluded. The Signals rows Nonprofit budget, Nonprofit fiscal year ahead and Named by Harry never fire (no
+source writes their facts) and can be deleted.
 
 **Sheet edits apply at the next sync:** 02:00 UK every day, and 11:30 UK on weekdays, so a morning
 edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound sync`.

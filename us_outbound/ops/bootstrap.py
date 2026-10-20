@@ -101,11 +101,9 @@ def database_url(env: Mapping[str, str]) -> str:
 
 
 def _in_use(store: Store, settings: Settings) -> Settings:
-    """A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py); and the day's
-    automatic thresholds stand in for the sheet's while auto_thresholds is yes (scoring/balance.py)."""
-    from us_outbound.scoring import balance
-
-    return balance.applied(store, with_holds(store, settings))
+    """A mailbox a kill rule pauses counts as Paused at once, before the sheet syncs (base/holds.py). (The day's
+    automatic tier thresholds went with the tiers: W2-2, Harry's D7.)"""
+    return with_holds(store, settings)
 
 
 def _load_settings(store: Store) -> tuple[Settings | None, Mapping[str, list[Any]]]:

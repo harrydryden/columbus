@@ -31,6 +31,8 @@ from us_outbound.context import Secrets
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.logs import hash_email
 from us_outbound.ops import bootstrap, cli, heartbeat
+from us_outbound.enrol import openers
+from us_outbound.scoring.angle import angle_setter
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.defaults import COLUMNS, default_tabs
 from us_outbound.settings.model import TABS
@@ -263,18 +265,22 @@ def test_first_sync_versions_every_tab_and_sends_nothing(flow):
     assert settings.general.approver_slack_ids == (PHASE0_GENERAL["approver_slack_ids"],)
 
 
-def test_the_account_scores_priority_with_the_eap_angle_and_evidence(flow):
+def test_the_account_scores_90_in_the_queue_with_the_eap_angle_and_evidence(flow):
     a = flow["scored"]
     # Mental health support 15, EAP named 5, Progressive benefits 5 (mental health days), People leader
     # in place 10, New People leader 30, Hiring and growth 15; the values page no longer scores.
-    assert (a["score"], a["tier"], a["angle"]) == (90, "Priority", "Upgrade the EAP")  # + Team of 50–99 (its band)
+    assert (a["score"], a["tier"], a["angle"]) == (90, "Queue", "Upgrade the EAP")  # + Team of 50–99 (its band)
     assert "capped" not in a["tier_reason"] and "New People leader (+30)" in a["tier_reason"]
     matched = [e["value"]["signal"] for e in flow["world"].store.select("signal_events", {"source": "scoring"})]
     assert "EAP named" in matched and "New People leader" in matched
     settings, _ = load_current(flow["world"].store)
     events = flow["world"].store.select("signal_events", {"account_id": a["account_id"]})
     r = score_account(a, events, settings, NOW.date())
-    assert r.opener == "Saw your benefits page mentions EAP."  # the EAP named opener, filled with its evidence
+    # The angle setter's plain opener, filled with its evidence as enrol fills it when no line by role fits
+    # (enrol/openers.fill_opener; the scoring-time opener went with W2-2).
+    setter = angle_setter(r.angle, r.matches)
+    ev = next(e for e in setter.evidence if e.term or e.quote)
+    assert openers.fill_opener(setter.signal.opener, ev) == "Saw your benefits page mentions EAP."
 
 
 def test_enrol_renders_four_compliant_steps_for_the_senders_campaign(flow):
@@ -357,7 +363,7 @@ def test_changing_a_weight_changes_the_score_after_the_next_sync(flow):
     assert detail["rescored"] is True
     before, after = flow["scored"], flow["reweighted"]
     assert before["score"] - after["score"] == 25
-    assert after["tier"] == "Priority" and "New People leader (+5)" in after["tier_reason"]
+    assert after["tier"] == "Queue" and "New People leader (+5)" in after["tier_reason"]
     history = flow["world"].store.select("settings", {"tab": "Signals", "key": "New People leader"})
     assert sorted((r["values"]["weight"], r["effective_to"] is None) for r in history) == [("30", False), ("5", True)]
 

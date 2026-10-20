@@ -38,14 +38,15 @@ _GENERAL: list[tuple[str, str, str]] = [
         "`us-outbound stop --live`.",
     ),
     ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company. Each send day takes what is left of it ÷ the send days left in the week."),
-    # control_share is retired (settings/validate.RETIRED_GENERAL; Harry, 19 Oct 2026): explore_share takes its
-    # place as a new key, at 0, so `settings load` removes the old row and adds the new one without starting the arm.
+    # control_share, priority_threshold, standard_threshold and auto_thresholds are retired
+    # (settings/validate.RETIRED_GENERAL; Harry's D7, 19 Oct 2026; W2-2): the tiers went, and explore_share's random
+    # arm took the Control tier's place.
     (
         "explore_share",
-        "0",
+        "0.15",
         "Share of each day's new companies picked at random from the ready queue, within the Focus shares, instead "
         "of in score order, so replies can show whether the score helps (contacts.arm). 0: none, every company in "
-        "score order. At most 0.25. Added by the build (Harry, 19 Oct 2026).",
+        "score order. At most 0.25. Harry chose 0.15 (19 Oct 2026). Added by the build.",
     ),
     (
         "hand_check_sample",
@@ -65,17 +66,6 @@ _GENERAL: list[tuple[str, str, str]] = [
         "no",
         "yes: when the early warning fires (no human reply from 100 companies whose reply window has closed), new "
         "enrolment pauses as well as the alert. no: the alert only. Added by the build (Harry, 19 Oct 2026).",
-    ),
-    ("priority_threshold", "50", "Score at or above this is Priority. Used only while auto_thresholds is no."),
-    ("standard_threshold", "20", "Score at or above this is Standard; below it is Control. Used only while "
-     "auto_thresholds is no."),
-    (
-        "auto_thresholds",
-        "yes",
-        "yes: the two thresholds above follow the queue each day: top fit is the best fifth (30 points at least), "
-        "and the good-fit pool is kept big enough for two weeks of sending at weekly_enrol_cap, with the rest the "
-        "comparison group (about 30%). The daily post shows the day's values. no: the two values above, as typed. "
-        "Harry, 19 Oct 2026. Added by the build.",
     ),
     ("score_cap", "100", "Cap on an account's total score."),
     (
@@ -358,6 +348,8 @@ _BENEFITS_LINES = (
 
 # signal, source, looks_for, context_rule, weight, max_weight, action, suggests_angle, opener, counts_for_days,
 # active, note: the Signals tab's columns in order, but for the opener lines by role (_OPENERS, below).
+# W2-2 (20 Oct 2026; code-scoring B5): Nonprofit budget, Nonprofit fiscal year ahead (irs_bmf) and Named by Harry
+# (named) went: no source writes their facts. The Layoffs row and its Suppress action stay until D11.
 _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]] = [
     (
         "Mental health support listed", "clay_careers, careers_pages, job_posts",
@@ -474,15 +466,6 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         f"{_APPENDIX_A}: +15 to +25; with Visited the US site it makes Priority.",
     ),
     (
-        "Nonprofit budget", "irs_bmf", "revenue >= 2000000 AND revenue <= 50000000",
-        "", "15", "", "Score", "", "", "400", "yes", "SPEC 5 default.",
-    ),
-    (
-        "Nonprofit fiscal year ahead", "irs_bmf",
-        "days_to_fiscal_year_start >= 60 AND days_to_fiscal_year_start <= 120",
-        "", "20", "", "Score", "", "", "1", "yes", "SPEC 5 default. Recomputed daily.",
-    ),
-    (
         "Q4 plan-year window", "calendar", "month in [10, 11, 12]",
         "", "10", "", "Score", "", "", "1", "no",
         f"{_APPENDIX_A}: inactive. It added 10 to every account from October to December, so it could not tell "
@@ -503,11 +486,6 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "Layoffs", "layoffs", "days_since_layoff <= 90",
         "", "0", "", "Suppress", "", "", "90", "yes",
         "Suppresses the domain for 90 days after a layoff. SPEC 5 default.",
-    ),
-    (
-        "Named by Harry", "named", "named = true",
-        "", "30", "", "Score", "", "", "365", "yes",
-        "Companies on the Named accounts tab (Harry, 30 Sep 2026). They pass every other check as usual.",
     ),
     (
         "Close match to Spill's customers", "lookalike", "lookalike_fit >= 70",
