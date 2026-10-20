@@ -103,6 +103,15 @@ def test_a_test_started_from_21_oct_under_another_split_is_shown_paused_or_not_a
     ctx.settings = dataclasses.replace(ctx.settings, general=dataclasses.replace(ctx.settings.general,
                                                                                  live_split="opener"))
     assert "opener-holdout (holdout; drawing arms)" in experiments.registry_lines(ctx)[1]
+    # W3-4 r2: the ab test under its own split, test, but without its pre-registration (the version in force read
+    # leniently): no arms, and the line says it is the row, not the split.
+    bare = dataclasses.replace(ab, **{k: "" for k in prereg if k != "alpha"}, alpha=None)
+    ctx.settings = dataclasses.replace(ctx.settings, tests=(bare,), general=dataclasses.replace(
+        ctx.settings.general, live_split="test"))
+    assert ctx.settings.drawn_test() is None
+    assert [(e.name, e.drawing) for e in experiments.registry(ctx)] == [("short-email-1", False)]
+    assert ("short-email-1 (A/B copy test; paused: its row needs its pre-registration fields on the Tests tab): not "
+            "pre-registered on the Tests tab") in experiments.registry_lines(ctx)[1]
 
 
 def test_a_registered_test_prints_its_fields_reached_matured_and_a_date():

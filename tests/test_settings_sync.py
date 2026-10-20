@@ -553,7 +553,10 @@ def test_anything_apply_approved_did_not_foresee_is_recorded_and_the_sync_goes_o
 
 def test_a_sync_that_activates_10_more_labels_posts_once_so_the_decision_log_can_say_why(ctx, sheet):
     """The default sheet has some labels switched off; switching 10 of them on widens the ICP: one post naming "10
-    more industries active". The same sync again posts nothing more (post_once); a narrowing is no widening."""
+    more industries active". The same sync again posts nothing more (post_once); a narrowing is no widening. The run
+    starts from the version in force, as bootstrap builds it (W3-4 r2: from the code's defaults, nothing is posted)."""
+    assert sync.run(ctx)["icp_widened"] == []  # the first sync: ctx.settings is no version in force
+    ctx.settings, _ = sync.load_current(ctx.store)
     off = [r for r in sheet["Industries"] if r["active"].strip().lower() == "no"][:10]
     assert len(off) == 10
     for r in off:
@@ -608,3 +611,69 @@ def test_live_sending_no_comes_into_force_whatever_the_tests_tab_says(ctx, sheet
     assert len(told) == 1 and test_id in told[0]
     sync.run(dataclasses.replace(ctx, now=ctx.now + timedelta(hours=2)))
     assert len([t for _, t in ctx.clients.slack.posts if sync.SPLIT_HEAD in t]) == 1  # once a day
+
+
+def _holdout_from_22_oct_without_registration(tabs) -> dict:
+    """The review's probe row (W3-4 r2): the default Tests row as a running opener holdout started Thu 22 Oct 2026,
+    after REGISTRY_FROM, with none of the five pre-registration fields (the code before W3-4 has no such columns)."""
+    row = tabs["Tests"][0]
+    row.update(kind="holdout", version_a="opener", version_b="holdout", status="running", start_date="2026-10-22",
+               read_date="2027-01-15", metric_id="", definition_version="", test="", alpha="", look_thresholds="")
+    return row
+
+
+def test_a_version_stored_by_older_code_with_an_unregistered_test_stays_in_force(ctx, sheet):
+    """W3-4 r2 (the review's blocking issue): the code in force before this deploy lets Harry start a holdout on or
+    after 21 Oct without the pre-registration, and stores the row. After the deploy, load_current must still read
+    that version (strict=False) with no Tests error, and load_fallback must not fall back (fallback_tabs empty):
+    otherwise enrolment and the reply desk stop until the sheet is fixed. The sheet's copy of the row is still
+    refused by the sync's own (strict) check, so the stored version stays in force, and one post a day names the gap."""
+    tabs = default_tabs()
+    _holdout_from_22_oct_without_registration(tabs)
+    ctx.store.insert("settings", [{"tab": tab, "key": natural_key(tab, r), "values": r, "effective_from": T1,
+                                   "effective_to": None, "synced_at": T1} for tab, rows in tabs.items() for r in rows])
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values()), {t: [str(e) for e in v] for t, v in errors.items() if v}
+    (t,) = [t for t in settings.tests if t.status == "running"]
+    assert (t.test_id, t.kind, t.registered, t.pre_registered) == ("t1-eap-opener", "holdout", True, False)
+    fallback = sync.load_fallback(ctx.store)
+    assert fallback is not None and fallback.fallback_tabs == frozenset()
+
+    _holdout_from_22_oct_without_registration(sheet)  # the sheet still says the same
+    ctx.settings, ctx.now = settings, T2
+    summary = sync.run(ctx)
+    assert summary["rejected"] == ["Tests"] and summary["unusable"] == []
+    gap = ("t1-eap-opener needs its pre-registration fields (metric_id, definition_version, test, alpha, "
+           "look_thresholds)")
+    assert summary["registration_gaps"] == [gap]
+    told = [text for _, text in ctx.clients.slack.posts if sync.REGISTRATION_HEAD in text]
+    assert len(told) == 1 and gap in told[0]
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values())  # still in force after the refused sync
+    ctx.now = T2 + timedelta(hours=1)
+    sync.run(ctx)
+    assert len([t for _, t in ctx.clients.slack.posts if sync.REGISTRATION_HEAD in t]) == 1  # once a day
+
+
+def test_a_sync_that_starts_from_the_defaults_or_the_fallback_posts_no_widening(ctx, sheet):
+    """W3-4 r2 (review note): settings_sync can run on the code's defaults (nothing in force) or on the fallback. The
+    widening post compares against the version that was in force, so neither posts one. Each starting point below has
+    max_employees 100 against the sheet's 249, which widening() reads as "max_employees 100 → 249"; only the one that
+    is a version in force (versions set, no fallback_tabs) posts it."""
+    from us_outbound.settings.model import General, Settings
+
+    defaults = Settings(general=dataclasses.replace(General(), max_employees=100))  # bootstrap's stand-in: no versions
+    ctx.settings = defaults
+    summary = sync.run(ctx)
+    assert sync.widening(defaults, sync.load_current(ctx.store)[0]) == ["max_employees 100 → 249"]  # what it would say
+    assert summary["icp_widened"] == []
+    in_force, _ = sync.load_current(ctx.store)
+    narrow = dataclasses.replace(in_force.general, max_employees=100)
+    ctx.settings = dataclasses.replace(in_force, general=narrow, fallback_tabs=frozenset({"Industries"}))
+    ctx.now = T2
+    assert sync.run(ctx)["icp_widened"] == []
+    assert not [t for _, t in ctx.clients.slack.posts if sync.WIDENED_HEAD in t]
+    ctx.settings = dataclasses.replace(in_force, general=narrow)  # the same narrower start, as a version in force
+    ctx.now = T3
+    assert sync.run(ctx)["icp_widened"] == ["max_employees 100 → 249"]
+    assert len([t for _, t in ctx.clients.slack.posts if sync.WIDENED_HEAD in t]) == 1

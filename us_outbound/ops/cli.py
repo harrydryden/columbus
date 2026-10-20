@@ -445,7 +445,11 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     else:
         print("Enrollment: not stopped by an operator")
     running = s.running_test()
-    print(f"Running test: {running.test_id} ({running.kind}, read on {running.read_date})" if running
+    paused_test = ""  # W3-4 r2: running on the sheet, but drawing no arms for new contacts (Settings.drawn_test)
+    if running is not None and s.drawn_test() is None:
+        paused_test = (" (paused: its row needs its pre-registration fields)" if running.registered
+                       and not running.pre_registered else f" (paused: live_split is {s.general.live_split})")
+    print(f"Running test: {running.test_id} ({running.kind}, read on {running.read_date}){paused_test}" if running
           else "Running test: none")
     _status_heartbeats(ctx.store, ctx.now)
     try:

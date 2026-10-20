@@ -515,6 +515,25 @@ def test_status_prints_jobs_and_mailboxes(capsys):
     assert "Today: 0, limited by ready accounts" in out
     assert "Apollo: 0 of 2,000 credits used this month (0%)" in out
     assert "Retention (00:40 UK daily): not run yet" in out  # ops/retention.py
+    assert "Running test: none" in out
+
+
+@pytest.mark.parametrize("live_split, prereg, says", [
+    ("test", True, "Running test: t1-agencies (ab, read on None)\n"),  # draws: no note
+    ("both", True, "Running test: t1-agencies (ab, read on None) (paused: live_split is both)\n"),
+    ("test", False, "Running test: t1-agencies (ab, read on None) (paused: its row needs its pre-registration "
+                    "fields)\n"),
+])
+def test_status_says_when_the_running_test_draws_no_arms(capsys, live_split, prereg, says):
+    """W3-4 r2 (review note): a test running on the sheet that draws no arms for new contacts (Settings.drawn_test is
+    None) is shown as paused, with why: live_split names another split, or its row lacks the pre-registration."""
+    from tests.test_render import FIRST_TEST
+
+    t = FIRST_TEST if prereg else dataclasses.replace(FIRST_TEST, metric_id="", definition_version="", test="",
+                                                      alpha=None, look_thresholds="")
+    s = dataclasses.replace(SETTINGS, tests=(t,), general=dataclasses.replace(SETTINGS.general, live_split=live_split))
+    assert Harness(s).run("status") == 0
+    assert says in capsys.readouterr().out
 
 
 def test_retention_runs_by_hand_and_shows_in_status(capsys):

@@ -188,7 +188,9 @@ def registry_lines(ctx: Context) -> list[str]:
     for e in entries:
         t = e.test
         kind = KIND_WORDS.get(t.kind, t.kind) if t.test_id else SPLIT_WORDS.get(e.split, e.split)
-        if not e.drawing:  # a copy test started from 21 Oct draws only under its split (Settings.drawn_test)
+        if not e.drawing and t.registered and not t.pre_registered:  # read leniently from an older version (r2)
+            state = "paused: its row needs its pre-registration fields on the Tests tab"
+        elif not e.drawing:  # a copy test started from 21 Oct draws only under its split (Settings.drawn_test)
             state = f"paused: General live_split is {split}, not {e.split}"
         elif any(t is m for m in mismatched):  # a holdout row whose split draws beside the others (both)
             state = f"drawing arms, but not alone: General live_split is {split}, not {e.split}"

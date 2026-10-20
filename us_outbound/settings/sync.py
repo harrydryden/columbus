@@ -272,7 +272,11 @@ def _choose(
     report = {t: list(sheet_errors[t]) for t in rejected}
     errors = sheet_errors
     for _ in range(len(TABS) + 1):
-        _, errors = validate_all({t: stored[t] if t in rejected else sheet.get(t) for t in TABS})
+        # Leniently (W3-4 r2): a rejected tab's version in force is read as load_current reads it, so a row stored by
+        # older code (a test started from 21 Oct without its pre-registration) neither leaves it unusable nor holds
+        # back the tabs it names. A sheet tab still in play passed the strict check above on its own, and the checks
+        # between tabs are the same either way.
+        _, errors = validate_all({t: stored[t] if t in rejected else sheet.get(t) for t in TABS}, strict=False)
         grew = False
         for t in TABS:
             if not errors[t]:
@@ -478,6 +482,7 @@ def run(ctx: Context) -> dict:
         rescored = _rescore(current)
     widened = _post_widening(ctx, ctx.settings, settings) if settings is not None else []
     split_paused = _post_split_mismatches(ctx, settings) if settings is not None else []
+    unregistered = _post_registration_gaps(ctx, settings) if settings is not None else []
 
     summary = {
         "sheet_id": sheet_id,
@@ -497,6 +502,7 @@ def run(ctx: Context) -> dict:
         "fallback": fallback,
         "icp_widened": widened,
         "split_mismatches": split_paused,
+        "registration_gaps": unregistered,
     }
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
         summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
@@ -538,11 +544,15 @@ def widening(before: Settings | None, after: Settings) -> list[str]:
 
 def _post_widening(ctx: Context, before: Settings | None, after: Settings) -> list[str]:
     """One post for a sync that widened the ICP, so docs/decisions.md can record why (a person's reason is the log's
-    entry). Once per change and day (post_once). Never raises: the sync goes on."""
+    entry). Once per change and day (post_once). Never raises: the sync goes on. Nothing when the run started from the
+    code's defaults or the fallback (no version in force, or fallback_tabs): what it would compare against is not what
+    was in force, and a widening from the defaults would be spurious (W3-4 r2)."""
     import hashlib
 
     from us_outbound.base import notify, say
 
+    if before is None or before.fallback_tabs or not before.versions:
+        return []
     try:
         lines = widening(before, after)
         if not lines:
@@ -599,6 +609,40 @@ def _post_split_mismatches(ctx: Context, settings: Settings) -> list[str]:
         raise
     except Exception as exc:
         log("test_split_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
+
+
+REGISTRATION_HEAD = "A running test cannot draw arms as the Tests tab has it"
+
+
+def registration_gaps(settings: Settings) -> list[str]:
+    """One line per running test started from 21 Oct 2026 that the sheet's check would refuse (W3-4 r2;
+    Settings.registration_gaps): its row has not every pre-registration field, or another test is running too. Only a
+    version stored by the code before W3-4 holds one (validate._tests reads it leniently, so the reply desk and
+    enrolment go on); a copy test in this state draws no arms for new contacts."""
+    return [f"{t.test_id} {why}" for t, why in settings.registration_gaps()]
+
+
+def _post_registration_gaps(ctx: Context, settings: Settings) -> list[str]:
+    """Once a day per test while registration_gaps names it. Never raises."""
+    from us_outbound.base import notify, say
+
+    try:
+        found = settings.registration_gaps()
+        if not found:
+            return []
+        lines = [f"{t.test_id} {why}" for t, why in found]
+        pairs = [(notify.once_key(ctx, "test_registration", t.test_id), f"• {_slack_escape(line)}")
+                 for (t, _), line in zip(found, lines)]
+        notify.post_once(ctx, pairs, head=f"{say.ACTION} *{REGISTRATION_HEAD}*",
+                         foot=f"_Fill in metric_id, definition_version, test, alpha and look_thresholds, and leave one "
+                              f"test running, on the {say.sheet_link(ctx, 'Tests')}; until the sheet passes, the "
+                              f"version in force stays and a copy test's arms are not drawn for new contacts._")
+        return lines
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("test_registration_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
         return []
 
 

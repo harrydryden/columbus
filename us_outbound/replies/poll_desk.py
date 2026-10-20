@@ -19,6 +19,8 @@ For each reply item not yet handled:
        "class: <class>"            the reply's class corrected (W3-4, 21 Oct 2026; design-final §5 L11): one
                                    reply_class_corrected event (desk.correct_class), which every outcome and report
                                    takes; it decides nothing about the answer and the thread reading goes on.
+                                   Read only while the item is open: once it is sent or skipped its thread is not
+                                   read again, so a "class:" written after that is not taken (W3-4 r2; known, kept).
      Thread replies count in order, then the reactions on the current draft message; ❌ beats ✅. A ✅ on a draft
      that was edited since, or whose send failed, no longer counts. The bot seeds ✅ and ❌ on each alert
      (replies/poll.py) and on a changed draft; its own reactions and notes are neither decisions nor ignored.

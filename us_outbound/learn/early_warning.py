@@ -90,7 +90,8 @@ def check(ctx: Context, found: Sequence[Outcome] | None = None) -> dict[str, Any
     # The hold first, then the alert (holds are recorded before alerts). A warning holds once: like the stop rule
     # (kill_rules: fired.ever), a warning whose hold Harry cleared (`killrules clear`) never holds again, or the next
     # metrics_daily would pause enrolment again, silently, as its post went out that week (W3-4 r1).
-    holding = pause and kill_rules.holding(ctx, SCOPE, TARGET)
+    # Read whatever the key says now (W3-4 r2): a hold made while it was yes stays until cleared, and the footer says so.
+    holding = kill_rules.holding(ctx, SCOPE, TARGET)
     fired_before = kill_rules.ever_fired(ctx)
     new = next((w for w in fired if f"early_warning_{w.name}" not in fired_before), None)
     if pause and not holding and new is not None:
@@ -100,9 +101,12 @@ def check(ctx: Context, found: Sequence[Outcome] | None = None) -> dict[str, Any
         summary["held"] = f.item_id
         holding = True
     lines = [(notify.once_key(ctx, "early_warning", w.name, per="week"), f"• {w.line}") for w in fired]
-    if holding:
+    if holding and pause:
         foot = ("New enrolment is paused until `us-outbound killrules clear <item> --live` (General "
                 "early_warning_pause = yes).")
+    elif holding:
+        foot = ("New enrolment is still paused by an earlier early warning until `us-outbound killrules clear <item> "
+                "--live` (General early_warning_pause is now no, so no new warning holds; the hold made stays).")
     elif pause:
         foot = ("This is an alert only: its hold was cleared with `us-outbound killrules clear`, and a warning holds "
                 "once (General early_warning_pause = yes).")

@@ -904,6 +904,56 @@ def test_a_test_started_from_21_oct_needs_its_pre_registration_and_its_split(tab
     assert (settings.running_test().metric, settings.running_test().method) == ("O4", "fisher_exact")  # the defaults
 
 
+_BLANK_REGISTRATION = dict(metric_id="", definition_version="", test="", alpha="", look_thresholds="")
+
+
+def test_the_version_in_force_is_read_without_the_pre_registration_rules_and_draws_nothing(tabs):
+    """W3-4 r2 (the review's blocking probe): the code before W3-4 lets a test start on or after 21 Oct with no
+    pre-registration columns, and stores the row. Read again under this code (strict=False: sync.load_current and
+    load_fallback), the row must still validate, or every tab falls back and enrolment and the reply desk stop
+    (spec.py: rows stored under older code validate under newer code). The sheet's own check (strict, the default)
+    still refuses it. A copy test in that state draws no arms, and registration_gaps names what it lacks."""
+    bare = _prereg_tabs(tabs, **_BLANK_REGISTRATION)  # a copy test, started 26 Oct 2026, live_split = test
+    strict = _errors(bare, "Tests")
+    assert sorted((e.column, e.message) for e in strict) == sorted((c, "is required") for c in _BLANK_REGISTRATION)
+    settings, errors = validate_all(bare, strict=False)
+    assert settings is not None and not any(errors.values()), errors
+    t = settings.running_test()
+    assert (t.registered, t.pre_registered) == (True, False)
+    # Under live_split = test it would draw (drawn_test's split rule); without its pre-registration it does not.
+    assert settings.drawn_test() is None
+    assert [(g.test_id, why) for g, why in settings.registration_gaps()] == [
+        ("t1-eap-opener", "needs its pre-registration fields (metric_id, definition_version, test, alpha, "
+                          "look_thresholds)")]
+    # The same row with its five fields draws, and has no gap (the guard is the pre-registration, nothing else).
+    full, _ = validate_all(_prereg_tabs(tabs), strict=False)
+    assert full.drawn_test() is full.running_test() and full.registration_gaps() == []
+
+    # Two running from 21 Oct: a holdout (opener/holdout, 22 Oct) beside the copy test, as the old code allowed.
+    # Strict: both rows refused (the one-test rule). Lenient: both read; each named once, for what it lacks.
+    two = _prereg_tabs(tabs)
+    two["Tests"].append(dict(two["Tests"][0], test_id="h1", kind="holdout", version_a="opener", version_b="holdout",
+                             start_date="2026-10-22", **_BLANK_REGISTRATION))
+    assert [(e.row, e.column) for e in _errors(two, "Tests") if e.column == "status"] == [(2, "status"), (3, "status")]
+    settings, errors = validate_all(two, strict=False)
+    assert settings is not None and not any(errors.values()), errors
+    assert [(g.test_id, why.split(" (")[0]) for g, why in settings.registration_gaps()] == [
+        ("t1-eap-opener", "is not the only test running"), ("h1", "needs its pre-registration fields")]
+
+    # A rule its looks do not fit (one_look with an interim look): strict refuses it; lenient reads it with the
+    # default rule (look_thresholds blank, so not pre-registered: it draws nothing, and its gap is named).
+    unfit = _prereg_tabs(tabs, looks="2026-12-01")
+    assert _one(unfit, "Tests", "looks")
+    settings, errors = validate_all(unfit, strict=False)
+    assert settings is not None and not any(errors.values())
+    assert settings.running_test().look_thresholds == "" and settings.running_test().look_rule == "obrien_fleming"
+    assert settings.drawn_test() is None
+    # Started before 21 Oct (warm-intro-70): no gap, either way.
+    legacy, _ = validate_all(_prereg_tabs(tabs, live_split="both", start_date="2026-10-12", **_BLANK_REGISTRATION),
+                             strict=False)
+    assert legacy.registration_gaps() == [] and legacy.drawn_test() is legacy.running_test()
+
+
 def test_live_split_is_one_of_five(tabs):
     for value in ("both", "opener", "subject", "test", "none"):
         next(r for r in tabs["General"] if r["key"] == "live_split")["value"] = value

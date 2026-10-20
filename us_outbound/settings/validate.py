@@ -16,6 +16,9 @@ sync, the default) still fails on a duplicate key; strict=False (settings/sync.l
 in force) keeps the first row of a duplicated key and warns. A value that does not parse fails in both. Every key a
 package deletes from General goes into RETIRED_GENERAL in the same commit, and the live sheet's key names are a test
 fixture (tests/fixtures/general_keys_live.txt). general_warnings() lists the warnings.
+
+The Tests tab's pre-registration and its one-running-test rule (W3-4) are enforced the same way (W3-4 r2): strictly
+on the sheet, not on the version in force read again (_tests), which the code before W3-4 may have stored without them.
 """
 
 from __future__ import annotations
@@ -1101,10 +1104,16 @@ def _variant(r: _Row, kind: str) -> tuple[int, str, str, str, str]:
     return email, change, texts[0], texts[1], find
 
 
-def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
+def _tests(rows: list[_Row], strict: bool = True) -> list[tuple[Test, int]]:
     """The Tests tab. kind (ab, the default, holdout or variant) and looks (Harry, 6 Oct 2026) are optional columns,
     and so are a variant test's email, change, text_a, text_b and find (Harry, 7 Oct 2026), and share_a, the share
-    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank)."""
+    of an ab or variant test's accounts version_a takes (Harry, 8 Oct 2026; 50% when blank).
+
+    strict=False (the version in force, read again: settings/sync.load_current) does not require the pre-registration
+    or the one running test (W3-4 r2): a row stored by the code before W3-4, started on or after REGISTRY_FROM without
+    them, must still be read, or every tab falls back and enrolment and the reply desk stop (spec.py: rows stored under
+    older code validate under newer code). Such a test draws no arms (Settings.drawn_test) and settings_sync says so
+    once a day (Settings.registration_gaps); the sheet's own check (strict) still refuses the row."""
     out: list[tuple[Test, int]] = []
     seen: dict[str, int] = {}
     running: int | None = None
@@ -1153,18 +1162,23 @@ def _tests(rows: list[_Row]) -> list[tuple[Test, int]]:
         # runs only once its row names the metric, the outcomes definition, the test, alpha and the per-look rule, and
         # only as the one test running. A test started before keeps the rules it started under.
         registered = start is None or start >= REGISTRY_FROM
-        needed = is_running and registered
+        needed = is_running and registered and strict
         metric_id = r.parse("metric_id", one_of(METRIC_IDS), required=needed, default="")
         version = r.parse("definition_version", str, required=needed, default="")
         method = r.parse("test", one_of(TEST_METHODS), required=needed, default="")
         alpha = r.parse("alpha", _alpha, required=needed, default=None)
         rule_name = r.parse("look_thresholds", one_of(LOOK_RULES), required=needed, default="")
         interim = tuple(looks or ())  # the looks before the read_date, which is always the last
-        if needed and rule_name == ONE_LOOK and interim:
-            r.fail("looks", "must be blank when look_thresholds is one_look: the test is read once, on its read_date")
-        elif rule_name == OBRIEN_FLEMING and needed and not interim:
-            r.fail("looks", "needs at least one look before the read_date when look_thresholds is obrien_fleming; "
-                            "or set look_thresholds to one_look")
+        unfit = ""
+        if is_running and registered and rule_name == ONE_LOOK and interim:
+            unfit = "must be blank when look_thresholds is one_look: the test is read once, on its read_date"
+        elif is_running and registered and rule_name == OBRIEN_FLEMING and not interim:
+            unfit = ("needs at least one look before the read_date when look_thresholds is obrien_fleming; or set "
+                     "look_thresholds to one_look")
+        if unfit and strict:
+            r.fail("looks", unfit)
+        elif unfit:  # the version in force, read again: read with the default rule, and not pre-registered (no draws)
+            rule_name = ""
         alone = needed and len(running_rows) > 1
         if alone:
             r.fail("status", f"only one test runs at a time from {REGISTRY_FROM:%d %b %Y} (rows "
@@ -1221,6 +1235,8 @@ def _validate(tab: str, rows: Iterable[Mapping[str, Any]] | None, *, strict: boo
         return (General() if tab == "General" else []), errors
     if tab == "General":
         return _general(prepared, strict, warnings), errors
+    if tab == "Tests":
+        return _tests(prepared, strict), errors
     return _VALIDATORS[tab](prepared), errors
 
 

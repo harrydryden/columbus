@@ -780,9 +780,11 @@ class Settings:
         """The running copy test, when General live_split lets it draw arms; else None, and enrol gives no new contact
         a test arm (W3-4). A test started from REGISTRY_FROM draws only under live_split = test, as the one split; one
         started before (warm-intro-70) under both or test, as it did before live_split. Decided here, where arms are
-        drawn, and not in validation, so a Tests row never keeps General back (W3-4 r1, 21 Oct 2026)."""
+        drawn, and not in validation, so a Tests row never keeps General back (W3-4 r1, 21 Oct 2026). A test started from
+        REGISTRY_FROM without its pre-registration (a row the code before W3-4 stored, read leniently: validate._tests)
+        draws nothing either (W3-4 r2; registration_gaps)."""
         t = self.running_test()
-        if t is None:
+        if t is None or (t.registered and not t.pre_registered):
             return None
         allowed = (SPLIT_TEST,) if t.registered else (SPLIT_BOTH, SPLIT_TEST)
         return t if self.general.live_split in allowed else None
@@ -793,6 +795,24 @@ class Settings:
         once a day; the readout's registry shows it)."""
         split = self.general.live_split
         return [t for t in self.tests if t.status == "running" and t.registered and t.split() != split]
+
+    def registration_gaps(self) -> list[tuple[Test, str]]:
+        """The running tests started from REGISTRY_FROM that the sheet's check would refuse, and why: a row without
+        every pre-registration field, or one of two or more running (W3-4 r2). Only the version in force, stored by
+        the code before W3-4 and read leniently (validate._tests, strict=False), can hold one; such a copy test draws
+        no arms (drawn_test), and settings_sync posts it once a day."""
+        running = [t for t in self.tests if t.status == "running"]
+        out = []
+        for t in running:
+            if not t.registered:
+                continue
+            if not t.pre_registered:
+                missing = [f for f in PRE_REGISTRATION if getattr(t, f) in ("", None)]
+                out.append((t, f"needs its pre-registration fields ({', '.join(missing)})"))
+            elif len(running) > 1:
+                others = ", ".join(o.test_id for o in running if o is not t)
+                out.append((t, f"is not the only test running ({others} also says running)"))
+        return out
 
     def draws_opener_holdout(self) -> bool:
         """Whether the opener holdout draws (General live_split both or opener; W3-4)."""

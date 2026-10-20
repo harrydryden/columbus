@@ -36,7 +36,8 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      account, whatever its Copy row; an account where the change cannot be made is left out of the test),
      each split drawn only while General live_split lets it (W3-4, 21 Oct 2026: both, the default, draws all
      three as before; opener, subject or test draws that one alone, none draws none; Settings.drawn_test,
-     draws_opener_holdout, draws_subject_split; a subject split not drawn records subject_arm n/a),
+     draws_opener_holdout, draws_subject_split; a split not drawn records its arm as n/a: subject_arm, and
+     opener_arm from W3-4 r2, so a later read of either never counts an account no draw put in an arm),
      its four rendered emails (any copy-rule violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the
@@ -619,7 +620,7 @@ class Prepared:
     lead: dict
     opener_note: str = ""  # the opener lines passed over, and why (enrol/openers.py)
     copy_note: str = ""  # a more specific Copy row exists but cannot be sent yet
-    opener_arm: str = openers.NONE  # opener, holdout or none: contacts.opener_arm, for the readout
+    opener_arm: str = openers.NONE  # opener, holdout, none or n/a: contacts.opener_arm, for the readout
     opener_source: str = ""  # the line's signal and column, or the generic line's General key
     subject_arm: str = render.COPY_SUBJECT  # personal or copy: email 1's subject (contacts.subject_arm)
     # The four emails as rendered, the variables they were filled with, and the mailbox they were rendered for.
@@ -689,7 +690,7 @@ def prepare(
     op, overlay = account_opener(ctx, a, c, check)
     opener, note = render.pick_opener(op.text, sender_is_harry=host, demo_host=g.demo_host, exempt=exempt)
     if note:  # every filled opener goes through the copy rules once more, as it will be sent
-        op = openers.Opener("", openers.NONE, "", (*op.notes, note))
+        op = openers.Opener("", openers.NO_ARM if op.arm == openers.NO_ARM else openers.NONE, "", (*op.notes, note))
     values = render.variables(a, c, mb, s, copy_row=row, opener=opener, legal_overlay=overlay)
     arm = render.subject_arm(a.get("account_id"), s)  # Harry, 5 Oct 2026: email 1's personal subject, as a split
     first_subject = render.email1_subject(arm, s)

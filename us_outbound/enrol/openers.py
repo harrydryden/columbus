@@ -84,6 +84,9 @@ from us_outbound.settings.overrides import effective
 
 
 OPENER, HOLDOUT, NONE = "opener", "holdout", "none"  # contacts.opener_arm
+# contacts.opener_arm while General live_split leaves the holdout out (W3-4 r2): the account was in no draw, so neither
+# arm counts it (as render.NO_SUBJECT_ARM for the subject split); its line is chosen as ever.
+NO_ARM = "n/a"
 PLAIN_COLUMN = "opener"
 HOLDOUT_SALT = "opener-holdout:"
 
@@ -604,6 +607,8 @@ def choose(account: Mapping[str, Any], contact: Mapping[str, Any], events: Seque
     else:
         op = Opener()
     op = _or_generic(op, account, contact, settings, check)
+    if not settings.draws_opener_holdout():
+        return replace(op, arm=NO_ARM)
     return op.held_out() if held else op
 
 

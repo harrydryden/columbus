@@ -151,9 +151,10 @@ def test_enrol_sends_each_account_its_arm_s_subject_and_records_the_arm():
     # both (the default, today's draws): the holdout (share 1.0: every account) and the subject split, as above.
     ("both", {"holdout"}, {PERSONAL: 2, COPY: 1}),
     ("opener", {"holdout"}, {render.NO_SUBJECT_ARM: 3}),  # the holdout alone; no subject arm, the Copy row's subject
-    ("subject", {"opener", "none"}, {PERSONAL: 2, COPY: 1}),  # the subject split alone; every opener
-    ("test", {"opener", "none"}, {render.NO_SUBJECT_ARM: 3}),  # neither: the Tests tab's test alone
-    ("none", {"opener", "none"}, {render.NO_SUBJECT_ARM: 3}),  # no split at all
+    # The holdout not drawn: every account its opener, and opener_arm n/a, in no arm (W3-4 r2, as subject_arm n/a).
+    ("subject", {openers.NO_ARM}, {PERSONAL: 2, COPY: 1}),  # the subject split alone; every opener
+    ("test", {openers.NO_ARM}, {render.NO_SUBJECT_ARM: 3}),  # neither: the Tests tab's test alone
+    ("none", {openers.NO_ARM}, {render.NO_SUBJECT_ARM: 3}),  # no split at all
 ])
 def test_live_split_decides_which_split_draws_arms(live_split, held, subjects):
     """W3-4 (21 Oct 2026; design-final §5 L10, D8): General live_split names the one split that draws arms. With the
@@ -166,8 +167,7 @@ def test_live_split_decides_which_split_draws_arms(live_split, held, subjects):
     out = enrol.run(ctx)
     assert out["enrolled"] == 3 and out["subjects"] == {"arms": subjects}
     contacts = ctx.store.select("contacts")
-    arms = {c["opener_arm"] for c in contacts}
-    assert arms == {"holdout"} if "holdout" in held else arms <= held
+    assert {c["opener_arm"] for c in contacts} == held
     sent = {lead["email"]: lead["custom_variables"] for p in instantly_posts(t) for lead in p.json["leads"]}
     if render.NO_SUBJECT_ARM in subjects:  # every email 1 has the Copy row's own subject
         assert sent["jane@acmecreative.com"]["s1_subject"] == "Support for the Acme Creative team"

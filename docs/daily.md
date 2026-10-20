@@ -105,7 +105,7 @@ one click decides.
 | ❌ or `skip` (or `no`, `reject`, `don't send`) | The card is closed, and nothing is sent |
 | `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
 | `send: …` | Sends that text instead of the draft |
-| `class: …` (for example `class: referral`, `class: not now`) | Records the class the reply should have had. Nothing is sent and the card stays open; every report counts the reply as you said. `class: unsubscribe` also opts them out everywhere, as a reply asking to stop is (the card stays open: close it with `skip`). Once 10 corrections exist, the first readout of each month shows how often the model's class stood |
+| `class: …` (for example `class: referral`, `class: not now`) | Records the class the reply should have had. Nothing is sent and the card stays open; every report counts the reply as you said. `class: unsubscribe` also opts them out everywhere, as a reply asking to stop is (the card stays open: close it with `skip`). Write it before `send` or `skip`: once the card is closed its thread is not read again. Once 10 corrections exist, the first readout of each month shows how often the model's class stood |
 
 A card that says *Instantly thinks this reply is interested; our model does not* is one where Instantly's own read
 of the email disagrees with ours: read it yourself. An away message Instantly reads as interested gets a card too
@@ -177,7 +177,11 @@ human reply within 28 days; O3: a positive one), `definition_version` (the metri
 looks), and runs alone, with `live_split` naming its split. While a running test's split is not `live_split`, it
 draws no arms (a copy test) or draws beside the others (a holdout under `both`): the registry line says "paused" or
 "not alone", and one post a day says so. The sync never holds General back for it, so `live_sending` = no always
-comes into force. `warm-intro-70` runs on as it started.
+comes into force. `warm-intro-70` runs on as it started. A test started from 21 Oct that is running without those five
+columns (only one started before this check existed can be) keeps the settings in force as they are, draws no arms,
+and is named in one post a day ("A running test cannot draw arms as the Tests tab has it") until its row is filled in.
+A split `live_split` leaves out records its arm as `n/a` on new contacts (`opener_arm`, `subject_arm`), so neither
+arm counts them.
 
 **The early warning** (from 21 Oct 2026; `metrics_daily`). One post a week, only when it fires: no human reply from
 100 companies that have had 28 days (P = 0.048 if the true rate were 3%), or a meeting or positive-reply rate very

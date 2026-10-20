@@ -110,6 +110,23 @@ def test_config_version_changes_only_for_content_tabs(monkeypatch):
     assert first.snapshot["general"]["send_window"] == "Mon–Fri 09:00–16:00 America/New_York"
 
 
+def test_the_snapshot_s_copy_test_is_the_test_that_draws_arms():
+    """W3-4 r2 (the review's surviving mutation: copy_test reading running_test instead of drawn_test). FIRST_TEST has
+    no start_date, so it reads as started from 21 Oct, pre-registered: it draws under live_split = test alone. Under
+    both it is running but draws nothing, so nothing a contact is sent changes and the snapshot has no copy test;
+    under test it has its id. The same row without its pre-registration (the version in force read leniently) draws
+    nothing either, under test."""
+    from tests.test_render import FIRST_TEST
+
+    paused = make_settings(tests=(FIRST_TEST,), live_split="both")
+    assert paused.running_test() is FIRST_TEST and paused.drawn_test() is None
+    assert config_version.snapshot(paused)["copy_test"] is None
+    assert config_version.snapshot(make_settings(tests=(FIRST_TEST,), live_split="test"))["copy_test"]["test_id"] == (
+        "t1-agencies")
+    bare = dataclasses.replace(FIRST_TEST, metric_id="", definition_version="", test="", alpha=None, look_thresholds="")
+    assert config_version.snapshot(make_settings(tests=(bare,), live_split="test"))["copy_test"] is None
+
+
 def test_a_version_is_recorded_once_and_dry_run_records_it_too():
     ctx = make_context(make_settings(), now=NOW)
     cv = config_version.current(ctx)

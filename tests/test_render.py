@@ -122,7 +122,11 @@ def copy_row(version: str, industry: str, *, status: str = "approved", role: str
 
 
 COPY = (copy_row("agencies-v1", AGENCIES), copy_row("general-v1", "General"))
-FIRST_TEST = ABTest("t1-agencies", "A shorter email 1 beats the first", "agencies-v1", "agencies-v2", 400, "running")
+# No start_date, so it reads as started from 21 Oct 2026, with the pre-registration such a test needs to draw arms
+# (W3-4 r2: Settings.drawn_test; a row without it is the version in force read leniently, and draws none).
+FIRST_TEST = ABTest("t1-agencies", "A shorter email 1 beats the first", "agencies-v1", "agencies-v2", 400, "running",
+                    metric_id="O4", definition_version="2026-10-20", test="fisher_exact", alpha=0.10,
+                    look_thresholds="one_look")
 BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2026, 12, 18), date(2027, 1, 4)))
 
 

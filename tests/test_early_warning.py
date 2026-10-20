@@ -131,6 +131,24 @@ def test_a_cleared_hold_does_not_come_back_the_next_day():
     assert "its hold was cleared with `us-outbound killrules clear`" in posts(ctx)[-1]
 
 
+def test_a_hold_kept_after_the_key_goes_to_no_is_named_in_the_footer():
+    """W3-4 r2 (review note): the warning held enrolment under early_warning_pause = yes; Harry then sets the key to no
+    and does not run `killrules clear`. The hold stays (holds.enrolment_stop), so the next week's post must not say
+    "nothing is paused": it names the hold still in force, and no new hold is made (one item)."""
+    ctx = world(100, pause=True)
+    first = early_warning.check(ctx)
+    assert first["held"] and holds.enrolment_stop(ctx.store)
+    g = dataclasses.replace(ctx.settings.general, early_warning_pause=False)
+    next_week = dataclasses.replace(ctx, now=NOW + timedelta(days=7),
+                                    settings=dataclasses.replace(ctx.settings, general=g))
+    TRANSPORTS[id(next_week)] = TRANSPORTS[id(ctx)]
+    assert early_warning.check(next_week)["held"] is None
+    assert holds.enrolment_stop(ctx.store) and len(ctx.store.select("hitl_items", {"kind": "kill_rule"})) == 1
+    footer = posts(ctx)[-1]
+    assert len(posts(ctx)) == 2 and "nothing is paused" not in footer
+    assert "New enrolment is still paused by an earlier early warning until `us-outbound killrules clear" in footer
+
+
 def test_the_hold_is_written_before_the_alert(monkeypatch):
     """Holds are recorded before alerts: a post that fails leaves the hold in place."""
     ctx = world(100, pause=True)
