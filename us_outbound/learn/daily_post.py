@@ -169,6 +169,7 @@ JOB = "daily_post"
 WAITING = ("open", "escalated")
 LISTED_CLASSES = ("objection", "negative", "other")
 LIST_LIMIT = 10  # accounts listed per section
+KINDS_LIMIT = 5  # kinds of new HubSpot record listed on one company's line (hubspot_created)
 QUOTE = 120  # characters of reply text quoted
 HAND_CHECK = "hand_check"  # hitl_items.kind of the weekly hand-check (enrol/hand_check.py)
 # "reply" is poll_replies' kind; "reply_approval" the first name, kept for old rows. Kill-rule holds are listed
@@ -609,13 +610,26 @@ def _what(e: Mapping[str, Any]) -> str:
     return f"{what} ({where})" if where else what
 
 
+def _kinds(found: Sequence[Mapping[str, Any]]) -> str:
+    """The records at one company, alike ones counted, in the order each kind first came: "500 × contact (a colleague)
+    (an integration), company (made from the new contact)". At most KINDS_LIMIT kinds, then "and N more records", so
+    a bulk import at one domain is one short line, not one entry per record (Slack cuts a text at 40,000 characters,
+    the whole post with it)."""
+    kinds = Counter(_what(e) for e in found)  # a Counter keeps the order each kind first came
+    shown = list(kinds.items())[:KINDS_LIMIT]
+    parts = [w if n == 1 else f"{n} × {w}" for w, n in shown]
+    rest = len(found) - sum(n for _, n in shown)
+    return ", ".join(parts) + (f" and {fmt.plural(rest, 'more record')}" if rest else "")
+
+
 def hubspot_created(ctx: Context, events: Iterable[Mapping[str, Any]], names: Mapping[str, str]
                     ) -> tuple[list[str], dict[str, int]]:
     """(one line per company, at most LIST_LIMIT, then "and N more"; nums["hubspot_created"]): the period's records
     HubSpot made at companies we emailed, each after the company's first step 1 (a deal_created row from before it,
     one steps 2 and 4 found on a company we hold, is left out). "Acme Creative: contact (the person we emailed)
-    (website form "Demo Form"), company (made from the new contact) · emailed 14 Oct". Companies are named, never a
-    person: no name, no email address."""
+    (website form "Demo Form"), company (made from the new contact) · emailed 14 Oct"; alike records are counted
+    once ("500 × contact (a colleague) (an integration)", _kinds). Companies are named, never a person: no name, no
+    email address."""
     rows = [e for e in events if e.get("account_id")]
     ids = sorted({str(e["account_id"]) for e in rows})
     first: dict[str, datetime] = {}
@@ -633,8 +647,8 @@ def hubspot_created(ctx: Context, events: Iterable[Mapping[str, Any]], names: Ma
     nums = {"contacts": sum(e.get("type") == "hubspot_contact_created" for e in shown),
             "companies": sum(e.get("type") == "hubspot_company_created" for e in shown),
             "deals": sum(e.get("type") == "deal_created" for e in shown), "companies_emailed": len(by_account)}
-    lines = [f"{names.get(aid, 'an account')}: {', '.join(_what(e) for e in found)} · emailed "
-             f"{first[aid].astimezone(UK):%-d %b}" for aid, found in list(by_account.items())[:LIST_LIMIT]]
+    lines = [f"{names.get(aid, 'an account')}: {_kinds(found)} · emailed {first[aid].astimezone(UK):%-d %b}"
+             for aid, found in list(by_account.items())[:LIST_LIMIT]]
     if len(by_account) > LIST_LIMIT:
         lines.append(f"and {len(by_account) - LIST_LIMIT} more")
     return lines, nums

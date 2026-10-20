@@ -211,8 +211,11 @@ HubSpot. A meeting and a deal for one booking count once.
 company we sent email 1 to, after that email, the daily summary's yesterday says so, one line per company: what was
 made (the person we emailed, a colleague, the company, a deal), how (a website form and its name, a meeting booking,
 logged from an email by someone at Spill, a HubSpot workflow and its name, made from the new contact) and the day we
-first emailed them. It names the company, never the person. It is a sign of interest to look at, not an ask, and the
+first emailed them. Alike records are counted, not repeated ("500 × contact (a colleague) (an integration)" after a
+bulk import), and a line lists at most five kinds, then "and N more records". It names the company, never the person. It is a sign of interest to look at, not an ask, and the
 reply and meeting rates do not count it. `hubspot_readback` reads it every hour; it only reads HubSpot.
+A deal found this way, in any pipeline, is that company's deal from then on, as a Spill 3.0 deal is: its people are
+kept past the retention window, and while it is open Columbus makes no "US Outbound –" deal beside it.
 
 **Tests are read only at a look you set in advance.** On the Tests tab, before `us-outbound test start ID
 --live`:
