@@ -50,19 +50,24 @@ When supply is short the run creates the raw accounts that close the gap, (targe
 Monday to Sunday), so a floored yield cannot admit thousands at once (RS §2 W1-3). The Focus tab's groups
 come first, each to its share of the target; the other active groups share the rest. The run also stops
 when today's credits are used. A page whose companies the ceiling cuts off is read again next run (its
-credit note says "cut"), so no company on it is lost for the month.
+place stays on the page before), so no company on it is lost for the month.
 
-Search order (code-sources B2). Within each search and size band the states are read in turn, starting
-from a different state each ISO week (week mod the number of states), so consecutive pages alternate
-state. Until 19 Oct they were read in the States tab's order, alphabetical, and two Georgia pages filled
-the Technology pool: the queue was 85% Georgia. Each account created is stamped with the search that
-found it, a sourced_by fact (source source_universe: slice, group, state, band, page, run), so what
-happens to it later can be traced back to where sourcing looked.
+Search order (code-sources B2; loop L2). The week's plan (sources/allocation.py, W3-3) gives each active state
+its pages: one at least, the rest by a prior-weighted draw of each state's contactable yield per page, none above
+max(0.40, 1 ÷ states) of them. A run reads the searches of the state furthest from its plan first, so pages
+alternate state in the plan's proportions; ties, and the reads once the week's plan is used up, go in turn from a
+different state each ISO week (week mod the number of states). Until 19 Oct they were read in the States tab's
+order, alphabetical, and two Georgia pages filled the Technology pool: the queue was 85% Georgia. Each account
+created is stamped with the search that found it, a sourced_by fact (source source_universe: slice, group, state,
+band, page, run), so what happens to it later can be traced back to where sourcing looked (and the plan's yields
+are read from them).
 
 Credits. A search page costs 1 credit when it returns a company and 0 when it is empty (Apollo's
 API docs; docs/phase0-facts.md), so about 0.01 to 0.02 credits per account sourced. Every page goes
-into credit_ledger with its search and page in the note, so the next run carries on from the next
-page; each month starts again from page 1, which refreshes the universe monthly (SPEC 7). Sourcing
+into credit_ledger with its search and page in the note (what was paid for); each search's place is kept in
+source_state (cursors:<month>; W3-3, code-sources B11: the ledger's notes were the place until then, copied in once),
+so the next run carries on from the next page; each month starts again from page 1, which refreshes the universe
+monthly (SPEC 7). Sourcing
 may spend SOURCING_SHARE of apollo_monthly_credits, paced by the weekday, and never more than is left
 of the whole Apollo budget today (sources/apollo_credits.py), so pick_contacts keeps the rest for
 email reveals. Nothing is spent while Apollo's balance is below apollo_floor.

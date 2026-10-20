@@ -37,17 +37,18 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
   6. Write: one contact per account (v1); or, when nobody suitable exists, a contact_pick fact
      saying why, which limits.py reports as "no suitable contact".
 Every reveal and every outcome is a signal_events fact with source pick_contacts (no names or
-emails), so nobody is paid for twice. A reveal whose email is not at the company's domain carries
-rejected_email_domain, the email's domain (W3-3; loop L5: a domain seen twice for one account is
-proposed as an alias, suggestions()).
+emails), so nobody is paid for twice. SOURCE is not a SPEC 7 source key, so no Signals row can
+score these facts. A reveal whose email is not at the company's domain carries rejected_email_domain,
+the email's domain (W3-3; loop L5: a domain seen twice for one account is proposed as an alias,
+suggestions()).
 
 Contactability (W3-3, 20 Oct 2026; loop L5). contact_precheck (05:15) counts, for each account
 waiting for a contact, the people this job could contact there (contactable_candidates). An account
 with none (accounts.status_reason no_contact_candidates) is not tried until its next precheck; after
 the random arm is drawn, the ranked accounts are tried most candidates first, then those not
 prechecked, each in queue order. The arm is drawn before that ordering, so it stays a random draw from
-the eligible queue, whatever its accounts' candidate counts. SOURCE is not a SPEC 7 source key, so no Signals row can
-score these facts.
+the eligible queue, whatever its accounts' candidate counts (an account with none is in neither lane: it has
+nobody either arm could contact).
 
 Dry-run and live are the same: the job writes only to the database and its Apollo calls are
 reads, which the guard allows in dry-run, so reveals spend credits in both, within the budget.

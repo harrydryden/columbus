@@ -69,10 +69,10 @@ Credits. Each search page that returns a company costs 1 Apollo credit and an em
 normal day costs 2, plus 1 for each new visitor Apollo's enrich finds (a few a day; the first run
 looks up the 30-day backlog, MAX_ENRICH_PER_RUN a run): at most MAX_CREDITS_PER_RUN a run, about
 150 to 200 a month (under 10% of apollo_monthly_credits). This is not paced like the sources'
-shares: it runs after pick_contacts has taken the day's allowance, and a visit not read today is
-not read on a quiet day waits for the next run. Every request goes into credit_ledger (job site_visits), so it
-counts in the month's budget, and the ledger records money only (W3-3); nothing is spent while Apollo's balance is below apollo_floor or the month's
-Apollo budget is used.
+shares: it runs after pick_contacts has taken the day's allowance, and a visit not read today waits for the next
+run (it stays on the 30-day list). Every request goes into credit_ledger (job site_visits), so it counts in the
+month's budget, and the ledger records money only (W3-3); nothing is spent while Apollo's balance is below
+apollo_floor or the month's Apollo budget is used.
 
 Dry-run: the reads happen and their credits are recorded. Accounts, facts, events, raw rows, source_state and
 the ledger are database writes, which dry-run makes too (SPEC 0.3), as in source_universe. Nothing is
@@ -308,8 +308,13 @@ def last_list(ctx: Context) -> tuple[set[str] | None, datetime | None]:
 
 
 def keep_list(ctx: Context, read: Read) -> None:
-    source_state.put(ctx.store, LIST_KEY, {"keys": sorted({row_key(o) for o in read.rows if row_key(o)}),
-                                           "at": ctx.now.isoformat(), "complete": read.complete}, ctx.now)
+    """Today's list as the next run's last one. A list not read to its end (MAX_PAGES_PER_SEARCH) keeps the last
+    list's keys too, so a company past the pages read is not taken for a new visit when it is read again."""
+    keys = {row_key(o) for o in read.rows if row_key(o)}
+    if not read.complete:
+        keys |= last_list(ctx)[0] or set()
+    source_state.put(ctx.store, LIST_KEY, {"keys": sorted(keys), "at": ctx.now.isoformat(),
+                                           "complete": read.complete}, ctx.now)
 
 
 def new_on_list(ctx: Context, read: Read | None) -> tuple[list[Mapping[str, Any]], datetime | None, bool]:

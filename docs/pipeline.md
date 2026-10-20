@@ -114,8 +114,11 @@ Each stage lists what it spends and the status it leaves the account in. A stage
 - **Status: `new`.**
 
 **2. Free signals: daily and weekly.**
-- **apollo_people** (free; weekdays 04:20, before verify_accounts' rescore; Harry, 5 Oct 2026): for
-  every queue account with a known size, Apollo's people search (0 credits, no emails) at the
+- **contact_precheck** (free; weekdays 05:15, before pick_contacts' rescore; W3-3, 20 Oct 2026, in place of
+  apollo_people at 04:20, Harry, 5 Oct 2026): for each verified account waiting for a contact, the search
+  pick_contacts makes (every Roles-tab title at its size, US, verified emails), counted as
+  `contactable_candidates` (0: `status_reason` `no_contact_candidates`, set aside for 30 days and left out of
+  contactable supply); and Apollo's people search (0 credits, no emails) at the
   company for the Roles-tab People-leader titles at its size, in the US, with no email filter, and
   once more for how many people Apollo holds there. It writes `people_leader_count`, the newest
   leader's `people_leader_days_in_title` and `people_leader_newest`, `people_found` and
@@ -155,14 +158,16 @@ Each stage lists what it spends and the status it leaves the account in. A stage
   and the last 30 days, and the `site_visit_intent_paths` (`/us/pricing`, `/us/demo`, `/us/book`)
   in the last 30 days. A visitor is matched to its account by root domain (aliases included) or
   Apollo id, and gets `us_visits_30d` and `pricing_or_demo_visits_30d` (1 while Apollo lists it, 0
-  once it no longer does, written only on a change), and a `site_visit` event for each day it
-  visited (the daily post's warm accounts, the readout's visits before and after the first email).
+  once it no longer does, written only on a change), and a `site_visit` event when it first appears on the
+  30-day list since the last run (W3-3: the one-day search went; the daily post's warm accounts, the readout's
+  visits before and after the first email). After five runs with no new visitor it reads the list weekly.
   A visitor we don't hold is kept out on its search row only when it is surely not for us (outside
   the US, no label fits, an insurer or broker; never its HQ state, Harry, 6 Oct 2026). Every other one is looked up in
   Apollo's organisation enrich (1 credit each found, at most 30 a run) and judged again: out only
   for a size clearly outside the General size range; otherwise it comes in by the front door with source
   `site_visit`. One Apollo leaves in doubt (no HQ state, no size, no industry, a count near an
-  edge) comes in held for the weekly hand-check, not left out (Harry, 6 Oct 2026). The
+  edge) comes in as any other, and verify_accounts decides (Harry, 14 Oct 2026; the hold for the
+  hand-check went with W3-3). The
   rescore follows, so a visit counts at the 12:00 enrol. Apollo refusing the filters, or a week
   with no visitor, puts one line in the daily post: check the tracker.
 - **Layoffs.**

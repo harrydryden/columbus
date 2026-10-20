@@ -86,7 +86,10 @@ def read_day(ctx: Context, row: Mapping[str, Any]) -> Day | None:
     started = utc(row.get("started_at"))
     day = str(d.get("date") or (et_day(started).isoformat() if started else ""))
     if row.get("status") == "skipped":
-        cause = "blackout" if "blackout" in str(d.get("reason") or "").casefold() else "gate"
+        reason = str(d.get("reason") or "").casefold()
+        if "not a send day" in reason or "previous run still going" in reason:
+            return None  # no send day lost: a weekend or holiday, or the scheduler's overlap (another run went)
+        cause = "blackout" if "blackout" in reason else "gate"
         share = day_share(ctx)
         return Day(day, cause, share, 0, 0, {cause: share})
     terms = d.get("number_terms") if isinstance(d.get("number_terms"), Mapping) else {}

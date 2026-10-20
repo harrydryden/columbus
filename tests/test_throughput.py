@@ -50,6 +50,7 @@ def week(first_send_days_ago: int):
         enrol_run(ctx, day, ran(30, cap, 40, n))
     enrol_run(ctx, 3, {"reason": "the weekly hand-check is not approved yet"}, status="skipped")
     enrol_run(ctx, 4, ran(30, 25, 10, 10))
+    enrol_run(ctx, 5, {"reason": "2026-10-24 is not a send day"}, status="skipped")  # Saturday: no day lost
     sends(ctx, "maria@meetspill.org", 1, first_send_days_ago)
     sends(ctx, "tom@spillhq.org", 1, first_send_days_ago)
     sends(ctx, "maria@meetspill.org", 22, 3)

@@ -275,11 +275,12 @@ The first time, add the `share_a` header cell after `find` (or `us-outbound sett
 
 | UK time | Job | What it does |
 | :- | :- | :- |
-| 03:00 | `source_universe` | Finds new companies in Apollo until there are two weeks of `weekly_enrol_cap` in companies that can be emailed ("contactable supply"), never more than 2 × the cap in a run or 3 × in a week. The states take turns, from a different state each week |
-| 03:45, 04:20 | `read_pages`, `apollo_people` | Free reads: careers pages, People leaders |
+| 03:00 | `source_universe` | Finds new companies in Apollo until there are two weeks of `weekly_enrol_cap` in companies that can be emailed ("contactable supply"), never more than 2 × the cap in a run or 3 × in a week. Where it looks follows the week's plan (pages per state: at least one a state, at most 40% to one; W3-3), printed in the Monday readout |
+| 03:45 | `read_pages` | Free reads: careers pages |
 | 04:30 | `verify_accounts` | The free checks and the industry label check |
 | 05:00, 05:10 | `apollo_enrich`, `apollo_signals` | Paid reads, for verified companies only (since 19 Oct): an exact headcount (one outside the size range is left out for good) and funding; open job postings |
-| 05:30 | `pick_contacts` | One rescore, then a contact for the companies the next two send days need |
+| 05:15 | `contact_precheck` | Free reads (W3-3, in place of `apollo_people` at 04:20): who Apollo has to email at each verified company waiting for a contact, and its People leaders. A company with nobody is set aside for 30 days |
+| 05:30 | `pick_contacts` | One rescore, then a contact for the companies the next two send days need, the ones with the most people to try first |
 
 To see why sourcing stopped: the `stopped_by` of the run's `source_universe_done` log line (and its heartbeat's
 detail, with the counts under `supply`). It names the
@@ -468,12 +469,24 @@ with `us-outbound accounts`: a summary, then the companies in queue order (`--st
 contacts' emails. For a spreadsheet, run `railway ssh -- us-outbound accounts --csv > companies.csv`
 on your own computer; it holds names and emails, so keep it private and delete it when you are done.
 
-**People leaders** (5 Oct 2026): each weekday at 04:20, before the queue is sorted, `apollo_people`
-looks up who leads People at every company in the queue in Apollo's free people search, so "New
-People leader" and "People leader in place" count for companies nobody has contacted yet. "First
-People hire (likely)" counts only where Apollo knows at least half the company's staff, so that
-finding no People leader there means something. Once, after this reaches the worker:
-`us-outbound settings load --tab Signals --live`, then `us-outbound sync`.
+**People leaders** (5 Oct 2026; from W3-3, 20 Oct 2026, in `contact_precheck`): each weekday at 05:15, before
+`pick_contacts` rescores the queue, Apollo's free people search looks up who leads People at each verified company
+waiting for a contact, so "New People leader" and "People leader in place" count before anyone is contacted. "First
+People hire (likely)" counts only where Apollo knows at least half the company's staff, so that finding no People
+leader there means something.
+
+**Once after W3-3 reaches the worker** (20 Oct 2026): `us-outbound source migrate-state` prints the places in this
+month's Apollo searches and the judged website visitors it would copy out of the credit ledger's notes; then
+`us-outbound source migrate-state --live` copies them (`source_universe` makes the same copy on its first run if this
+has not run, so nothing restarts at page 1). Then `us-outbound accounts dedupe` lists the domains more than one
+company holds; `us-outbound accounts dedupe --live` merges each into one (never two companies that both have a
+contact being emailed: those are listed for you), and once none is left it makes the database hold one company per
+domain.
+
+**Suggestions** (W3-3): the Monday readout adds rows to the Suggestions tab of the settings sheet: a title
+`pick_contacts` left out at 10 or more companies of one size (`roles_title`: add it to a Roles-tab row?), and an
+email domain revealed twice for one company (`domain_alias`: take it as the company's own?). Nothing changes until
+you approve a row.
 
 **Retention** (7 Oct 2026; SPEC 6 and 13). The `retention` job runs at 00:40 UK every night and needs nothing from
 you. It deletes each Instantly lead 31 days after its last step (or after the reply, bounce, unsubscribe or booking
