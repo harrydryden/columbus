@@ -55,6 +55,16 @@ MEETING_PROPS = (
     "hs_meeting_title", "hs_meeting_start_time", "hs_meeting_outcome", "hs_meeting_source", "hubspot_owner_id",
     "hs_createdate", "hs_lastmodifieddate",
 )
+# Records created in HubSpot at companies Columbus emailed (crm/readback.created; Harry, 20 Oct 2026). How a record
+# was made is HubSpot's standard, read-only hs_object_source_label (FORM, EXTENSION, MEETINGS, CRM_SETTING,
+# AUTOMATION_PLATFORM, INTEGRATION, ...) and hs_object_source_detail_1 names it (a form's or a workflow's name):
+# confirmed in the live portal, 20 Oct 2026. A search result carries no associations (get_record reads a deal's).
+SOURCE_PROPS = ("hs_object_source_label", "hs_object_source_detail_1")
+CREATED_PROPS = {
+    "contacts": ("email", "hs_email_domain", "createdate", *SOURCE_PROPS),
+    "companies": ("domain", "name", "createdate", *SOURCE_PROPS),
+    "deals": ("dealname", "pipeline", "dealstage", "createdate", "hs_lastmodifieddate", *SOURCE_PROPS),
+}
 
 # HubSpot-defined association type ids, keyed (from, to).
 # PHASE0-CONFIRM: ids from HubSpot's association type table; deal->company 5 is the
@@ -266,6 +276,19 @@ class HubSpot(HttpClient):
         sorts = [{"propertyName": "hs_lastmodifieddate", "direction": "ASCENDING"}]
         return [{"id": r["id"], "properties": r.get("properties", {})}
                 for r in self._search("deals", groups, (*DEAL_PROPS, "createdate", "hs_lastmodifieddate"), sorts)]
+
+    def search_created(self, obj: str, since: datetime, properties: Iterable[str]) -> list[dict]:
+        """Records of this type (contacts, companies, deals) created since then, oldest first, with the properties
+        named (crm/readback.created: new records at companies we emailed; CREATED_PROPS). Read only: a search, which
+        the guard allows as every other read."""
+        since = since if since.tzinfo else since.replace(tzinfo=UTC)
+        obj = plural_type(obj)
+        groups = [{"filters": [
+            {"propertyName": "createdate", "operator": "GTE", "value": str(int(since.timestamp() * 1000))},
+        ]}]
+        sorts = [{"propertyName": "createdate", "direction": "ASCENDING"}]
+        return [{"id": r["id"], "properties": r.get("properties", {})}
+                for r in self._search(obj, groups, properties, sorts)]
 
     def pipeline_stages(self, pipeline_id: str, object_type: str = "deals") -> list[dict]:
         """The pipeline's stages ({id, label, displayOrder, metadata}) in board order."""

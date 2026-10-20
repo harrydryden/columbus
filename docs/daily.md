@@ -207,6 +207,13 @@ demo page, which books into the same calendar) and Spill 3.0 deals at "Demo requ
 we emailed. `hubspot_readback` reads them every hour and stops that company's emails; it only reads
 HubSpot. A meeting and a deal for one booking count once.
 
+**New in HubSpot at companies we emailed** (20 Oct 2026). When HubSpot gets a new contact, company or deal at a
+company we sent email 1 to, after that email, the daily summary's yesterday says so, one line per company: what was
+made (the person we emailed, a colleague, the company, a deal), how (a website form and its name, a meeting booking,
+logged from an email by someone at Spill, a HubSpot workflow and its name, made from the new contact) and the day we
+first emailed them. It names the company, never the person. It is a sign of interest to look at, not an ask, and the
+reply and meeting rates do not count it. `hubspot_readback` reads it every hour; it only reads HubSpot.
+
 **Tests are read only at a look you set in advance.** On the Tests tab, before `us-outbound test start ID
 --live`:
 - `kind`: `ab` (the default) for a copy test between two Copy rows; `variant` for one change to one email

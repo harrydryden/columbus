@@ -494,6 +494,8 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "get_record": lambda c, w: c.get_record("meetings", "m1", ["hs_meeting_outcome"], associations=["contacts"]),
         "search_meetings": lambda c, w: c.search_meetings("owner-harry", NOW),
         "search_pipeline_deals": lambda c, w: c.search_pipeline_deals(PIPELINE, NOW),
+        # crm/readback.created (Harry, 20 Oct 2026): a createdate search, a read like the others.
+        "search_created": lambda c, w: c.search_created("contacts", NOW, ["email", "createdate"]),
         "pipeline_stages": lambda c, w: c.pipeline_stages(PIPELINE),
         "iter_opted_out_or_bounced_emails": lambda c, w: list(c.iter_opted_out_or_bounced_emails()),
         # The lookalikes job's reads (sources/lookalikes.py): company and deal fields only.

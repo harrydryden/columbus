@@ -62,6 +62,11 @@ SCHEMA = {
 }
 
 
+def _ms(value: str) -> int:
+    """Milliseconds since the epoch, from milliseconds or ISO text: a search compares dates as HubSpot does."""
+    return int(value) if value.isdigit() else int(datetime.fromisoformat(value).timestamp() * 1000)
+
+
 class FakeHubSpot:
     """An in-memory HubSpot CRM behind the transport: objects, search, associations, pipelines, opt-outs. A create or
     update with a property outside SCHEMA answers 400 (PROPERTY_DOESNT_EXIST), and is kept in rejected."""
@@ -109,8 +114,8 @@ class FakeHubSpot:
         have = str(self.objects[obj][rid].get(prop) or "")
         if op == "EQ":
             return have == value
-        if op == "GTE":
-            return have != "" and int(have) >= int(value)
+        if op == "GTE":  # a date as HubSpot stores it, ISO text (createdate), or as milliseconds (the filter's form)
+            return have != "" and _ms(have) >= int(value)
         if op == "HAS_PROPERTY":
             return have != ""
         raise AssertionError(f"unexpected operator {op}")
