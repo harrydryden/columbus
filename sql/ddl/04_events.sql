@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS us_outbound.events (
   source text,
   analytics_source text,
   amount double precision,
+  ai_interest_value text,
   PRIMARY KEY (event_id)
 );
 -- For databases created before a booking said where it was read from (6 Oct 2026).
@@ -28,6 +29,9 @@ ALTER TABLE us_outbound.events ADD COLUMN IF NOT EXISTS source text;
 ALTER TABLE us_outbound.events ADD COLUMN IF NOT EXISTS analytics_source text;
 -- W2-3 (20 Oct 2026): a number an event carries; apollo_balance's is Apollo's lead-credit balance (learn/spend.py).
 ALTER TABLE us_outbound.events ADD COLUMN IF NOT EXISTS amount double precision;
+-- W3-4 (21 Oct 2026): Instantly's own read of a received email's interest (its ai_interest_value, as Instantly
+-- gives it), on the replied event: a second opinion beside our classifier (replies/poll.py).
+ALTER TABLE us_outbound.events ADD COLUMN IF NOT EXISTS ai_interest_value text;
 CREATE INDEX IF NOT EXISTS events_account_id_idx ON us_outbound.events (account_id);
 CREATE INDEX IF NOT EXISTS events_contact_id_idx ON us_outbound.events (contact_id);
 CREATE INDEX IF NOT EXISTS events_occurred_at_idx ON us_outbound.events (occurred_at);

@@ -33,7 +33,8 @@ Top to bottom:
     realised share by step-1 week, and the one read at 300 random companies matured) and the A/A sham arm (a label
     that changes nothing: a difference outside its interval is pipeline bias), industry group and size band on human
     replies within 28 days, and last week's activity by cut (v_readout_weekly), counts only; the segment value
-    (learn/segments.readout_line: the HubSpot prior in force, each Focus group's matured n toward 300);
+    (learn/segments.readout_line: the HubSpot prior in force, each Focus group's matured n toward 300); in the first
+    readout of a month, the reply classes people corrected (replies/desk.correction_table, from 10 corrections);
   * the tests: the registry (learn/experiments.registry_lines, W3-4: General live_split, each split's
     pre-registration, planned n, reached, matured and projected date), then each running test at its looks
     (learn/looks.py); the signals (learn/signal_review.py), as monitoring;
@@ -307,6 +308,18 @@ def segment_lines(ctx: Context, found: Sequence[Outcome]) -> list[str]:
 
     return ["", "*Segment value* (Spill's HubSpot history as the prior; Columbus's own replies move it as they "
                 "mature)", segments.readout_line(ctx, found)]
+
+
+def reply_class_lines(ctx: Context) -> list[str]:
+    """Loop L11 (W3-4): the monthly agreement and confidence-calibration table of the reply classes people corrected
+    with `class:` (replies/desk.correction_table), in the first readout of each month, once 10 corrections exist."""
+    from us_outbound.replies import desk
+
+    if ctx.now.astimezone(UK).day > 7:
+        return []
+    table = desk.correction_table(ctx)
+    return ["", "*Reply classes* (this month: how often the model's class stood once a person read the reply)",
+            *table] if table else []
 
 
 def sham_counts(m28: Sequence[Outcome]) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -689,6 +702,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     arm_nums: dict[str, Any] = {}
     body += _guarded(ctx, "splits", "*Splits*", lambda: split_lines(ctx, found, arm_nums))
     body += _guarded(ctx, "segments", "*Segment value*", lambda: segment_lines(ctx, found))
+    body += _guarded(ctx, "reply_classes", "*Reply classes*", lambda: reply_class_lines(ctx))
     if rows is not None:
         cut_block = [line for cut, title, about in CUTS for line in cut_lines(rows, cut, title, about, start)]
         if cut_block:

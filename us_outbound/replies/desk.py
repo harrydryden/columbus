@@ -583,6 +583,57 @@ def describe_item(ctx: Context, item: ReplyItem) -> str:
     return f"a reply from {who} at {company} ({class_label(item.reply_class)})"
 
 
+# -- a person's correction of a reply's class (W3-4, 21 Oct 2026; design-final §5 L11) ---------------------------------
+
+
+CLASS_CORRECTED = "reply_class_corrected"  # events.type (learn/outcomes.CORRECTED: the latest one counts)
+CORRECTION_TABLE_FROM = 10  # corrections before the agreement and calibration table prints (L11)
+CONFIDENCE_BANDS = ((0.0, 0.7, "under 0.70"), (0.7, 0.85, "0.70-0.84"), (0.85, 1.01, "0.85 and over"))
+
+
+def correct_class(ctx: Context, item: ReplyItem, reply_class: str, *, by: str, ref: str = "") -> dict:
+    """`class: <class>` in a reply item's thread (replies/poll_desk.py): one reply_class_corrected event, source the
+    reply's events row (its Instantly email id), reply_class the class it should have. Every outcome and report
+    then takes it (learn/outcomes.classes); the item's own class and the draft stay as they were, and nothing is
+    sent. ref (the Slack message's ts) makes the event once per message. Dry-run: worked out, nothing written."""
+    event = {"event_id": f"{CLASS_CORRECTED}:{item.email_id}:{ref or ctx.now.isoformat()}", "type": CLASS_CORRECTED,
+             "source": item.email_id, "reply_class": reply_class, "approved_by": by, "occurred_at": ctx.now,
+             "account_id": item.account_id or None, "contact_id": item.contact_id or None}
+    out = {"item": item.short_id, "from": item.reply_class, "to": reply_class, "by": by}
+    if ctx.dry_run:
+        return {**out, "dry_run": True}
+    ctx.store.upsert("events", [event])
+    save_payload(ctx.store, item.id, class_corrected={"to": reply_class, "by": by, "at": ctx.now.isoformat()})
+    log("reply_class_corrected", item_id=item.id, reply_class=reply_class, was=item.reply_class)
+    return out
+
+
+def correction_table(ctx: Context) -> list[str]:
+    """The monthly agreement and confidence-calibration table (L11), once CORRECTION_TABLE_FROM corrections exist:
+    of the reply items a person has handled, the share whose class nobody corrected, by the model's confidence."""
+    corrected: dict[str, str] = {}
+    for e in sorted(ctx.store.select("events", {"type": CLASS_CORRECTED}), key=lambda e: utc(e.get("occurred_at"))
+                    or datetime.min.replace(tzinfo=UTC)):
+        corrected[str(e.get("source") or "")] = str(e.get("reply_class") or "")
+    if len(corrected) < CORRECTION_TABLE_FROM:
+        return []
+    handled = [ReplyItem(r) for r in ctx.store.select(TABLE, {"kind": list(REPLY_KINDS)})
+               if r.get("status") == HANDLED or ReplyItem(r).email_id in corrected]
+    rows = []
+    for lo, hi, label in CONFIDENCE_BANDS:
+        band = [i for i in handled if lo <= float(i.payload.get("confidence") or 0) < hi]
+        changed = sum(corrected.get(i.email_id, i.reply_class) != i.reply_class for i in band)
+        if band:
+            rows.append(f"    confidence {label}: {len(band) - changed} of {len(band)} kept their class "
+                        f"({(len(band) - changed) / len(band):.0%})")
+    moves = Counter((i.reply_class, corrected[i.email_id]) for i in handled
+                    if i.email_id in corrected and corrected[i.email_id] != i.reply_class)
+    head = (f"  Reply classes a person read: {len(handled)}; corrected with `class:` {sum(moves.values())}. "
+            "By the model's confidence:")
+    top = ", ".join(f"{class_label(a)} → {class_label(b)} {n}" for (a, b), n in moves.most_common(5))
+    return [head, *rows, *([f"    Most often: {top}."] if top else [])]
+
+
 
 # -- the command line (`us-outbound replies list | send | skip`) -----------------------------------------
 

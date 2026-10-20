@@ -865,3 +865,55 @@ def test_the_first_warm_reply_that_asked_to_stop_end_to_end(world):
     assert len(crm.objects["companies"]) == len(crm.objects["contacts"]) == len(crm.objects["notes"]) == 1
     assert len(crm.objects["tasks"]) == 1 and len(crm.objects["deals"]) == 1
     assert crm.unsubscribed == ["jane.doe%40acmecreative.com"]
+
+
+# -- Instantly's own read, ai_interest_value (W3-4, 21 Oct 2026; design-final §5 L11) ----------------------------------
+
+
+def test_instantly_s_interest_value_is_stored_on_the_replied_event(world):
+    world.reply("E1", ai_interest_value=1)
+    run(world)
+    [ev] = world.events("replied")
+    assert ev["ai_interest_value"] == "1"
+    assert "instantly_thinks_interested" not in only_item(world)["payload"]  # positive: Instantly and we agree
+
+
+def test_an_away_message_instantly_calls_interested_opens_an_item_for_a_person(world):
+    """Our model reads an out-of-office; Instantly's value is 1 (interested). The return date is kept as for any away
+    message, and an item opens too, with no draft, flagged in the alert, so a person reads it."""
+    world.sdk.answer = classification("out_of_office", ooo_return_date="2026-11-02")
+    world.reply("E1", text="Thanks! Out until 2 Nov, but yes, keen to chat after.", ai_interest_value=1)
+    out = run(world)
+    [ooo] = world.items("out_of_office")
+    [item] = world.items("reply")
+    p = item["payload"]
+    assert p["instantly_thinks_interested"] is True and p["reply_class"] == "out_of_office" and p["draft"] == ""
+    assert out["instantly_thinks_interested"] == 1
+    text = "\n".join(b["text"]["text"] for b in world.slack_posts[0]["blocks"])
+    assert f"*{poll.INSTANTLY_SAYS}*" in text
+
+
+def test_an_objection_instantly_calls_interested_is_flagged(world):
+    world.sdk.answer = classification("objection", objection="price")
+    world.reply("E1", text="Too pricey for us right now.", ai_interest_value="2")
+    run(world)
+    assert only_item(world)["payload"]["instantly_thinks_interested"] is True
+
+
+def test_an_unsubscribe_instantly_calls_interested_stays_an_opt_out_with_no_item(world):
+    world.sdk.answer = classification("unsubscribe", asks_to_stop=True)
+    world.reply("E1", text="Please remove me from your list.", ai_interest_value=1)
+    out = run(world)
+    assert world.items("reply") == [] and out["instantly_thinks_interested"] == 0
+    assert world.events("replied")[0]["reply_class"] == "unsubscribe"
+
+
+def test_an_unread_or_low_interest_value_opens_nothing(world):
+    """0 (out of office in Instantly's terms), a negative value, a probability-looking 0.8 or text: never read as
+    interested (poll.INSTANTLY_INTERESTED_AT), so an away message stays a handled out_of_office row."""
+    assert [poll.instantly_interested(v) for v in ("1", "2", "4", "0", "-1", "0.8", "high", None)] == [
+        True, True, True, False, False, False, False, False]
+    world.sdk.answer = classification("out_of_office", ooo_return_date="2026-11-02")
+    world.reply("E1", text="Out until 2 Nov.", ai_interest_value=0)
+    run(world)
+    assert world.items("reply") == [] and len(world.items("out_of_office")) == 1
