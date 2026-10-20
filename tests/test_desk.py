@@ -390,6 +390,26 @@ def test_a_contact_marked_suppressed_is_refused_too(settings):
     assert inst.replies == [] and out["not_sent"][0]["why"] == "suppressed_since"
 
 
+def test_a_suppressed_colleague_who_wrote_is_refused_though_the_contact_is_not(settings):
+    """The From check (desk.suppressed_since; the Waves 2-3 review): a colleague at the account replied and asked to
+    stop. The colleague is suppressed, the contact we emailed (con-1) is not, and the desk's answer goes in the thread,
+    to the colleague. An approver ticks it: nothing goes, why suppressed_since, by Slack and by the command line."""
+    from us_outbound import suppression
+
+    colleague = "colleague@acmecreative.com"
+    ctx, t, crm, sl, inst = desk_world(settings, row=reply_row(from_address=colleague))
+    suppression.add(ctx.store, email=colleague, reason="unsubscribe", source="reply", now=NOW)
+    contact = ctx.store.get("contacts", contact_id="con-1")
+    assert not contact.get("suppressed")
+    assert not suppression.is_suppressed(ctx.store, email=contact["email"], now=NOW)
+    sl.react("white_check_mark", HARRY_ID)
+    out = poll(ctx)
+    assert inst.replies == [] and out["not_sent"][0]["why"] == desk.SUPPRESSED_SINCE
+    assert row_of(ctx)["status"] == "open"
+    res = desk.approve(ctx, ITEM)
+    assert res["sent"] is False and res["why"] == desk.SUPPRESSED_SINCE and inst.replies == []
+
+
 def test_claim_lets_only_one_run_send(settings):
     ctx, *_ = desk_world(settings)
     item = ReplyItem(row_of(ctx))

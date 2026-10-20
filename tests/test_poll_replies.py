@@ -11,7 +11,7 @@ import pytest
 
 from tests.fakes_replies import BOB, HANNAH, HARRY, JANE, NOW, OPUS, SONNET, classification, make_world
 from us_outbound.clients import instantly as instantly_client
-from us_outbound.replies import poll
+from us_outbound.replies import classify, poll
 
 # The payload keys the reply desk codes to (replies/poll.py docstring).
 CONTRACT = {
@@ -329,6 +329,30 @@ def test_a_warm_reply_that_also_asks_to_stop_is_suppressed_first_and_still_reach
     text = "\n".join(b["text"]["text"] for b in alert["blocks"])
     assert f"*Worth knowing:*\n• *{poll.ALSO_STOP}*" in text
     assert "Claude was not sure" not in text  # 0.9 is at or over MIN_CONFIDENCE (0.7)
+
+
+@pytest.mark.parametrize("cls", ["positive", "referral", "wrong_person", "not_now"])
+def test_the_models_stop_flag_alone_opts_out_in_the_run_that_reads_the_reply(world, cls):
+    """The model-only opt-out (the Waves 2-3 review; poll._process: asks_to_stop with no stop phrasing). The stop rule
+    sees nothing in this text (asserted), the model says asks_to_stop. The address is suppressed, the
+    unsubscribed:E1 marker written and the blocklist called as the reply is read, and counted: without the branch a
+    kept class (KEEP_ON_STOP) was opted out only by the sweep at the end of the run, on a second read of the email
+    from Instantly, uncounted, and its item said opt_out None. not_now with asks_to_stop is an unsubscribe (classify:
+    outside KEEP_ON_STOP), opted out with no item."""
+    text = "Not right now, and please take my name off your list."
+    assert not classify.asks_to_stop(text)
+    world.sdk.answer = classification(cls, confidence=0.9, asks_to_stop=True)
+    world.reply("E1", text=text)
+    out = run(world)
+    assert world.suppressed(JANE)[0]["reason"] == "unsubscribe" and world.blocked == [[JANE]]
+    assert [e["event_id"] for e in world.events("unsubscribed")] == ["unsubscribed:E1"]
+    assert out["opted_out"] == {"done": 1}
+    if cls == "not_now":
+        assert world.items() == [] and world.events("replied")[0]["reply_class"] == "unsubscribe"
+        return
+    p = only_item(world)["payload"]
+    assert (p["reply_class"], p["also_asked_to_stop"], p["opt_out"]) == (cls, True, "done")
+    assert p["classified_by"] == "model"
 
 
 def test_a_kept_class_on_a_weak_read_says_the_model_was_unsure(world):

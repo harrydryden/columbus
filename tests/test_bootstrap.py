@@ -362,6 +362,36 @@ def test_the_kill_rules_run_live_and_protective_only_on_the_last_good_settings(b
             factory(job)
 
 
+BRAKES = ("kill_rules", "blackout", "sync_outcomes", "poll_replies", "suppression_load", "heartbeat_check",
+          "operator_stop", "unenrol")
+
+
+def test_every_brake_is_a_safety_job():
+    """The jobs that must keep running on a broken sheet (W1-1; RS P0-1): the kill rules and the blackout pause
+    sending; sync_outcomes records and suppresses bounces and link opt-outs and, since W2-3, feeds the bounce brake
+    (kill_rules.after_bounce); poll_replies honours a stop by reply; suppression_load keeps the do-not-contact list;
+    heartbeat_check says something stopped; stop and unenrol are the kill switch."""
+    assert set(BRAKES) <= bootstrap.SAFETY_JOBS
+
+
+@pytest.mark.parametrize("job", BRAKES)
+def test_each_brake_builds_live_and_protective_only_on_the_last_good_settings(job):
+    """The version in force fails (a Copy row this code rejects, as on 11 Oct 2026), and an earlier one is stored:
+    each brake builds live, protective-only, on the earlier Copy version; a job outside SAFETY_JOBS refuses. Without
+    sync_outcomes here, bounces would go unrecorded and unsuppressed and the hourly kill rules would read none, so a
+    mailbox at 5% bounces would keep sending."""
+    from us_outbound.settings import sync
+
+    store, t, inst, sheets = _fallback_world(both_copy_versions_bad=False)
+    assert sync.load_current(store)[0] is None
+    factory = _factory(store, t, sheets, T1)
+    ctx = factory(job)
+    assert ctx.live and ctx.protective_only
+    assert ctx.settings.fallback_tabs == {"Copy"} and ctx.settings.fallback_mode == "earlier versions"
+    with pytest.raises(bootstrap.SettingsUnusable):
+        factory("enrol")
+
+
 def test_the_blackout_pauses_on_the_fallback_but_starts_nothing_after_it():
     """Thanksgiving week is a blackout (the build's blackout_dates, 2026-11-23..2026-11-27): on Mon 23 Nov the job on
     the fallback pauses the sending campaign; on Mon 30 Nov, the hold over, it calls no activate (protective-only)
