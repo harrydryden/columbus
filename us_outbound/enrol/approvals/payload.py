@@ -91,6 +91,8 @@ def build_payload(ctx: Context, p: enrol.Prepared, *, slot: int, slots: int) -> 
         "test_note": f"{test.test_id} · not in the test ({p.test_note})" if test and p.test_note else "",
         # What the card was rendered under (config_version.py; Harry, 7 Oct 2026): ✅ stamps these, not today's.
         "config_version": p.config_version, "code_sha": p.code_sha, "copy_hash": p.copy_hash,
+        # The arm it was walked in (W1-6): ✅ stamps this one, not the account's arm at the ✅.
+        "arm": p.arm,
         "industry": _text(a.get("industry")), "industry_group": group, "role": _text(c.get("role")),
         "tier": _text(a.get("tier")), "score": a.get("score"), "send_day": send_day.isoformat(),
         "edited": False, "original": {}, "reason": "",

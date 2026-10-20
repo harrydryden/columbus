@@ -122,11 +122,13 @@ NOT_ADDED = "not added by Instantly (blocklist, or already in another campaign)"
 # one of them raises a job-errors finding instead of reading as an ok run that enrolled nobody (W1-6).
 HUBSPOT_FAILED, COPY_BLOCKED = "HubSpot check failed", "copy blocked"
 FAILURE_REASONS = (HUBSPOT_FAILED, COPY_BLOCKED)
+SECOND_SKIP = "second contact: "  # a second contact's skip reason starts so; its failures count with the first's
 # A lead add whose answer never came (a timeout, a dropped connection: an OSError, as http.py raises a POST write
 # that may have happened as it came): the campaign is read ADD_LOOKUP_WAITS[0] seconds later and, if none of the
 # owner's leads is there yet, again ADD_LOOKUP_WAITS[1] seconds after that (RS §2 W1-6). Leads found are recorded; the
-# rest are skipped with ADD_UNKNOWN and tried again by the next run, whose add Instantly takes or leaves out as a
-# lead already in the campaign (then found by campaign_lead_ids and recorded).
+# rest are skipped with ADD_UNKNOWN, a new account keeping this owner as its sender, and tried again by the next run
+# in the same campaign, whose add Instantly takes or leaves out as a lead already there (then found by
+# campaign_lead_ids and recorded).
 ADD_LOOKUP_WAITS = (30, 60)
 ADD_UNKNOWN = "add outcome unknown: the next run tries again"
 OPTOUT_UNTESTED = ("optout_tested is no: the seed-inbox test of Instantly's unsubscribe link is not done, so nothing "
@@ -670,6 +672,9 @@ class Prepared:
     test_arm: str = ""
     test_note: str = ""
     written: dict[int, CopyStep] = field(default_factory=dict)
+    # The arm it was enrolled in (W1-6; contacts.arm): random when it was walked in the random arm's lane, ranked
+    # otherwise; set by run() once the walks are done (enrol_stamps). "" on a card posted before it existed.
+    arm: str = ""
 
 
 @dataclass
@@ -817,7 +822,7 @@ def _walk(
             continue
         p = prepare(ctx, cand, free, counts, rows, pace, not_sending)
         if isinstance(p, Skip):
-            run.skip(cand.account, p.reason if cand.slot == 1 else f"second contact: {p.reason}", p.detail)
+            run.skip(cand.account, p.reason if cand.slot == 1 else f"{SECOND_SKIP}{p.reason}", p.detail)
             if p.exclude_fact:
                 mark_excluded(ctx, cand.account, p.exclude_fact, p.detail[0])
                 run.excluded.append({"account_id": cand.account["account_id"], "reason": p.detail[0]})
@@ -889,8 +894,16 @@ def _unanswered_add(ctx: Context, campaign: str, items: Sequence[Prepared], lead
     other owners' adds never ran (code-contacts-enrol M3). Now: wait, read the campaign; if none of the leads is
     there yet, wait longer and read it again (Instantly can take a few seconds to list a bulk add); record what is
     there; one errors line for the owner; and the next owner's add goes ahead. A lead not found is not marked
-    refused: the next run adds it again, and Instantly either takes it or leaves it out as one in the campaign
-    already, which campaign_lead_ids then finds and records."""
+    refused: the next run adds it again.
+
+    Not being listed after 90 s does not prove the add failed, so a new account skipped here is given this owner as
+    its sender now, as its first enrolment would have (SPEC 9), not left without one. Otherwise the next run's
+    assign_sender could give it to another owner (it goes by the share of pace left), whose add Instantly leaves out
+    because the lead is in this owner's campaign (skip_if_in_workspace); campaign_lead_ids would then look in the
+    wrong campaign, not find it, and mark the contact not added: the account would stay verified, a colleague be
+    emailed from the second campaign, and the first lead run its sequence unrecorded. With the sender kept, the retry
+    goes to this campaign, where Instantly either takes the lead or leaves it out as one there already, which
+    campaign_lead_ids then finds and records."""
     emails = [_lower(lead["email"]) for lead in leads]
     found: dict[str, str] = {}
     lookups, failed = 0, ""
@@ -905,15 +918,32 @@ def _unanswered_add(ctx: Context, campaign: str, items: Sequence[Prepared], lead
         if found:
             break
     ids = {i: found[e] for i, e in enumerate(emails) if e in found}
+    pinned = []
     for i, p in enumerate(items):
         if i not in ids:
             run.skip(p.account, ADD_UNKNOWN, [f"{campaign}: Instantly did not answer the add ({type(exc).__name__}), "
                                               f"and the lead was not in the campaign after {lookups} lookups"])
+            if p.slot == 1 and not str(p.account.get("sender") or "").strip():
+                pinned.append({"account_id": p.account["account_id"], "sender": p.owner})
+    if pinned:  # the retry goes to this campaign, where a lead that did land is found (the docstring)
+        ctx.store.upsert("accounts", pinned)
     run.errors.append(f"{campaign}: Instantly did not answer the add ({type(exc).__name__}: {str(exc)[:120]}); "
                       f"{len(ids)} of {len(leads)} leads found in the campaign after {lookups} lookups and recorded, "
                       f"the rest tried again next run{failed}")
     log("enrol_add_unanswered", campaign=campaign, leads=len(leads), found=len(ids), lookups=lookups)
     return ids
+
+
+def _resume(ctx: Context, campaign: str, leads: int, run: _Run) -> None:
+    """After leads went into the campaign: activate it again if Instantly has marked it completed
+    (capacity.resume_if_completed), or say in errors that the leads wait unsent until someone does. An OSError (no
+    answer from the campaign list) is caught too: the leads are in by now, and must still be recorded."""
+    try:
+        if capacity.resume_if_completed(ctx, campaign):
+            log("campaign_resumed", campaign=campaign, leads=leads)
+    except (ApiError, LookupError, OSError) as exc:
+        run.errors.append(f"{campaign} may be completed in Instantly and could not be checked or resumed "
+                          f"({str(exc)[:160]}): run `us-outbound start --live`, or the leads just added wait unsent")
 
 
 def mark_not_added(ctx: Context, contact_id: Any) -> None:
@@ -958,17 +988,20 @@ def email_hashes(custom_variables: Mapping[str, Any]) -> list[str] | None:
 
 def enrol_stamps(settings: Settings, p: Prepared) -> dict[str, Any]:
     """What the contact was enrolled as, kept on the contact so later relabels, resizes and copy changes cannot move
-    it between the readout's cells (W1-6; code-contacts-enrol L6): the account's arm (accounts.arm, drawn at
-    pick_contacts; ranked when unset), the A/A sham arm (queue.sham_arm), the industry label, group and size band
-    as they were, the copy level its emails were rendered at, email 1's subject and each step's body hash.
+    it between the readout's cells (W1-6; code-contacts-enrol L6): the arm it was walked in (Prepared.arm, from
+    accounts.arm as drawn at pick_contacts; the account's arm, else ranked, when unset), the A/A sham arm
+    (queue.sham_arm), the industry label, group and size band as they were, the copy level its emails were rendered
+    at, email 1's subject and each step's body hash.
 
-    From the lead as it goes to Instantly (its custom variables), so a send approval's ✅, which rebuilds the
-    Prepared from its card, stamps exactly what the card showed. A card posted before W1-6 has its copy level worked
-    out at the ✅ (labels.copy_level), and the subject and hashes from its lead."""
+    From the Prepared and the lead as it goes to Instantly (its custom variables), so a send approval's ✅, which
+    rebuilds the Prepared from its card, stamps what the card showed: its arm and copy level from the card, the
+    subject and hashes from its lead. A card with no copy level has it worked out at the ✅ (labels.copy_level)."""
     a = p.account
     variables = p.lead.get("custom_variables") if isinstance(p.lead.get("custom_variables"), Mapping) else {}
     return {
-        "arm": str(a.get("arm") or "") or queue.RANKED,
+        # The arm it was walked in (run() sets p.arm), not accounts.arm alone: an account pick drew at random while
+        # explore_share was above 0 is walked in queue order once the share is back at 0, and is ranked then.
+        "arm": p.arm or str(a.get("arm") or "") or queue.RANKED,
         "sham_arm": queue.sham_arm(a.get("account_id")),
         "industry_at_enrol": str(a.get("industry") or "") or None,
         "industry_group_at_enrol": settings.industry_group_of(a) or None,
@@ -1030,6 +1063,13 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
         ctx.store.upsert("contacts", contacts)
 
 
+def _failures(skipped: Mapping[str, int]) -> dict[str, int]:
+    """The summary's failures: {reason: count} for the skips that are failures of the run (FAILURE_REASONS), a
+    second contact's ("second contact: HubSpot check failed") counted under its reason, so job_errors sees them."""
+    out = {why: skipped.get(why, 0) + skipped.get(f"{SECOND_SKIP}{why}", 0) for why in FAILURE_REASONS}
+    return {why: k for why, k in out.items() if k}
+
+
 def _copy_test_summary(s: Settings, r: _Run) -> dict[str, Any] | None:
     """The enrol summary's copy_test: the running copy test, today's contacts in each arm, and why others were not in
     it (a variant whose change could not be made, or whose arm is full)."""
@@ -1089,12 +1129,16 @@ def run(ctx: Context) -> dict:
     # holding it to today's quota would bend the arm towards whichever group the ranked accounts left room in. Its
     # accounts still count against the quota, so the day's groups keep their shares. With explore_share 0 (the
     # default) there is no random walk and every account is walked in queue order, those pick drew while the share
-    # was above 0 included, so setting it back to 0 is today's order exactly.
+    # was above 0 included, so setting it back to 0 is today's order exactly; their contacts are stamped ranked.
     in_order = sorted(cands, key=lambda c: queue.order_key(c.account, s))
     exploring = s.general.explore_share > 0
-    drawn = [c for c in in_order if exploring and c.account.get("arm") == queue.RANDOM]
+
+    def in_random_arm(account: Mapping[str, Any]) -> bool:
+        return exploring and account.get("arm") == queue.RANDOM
+
+    drawn = [c for c in in_order if in_random_arm(c.account)]
     random_lane = iter(drawn)
-    ranked_lane = iter([c for c in in_order if not (exploring and c.account.get("arm") == queue.RANDOM)])
+    ranked_lane = iter([c for c in in_order if not in_random_arm(c.account)])
     n_random = queue.explore_count(n, s, len(drawn))
     counts, approved = running_test_counts(ctx), sendable_copy(s)
     # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
@@ -1119,6 +1163,9 @@ def run(ctx: Context) -> dict:
     prepared += _walk(ctx, iter(seconds), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
     for p in prepared:
         p.config_version, p.code_sha = cv.id, cv.code_sha
+        # The arm each contact is stamped with is the lane its account was walked in (a second contact: its
+        # account's), so with explore_share at 0 every contact is ranked, an account drawn at random earlier included.
+        p.arm = queue.RANDOM if in_random_arm(p.account) else queue.RANKED
 
     by_owner: dict[str, list[Prepared]] = defaultdict(list)
     for p in prepared:
@@ -1147,6 +1194,8 @@ def run(ctx: Context) -> dict:
             continue
         except OSError as exc:  # no answer: the add may have happened (http.py raises it as it came)
             ids = _unanswered_add(ctx, campaign, items, leads, exc, r)
+            if ids:  # leads that are in a completed campaign wait unsent until it is activated again
+                _resume(ctx, campaign, len(ids), r)
             _record_enrolled(ctx, items, ids, campaign, month)
             enrolled[owner] = len(ids)
             continue
@@ -1162,12 +1211,7 @@ def run(ctx: Context) -> dict:
             would[owner] = len(items)
             continue
         plan_room = plan.after_add(ctx, result)
-        try:
-            if capacity.resume_if_completed(ctx, campaign):
-                log("campaign_resumed", campaign=campaign, leads=len(items))
-        except (ApiError, LookupError) as exc:
-            r.errors.append(f"{campaign} is completed in Instantly and could not be resumed ({str(exc)[:160]}): "
-                            "run `us-outbound start --live`, or the leads just added wait unsent")
+        _resume(ctx, campaign, len(items), r)
         ids = _created_ids(result, leads)
         missing = [i for i in range(len(items)) if i not in ids]
         found: dict[str, str] | None = {}
@@ -1202,9 +1246,9 @@ def run(ctx: Context) -> dict:
         campaigns_not_sending=stopped,
         focus=quota.describe() if quota.active else None,
         candidates=len(cands),
-        failures={why: r.skipped[why] for why in FAILURE_REASONS if r.skipped[why]},
+        failures=_failures(r.skipped),
         explore={"share": s.general.explore_share, "drawn_ready": len(drawn), "target": n_random,
-                 "prepared": sum(p.account.get("arm") == queue.RANDOM for p in prepared)},
+                 "prepared": sum(p.arm == queue.RANDOM for p in prepared[:n_first])},
         prepared=len(prepared),
         enrolled=sum(enrolled.values()),
         by_owner=dict(enrolled) if ctx.live else dict(would),

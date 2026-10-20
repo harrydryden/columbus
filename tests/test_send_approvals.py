@@ -967,6 +967,27 @@ def test_an_approved_card_keeps_the_version_it_was_rendered_under():
     assert jane["email_hashes"] == [hashlib.sha256(cv[f"s{n}_body"].encode()).hexdigest() for n in (1, 2, 3, 4)]
 
 
+def test_an_approved_card_stamps_the_arm_and_copy_level_it_was_rendered_at():
+    """The card's arm and copy level, not the account's at the ✅. Acme's card is rendered at the group's copy (no
+    label check yet: labels.copy_level gives "group") and walked ranked (explore_share 0). Before the ✅ a label check
+    confirms its label (label_source rules+model: "label" level, the same industry, so the card still fits and is
+    not withdrawn) and its accounts.arm reads random. Before the round-1 review fix the ✅ worked both out again from
+    the account, and stamped "label" and "random"."""
+    from us_outbound import labels
+
+    ctx, t, sl, out = proposed()
+    row = item_for(ctx, "acc-1")
+    assert (row["payload"]["arm"], row["payload"]["copy_level"]) == ("ranked", labels.GROUP_COPY)
+    ctx.store.update("accounts", {"account_id": "acc-1"}, {
+        "label_source": labels.AGREED, "label_checked_at": ctx.now + timedelta(minutes=1), "arm": "random"})
+    acme = ctx.store.get("accounts", account_id="acc-1")
+    assert labels.copy_level(acme) == labels.LABEL_COPY
+    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
+    assert poll(ctx)["outcomes"] == {"approved": 1}
+    jane = ctx.store.get("contacts", contact_id="con-1")
+    assert (jane["arm"], jane["copy_level"]) == ("ranked", labels.GROUP_COPY)
+
+
 def test_a_card_posted_before_the_stamp_leaves_the_contact_unstamped():
     ctx, t, sl, _ = proposed()
     row = item_for(ctx, "acc-1")

@@ -82,8 +82,12 @@ The code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev
 saw it, but a deploy alone no longer starts a version: before, all 50 deploys of the first 12 days did, which split
 every cohort and would have split a copy test's arms on code that changed nothing sent. Version ids changed once,
 discontinuously, at the deploy of W1-6 (it took `code_sha`, `weekly_enrol_cap` and the retired `control_share` out
-of the hash): `cohorts changes` across that deploy lists only the code line, and nothing a contact gets changed. The `config_versions` table keeps each version's snapshot, so
-`us-outbound cohorts changes` can say what differs in plain words.
+of the hash): `cohorts changes` across that deploy lists only the code line, and nothing a contact gets changed. The
+other side of this: a deploy that changes how emails are rendered (`enrol/render.py`, the copy rules) without
+touching a template, a tab or a General key starts no version either. Such a change is made through the steps above
+like any change to what is sent, and its cohorts are told apart by `code_sha` (and each step's `email_hashes`), not
+by `config_version`. The `config_versions` table keeps each version's snapshot, so `us-outbound cohorts changes` can
+say what differs in plain words.
 
 ## Cohorts
 
