@@ -112,7 +112,6 @@ SPEC: dict[str, tuple[Col, ...]] = {
     ),
     "Focus": (Col("industry_group", key=True, ref="Industries", required=True),
               Col("share", parse=p.parse_share, required=True), NOTE),
-    "Named accounts": (Col("domain", key=True, parse=p.root_domain, required=True), Col("name"), NOTE),
 }
 assert tuple(SPEC) == TABS
 assert not any(c.optional and c.required for cols in SPEC.values() for c in cols)  # a missing column reads blank

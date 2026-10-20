@@ -73,12 +73,12 @@ API. It can only be replaced.
 | `US_OUTBOUND_SETTINGS_SHEET_ID` | The id in the settings sheet's URL (`docs.google.com/spreadsheets/d/<id>/edit`) | yes |
 | `US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON` | The whole JSON key file from step d, pasted as it is (several lines are fine) | yes |
 | `US_OUTBOUND_APOLLO_API_KEY` | Apollo master API key | yes |
-| `US_OUTBOUND_CLAY_API_KEY` | Clay API key | yes |
+| `US_OUTBOUND_CLAY_API_KEY` | No longer read: Clay was removed (W2-1, 20 Oct 2026). The variable can be deleted | yes |
 | `US_OUTBOUND_INSTANTLY_API_KEY` | Instantly API key | yes |
 | `US_OUTBOUND_HUBSPOT_TOKEN` | HubSpot service key with the SPEC 13 scopes (phase0-runbook.md §5) | yes |
 | `US_OUTBOUND_SLACK_BOT_TOKEN` | Slack bot token (`xoxb-…`) from `deploy/slack-app-manifest.yaml`. Optional for now (Harry, 30 Sep): without it, dry-run jobs write their Slack messages to the log. Live runs refuse to start without it | yes |
 | `US_OUTBOUND_CLAUDE_API_KEY` | The new Claude key, with a $10 monthly limit set in the Anthropic console (SPEC 1.1) | yes |
-| `US_OUTBOUND_WATCHDOG_URL` | Optional: the Healthchecks.io ping URL of the outside watchdog (step h). Without it, `us-outbound golive` warns | yes |
+| `US_OUTBOUND_WATCHDOG_URL` | Optional: the Healthchecks.io ping URL of the outside watchdog (step h). Without it, `us-outbound status`'s Watchdog check warns | yes |
 | `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | `30`. On a redeploy the scheduler gets 30 s between SIGTERM and SIGKILL. It gives running jobs 25 s, then stops them | no (a setting) |
 | `US_OUTBOUND_MAX_PARALLEL` | Optional: how many jobs may run at once (default `2`) | no (a setting) |
 
@@ -196,7 +196,7 @@ Healthchecks.io check, which emails Harry when the ping is late or says somethin
 2. Copy the check's **Ping URL** (`https://hc-ping.com/…`). In the **us-outbound** service's
    **Variables**, add `US_OUTBOUND_WATCHDOG_URL` with it and **Seal** it: anyone who has the URL can
    report the worker alive. Press **Deploy**. Within the hour the check shows its first ping, and
-   `us-outbound golive` stops warning "no outside watchdog".
+   `us-outbound status` stops warning "no outside watchdog".
 3. Point Railway's deploy failures at Slack: **Project Settings → Webhooks → New Webhook**, with a
    Slack incoming-webhook URL for `#us-outbound` (Slack: **Apps → Incoming Webhooks**), for deployment
    status changes. Railway formats the message for Slack itself. A build that fails, or a worker that

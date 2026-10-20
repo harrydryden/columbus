@@ -70,8 +70,15 @@ class FakeApollo:
         if o.get("_in", state_code(o.get("state") or "")) != STATE_OF[body["organization_locations"][0]]:
             return False
         ranges = body.get("organization_num_employees_ranges") or ()
-        if o.get("_band") and len(ranges) == 1 and ranges[0] != o["_band"].replace("-", ","):
-            return False  # a size-band search, for a company whose record has no employee count
+        if len(ranges) == 1:  # every search is one size band (W2-1: the unbanded search went)
+            if o.get("_band"):  # Apollo's own band for the company, whatever its record shows
+                if ranges[0] != o["_band"].replace("-", ","):
+                    return False
+            else:
+                lo, hi = (int(x) for x in ranges[0].split(","))
+                n = o.get("estimated_num_employees")
+                if n is None or not lo <= n <= hi:
+                    return False
         if o.get("_always"):  # Apollo matched it on something its record does not show
             return True
         if "organization_naics_codes" in body:
@@ -81,11 +88,7 @@ class FakeApollo:
     def search(self, req):
         body = req.json
         self.searches.append(body)
-        if "organization_ids" in body and "organization_num_employees_ranges" in body:  # the size-band backfill
-            ids, ranges = set(body["organization_ids"]), body["organization_num_employees_ranges"]
-            found = [{"id": o["id"]} for o in self.orgs
-                     if o["id"] in ids and (o.get("_band") or "").replace("-", ",") in ranges]
-        elif "organization_ids" in body:  # the apollo_jobs screen: the ids with a current posting
+        if "organization_ids" in body:  # the apollo_jobs screen: the ids with a current posting
             found = [{"id": i} for i in body["organization_ids"] if self.postings.get(i)]
         else:
             found = [o for o in self.orgs if self._found(o, body)]
@@ -99,15 +102,6 @@ class FakeApollo:
         posts = [{"id": f"{org_id}-{n}", "title": t, "url": f"https://jobs.example/{org_id}/{n}"}
                  for n, t in enumerate(self.postings.get(org_id, ()))]
         return {"organization_job_postings": posts, "pagination": {"total_entries": len(posts)}}
-
-
-@pytest.fixture(autouse=True)
-def unbanded_first_page(request, monkeypatch):
-    """Most tests here were written for searches that start without a size filter, a path the job
-    still takes for a search split over 50,000 companies. Since 2 Oct 2026 every search starts by
-    size band (START_BANDS); tests marked `banded` run with that default."""
-    if "banded" not in request.keywords:
-        monkeypatch.setattr(uni, "START_BANDS", ("",))
 
 
 def make(orgs=(), *, settings=None, now=NOW, live=False, store=None, **apollo):
@@ -136,16 +130,19 @@ def test_each_search_is_a_group_s_naics_codes_in_one_active_state_at_10_to_249_e
     states = [STATE_OF[b["organization_locations"][0]] for b in fake.searches]
     assert sorted(set(states)) == ["IL", "NY"]
     first = fake.searches[0]
-    assert first["organization_num_employees_ranges"] == ["10,19", "20,49", "50,99", "100,249"]
+    # One size band a search (W2-1: the unbanded search and its split went): the first is the smallest band.
+    assert first["organization_num_employees_ranges"] == ["10,19"]
+    assert {b["organization_num_employees_ranges"][0] for b in fake.searches} == {"10,19", "20,49", "50,99", "100,249"}
     assert first["not_organization_naics_codes"] == ["524"]  # insurers and brokers, partners (SPEC 9)
     assert (first["page"], first["per_page"]) == (1, 100)
-    tech, agencies = fake.searches[0]["organization_naics_codes"], fake.searches[2]["organization_naics_codes"]
+    # Tech's 2 states × 4 bands = 8 searches come first, then the Agencies'.
+    tech, agencies = fake.searches[0]["organization_naics_codes"], fake.searches[8]["organization_naics_codes"]
     assert {"5112", "51321", "5415", "51821"} <= set(tech) and "5418" in agencies
     assert all(2 <= len(c) <= 5 for c in tech + agencies)  # PHASE0-CONFIRM: Apollo takes 2 to 5 digits
     assert not any(c.startswith(p) for c in agencies for p in tech)  # nothing paid for twice
     # Tech, Agencies and Legal Teams (on from launch, review Appendix A) in two states; Digital health's
-    # codes are Tech's, so it has no search of its own.
-    assert len(fake.searches) == 6
+    # codes are Tech's, so it has no search of its own. Each in four size bands: 3 × 2 × 4 = 24 searches.
+    assert len(fake.searches) == 24
     assert all(r.method in ("GET", "POST") for r in t.requests)
     assert {c.action for c in ctx.guard.calls if c.system == "apollo"} <= APOLLO_READ_ACTIONS
 
@@ -170,7 +167,6 @@ def test_the_focus_tab_s_groups_come_first_with_their_share_of_the_queue():
 SEVEN = ("GA", "IL", "MA", "NJ", "NY", "PA", "TX")  # the live sheet's active states (19 Oct 2026)
 
 
-@pytest.mark.banded
 def test_the_states_alternate_from_a_start_that_moves_each_iso_week():
     """code-sources B2: read state by state in the States tab's alphabetical order, GA came first and two Georgia
     pages filled the Technology pool: the queue was 85% Georgia, none from New York (16 of 59 US customers). Within
@@ -188,7 +184,6 @@ def test_the_states_alternate_from_a_start_that_moves_each_iso_week():
     assert uni.rotated(SEVEN, 49) == list(SEVEN)  # 49 = 7 × 7: back to GA
 
 
-@pytest.mark.banded
 def test_the_run_reads_the_states_in_turn_and_stamps_each_account_with_the_search_that_found_it():
     """Mon 19 Oct 2026 is ISO week 43. One company in each of the seven states, all 20-49 staff: the run reads the
     10-19 band of every state first (empty), then 20-49 from IL round to GA, and each company it creates carries
@@ -239,7 +234,7 @@ def test_a_company_becomes_one_account_with_one_label_and_the_facts_scoring_read
     # And the search that found it (W1-3a; code-sources §6), under the job's own source, which no Signals row reads.
     [found] = ctx.store.select("signal_events", {"account_id": a["account_id"], "source": uni.JOB})
     assert found["fact"] == "sourced_by" and found["value"] == {
-        "slice": found["value"]["slice"], "group": "Technology & Startups", "state": "NY", "band": None, "page": 1,
+        "slice": found["value"]["slice"], "group": "Technology & Startups", "state": "NY", "band": "50-99", "page": 1,
         "run_id": ctx.run_id}
     assert found["value"]["slice"].startswith("Technology & Startups|naics|NY|") and uni.JOB not in SOURCE_FIELDS
 
@@ -283,7 +278,7 @@ def test_skipped_companies_and_why():
         org(1, domain="gmail.com"),
         org(2, domain=None),
         org(3, state="California", _in="NY"),
-        org(4, employees=600),
+        org(4, employees=600, _band="100-249"),  # Apollo's band search found it; its record says 600
         org(5, naics=("541511",), keywords=("hr software", "payroll")),  # an HR-tech vendor: a partner
         org(6, naics=("111110",), keywords=("soybeans",), industry="farming", _always=True),
         org(11, naics=("524210",), keywords=("insurtech",), _always=True),  # an insurance agency: a partner
@@ -351,7 +346,6 @@ def test_an_open_account_whose_label_was_checked_keeps_it_when_found_again_and_a
     assert by["company3.com"]["industry"] == "Fintech" and not by["company3.com"].get("label_source")
 
 
-@pytest.mark.banded
 def test_a_row_with_no_count_never_blanks_a_size_the_account_already_has():
     """A13: apollo_enrich (or an earlier row) gave an exact count; a later search row has none. The count and its
     band stay; a blank size is still filled from the search's band; an Overrides row still wins."""
@@ -447,7 +441,7 @@ def test_short_of_two_weeks_it_creates_what_the_yields_need_up_to_twice_the_cap_
         "the ceiling of 2 × weekly_enrol_cap (300) raw accounts a run; contactable supply was 160 of 300 (two weeks "
         "of weekly_enrol_cap); p_v 0.50 (measured: 20 of 40), p_c 0.50 (measured: 20 of 40)")
     ny_tech = [b["page"] for b in fake.searches if b["organization_locations"] == ["New York, US"]
-               and "5415" in b.get("organization_naics_codes", ())]
+               and "5415" in b.get("organization_naics_codes", ()) and b["organization_num_employees_ranges"] == ["50,99"]]
     assert ny_tech == [1, 2, 3] and out["credits"] == 3.0
     created = [a for a in ctx.store.select("accounts") if a["domain"].startswith("company")]
     assert len(created) == 300 and len(ctx.store.select("signal_events", {"fact": "sourced_by"})) == 300
@@ -538,7 +532,7 @@ def test_the_weekly_ceiling_lets_thursday_create_only_what_monday_to_wednesday_l
     ctx.now = datetime(2026, 10, 12, 2, 0, tzinfo=UTC)  # Monday: a new week; the cut page first
     monday = uni.run(dataclasses.replace(ctx, run_id="mon"))
     ny = [b["page"] for b in fake.searches[before:] if b["organization_locations"] == ["New York, US"]
-          and "5415" in b.get("organization_naics_codes", ())]
+          and "5415" in b.get("organization_naics_codes", ()) and b["organization_num_employees_ranges"] == ["50,99"]]
     assert ny == [1, 2] and monday["created"] == 100  # page 1's other 50, then page 2's 50
     assert len({a["domain"] for a in ctx.store.select("accounts") if a["domain"].startswith("company")}) == 150
 
@@ -553,7 +547,7 @@ def test_the_next_run_carries_on_from_the_next_page_and_a_new_month_starts_again
     ctx.now = NOW + timedelta(days=1)
     assert uni.run(ctx)["created"] == 50
     ny = [b["page"] for b in fake.searches if b["organization_locations"] == ["New York, US"]
-          and "5415" in b.get("organization_naics_codes", ())]
+          and "5415" in b.get("organization_naics_codes", ()) and b["organization_num_employees_ranges"] == ["50,99"]]
     assert ny == [1, 2]
     [first] = [n for n in (json.loads(r["note"]) for r in ledger(ctx)) if n["page"] == 1 and n["results"]]
     assert first["pages"] == 2 and first["results"] == 100 and first["total"] == 150
@@ -562,7 +556,7 @@ def test_the_next_run_carries_on_from_the_next_page_and_a_new_month_starts_again
     before = len(fake.searches)
     uni.run(ctx)
     november = [b["page"] for b in fake.searches[before:] if b["organization_locations"] == ["New York, US"]
-                and "5415" in b.get("organization_naics_codes", ())]
+                and "5415" in b.get("organization_naics_codes", ()) and b["organization_num_employees_ranges"] == ["50,99"]]
     assert november == [1, 2]  # page 1 again; its companies are accounts already, so page 2 too
 
 
@@ -604,7 +598,9 @@ def test_a_page_with_results_costs_one_credit_and_an_empty_page_none():
     ctx, _, _ = make([org(1)])
     uni.run(ctx)
     rows = ledger(ctx)
-    assert sorted(r["credits"] for r in rows) == [0.0, 0.0, 0.0, 0.0, 0.0, 1.0]  # Legal Teams' two empty searches
+    # 3 groups (Tech, Agencies, Legal Teams) × 2 states × 4 size bands = 24 pages; only Tech's New York 50-99 page
+    # holds company 1 (64 staff), so 23 empty pages cost nothing and 1 costs a credit.
+    assert sorted(r["credits"] for r in rows) == [0.0] * 23 + [1.0]
     assert all(r["system"] == "apollo" and r["run_id"] == ctx.run_id and r["occurred_at"] == NOW for r in rows)
 
 
@@ -632,34 +628,6 @@ def test_no_credit_is_spent_below_apollo_floor():
     assert fake.searches == [] and [r.url.rsplit("/", 1)[-1] for r in t.requests] == ["credit_usage_stats"]
 
 
-def test_a_search_over_50_000_companies_is_split_by_size_band():
-    def total(body):
-        return 60_000 if len(body["organization_num_employees_ranges"]) == 4 and "5415" in body.get("organization_naics_codes", ()) else 0
-
-    s = settings_with(states=("NY",))
-    ctx, _, fake = make([org(i) for i in range(1, 3)], settings=s, total=total)
-    uni.run(ctx)
-    tech = [b for b in fake.searches if "5415" in b.get("organization_naics_codes", ())]
-    assert [b["organization_num_employees_ranges"] for b in tech] == [
-        ["10,19", "20,49", "50,99", "100,249"], ["10,19"], ["20,49"], ["50,99"], ["100,249"]]
-    assert json.loads(ledger(ctx)[0]["note"])["split"] is True
-    later = uni.cursors(ctx)
-    assert later[uni.plan(s, uni.active_groups(s), ("NY",))["Technology & Startups"][0].key].split
-
-
-def test_without_employee_counts_the_size_band_comes_from_a_size_band_search():
-    s = settings_with(states=("NY",))
-    ctx, _, fake = make([org(1, employees=None, _band="20-49"), org(2, employees=None, _band="100-249")], settings=s)
-    out = uni.run(ctx)
-    tech = [b["organization_num_employees_ranges"] for b in fake.searches if "5415" in b.get("organization_naics_codes", ())]
-    assert tech == [["10,19", "20,49", "50,99", "100,249"], ["10,19"], ["20,49"], ["50,99"], ["100,249"]]
-    got = {d: (a["employees"], a["size_band"]) for d, a in accounts_by_domain(ctx).items()}
-    assert got == {"company1.com": (None, "20-49"), "company2.com": (None, "100-249")}
-    assert out["created"] == 2 and json.loads(ledger(ctx)[0]["note"])["why"] == "no employee counts"
-    assert len(ctx.store.select("signal_events", {"fact": "founded_year"})) == 2  # facts once per company a run
-
-
-@pytest.mark.banded
 def test_every_search_starts_by_size_band_so_no_account_lacks_one():
     """2 Oct 2026: Apollo's search rows carry no employee count, so a search with no size filter gave
     accounts no size band. Every search is now one per band, and the band is the filter's."""
@@ -669,35 +637,7 @@ def test_every_search_starts_by_size_band_so_no_account_lacks_one():
     assert all(len(b["organization_num_employees_ranges"]) == 1 for b in fake.searches)
     got = {d: (a["employees"], a["size_band"]) for d, a in accounts_by_domain(ctx).items()}
     assert got == {"company1.com": (None, "20-49"), "company2.com": (None, "100-249")}
-    assert out["created"] == 2 and out["size_bands_backfilled"] == 0
-
-
-def test_a_page_with_no_employee_counts_is_not_taken_unbanded():
-    s = settings_with(states=("NY",))
-    ctx, _, _ = make([org(1, employees=None, _band="20-49")], settings=s)
-    uni.run(ctx)
-    assert all(a["size_band"] for a in ctx.store.select("accounts"))  # only the band searches made accounts
-
-
-@pytest.mark.banded
-def test_accounts_left_with_no_size_band_get_one_from_a_search_by_their_ids():
-    # Two weeks of weekly_enrol_cap 1 is 2, and 2 accounts are ready to email: no new searches.
-    s = settings_with(states=("NY",), weekly_enrol_cap=1)
-    old = [org(1, employees=None, _band="20-49"), org(2, employees=None, _band="50-99"), org(3, employees=None)]
-    ctx, _, fake = make(old, settings=s)
-    seed_supply(ctx, ready=2)
-    ctx.store.insert("accounts", [
-        {"account_id": f"a{i}", "domain": f"company{i}.com", "apollo_org_id": f"org{i:03d}", "status": "new",
-         "industry": "Fintech", "industry_group": "Technology & Startups", "size_band": None, "employees": None,
-         "first_seen": NOW}
-        for i in (1, 2, 3)])
-    out = uni.run(ctx)
-    bands = {a["account_id"]: a["size_band"] for a in ctx.store.select("accounts") if a["account_id"].startswith("a")}
-    assert bands == {"a1": "20-49", "a2": "50-99", "a3": None}  # no band search returned company 3
-    assert out["size_bands_backfilled"] == 2 and out["stopped_by"].startswith("contactable supply holds two weeks")
-    backfill = [b for b in fake.searches if "organization_ids" in b]
-    assert len(backfill) == 4 and all(len(b["organization_num_employees_ranges"]) == 1 for b in backfill)
-    assert out["credits"] == 2.0  # a page with results costs 1; the two empty bands cost nothing
+    assert out["created"] == 2 and "size_bands_backfilled" not in out  # the backfill went with W2-1
 
 
 def test_dry_run_reads_apollo_and_writes_only_the_database():

@@ -3,13 +3,12 @@
 For Harry, from the pilot that starts on Monday 5 October 2026. Run every command inside the
 worker: `railway ssh -- us-outbound <command>`. Nothing changes without `--live`.
 
-## The two switches (General tab)
+## The switches (General tab)
 
 | Key | no | yes |
 | :- | :- | :- |
-| `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry, and enrol posts a few preview cards to #us-outbound-dev | Emails go out. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
-| `auto_send` | The pilot: every email waits for an approver's ✅ on its card in #us-outbound | Emails go straight to Instantly once the weekly hand-check is approved |
-| `hand_check_gate` | Your D5 (19 Oct 2026): the hand-check is a measure. Only the companies it picked wait for your decision, for 7 days at most; everyone else is emailed as usual | The default until you set no: with `auto_send` = yes, no new leads go to Instantly in a week until every company picked at random has a decision |
+| `live_sending` | Nothing new reaches Instantly or a prospect. Jobs run dry | Emails go out: each send day's leads go straight to Instantly. The sheet refuses yes while `approver_slack_ids` is blank, and no lead is added until `optout_tested` = yes |
+| `hand_check_gate` | Your D5 (19 Oct 2026): the hand-check is a measure. Only the companies it picked wait for your decision, for 7 days at most; everyone else is emailed as usual | The default until you set no: no new leads go to Instantly in a week until every company picked at random has a decision |
 | `auto_thresholds` | `priority_threshold` and `standard_threshold` are used as typed; an alert says when top fit is under 5% or a group over 60% | The default (Harry, 19 Oct 2026). Each day the thresholds follow the queue: top fit is its best fifth (30 points at least), and the good-fit pool is kept big enough for two weeks of sending at `weekly_enrol_cap`, the rest being the comparison group (about 30%). The daily post's *Pipeline* shows the day's values; an alert comes only when the queue is too small for two weeks |
 
 **Company size (General `min_employees`, `max_employees`; 10 and 249 by default).** To contact companies of 5
@@ -18,13 +17,14 @@ from page 1), verify_accounts holds accounts to it, and the hand-check's size ed
 Roles tab's 10-49 order applies below 10 and its 50-249 order above 249. The first time, run
 `us-outbound settings load --tab General --live` to add the two keys to the sheet.
 
-**A second contact** (`second_contact`, no; Harry, 6 Oct 2026). With yes, a company of 50 or more staff
-(`second_contact_min_employees`) also gets a second person of another role, from the same sender, 3 days
-(`second_contact_delay_days`) after the first person's email 1, with the room new companies leave. Their
-card is headed "Send approval · second contact" and names the first person; approve it like any other.
-When anyone at the company replies, bounces or unsubscribes, both people's emails stop. To switch it on:
-`us-outbound settings load --tab General --set second_contact=yes --live`, then `us-outbound sync`.
-`us-outbound status` and the daily post say whether it is on.
+**Removed on 20 Oct 2026 (W2-1; your decisions of 19 Oct):** the send cards and `auto_send` (each send day's
+leads go straight to Instantly, as they did with `auto_send` = yes), second contacts (`second_contact`: one person
+per company), every Clay path and the one-off commands `golive`, `approvals`, `phase0 check`, `clay check-email`
+and `labels crosswalk`. Their General rows (`auto_send`, `second_contact` and its two keys, the seven Clay keys,
+the never-read `recontact_*`, `hubspot_deal_stage`, `apollo_credits_per_account`, `opener_focus` and
+`opener_focus_line`) are no longer read; the sync lists them, and you can delete the rows (`us-outbound settings
+load --tab General --live` takes them off). `us-outbound status` now ends with the three go-live checks that still
+matter: Copy, Campaigns and Watchdog.
 
 **Sheet edits apply at the next sync:** 02:00 UK every day, and 11:30 UK on weekdays, so a morning
 edit is in force for the 12:00 enrol. To apply an edit now, run `us-outbound sync`.
@@ -55,7 +55,7 @@ knows weekdays only, so since 7 October 2026 the hourly `blackout` job also paus
 once the send window has closed (16:00 ET) on the last send day before a blackout, and starts the same
 campaigns again from midnight ET after it. The follow-ups that fell due go out on the next send day (Monday
 30 November; Tuesday 5 January), as the send forecast already assumed. One line in #us-outbound says when it
-pauses them and one when it starts them again. `us-outbound status`, `golive` and the daily post say "paused
+pauses them and one when it starts them again. `us-outbound status` (its Campaigns check too) and the daily post say "paused
 for the blackout until Mon 30 Nov": there is nothing to do.
 
 - **`us-outbound stop --live` during a blackout** still stops everything, and the campaigns stay paused after
@@ -77,35 +77,26 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | When | What arrives | What to do |
 | :- | :- | :- |
 | 07:00 | Mailbox check, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
-| Monday 05:45 | The weekly hand-check: `hand_check_sample` companies (10 until you set 20) picked at random from those the coming send days would email, after today's own (so Monday's sending is never held up). Since 14 Oct nothing is held here for doubtful facts or an unclear industry: a company missing its HQ state, size or industry is left out by itself ("incomplete information"), as is one the AI cannot place in our industries, and a borderline size (near a band edge) goes ahead on Apollo's count. With `hand_check_gate` = no only the picked companies wait for you, for 7 days at most; with yes (and `auto_send` = yes) the week's new leads wait for the whole check. A check still open on Wednesday 09:00 posts one reminder. If the Monday draw fails, the 5-minute poll draws the week itself from 06:15; with the whole-day gate, a week that found no company ready at 05:45 is drawn again once one is | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed: say why in `reason`), or *wrong industry* with the right one in `right_label`; pick *no* in `contact_ok` or `opener_ok` when the person or the opening line is wrong. Each choice is applied within 5 minutes, and a change later is applied too (a leave out changed to fine puts the company back). A choice that cannot be applied says why in `note`. The check closes when every row is applied, or after 7 days; the Monday readout counts the decisions and any company sent unjudged (`handcheck approve` still works from a terminal). Every week's rows stay on the tab, and each applied row is kept in the database as a judgement |
+| Monday 05:45 | The weekly hand-check: `hand_check_sample` companies (10 until you set 20) picked at random from those the coming send days would email, after today's own (so Monday's sending is never held up). Since 14 Oct nothing is held here for doubtful facts or an unclear industry: a company missing its HQ state, size or industry is left out by itself ("incomplete information"), as is one the AI cannot place in our industries, and a borderline size (near a band edge) goes ahead on Apollo's count. With `hand_check_gate` = no only the picked companies wait for you, for 7 days at most; with yes the week's new leads wait for the whole check. A check still open on Wednesday 09:00 posts one reminder. If the Monday draw fails, the 5-minute poll draws the week itself from 06:15; with the whole-day gate, a week that found no company ready at 05:45 is drawn again once one is | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed: say why in `reason`), or *wrong industry* with the right one in `right_label`; pick *no* in `contact_ok` or `opener_ok` when the person or the opening line is wrong. Each choice is applied within 5 minutes, and a change later is applied too (a leave out changed to fine puts the company back). A choice that cannot be applied says why in `note`. The check closes when every row is applied, or after 7 days; the Monday readout counts the decisions and any company sent unjudged (`handcheck approve` still works from a terminal). Every week's rows stay on the tab, and each applied row is kept in the database as a judgement |
 | Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
 | 09:00 Tue–Sat | The daily post, short since 9 Oct 2026, Tuesday to Saturday since 19 Oct 2026 (each covers the day before alone: Saturday's is Friday, Tuesday's is Monday; weekend replies are in the Monday readout): **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
-| 12:00 | Send cards: one per email, with the whole sequence in its thread | ✅ or ❌ each one by the end of the next send day. After that the card lapses and the company goes back to the queue. If a ✅ can't go through yet (sending stopped, a reply waiting too long), the card stays open with a note in its thread |
+| 12:00 | Enrol adds the day's leads to Instantly (no card since 20 Oct 2026) | Nothing |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
 | Around a blackout | "Paused N US Outbound campaigns for the blackout…" (the evening before, UK time), then "Started N … again after the blackout" | Nothing (see **Blackout dates** above). A "Left paused" line names what to run |
 
 ## The words and emojis
 
-Reply in the card's thread, or react to the card. Only an approver counts: `approver_slack_ids`,
+Reply in the reply card's thread, or react to the card. Only an approver counts: `approver_slack_ids`,
 and a mailbox's owner for replies to their own mailbox. The bot puts ✅ and ❌ on each card, so
 one click decides.
 
-| On a send card (12:00) | On a reply card | What it does |
-| :- | :- | :- |
-| ✅ or `send` (or `approve`) | ✅ or `send` (or `approve`) | Sends it. A send card's lead goes to Instantly within 5 minutes |
-| ❌ or `skip` (or `no`, `reject`, `don't send`) | ❌ or `skip` (or `no`, `reject`, `don't send`) | A send card offers the three choices below. A reply card is closed, and nothing is sent |
-| ✏️ (or `edit`), then a thread reply with the new email 1. Put "Subject: …" first, or "Email 2:" to change a follow-up | `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
-| — | `send: …` | Sends that text instead of the draft |
-| 👤 | — | Not this person: the next-ranked contact at the company is proposed later |
-| 🚫 | — | Drop the company for good |
-| `industry: Fintech` (any label on the Industries tab; any case, and a unique part of one, like `games`, will do) | — | The company is that, not what the card says: its label is set, kept on the Overrides tab, the card is withdrawn and a new card with that label's emails is posted at once (if it can't be, the next enrol proposes the company). Works whether you have ❌'d it or not. An unknown label gets the list of labels in the thread |
-
-Each send card's **Industry** line says how its label was checked (Harry, 7 Oct 2026; the label check):
-`rules and model agree · Fintech copy` is the normal case; `⚠️ … · the rules say X, the model says Y (medium) ·
-General copy` means they disagreed and the email is the safe General one; `⚠️ … · not checked by the model` is a
-card from before the check, or with `label_check` = `skip`. **They do** is what the model read the company does,
-with its quote. If either is wrong, reply `industry: <label>`.
+| On a reply card | What it does |
+| :- | :- |
+| ✅ or `send` (or `approve`) | Sends the draft |
+| ❌ or `skip` (or `no`, `reject`, `don't send`) | The card is closed, and nothing is sent |
+| `edit: …` | The edit is checked against the copy rules and posted again. ✅ on it sends it |
+| `send: …` | Sends that text instead of the draft |
 
 ## Mondays: the readout
 
@@ -139,9 +130,10 @@ to bottom:
    copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
    table, `us-outbound cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
    two versions, `us-outbound cohorts changes`.
-7. **Industry labels** (Harry, 7 Oct 2026): last week's and all cards with the right industry against the 95%
-   target ("met" or "not met", from 30 cards), the corrections approvers made (`Games studios → Technology &
-   Startups (2)`), how often the rules and the model agreed, and the companies held or left out. Many of one
+7. **Industry labels** (Harry, 7 Oct 2026): the corrections made by hand (`Games studios → Technology &
+   Startups (2)`), how often the rules and the model agreed, and the companies held or left out. How often a
+   label is right is the label sample's figure (`labels sample --score`), not this block's (the send cards'
+   "right N of N" went with them). Many of one
    correction means a definition or keywords on the Industries tab need a change; run `us-outbound labels eval
    --live` before and after.
 8. **Signal value:** the signals whose companies replied more or less than the companies without them, as
@@ -198,18 +190,15 @@ The sync checks the texts against the copy rules (no "!", American spelling, no 
 one, saying why. A text may use `{{first_name}}`, `{{company}}` and the other variables, but not
 `{{opener}}` or `{{legal_overlay}}`.
 
-- **Who gets which.** A company's version comes from a hash of the company, so it never changes: a card
-  posted again, an industry correction or a second contact at the company get the same one. It is
+- **Who gets which.** A company's version comes from a hash of the company, so it never changes: an
+  industry correction gets the same one. It is
   independent of the opener holdout and the personal-subject split, so those comparisons still hold.
 - **Where the change cannot be made** (a `replace` whose words are not in that company's Copy row; a
   `subject` test on email 1 for a company with the personal subject; or a change that would break a copy
   rule in that email, such as a line made too long by a long company name), the company is left out of the
-  test whichever version it hashed to, and gets the Copy row's email as it is. Its card says "Test:
-  warm-intro · not in the test (why)", and the enrol summary counts the reasons. `us-outbound test start`
+  test whichever version it hashed to, and gets the Copy row's email as it is. The enrol summary counts the
+  reasons. `us-outbound test start`
   says how many Copy rows the change fits. The warm intro fits every email 1.
-- **The card** shows the version's email, and its facts line ends "Test: warm-intro · warm intro". You
-  can edit it as any card: it keeps its version, and the read counts it there and says how many of each
-  version's emails were edited.
 - **Contacts already in flight keep their emails.** A test reaches only companies enrolled after it
   starts; when it stops (set `status` to `read` or `stopped`, then `us-outbound sync`), new companies get
   the Copy row as it is. Once a version has `accounts_per_version` companies, the rest get the Copy row as
@@ -294,7 +283,7 @@ ceilings keep that to 300 a run and 450 a week at a cap of 150.
 
 Each sender takes new contacts at a quarter of its daily cap, so the follow-ups on days 7, 14 and
 21 always fit. In week 1 the ramp holds each mailbox to 10 sends a day, which is about 3 new
-contacts a day per mailbox. Expect about **6 cards a day** with Hannah's and Sam's mailboxes, and
+contacts a day per mailbox. Expect about **6 new contacts a day** with Hannah's and Sam's mailboxes, and
 about **11** once Harry's two are warm. Volume grows as the ramp rises to 20 sends a day (about 5
 new contacts a mailbox) and then 30 (about 8). In the pilot, `weekly_enrol_cap` (150) is well
 above this.
@@ -312,18 +301,17 @@ paste, so the table below is a reference; the message itself says what to do. A 
 | :- | :- | :- |
 | "Credits and settings: … Apollo runs out in about D days…" (or "Apollo is below our reserve…") | 09:00 Tue–Sat with the daily post, Monday 08:30 with the readout; once a day, when the floor is under 21 days away at the last fortnight's pace, or Apollo is already under it (then sourcing and email reveals have stopped) | Buy Apollo credits, or lower `apollo_monthly_credits` on the General tab (below the floor: buy, or lower `apollo_floor`) |
 | "Apollo: … credits used this month (80%)", or "… are used" | 09:00, at 80% and at 100%, once a month each | At 100% sourcing and email reveals stop until the 1st. Raise `apollo_monthly_credits` on the General tab to allow more |
-| "Clay: … (80%)", or "… are used" | The same, for `clay_monthly_credits` (only while Clay is used) | Raise `clay_monthly_credits` |
 | "Claude: $X of the $50 monthly cap…" | 09:00, at 50%, 80% and 100%, once a month each (the month is UTC, as Anthropic counts it) | At the cap, replies come to you as "other" with no draft, copy QA stops, and new companies wait unverified for the industry label check (those already verified carry on). Raise `claude_monthly_cap_usd` on the General tab (up to $100) and the spend limit in the Anthropic Console |
 | "Apollo's website-visitor credits are running low…" | 09:00, once a month, under 15% left, while site visits are on | Buy more in Apollo, or the site-visit signals stop |
 | "Add N mailboxes now: a new mailbox takes about 3 weeks to warm up…" | Monday 08:30 (with the readout), once a week, when the Active mailboxes at full ramp take fewer new companies a week than `weekly_enrol_cap`, and enough companies are ready or coming to fill more | Buy the mailboxes, then `us-outbound mailbox add ADDRESS --owner "NAME" --live` for each. The same-day "Add a mailbox for …" line in the daily post stays |
-| "labels: N industry corrections since the last send day…" | 09:00, once a day, when you corrected 3 or more cards' industry, or 10% of at least 10 | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
-| "labels: the model put N of the M companies the rules labelled (P%) in another group or outside our labels…" | 09:00, once a day, when the model agreed on the group for under 70% of at least 20 companies the rules labelled (each counted once; the model naming a label within the rules' group, such as Publishers for Marketing & Creative Agencies, agrees) | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: `us-outbound labels crosswalk` says which, then trim them on the Industries tab |
+| "labels: N industry corrections since the last send day…" | 09:00, once a day, when 3 or more companies' industry was corrected by hand (the Hand-check tab, `labels set`) | The line names the moves (`Adtech & martech → Fintech (3)`): fix that label's `definition` or `apollo_keywords` on the Industries tab, `us-outbound labels eval --live`, then `us-outbound labels audit --live` |
+| "labels: the model put N of the M companies the rules labelled (P%) in another group or outside our labels…" | 09:00, once a day, when the model agreed on the group for under 70% of at least 20 companies the rules labelled (each counted once; the model naming a label within the rules' group, such as Publishers for Marketing & Creative Agencies, agrees) | The rules' NAICS codes or keywords for the group it names bring in the wrong companies: trim them on the Industries tab |
 | "labels: the rules gave no label to N of M companies checked…" | 09:00, once a day, when at least 20 companies and 30% of those checked had no rules label | The line names the model's commonest labels for them and their commonest NAICS codes (`541511 → Software & SaaS (9)`): add each code to that label's `naics_prefixes` on the Industries tab, then `us-outbound sync` and `us-outbound relabel --live` |
 | "The label check did not run (…); N companies wait unverified" | 09:00, once a day, while the model cannot be asked (the Claude cap, an error) | At the cap, raise `claude_monthly_cap_usd`; on an error, it usually clears itself next run. Verified companies carry on meanwhile. To run on the rules alone, set `label_check` to `skip` |
-| "Instantly's plan is full: nobody new is being emailed" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and a ✅ already given goes through once there is room (the card says it is held) |
+| "Instantly's plan is full: nobody new is being emailed" | When an add finds the plan full, once a day | Upgrade the Instantly plan, or delete leads that finished their sequence. Nobody is suppressed: the contacts wait, and the next enrol adds them once there is room |
 | "Instantly's plan has room for N more leads, under 2 weeks…" | After an add, once a week | The same, before it fills |
 | "Some automatic jobs ran into problems" | Hourly, once a day per job and kind | Usually nothing: each job tries again on its next run. If it keeps coming, `us-outbound status` and the worker's logs in Railway |
-| "HubSpot turned down our key" (or Apollo, Clay, Instantly, Slack, Google, Anthropic), inside "Some automatic jobs ran into problems" | Hourly, once a day per key | If the key was revoked: make a new one, replace the variable in the us-outbound service's **Variables**, then **Deploy**. If the key is current, check what the plan allows (Apollo answers 403 for a search its plan does not include) |
+| "HubSpot turned down our key" (or Apollo, Instantly, Slack, Google, Anthropic), inside "Some automatic jobs ran into problems" | Hourly, once a day per key | If the key was revoked: make a new one, replace the variable in the us-outbound service's **Variables**, then **Deploy**. If the key is current, check what the plan allows (Apollo answers 403 for a search its plan does not include) |
 | "The jobs have stopped… The settings sheet has errors on the … tab" (also "N automatic jobs have stopped running") | Hourly, once a day | Fix the sheet (the message shows the first errors and links the tab), then `us-outbound sync`. The worker also reads the sheet each time it starts |
 
 **If Slack itself is down or its token is revoked,** none of this can be posted. Healthchecks.io
@@ -346,30 +334,20 @@ docs/railway-setup.md, step h.
   were. Either wait until `us-outbound cohorts in-flight` shows none for that campaign and run
   `us-outbound campaigns ensure --fix --live`, or apply it to them too with
   `us-outbound campaigns ensure --fix --in-flight --live` (docs/developing-while-live.md).
-- **A card says "Not sent":** the re-check at your ✅ found the person or company can no longer be
-  emailed (an unsubscribe, a customer or open deal in HubSpot, a suppressed domain). Nothing was
-  sent and the card is closed; there is nothing to do. A card that is only *held* (sending stopped,
-  a reply waiting too long) stays open and your ✅ stands: the lead is added within 5 minutes of the
-  hold clearing, unless the card expires first.
-- **The daily post says a campaign is not active:** that sender gets no new cards until
+- **The daily post says a campaign is not active:** that sender gets no new leads until
   `us-outbound start --live` activates it. The 07:00 mailbox check activates a newly created
   campaign by itself once sending has gone live. A campaign Instantly shows as *completed* is fine:
   Instantly marks an active campaign completed whenever it has no lead left to email (straight after
   `start`, if it has none yet), and the next lead added resumes it.
-- **A card's industry is wrong** (a fulfilment firm pitched as a games studio): reply `industry: <label>`
-  in its thread (or `us-outbound approvals industry ID "<label>" --live`). The label is set and kept
-  on the Overrides tab, the card is withdrawn, and a new card with the right emails is posted in its
-  place; 🚫 if the company is no fit at all. For a company with no card,
-  `us-outbound labels set DOMAIN "<label>" --live`; `us-outbound labels show DOMAIN` gives its label's
-  history. Since 7 Oct the task model checks each company's label before it can get a card (the
-  label check, docs/pipeline.md stage 3), so this should be rare: the full daily post's **Labels** line
-  (`us-outbound daily --full`) counts the corrections, and an ask names them when there are several. `us-outbound relabel` shows what the rules and the stored checks change for
-  the companies in the queue; `--live` applies it and withdraws the open cards it changes. Government
-  domains (.gov, .mil) are never prospected.
-- **Start the waiting cards again:** `us-outbound approvals redo all --live` (or one card: `approvals redo
-  ID --live`) withdraws each waiting card and posts it again for the same person and sender, with the
-  company's label and emails as they are now (after a `labels audit --live`, say). A company that may no
-  longer be emailed is not posted again; one that cannot be made ready now goes back to the queue.
+- **A company's industry is wrong** (a fulfilment firm pitched as a games studio): pick *wrong industry*
+  with the right one in `right_label` on the Hand-check tab, or `us-outbound labels set DOMAIN "<label>"
+  --live`. The label is set and kept on the Overrides tab, and the company's next emails are that label's;
+  contacts already in flight keep theirs. `us-outbound labels show DOMAIN` gives its label's history. Since
+  7 Oct the task model checks each company's label before it is verified (the label check, docs/pipeline.md
+  stage 3), so this should be rare: the full daily post's **Labels** line (`us-outbound daily --full`) counts
+  the corrections, and an ask names them when there are several. `us-outbound relabel` shows what the rules
+  and the stored checks change for the companies in the queue; `--live` applies it. Government domains (.gov,
+  .mil) are never prospected.
 - **A missed-heartbeat alert:** a job has not run when it should have. `us-outbound status` lists
   the jobs that failed or missed, with the error. The worker's logs are in Railway.
 - **Someone asks to be forgotten, or Apollo sends a deletion notice:** within 30 days,
@@ -510,20 +488,17 @@ commands instead.
 
 | Command | What it does |
 | :- | :- |
-| `status` | The switches, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number |
+| `status` | `live_sending`, when the settings were synced, what waits for you, the jobs that need a look, what retention last deleted, mailboxes, today's number, and the go-live checks: Copy, Campaigns, Watchdog |
 | `daily`, `daily --full` | The daily post as it would read now, short or in full; it posts nothing |
-| `golive` | The read-only go/no-go check |
 | `accounts`, `accounts DOMAIN`, `accounts --csv` | The companies and contacts we hold: a summary and the list, one company in full, or a spreadsheet. Read-only |
 | `sync` | Brings sheet edits into force now |
 | `start --live` | Syncs, then resumes the campaigns and enrollment |
 | `stop --live` | The brake |
 | `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
-| `approvals list`, `approvals send ID --live` (or `contact ID`, `company ID`, `industry ID "Fintech"`) | Send cards without Slack |
-| `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as `industry: Fintech` on a card does), or show its label and its check history |
+| `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as *wrong industry* on the Hand-check tab does), or show its label and its check history |
 | `labels audit`, then `labels audit --live` | The label check for the whole queue now, rather than about 150 companies a weekday: the dry run says how many, what it costs at most (about $0.01 each) and shows a prompt; `--live` first reads the home page of each company whose label the page could settle: never checked, the model unsure, or a label the model gave without the rules agreeing (public pages, no paid service), and asks about those again with it. A label the model gives alone gets its own copy only once the model has read the page; until then the company gets its group's copy, then asks, decides, lists where the rules and the model differ, and withdraws the cards that no longer fit |
-| `labels crosswalk`, `labels crosswalk --live` | How well the Industries tab translates Apollo's industry, NAICS codes and keyword tags into labels, measured on the companies whose label is known (your corrections, and the model's sure verdicts). It prints the translations that are mostly wrong ("naics 541613 → Marketing & Creative Agencies: 5 companies, 0% right; poor: mostly Adtech & martech"), those that place the group but not the label, and Apollo values the tab does not translate but could. `--live` also writes every row to a Crosswalk tab on the settings sheet. It asks no model and spends nothing |
 | `labels sample --live`, then `labels sample --score` | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed (`--size` for more), added to the Label sample tab as this month's batch, under the rows already there, with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); `--score` prints the share right with a 95% interval, how many emails would have carried a pitch that is not true, and, where the right label is known, how often our label, the rules and the model each had it. Judged rows are never redrawn. It asks no model and spends nothing |
-| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies approvers corrected, `--from-sample` the companies judged on the Label sample tab, about $0.01 each). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
+| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies corrected by hand, `--from-sample` the companies judged on the Label sample tab, about $0.01 each). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |

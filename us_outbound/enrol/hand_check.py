@@ -42,8 +42,9 @@ writes one hand_check judgement fact per row (judged, tally). What waits for him
     HOLD_DAYS (7) from the draw (held); then they are released and the Monday readout lists them as unjudged, sent.
     Everyone else is emailed as usual. On 15 Oct the whole-day gate cost about 21 leads behind an error that fired
     208 times (code-approvals-handcheck-copy B6);
-  * yes (the default until the sheet says no: SPEC 11 as built): with auto_send = yes enrol waits until every
-    hand_check item of the ISO week is handled (enrol.hand_check), as before.
+  * yes (the default until the sheet says no: SPEC 11 as built): enrol waits until every hand_check item of the
+    ISO week is handled (enrol.hand_check), as before. (Until W2-1 that was with General auto_send = yes, as the live
+    sheet had it; with auto_send = no each email waited for its own send approval instead.)
 Either way a week closes once every sampled row has an applied decision (or its company is no longer on file), or 7
 days after the draw (close); a week still open at Wednesday 09:00 UK posts one reminder (remind).
 
@@ -208,7 +209,7 @@ def opener_for(ctx: Context, account: Mapping[str, Any], contact: Mapping[str, A
         return render.pick_opener(text, sender_is_harry=False, demo_host=ctx.settings.general.demo_host,
                                   exempt=exempt)[1]
 
-    return openers.for_account(ctx, account, contact, events, check=check, spend=False)
+    return openers.for_account(ctx, account, contact, events, check=check)
 
 
 def facts(ctx: Context, account: Mapping[str, Any], domains: set[str], hashes: set[str]) -> dict[str, Any]:
@@ -297,24 +298,18 @@ def _accounts(n: int) -> str:
 
 
 def gates(ctx: Context) -> bool:
-    """Whether the hand-check holds the whole day's enrolment: hand_check_gate = yes, with auto_send = yes (with no,
-    every email is approved in Slack and enrol never waited for it)."""
-    g = ctx.settings.general
-    return g.hand_check_gate and g.auto_send
+    """Whether the hand-check holds the whole day's enrolment: hand_check_gate = yes."""
+    return ctx.settings.general.hand_check_gate
 
 
-WHOLE_DAY, SAMPLE_ONLY, NOTHING_WAITS = "whole day", "sample only", "nothing"
+WHOLE_DAY, SAMPLE_ONLY = "whole day", "sample only"
 
 
 def holds(ctx: Context) -> str:
     """What waits for the check, as enrol.hand_check has it, for the notice and the reminder to say: WHOLE_DAY while it
-    gates() the day; SAMPLE_ONLY with hand_check_gate = no (held: the sampled companies, for HOLD_DAYS at most); and
-    NOTHING_WAITS with hand_check_gate = yes and auto_send = no, where enrol neither waits nor holds (every email is
-    approved in Slack). Keyed on gates() alone, that last mode said the sample waited when nothing did (the W1-5 review,
-    round 2)."""
-    if gates(ctx):
-        return WHOLE_DAY
-    return SAMPLE_ONLY if not ctx.settings.general.hand_check_gate else NOTHING_WAITS
+    gates() the day; SAMPLE_ONLY with hand_check_gate = no (held: the sampled companies, for HOLD_DAYS at most). (A
+    third mode, nothing waits, was for auto_send = no, and went with it: W2-1.)"""
+    return WHOLE_DAY if gates(ctx) else SAMPLE_ONLY
 
 
 def slack_text(ctx: Context, payload: Mapping[str, Any], tab_rows: Sequence[Mapping[str, Any]]) -> str:
@@ -350,9 +345,7 @@ def slack_text(ctx: Context, payload: Mapping[str, Any], tab_rows: Sequence[Mapp
         why={WHOLE_DAY: f"until every {'company picked at random' if drawn else 'row'} has a decision, no new leads go "
                         "to Instantly this week.",
              SAMPLE_ONLY: f"only these companies wait for you, for {HOLD_DAYS} days at most; everyone else is emailed "
-                          "as usual.",
-             NOTHING_WAITS: "it holds up no email (each one is approved in Slack): the decisions measure how often the "
-                            "companies about to be emailed are the right ones."}[mode])
+                          "as usual."}[mode])
 
 
 def lines(payload: Mapping[str, Any]) -> list[str]:
@@ -500,9 +493,8 @@ def remind(ctx: Context, item: Mapping[str, Any], waiting: int) -> dict | None:
         do=f"Pick a `decision` on {'its row' if waiting == 1 else 'each of their rows'} on the "
            f"{say.sheet_link(ctx, tab.TAB)}.",
         why={WHOLE_DAY: "no new leads go to Instantly this week until every row has one.",
-             SAMPLE_ONLY: f"those companies wait for it, for {HOLD_DAYS} days from Monday at most; sending does not.",
-             NOTHING_WAITS: "it holds up no email; the decisions are the week's measure of whether the right companies "
-                            "are emailed."}[holds(ctx)])
+             SAMPLE_ONLY: f"those companies wait for it, for {HOLD_DAYS} days from Monday at most; sending does not."}[
+            holds(ctx)])
     sent = notify.alert(ctx, notify.mention(ctx) + text)
     payload["reminded_at"] = ctx.now.isoformat()
     ctx.store.upsert("hitl_items", [{"item_id": item["item_id"], "payload": payload}])

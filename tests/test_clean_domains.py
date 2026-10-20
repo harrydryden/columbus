@@ -8,7 +8,6 @@ import pytest
 
 from us_outbound.clean.domains import (
     canonical_domain,
-    follow_redirect,
     is_generic_mailbox,
     is_personal_domain,
     record_alias,
@@ -115,56 +114,6 @@ def test_is_personal_domain(domain, personal):
 )
 def test_is_generic_mailbox(local, generic):
     assert is_generic_mailbox(local) is generic
-
-
-class Resolver:
-    def __init__(self, result):
-        self.result, self.calls = result, []
-
-    def __call__(self, url):
-        self.calls.append(url)
-        return self.result(url) if callable(self.result) else self.result
-
-
-def test_follow_redirect_to_a_new_root_returns_the_old_one_as_alias():
-    r = Resolver("https://www.newname.com/")
-    assert follow_redirect("oldname.com", r) == ("newname.com", "oldname.com")
-    assert r.calls == ["https://oldname.com"]
-
-
-@pytest.mark.parametrize(
-    "target",
-    [
-        "https://www.acme.com/home",  # same root
-        "https://acme.com",  # no redirect: the resolver returns the URL itself
-        "",
-        None,
-        "https://www.godaddy.com/forsale/acme.com",  # parked
-        "https://www.facebook.com/acmeco",  # social profile
-        "https://acme.wixsite.com/acme",  # a hosted site: the company's own domain stays the root
-        "https://acme.github.io/",
-        "https://mail.google.com",  # never adopt a big platform
-        "https://1.2.3.4/",
-    ],
-)
-def test_follow_redirect_without_a_new_root(target):
-    r = Resolver(target)
-    assert follow_redirect("acme.com", r) == ("acme.com", None)
-    assert len(r.calls) == 1
-
-
-def test_follow_redirect_ignores_personal_domain_targets():
-    assert follow_redirect("acme.com", Resolver("https://gmail.com")) == ("acme.com", None)
-
-
-def test_follow_redirect_keeps_the_given_host_and_skips_invalid_domains():
-    r = Resolver(lambda url: url)
-    assert follow_redirect("https://www.Acme.com/about", r) == ("acme.com", None)
-    assert r.calls == ["https://www.acme.com"]
-    bad = Resolver("https://acme.com")
-    assert follow_redirect("1.2.3.4", bad) == (None, None)
-    assert follow_redirect("", bad) == (None, None)
-    assert bad.calls == []
 
 
 @pytest.fixture

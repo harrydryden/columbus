@@ -185,7 +185,7 @@ def contacts_in_order(contacts: Sequence[Mapping[str, Any]], account: Mapping[st
 
 def _ready(ctx: Context) -> int:
     """How many contacts enrol could email today: verified, with a sendable contact, leaving out this week's
-    hand-check pulls and the companies whose send approval still waits (enrol/today.py, as every count of it)."""
+    hand-check pulls (enrol/today.py, as every count of it)."""
     from us_outbound.enrol import today
 
     return today.read(ctx, campaigns=False).ready_count
@@ -214,7 +214,7 @@ def summary(ctx: Context, stored: Stored) -> list[str]:
         f"  By status: {_counts(statuses, STATUSES, 'no status')}",
         f"  By tier: {_counts(tiers, TIERS, 'not scored yet')}",
         f"Contacts: {stored.contact_count}",
-        f"  With an email: {len(emails)} (by source: {_counts(sources, ('apollo', 'clay'), 'unknown')})",
+        f"  With an email: {len(emails)} (by source: {_counts(sources, ('apollo',), 'unknown')})",
         f"  Suppressed: {sum(1 for c in every if c.get('suppressed'))}",
         f"  Enrolled: {sum(1 for c in every if c.get('enrolled_at') is not None)}",
         f"Ready to email: {ready}",
@@ -311,8 +311,6 @@ def _newest(rows: Iterable[Mapping[str, Any]], column: str) -> list[dict]:
 
 def _ready_for(ctx: Context, account: Mapping[str, Any], contacts: Sequence[Mapping[str, Any]]) -> str:
     """Whether enrol could email this company today, and through whom; or why not (enrol.eligible)."""
-    from us_outbound.enrol import approvals
-
     status, tier = _text(account.get("status")), _text(account.get("tier"))
     if status != "verified":
         return f"no: enrol takes verified companies, and this one is {status or 'without a status'}"
@@ -324,7 +322,7 @@ def _ready_for(ctx: Context, account: Mapping[str, Any], contacts: Sequence[Mapp
         hashes = [*(hash_email(e) for e in emails if "@" in e), *(_text(c.get("email_sha256")) for c in contacts)]
         _, pulled = enrol.hand_check(ctx, ctx.now_et().date())
         g = enrol.gates(ctx, pulled, enrol.suppressed_for(ctx, domains, hashes))
-        contact, why = enrol.eligible(account, contacts, g, approvals.waiting(ctx).accounts)
+        contact, why = enrol.eligible(account, contacts, g)
     except Exception as exc:  # the rest of the view still prints
         return _failed(exc)
     if contact is None:
@@ -448,8 +446,6 @@ def company(ctx: Context, given: str) -> tuple[bool, list[str]]:
         f"  Ids: account {aid} · Apollo {_text(a.get('apollo_org_id')) or '-'} · "
         f"HubSpot {_text(a.get('hubspot_company_id')) or '-'}",
     ]
-    if a.get("clay_checked_at"):
-        lines.append(f"  Clay checked: {_time(a['clay_checked_at'])}")
     try:
         lines.append(f"  Domain suppressed: {_domain_suppression(ctx, domain)}")
     except Exception as exc:  # the rest of the view still prints

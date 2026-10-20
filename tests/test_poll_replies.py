@@ -425,28 +425,22 @@ def test_out_of_office_records_the_return_date_and_engages_nobody(world):
     [row] = world.items("out_of_office")
     assert row["status"] == "handled" and row["handled_by"] == "poll_replies"
     assert row["payload"]["ooo_return_date"] == "2026-11-02"
-    retime = row["payload"]["retime"]
-    assert retime["status"] == "noted" and "LEAD_PAUSE_CONFIRMED" in retime["note"]
-    assert retime["resume_on"] == "2026-11-04"  # two send days after Monday 2 November
+    assert "retime" not in row["payload"]  # the re-timing, never confirmed, went with W2-1
     assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "enrolled"
     assert world.events("replied")[0]["reply_class"] == "out_of_office"
     assert world.lead_patches == [] and out["classified"] == {"out_of_office": 1}
 
 
-def test_out_of_office_pauses_and_resumes_the_lead_once_phase0_confirms(world, monkeypatch):
-    monkeypatch.setattr(instantly_client, "LEAD_PAUSE_CONFIRMED", True)
+def test_out_of_office_never_pauses_or_resumes_the_lead(world):
+    """The re-timing (pause the lead, set it going two send days after the return date) waited for phase 0 to confirm
+    Instantly's lead pause, which never came, and went with W2-1: an out-of-office reply changes no lead, and a later
+    run sets none going."""
     world.sdk.answer = classification("out_of_office", ooo_return_date="2026-11-02")
     world.reply("E1", text="Out until 2 November.")
-    run(world)
-    assert world.lead_patches == [("L-jane", {"status": 2})]
-    assert world.items("out_of_office")[0]["payload"]["retime"]["status"] == "paused"
-    world.at(NOW + timedelta(days=3))  # Fri 30 Oct: not yet
-    run(world)
-    assert len(world.lead_patches) == 1
-    world.at(NOW + timedelta(days=8))  # Wed 4 Nov
     out = run(world)
-    assert world.lead_patches[-1] == ("L-jane", {"status": 1}) and out["ooo_resumed"] == 1
-    assert world.items("out_of_office")[0]["payload"]["retime"]["status"] == "resumed"
+    world.at(NOW + timedelta(days=8))  # Wed 4 Nov, past the return date
+    later = run(world)
+    assert world.lead_patches == [] and "ooo_paused" not in out and "ooo_resumed" not in later
 
 
 def test_out_of_office_does_not_hold_back_capacity(world):

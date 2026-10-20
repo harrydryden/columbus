@@ -126,17 +126,15 @@ FIRST_TEST = ABTest("t1-agencies", "A shorter email 1 beats the first", "agencie
 BLACKOUTS = (DateRange(date(2026, 11, 23), date(2026, 11, 27)), DateRange(date(2026, 12, 18), date(2027, 1, 4)))
 
 
-def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(), named_accounts=(),
+def make_settings(*, mailboxes=MAILBOXES, copy=COPY, tests=(), overrides=(), focus=(),
                   industries=INDUSTRIES, **general) -> Settings:
     g = General(
-        hubspot_owner_id="owner-harry",
-        clay_monthly_credits=2000.0, clay_credits_per_account=5.0, blackout_dates=BLACKOUTS,
+        hubspot_owner_id="owner-harry", blackout_dates=BLACKOUTS,
         email1_subject_share=0.0,  # every email 1 keeps the Copy row's subject; the split's tests opt in
     )
     return Settings(
         general=dataclasses.replace(g, **general), angles=ANGLES, industries=tuple(industries), copy=tuple(copy),
         mailboxes=tuple(mailboxes), tests=tuple(tests), overrides=tuple(overrides), focus=tuple(focus),
-        named_accounts=tuple(named_accounts),
     )
 
 
@@ -341,11 +339,10 @@ def test_signature_on_every_email_and_no_data_notice():
 
 
 def test_the_data_record_names_only_the_data_providers_in_use():
-    # Clay is skipped until its functions exist (clay_verification), so the record names Apollo alone.
+    # Clay never ran and was removed (W2-1), so the record names Apollo alone, as it did on every contact so far.
     assert render.data_record(make_settings()) == {
         "contact_data": "Apollo", "company_information": "the company's public website",
         "lawful_basis": "legitimate interests: telling businesses about Spill", "shown_in_email": False}
-    assert render.data_record(make_settings(clay_verification="required"))["contact_data"] == "Apollo and Clay"
 
 
 # -- two links an email (Harry, 6 Oct 2026) ------------------------------------------------------------

@@ -34,48 +34,21 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      contact yet. Otherwise the next candidate, at most MAX_REVEALS per account.
   6. Write: one contact per account (v1); or, when nobody suitable exists, a contact_pick fact
      saying why, which limits.py reports as "no suitable contact".
-  7. Second contacts (General second_contact, no by default; enrol/second.py; Harry, 6 Oct 2026):
-     after the first contacts, and only with what they leave of the lookahead, enrolled accounts of
-     second_contact_min_employees or more staff whose second contact is due within the next two send
-     days get the same search, ranking, checks and reveals, leaving out people of the first contact's
-     copy role. Their reveals count against the Apollo budget like any; their contact_pick fact has
-     slot 2.
-
 Every reveal and every outcome is a signal_events fact with source pick_contacts (no names or
 emails), so nobody is paid for twice. SOURCE is not a SPEC 7 source key, so no Signals row can
 score these facts.
 
 Dry-run and live are the same: the job writes only to the database and its Apollo calls are
-reads, which the guard allows in dry-run, so reveals spend credits in both, within the budget
-(as verify_in_clay spends Clay's). The scheduler runs it without --live.
+reads, which the guard allows in dry-run, so reveals spend credits in both, within the budget.
+The scheduler runs it without --live.
 
 A kill rule pausing the apollo email source (base/holds.paused_sources: Apollo's addresses bounced;
 learn/kill_rules.py) stops the run before any search, reveal or credit, and the run's summary and so its
-heartbeat say why (apollo_paused; Harry, 7 Oct 2026), as the clay source's pause stops Clay's lookups
-(clay_room). Clay alone is not used meanwhile, even with clay_email_fallback = yes and the clay source not
-paused: Clay is the fallback for Apollo's misses and catch-alls (Harry, 2 Oct 2026: Clay narrowed to that),
-looked up only after an Apollo reveal, and making it the main source while Harry checks why Apollo's addresses
-bounced would spend Clay's credits at a rate nobody chose. Contacts already found stay ready, and enrol still
-takes those whose source is not paused. `us-outbound killrules clear ITEM_ID --live` lifts the pause.
+heartbeat say why (apollo_paused; Harry, 7 Oct 2026). Contacts already found stay ready, and enrol still takes those
+whose source is not paused. `us-outbound killrules clear ITEM_ID --live` lifts the pause.
 
-The Clay email waterfall (SPEC 9: "misses and catch-alls go to the Clay Contacts function";
-Harry, 2 Oct 2026: Clay narrowed to this), behind General clay_email_fallback (default no, as
-Clay's server-callable path is unconfirmed: clients/clay.py, docs/phase0-facts.md). When it is
-yes and Apollo's reveal of a candidate gave no email or one Apollo doesn't call verified (a miss,
-or a catch-all), that person is looked up in Clay once: the "US Outbound – Contacts" function
-when clay_contacts_function_id is set (SPEC 8's inputs: full_name, domain, linkedin_url, title),
-otherwise the workspace's Work Email function as it is (its own inputs: Full Name, Company Domain,
-Social Profile URL, Company Name; clients/clay.WORK_EMAIL_INPUTS; it charges only when it finds an
-email). At most one lookup an account and CLAY_LOOKUPS_PER_RUN a run, each within today's share
-of clay_monthly_credits (budget.py; credit_ledger, reserved before the call and settled after it),
-none while a kill rule pauses the clay source (base/holds.paused_sources) or the Clay API key is
-not set, and none for the rest of the run once CLAY_MAX_ERRORS lookups have failed (a wrong key or
-a function without "API & CLI" would otherwise spend every lookup's reserve). Only a "valid"
-result is used: catch_all_valid waits for pipeline change 8 (whether a catch-all is sendable with
-Instantly's risky contacts off), and the bounce kill rule pauses the clay source on its own if its
-addresses bounce. The contact is kept by the same checks as Apollo's, with email_source = clay;
-the lookup is a contact_clay fact. `us-outbound clay check-email` makes one Work Email lookup by
-hand, to confirm all this before clay_email_fallback goes on (ops/clay_check.py).
+Clay's email waterfall (Apollo's misses looked up in Clay, behind General clay_email_fallback, which was never
+switched on) and second contacts (General second_contact) were removed with W2-1 (20 Oct 2026; Harry's D18).
 """
 
 from __future__ import annotations
@@ -92,18 +65,11 @@ from us_outbound.base import holds
 from us_outbound.clean.domains import canonical_domain
 from us_outbound.clean.people import SENIORITY, Ranked, clean_person_name, company_size, rank_person, state_code
 from us_outbound.clients.apollo import credits_left, people_in, while_full_page
-from us_outbound.clients.clay import (
-    WORK_EMAIL_FUNCTION_ID,
-    ClayError,
-    parse_contacts_output,
-    parse_work_email_output,
-    work_email_inputs,
-)
 from us_outbound.clients.db import Store, new_id
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.clients.http import ApiError
-from us_outbound.context import ConfigError, Context
-from us_outbound.enrol import enrol, queue, second
+from us_outbound.context import Context
+from us_outbound.enrol import enrol, queue
 from us_outbound.facts import newest_by
 from us_outbound.logs import hash_email, log
 from us_outbound.settings.model import Role, Settings
@@ -131,16 +97,6 @@ MAX_ERRORS = 3  # Apollo errors before the batch stops
 LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
 LEDGER_NOTE = "email reveal (people/bulk_match)"
-# The Clay email waterfall (Harry, 2 Oct 2026).
-CLAY_SOURCE = "clay"  # contacts.email_source, and the kill rules' source (learn/kill_rules.py SOURCES)
-CLAY_FACT = "contact_clay"  # one per Clay lookup: who, the status, kept or why not
-# PHASE0-CONFIRM: what one Work Email lookup costs. Reserved before the call, settled at what Clay reports
-# (credits_used), or this when it found an email and reported nothing, or 0 when it found none.
-CLAY_RESERVE = 2.0
-CLAY_ACCEPTED = frozenset({"valid"})  # catch_all_valid waits for pipeline change 8
-CLAY_LOOKUPS_PER_RUN = 25  # each lookup polls Clay until it finishes, inside the job's 60 minutes
-CLAY_MAX_ERRORS = 3  # failed lookups before the run stops asking Clay
-CLAY_LEDGER_NOTE = "email waterfall (Clay)"
 
 # api_search reads "United States" in person_locations as the whole country, and honours
 # contact_email_status: confirmed live 2 Oct 2026 (CA and WA people came back, and every reveal was
@@ -431,12 +387,9 @@ def full_search_is_fresh(ctx: Context, account_id: str) -> bool:
 
 def rank_candidates(
     people: Sequence[Mapping[str, Any]], account: Mapping[str, Any], settings: Settings, today: date,
-    revealed: Container[str] = frozenset(), exclude_roles: Container[str] = frozenset(),
+    revealed: Container[str] = frozenset(),
 ) -> tuple[list[Candidate], Counter[str]]:
-    """(the people who may be contacted, best first; how many were left out and why).
-
-    exclude_roles: copy roles (lower case) left out, for a second contact: the first contact's (enrol/second.py).
-    """
+    """(the people who may be contacted, best first; how many were left out and why)."""
     size, group = account_size(account), settings.industry_group_of(account)
     out: list[Candidate] = []
     left_out: Counter[str] = Counter()
@@ -451,9 +404,6 @@ def rank_candidates(
         r = rank_person(p.get("title"), settings.roles, size, group, days_in_role(p, today))
         if r is None:
             left_out["title not contacted at this size"] += 1
-            continue
-        if r.role.writes_as.strip().lower() in exclude_roles:
-            left_out["the first contact's role"] += 1
             continue
         out.append(Candidate(dict(p), r))
     out.sort(key=lambda c: (c.ranked.key, c.id))
@@ -478,28 +428,6 @@ class _Run:
     no_contact_accounts: list[dict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     stopped: str | None = None
-    # The Clay email waterfall: why it is not used this run (None: it is), and what it did.
-    clay_off: str | None = "clay_email_fallback is no"
-    clay_left: float = 0.0  # what today may still spend of the month's Clay budget, less this run's lookups
-    clay_lookups: int = 0
-    clay_found: int = 0
-    clay_credits: float = 0.0
-    clay_errors: int = 0
-
-    def why_not_clay(self) -> str | None:
-        if self.clay_off:
-            return self.clay_off
-        if self.clay_lookups >= CLAY_LOOKUPS_PER_RUN:
-            return f"this run's {CLAY_LOOKUPS_PER_RUN} Clay lookups are made"
-        if self.clay_left < CLAY_RESERVE:
-            return "today's share of the month's Clay budget is used"
-        return None
-
-    def clay_spend(self, credits: float) -> None:
-        self.clay_lookups += 1
-        self.clay_credits += credits
-        self.clay_left -= credits
-
     def why_not_reveal(self) -> str | None:
         if self.left < REVEAL_CREDITS:
             return "today's share of the month's Apollo budget is used"
@@ -581,74 +509,6 @@ def why_not_keep(
     return None
 
 
-def wants_clay(row: Mapping[str, Any] | None, why: str | None) -> bool:
-    """Apollo's reveal missed (no match, no email) or gave an email it doesn't call verified (a catch-all)."""
-    return row is None or not row.get("email") or bool(why and why.startswith("email status"))
-
-
-def clay_inputs(account: Mapping[str, Any], cand: Candidate, match: Mapping[str, Any] | None) -> dict | None:
-    """SPEC 8's Contacts inputs (full_name, domain, linkedin_url, title); None without a full name or a LinkedIn URL.
-
-    Work Email takes its own names for them (as_work_email)."""
-    m = match or {}
-    first = str(m.get("first_name") or cand.person.get("first_name") or "").strip()
-    last = str(m.get("last_name") or cand.person.get("last_name") or "").strip()
-    linkedin = str(m.get("linkedin_url") or cand.person.get("linkedin_url") or "").strip()
-    if not ((first and last) or linkedin):
-        return None
-    return {"full_name": " ".join(x for x in (first, last) if x) or None, "domain": _lower(account.get("domain")),
-            "linkedin_url": linkedin or None, "title": str(m.get("title") or cand.person.get("title") or "") or None}
-
-
-def as_work_email(inputs: Mapping[str, Any], account: Mapping[str, Any]) -> dict[str, str]:
-    """SPEC 8's Contacts inputs under Work Email's own names, with the company's name; Work Email takes no title."""
-    return work_email_inputs(inputs.get("full_name"), inputs.get("domain"), inputs.get("linkedin_url"),
-                             company_name=str(account.get("clean_name") or "") or None)
-
-
-def clay_lookup(ctx: Context, account: Mapping[str, Any], cand: Candidate, match: Mapping[str, Any] | None,
-                batch: _Run) -> tuple[dict | None, str | None, dict]:
-    """(the contacts row from Clay's waterfall, or None; why not; the lookup's fact value). Recorded in credit_ledger first.
-
-    The "US Outbound – Contacts" function, once built, takes SPEC 8's inputs as they are; Work Email takes its
-    own names for them (as_work_email). PHASE0-CONFIRM: those names, through the Routines API.
-    """
-    g = ctx.settings.general
-    inputs = clay_inputs(account, cand, match)
-    value: dict[str, Any] = {"apollo_person_id": cand.id, "row": cand.ranked.role.role, "status": None, "kept": False,
-                             "credits": 0.0}
-    if inputs is None:
-        return None, "no full name or LinkedIn URL to look up in Clay", {**value, "reason": "nothing to look up"}
-    function = g.clay_contacts_function_id or WORK_EMAIL_FUNCTION_ID
-    if not g.clay_contacts_function_id:
-        inputs = as_work_email(inputs, account)
-    with ledger.charge(ctx, "clay", JOB, CLAY_RESERVE, note=f"{CLAY_LEDGER_NOTE}, reserved",
-                       account_id=account["account_id"]) as paid:
-        try:
-            out = ctx.clients.clay.run_function(function, inputs)
-            got = parse_contacts_output(out) if g.clay_contacts_function_id else parse_work_email_output(out)
-        except (ApiError, ClayError) as exc:
-            batch.clay_spend(paid.keep(note=f"{CLAY_LEDGER_NOTE} failed; counted in case Clay charged it"))
-            why = f"Clay lookup failed ({type(exc).__name__})"
-            batch.clay_errors += 1
-            log("pick_contacts_clay_error", account_id=account["account_id"], error=str(exc)[:200])
-            if batch.clay_errors >= CLAY_MAX_ERRORS:
-                batch.clay_off = f"{CLAY_MAX_ERRORS} Clay lookups failed this run (the last: {str(exc)[:200]})"
-            return None, why, {**value, "credits": CLAY_RESERVE, "reason": why}
-        credits = got["credits_used"]
-        if credits is None:
-            credits = CLAY_RESERVE if got["email"] else 0.0
-        paid.settle(credits, note=CLAY_LEDGER_NOTE)
-    batch.clay_spend(credits)
-    value.update(status=got["status"], credits=credits, provider=got.get("provider"))
-    if got["status"] not in CLAY_ACCEPTED or not got["email"]:
-        return None, f"Clay email status {got['status']}", value
-    person = {**cand.person, **(match or {})}
-    row = contact_row(ctx, account, cand, {**person, "email": got["email"], "email_status": got["status"]})
-    row["email_source"] = CLAY_SOURCE
-    return row, None, value
-
-
 def _reveal_value(cand: Candidate, row: Mapping[str, Any] | None, credits: float, why: str | None) -> dict:
     return {
         "apollo_person_id": cand.id, "row": cand.ranked.role.role, "role": cand.ranked.role.writes_as,
@@ -675,10 +535,9 @@ def _most(c: Counter[str]) -> str:
 
 def pick_account(
     ctx: Context, account: Mapping[str, Any], batch: _Run, revealed: Container[str],
-    domains: set[str], hashes: set[str], known: set[str], exclude_roles: Container[str] = frozenset(),
+    domains: set[str], hashes: set[str], known: set[str],
 ) -> Outcome:
-    """Search, rank and reveal for one account; writes the contact and the reveal facts. exclude_roles: for a
-    second contact, the first contact's copy role (rank_candidates)."""
+    """Search, rank and reveal for one account; writes the contact and the reveal facts."""
     s = ctx.settings
     size = account_size(account)
     if size is None:
@@ -695,12 +554,11 @@ def pick_account(
     if not people:
         return Outcome(NO_CONTACT, "nobody at Apollo with a Roles-tab title for its size, in the US, with a verified email",
                        detail={"found": 0})
-    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed, exclude_roles)
+    cands, left_out = rank_candidates(people, account, s, ctx.today_uk(), revealed)
     detail: dict[str, Any] = {"found": len(people), "candidates": len(cands), "left_out": dict(left_out)}
     if not cands:
         return Outcome(NO_CONTACT, f"nobody suitable ({_most(left_out)})", detail=detail)
     rejected: Counter[str] = Counter()
-    clay_tried = False
     for cand in cands[:MAX_REVEALS]:
         stop = batch.why_not_reveal()
         if stop:
@@ -715,21 +573,6 @@ def pick_account(
             ctx.store.insert("contacts", [row])
             known.add(row["email_sha256"])
             return Outcome(PICKED, contact=row, candidate=cand, detail={**detail, "reveals": sum(rejected.values()) + 1})
-        if not clay_tried and wants_clay(row, why) and batch.why_not_clay() is None:
-            clay_tried = True
-            clay_row, clay_why, value = clay_lookup(ctx, account, cand, match, batch)
-            if clay_row is not None:
-                person = {**cand.person, **(match or {})}
-                clay_why = why_not_keep(ctx, account, clay_row, person, domains, hashes, known, CLAY_ACCEPTED)
-            value.update(kept=clay_why is None, reason=clay_why)
-            ctx.store.insert("signal_events", [_fact(account["account_id"], CLAY_FACT, value, ctx.now)])
-            if clay_row is not None and clay_why is None:
-                ctx.store.insert("contacts", [clay_row])
-                known.add(clay_row["email_sha256"])
-                batch.clay_found += 1
-                return Outcome(PICKED, contact=clay_row, candidate=cand,
-                               detail={**detail, "reveals": sum(rejected.values()) + 1, "clay": True})
-            why = f"{why}; Clay: {clay_why}"
         rejected[why] += 1
     detail["reveals"] = sum(rejected.values())
     reasons = ", ".join(f"{why} ({n})" if n > 1 else why for why, n in rejected.items())
@@ -739,21 +582,18 @@ def pick_account(
 # -- the job --------------------------------------------------------------------------------------
 
 
-def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run, slot: int = 1) -> None:
+def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run) -> None:
     aid = account["account_id"]
     value = {"outcome": out.outcome, "reason": out.reason, **out.detail}
-    if slot != 1:
-        value["slot"] = slot  # a second contact (enrol/second.py)
     if out.outcome == PICKED and out.contact and out.candidate:
         value.update(contact_id=out.contact["contact_id"], row=out.candidate.ranked.role.role,
                      role=out.contact["role"], seniority=SENIORITY[out.candidate.ranked.seniority],
                      apollo_person_id=out.candidate.id,  # the opener knows when the contact is the new leader
                      email_source=out.contact["email_source"])
         batch.picked.append({"account_id": aid, "domain": account.get("domain"), "row": value["row"],
-                             "role": value["role"], "seniority": value["seniority"],
-                             **({"slot": slot} if slot != 1 else {})})
+                             "role": value["role"], "seniority": value["seniority"]})
     else:
-        reason = out.reason if slot == 1 else f"second contact: {out.reason}"
+        reason = out.reason
         batch.no_contact[reason] += 1
         if len(batch.no_contact_accounts) < LIST_LIMIT:
             batch.no_contact_accounts.append({"account_id": aid, "domain": account.get("domain"), "reason": reason})
@@ -762,32 +602,12 @@ def _record(ctx: Context, account: Mapping[str, Any], out: Outcome, batch: _Run,
 
 
 def apollo_paused(ctx: Context) -> str | None:
-    """Why no Apollo reveal may be made now: a kill rule pauses the apollo email source; None when none does (the
-    module docstring: Clay alone is not used meanwhile)."""
+    """Why no Apollo reveal may be made now: a kill rule pauses the apollo email source; None when none does."""
     paused = holds.paused_sources(ctx.store)
     if EMAIL_SOURCE not in paused:
         return None
-    return (f"a kill rule pauses the apollo email source ({paused[EMAIL_SOURCE] or 'bounces'}): no Apollo reveals, "
-            "and Clay alone is not used, as it is the fallback for Apollo's misses; `us-outbound killrules clear "
-            "ITEM_ID --live` lifts it once checked")
-
-
-def clay_room(ctx: Context) -> tuple[str | None, float]:
-    """(why the Clay waterfall is not used this run, or None; what today may spend of the month's Clay budget)."""
-    s = ctx.settings
-    if not s.general.clay_email_fallback:
-        return "clay_email_fallback is no", 0.0
-    paused = holds.paused_sources(ctx.store)
-    if CLAY_SOURCE in paused:
-        return f"a kill rule pauses the clay email source ({paused[CLAY_SOURCE] or 'bounces'})", 0.0
-    month = budget.monthly(ctx.store, s, "clay", ctx.now)
-    if month.budget <= 0:
-        return "no monthly Clay budget (clay_monthly_credits is 0)", 0.0
-    try:
-        ctx.clients.clay  # the key, read once here rather than failing the job at the first lookup
-    except ConfigError as exc:
-        return f"no Clay API key: {exc}", 0.0
-    return None, month.left_today
+    return (f"a kill rule pauses the apollo email source ({paused[EMAIL_SOURCE] or 'bounces'}): no Apollo reveals; "
+            "`us-outbound killrules clear ITEM_ID --live` lifts it once checked")
 
 
 def _balance(ctx: Context) -> tuple[float | None, str | None]:
@@ -828,13 +648,6 @@ def run(ctx: Context) -> dict:
     due = [a for a in need if not past.cooling(a["account_id"], ctx.now)]
     want = max(0, lookahead(s) - ready)
     summary.update(ready_before=ready, wanted=want, waiting=len(need), tried_recently=len(need) - len(due))
-    # Second contacts (enrol/second.py; Harry, 6 Oct 2026), due within the same lookahead: ([], 0), without a
-    # read, while second_contact is no. They are revealed only with what the first contacts leave of `want`.
-    need2, ready2 = second.to_pick(ctx, second.due_by(ctx, LOOKAHEAD_SEND_DAYS))
-    due2 = [(a, role) for a, role in need2 if not past.cooling(a["account_id"], ctx.now)]
-    if second.on(s):
-        summary["second_contacts"] = {"ready_before": ready2, "waiting": len(need2),
-                                      "tried_recently": len(need2) - len(due2), "picked": 0}
 
     month = budget.monthly(store, s, "apollo", ctx.now)
     batch = _Run(left=month.left_today, balance=None, floor=s.general.apollo_floor)
@@ -842,9 +655,8 @@ def run(ctx: Context) -> dict:
     if held:
         summary["apollo_paused"] = held  # in the heartbeat whatever else the run says
     why = None
-    if not want or not (due or (due2 and want > ready2)):
-        enough = not want or (not due and due2)
-        why = "enough accounts are ready for the next two send days" if enough else "no account is waiting for a contact"
+    if not want or not due:
+        why = "enough accounts are ready for the next two send days" if not want else "no account is waiting for a contact"
     elif held:
         why = held
     elif month.budget <= 0:
@@ -860,7 +672,6 @@ def run(ctx: Context) -> dict:
         log("pick_contacts_done", run_id=ctx.run_id, **summary)
         return summary
 
-    batch.clay_off, batch.clay_left = clay_room(ctx)
     domains, hashes = enrol.suppressed(ctx)
     known = {str(c["email_sha256"]) for c in store.select("contacts") if c.get("email_sha256")}
     # The random explore arm (Harry's D7; queue.strata): explore_share of today's want, counted in kept contacts,
@@ -924,28 +735,6 @@ def run(ctx: Context) -> dict:
                           "picked": len(kept_random),
                           "realised": round(len(kept_random) / picked, 3) if k and picked else None,
                           "by_group": dict(Counter(s.industry_group_of(a) for a in kept_random))}
-    # Then second contacts, with what is left of the lookahead once the first contacts are counted: the first
-    # contacts of new accounts come first when capacity is short (Harry, 6 Oct 2026).
-    room2 = max(0, lookahead(s) - ready - len(batch.picked) - ready2)
-    picked2 = 0
-    for account, role in due2:
-        if picked2 >= room2 or batch.stopped:
-            break
-        try:
-            out = pick_account(ctx, account, batch, past.revealed[account["account_id"]], domains, hashes, known,
-                               exclude_roles=frozenset({role}))
-        except ApiError as exc:
-            batch.errors.append(f"{account.get('domain')}: {str(exc)[:200]}")
-            if len(batch.errors) >= MAX_ERRORS:
-                batch.stopped = f"{MAX_ERRORS} Apollo errors"
-            continue
-        if out.outcome == STOPPED:
-            break
-        batch.tried += 1
-        picked2 += out.outcome == PICKED
-        _record(ctx, account, out, batch, slot=second.SECOND)
-    if "second_contacts" in summary:
-        summary["second_contacts"]["picked"] = picked2
 
     summary.update(
         status="ok",
@@ -959,9 +748,6 @@ def run(ctx: Context) -> dict:
         stopped=batch.stopped,
         errors=batch.errors,
         budget=budget.monthly(store, s, "apollo", ctx.now).describe(),
-        clay={"off": batch.clay_off, "lookups": batch.clay_lookups, "found": batch.clay_found,
-              "credits": batch.clay_credits, "errors": batch.clay_errors,
-              "budget": budget.monthly(store, s, "clay", ctx.now).describe()},
         picked_accounts=batch.picked[:LIST_LIMIT],
         no_contact_accounts=batch.no_contact_accounts,
     )

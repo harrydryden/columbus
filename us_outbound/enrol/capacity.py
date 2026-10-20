@@ -18,11 +18,8 @@ steady), and fewer when, on any of the four days a lead enrolled today would sen
 follow-ups already due leave less room than that. So no step of any lead, old or new, has
 to wait for a full inbox, including on the Mondays that collect steps due at the weekend.
 
-Leads that have stopped (a reply, bounce or unsubscribe, the account-level stop that ends a
-second contact's lead with the first's, or an account no longer enrolled)
-hold nothing. A send approval still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026)
-holds one of today's slots for its sender until it is approved or expires (limits.today), so
-the next enrol run never proposes more than the senders can send.
+Leads that have stopped (a reply, bounce or unsubscribe, an account-level stop, or an account no longer enrolled)
+hold nothing.
 
 Each mailbox's sends a day are the lowest of:
   * the sending ramp (registry/ramp.py; Harry, 1 Oct 2026): 10 a day in its first sending
@@ -149,8 +146,7 @@ def resume_if_completed(ctx: Context, campaign: str) -> bool:
 
     Instantly marks an active campaign "completed" once it has no lead left to email, as it did straight after
     `start` for the campaigns with no leads yet (6 Oct 2026: Harry Dryden's and Hannah MacIntosh's), and a lead
-    added after that waits unsent until the campaign is activated again. So every lead add (enrol, a send approval,
-    a seed) calls this once the lead is in. A paused campaign (a stop, a kill rule) is left paused.
+    added after that waits unsent until the campaign is activated again. So every lead add (enrol, a seed) calls this once the lead is in. A paused campaign (a stop, a kill rule) is left paused.
     """
     found = [c for c in ctx.clients.instantly.list_campaigns() if str(c.get("name") or "") == campaign]
     if len(found) != 1 or _status(found[0]) != CAMPAIGN_COMPLETED:
@@ -271,31 +267,15 @@ class SenderCapacity:
     sent_last_day: int | None = None  # campaign emails this sender's inboxes sent that day
     instantly_says: str = ""  # why Instantly says the campaign is not sending, when it says so
     at_limit: bool = False  # Instantly says the campaign or all its inboxes hit their daily limit
-    # Send approvals still waiting in Slack (enrol/approvals/; Harry, 2 Oct 2026): each holds one of
-    # today's slots, so free is what is left after them (limits.today takes them off).
-    pending: int = 0
-    held_from: int | None = None  # free before the waiting send approvals took their slots
     not_sending: str = ""  # why the owner's campaign takes no new leads now (campaigns_not_sending)
     stopped: bool = False  # a live run: not_sending took every slot today
-
-    def hold(self, n: int) -> None:
-        """Take n slots for send approvals still waiting (limits.today)."""
-        self.held_from = self.free
-        self.pending = max(0, n)
-        self.free = max(0, self.free - self.pending)
 
     def stop(self, why: str, *, live: bool) -> None:
         """The owner's campaign takes no new leads now: a live run gives the owner none today; a dry run only notes it."""
         self.not_sending = why
         if live:
-            self.held_from = self.slots
             self.free = 0
             self.stopped = True
-
-    @property
-    def slots(self) -> int:
-        """Today's new-lead slots before the waiting send approvals took theirs."""
-        return self.free if self.held_from is None else self.held_from
 
     @property
     def full(self) -> bool:
@@ -310,8 +290,6 @@ class SenderCapacity:
             return f"Instantly says {self.instantly_says}"
         if self.sent_last_day is not None and self.last_day and self.sent_last_day >= 0.95 * self.cap:
             return f"its inboxes sent {self.sent_last_day} of {self.cap} on {self.last_day:%a %d %b}"
-        if self.pending and self.free <= 0:
-            return f"{self.pending} emails waiting for approval in Slack hold today's slots"
         return f"follow-ups already fill {self.tightest_day:%a %d %b}" if self.tightest_day else "no room today"
 
     @property
@@ -338,8 +316,6 @@ class SenderCapacity:
         else:
             why = f"a new lead sends 4 emails, so {self.pace} new a day keeps {self.cap} sends a day steady"
         extra = f"; Instantly is {self.backlog} emails behind from {self.last_day:%a %d %b}, sent today first" if self.backlog and self.last_day else ""
-        if self.pending:
-            extra += f"; {self.pending} more wait for approval in Slack"
         return f"{self.owner}: {self.free} new leads today, {self.cap} sends a day ({why}){extra}{note}"
 
 

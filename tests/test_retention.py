@@ -307,7 +307,7 @@ def test_a_failed_delete_is_reported_and_tried_again():
 
 def test_a_deleted_lead_is_no_lead_to_the_code_that_reads_one():
     """The account-level stop, the in-flight list and enrol all read instantly_lead_id; a deleted lead has none."""
-    from us_outbound.enrol import enrol, second
+    from us_outbound.enrol import enrol
 
     w = World(now=datetime(2026, 12, 11, 17, tzinfo=UTC))
     first = w.contact(date(2026, 10, 6))
@@ -320,7 +320,7 @@ def test_a_deleted_lead_is_no_lead_to_the_code_that_reads_one():
             reply_class="positive")
     assert account_stop.to_stop(w.ctx) == []
     assert capacity.in_flight(w.ctx.store, SETTINGS, TODAY) == []
-    assert second.is_enrolled(row) and enrol.contact_block(row, set(), set()) == "contact already enrolled"
+    assert row["enrolled_at"] and enrol.contact_block(row, set(), set()) == "contact already enrolled"
 
 
 def test_the_job_runs_with_a_heartbeat():

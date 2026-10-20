@@ -73,7 +73,6 @@ APOLLO_READ_ACTIONS = frozenset(
         "people.match",
         "people.bulk_match",
         "website_visitors.search",
-        "website_visitors.domain_aggregates",
         "usage.credits",
         "auth.health",
     }
@@ -136,8 +135,6 @@ class Boundaries:
     registry_owners: frozenset[str] = frozenset()  # mailbox owner names
     hubspot_pipeline_id: str = ""
     hubspot_deal_stage_id: str = ""
-    # The two US Outbound functions, and Work Email while clay_email_fallback is yes (context.boundaries_for).
-    clay_function_ids: frozenset[str] = frozenset()
     settings_sheet_id: str = ""
     alert_channel: str = "#us-outbound"
     dev_channel: str = "#us-outbound-dev"
@@ -265,17 +262,6 @@ class Guard:
         if op.action not in APOLLO_READ_ACTIONS:
             raise GuardViolation(f"Apollo action {op.action!r} is not an allowed read")
         return True
-
-    def _check_clay(self, op: Op) -> bool:
-        if op.action == "function.run":
-            if op.target not in self.bounds.clay_function_ids:
-                raise GuardViolation(
-                    f"Clay function {op.target!r} is not one of the US Outbound functions (SPEC 1.2, 8)"
-                )
-            return True  # Clay verification runs in dry-run too; budgets are checked by the caller.
-        if op.action in {"function.get", "function.list", "workspace.get", "run.get"} and not op.write:
-            return True
-        raise GuardViolation(f"Clay action {op.action!r} is not allowed from Python")
 
     def _check_instantly(self, op: Op) -> bool:
         b = self.bounds
@@ -477,8 +463,6 @@ class Guard:
     def _check_public(self, op: Op) -> bool:
         if op.write:
             raise GuardViolation("public sources are read only")
-        if op.action == "resolve_redirect":
-            return True  # HEAD on a prospect's own domain to follow one redirect (SPEC 13 data cleaning)
         if op.action == "site.get":
             # A GET of a page on the account's own site (sources/pages.py; Harry, 2 Oct 2026): the host
             # must be the account's root domain or one of its subdomains, never anywhere else.

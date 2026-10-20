@@ -46,7 +46,7 @@ def test_how_the_month_is_going():
         {"entry_id": "a", "system": "apollo", "credits": 1000.0, "occurred_at": datetime(2026, 10, 5, 9, tzinfo=UTC)},
         {"entry_id": "b", "system": "apollo", "credits": 50.0, "occurred_at": datetime(2026, 9, 30, 22, 59, tzinfo=UTC)},  # September, UK time
         {"entry_id": "c", "system": "apollo", "credits": 7.0, "occurred_at": now - timedelta(hours=1)},
-        {"entry_id": "d", "system": "clay", "credits": 9.0, "occurred_at": now},
+        {"entry_id": "d", "system": "clay", "credits": 9.0, "occurred_at": now},  # an old Clay row: not Apollo's
     ])
     b = budget.monthly(ctx.store, S, "apollo", now)
     assert (b.budget, b.used, b.used_today, b.remaining) == (2000.0, 1007.0, 7.0, 993.0)
@@ -56,11 +56,12 @@ def test_how_the_month_is_going():
     assert round(b.projected) == 1108  # 1,007 over the 20 weekdays through today, for 22
     assert b.describe() == ("Apollo: 1,007 of 2,000 credits used this month (50%); pace to date 1,818, so behind pace; "
                             "heading for 1,108 by 31 Oct; up to 326 more today (3 weekdays left)")
-    assert budget.monthly(ctx.store, S, "clay", now).used == 9.0
+    # Clay's budget went with Clay (W2-1): apollo is the one monthly credit budget.
+    assert set(budget.MONTHLY_KEYS) == {"apollo"}
 
 
 def test_pace_and_a_spent_month():
-    base = dict(system="clay", budget=2000.0, used_today=0.0, weekdays_in_month=20, weekdays_before_today=9,
+    base = dict(system="apollo", budget=2000.0, used_today=0.0, weekdays_in_month=20, weekdays_before_today=9,
                 month_end=date(2026, 11, 30))
     assert budget.Budget(used=1000.0, **base).pace == "on"  # 10 of 20 weekdays through today: 1,000 is on pace
     assert budget.Budget(used=1200.0, **base).pace == "ahead"
@@ -70,9 +71,9 @@ def test_pace_and_a_spent_month():
 
 
 def test_a_zero_budget_means_the_system_is_not_called():
-    ctx = make_context(make_settings(clay_monthly_credits=0.0))
-    b = budget.monthly(ctx.store, ctx.settings, "clay", ctx.now)
-    assert b.spent and "no monthly budget set (clay_monthly_credits is 0)" in b.describe()
+    ctx = make_context(make_settings(apollo_monthly_credits=0))
+    b = budget.monthly(ctx.store, ctx.settings, "apollo", ctx.now)
+    assert b.spent and "no monthly budget set (apollo_monthly_credits is 0)" in b.describe()
 
 
 def test_send_days_left_in_the_week():

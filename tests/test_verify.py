@@ -1,11 +1,9 @@
-"""verify_accounts (us_outbound/verify.py) and the General key clay_verification (Harry, 1 Oct 2026):
-the checks on Apollo data and HubSpot, the HubSpot exclusions, the rescore, the required mode, the
-setting's default, validation and load, the two client reads it needs, and the pipeline from source
-to verified."""
+"""verify_accounts (us_outbound/verify.py): the checks on Apollo data and HubSpot, the HubSpot exclusions, the
+rescore, the two client reads it needs, and the pipeline from source to verified. (The General key clay_verification
+and its required mode went with Clay: W2-1.)"""
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import json
 from datetime import UTC, date, datetime, timedelta
@@ -21,12 +19,8 @@ from us_outbound.clients.guard import Boundaries, Guard
 from us_outbound.clients.hubspot import HubSpot
 from us_outbound.context import Secrets
 from us_outbound.ops import cli
-from us_outbound.ops.heartbeat import run_job
 from us_outbound.scoring import score, tiers
-from us_outbound.settings import load as loader
-from us_outbound.settings.defaults import default_tabs
-from us_outbound.settings.model import CLAY_VERIFICATION_MODES, Focus, General, Override
-from us_outbound.settings.validate import validate_all
+from us_outbound.settings.model import Focus, Override
 from us_outbound.sources import apollo_jobs, apollo_universe
 
 NOW = datetime(2026, 10, 5, 3, 30, tzinfo=UTC)  # Monday 5 Oct, 04:30 UK
@@ -67,11 +61,10 @@ def hubspot_requests(t):
 def test_an_account_that_passes_every_check_is_verified_and_scored():
     ctx, t = make([account(), account("a2", status="queued", employees=None, size_band="20-49")])
     out = verify.run(ctx)
-    assert (out["verified"], out["checked"], out["clay_verification"]) == (2, 2, "skip")
+    assert (out["verified"], out["checked"]) == (2, 2) and "clay_verification" not in out
     assert status(ctx, "a1") == status(ctx, "a2") == "verified"
     a = ctx.store.get("accounts", account_id="a1")
     assert a["tier"] in ("Priority", "Standard", "Control") and a["last_scored"] == NOW  # the rescore ran
-    assert a.get("clay_checked_at") is None  # how to find the accounts Clay has not seen
     bodies = [r.json for r in hubspot_requests(t)]
     assert {"propertyName": "domain", "operator": "EQ", "value": "a1co.com"} in [g["filters"][0] for g in bodies[0]["filterGroups"]]
     assert any(f == {"propertyName": "hs_email_domain", "operator": "EQ", "value": "a1co.com"}
@@ -176,49 +169,6 @@ def test_the_focus_tab_s_groups_are_checked_first(monkeypatch):
     monkeypatch.setattr(verify, "check", lambda a, *rest: order.append(a["account_id"]) or original(a, *rest))
     verify.run(ctx)
     assert list(dict.fromkeys(order)) == ["m1", "t1"]  # check() runs again after the label check
-
-
-# -- required: accounts wait for verify_in_clay ----------------------------------------------------
-
-
-def test_with_clay_required_accounts_wait_and_the_run_says_why():
-    s = settings_with(clay_verification="required")
-    ctx, t = make([account()], settings=s)
-    out = run_job(ctx, verify.run)
-    assert out["skipped"] is True and "verify_in_clay is not built" in out["reason"] and out["waiting"] == 1
-    assert status(ctx) == "new" and t.requests == []
-    assert ctx.store.get("heartbeats", run_id=ctx.run_id)["status"] == "skipped"  # alive, for heartbeat_check
-
-
-# -- the setting --------------------------------------------------------------------------------------
-
-
-def test_clay_verification_defaults_to_skip_with_harry_s_note():
-    assert General().clay_verification == "skip" and CLAY_VERIFICATION_MODES == ("required", "skip")
-    [row] = [r for r in default_tabs()["General"] if r["key"] == "clay_verification"]
-    assert row["value"] == "skip"
-    assert "Harry, 1 Oct 2026: go live on 5 Oct before the Clay functions exist; set to required once they do" in row["note"]
-
-
-def test_clay_verification_must_be_required_or_skip():
-    tabs = copy.deepcopy(default_tabs())
-    row = next(r for r in tabs["General"] if r["key"] == "clay_verification")
-    row["value"] = "required"
-    assert validate_all(tabs)[0].general.clay_verification == "required"
-    for bad in ("maybe", "Skip", ""):
-        row["value"] = bad
-        [e] = validate_all(tabs)[1]["General"]
-        assert e.label == "clay_verification" and ("required, skip" in e.message or "is required" in e.message)
-    tabs["General"].remove(row)
-    assert validate_all(tabs)[0].general.clay_verification == "skip"  # a sheet without the row reads as skip
-
-
-def test_settings_load_adds_the_key_to_harry_s_sheet_and_sets_it():
-    sheet = [r for r in default_tabs()["General"] if r["key"] != "clay_verification"]
-    plan = loader.plan_tab("General", sheet, default_tabs()["General"])
-    assert "clay_verification = skip" in plan.added
-    plan = loader.plan_tab("General", sheet, default_tabs()["General"], {"clay_verification": "required"})
-    assert {r["key"]: r["value"] for r in plan.rows}["clay_verification"] == "required"
 
 
 # -- the client reads verify and apollo_signals use -------------------------------------------------------
@@ -396,19 +346,6 @@ def test_an_overrides_row_settles_a_doubt():
     s = settings_with(overrides=(Override("a1co.com", "employees", "45"),))
     ctx, _ = make([account(employees=49, size_band="20-49")], settings=s)
     assert verify.run(ctx)["verified"] == 1
-
-
-def test_the_cross_check_hook_can_settle_a_doubt(monkeypatch):
-    seen = []
-
-    def clay_agrees(ctx, account, found):
-        seen.append((account["account_id"], list(found)))
-        return []
-
-    monkeypatch.setattr(verify, "cross_check", clay_agrees)
-    ctx, _ = make([account(employees=49, size_band="20-49")])
-    assert verify.run(ctx)["verified"] == 1
-    assert seen == [("a1", ["Apollo's estimate of 49 staff is within 2 of the 50-staff edge"])]
 
 
 # -- the industry label check (labels.py; Harry, 7 Oct 2026: "industry categorisation is critical") --------------------
@@ -683,36 +620,6 @@ def test_required_never_unverifies_a_verified_account_when_the_model_is_unavaila
     assert out["labels"]["verified_unchecked"] == 1 and out["labels"]["unavailable_reason"]
 
 
-def test_a_card_rendered_before_its_label_was_decided_is_withdrawn_when_it_no_longer_fits():
-    from us_outbound.enrol import approvals
-
-    ctx, _ = labelled([account(status="verified", industry="Adtech & martech")],
-                      {"a1co.com": {"label": "Fintech", "evidence": "Payments software"}})
-    ctx.store.insert("hitl_items", [{
-        "item_id": "card-1", "kind": approvals.KIND, "account_id": "a1", "contact_id": "c1", "status": "open",
-        "created_at": NOW - timedelta(hours=16), "slack_channel": "", "slack_ts": "",
-        "payload": {"industry": "Adtech & martech", "industry_group": "Technology & Startups", "company": "A1",
-                    "copy_version": "adtech-martech-people-v1", "state": "waiting"}}])
-    assert approvals.unfit_cards(ctx) == []  # nothing decided since the card
-    verify.run(ctx)
-    [(item, why, back)] = approvals.unfit_cards(ctx)
-    assert (item.id, why, back) == ("card-1", "its industry was Adtech & martech and is now Fintech", True)
-
-
-def test_an_account_with_a_card_waiting_is_checked_first(monkeypatch):
-    from us_outbound.enrol import approvals
-
-    monkeypatch.setattr(labels, "MAX_LABEL_CALLS_PER_RUN", 1)
-    ctx, sdk = labelled([account("t1", status="verified", score=90, tier="Priority"),
-                         account("t2", status="verified", score=10, tier="Standard")],
-                        {"t1co.com": {"label": "Fintech", "evidence": "Payments software"},
-                         "t2co.com": {"label": "Fintech", "evidence": "Payments software"}})
-    ctx.store.insert("hitl_items", [{"item_id": "card-2", "kind": approvals.KIND, "account_id": "t2", "status": "open",
-                                     "created_at": NOW - timedelta(hours=16), "payload": {}}])
-    verify.run(ctx)
-    assert sdk.domains() == ["t2co.com"]  # its card is the next email out, though t1 is first in the queue
-
-
 @pytest.mark.parametrize("mode", ["required", "skip"])
 def test_an_overrides_row_reaches_an_account_already_verified(mode):
     """9 Oct 2026 (the refactoring scan's defect 5): an Overrides industry row never reached an account the check had
@@ -743,9 +650,8 @@ def test_the_reason_codes_contract_splits_every_code_into_one_kind():
     """The W1-C contract (19 Oct 2026; RS P0-3): accounts.status_reason codes, each with what it does to the account,
     defined before the packages that write them. A transient failure (no label call left, a HubSpot error) must never
     be filed as terminal, and an industry switched off is parked, never disqualified for good: those are the two
-    mistakes that would lose companies for good (the ~50 of 13 Oct). W1-4 adds clay_pending (transient: Clay's answer
-    not in yet), the one failure the contract left without a code. 15 terminal + 2 parked + 2 re-checkable + 3
-    transient = 22 codes."""
+    mistakes that would lose companies for good (the ~50 of 13 Oct). W1-4 added clay_pending (Clay's answer not in
+    yet), which went with Clay (W2-1). 15 terminal + 2 parked + 2 re-checkable + 2 transient = 21 codes."""
     by_kind: dict[str, set[str]] = {}
     for code, kind in verify.REASON_CODES.items():
         by_kind.setdefault(kind, set()).add(code)
@@ -755,9 +661,9 @@ def test_the_reason_codes_contract_splits_every_code_into_one_kind():
                           "hubspot_bounced", "hand_check", "declined"},
         verify.PARKED: {"industry_off", "label_failed"},
         verify.RECHECK: {"hubspot_open_deal", "hubspot_owner"},
-        verify.TRANSIENT: {"label_not_checked", "hubspot_check_failed", "clay_pending"},
+        verify.TRANSIENT: {"label_not_checked", "hubspot_check_failed"},
     }
-    assert len(verify.REASON_CODES) == 22
+    assert len(verify.REASON_CODES) == 21
     # Every code the label check and the HubSpot facts produce is in the contract, of the kind it should be.
     assert {verify.REASON_CODES[c] for c in (labels.PUBLIC_BODY_CODE, labels.ASSOCIATION_CODE, labels.OTHER_CODE,
                                               labels.NO_LABEL_CODE)} == {verify.TERMINAL}
@@ -1205,24 +1111,3 @@ def test_the_status_column_comment_lists_every_status():
     [line] = [x for x in ddl.splitlines() if x.startswith("COMMENT ON COLUMN us_outbound.accounts.status IS")]
     listed = line.split("One of: ", 1)[1].split(".", 1)[0].split(", ")
     assert sorted(listed) == sorted(accounts_view.STATUSES) and "parked" in listed
-
-
-def test_a_card_whose_company_is_parked_is_withdrawn_like_one_left_out():
-    """A reader of accounts.status that must name parked (RS §3 W1-4): a send-approval card rendered before the label
-    check parked its company (its industry switched off) no longer fits, as for a disqualified one, and goes back to
-    nobody (back False)."""
-    from us_outbound.enrol import approvals
-
-    ctx, _ = labelled([{**physicians("a1"), "status": "verified"}], {"a1co.com": PHYSICIANS},
-                      facts={"a1": physician_facts("a1")})
-    ctx.store.insert("hitl_items", [{
-        "item_id": "card-1", "kind": approvals.KIND, "account_id": "a1", "contact_id": "c1", "status": "open",
-        "created_at": NOW - timedelta(hours=16), "slack_channel": "", "slack_ts": "",
-        "payload": {"industry": "Physician practices", "industry_group": "Healthcare", "company": "A1",
-                    "copy_version": "healthcare-people-v1", "state": "waiting"}}])
-    verify.run(ctx)
-    assert status(ctx) == "parked"
-    [(item, why, back)] = approvals.unfit_cards(ctx)
-    assert (item.id, back) == ("card-1", False)
-    assert why == ("A1 is left out: industry_off: its industry (Healthcare) is switched off on the Industries tab "
-                   "(the label check)")

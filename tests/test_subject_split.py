@@ -3,7 +3,7 @@
 The General email1_subject_share of accounts get General email1_subject ("support for the {{company}} team") as
 email 1's subject, the rest the Copy row's s1_subject. The tests: the keys are validated as a subject; the split
 is stable per account, about half, and independent of the opener holdout; only email 1's subject changes; enrol
-sends the arm's subject on both paths (auto_send, and the Slack send card) and records contacts.subject_arm;
+sends the arm's subject and records contacts.subject_arm;
 `copy preview` shows it. `signals review` (tests/test_signal_review.py), the daily post
 (tests/test_daily_report.py) and `seed send --subject` (tests/test_seed.py) are tested with their own worlds.
 """
@@ -16,7 +16,7 @@ import pytest
 
 from tests.fakes import make_context
 from tests.test_render import HANNAH, account, make_settings, values_for
-from us_outbound.enrol import approvals, copy_desk, enrol, openers, render
+from us_outbound.enrol import copy_desk, enrol, openers, render
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import General
 from us_outbound.settings.validate import validate_all, validate_tab
@@ -145,26 +145,6 @@ def test_enrol_sends_each_account_its_arm_s_subject_and_records_the_arm():
     assert {cv["s2_subject"] for cv in sent.values()} == {"How Spill works for agencies"}
     got = {c["contact_id"]: c["subject_arm"] for c in ctx.store.select("contacts")}
     assert got == {"con-1": PERSONAL, "con-2": PERSONAL, "con-3": COPY}
-
-
-def test_the_send_card_shows_the_personal_subject_and_its_tick_records_the_arm():
-    from tests.test_send_approvals import HARRY_ID, blocks_text, item_for, poll, world
-
-    ctx, t, sl = world(email1_subject_share=1.0)
-    enrol.run(ctx)
-    row = item_for(ctx, "acc-1")
-    p = row["payload"]
-    assert p["subject_arm"] == PERSONAL
-    assert p["lead"]["custom_variables"]["s1_subject"] == "support for the Acme Creative team"
-    [card] = [x for x in sl.posts if x["ts"] == row["slack_ts"]]
-    assert "*Subject:* support for the Acme Creative team" in blocks_text(card)
-    sl.react("white_check_mark", HARRY_ID, ts=row["slack_ts"])
-    assert poll(ctx)["outcomes"] == {"approved": 1}
-    assert ctx.store.get("contacts", contact_id="con-1")["subject_arm"] == PERSONAL
-    # A card posted before the split has no arm in its payload: it was rendered with the Copy row's subject.
-    old = dict(item_for(ctx, "acc-2"))
-    old["payload"] = {k: v for k, v in old["payload"].items() if k != "subject_arm"}
-    assert approvals._prepared(ctx, approvals.Item(old)).subject_arm == COPY
 
 
 # -- copy preview ----------------------------------------------------------------------------------------------------

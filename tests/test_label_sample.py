@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from tests.fakes import make_context
-from tests.test_crosswalk import Sheet
+from tests.test_copy_desk import Sheet
 from tests.test_labels import DEFAULT
 from us_outbound.ops import cli, label_sample as ls
 

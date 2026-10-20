@@ -19,14 +19,12 @@ and from the label check's stored verdict (labels.py: no model call either):
     companies, 37signals and Postmark among them, whose Apollo codes include IT services, which Technology &
     Startups excludes). A company an earlier relabel disqualified that way is put back in the queue (status queued,
     tier and label cleared), so the label check asks about it;
-  * a company with no Apollo codes or keywords on file keeps its label;
-  * an open send-approval card that no longer fits its company's label (approvals.unfit_cards: another label,
-    disqualified, or a pitch more specific than the label now allows) is withdrawn: closed by "system" like an
-    expiry (outcome expired, with the reason), its card and thread say so, nothing reaches Instantly, and the
-    company goes back to the queue, so a later enrol proposes it with the right copy.
+  * a company with no Apollo codes or keywords on file keeps its label.
+(An open send-approval card that no longer fit its company's label was withdrawn too, until send approvals were
+removed: W2-1, 20 Oct 2026.)
 
 Dry-run (no --live) prints what it would change and changes nothing. Companies already enrolled are not touched:
-their emails were approved as they were.
+their emails were rendered as they were.
 
 `us-outbound labels audit [--limit N] [--live]` (audit, below; Harry, 7 Oct 2026) is this with the model asked first
 about each open company with no fresh verdict, as verify_accounts asks about about 150 a run: it brings the whole
@@ -48,7 +46,6 @@ from us_outbound import facts, labels
 from us_outbound.clean.domains import is_public_body
 from us_outbound.clients.guard import CLI_APPROVER
 from us_outbound.context import Context
-from us_outbound.enrol import approvals
 from us_outbound.logs import log
 from us_outbound.settings.model import Industry
 from us_outbound.sources import apollo_universe as universe
@@ -122,19 +119,6 @@ def _line(a: Mapping[str, Any], d: labels.Decision) -> tuple[str, str]:
     return f"{old} → {d.label}", f"{a.get('domain')}: {old} → {d.label}"
 
 
-def _after(ctx: Context, a: Mapping[str, Any], d: labels.Decision) -> dict[str, Any]:
-    return {**a, **labels.columns(a, d), "label_checked_at": ctx.now}
-
-
-def _cards(ctx: Context, after: Mapping[str, Mapping[str, Any]]) -> tuple[list[str], list[str]]:
-    """(the open cards that no longer fit, by company; those withdrawn: live only)."""
-    found = approvals.unfit_cards(ctx, after) if after else []
-    withdrawn: list[str] = []
-    if ctx.live and found:
-        withdrawn = approvals.withdraw_unfit(ctx, ctx.clients.slack, found)
-    return [item.company for item, _, _ in found], withdrawn
-
-
 def ruled_out_on_rules(ctx: Context) -> list[dict]:
     """The companies an earlier relabel disqualified because the rules found no label, with no label check verdict
     since: the label check, not the rules, decides them (the module docstring)."""
@@ -173,13 +157,10 @@ def run(ctx: Context) -> dict:
     if ctx.live:
         for aid, (a, d, v, rules) in changes.items():
             labels.apply(ctx, a, d, v, rules=rules, stored=labels.latest_verdict(events.get(aid, [])))
-    cards, withdrawn = _cards(ctx, {aid: _after(ctx, a, d) for aid, (a, d, _v, _r) in changes.items()})
-    log("relabel", run_id=ctx.run_id, accounts=len(accounts), changed=len(changes), cards=len(cards),
-        withdrawn=len(withdrawn), dry_run=ctx.dry_run)
+    log("relabel", run_id=ctx.run_id, accounts=len(accounts), changed=len(changes), dry_run=ctx.dry_run)
     return {
         "dry_run": ctx.dry_run, "queued_accounts": len(accounts), "changed": len(changes),
         "moves": dict(moves.most_common()), "changes": lines,
-        "cards_to_withdraw": cards, "cards_withdrawn": withdrawn,
         "restored": sorted(str(a.get("domain")) for a in back),
     }
 
@@ -198,9 +179,8 @@ def _account(ctx: Context, domain: str) -> dict:
 
 
 def set_label(ctx: Context, domain: str, text: str) -> dict:
-    """`labels set DOMAIN LABEL`: an approver's correction for a company with no card (or any), by "cli": the label
-    (labels.correct: the account, a label_corrected fact, the Overrides tab), and an open card that no longer fits it
-    withdrawn. A dry run says what would change and changes nothing."""
+    """`labels set DOMAIN LABEL`: a person's correction, by "cli": the label (labels.correct: the account, a
+    label_corrected fact, the Overrides tab). A dry run says what would change and changes nothing."""
     a = _account(ctx, domain)
     ind = labels.resolve(text, ctx.settings)
     if ind is None:
@@ -208,14 +188,9 @@ def set_label(ctx: Context, domain: str, text: str) -> dict:
     out: dict[str, Any] = {"dry_run": ctx.dry_run, "domain": a.get("domain"), "from": a.get("industry"),
                            "to": ind.industry, "active": ind.active}
     if ctx.dry_run:
-        after = {**a, "industry": ind.industry, "industry_group": ind.industry_group,
-                 "label_source": labels.APPROVER, "label_checked_at": ctx.now}
-        out["cards_to_withdraw"] = [item.company for item, _, _ in approvals.unfit_cards(ctx, {a["account_id"]: after})]
         return out
     got = labels.correct(ctx, a, ind, by=CLI_APPROVER, via="cli", who="at the command line (labels set)")
-    found = approvals.unfit_cards(ctx, {a["account_id"]: ctx.store.get("accounts", account_id=a["account_id"])})
-    return {**out, "sheet": got["sheet"], "cards_withdrawn": approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx),
-                                                                                       found)}
+    return {**out, "sheet": got["sheet"]}
 
 
 def show(ctx: Context, domain: str) -> dict:
@@ -247,18 +222,17 @@ def show(ctx: Context, domain: str) -> dict:
 
 
 def audit(ctx: Context, limit: int | None = None) -> dict:
-    """The label check for the whole queue now: each open company with no fresh verdict asked (live), those with a
-    card waiting first, then Focus groups, then queue order, up to limit; its decision written as verify_accounts writes it (verify.converge: a held
-    one back to queued and to the hand-check, one ruled out disqualified); then relabel for the rest, and every open
-    card that no longer fits withdrawn. Dry-run asks nothing: the count, the cost at most, a sample prompt, and what
-    the stored verdicts alone would change."""
+    """The label check for the whole queue now: each open company with no fresh verdict asked (live), Focus groups
+    first, then queue order, up to limit; its decision written as verify_accounts writes it (verify.converge: a held
+    one back to queued and to the hand-check, one ruled out disqualified); then relabel for the rest. Dry-run asks
+    nothing: the count, the cost at most, a sample prompt, and what the stored verdicts alone would change."""
     from us_outbound import verify
 
     s = ctx.settings
     accounts = [a for a in ctx.store.select("accounts", {"status": list(universe.OPEN_STATUSES)})
                 if a.get("tier") not in universe.OUT_OF_QUEUE_TIERS]
     events = label_events(ctx, [str(a["account_id"]) for a in accounts])
-    order = verify.check_order(accounts, s, verify.carded(ctx))  # cards waiting first, then Focus, then queue
+    order = verify.check_order(accounts, s)  # Focus groups first, then queue order
     unsure = pages.unsure(ctx, order)  # asked, not sure, and the home page not read: read it first (live)
     home: dict[str, int] = {}
     if ctx.live and unsure:
@@ -303,12 +277,9 @@ def audit(ctx: Context, limit: int | None = None) -> dict:
                                   "model": v.label, "confidence": v.confidence, "entity": v.entity,
                                   "now": f"{row.get('status')}: {row.get('industry')} ({row.get('label_source')})",
                                   "evidence": v.evidence})
-    rest = run(ctx)  # the rules and stored verdicts for the companies not asked (it withdraws its own cards)
-    found = approvals.unfit_cards(ctx)
-    withdrawn = [*rest["cards_withdrawn"], *approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx), found)]
+    rest = run(ctx)  # the rules and stored verdicts for the companies not asked
     out.update(asked=ch.asked, unavailable=ch.unavailable, usd=ch.usd(), decisions=dict(run_.tally),
-               disagreements=disagreements, changed=run_.changed, relabelled=rest["changes"],
-               cards_withdrawn=withdrawn)
+               disagreements=disagreements, changed=run_.changed, relabelled=rest["changes"])
     log(AUDIT_JOB, run_id=ctx.run_id, to_check=len(todo), asked=ch.asked, usd=out["usd"],
-        disagreements=len(disagreements), withdrawn=len(withdrawn), unavailable=ch.unavailable[:120])
+        disagreements=len(disagreements), unavailable=ch.unavailable[:120])
     return out

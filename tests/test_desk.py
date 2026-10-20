@@ -1,4 +1,5 @@
-"""The reply desk (replies/desk.py): poll_approvals, the CLI path, re-posts and escalation (SPEC 11; D11)."""
+"""The reply desk (replies/desk.py): the poll_approvals job (desk.poll_desk), the CLI path, re-posts and escalation
+(SPEC 11; D11), and the close of the send approvals left open when they were removed (W2-1)."""
 
 from __future__ import annotations
 
@@ -119,7 +120,7 @@ def row_of(ctx, item_id=ITEM) -> dict:
 
 
 def poll(ctx) -> dict:
-    return desk.poll_approvals(ctx)
+    return desk.poll_desk(ctx)
 
 
 # -- approving in Slack ------------------------------------------------------------------------------
@@ -258,7 +259,7 @@ def test_a_failed_send_is_never_retried_without_a_person(settings):
 def test_a_reply_outside_a_us_outbound_thread_is_closed_for_a_person_and_the_run_goes_on(settings):
     """M2 (code-replies-crm; RS §2 W1-2): a colleague's reply whose thread carries no campaign id is refused by the
     guard (Instantly.reply answers only in a US Outbound thread). Until 19 Oct 2026 the GuardViolation crashed
-    poll_approvals (this test asserted the crash), so the escalation, the send approvals and the hand-check tab were
+    poll_approvals (this test asserted the crash), so the escalation and the hand-check tab were
     not processed either. Now: that item is handled "by hand" with why, one alert says so, the other item is sent and
     the run finishes."""
     ctx, t, crm, sl, inst = desk_world(settings)
@@ -517,8 +518,8 @@ def test_a_non_warm_reply_task_carries_nothing_about_the_prospect(settings):
     assert crm.linked("tasks", next(iter(crm.objects["tasks"])), "companies") == []
 
 
-def _auto_send(settings, on: bool):
-    return dataclasses.replace(settings, general=dataclasses.replace(settings.general, auto_send=on))
+def _gate(settings, on: bool):
+    return dataclasses.replace(settings, general=dataclasses.replace(settings.general, hand_check_gate=on))
 
 
 def _hand_check(ctx) -> None:
@@ -527,7 +528,7 @@ def _hand_check(ctx) -> None:
 
 
 def test_other_items_escalate_by_task_and_keep_their_status(settings):
-    ctx, t, crm, sl, inst = desk_world(_auto_send(settings, True))  # enrol waits for the hand-check then
+    ctx, t, crm, sl, inst = desk_world(_gate(settings, True))  # enrol waits for the hand-check then
     _hand_check(ctx)
     poll(ctx)
     hc = row_of(ctx, "hc-2026-W41")
@@ -543,9 +544,10 @@ def test_other_items_escalate_by_task_and_keep_their_status(settings):
     assert inst.forwards == []
 
 
-def test_the_hand_check_is_not_escalated_while_every_email_is_approved_in_slack(settings):
-    """auto_send = no: nothing waits for the weekly hand-check, so no task and no DM every week."""
-    ctx, t, crm, sl, inst = desk_world(_auto_send(settings, False))
+def test_the_hand_check_is_not_escalated_while_it_gates_no_day(settings):
+    """hand_check_gate = no (D5): only its sample waits, and it reminds on Wednesday itself, so no task and no DM every
+    week."""
+    ctx, t, crm, sl, inst = desk_world(_gate(settings, False))
     _hand_check(ctx)
     out = poll(ctx)
     hc = row_of(ctx, "hc-2026-W41")
@@ -599,6 +601,73 @@ def test_without_slack_approvals_wait_and_escalation_still_reaches_harry(setting
     assert len(inst.forwards) == 1 and "Slack: the alert in #us-outbound" in inst.forwards[0]["body"]["text"]
     assert '"event": "slack_not_configured"' in capsys.readouterr().out
     assert crm.objects["companies"]  # the HubSpot writes do not need Slack
+
+
+# -- the job: each part in its own guard, and the send approvals closed (W2-1) ---------------------------
+
+
+def test_the_hand_check_tab_failing_is_listed_and_the_reply_is_still_sent(settings, monkeypatch):
+    """poll_desk runs the reply desk and the hand-check tab each in its own try: the tab raising (a Sheets outage the
+    tab's own catch missed) is one hand_check_errors line, heartbeat_check's to read, and the scripted reply item,
+    approved in its thread, is still sent."""
+    from us_outbound.enrol import hand_check_tab
+
+    def broken(ctx):
+        raise RuntimeError("the tab is down")
+
+    monkeypatch.setattr(hand_check_tab, "apply", broken)
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "send")
+    out = poll(ctx)
+    assert out["hand_check_errors"] == ["RuntimeError: the tab is down"] and out["hand_check"] is None
+    [sent] = inst.replies
+    assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["status"] == "handled" and out["errors"] == []
+
+
+def test_the_reply_desk_failing_still_applies_the_hand_check_tab(settings, monkeypatch):
+    ran = []
+    monkeypatch.setattr(desk, "escalate", lambda *a: (_ for _ in ()).throw(RuntimeError("escalation broke")))
+    from us_outbound.enrol import hand_check_tab
+
+    monkeypatch.setattr(hand_check_tab, "apply", lambda ctx: ran.append(1) or {"applied": [], "hand_check_errors": []})
+    ctx, t, crm, sl, inst = desk_world(settings)
+    out = poll(ctx)
+    assert ran == [1] and out["hand_check"] == {"applied": [], "hand_check_errors": []}
+    assert out["errors"] == ["the reply desk failed: RuntimeError: escalation broke"]
+
+
+def _send_approval(item_id: str, status: str = "open", **kw) -> dict:
+    return {"item_id": item_id, "kind": "send_approval", "status": status, "account_id": "acc-1",
+            "contact_id": "con-1", "created_at": NOW - timedelta(days=2),
+            "payload": {"state": "waiting", "company": "Acme Creative"}, **kw}
+
+
+def test_the_send_approvals_left_open_are_closed_once_as_expired_and_never_escalated(settings):
+    """Two cards left open and one caught sending (an add that may have reached Instantly), all over 24 hours old.
+    Live: the 2 open ones are handled by "system" as expired, each with its send-approval event; the sending one is
+    listed for a person, not closed; none is escalated (no task, no DM). A second run closes nothing."""
+    ctx, t, crm, sl, inst = desk_world(settings)
+    ctx.store.upsert("hitl_items", [_send_approval("sa-1"), _send_approval("sa-2"),
+                                    _send_approval("sa-3", status="sending")])
+    out = poll(ctx)
+    assert out["send_approvals"] == {"closed": ["sa-1", "sa-2"], "would_close": [], "sending": ["sa-3"]}
+    for item_id in ("sa-1", "sa-2"):
+        row = row_of(ctx, item_id)
+        assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", "system", "expired")
+        assert row["payload"]["reason"] == desk.SEND_APPROVALS_REMOVED and row["payload"]["company"] == "Acme Creative"
+        event = ctx.store.get("events", event_id=f"send-approval:{item_id}")
+        assert (event["type"], event["approval"], event["approved_by"]) == ("send_approval", "expired", "system")
+    assert row_of(ctx, "sa-3")["status"] == "sending" and not row_of(ctx, "sa-3").get("escalated_at")
+    assert not [x for x in crm.objects["tasks"].values() if "send approval" in x["hs_task_subject"]]
+    assert not [p for p in sl.posts if p["channel"] == HARRY_ID]
+    assert poll(ctx)["send_approvals"] == {"closed": [], "would_close": [], "sending": ["sa-3"]}
+
+
+def test_a_dry_run_says_which_send_approvals_it_would_close_and_closes_none(settings):
+    ctx, t, crm, sl, inst = desk_world(settings, live=False)
+    ctx.store.upsert("hitl_items", [_send_approval("sa-1")])
+    assert poll(ctx)["send_approvals"] == {"closed": [], "would_close": ["sa-1"]}
+    assert row_of(ctx, "sa-1")["status"] == "open" and ctx.store.get("events", event_id="send-approval:sa-1") is None
 
 
 # -- enrolment pause (SPEC 11) -------------------------------------------------------------------------

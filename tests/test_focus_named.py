@@ -1,5 +1,6 @@
-"""Industry focus and named companies from the sheet (Harry, 30 Sep 2026): the Focus and Named
-accounts tabs, their validation, the front door, the "named" source, and focus in the enrol job."""
+"""Industry focus from the sheet (Harry, 30 Sep 2026): the Focus tab, its validation, the front door, and focus in
+the enrol job. (The Named accounts tab and its source, sources/named.py, never had a row and went with W2-1: a sheet
+that still has the tab validates, and the tab is not read.)"""
 
 from __future__ import annotations
 
@@ -16,9 +17,8 @@ from us_outbound.clients.http import ApiError
 from us_outbound.enrol import enrol, focus
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.defaults import default_tabs
-from us_outbound.settings.model import Focus, NamedAccount
+from us_outbound.settings.model import Focus
 from us_outbound.settings.validate import parse_share, validate_all
-from us_outbound.sources import named
 
 NOW = datetime(2026, 10, 27, 11, 0, tzinfo=UTC)
 BASE = default_tabs()
@@ -65,25 +65,20 @@ def test_focus_rows_must_name_an_active_group_and_stay_within_100_percent():
     assert "already on row" in errors_on(t, "Focus")[0].message
 
 
-def test_named_accounts_are_company_root_domains():
+def test_a_named_accounts_tab_left_on_the_sheet_is_not_read():
     t = copy.deepcopy(BASE)
-    t["Named accounts"] = [
-        {"domain": "acmecreative.com", "name": "Acme Creative", "note": "met at a conference"},
-        {"domain": "www.brightfin.com", "name": "", "note": ""},
-        {"domain": "gmail.com", "name": "", "note": ""},
-        {"domain": "spill.chat", "name": "", "note": ""},
-        {"domain": "ACMECREATIVE.com", "name": "", "note": ""},
-    ]
-    errs = {e.row: e.message for e in errors_on(t, "Named accounts")}
-    assert "root domain like acme.com" in errs[3] and "personal email domain" in errs[4]
-    assert "spill.chat is Spill" in errs[5] and "already on row 2" in errs[6]
+    assert "Named accounts" not in t
+    t["Named accounts"] = [{"domain": "gmail.com", "name": "", "note": ""}]  # was an error on that tab
+    settings, errors = validate_all(t)
+    assert settings is not None and not any(errors.values()) and "Named accounts" not in errors
+    assert not hasattr(settings, "named_accounts")
 
 
 def test_a_sheet_without_the_new_tabs_still_validates():
-    t = {k: v for k, v in copy.deepcopy(BASE).items() if k not in ("Focus", "Named accounts")}
+    t = {k: v for k, v in copy.deepcopy(BASE).items() if k != "Focus"}
     settings, errors = validate_all(t)
     assert settings is not None and not any(errors.values())
-    assert settings.focus == () and settings.named_accounts == ()
+    assert settings.focus == ()
     t.pop("Tests")
     assert "the sheet has no Tests tab" in validate_all(t)[1]["Tests"][0].message  # the old tabs are still required
 
@@ -101,7 +96,7 @@ def test_sync_reads_a_missing_optional_tab_as_empty(monkeypatch):
                 raise ApiError("sheets", 400, {"error": {"message": f"Unable to parse range: '{missing[0]}'"}}, "batchGet")
             return super().read_tabs(sheet_id, tabs)
 
-    old = {k: v for k, v in default_tabs().items() if k not in ("Focus", "Named accounts")}
+    old = {k: v for k, v in default_tabs().items() if k != "Focus"}
     settings, _ = validate_all(default_tabs())
     ctx = make_context(settings, now=NOW, job="settings_sync")
     ctx.clients.sheets, ctx.clients.slack = OldSheet(old), StubSlack()
@@ -110,15 +105,11 @@ def test_sync_reads_a_missing_optional_tab_as_empty(monkeypatch):
     assert sync.load_current(ctx.store)[0] is not None
 
 
-# -- the front door and the "named" source ------------------------------------------------------
-
-
-def named_ctx(*rows: NamedAccount):
-    return make_context(make_settings(named_accounts=rows), now=NOW)
+# -- the front door ------------------------------------------------------
 
 
 def test_the_front_door_finds_by_root_domain_and_alias_and_refuses_suppressed_and_partners():
-    ctx = named_ctx()
+    ctx = make_context(validate_all(default_tabs())[0], now=NOW)
     st = ctx.store
     st.insert("accounts", [{"account_id": "a1", "domain": "acme.com", "status": "verified"}])
     st.insert("domain_aliases", [{"alias": "acme-old.com", "root_domain": "acme.com", "source": "test", "added_at": NOW}])
@@ -134,22 +125,8 @@ def test_the_front_door_finds_by_root_domain_and_alias_and_refuses_suppressed_an
     assert (row["domain"], row["clean_name"], row["source"], row["status"]) == ("newco.io", "NewCo", "named", "new")
 
 
-def test_named_accounts_are_marked_once_and_unmarked_when_taken_off():
-    ctx = named_ctx(NamedAccount("newco.io", "NewCo", "Harry met them"), NamedAccount("acme.com"))
-    ctx.store.insert("accounts", [{"account_id": "a1", "domain": "acme.com", "status": "verified"}])
-    out = named.run(ctx)
-    assert out["created"] == ["newco.io"] and out["named"] == 2 and out["marked"] == 2
-    facts = ctx.store.select("signal_events", {"source": "named"})
-    assert {f["value"] for f in facts} == {True} and len(facts) == 2
-    assert named.run(ctx)["marked"] == 0  # nothing changed, nothing written
-    ctx.settings = make_settings(named_accounts=(NamedAccount("newco.io"),))
-    ctx.now = NOW + timedelta(days=1)
-    assert named.run(ctx)["unmarked"] == 1
-    latest = max((f for f in ctx.store.select("signal_events", {"account_id": "a1"})), key=lambda f: f["observed_at"])
-    assert latest["value"] is False
-
-
 def test_the_named_signal_scores_a_named_account():
+    """The Signals tab's "named" row still scores a named fact on file (none is written since W2-1)."""
     settings, _ = validate_all(default_tabs())
     events = [{"event_id": "e1", "account_id": "a1", "source": "named", "fact": "named", "value": True,
                "quote": "On the Named accounts tab", "observed_at": NOW}]

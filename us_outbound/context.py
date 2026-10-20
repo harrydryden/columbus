@@ -30,7 +30,6 @@ ET = ZoneInfo("America/New_York")
 # sealed service variables (docs/railway-setup.md); they never go in the repo, logs or database.
 SECRET_NAMES = {
     "apollo": "US_OUTBOUND_APOLLO_API_KEY",
-    "clay": "US_OUTBOUND_CLAY_API_KEY",
     "instantly": "US_OUTBOUND_INSTANTLY_API_KEY",
     "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
     "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",
@@ -79,25 +78,17 @@ class Secrets:
         return self._cache[name]
 
 
-def boundaries_for(settings: Settings, settings_sheet_id: str = "", job: str = "", watchdog_url: str = "") -> Boundaries:
+def boundaries_for(settings: Settings, settings_sheet_id: str = "", watchdog_url: str = "") -> Boundaries:
     """The containers a job may touch. watchdog_url: the ping URL heartbeat_check may GET (ops/watchdog.py), only
     for that job; "" for every other."""
-    from us_outbound.clients.clay import CHECK_EMAIL_JOB, WORK_EMAIL_FUNCTION_ID
-
     g = settings.general
     live_mailboxes = [m for m in settings.mailboxes if m.status != "Retired"]
-    # The US Outbound functions, and Clay's own Work Email while clay_email_fallback is yes (Harry, 2 Oct 2026),
-    # or for the one lookup `us-outbound clay check-email` makes to confirm it before the switch goes on.
-    clay_functions = {x for x in (g.clay_accounts_function_id, g.clay_contacts_function_id) if x}
-    if g.clay_email_fallback or job == CHECK_EMAIL_JOB:
-        clay_functions.add(WORK_EMAIL_FUNCTION_ID)
     return Boundaries(
         registry_addresses=frozenset(m.address.lower() for m in live_mailboxes),
         registry_account_ids=frozenset(m.instantly_account_id for m in live_mailboxes if m.instantly_account_id),
         registry_owners=frozenset(m.owner_name for m in live_mailboxes),
         hubspot_pipeline_id=g.hubspot_pipeline_id,
         hubspot_deal_stage_id=g.hubspot_deal_stage_id,
-        clay_function_ids=frozenset(clay_functions),
         settings_sheet_id=settings_sheet_id or os.environ.get("US_OUTBOUND_SETTINGS_SHEET_ID", ""),
         alert_channel=g.alert_channel,
         dev_channel=g.dev_channel,
@@ -131,12 +122,6 @@ class Clients:
         from us_outbound.clients.apollo import Apollo
 
         return Apollo(self.guard, self.transport, self.secrets.get("apollo"))
-
-    @cached_property
-    def clay(self):
-        from us_outbound.clients.clay import Clay
-
-        return Clay(self.guard, self.transport, self.secrets.get("clay"))
 
     @cached_property
     def instantly(self):

@@ -1,12 +1,11 @@
 """Public, unauthenticated sources (SPEC 7, 13): job-post feeds, IRS BMF files, layoffs data.
 
 get() reads only the hosts in guard.PUBLIC_HOSTS (the guard refuses any other host).
-resolve_redirect() sends one HEAD to a prospect's own domain and returns where it
-redirects, without following further (SPEC 13 data cleaning: "follow one redirect").
 site_get() reads one page of a prospect's own site, its root domain or a subdomain (the guard
 refuses any other host), for the careers and benefits page reader (sources/pages.py). It
 returns the whole Response, redirects included, so the reader decides what to follow.
-No credentials, no cookies, and nothing is ever sent but a GET or a HEAD.
+No credentials, no cookies, and nothing is ever sent but a GET. (resolve_redirect, one HEAD to follow a redirect,
+was never wired in and went with W2-1, 20 Oct 2026.)
 """
 
 from __future__ import annotations
@@ -14,8 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from us_outbound.clients.guard import Op
-from us_outbound.clients.http import HttpClient, Response, TransportError
-from us_outbound.logs import log
+from us_outbound.clients.http import HttpClient, Response
 
 USER_AGENT = "spill-us-outbound/1.0 (+https://www.spill.chat/us)"
 ROBOTS_AGENT = "spill-us-outbound"  # the name a robots.txt group addresses us by
@@ -57,11 +55,6 @@ def absolute_location(base: str, location: str) -> str:
     return f"{scheme}://{netloc}{directory}/{loc}"
 
 
-def _header(resp: Response, name: str) -> str:
-    want = name.lower()
-    return next((v for k, v in (resp.headers or {}).items() if k.lower() == want), "")
-
-
 class Public(HttpClient):
     system = "public"
     base_url = ""
@@ -81,25 +74,3 @@ class Public(HttpClient):
         op = Op("site.get", target=host, detail={"domain": domain, "path": path.split("?", 1)[0]})
         headers = {"User-Agent": USER_AGENT, "Accept": PAGE_ACCEPT}
         return self.request("GET", url, op, headers=headers, raw=True, timeout=timeout)
-
-    def resolve_redirect(self, url: str) -> str:
-        """Where url redirects to (one hop, absolute), or url itself if it does not redirect or fails."""
-        _, _, host, _ = split_url(url)
-        try:
-            resp = self._head(url, Op("resolve_redirect", target=host))
-        except TransportError as exc:  # no answer: a timeout or a dropped connection
-            log("redirect_unresolved", host=host, reason=exc.reason)
-            return url
-        if resp is None or not 300 <= resp.status < 400:
-            if resp is not None and resp.status >= 400:
-                log("redirect_unresolved", host=host, status=resp.status)
-            return url
-        location = _header(resp, "Location")
-        return absolute_location(url, location) if location else url
-
-    def _head(self, url: str, op: Op) -> Response | None:
-        """HEAD through the guard, returning the raw Response so the Location header is visible.
-
-        RequestsTransport never follows redirects on HEAD, so the Location is the first hop.
-        """
-        return self.request("HEAD", url, op, raw=True)

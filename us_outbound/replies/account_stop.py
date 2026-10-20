@@ -1,12 +1,13 @@
 """The account-level stop (Harry, 6 Oct 2026): when anyone at an account replies, bounces, unsubscribes or
 complains, every sequence at the account stops, not only theirs.
 
-With one contact per account this was the contact's own stop. With a second contact (enrol/second.py) an account
-can have two leads in its sender's campaign, and today:
+With one contact per account this is the contact's own stop. An account with two leads in its sender's campaign (a
+second contact, enrol/second.py, removed with W2-1, 20 Oct 2026, before any was enrolled) would have had, and the
+sweep keeps covering:
   * a reply: Instantly stops the replying lead, and its campaigns stop "for the company" too (stop_for_company,
     clients/instantly.CAMPAIGN_SETTINGS), which covers the colleague's lead. Not covered: a reply Instantly ties
     to no lead, or takes for an auto-reply (stop_on_auto_reply is off). poll_replies flags those on the reply
-    item (sequence_may_continue), and the account becomes engaged, so no second contact is proposed after it;
+    item (sequence_may_continue), and the account becomes engaged;
   * a bounce: sync_outcomes suppresses that address and marks that contact; Instantly stops only that lead;
   * an unsubscribe (Instantly's link, or a reply asking to stop): replies/optout.py suppresses that address, puts
     it on the blocklist and opts it out in HubSpot; Instantly stops only that lead;
@@ -30,9 +31,8 @@ Per address (Harry, 6 Oct 2026): an unsubscribe or bounce suppresses only the ad
 colleague's emails stop, but they are not suppressed, not blocklisted and not opted out in HubSpot. The
 contact whose own event it was is never touched here: Instantly has stopped their lead already.
 
-With second_contact = no every account has one enrolled contact, so there is never a colleague's lead to stop
-and a reply, bounce or unsubscribe makes the sweep call nothing; it still runs, for accounts given a second contact
-before the switch went off.
+With one enrolled contact per account there is never a colleague's lead to stop, and a reply, bounce or unsubscribe
+makes the sweep call nothing; it still runs, for the suppressed-in-flight stop below and for any account with two.
 
 Suppressed while in flight (Harry, 7 Oct 2026): only enrol checked suppression, so a person who opted out in
 HubSpot after they were enrolled (suppression_load, nightly), or a company whose domain was suppressed since (a
@@ -60,6 +60,7 @@ Dry-run: it counts what it would stop, calls nothing and writes nothing.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
 from us_outbound.base import notify, say
@@ -67,10 +68,12 @@ from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation
 from us_outbound.clients.http import ApiError
 from us_outbound.context import ConfigError, Context
-from us_outbound.enrol import capacity, enrol, second
+from us_outbound.enrol import capacity, enrol
 from us_outbound.logs import hash_email, log
 
 STOPPED = "lead_stopped"  # events.type (enrol/capacity.STOP_EVENTS reads it)
+STOP_TYPES = ("replied", "bounced", "unsubscribed", "complained")  # events.type of a stop (the module docstring)
+OUT_OF_OFFICE = "out_of_office"  # a reply of this class stops nothing
 SUPPRESSED = "suppressed"  # the cause of a stop for an address or domain suppressed while the lead was in flight
 SUPPRESSION_SOURCE = "suppression"  # events.source on the lead_stopped rows it makes
 # events.source on a lead_stopped row whose stop the guard refused (W1-2, 19 Oct 2026; code-replies-crm L2): the
@@ -80,6 +83,20 @@ REFUSED_ALERT = "account_stop_refused"  # its alert's post_once key, with the co
 REFUSED_HEAD = f"{say.URGENT} *A sequence that should have stopped may still be sending*"
 ID_CHUNK = 1000
 LIST_LIMIT = 50
+
+
+def is_stop(event: Mapping[str, Any], *, classified_only: bool = False) -> bool:
+    """Whether this events row stops every sequence at its account. classified_only: an unclassified reply
+    (poll_replies has not read it yet) waits for its class, as it may be an out-of-office one."""
+    t = event.get("type")
+    if t not in STOP_TYPES:
+        return False
+    if t != "replied":
+        return True
+    cls = event.get("reply_class")
+    if not cls:
+        return not classified_only
+    return cls != OUT_OF_OFFICE
 
 
 def marker(contact_id: str) -> str:
@@ -128,15 +145,15 @@ def to_stop(ctx: Context) -> list[tuple[dict, dict]]:
     Outbound campaign, with no stop of their own and not stopped here before; and contacts suppressed while in
     flight, with everyone else at their account."""
     store = ctx.store
-    events = store.select("events", {"type": list(second.STOP_TYPES)})
-    stops = [e for e in events if second.is_stop(e, classified_only=True)]
+    events = store.select("events", {"type": list(STOP_TYPES)})
+    stops = [e for e in events if is_stop(e, classified_only=True)]
     suppressed = suppressed_in_flight(ctx)
     if not stops and not suppressed:
         return []
     done = {str(e["event_id"]) for e in store.select("events", {"type": STOPPED})}
     # Whoever replied, bounced, unsubscribed or complained themselves (a reply not classified yet too): Instantly
     # stopped their own lead, which is left as it is.
-    own = {str(e.get("contact_id")) for e in events if e.get("contact_id") and second.is_stop(e)}
+    own = {str(e.get("contact_id")) for e in events if e.get("contact_id") and is_stop(e)}
     by_contact: dict[str, dict] = {}
     contact_ids = sorted(own)
     for i in range(0, len(contact_ids), ID_CHUNK):

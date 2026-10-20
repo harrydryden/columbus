@@ -131,19 +131,16 @@ def test_the_monthly_budgets_at_80_and_100_percent_once_a_month_each():
     spend.check(ctx)
     assert len(posts(t)) == 1
     spent(ctx, "apollo", 400)
-    spent(ctx, "clay", 1_900)
+    spent(ctx, "clay", 1_900)  # an old Clay row: Clay's budget went with W2-1, so it asks nothing
     spend.check(ctx)
     text = posts(t)[-1]
-    assert text.startswith("<@U_HARRY> :rotating_light: *Credits and settings: 2 things need a decision*\n")
+    assert text.startswith("<@U_HARRY> :rotating_light: *Credits and settings: 1 thing needs a decision*\n")
     assert (f":rotating_light: *Apollo's monthly budget is used up, so we have stopped {STOPS_APOLLO} until 1 Nov.*\n"
             "2,050 of the 2,000 credits we allow a month are spent.\n"
             "*What to do:* to carry on this month, raise `apollo_monthly_credits` (now 2,000) to about 2,374, what this "
             f"month needs at its pace so far, on the {GENERAL}; it applies at the next settings sync, or now with "
             "`railway ssh -- us-outbound sync`. Otherwise it starts again on 1 Nov.") in text
-    assert (":warning: *Clay's monthly budget is 95% used; at 100% we stop checking companies in Clay and looking up "
-            "emails there until 1 Nov.*\n1,900 of the 2,000 credits we allow a month are spent.\n"
-            "*What to do:* this month needs about 2,200 at its pace so far: raise `clay_monthly_credits` (now 2,000) on "
-            f"the {GENERAL}, or let it stop.") in text
+    assert "Clay" not in text
     november, t2 = world(now=datetime(2026, 11, 2, 9, 0, tzinfo=UTC))
     november.store = ctx.store
     november.store.guard = november.guard

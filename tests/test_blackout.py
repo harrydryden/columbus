@@ -364,24 +364,24 @@ def test_start_over_a_blackout_resumes_enrolment_and_leaves_the_campaigns_for_th
     assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
 
 
-def test_status_golive_and_the_cohort_report_say_paused_for_the_blackout(capsys, monkeypatch):
-    from tests.test_golive import lines_of, ready_world
+def test_status_its_campaigns_check_and_the_cohort_report_say_paused_for_the_blackout(capsys):
+    from tests.test_live_checks import ready_world
     from us_outbound.ops import cli
 
-    f = ready_world(monkeypatch)
+    f = ready_world()
     f.ctx.now = EVE
     f.ctx.job = "blackout"
     f.ctx.guard.configure(live=True)
     blackout.run(f.ctx)
     f.ctx.guard.configure(live=False)
     f.ctx.now = DURING
-    assert cli.main(["golive"], context_factory=f) in (0, 1)
+    # status prints the go-live Campaigns check it kept from golive (W2-1; ops/live_checks.py).
+    assert cli.main(["status"], context_factory=f) == 0
     out = capsys.readouterr().out
-    assert lines_of(out)["Campaigns"] == "PASS  Campaigns: all 3 exist and match; 3 paused for the blackout until Mon 30 Nov"
+    assert "  US Outbound – Hannah Spalding: paused for the blackout until Mon 30 Nov" in out
+    assert "  PASS  Campaigns: all 3 exist and match; 3 paused for the blackout until Mon 30 Nov" in out.splitlines()
     assert "US Outbound – Hannah Spalding: matches (paused); paused for the blackout until Mon 30 Nov, when the " \
            "blackout job starts it again" in out
-    assert cli.main(["status"], context_factory=f) == 0
-    assert "  US Outbound – Hannah Spalding: paused for the blackout until Mon 30 Nov" in capsys.readouterr().out
     lines = cohorts.log_lines(f.ctx, None, None)
     assert any(line.endswith("US Outbound – Hannah Spalding paused for the blackout until 2026-11-30 (0 leads in "
                              "flight)") for line in lines), lines

@@ -24,24 +24,19 @@ pipeline of companies to send to, the [un]subscribes, the replies, and anything 
 surface to make the system better over time". It covers the day before, and reads top to bottom:
   * the headline: sent, companies that replied (positive or referral among them), unsubscribes, companies and
     contacts found, and accounts ready to send, on one line;
-  * Needs you (4 Oct 2026), right under it: the send approvals waiting for a ✅ (the oldest's age,
-    and that a card lapses at the end of the next send day), the reply items waiting (the oldest's
-    age), the kill-rule holds in force and an open hand-check; or "nothing";
+  * Needs you (4 Oct 2026), right under it: the reply items waiting (the oldest's age), the kill-rule holds in
+    force and an open hand-check; or "nothing";
   * Sent and outcomes: sends by step, replies by class, positive and referral replies, bounces,
     unsubscribes, demos booked and held (the events table; sync_outcomes, poll_replies and
     hubspot_readback write it); objections, negatives and "other" replies, out-of-office replies,
     and warm accounts: enrolled accounts that visited the US site (SPEC 11);
-  * Approvals, Found, Pipeline and To improve (learn/daily_report.py): the Slack send approvals
-    (left out until they exist), the companies and contacts identified in the period, what is
-    ready to send now and what stands behind it, and what the data says to tune, each line only
-    once there is enough data;
+  * Found, Pipeline and To improve (learn/daily_report.py): the companies and contacts identified in the period,
+    what is ready to send now and what stands behind it, and what the data says to tune, each line only once
+    there is enough data;
   * Today's number: what limits it, each sender's capacity, and the credit budgets (limits.py,
-    the same lines `us-outbound status` prints), with the send approvals still waiting counted as
-    enrol counts them (enrol/approvals.waiting: their accounts are not ready again, and they hold
-    their senders' slots); and why enrollment waits today, from enrol.gate (a blackout or non-send
-    day, an operator stop, the stop rule, a positive reply waiting too long), plus the hand-check
-    only while auto_send = yes, and a note when live_sending is no (enrol then runs dry); and the
-    second-contact switch (enrol/second.py; 6 Oct 2026): "Second contact: off", or how many are ready;
+    the same lines `us-outbound status` prints); and why enrollment waits today, from enrol.gate (a blackout or
+    non-send day, an operator stop, the stop rule, a positive reply waiting too long), plus the hand-check while
+    it gates the day (enrol.hand_check), and a note when live_sending is no (enrol then runs dry);
   * Sources: the careers and benefits page reader's coverage, its last run, every account read so
     far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
     what Apollo's organization enrich found, with funding in the last 180 and 365 days
@@ -51,7 +46,7 @@ surface to make the system better over time". It covers the day before, and read
     (sources/lookalike_leads.py);
   * Labels (Harry, 7 Oct 2026; labels.py): the industry label check's companies checked in the period and their
     decisions (agreed, overruled, the group's or General copy, held, disqualified), the companies the last
-    verify_accounts left unchecked and why, and the cards' industry corrections against the cards decided;
+    verify_accounts left unchecked and why, and the industry corrections made by hand;
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
   * Kill rules and items waiting: rules that fired and the holds still in force
@@ -68,7 +63,7 @@ It posts to the alert channel (the dev channel in dry-run), or to the log with n
 
 Before it, the asks (Harry, 7 Oct 2026), each in its own message with the approvers mentioned and each
 line once (base/notify.post_once): the credit and spend alerts (learn/spend.py: Apollo's balance against
-apollo_floor, the monthly Apollo and Clay budgets, Claude's spend against its cap, Apollo's website-visitor
+apollo_floor, the monthly Apollo budget, Claude's spend against its cap, Apollo's website-visitor
 credits). The mailboxes to add three weeks ahead (learn/capacity_ahead.py) are a Monday ask, so the Monday
 readout makes it. The credit budget lines end with the one-line spend summary (spend.summary_line).
 """
@@ -85,7 +80,7 @@ from us_outbound import fmt, labels, limits
 from us_outbound.base import holds, notify, say
 from us_outbound.clients.db import Range
 from us_outbound.context import UK, Context
-from us_outbound.enrol import approvals, enrol, focus, second, today
+from us_outbound.enrol import enrol, focus, today
 from us_outbound.learn import daily_report, kill_rules, spend
 from us_outbound.logs import clip, log
 from us_outbound.ops import retention
@@ -104,7 +99,8 @@ HAND_CHECK = "hand_check"  # hitl_items.kind of the weekly hand-check (enrol/han
 # "reply" is poll_replies' kind; "reply_approval" the first name, kept for old rows. Kill-rule holds are listed
 # as holds, never as waiting for approval.
 KIND_LABELS = {"reply": "replies", "reply_approval": "reply approvals", HAND_CHECK: "hand-checks",
-               "manual_merge": "manual merges", daily_report.KIND: "send approvals"}
+               "manual_merge": "manual merges"}
+SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind (replies/desk.close_send_approvals)
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
 
 
@@ -164,25 +160,20 @@ def _names(ctx: Context, ids: set[str]) -> dict[str, str]:
 class ForYou:
     """What waits for a person now (the post's "Needs you" line, and `us-outbound status`)."""
 
-    send_approvals: list[dict]  # cards waiting for a ✅: open and not lapsed
     replies: list[dict]  # reply items to answer: open or escalated
     holds: list[dict]  # kill-rule holds in force
     hand_checks: list[dict]  # the weekly hand-check, while it waits
 
     @property
     def counts(self) -> dict[str, int]:
-        return {"send_approvals": len(self.send_approvals), "replies": len(self.replies),
+        return {"replies": len(self.replies),
                 "kill_rule_holds": len(self.holds), "hand_checks": len(self.hand_checks)}
 
 
 def for_you(ctx: Context, open_items: Sequence[Mapping[str, Any]] | None = None) -> ForYou:
-    """From the hitl_items open or escalated (read here unless given). A send approval past the end of its
-    next send day has lapsed: poll_approvals closes it within minutes, and it needs nobody."""
+    """From the hitl_items open or escalated (read here unless given)."""
     rows = list(open_items) if open_items is not None else ctx.store.select("hitl_items", {"status": list(WAITING)})
-    today = ctx.today_uk()
-    sends = [dict(i) for i in rows if i.get("kind") == daily_report.KIND and i.get("status") == "open"
-             and not approvals.is_expired(i.get("payload") if isinstance(i.get("payload"), Mapping) else {}, today)]
-    return ForYou(send_approvals=sends, replies=[dict(i) for i in rows if is_reply(i)],
+    return ForYou(replies=[dict(i) for i in rows if is_reply(i)],
                   holds=[dict(i) for i in rows if i.get("kind") == holds.KIND],
                   hand_checks=[dict(i) for i in rows if i.get("kind") == HAND_CHECK])
 
@@ -196,12 +187,8 @@ def _oldest(ctx: Context, items: Sequence[Mapping[str, Any]]) -> str:
 
 
 def needs_you(ctx: Context, w: ForYou) -> str:
-    """"*Needs you:* 3 send approvals (the oldest has waited 20 hours; ...) · 1 reply (waited 2 hours) · ..."."""
+    """"*Needs you:* 1 reply (waited 2 hours) · 1 kill-rule hold (...) · ..."."""
     parts = []
-    if w.send_approvals:
-        age = _oldest(ctx, w.send_approvals)
-        parts.append(f"{fmt.plural(len(w.send_approvals), 'send approval')} ({age + '; ' if age else ''}"
-                     "a card lapses at the end of the next send day)")
     if w.replies:
         age = _oldest(ctx, w.replies)
         parts.append(fmt.plural(len(w.replies), "reply", "replies") + (f" ({age})" if age else ""))
@@ -308,21 +295,17 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     if enrolled:
         lines.append("Warm accounts (enrolled, visited the US site): " + ", ".join(visited))
 
-    # Today's number, its senders and the ready accounts exactly as enrol.run works them out: the send
-    # approvals still waiting keep their accounts out of the candidates and hold their senders' slots.
+    # Today's number, its senders and the ready accounts exactly as enrol.run works them out.
     t = today.read(ctx)
-    today_et, hand_check_waits, held, lim = t.day, t.waits, t.held, t.limits
-    ready = [*t.ready, *t.seconds]  # every contact enrol could propose: first and second (enrol/today.py)
+    today_et, hand_check_waits, lim = t.day, t.waits, t.limits
+    ready = t.ready
     nums.update(number=lim.number, limited_by=lim.explanation, ready_accounts=t.ready_count)
 
-    # The funnel (Harry, 2 Oct 2026): approvals, what was found, the pipeline, and what to tune.
+    # The funnel (Harry, 2 Oct 2026): what was found, the pipeline, and what to tune.
     data = daily_report.Rows.load(ctx)
-    section, more = daily_report.approvals(ctx, data, start, end)
-    lines += ["", *section] if section else []
-    nums.update(more)
     improve: list[str] = []
     for section, more in (daily_report.found(ctx, data, start, end, label),
-                          daily_report.pipeline(ctx, data, ready, set(held.accounts), lim),
+                          daily_report.pipeline(ctx, data, ready, lim),
                           daily_report.to_improve(ctx, data)):
         lines += ["", *section]
         nums.update(more)
@@ -333,21 +316,18 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     lines.insert(2, needs_you(ctx, waiting_on))
     nums.update(needs_you=waiting_on.counts)
 
-    # Today's number, each sender, the budgets (limits.py), and why enrollment waits: enrol's own gates, and
-    # the hand-check only while auto_send = yes (with no, every email is approved in Slack instead); with
-    # hand_check_gate = no it never waits (enrol.hand_check: only the sampled companies are held).
+    # Today's number, each sender, the budgets (limits.py), and why enrollment waits: enrol's own gates, and the
+    # hand-check while it gates the day; with hand_check_gate = no it never waits (enrol.hand_check: only the sampled
+    # companies are held).
     lines += ["", "*Today's number*", lim.explanation]
     lines += [f"  {line}" for line in lim.detail]
-    if not second.on(ctx.settings):  # when on, limits.py's own line says how many are ready
-        lines.append(f"  {second.describe(ctx.settings)}")
     why = enrol.gate(ctx, today_et)
-    if why is None and ctx.settings.general.auto_send:
+    if why is None:
         why = hand_check_waits
     if why:
         lines.append(f"  Enrollment waits: {why}.")
     if not ctx.settings.general.live_sending and "live_sending" not in (why or ""):
-        lines.append("  Running dry: live_sending is no, so enrol reaches nobody (a few cards go to the dev channel "
-                     "as a preview).")
+        lines.append("  Running dry: live_sending is no, so enrol reaches nobody.")
     lines.append("Credit budgets this month:")
     lines += [f"  {line}" for line in lim.budget_lines]
     spent = spent if spent is not None else spend.read(ctx)
@@ -369,7 +349,7 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
     # Website visits from Apollo, or that its tracker sends no data (Harry, 5 Oct 2026): one line.
     lines.append(site_visits.post_line(ctx))
 
-    # The industry label check (labels.py; Harry, 7 Oct 2026): its checks, and the cards' corrections.
+    # The industry label check (labels.py; Harry, 7 Oct 2026): its checks, and the corrections made by hand.
     lines += ["", "*Labels*", *labels.post_lines(ctx, start, end)]
 
     # Mailbox health: sends in the period, bounces over the last 100, the ramp.
@@ -406,8 +386,9 @@ def gather(ctx: Context, spent: spend.Spend | None = None) -> Day:
         lines.append(f"  Holds in force: {len(in_force)} (`us-outbound killrules show`)")
     nums.update(kill_rules_fired=len(fired), holds_in_force=len(in_force))
 
-    # What waits for an approval (a kill-rule hold is a hold, listed above, not an approval).
-    waiting = [i for i in data.open_items if i.get("kind") != holds.KIND]
+    # What waits for an approval (a kill-rule hold is a hold, listed above, not an approval; a send approval left
+    # open from before W2-1 waits for nobody: the reply desk closes it).
+    waiting = [i for i in data.open_items if i.get("kind") not in (holds.KIND, SEND_APPROVAL_KIND)]
     by_kind = Counter(KIND_LABELS.get(str(i.get("kind")), str(i.get("kind"))) for i in waiting)
     if waiting:
         oldest = min((utc(i.get("created_at")) for i in waiting if utc(i.get("created_at"))), default=None)
@@ -474,10 +455,6 @@ def _needs(ctx: Context, w: ForYou) -> list[str]:
     """The asks, numbered: what to do, and where (the channel, or the command to paste)."""
     channel = ctx.settings.general.alert_channel
     out = []
-    if w.send_approvals:
-        age = _waited(ctx, w.send_approvals)
-        out.append(f"Approve {fmt.plural(len(w.send_approvals), 'email')} ({age + '; ' if age else ''}a card lapses after "
-                   f"its next send day): ✅ or ❌ on each card in {channel}")
     if w.replies:
         age = _waited(ctx, w.replies)
         n = len(w.replies)
@@ -521,10 +498,6 @@ def _yesterday(day: Day) -> list[str]:
     if n.get("demos_booked"):
         parts.append(f"{fmt.plural(n['demos_booked'], 'demo')} booked")
     out = [" · ".join(parts)]
-    cards = [(n.get("approved", 0), "approved"), (n.get("contact_declined", 0) + n.get("company_dropped", 0), "declined"),
-             (n.get("approvals_expired", 0), "lapsed with no answer")]
-    if any(k for k, _ in cards):
-        out.append("Email cards: " + ", ".join(f"{k} {word}" for k, word in cards if k))
     found = f"Found {fmt.plural(n.get('found_companies', 0), 'company', 'companies')}"
     sources = n.get("found_by_source") or {}
     if len(sources) == 1:
@@ -547,23 +520,16 @@ def _today(ctx: Context, day: Day) -> list[str]:
     if day.why:
         out = ["*Today: no new people added to the emails*", f"Why: {day.why}."]
     else:
-        pending = sum(c.pending for c in lim.senders.values())
-        if not lim.number and pending:  # every sender's room is taken by cards waiting (12 Oct 2026: "up to 0")
-            out = ["*Today: no new people until the waiting emails are approved*",
-                   f"Each sender's room for today is taken by the {fmt.plural(pending, 'email')} waiting for your ✅."]
-        else:
-            out = [f"*Today: up to {fmt.plural(lim.number, 'new person', 'new people')} added to the emails*"]
-            binding = str(t.get("binding"))
-            limit = LIMIT_WORDS.get(binding, limits.LABELS.get(binding, binding))
-            if binding == "sending_capacity" and day.ramping:
-                limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
-            out.append(f"Held to that by {limit}")
+        out = [f"*Today: up to {fmt.plural(lim.number, 'new person', 'new people')} added to the emails*"]
+        binding = str(t.get("binding"))
+        limit = LIMIT_WORDS.get(binding, limits.LABELS.get(binding, binding))
+        if binding == "sending_capacity" and day.ramping:
+            limit += f" ({fmt.plural(day.ramping, 'mailbox', 'mailboxes')} still warming up)"
+        out.append(f"Held to that by {limit}")
     names = _short_names(list(lim.senders))
     senders = []
     for owner, c in ({} if day.why else lim.senders).items():  # no room to show on a day nobody is added
         part = f"{names.get(owner, owner)} {c.free}"
-        if c.pending:
-            part += f" (+{c.pending} waiting for ✅)"
         if c.not_sending:
             part += " (not sending)"
         senders.append(part)

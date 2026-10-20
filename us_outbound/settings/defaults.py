@@ -33,17 +33,11 @@ _GENERAL: list[tuple[str, str, str]] = [
         "live_sending",
         "no",
         "The master switch and Harry's sign-off. no: nothing reaches a prospect or Instantly. yes: emails go out "
-        "(each still waits for your ✅ while auto_send is no). Sheet edits apply at the next sync (02:00 and 11:30 "
+        "once the day's leads are added to Instantly. Sheet edits apply at the next sync (02:00 and 11:30 "
         "UK on weekdays), or now with `us-outbound sync`. To stop sending that is already under way, run "
         "`us-outbound stop --live`.",
     ),
-    (
-        "auto_send",
-        "no",
-        "no (the pilot): every email waits for an approver's ✅ on its card in #us-outbound. yes: emails go straight "
-        "to Instantly once the weekly hand-check is approved. Nothing goes out while live_sending is no.",
-    ),
-    ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company, and a second contact (second_contact) counts too. Each send day takes what is left of it ÷ the send days left in the week."),
+    ("weekly_enrol_cap", "150", "Most new contacts enrolled in a week (Monday to Sunday, UK time): one a company. Each send day takes what is left of it ÷ the send days left in the week."),
     # control_share is retired (settings/validate.RETIRED_GENERAL; Harry, 19 Oct 2026): explore_share takes its
     # place as a new key, at 0, so `settings load` removes the old row and adds the new one without starting the arm.
     (
@@ -85,12 +79,6 @@ _GENERAL: list[tuple[str, str, str]] = [
     ),
     ("score_cap", "100", "Cap on an account's total score."),
     (
-        "clay_monthly_credits",
-        "2000",
-        "Clay credits the jobs may spend each calendar month (UK time), about 500 a week. "
-        "Each weekday may use what is left ÷ the weekdays left. 0 means no Clay calls.",
-    ),
-    (
         "apollo_monthly_credits",
         "2000",
         "Apollo credits the jobs may spend each calendar month (UK time), about 500 a week. "
@@ -101,7 +89,7 @@ _GENERAL: list[tuple[str, str, str]] = [
     (
         "approver_slack_ids",
         "",
-        "Slack member ids (U…) whose ✅ counts on send cards and reply drafts, comma-separated. Harry: U098X453UAG. "
+        "Slack member ids (U…) whose ✅ counts on reply drafts, comma-separated. Harry: U098X453UAG. "
         "A mailbox owner's slack_id (Mailboxes tab) can also approve replies to their own mailbox.",
     ),
     ("escalation_email", "harry@spill.chat", "Where human-in-the-loop items go after escalation_hours."),
@@ -123,8 +111,6 @@ _GENERAL: list[tuple[str, str, str]] = [
         "2026-11-23..2026-11-27, 2026-12-18..2027-01-04",
         "No enrollment on these dates: comma-separated YYYY-MM-DD..YYYY-MM-DD ranges (Thanksgiving week; the holidays).",
     ),
-    ("recontact_person_months", "12", "Not used yet; leave as it is."),
-    ("recontact_account_months", "6", "Not used yet; leave as it is."),
     (
         "stop_rule_accounts",
         "1500",
@@ -153,62 +139,10 @@ _GENERAL: list[tuple[str, str, str]] = [
     ("hubspot_pipeline", "Spill 3.0", "Deals go in this pipeline."),
     ("hubspot_pipeline_id", "",
      "The pipeline's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
-    ("hubspot_deal_stage", "", "Not used yet; leave as it is."),
     ("hubspot_deal_stage_id", "",
      "Its first stage's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
     ("hubspot_owner_id", "",
      "Harry's HubSpot owner id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
-    ("clay_accounts_function_id", "", "Clay function \"US Outbound – Accounts\", once built in phase 0."),
-    ("clay_contacts_function_id", "", "Clay function \"US Outbound – Contacts\", once built in phase 0."),
-    ("clay_credits_per_account", "0", "Not used yet; leave as it is."),
-    (
-        "clay_verification",
-        "skip",
-        "required: every account passes through Clay before it can be emailed (SPEC 2, verify_in_clay). "
-        "skip: verify_accounts verifies an account on its Apollo data and HubSpot instead. "
-        "Harry, 1 Oct 2026: go live on 5 Oct before the Clay functions exist; set to required once they do.",
-    ),
-    (
-        "clay_email_fallback",
-        "no",
-        "yes: when Apollo has no verified email for the chosen person (a miss or a catch-all), pick_contacts asks "
-        "Clay's Work Email waterfall, within clay_monthly_credits; only a valid result is used. "
-        "Harry, 2 Oct 2026: no until Clay's server-callable path is confirmed: run "
-        "`us-outbound clay check-email --first YOUR_FIRST_NAME --last YOUR_LAST_NAME --domain spill.chat --live` "
-        "first; it says when to set this to yes.",
-    ),
-    (
-        "clay_cross_check",
-        "no",
-        "yes: before an account whose HQ state or size Apollo leaves in doubt goes to the weekly hand-check, "
-        "verify_accounts asks Clay's \"US Outbound – Accounts\" function (clay_accounts_function_id) once, within "
-        "clay_monthly_credits. A doubt Clay settles is dropped; where Clay disagrees, the hand-check shows both counts or "
-        "states. A missing HQ state or size is filled in from Clay. Needs clay_accounts_function_id. Harry, 6 Oct 2026: "
-        "no until the function is built in Clay (docs/pipeline.md has its spec).",
-    ),
-    (
-        "second_contact",
-        "no",
-        "yes: at companies of second_contact_min_employees or more staff, a second person of another role (the "
-        "founder, say, when the first was the People leader) gets their own emails, from the same sender, "
-        "second_contact_delay_days after the first person's email 1. Second contacts take only the room the first "
-        "contacts of new companies leave, and count towards the week and each sender's day like anyone. When anyone "
-        "at the company replies, bounces, unsubscribes or complains, both people's emails stop. no: one person per "
-        "company. Harry, 6 Oct 2026: no while sending capacity is the limit.",
-    ),
-    (
-        "second_contact_min_employees",
-        "50",
-        "The smallest company, by staff, that gets a second contact. Read as the Roles tab reads size, so a company "
-        "in the 50-99 band counts as 50.",
-    ),
-    (
-        "second_contact_delay_days",
-        "3",
-        "Days after the first person's email 1 before the second person's, so the two never arrive the same day "
-        "(at least 1). A multiple of 7 would put the second's emails on the days of the first's follow-ups.",
-    ),
-    ("apollo_credits_per_account", "1", "Not used yet; leave as it is."),
     (
         "apollo_enrich_groups",
         "Technology & Startups",
@@ -295,18 +229,6 @@ _GENERAL: list[tuple[str, str, str]] = [
      "The generic opener for a founder or executive. Added by the build."),
     ("opener_generic_ops", General.opener_generic_ops,
      "The generic opener for operations. Added by the build."),
-    (
-        "opener_focus",
-        "no",
-        "yes: an account with no signal line gets opener_focus_line, with a short \"what they do\" phrase the "
-        "task model takes from Apollo's keywords and description (about $0.002 an account, once, in live runs "
-        "only; within the monthly cap). Added by the build.",
-    ),
-    (
-        "opener_focus_line",
-        "I came across {company} and its work on {focus}.",
-        "The line opener_focus uses. Tokens: {company}, {focus}, {city}. Added by the build.",
-    ),
     (
         "email1_subject",
         General.email1_subject,
@@ -905,7 +827,6 @@ def default_tabs() -> dict[str, list[dict[str, str]]]:
         "Overrides": [],
         "Tests": [dict(_FIRST_TEST)],
         "Focus": _rows("Focus", _FOCUS),
-        "Named accounts": [],
     }
     for tab, rows in tabs.items():
         for row in rows:

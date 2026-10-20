@@ -11,7 +11,7 @@ rerun or a restart never repeats a line):
     at that pace (a new mailbox or a purchase takes time), or the balance is already under it: once a UK day. When
     Apollo's balance cannot be read, a source's skip for the floor in the last LOOKBACK says it instead.
     Apollo's balance also falls with use outside these jobs (the Apollo app), which the ledger does not see.
-  * The monthly budgets (budget.monthly: apollo_monthly_credits, clay_monthly_credits) at 80% and 100% used, once
+  * The monthly budget (budget.monthly: apollo_monthly_credits) at 80% and 100% used, once
     a UK month each, saying what stops at 100% and the key that raises it.
   * Claude's spend this month (credit_ledger, the UTC month, as clients/claude.py counts it) at 50%, 80% and 100%
     of claude_monthly_cap_usd, once a UTC month each. 100% is where the client refuses every call (the cap less
@@ -46,16 +46,15 @@ from us_outbound.timeparse import utc
 
 PACE_DAYS = 14  # the Apollo pace: its average daily spend in credit_ledger over this many days
 FLOOR_WARN_DAYS = 21  # ask when apollo_floor is fewer days away than this
-BUDGET_STEPS = (0.8, 1.0)  # apollo_monthly_credits and clay_monthly_credits
+BUDGET_STEPS = (0.8, 1.0)  # apollo_monthly_credits
 CLAUDE_STEPS = (0.5, 0.8, 1.0)  # claude_monthly_cap_usd
 VISITOR_WARN_SHARE = 0.15  # Apollo's website-visitor credits: ask when fewer than this share are left
 LOOKBACK = timedelta(hours=26)  # a source's skip for the floor this recent stands in for an unread balance
 # The jobs that check Apollo's balance against apollo_floor before spending (sources/apollo_credits.floor_reason).
 FLOOR_JOBS = ("source_universe", "apollo_signals", "apollo_enrich", "site_visits", "lookalikes", "lookalike_leads",
               "pick_contacts")
-# What we stop doing when Apollo or Clay has no credits left, in plain words ("we have stopped ...").
-STOPS = {"apollo": "finding new companies and looking up contacts' emails",
-         "clay": "checking companies in Clay and looking up emails there"}
+# What we stop doing when Apollo has no credits left, in plain words ("we have stopped ...").
+STOPS = {"apollo": "finding new companies and looking up contacts' emails"}
 CLAUDE_STOPS = ("replies get no draft and are filed as \"other\", the copy check stops, and new companies wait unchecked "
                 "for their industry label")
 CLAUDE_WHAT = "Claude (the AI that reads replies, drafts answers and checks labels)"
@@ -131,7 +130,7 @@ def read(ctx: Context) -> Spend:
     spent = budget.spent_in(ctx.store, "apollo", ctx.now - timedelta(days=PACE_DAYS), ctx.now)
     return Spend(
         apollo_left=left, apollo_floor=s.general.apollo_floor, apollo_pace=spent / PACE_DAYS,
-        budgets={sys: budget.monthly(ctx.store, s, sys, ctx.now) for sys in ("apollo", "clay")},
+        budgets={sys: budget.monthly(ctx.store, s, sys, ctx.now) for sys in budget.MONTHLY_KEYS},
         claude_usd=month_spend_usd(ctx.store, ctx.now), claude_cap=float(s.general.claude_monthly_cap_usd),
         visitors=visitors, apollo_error=error, floor_skip=_floor_skip(ctx) if left is None else "",
     )
@@ -273,7 +272,7 @@ def asks(ctx: Context, sp: Spend) -> list[tuple[str, str]]:
     """Every (key, line) due today, before deduplication; the industry label check's asks last (labels.asks)."""
     from us_outbound import labels
 
-    found = [apollo_floor_ask(ctx, sp), *(budget_ask(ctx, sp.budgets[sys]) for sys in ("apollo", "clay")),
+    found = [apollo_floor_ask(ctx, sp), *(budget_ask(ctx, sp.budgets[sys]) for sys in budget.MONTHLY_KEYS),
              claude_ask(ctx, sp), visitors_ask(ctx, sp)]
     return [a for a in found if a is not None] + labels.asks(ctx)
 

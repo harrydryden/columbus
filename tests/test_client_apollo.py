@@ -31,7 +31,6 @@ READ_METHODS = {
     "job_postings",
     "search_people",
     "bulk_match",
-    "website_visitor_aggregates",
     "search_website_visitors",
 }
 
@@ -51,7 +50,6 @@ def exercise(apollo):
     apollo.job_postings("org1")
     apollo.search_people({"person_titles": ["Head of People"]})
     apollo.bulk_match([{"id": "p1"}])
-    apollo.website_visitor_aggregates("spill.chat", ["org1"])
     apollo.search_website_visitors(["spill.chat"], days=30, pages=["/us"])
 
 
@@ -235,23 +233,6 @@ def test_bulk_match_chunks_of_ten_and_no_personal_emails():
     with pytest.raises(ValueError):
         apollo.bulk_match([{"id": "p1"}], reveal_personal_emails=True)
     assert len(t.requests) == 3
-
-
-def test_website_visitor_aggregates_per_company():
-    apollo, t, _ = make()
-    t.route("GET", "/website_visitors/domain_aggregates", fn=lambda req: (
-        {"visits": 4, "top_paths": ["/us", "/us/pricing"]} if req.params["organization_id"] == "o1" else None
-    ))
-    out = apollo.website_visitor_aggregates("spill.chat", ["o1", "o1", "o2"], since="2026-09-01", until="2026-09-30")
-    assert out == {"o1": {"visits": 4, "top_paths": ["/us", "/us/pricing"]}, "o2": {}}
-    assert [r.params for r in t.requests] == [
-        {"domain": "spill.chat", "organization_id": "o1", "from": "20260901", "to": "20260930"},
-        {"domain": "spill.chat", "organization_id": "o2", "from": "20260901", "to": "20260930"},
-    ]
-
-    apollo, t, _ = make()
-    t.route("GET", "/website_visitors/domain_aggregates", status=404, body={"error": "stats not found"})
-    assert apollo.website_visitor_aggregates("spill.chat", ["o3"]) == {"o3": {}}
 
 
 def test_website_visitor_search_body_is_read_only_and_never_resent():

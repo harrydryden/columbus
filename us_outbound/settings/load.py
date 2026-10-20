@@ -11,9 +11,8 @@ command merges them into the sheet without losing Harry's own edits:
     renamed and given the build's value, since its unit changed; retired keys (postal_address,
     privacy_url) are removed; keys the sheet does not have
     yet are added with the build's value and note; `--set key=value` sets the values Harry has
-    decided. Note-only rows stay where they are. clay_verification (Harry, 1 Oct 2026) arrives
-    this way as skip; `--set clay_verification=required` once the Clay functions exist.
-    `--set` refuses the sign-off keys (SIGN_OFF: live_sending, auto_send, optout_tested,
+    decided. Note-only rows stay where they are.
+    `--set` refuses the sign-off keys (SIGN_OFF: live_sending, optout_tested,
     approver_slack_ids): this command is live with --live alone, and those are Harry's to set on
     the sheet. A load never changes the note of a key the tab already has; `--take note` refreshes
     those notes from the build's, and never touches a value.
@@ -74,9 +73,9 @@ KEEP: dict[str, tuple[str, ...]] = {"Industries": ("active", "priority", "proof_
 # already has from the build's (their values are never touched by this).
 GENERAL_TAKE = ("note",)
 # The sign-off keys: Harry sets them on the sheet. `settings load` is an operator command, live with
-# --live alone, so its --set must not be a way round his sign-off (live_sending, auto_send and
+# --live alone, so its --set must not be a way round his sign-off (live_sending and
 # optout_tested decide what is sent; approver_slack_ids decides who may approve it).
-SIGN_OFF = ("live_sending", "auto_send", "optout_tested", "approver_slack_ids")
+SIGN_OFF = ("live_sending", "optout_tested", "approver_slack_ids")
 # Tabs where every column the sheet already has keeps its value, blank included (Harry, 2 Oct 2026: the
 # tokenized openers arrive as new Signals columns without undoing his edits). Columns the sheet does not
 # have yet take the build's values; `--take COLUMN` lets the build win for one column, as the design

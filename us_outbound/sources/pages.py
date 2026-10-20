@@ -1,10 +1,10 @@
 """Source "careers_pages" and the read_pages job: what a company says about its benefits (Harry, 2 Oct 2026).
 
 Harry's decision of 2 Oct 2026: Clay's page reading moves into our own code, with no Clay
-credits; Clay is kept for the email waterfall (contacts/pick.py). This job feeds the signals
+credits (Clay was removed altogether: W2-1, 20 Oct 2026). This job feeds the signals
 that read what a company says about its benefits: Mental health support listed, EAP named,
 Wellbeing app or perk named, Progressive benefits and Modern mental-health vendor named (a Hold).
-Their Signals rows list careers_pages and job_posts beside clay_careers, for when Clay returns.
+Their Signals rows list careers_pages beside clay_careers and job_posts, sources nothing writes any more.
 
 Each weekday at 03:45 UK, after source_universe (03:00) and before verify_accounts (04:30), whose
 rescore scores the new facts, first a home-page pass (home_pass) for the label check: each queue account whose label
@@ -25,10 +25,7 @@ One account, cheapest and most structured first:
      domain and its subdomains are read (the guard refuses any other host); a redirect is
      followed only within them, PAGE_TIMEOUT seconds a page, one attempt, no JavaScript, our
      own User-Agent (clients/public.py). A path robots.txt disallows is not read.
-  2. Its job board (job_posts, sources/job_posts.py): a Greenhouse, Lever, Ashby or Workable
-     board linked or embedded on the pages read, or else the domain stem as a slug when the
-     feed confirms it is the same company.
-  3. Extraction is deterministic and free (clean/pages.py): the sentences and list items that
+  2. Extraction is deterministic and free (clean/pages.py): the sentences and list items that
      mention benefits, mental health, the EAP, wellbeing, perks, leave, stipends or any term of
      the page signals on the Signals tab, with the quote and the URL. No model reads the pages.
 
@@ -39,8 +36,8 @@ Facts (the shapes scoring matches, and those of the Clay Accounts function, SPEC
                  {title, meta_description, text}: what the home page says the company is (at most
                  HOME_TEXT_CHARS of its first text), which no signal scores and the industry label
                  check reads beside Apollo's facts (labels.py; Harry, 7 Oct 2026)
-  job_posts      posting_text {text, posting}, ats_feed {vendor, slug, found_by, postings},
-                 read_status
+(Its job-board feeds, source job_posts from sources/job_posts.py, found no candidate in any run and were removed with
+W2-1, 20 Oct 2026; their old facts are left as they are.)
 Outcomes (SPEC 8): read, no_pages_found, blocked, error, per source and for the account. A
 failed read (blocked or error) is "not read", never "nothing found": scoring gives that source's
 facts no points and a failed read never clears a Hold (scoring/score.py). A failed re-read does
@@ -48,8 +45,7 @@ not overwrite an earlier good read_status, so what an earlier read found still c
 
 Coverage (Harry: "we should enhance this functionality if we're unable to get the data we need
 after testing live on the first few batches"): coverage() counts, for the last run and for every
-account read so far, the outcomes, the share with a job-board feed, the share with any benefits
-text and the accounts each page signal matches on these facts alone. `us-outbound pages show`
+account read so far, the outcomes, the share with any benefits text and the accounts each page signal matches on these facts alone. `us-outbound pages show`
 prints it and the daily post carries it, with the decision rule of docs/roadmap.md: after
 DECIDE_AFTER accounts, under ENHANCE_BELOW with benefits text means enhance the reader.
 
@@ -81,7 +77,7 @@ from us_outbound.clean.pages import (
 )
 from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.clients.http import ApiError, Response, TransportError
+from us_outbound.clients.http import Response, TransportError
 from us_outbound.clients.public import ROBOTS_AGENT, absolute_location, split_url
 from us_outbound.context import UK, Context
 from us_outbound.enrol import focus, queue
@@ -91,26 +87,23 @@ from us_outbound.scoring.score import match_signal
 from us_outbound.settings.conditions import ContextRules
 from us_outbound.settings.model import Settings, Signal
 from us_outbound.settings.validate import page_signals_notice
-from us_outbound.sources import job_posts
 from us_outbound.sources.apollo_universe import OPEN_STATUSES, OUT_OF_QUEUE_TIERS
 from us_outbound.timeparse import utc, utc_strict
 
 JOB = "read_pages"
 SOURCE = "careers_pages"
-FEED_SOURCE = job_posts.SOURCE
+FEED_SOURCE = "job_posts"  # the removed job-board reader's source: its old facts still count in coverage
 READER_SOURCES = (SOURCE, FEED_SOURCE)
 READ, NO_PAGES, BLOCKED, ERROR = "read", "no_pages_found", "blocked", "error"
 OUTCOMES = (READ, NO_PAGES, BLOCKED, ERROR)
 UNREAD = frozenset({BLOCKED, ERROR})  # scoring/score.UNREAD_STATUSES
-SUMMARY_FACT, FEED_FACT = "page_read", "ats_feed"
+SUMMARY_FACT = "page_read"
 
 MAX_ACCOUNTS_PER_RUN = 120  # about 15 s each when a site answers: 30 minutes
 RUN_SECONDS = 30 * 60  # the run stops starting accounts after this; the scheduler's timeout is 40 minutes
 ACCOUNT_SECONDS = 60
 PAGE_BUDGET = 6  # pages of the company's own site, the home page included (robots.txt not counted)
-MAX_LINKED_BOARDS = 2  # job boards tried from links on the site
 PAGE_TIMEOUT = 8.0  # seconds
-FEED_TIMEOUT = 15.0
 MAX_REDIRECTS = 3
 MAX_HTML = 1_500_000  # characters of a page read
 PAGES_KEPT = 10  # pages listed in the page_read fact
@@ -261,7 +254,7 @@ def link_rank(url: str, text: str) -> int | None:
 
 
 class Reader:
-    """One account's read: its own site within PAGE_BUDGET pages, then its job board."""
+    """One account's read: its own site within PAGE_BUDGET pages."""
 
     def __init__(self, ctx: Context, account: Mapping[str, Any], vocab: Vocabulary, deadline: float):
         self.ctx, self.account, self.vocab, self.deadline = ctx, account, vocab, deadline
@@ -270,14 +263,9 @@ class Reader:
         self.requests = 0
         self.pages: list[dict] = []
         self.site_snippets: list[tuple[Snippet, str]] = []
-        self.feed_snippets: list[tuple[Snippet, job_posts.Posting]] = []
-        self.board: job_posts.Board | None = None
-        self.confirmed_by = ""
-        self.postings = 0
-        self.site, self.feed = NO_PAGES, NO_PAGES
+        self.site = NO_PAGES
         self.values_page: bool | None = None
         self.notes: list[str] = []
-        self.board_texts: list[str] = []  # links, page source and redirects, where a job board can be named
         self.fetches = 0  # pages of the site asked for, against PAGE_BUDGET
         self.not_started = False  # the run had no time left for this account: it is not recorded
         self._seen_snippets: set[str] = set()
@@ -286,9 +274,8 @@ class Reader:
 
     @property
     def outcome(self) -> str:
-        """The account's outcome: read if either part read; else blocked, error, then no pages found."""
-        parts = (self.site, self.feed)
-        return next(o for o in (READ, BLOCKED, ERROR, NO_PAGES) if o in parts)
+        """The account's outcome: its site's."""
+        return self.site
 
     def out_of_time(self) -> bool:
         return _clock() >= self.deadline
@@ -351,7 +338,6 @@ class Reader:
             except ValueError:
                 return Fetched("missing", url, note="not a web address")
             if not on_domain(url, self.domain):
-                self.board_texts.append(url)
                 return Fetched("offsite", url, note="redirects off the company's domain")
             if self.out_of_time():
                 return Fetched("skipped", url, note="time budget")
@@ -383,8 +369,7 @@ class Reader:
         return Fetched(ERROR, url, note="too many redirects")
 
     def _use(self, page: Page) -> list[tuple[int, str]]:
-        """Take the page's snippets, job boards and values link; return its on-domain careers and benefits links."""
-        self.board_texts += [link.url for link in page.links] + [page.raw]
+        """Take the page's snippets and values link; return its on-domain careers and benefits links."""
         whole = bool(BENEFITS_LINK.search(_path(page.url)))
         for s in benefit_snippets(page, self.vocab.terms, whole_page=whole, context=self.vocab.context):
             key = " ".join(s.text.casefold().split())
@@ -452,54 +437,8 @@ class Reader:
         else:
             self.site = NO_PAGES
 
-    # -- the job board --
-
-    def _board(self, board: job_posts.Board) -> str:
-        """READ when the feed is read and is the account's; else missing, unconfirmed, BLOCKED or ERROR."""
-        try:
-            body = self.ctx.clients.sites.get(board.url, params=board.params, timeout=FEED_TIMEOUT)
-        except TransportError:
-            self.requests += 1
-            return ERROR
-        except ApiError as exc:
-            self.requests += 1
-            if exc.status in (404, 410) or 300 <= exc.status < 400:
-                return "missing"
-            return BLOCKED if exc.status in BLOCK_CODES else ERROR
-        self.requests += 1
-        why = job_posts.confirms(board, body, self.account)
-        if why is None:
-            return "unconfirmed"
-        posts = job_posts.postings(board.vendor, body)
-        self.board, self.confirmed_by, self.postings = board, why, len(posts)
-        self.feed_snippets = job_posts.posting_snippets(posts, self.vocab.terms, self.vocab.context)
-        return READ
-
-    def read_feeds(self) -> None:
-        linked = job_posts.find_boards(self.board_texts)
-        failed: list[str] = []
-        for board in linked[:MAX_LINKED_BOARDS]:
-            if self.out_of_time():
-                break
-            got = self._board(board)
-            if got == READ:
-                self.feed = READ
-                return
-            if got in UNREAD:
-                failed.append(got)
-        if not linked:
-            for board in job_posts.stem_boards(self.domain):
-                if self.out_of_time():
-                    break
-                if self._board(board) == READ:  # a stem guess that fails is a guess, not a failed read
-                    self.feed = READ
-                    return
-        self.feed = BLOCKED if BLOCKED in failed else ERROR if failed else NO_PAGES
-
     def read(self) -> None:
         self.read_site()
-        if not self.not_started:
-            self.read_feeds()
 
     def read_home(self) -> str:
         """The home page only, for the label check (home_pass): READ when it says what the company is (self.home);
@@ -544,26 +483,17 @@ def facts(r: Reader, now: datetime, run_id: str, good: set[str]) -> list[dict]:
             add(SOURCE, "mental_health_provision", mh, s.text, url)
         else:
             add(SOURCE, "benefit", {"item": "; ".join(s.terms)}, s.text, url)
-    for s, post in r.feed_snippets:
-        add(FEED_SOURCE, "posting_text", {"text": s.text, "posting": post.title}, s.text, post.url)
     if r.values_page is not None and r.site in (READ, NO_PAGES):
         add(SOURCE, "values_page", r.values_page)
     if r.home:  # no Signals row reads it (scoring matches terms in TEXT_FACTS only): the label check's material
         add(SOURCE, HOME_FACT, r.home, (r.home.get("title") or r.home.get("meta_description") or "")[:300], r.home_url)
-    if r.board is not None:
-        add(FEED_SOURCE, FEED_FACT, {"vendor": r.board.vendor, "slug": r.board.slug, "found_by": r.board.found_by,
-                                     "confirmed_by": r.confirmed_by, "postings": r.postings}, url=r.board.url)
     kept = []
-    for source, outcome in ((SOURCE, r.site), (FEED_SOURCE, r.feed)):
-        if outcome in UNREAD and source in good:
-            kept.append(source)
-            continue
-        add(source, "read_status", outcome)
+    if r.site in UNREAD and SOURCE in good:
+        kept.append(SOURCE)
+    else:
+        add(SOURCE, "read_status", r.site)
     add(SOURCE, SUMMARY_FACT, {
-        "outcome": r.outcome, "site": r.site, "feed": r.feed,
-        "vendor": r.board.vendor if r.board else None, "slug": r.board.slug if r.board else None,
-        "found_by": r.board.found_by if r.board else None, "postings": r.postings,
-        "snippets": len(r.site_snippets), "posting_snippets": len(r.feed_snippets),
+        "outcome": r.outcome, "site": r.site, "snippets": len(r.site_snippets),
         "pages": r.pages, "requests": r.requests, "run_id": run_id,
         "notes": r.notes + ([f"kept the earlier good read of {', '.join(kept)}"] if kept else []),
     })
@@ -631,7 +561,6 @@ def home_pass(ctx: Context, accounts: Sequence[Mapping[str, Any]], *, seconds: f
 class Coverage:
     accounts: int = 0
     outcomes: Counter[str] = field(default_factory=Counter)
-    with_feed: int = 0
     with_text: int = 0
     signals: dict[str, int] = field(default_factory=dict)
     run_at: datetime | None = None
@@ -641,7 +570,6 @@ class Coverage:
 
     def as_dict(self) -> dict[str, Any]:
         return {"accounts": self.accounts, "outcomes": {o: self.outcomes.get(o, 0) for o in OUTCOMES},
-                "with_feed": self.with_feed, "feed_share": round(self.share(self.with_feed), 3),
                 "with_benefits_text": self.with_text, "benefits_text_share": round(self.share(self.with_text), 3),
                 "signals": dict(self.signals)}
 
@@ -649,8 +577,7 @@ class Coverage:
         outcomes = ", ".join(f"{o.replace('_', ' ')} {self.outcomes.get(o, 0)}" for o in OUTCOMES)
         sigs = ", ".join(f"{name} {n}" for name, n in self.signals.items()) or "no page signal is active"
         return [f"{self.accounts} accounts: {outcomes}",
-                f"With a job-board feed: {self.with_feed} ({self.share(self.with_feed):.0%}) · "
-                f"with benefits text: {self.with_text} ({self.share(self.with_text):.0%})",
+                f"With benefits text: {self.with_text} ({self.share(self.with_text):.0%})",
                 f"Page signals matched on these facts: {sigs}"]
 
 
@@ -681,8 +608,6 @@ def coverage(store: Any, settings: Settings, today: date, *, run_id: str | None 
         cov.accounts += 1
         cov.outcomes[str(v.get("outcome"))] += 1
         cov.run_at = t if cov.run_at is None or t > cov.run_at else cov.run_at
-        if v.get("feed") == READ and v.get("vendor"):
-            cov.with_feed += 1
         cov.with_text += aid in texted
         for s in sigs:
             if match_signal(s, events[aid], today):
@@ -741,9 +666,8 @@ def post_lines(ctx: Context) -> list[str]:
     outcomes = ", ".join(f"{o.replace('_', ' ')} {last.outcomes.get(o, 0)}" for o in OUTCOMES)
     sigs = ", ".join(f"{name} {n}" for name, n in total.signals.items() if n) or "none yet"
     lines = [f"Careers pages: last run {last.accounts} accounts ({outcomes}); "
-             f"feed {last.share(last.with_feed):.0%}, benefits text {last.share(last.with_text):.0%}.",
-             f"  So far {total.accounts} accounts: feed {total.share(total.with_feed):.0%}, "
-             f"benefits text {total.share(total.with_text):.0%}; signals matched: {sigs}.",
+             f"benefits text {last.share(last.with_text):.0%}.",
+             f"  So far {total.accounts} accounts: benefits text {total.share(total.with_text):.0%}; signals matched: {sigs}.",
              f"  {decision(total)}"]
     notice = page_signals_notice(ctx.settings)
     if notice:
@@ -783,7 +707,7 @@ def run(ctx: Context) -> dict:
         except GuardViolation:
             raise
         except Exception as exc:  # one odd site never stops the run; the account is "error", tried again later
-            r.site = r.feed = ERROR
+            r.site = ERROR
             r.notes.append(f"{type(exc).__name__}: {str(exc)[:200]}")
             errors.append(f"{account.get('domain')}: {type(exc).__name__}")
             log("read_pages_account_failed", account_id=account["account_id"], error=type(exc).__name__)
@@ -795,8 +719,8 @@ def run(ctx: Context) -> dict:
         read += 1
         requests += r.requests
         rows_written += len(rows)
-        log("read_pages_account", account_id=account["account_id"], outcome=r.outcome, site=r.site, feed=r.feed,
-            requests=r.requests, snippets=len(r.site_snippets) + len(r.feed_snippets))
+        log("read_pages_account", account_id=account["account_id"], outcome=r.outcome, site=r.site,
+            requests=r.requests, snippets=len(r.site_snippets))
     this_run = coverage(ctx.store, ctx.settings, ctx.today_uk(), run_id=ctx.run_id)
     total = coverage(ctx.store, ctx.settings, ctx.today_uk())
     summary.update(

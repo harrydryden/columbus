@@ -459,11 +459,6 @@ class Instantly(HttpClient):
             return None
         return body
 
-    def list_accounts(self, emails: Iterable[str]) -> list[dict]:
-        """The registry accounts that exist in Instantly, read one by one (never an unfiltered list)."""
-        accs = self._registry("account.get", emails)
-        return [a for a in (self._get_account(e) for e in accs) if a is not None]
-
     def warmup_status(self, emails: Iterable[str]) -> dict[str, dict]:
         """Per email: warmup_enabled, warmup_status, warmup_score, health_score(_label), status."""
         accs = self._registry("account.get", emails)

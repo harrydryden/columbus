@@ -422,7 +422,7 @@ def _refused(ctx: Context, r: Mapping[str, Any]) -> str:
 
 def _apply_row(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | None) -> Outcome:
     """Do what one decided row says, and write its judgement fact."""
-    from us_outbound.enrol import approvals, hand_check  # the card withdrawal, after a label change
+    from us_outbound.enrol import hand_check  # it builds on this module
 
     decision, domain, week = _decision(r), _domain(r), str(r.get("week") or "").strip()
     if decision not in DECISIONS:
@@ -450,8 +450,6 @@ def _apply_row(ctx: Context, r: Mapping[str, Any], item: Mapping[str, Any] | Non
         back = _put_back(ctx, a, str(r.get("check") or "")) if _left_out_here(a) else ""
         if ind is not None:
             labels.correct(ctx, a, ind, by=BY, via="sheet", who=f"on the {TAB} tab", week=week)
-            found = approvals.unfit_cards(ctx, {aid: ctx.store.get("accounts", account_id=aid)})
-            approvals.withdraw_unfit(ctx, approvals.slack_or_none(ctx), found)
             done = f"industry set to {ind.industry}"
         else:
             done = "fine"
@@ -537,7 +535,7 @@ def apply(ctx: Context) -> dict[str, Any]:
             out["written"] = sum(1 for r in tab if str(r.get("week")) == week)
     except GuardViolation:
         raise
-    except Exception as exc:  # the sheet: the replies and cards must still be worked
+    except Exception as exc:  # the sheet: the replies must still be worked
         errors.append(f"reading the {TAB} tab: {type(exc).__name__}: {str(exc)[:160]}")
         log("hand_check_tab_failed", error=errors[-1])
         return out

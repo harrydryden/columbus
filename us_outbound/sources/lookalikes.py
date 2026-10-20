@@ -69,7 +69,7 @@ happen on a monthly cadence." It:
      customers" signals score lookalike_fit (SPEC 7: facts into signal_events; scoring matches them).
      settings_sync runs apply() every night too, from the stored cells and growth counts with no
      outside call, so an account sourced after the 1st has its facts by the next morning.
-  6. Rescores, so the exclusions and facts are in force before verify_in_clay runs.
+  6. Rescores, so the exclusions and facts are in force before verify_accounts runs.
 
 Also here: report() for `us-outbound lookalikes show`, fit_report() for `us-outbound lookalikes fit` (the
 fits, and the tier mix the build's lookalike rows would give, scored in memory: nothing is written), and

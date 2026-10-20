@@ -23,8 +23,7 @@ Copy row: "a" or "b" by sha256(account_id + test_id) (queue.test_version, as an 
 unless the row's share_a says otherwise (Harry, 8 Oct 2026: "a warm greeting on most but not all of the email 1s";
 70% gives version_a seven accounts in ten). The opener holdout
 and the subject split hash the account id with salts of their own, so the three splits are independent and the
-designs factorial. A second contact gets its account's arm when its first contact is in the test, and is never
-counted as a new account. Each arm takes its cap (accounts_per_version, counted in the smaller arm and scaled to the
+designs factorial. Each arm takes its cap (accounts_per_version, counted in the smaller arm and scaled to the
 larger: Test.cap); once an arm has them, the accounts it would
 have had get the Copy row as it is and are not in the test (nor are any once Harry sets the test read or stopped).
 
@@ -146,18 +145,14 @@ def arm_for(test: Test, account_id: Any) -> str:
 
 
 def choose(test: Test | None, account: Mapping[str, Any], row: CopyRow, *, today: date, subject_arm: str,
-           counts: Mapping[str, int], check: Check, first: Mapping[str, Any] | None = None) -> Arm | None:
-    """The running variant test's arm for this contact (module docstring): None when no variant test runs, before its
-    start_date, or for a second contact whose first contact is not in it; an Arm with a note when the account is not
-    in the test (its arm full, or the change cannot be made here); else its arm and the email it changes. counts:
-    accounts in each arm so far (enrol.running_test_counts). first: a second contact's first contact
-    (second.first_summary), whose arm it shares."""
+           counts: Mapping[str, int], check: Check) -> Arm | None:
+    """The running variant test's arm for this contact (module docstring): None when no variant test runs, or before
+    its start_date; an Arm with a note when the account is not in the test (its arm full, or the change cannot be made
+    here); else its arm and the email it changes. counts: accounts in each arm so far (enrol.running_test_counts)."""
     if test is None or test.kind != VARIANT_TEST or (test.start_date is not None and today < test.start_date):
         return None
-    if first is not None and str(first.get("test_id") or "") != test.test_id:
-        return None
     arm = arm_for(test, account["account_id"])
-    if first is None and 0 < test.cap(arm) <= counts.get(arm, 0):
+    if 0 < test.cap(arm) <= counts.get(arm, 0):
         return Arm(test.test_id, note=f"{test.arm_name(arm)} has its {test.cap(arm)} accounts")
     if test.change == SUBJECT and test.email == render.SUBJECT_STEP and subject_arm == render.PERSONAL_SUBJECT:
         return Arm(test.test_id, note="its email 1 has the personal subject (General email1_subject), which the test "

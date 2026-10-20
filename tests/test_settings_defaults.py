@@ -57,7 +57,6 @@ def test_general_spec_values(tabs, settings):
     assert raw["email_format"] == "html" and raw["booking_page"] == "https://www.spill.chat/us/book-demo"
     assert raw["site_url"] == "https://www.spill.chat/us" and raw["price_from"] == "195"
     notes = {r["key"]: r["note"] for r in tabs["General"]}
-    assert "calendar month" in notes["clay_monthly_credits"] and "0 means no Clay calls" in notes["clay_monthly_credits"]
     assert "Monday to Sunday" in notes["weekly_enrol_cap"] and "calendar month" in notes["apollo_monthly_credits"]
     g = settings.general
     assert g.live_sending is False
@@ -67,7 +66,7 @@ def test_general_spec_values(tabs, settings):
     # The W1-C keys at today's behaviour: no random arm, the hand-check's 10, the early warning alerts only.
     assert (raw["explore_share"], raw["hand_check_sample"], raw["early_warning_pause"]) == ("0", "10", "no")
     assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.0, 10, False)
-    assert (g.apollo_monthly_credits, g.clay_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 2000.0, 5000, 24)
+    assert (g.apollo_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 5000, 24)
     assert g.claude_monthly_cap_usd == 10.0
 
 
@@ -77,7 +76,6 @@ def test_the_general_notes_harry_reads(tabs):
     assert notes["live_sending"].startswith("The master switch and Harry's sign-off. no: nothing reaches a prospect")
     assert "02:00 and 11:30 UK on weekdays), or now with `us-outbound sync`" in notes["live_sending"]
     assert notes["live_sending"].endswith("To stop sending that is already under way, run `us-outbound stop --live`.")
-    assert notes["auto_send"].endswith("Nothing goes out while live_sending is no.")
     assert "Harry: U098X453UAG" in notes["approver_slack_ids"] and "slack_id (Mailboxes tab)" in notes["approver_slack_ids"]
     assert notes["optout_tested"].endswith("Live sending waits for it.")
     for key in ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id"):
@@ -86,11 +84,12 @@ def test_the_general_notes_harry_reads(tabs):
     assert notes["booking_page"] == "The demo page each email's call to action links to."
     assert notes["apollo_floor"].startswith("Safety floor: no job spends Apollo credits")
     assert notes["opener_generic"].endswith("Tokens: {company}, {city}. Blank: no opener.")
-    # Keys no code reads stay on the sheet (removing one would make a sheet that has it unusable).
+    # Keys no code read went with W2-1 (20 Oct 2026): retired, so a sheet that still has their rows only warns
+    # (RETIRED_GENERAL), and `settings load` takes the rows off the sheet.
     for key in ("recontact_person_months", "recontact_account_months", "hubspot_deal_stage", "clay_credits_per_account",
-                "apollo_credits_per_account"):
-        assert notes[key] == "Not used yet; leave as it is.", key
-    assert not [k for k, n in notes.items() if k in ("live_sending", "auto_send", "approver_slack_ids", "optout_tested")
+                "apollo_credits_per_account", "auto_send", "second_contact", "clay_verification", "opener_focus"):
+        assert key not in notes and key in RETIRED_GENERAL, key
+    assert not [k for k, n in notes.items() if k in ("live_sending", "approver_slack_ids", "optout_tested")
                 and "SPEC" in n]
     # Harry, 7 Oct 2026: the label check (labels.py), required from the start.
     row = next(r for r in tabs["General"] if r["key"] == "label_check")

@@ -98,7 +98,7 @@ def test_the_short_post_says_what_needs_harry_yesterday_today_the_pipeline_and_w
         "1. Answer 1 prospect reply (waiting 30 hours): ✅ or `edit: <text>` in its thread in #us-outbound",
         "2. 1 safety pause on (bounce or complaint limit hit): `railway ssh -- us-outbound killrules show`",
         "3. Weekly hand-check: 2 companies still need a decision on the "
-        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>; new leads wait for it",
         "",
         "*Yesterday (Mon 26 Oct)*",
         "Sent 8 emails (5 first, 3 follow-ups) · 3 companies replied (1 interested) · 1 bounce · 1 unsubscribe · "
@@ -144,6 +144,9 @@ def test_the_short_post_flags_a_loud_mailbox_and_covers_friday_only_on_saturday(
 def test_the_short_post_with_nothing_waiting_says_so_first_and_shows_today_s_number():
     ctx, _ = world()
     ctx.store.delete("hitl_items", {"kind": ["reply_approval", "hand_check", "kill_rule"]})
+    # This week's hand-check is done (hand_check_gate yes, the default: SPEC 11 as built), so nothing holds the day.
+    ctx.store.insert("hitl_items", [{"item_id": "h-done", "kind": "hand_check", "status": "handled",
+                                     "created_at": TUE_9 - timedelta(days=1), "payload": {"iso_week": "2026-W44"}}])
     with_general(ctx, live_sending=True, optout_tested=True)
     lines = daily_post.compact(ctx, daily_post.gather(ctx))
     assert lines[0] == ":bar_chart: *Daily summary, Tue 27 Oct: nothing needs you today*"
@@ -155,7 +158,7 @@ def test_the_short_post_with_nothing_waiting_says_so_first_and_shows_today_s_num
     assert not any(x.startswith("Test mode") for x in lines)
 
 
-def test_the_needs_lines_say_where_to_act_for_cards_and_the_doubtful_only_hand_check():
+def test_the_needs_lines_say_where_to_act_and_a_send_approval_left_open_needs_nobody():
     ctx, _ = world()
     ctx.store.delete("hitl_items", {"kind": ["reply_approval", "kill_rule"]})
     ctx.store.update("hitl_items", {"item_id": "h1"}, {"payload": {"iso_week": "2026-W44", "per_group": 0,
@@ -165,11 +168,12 @@ def test_the_needs_lines_say_where_to_act_for_cards_and_the_doubtful_only_hand_c
          "payload": {"state": "waiting", "owner": "Hannah Spalding", "send_day": "2026-10-27", "expires_on": "2026-10-28"}},
     ])
     lines = daily_post.compact(ctx, daily_post.gather(ctx))
+    # The send approval (left open from before W2-1) asks nothing: the reply desk closes it.
     assert lines[:3] == [
-        ":warning: *Daily summary, Tue 27 Oct: 2 things need you*",
-        "1. Approve 1 email (waiting 5 hours; a card lapses after its next send day): ✅ or ❌ on each card in #us-outbound",
-        "2. Weekly hand-check: 2 companies still need a decision on the "
-        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>",
+        ":warning: *Daily summary, Tue 27 Oct: 1 thing needs you*",
+        "1. Weekly hand-check: 2 companies still need a decision on the "
+        "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Hand-check tab>; new leads wait for it",
+        "",
     ]
 
 
@@ -334,26 +338,28 @@ def waits(lines):
     return [line for line in lines if line.startswith(("  Enrollment waits", "  Running dry"))]
 
 
-def test_enrollment_waits_on_enrol_s_own_gates_and_the_hand_check_only_with_auto_send_on():
+def test_enrollment_waits_on_enrol_s_own_gates_then_the_hand_check_while_it_gates_the_day():
+    """enrol's own gates first (the positive reply waiting 30 hours), then the weekly hand-check while
+    hand_check_gate is yes (the default; the auto_send = yes it also needed went with W2-1, as the live sheet had it);
+    with hand_check_gate = no (Harry's D5) only its sample waits, so the day does not."""
     ctx, _ = world()
     with_general(ctx, live_sending=True, approver_slack_ids=("U_HARRY",), optout_tested=True)
     lines, _ = daily_post.build(ctx)
-    # auto_send = no: the open hand-check does not hold anything back; the positive reply waiting 30 hours does.
     assert waits(lines) == ["  Enrollment waits: 1 positive reply has waited over 24 hours for approval."]
     ctx.store.delete("hitl_items", {"item_id": "r1"})
     lines, _ = daily_post.build(ctx)
-    assert waits(lines) == []
-    with_general(ctx, auto_send=True)  # now enrol waits for the weekly hand-check
-    lines, _ = daily_post.build(ctx)
     assert waits(lines) == ["  Enrollment waits: this week's hand-check (2026-W44) is not approved yet."]
+    with_general(ctx, hand_check_gate=False)
+    lines, _ = daily_post.build(ctx)
+    assert waits(lines) == []
 
 
 def test_with_live_sending_no_the_post_says_enrol_runs_dry():
     ctx, _ = world(live=False)
     ctx.store.delete("hitl_items", {"item_id": "r1"})
     lines, _ = daily_post.build(ctx)
-    assert waits(lines) == ["  Running dry: live_sending is no, so enrol reaches nobody (a few cards go to the dev "
-                            "channel as a preview)."]
+    assert waits(lines) == ["  Enrollment waits: this week's hand-check (2026-W44) is not approved yet.",
+                            "  Running dry: live_sending is no, so enrol reaches nobody."]
 
 
 def test_needs_you_says_nothing_when_nothing_waits():
@@ -361,11 +367,11 @@ def test_needs_you_says_nothing_when_nothing_waits():
     ctx.store.delete("hitl_items", {"kind": ["reply_approval", "hand_check", "kill_rule"]})
     lines, nums = daily_post.build(ctx)
     assert lines[2] == "*Needs you:* nothing"
-    assert nums["needs_you"] == {"send_approvals": 0, "replies": 0, "kill_rule_holds": 0, "hand_checks": 0}
+    assert nums["needs_you"] == {"replies": 0, "kill_rule_holds": 0, "hand_checks": 0}
     assert "Waiting for approval: nothing." in lines
 
 
-def test_reply_items_are_labelled_replies_and_a_lapsed_card_needs_nobody():
+def test_reply_items_are_labelled_replies_and_a_send_approval_left_open_needs_nobody():
     ctx, _ = world()
     ctx.store.insert("hitl_items", [
         {"item_id": "r2", "kind": "reply", "status": "escalated", "created_at": TUE_9 - timedelta(hours=3),
@@ -376,10 +382,11 @@ def test_reply_items_are_labelled_replies_and_a_lapsed_card_needs_nobody():
     ])
     lines, nums = daily_post.build(ctx)
     assert lines[2].startswith("*Needs you:* 2 replies (the oldest has waited 30 hours) · 1 kill-rule hold")
-    assert nums["needs_you"]["send_approvals"] == 0
+    assert "send_approvals" not in nums["needs_you"]
+    # r1, r2 and the hand-check wait; the send approval (closed by the desk's next live run) and the hold do not.
     [line] = [x for x in lines if x.startswith("Waiting for approval:")]
-    assert line.startswith("Waiting for approval: 4 (") and "replies 1" in line and "reply approvals 1" in line
-    assert "send approvals 1" in line and "kill-rule" not in line
+    assert line.startswith("Waiting for approval: 3 (") and "replies 1" in line and "reply approvals 1" in line
+    assert "send" not in line and "kill-rule" not in line
 
 
 def test_the_daily_command_prints_the_short_or_the_full_post_and_posts_nothing(capsys):

@@ -18,8 +18,8 @@ Status: open → handled (sent or skipped), or → escalated after escalation_ho
 approval). "sending" is held only while a reply goes out (a compare-and-set on status, so a
 scheduled run and `us-outbound replies approve` can never both send it).
 
-Send approvals (kind send_approval; Harry, 2 Oct 2026) share the table: enrol/approvals/ holds
-their contract, and nothing here reads them.
+Send approvals (kind send_approval; Harry, 2 Oct 2026) shared the table until W2-1 (20 Oct 2026) removed them: the
+reply desk closes any still open (desk.close_send_approvals), and nothing here reads them.
 """
 
 from __future__ import annotations

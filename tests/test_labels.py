@@ -667,6 +667,7 @@ def correction(i, frm, to, at=MON):
 
 
 def decided(i, approval="approved", at=MON):
+    """A send approval's decision, as the cards wrote them before W2-1 removed them: no label figure counts it now."""
     return {"event_id": f"send-approval:{i}", "type": "send_approval", "approval": approval, "occurred_at": at}
 
 
@@ -695,9 +696,10 @@ def test_the_daily_posts_labels_block():
         "no rules label 0; model overruled 1; group copy 1; General copy 0; held 1; disqualified 1; waiting "
         "unchecked 3).",
         "  The label check could not ask the model at the last verify run: the monthly Claude cap is reached.",
-        "  Cards: 1 industry correction of 20 decided (95% right): Games studios → Technology & Startups.",
+        # The cards' "N of N right" went with them (W2-1; design-final §4.4): the 20 decided cards count for nothing.
+        "  Corrected by hand: 1 (Games studios → Technology & Startups).",
     ]
-    assert labels.post_lines(measured(), start, end)[-1] == "  Cards: none decided."
+    assert not any("Corrected" in line or "Cards" in line for line in labels.post_lines(measured(), start, end))
 
 
 def test_the_daily_post_carries_the_block():
@@ -719,8 +721,9 @@ def test_the_asks_trip_once_a_day_on_corrections_and_an_unavailable_check():
     ctx = measured(facts_, [decided(i) for i in range(20)], {"unchecked": 4, "unavailable_reason": "Claude did not answer"})
     got = dict(labels.asks(ctx))
     tab = "<https://docs.google.com/spreadsheets/d/sheet-test/edit|Industries tab>"
+    # 3 corrections reach ASK_CORRECTIONS (3) whatever the decided cards: the share of cards went with them (W2-1).
     assert got["labels_corrections:2026-10-27"] == (
-        ":warning: *Industry labels: approvers corrected the industry on 3 of 23 email cards since the last send day.*\n"
+        ":warning: *Industry labels: the industry of 3 companies was corrected by hand since the last send day.*\n"
         "Corrections: Adtech & martech → Fintech (3).\n"
         f"*What to do:* check those industries' definitions on the {tab}: a sharper line fixes the next ones. A "
         "changed definition has every company checked again by itself; nothing to run.")
@@ -775,16 +778,14 @@ def test_the_readout_block():
               correction(2, "Games studios", "Technology & Startups", at=at)]
     ctx = measured(facts_, [decided(i, at=at) for i in range(38)], now=datetime(2026, 10, 26, 7, 30, tzinfo=UTC))
     lines = labels.readout_lines(ctx, start, end)
-    assert lines[1] == ("*Industry labels* (how often the industry on a send card was right, going by the approvers' "
-                        "corrections; target 95%)")
-    assert lines[2] == "  Right: last week 38 of 40 (95%, met) · so far 38 of 40 (95%, met)"
-    assert lines[3] == "  Corrected last week: Games studios → Technology & Startups (2)"
-    assert lines[4] == ("  Checked last week by the AI model against our industry-code rules: 9 · agreeing on the "
+    # The cards' "right N of N" against 95% is retired (W2-1; design-final §4.4): the 38 decided cards read nowhere.
+    assert lines[1] == "*Industry labels* (the AI check of each new company, and the corrections made by hand)"
+    assert lines[2] == "  Corrected last week: Games studios → Technology & Startups (2)"
+    assert lines[3] == ("  Checked last week by the AI model against our industry-code rules: 9 · agreeing on the "
                         "group for 100% · held for the hand-check 1 · disqualified 0")
-    few = labels.readout_lines(measured([correction(1, "a", "b", at=at)], [decided(1, at=at)]), start, end)
-    assert few[2] == "  Right: last week 1 of 2 (too few to read) · so far 1 of 2 (too few to read)"
-    none = labels.readout_lines(measured([], []), start, end)
-    assert none == ["", lines[1] + ": no card decided and no company checked yet."]
+    assert not any("Right" in line or "%, met" in line for line in lines)
+    none = labels.readout_lines(measured([], [decided(1, at=at)]), start, end)
+    assert none == ["", lines[1] + ": no company checked or corrected last week."]
 
 
 def test_the_monday_readout_carries_the_block():

@@ -15,11 +15,12 @@ from us_outbound.settings.conditions import Condition, ContextRules
 
 TABS = (
     "General", "Signals", "Angles", "Industries", "States", "Roles", "Copy", "Mailboxes", "Overrides", "Tests",
-    "Focus", "Named accounts",
+    "Focus",
 )
 # Tabs added after the sheet was first made (Harry, 30 Sep 2026): a sheet without them reads as
-# if they were empty, so settings_sync keeps working until they are added.
-OPTIONAL_TABS = frozenset({"Focus", "Named accounts"})
+# if they were empty, so settings_sync keeps working until they are added. The Named accounts tab went with
+# sources/named.py (W2-1, 20 Oct 2026; the live sheet never had it): a sheet that still has one is not read.
+OPTIONAL_TABS = frozenset({"Focus"})
 
 # Source keys (SPEC 7). A signal row names one or more of these.
 SOURCE_KEYS = (
@@ -73,7 +74,7 @@ SOURCE_FIELDS: dict[str, frozenset[str]] = {
     ),
     "layoffs": frozenset({"days_since_layoff"}),
     "calendar": frozenset({"month", "days_to_fiscal_year_start"}),
-    "named": frozenset({"named"}),  # the Named accounts tab (sources/named.py)
+    "named": frozenset({"named"}),  # the Named accounts tab had it; no producer since W2-1 (20 Oct 2026)
     # sources/lookalikes.py (Harry, 1 Oct 2026). lookalike_fit (0 to 100) and its three parts (0 to 1; size and
     # growth null when unknown): Harry, 5 Oct 2026.
     "lookalike": frozenset({"lookalike_active", "lookalike_strength", "lookalike_fit", "lookalike_industry_fit",
@@ -117,7 +118,6 @@ OPENER_TOKENS = ("company", "open_roles", "posting_title", "people_title", "grow
 # Tokens retired from the lines (Harry, 2 Oct 2026: funding is a signal, never a line). A sheet line that still
 # has one validates, so the settings in force stay usable, but it never fills, and `copy check` names it.
 RETIRED_OPENER_TOKENS = ("funding_stage",)
-FOCUS_LINE_TOKENS = ("company", "focus", "city")  # General opener_focus_line
 # The generic opener (Harry, 2 Oct 2026): General keys holding the line for an account with no signal line (the
 # General angle, Control among it, or a signal whose lines all fall through), by copy role, then the plain one.
 GENERIC_OPENER_KEYS = {"People leader": "opener_generic_people", "Founder or executive": "opener_generic_founder",
@@ -161,10 +161,6 @@ def band_bounds(band: str) -> tuple[int, int]:
     return int(lo), int(hi)
 
 
-# General clay_verification (Harry, 1 Oct 2026): required is SPEC 2 (every account through Clay before it
-# can be emailed); skip lets verify_accounts verify on Apollo data and HubSpot until the Clay functions exist.
-CLAY_REQUIRED, CLAY_SKIP = "required", "skip"
-CLAY_VERIFICATION_MODES = (CLAY_REQUIRED, CLAY_SKIP)
 # General label_check (Harry, 7 Oct 2026: "industry categorisation is critical"; us_outbound/labels.py): required, a
 # new account is verified only once the task model has checked its industry label; skip, on the rules alone (the
 # group's copy), for a Claude outage.
@@ -198,9 +194,6 @@ class General:
     """The General tab. Defaults are SPEC 5's; keys marked (build) were added by the build."""
 
     live_sending: bool = False
-    # (build) Harry, 2 Oct 2026: no, every email waits for an approver's ✅ in Slack before its lead is added
-    # to Instantly (enrol/approvals/); yes, enrol adds leads straight away, as before.
-    auto_send: bool = False
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
     # Retired from the sheet (RETIRED_GENERAL; the W1-C contracts commit, 19 Oct 2026; Harry's D7: rank by score plus
     # a random explore arm in place of the Control tier). A control_share row is no longer read, so this is always the
@@ -216,7 +209,7 @@ class General:
     # The weekly hand-check's sample size; 10, the default, is the draw's constant today (enrol/hand_check.py).
     hand_check_sample: int = 10
     # (build) W1-5 (19 Oct 2026): whether the weekly hand-check gates the whole day's enrolment. yes, the default, is
-    # today's behaviour (SPEC 11 as built: with auto_send = yes enrol waits until the week's check is done); no is the
+    # today's behaviour (SPEC 11 as built: enrol waits until the week's check is done); no is the
     # measure Harry chose under D5: only the sampled companies wait, until judged or for 7 days (enrol/hand_check.py).
     hand_check_gate: bool = True
     # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
@@ -227,7 +220,6 @@ class General:
     # (build) Harry, 19 Oct 2026: the two thresholds follow the queue each day (scoring/balance.py); no: as typed
     auto_thresholds: bool = True
     score_cap: int = 100
-    clay_monthly_credits: float = 2000.0  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week); 0 = no Clay calls
     apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)
     apollo_floor: int = 5000
     approver_slack_ids: tuple[str, ...] = ()
@@ -245,8 +237,6 @@ class General:
         DateRange(date(2026, 11, 23), date(2026, 11, 27)),
         DateRange(date(2026, 12, 18), date(2027, 1, 4)),
     )
-    recontact_person_months: int = 12
-    recontact_account_months: int = 6
     stop_rule_accounts: int = 1500
     stop_rule_meetings: int = 5
     stop_rule_bounce_rate: float = 0.03  # (build) the stop rule's account-level bounce share (learn/kill_rules.py)
@@ -254,24 +244,8 @@ class General:
     optout_tested: bool = False  # (build) Harry: yes once a seed-inbox test shows the unsubscribe link works (golive)
     hubspot_pipeline: str = "Spill 3.0"
     hubspot_pipeline_id: str = ""  # (build) looked up through the API in phase 0
-    hubspot_deal_stage: str = ""
     hubspot_deal_stage_id: str = ""  # (build)
     hubspot_owner_id: str = ""  # (build) Harry's HubSpot owner id
-    clay_accounts_function_id: str = ""  # (build) "US Outbound – Accounts"
-    clay_contacts_function_id: str = ""  # (build) "US Outbound – Contacts"
-    clay_credits_per_account: float = 0.0  # (build) estimate until measured on the first 100
-    clay_verification: str = CLAY_SKIP  # (build) Harry, 1 Oct 2026: skip until the Clay functions exist, then required
-    clay_email_fallback: bool = False  # (build) Harry, 2 Oct 2026: Clay's Work Email for Apollo's misses (contacts/pick.py)
-    # (build) Harry, 6 Oct 2026: Clay's cross-check of the HQ state and size Apollo leaves in doubt, before the weekly
-    # hand-check (us_outbound/clay_cross_check.py), through clay_accounts_function_id; no until that function is built.
-    clay_cross_check: bool = False
-    # (build) Harry, 6 Oct 2026: a second contact, of another role, at accounts of second_contact_min_employees or
-    # more staff (company_size), second_contact_delay_days after the first contact's email 1, from the same sender
-    # (enrol/second.py). Off by default: sending capacity is the binding limit today.
-    second_contact: bool = False
-    second_contact_min_employees: int = 50
-    second_contact_delay_days: int = 3
-    apollo_credits_per_account: float = 1.0  # (build) estimate until measured
     # (build) Harry, 2 Oct 2026: the industry groups whose queue accounts apollo_enrich enriches for funding and
     # an exact headcount (sources/apollo_enrich.py), where funding is common; blank enriches none.
     apollo_enrich_groups: tuple[str, ...] = ("Technology & Startups",)
@@ -308,8 +282,6 @@ class General:
         "Work and life both seem to ask more of people every year, and even the strongest teams feel it.")
     opener_generic_ops: str = (
         "Pressure in work and life seems to keep rising, and it hardly ever waits for a convenient week.")
-    opener_focus: bool = False
-    opener_focus_line: str = "I came across {company} and its work on {focus}."
     # (build) Harry, 5 Oct 2026: a personal subject for email 1, as a measured split. Mail filters (Superhuman,
     # Gmail) and people read a short, lower-case subject about the recipient as personal mail; the Copy rows'
     # subjects read like headlines. email1_subject_share of accounts, by a hash of the account id (its own salt,
@@ -622,15 +594,6 @@ class Focus:
 
 
 @dataclass(frozen=True)
-class NamedAccount:
-    """A row of the Named accounts tab: a company Harry wants approached."""
-
-    domain: str
-    name: str = ""
-    note: str = ""
-
-
-@dataclass(frozen=True)
 class Settings:
     general: General
     signals: tuple[Signal, ...] = ()
@@ -643,7 +606,6 @@ class Settings:
     overrides: tuple[Override, ...] = ()
     tests: tuple[Test, ...] = ()
     focus: tuple[Focus, ...] = ()
-    named_accounts: tuple[NamedAccount, ...] = ()
     synced_at: datetime | None = None
     versions: dict[str, Any] = field(default_factory=dict)  # tab -> effective_from of the version in force
     # The last-good fallback (ops/bootstrap.py SAFETY_JOBS; W1-1, 19 Oct 2026): the tabs whose version in force failed

@@ -25,10 +25,9 @@ has got (accounts emailed, windows closed): never a reply, so nobody peeks. Repl
 detects a 2x difference); positive and meeting rates are for information, with the same two-proportion test as
 `signals review` (signal_review.p_value). Harry writes the result on the Tests tab.
 
-An email an approver edited on its send card (approved_edited; enrol/approvals/) counts in the arm it was given,
-as assigned (Harry, 7 Oct 2026): leaving edits out would bias the comparison whenever approvers edit one arm's emails
-more than the other's (a warm intro they dislike, say), while counting them only dilutes it. Each arm's read says how
-many of its emails were edited (edited), so a large or lopsided number is seen.
+Every email counts in the arm it was given, as assigned (Harry, 7 Oct 2026). (An email an approver edited on its send
+card was counted that way too, and each read said how many; the send cards went with W2-1, 20 Oct 2026, after none was
+edited.)
 
 The Monday readout (learn/readout.py) lists each running test: a look reached in the last week, with its read,
 or how far it has got and its next look. The outcomes are counted as v_account_outcomes counts them, here in
@@ -53,7 +52,6 @@ from us_outbound.timeparse import uk_midnight, utc
 
 WINDOW = timedelta(days=REPLY_WINDOW_DAYS)
 POSITIVE = kinds.WARM
-EDITED = "approved_edited"  # a send approval's outcome when the approver edited the card (enrol/approvals/)
 
 
 class NotYet(Exception):
@@ -68,7 +66,6 @@ class Outcome:
     step1_at: datetime
     replies: tuple[tuple[datetime, str], ...] = ()  # (when, class) of each reply at the account
     meetings: tuple[datetime, ...] = ()
-    edited: bool = False  # its step-1 contact's emails were edited on the send card before they went
 
     @property
     def closes_at(self) -> datetime:
@@ -186,9 +183,7 @@ def arms(ctx: Context, test: Test) -> dict[str, Arm]:
         replies = tuple((t, str(e.get("reply_class") or "").strip().lower()) for e in evs
                         if e.get("type") == "replied" and (t := utc(e.get("occurred_at"))))
         meetings = tuple(t for e in evs if e.get("type") == "meeting_booked" and (t := utc(e.get("occurred_at"))))
-        edited = any(e.get("type") == "send_approval" and e.get("approval") == EDITED
-                     and e.get("contact_id") == step1.get("contact_id") for e in evs)
-        out[arm].emailed.append(Outcome(account_id, utc(step1["occurred_at"]), replies, meetings, edited))
+        out[arm].emailed.append(Outcome(account_id, utc(step1["occurred_at"]), replies, meetings))
     for a in out.values():
         a.emailed.sort(key=lambda o: (o.step1_at, o.account_id))
     return out
@@ -268,8 +263,7 @@ def read(ctx: Context, test_id: str) -> dict:
     for name, arm in by_arm.items():
         group = covered(arm, look)
         s = {"accounts": arm.accounts, "delivered": len(group), "replied": sum(o.replied() for o in group),
-             "positive": sum(o.positive() for o in group), "meetings": sum(o.met(look.reached_at) for o in group),
-             "edited": sum(o.edited for o in group)}  # counted in their arm, as assigned (module docstring)
+             "positive": sum(o.positive() for o in group), "meetings": sum(o.met(look.reached_at) for o in group)}
         versions[name] = {**s, "reply_rate": _rate(s["replied"], s["delivered"]),
                           "positive_rate": _rate(s["positive"], s["delivered"]),
                           "meeting_rate": _rate(s["meetings"], s["delivered"])}
@@ -294,14 +288,6 @@ def summary_line(result: Mapping[str, Any]) -> str:
     p = result.get("reply_p_value")
     return arms_text + (f" · p = {p:.2f}" if p is not None else "")
 
-
-def edited_line(result: Mapping[str, Any]) -> str:
-    """How many emails each arm had edited on the send card, or "" when none was: they count in their arm."""
-    versions = result["versions"].items()
-    if not any(v.get("edited") for _, v in versions):
-        return ""
-    each = ", ".join(f"{name} {v.get('edited', 0)} of {v['delivered']}" for name, v in versions)
-    return f"Edited by an approver before sending, and counted in the arm they were given: {each}."
 
 
 KIND_WORDS = {AB_TEST: "A/B copy test", VARIANT_TEST: "one-change variant test", HOLDOUT_TEST: "holdout test"}

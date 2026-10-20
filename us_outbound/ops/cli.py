@@ -1,12 +1,11 @@
 """The us-outbound command line (SPEC 13 Operations): the same entrypoints as the jobs.
 
 What Harry uses (`us-outbound --help` lists these, in this order):
-  status                              the two switches and what they mean, when the settings were
-                                      synced, what waits for him (send approvals, replies, kill-rule
-                                      holds), the jobs that failed or missed their heartbeat, what the
-                                      retention job last deleted, mailboxes, this week's number and the
-                                      campaigns
-  golive                              the read-only go/no-go check (ops/golive.py); exits 1 on a FAIL
+  status                              live_sending and what it means, when the settings were synced,
+                                      what waits for him (replies, kill-rule holds), the jobs that failed
+                                      or missed their heartbeat, what the retention job last deleted,
+                                      mailboxes, this week's number, the campaigns, and the three go-live
+                                      checks kept from golive (ops/live_checks.py: Copy, Campaigns, Watchdog)
   accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py):
     [--tier T] [--industry TEXT]      a summary and the list in queue order, one company in full (exits 1
     [--limit N] [--csv]               for a domain we do not hold), or a CSV to stdout (personal data)
@@ -20,21 +19,13 @@ What Harry uses (`us-outbound --help` lists these, in this order):
                                       (no settings, no operator_stop row: run stop --live once it is back)
                                       Over a blackout start leaves the campaigns paused, and the blackout
                                       job starts them after it (registry/blackout.py; 7 Oct 2026)
-  approvals list | send | contact |   send approvals without Slack (enrol/approvals/; Harry, 2 Oct 2026:
-    company [ID]                      while auto_send = no every email waits for approval), in the Slack
-                                      words: send = ✅ (its lead goes to Instantly), contact = 👤 not this
-                                      person, company = 🚫 not this company. approve, reject --contact and
-                                      reject --company are the same; approved_by "cli"
-  approvals industry ID LABEL         the card's company is LABEL ("industry: LABEL" in its thread): set,
-                                      kept on the Overrides tab, and the card withdrawn for a new one
   labels audit [--limit N] | eval     the industry label check (us_outbound/labels.py; Harry, 7 Oct 2026):
     [--from-corrections] | set        audit: the model asked about every open company with no fresh verdict
-    DOMAIN LABEL | show DOMAIN        now (verify_accounts asks about 150 a run), cards that no longer fit
-                                      withdrawn; dry-run says how many, the cost and a sample prompt. eval:
-                                      the model scored on the gold set (and, with --from-corrections, the
-                                      approvers' corrections); exits 1 below 90% acceptable or on any unsafe
-                                      answer. set: a company's label (an approver's correction, for a company
-                                      with no card). show: its label and check history. audit and eval call
+    DOMAIN LABEL | show DOMAIN        now (verify_accounts asks about 150 a run); dry-run says how many,
+                                      the cost and a sample prompt. eval: the model scored on the gold set
+                                      (and, with --from-corrections, the corrections made by hand); exits 1
+                                      below 90% acceptable or on any unsafe answer. set: a company's label
+                                      (a correction). show: its label and check history. audit and eval call
                                       the model only with --live (about $0.01 a company)
   replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
     [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
@@ -69,16 +60,8 @@ What Harry uses (`us-outbound --help` lists these, in this order):
   handcheck migrate-tab [--live]      the Hand-check tab moved to its new columns once, after a backup tab,
                                       and its dropdowns set (enrol/hand_check_tab.migrate); dry-run prints
                                       the header before and after
-  clay check-email --first NAME       one Work Email lookup through Clay's API for a Spill colleague's own
-    --last NAME --domain DOMAIN       name (never a prospect), to confirm the email fallback before
-    [--live]                          clay_email_fallback goes on (ops/clay_check.py); without --live it
-                                      only says what it would send. With --live it exits 1 unless the
-                                      fallback can go on
   capture check [--live]              the reply read's weekly canary checked by hand, the day after it went
                                       (replies/capture.py; the Monday capture job checks it otherwise)
-  phase0 check [--seed ADDRESS]       the live checks of the API details still to confirm (ops/phase0.py,
-    [--apollo-credits] [--live]       docs/phase0-confirm.md): read-only probes, and with --seed writes on
-                                      that seed lead of ours alone; without --live it only says what it calls
   erase --email <address>             an erasure request (SPEC 6)
   schedule                            the job table and next runs (UK time)
   run <job> [--live]                  one job, what the scheduler starts; its summary printed as one JSON
@@ -99,14 +82,11 @@ Dry-run is the default everywhere. Two kinds of live:
     sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
     test start, settings bootstrap|load, copy qa|draft, campaigns ensure,
-    handcheck show|approve|export|migrate-tab, killrules clear, replies skip, approvals contact|company|reject, capture check,
-    clay check-email): --live alone, so the phase-0 setup and the kill switch work while
-    live_sending is still no.
-    `replies send` sends to a prospect, and `approvals send` adds one to Instantly, so they are live
-    like a job: --live AND live_sending = yes.
-    copy qa and copy draft call Claude only with --live, so a dry run spends nothing; so does
-    clay check-email with Clay.
-  A read-only action given --live (approvals list, replies list, killrules show, campaigns show,
+    handcheck show|approve|export|migrate-tab, killrules clear, replies skip, capture check): --live alone, so the
+    setup and the kill switch work while live_sending is still no.
+    `replies send` sends to a prospect, so it is live like a job: --live AND live_sending = yes.
+    copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
+  A read-only action given --live (replies list, killrules show, campaigns show,
   copy check|preview, hubspot ids, test read) says that --live does nothing there.
   A --live run that stays dry says when the settings in force were synced, and how to bring a
   sheet edit in (`us-outbound sync`).
@@ -114,8 +94,7 @@ Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write 
 under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
 
 Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError
-or JSON/Unicode decoding error, which are bugs rather than bad input), or a golive check that
-FAILs; 2 refused (not built,
+or JSON/Unicode decoding error, which are bugs rather than bad input); 2 refused (not built,
 bad input, unusable settings); 3 blocked by a guardrail (GuardViolation); 143 stopped by
 SIGTERM while a job ran (the scheduler's timeout, or a redeploy; the heartbeat says error).
 """
@@ -154,19 +133,18 @@ JOBS: dict[str, str] = {
     "settings_sync": "us_outbound.settings.sync:run",
     "source_universe": "us_outbound.sources.apollo_universe:run",
     "apollo_signals": "us_outbound.sources.apollo_jobs:run",
-    "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages without Clay
+    "read_pages": "us_outbound.sources.pages:run",  # Harry, 2 Oct 2026: careers and benefits pages, and home pages
     "apollo_enrich": "us_outbound.sources.apollo_enrich:run",  # Harry, 2 Oct 2026: funding and headcount from enrich
     "apollo_people": "us_outbound.sources.apollo_people:run",  # Harry, 5 Oct 2026: People leaders at every account
     "site_visits": "us_outbound.sources.site_visits:run",  # Harry, 5 Oct 2026: Apollo's visitors to the US site
-    "public_signals": "not built yet (phase 1)",
-    "verify_in_clay": "not built yet (phase 1)",
-    # Build addition: verified on Apollo data and HubSpot while clay_verification = skip (Harry, 1 Oct 2026).
+    # Build addition: verified on Apollo data and HubSpot (Harry, 1 Oct 2026; Clay's verify_in_clay was never built
+    # and went with public_signals, both never scheduled, in W2-1, 20 Oct 2026).
     "verify_accounts": "us_outbound.verify:run",
     "score": "us_outbound.scoring.score:rescore",
     "pick_contacts": "us_outbound.contacts.pick:run",
     "enrol": "us_outbound.enrol.enrol:run",
     "poll_replies": "us_outbound.replies.poll:run",
-    "poll_approvals": "us_outbound.replies.desk:poll_approvals",
+    "poll_approvals": "us_outbound.replies.desk:poll_desk",  # the job keeps its name (W2-1): the reply desk, the hand-check tab
     "hubspot_readback": "us_outbound.crm.readback:hubspot_readback",
     "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
@@ -185,6 +163,9 @@ JOBS: dict[str, str] = {
     # Harry, 11 Oct 2026: a batch of companies to judge by hand each month, last month's scored, to Slack.
     "label_sample_monthly": "us_outbound.ops.label_sample:monthly",
 }
+# The module of every job, so one import of each proves no job lost a module it needs (W2-1, 20 Oct 2026: a removal
+# wide enough to miss an importer; tests/test_cli.py imports them all).
+JOB_MODULES: tuple[str, ...] = tuple(dict.fromkeys(t.partition(":")[0] for t in JOBS.values() if ":" in t))
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 
 Factory = Callable[..., Context]
@@ -368,7 +349,7 @@ def _sync_line(summary: dict) -> str:
 
 
 def _in_force_line(ctx: Context) -> str:
-    """The two switches as the settings now in force have them (the store, after a sync)."""
+    """live_sending as the settings now in force have it (the store, after a sync)."""
     from us_outbound.settings.sync import load_current
 
     settings, errors = load_current(ctx.store)
@@ -376,8 +357,7 @@ def _in_force_line(ctx: Context) -> str:
         tabs = ", ".join(t for t, errs in errors.items() if errs) or "unknown"
         return f"The settings are not usable ({tabs}): nothing runs until the sheet is fixed and synced."
     g = settings.general
-    return (f"In force now: live_sending {'yes' if g.live_sending else 'no'}, "
-            f"auto_send {'yes' if g.auto_send else 'no'}.")
+    return f"In force now: live_sending {'yes' if g.live_sending else 'no'}."
 
 
 def cmd_sync(args: argparse.Namespace, factory: Factory) -> int:
@@ -449,19 +429,16 @@ def _status_heartbeats(store: Any, now: datetime) -> None:
 
 
 def _switches(g: Any) -> str:
-    """The two General switches and what they mean together."""
+    """The General switch and what it means (auto_send went with the send approvals: W2-1, 20 Oct 2026)."""
     if not g.live_sending:
         meaning = "dry: nothing new reaches Instantly or a prospect; `us-outbound stop --live` pauses what already sends"
-    elif g.auto_send:
-        meaning = "live: emails go straight to Instantly once the weekly hand-check is approved"
     else:
-        meaning = "live: every email waits for an approver's ✅ in Slack"
-    return (f"Switches: live_sending {'yes' if g.live_sending else 'no'} · auto_send {'yes' if g.auto_send else 'no'} "
-            f"({meaning})")
+        meaning = "live: enrol adds each send day's leads straight to Instantly"
+    return f"Switch: live_sending {'yes' if g.live_sending else 'no'} ({meaning})"
 
 
 def _waiting_for_you(ctx: Context) -> str:
-    """"Waiting for you: 2 send approvals, 1 reply, 0 kill-rule holds" (learn/daily_post.for_you)."""
+    """"Waiting for you: 1 reply, 0 kill-rule holds" (learn/daily_post.for_you)."""
     from us_outbound.learn import daily_post
 
     w = daily_post.for_you(ctx)
@@ -469,8 +446,8 @@ def _waiting_for_you(ctx: Context) -> str:
     def n(count: int, one: str, many: str) -> str:
         return f"{count} {one if count == 1 else many}"
 
-    line = (f"Waiting for you: {n(len(w.send_approvals), 'send approval', 'send approvals')}, "
-            f"{n(len(w.replies), 'reply', 'replies')}, {n(len(w.holds), 'kill-rule hold', 'kill-rule holds')}")
+    line = (f"Waiting for you: {n(len(w.replies), 'reply', 'replies')}, "
+            f"{n(len(w.holds), 'kill-rule hold', 'kill-rule holds')}")
     return line + (", and this week's hand-check" if w.hand_checks else "")
 
 
@@ -529,9 +506,6 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
     running = s.running_test()
     print(f"Running test: {running.test_id} ({running.kind}, read on {running.read_date})" if running
           else "Running test: none")
-    from us_outbound.enrol import second
-
-    print(second.describe(s))  # the second-contact switch (Harry, 6 Oct 2026)
     _status_heartbeats(ctx.store, ctx.now)
     try:
         from us_outbound.ops import retention
@@ -567,7 +541,22 @@ def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
             print("  none yet")
     except Exception as exc:  # status still prints what it can
         print(f"Campaigns: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})")
+    _status_live_checks(ctx)
     return 0
+
+
+def _status_live_checks(ctx: Context) -> None:
+    """The three go-live checks status keeps (ops/live_checks.py; W2-1): Copy coverage, the campaigns, the watchdog."""
+    from us_outbound.ops import live_checks
+
+    try:
+        lines = live_checks.lines(live_checks.run_checks(ctx))
+    except GuardViolation:
+        raise
+    except Exception as exc:  # status still prints what it can
+        lines = [f"Go-live checks: unavailable ({type(exc).__name__}: {redact(str(exc))[:160]})"]
+    for line in lines:
+        print(line)
 
 
 NO_DB_NOTE = ("no operator_stop row was written: enrol will keep adding leads to paused campaigns (they do not send); "
@@ -696,10 +685,7 @@ def cmd_relabel(args: argparse.Namespace, factory: Factory) -> int:
               "label check decides them (`us-outbound labels audit --live`, or verify_accounts at 04:30).")
         if args.all:
             print("  " + ", ".join(out["restored"]))
-    cards = out["cards_withdrawn"] if ctx.live else out["cards_to_withdraw"]
-    if cards:
-        print(f"{'Withdrew' if ctx.live else 'Would withdraw'} {len(cards)} open card(s): {', '.join(cards)}.")
-    _dry_note(ctx, "no company or card was changed.")
+    _dry_note(ctx, "no company was changed.")
     return 0
 
 
@@ -758,8 +744,6 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
     print(f"Read at {look['label']}" + ("." if look["final"] else f"; the next is {result['next_look']}."
                                          if result["next_look"] else "."))
     print(looks.summary_line(result))
-    if looks.edited_line(result):
-        print(looks.edited_line(result))
     print("Reply rate decides (a 2x difference is what the test detects); positive and meeting rates are for information.")
     print("Harry writes the result on the Tests tab.")
     return 0
@@ -879,7 +863,7 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
         raise Refused("no Copy row for this account; give --version")
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})
     op = openers.for_account(ctx, account, {**contact, "role": role}, events, check=copy_desk._opener_check(settings),
-                             spend=False, settings=settings)
+                             settings=settings)
     arm = op.arm + (f", would be: {op.would_be}" if op.would_be else "")
     note = f"{op.text or 'none'} ({arm}; {op.source or 'no line'})" + (f"; passed over: {'; '.join(op.notes)}" if op.notes else "")
     if why:
@@ -1029,79 +1013,6 @@ def cmd_replies(args: argparse.Namespace, factory: Factory) -> int:
     return 0 if summary.get("sent") or ctx.dry_run else 2
 
 
-def _print_send_approvals(items: list[dict]) -> None:
-    if not items:
-        print("No send approvals are waiting.")
-        return
-    print(f"{len(items)} send approval{'s' if len(items) != 1 else ''} waiting, oldest first:")
-    for i in items:
-        who = ", ".join(x for x in (i["person"], i["title"]) if x)
-        expired = " (expired: poll_approvals closes it)" if i["expired"] else ""
-        print(f"\n{i['id']}  {i['company']} ({i['domain']}) · {who}")
-        print(f"  from {i['owner']} ({i['mailbox'] or 'mailbox unknown'}) · {i['state']}{' · edited' if i['edited'] else ''}"
-              f" · posted {i['send_day']}, until the end of {i['expires_on']}{expired} · in Slack: "
-              f"{'yes' if i['in_slack'] else 'no'}")
-        print(f"  Subject: {i['subject']}")
-        print(f"  Send it: us-outbound approvals send {i['id']} --live")
-        print(f"  Not this person: us-outbound approvals contact {i['id']} --live"
-              f"   Not this company: us-outbound approvals company {i['id']} --live")
-
-
-def cmd_approvals(args: argparse.Namespace, factory: Factory) -> int:
-    """Send approvals at the command line (enrol/approvals/): the same close path as Slack, approved_by "cli"."""
-    from us_outbound.enrol import approvals
-
-    if args.action == "list":
-        _only_reads(args)
-        _print_send_approvals(approvals.list_items(factory("approvals_list", False, operator=True)))
-        return 0
-    if not args.item_id:
-        raise Refused(f"approvals {args.action} needs an item id from `us-outbound approvals list`")
-    action = args.action
-    if action == "redo":  # Harry, 7 Oct 2026: today's cards withdrawn and posted again under the checked labels
-        ctx, summary = _operate(
-            factory, "approvals_redo", args.live, lambda c: approvals.redo(c, args.item_id),
-            operator=True, dry_note="no card was withdrawn or posted.",
-        )  # it reaches no prospect: --live alone
-        return 0
-    if action == "industry":  # Harry, 7 Oct 2026: "industry: LABEL" in the card's thread (labels.py)
-        if not args.label:
-            raise Refused('approvals industry needs the label: `us-outbound approvals industry ID "Fintech" --live`')
-        ctx, summary = _operate(
-            factory, "approvals_industry", args.live, lambda c: approvals.industry_item(c, args.item_id, args.label),
-            operator=True, dry_note="the label, the Overrides tab and the card are unchanged.",
-        )  # it reaches no prospect: --live alone
-        return 0
-    if action in ("contact", "company"):  # the Slack words: 👤 not this person, 🚫 not this company
-        if args.contact or args.company:
-            raise Refused(f"`approvals {action}` takes no --contact or --company")
-        args.contact, args.company, action = action == "contact", action == "company", "reject"
-    if action == "reject":
-        if args.contact == args.company:
-            raise Refused("approvals reject needs one of --contact (not this person) or --company (not this company)")
-        # Rejecting reaches no prospect (a contact suppressed, or an account excluded): --live alone.
-        ctx, summary = _operate(
-            factory, "approvals_reject", args.live,
-            lambda c: approvals.reject_item(c, args.item_id, "contact" if args.contact else "company"),
-            operator=True, dry_note="the item, the contact and the account are unchanged.",
-        )
-        return 0 if summary.get("done") or ctx.dry_run else 2
-    if args.contact or args.company:
-        raise Refused("--contact and --company go with reject, not send")
-    # send (approve) is ✅.
-    # approve adds the lead to Instantly, so it is live like a job: --live and live_sending = yes (SPEC 0.3).
-    ctx, summary = _operate(
-        factory, approvals.APPROVALS_CLI_JOB, args.live, lambda c: approvals.approve(c, args.item_id),
-        dry_note="the lead was not added to Instantly and the item is unchanged.",
-    )
-    if summary.get("held"):
-        print("Held, not sent yet: " + "; ".join(summary["held"]) + ". The approval stands: poll_approvals adds the "
-              "lead within 5 minutes of that clearing, unless the card expires first.")
-    elif summary.get("outcome") == approvals.BLOCKED:
-        print("Not sent, and closed: " + "; ".join(summary.get("why") or ()) + ".")
-    return 0 if summary.get("added") or ctx.dry_run else 2
-
-
 def _audit_report(out: dict, live: bool) -> None:
     print(f"{out['to_check']} of {out['open_accounts']} open companies have no fresh label check"
           f" ({out['stale']} with an earlier one: an older label list or prompt, or a home page read since).")
@@ -1134,32 +1045,6 @@ def _audit_report(out: dict, live: bool) -> None:
                   f"{d['entity']}) · now {d['now']}{quote}")
     for line in out["relabelled"]:
         print(f"  {line}")
-    if out["cards_withdrawn"]:
-        print(f"Withdrew {len(out['cards_withdrawn'])} open card(s): {', '.join(out['cards_withdrawn'])}.")
-
-
-def _crosswalk_report(out: dict) -> None:
-    r = out["rules"]
-    n = out["known"]
-    labelled = n - r["no_rules_label"]
-    print(f"{n} companies with a known label ({out['by_approver']} corrected by an approver, {out['by_model']} the "
-          f"model was sure of; {out['outside_our_labels']} outside our labels).")
-    if n:
-        print(f"The rules' label against it: the same label {r['exact_label']} ({r['exact_label'] / n:.0%}); of the "
-              f"{labelled} the rules labelled, the same group {r['same_group']}, another group {r['other_group']}; "
-              f"no rules label {r['no_rules_label']}.")
-    for key, title in (("poor", "Translations that are mostly wrong"),
-                       ("group_only", "Translations that place the group but not the label"),
-                       ("add", "Apollo values the tab does not translate, with a clear answer")):
-        if out[key]:
-            print(f"{title}:")
-            for row in out[key]:
-                right = f", {row['share_right']} right" if row["share_right"] else ""
-                says = f" → {row['tab_says']}" if row["tab_says"] else ""
-                print(f"  {row['kind']} “{row['value']}”{says}: {row['companies']} companies{right}; {row['verdict']} "
-                      f"(top label {row['top_label']} {row['label_share']}, group {row['top_group']} "
-                      f"{row['group_share']})")
-    print(f"{out['rows']} rows" + (" written to the Crosswalk tab." if out["tab_written"] else "."))
 
 
 def _sample_report(out: dict, live: bool) -> None:
@@ -1226,14 +1111,7 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         ctx = factory(relabel.AUDIT_JOB, args.live, operator=True)
         out = run_job(ctx, lambda c: relabel.audit(c, args.limit))
         _audit_report(out, ctx.live)
-        _dry_note(ctx, "no model was asked and no company or card was changed.")
-        return 0
-    if args.action == "crosswalk":  # reads only; with --live it also writes the Crosswalk tab
-        from us_outbound.ops import crosswalk
-
-        ctx = factory(crosswalk.JOB, args.live, operator=True)
-        _crosswalk_report(run_job(ctx, crosswalk.run))
-        _dry_note(ctx, f"the {crosswalk.TAB} tab was not written.")
+        _dry_note(ctx, "no model was asked and no company was changed.")
         return 0
     if args.action == "sample":  # reads only; with --live it writes the Label sample tab, --score reads it back
         from us_outbound.ops import label_sample
@@ -1273,7 +1151,7 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
     ctx, summary = _operate(
         factory, "labels_set", args.live, lambda c: relabel.set_label(c, args.domain, args.label),
-        operator=True, dry_note="the label, the Overrides tab and any card are unchanged.",
+        operator=True, dry_note="the label and the Overrides tab are unchanged.",
     )  # it reaches no prospect: --live alone
     return 0
 
@@ -1415,25 +1293,6 @@ def cmd_data(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-# -- go-live (Harry, 1 Oct 2026) ------------------------------------------------------------------
-
-
-def cmd_golive(args: argparse.Namespace, factory: Factory) -> int:
-    """The read-only go/no-go check (ops/golive.py). Exits 1 if any check FAILs."""
-    from us_outbound.ops import golive
-
-    try:
-        ctx = factory("golive", False)
-    except bootstrap.SettingsUnusable as exc:
-        checks = golive.unusable(exc.errors)
-        print(golive.render(checks, datetime.now(UTC)))
-        return golive.exit_code(checks)
-    checks = golive.run_checks(ctx)
-    g = ctx.settings.general
-    print(golive.render(checks, ctx.now, channel=g.alert_channel, auto_send=g.auto_send))
-    return golive.exit_code(checks)
-
-
 # -- the companies and contacts we hold (Harry, 5 Oct 2026) -----------------------------------------
 
 
@@ -1542,22 +1401,6 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def cmd_clay(args: argparse.Namespace, factory: Factory) -> int:
-    """`clay check-email`: one Work Email lookup for a Spill colleague, to confirm the email fallback (ops/clay_check.py).
-    Calls Clay only with --live; exits 1 when the call failed or its output is not what the parser expects."""
-    from us_outbound.clients.clay import CHECK_EMAIL_JOB
-    from us_outbound.ops import clay_check
-
-    ctx = factory(CHECK_EMAIL_JOB, args.live, operator=True)
-    try:
-        report = clay_check.check_email(ctx, args.first, args.last, args.domain)
-    except ValueError as exc:
-        raise Refused(str(exc)) from exc
-    for line in clay_check.lines(report):
-        print(line)
-    return 0 if report["dry_run"] or report["verdict"] == clay_check.READY else 1
-
-
 def cmd_signals(args: argparse.Namespace, factory: Factory) -> int:
     """Which signals predict replies (learn/signal_review.py), or the signal-value table (learn/signal_value.py,
     from v_signal_value; Harry, 6 Oct 2026): read-only, the evidence for reweighting the Signals tab."""
@@ -1647,21 +1490,6 @@ def cmd_capture(args: argparse.Namespace, factory: Factory) -> int:
     return 0 if not summary.get("errors") else 2
 
 
-def cmd_phase0(args: argparse.Namespace, factory: Factory) -> int:
-    """`phase0 check`: the API details to confirm that a live read, or a write on Harry's own seed lead, settles
-    (ops/phase0.py; Harry, 7 Oct 2026). An operator command: --live alone; it reaches no prospect."""
-    from us_outbound.ops import phase0
-
-    ctx, report = _operate(
-        factory, phase0.JOB, args.live,
-        lambda c: phase0.check(c, seeds=args.seed or (), apollo_credits=args.apollo_credits),
-        operator=True, show=False,
-    )
-    for line in phase0.lines(report):
-        print(line)
-    return 0
-
-
 def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
     """The kill-rule holds in force (learn/kill_rules.py), and lifting one once Harry has checked it."""
     from us_outbound.learn import kill_rules
@@ -1718,7 +1546,7 @@ def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
 
 
 HELP = ("Spill's US Outbound engine. Dry-run by default. `--live` makes a command act. Anything that reaches a "
-        "prospect (start, approvals send, replies send, every scheduled job) also needs live_sending = yes in the "
+        "prospect (start, replies send, every scheduled job) also needs live_sending = yes in the "
         "synced settings.")
 # Build and duplicate commands (4 Oct 2026): each still works as before, but `--help` lists only what Harry uses.
 HIDDEN = frozenset({"unenrol", "rescore", "dry-run", "db", "hubspot", "suppression", "lookalikes", "pages",
@@ -1742,10 +1570,10 @@ def build_parser() -> argparse.ArgumentParser:
         return parser
 
     # What Harry uses, in the order `--help` lists it.
-    command("status", "the switches, what waits for you, jobs, mailboxes and campaigns", cmd_status)
+    command("status", "live_sending, what waits for you, jobs, mailboxes, campaigns and the go-live checks",
+            cmd_status)
     dp = command("daily", "the daily post as it would read now (read-only; posts nothing)", cmd_daily)
     dp.add_argument("--full", action="store_true", help="every section: sources, labels, mailboxes, credits")
-    command("golive", "the read-only go/no-go check before the first sends", cmd_golive)
     # The choices are written out here, so --help does not import the view (ops/accounts_view.py STATUSES, TIERS).
     ac = command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV "
                  "(read-only)", cmd_accounts)
@@ -1773,17 +1601,6 @@ def build_parser() -> argparse.ArgumentParser:
     so.add_argument("--no-db", action="store_true",
                     help="the database is down: pause the campaigns through Instantly alone (no settings, no "
                          "operator_stop row; run stop --live again once it is back)")
-
-    ap = command("approvals", "the emails waiting for a ✅, without Slack: list, send, or not this contact or company",
-                 cmd_approvals, takes_live=True)
-    ap.add_argument("action", choices=["list", "send", "contact", "company", "approve", "reject", "industry", "redo"],
-                    help="send = ✅ (approve); contact = 👤 not this person; company = 🚫 not this company "
-                         "(reject --contact / --company); industry = the company's label is another; redo = withdraw "
-                         "the card and post it again under the company's label and emails as they are now")
-    ap.add_argument("item_id", nargs="?", help="the id `approvals list` shows (or its first characters); redo: or all")
-    ap.add_argument("label", nargs="?", help="industry: the Industries label, like \"Fintech\"")
-    ap.add_argument("--contact", action="store_true", help="reject: not this person; pick_contacts finds the next")
-    ap.add_argument("--company", action="store_true", help="reject: not this company; it is excluded")
 
     rp = command("replies", "the replies waiting, without Slack: list, send the draft (or your text), or skip",
                  cmd_replies, takes_live=True)
@@ -1831,15 +1648,6 @@ def build_parser() -> argparse.ArgumentParser:
     cp = command("capture", "the reply read's canary: check that the seed inbox's answer to the last one came back",
                  cmd_capture, takes_live=True)
     cp.add_argument("action", choices=["check"])
-
-    p0 = command("phase0", "the live checks of the API details still to confirm: read-only, or your own seed lead",
-                 cmd_phase0, takes_live=True)
-    p0.add_argument("action", choices=["check"])
-    p0.add_argument("--seed", action="append", metavar="ADDRESS",
-                    help="also the writes on this seed lead of ours (pause and resume, interest status, a forward to "
-                         "escalation_email); repeat it for a second seed lead")
-    p0.add_argument("--apollo-credits", action="store_true",
-                    help="also the probes that cost an Apollo credit each (3 at most)")
 
     kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
     kr.add_argument("action", choices=["show", "clear"])
@@ -1912,29 +1720,21 @@ def build_parser() -> argparse.ArgumentParser:
     hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
                     help="approve: accounts to leave out (ids or domains)")
 
-    cl = command("clay", "one Work Email lookup for your own name, to confirm Clay's email fallback", cmd_clay,
-                 takes_live=True)
-    cl.add_argument("action", choices=["check-email"])
-    cl.add_argument("--first", required=True, help="your first name (a Spill colleague's own, never a prospect's)")
-    cl.add_argument("--last", required=True, help="your last name")
-    cl.add_argument("--domain", required=True, help="Spill's own domain, like spill.chat")
-
     lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
-                 "company's label, show its label and history, or measure how Apollo's industries, NAICS codes and "
-                 "keywords translate into labels (crosswalk), or draw a sample for you to judge by hand (sample)", cmd_labels,
-                 takes_live=True)
-    lb.add_argument("action", choices=["audit", "eval", "set", "show", "crosswalk", "sample"])
+                 "company's label, show its label and history, or draw a sample for you to judge by hand (sample)",
+                 cmd_labels, takes_live=True)
+    lb.add_argument("action", choices=["audit", "eval", "set", "show", "sample"])
     lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
     lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
     lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")
     lb.add_argument("--from-corrections", action="store_true",
-                    help="eval: also score the companies approvers corrected, expecting their new label")
+                    help="eval: also score the companies corrected by hand, expecting their new label")
     lb.add_argument("--from-sample", action="store_true",
                     help="eval: also score the companies judged on the Label sample tab, expecting their right label")
     lb.add_argument("--size", type=int, help="sample: how many companies to draw (default 50)")
     lb.add_argument("--score", action="store_true", help="sample: read your verdicts back from the tab and count them")
-    rl = command("relabel", "put the companies in the queue under the industry labels the rules give now, and "
-                 "withdraw open cards whose label changes", cmd_relabel, takes_live=True)
+    rl = command("relabel", "put the companies in the queue under the industry labels the rules give now",
+                 cmd_relabel, takes_live=True)
     rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")
     er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
     er.add_argument("--email", required=True)

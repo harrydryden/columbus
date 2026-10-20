@@ -169,8 +169,7 @@ def brake_context(live: bool, *, env: Mapping[str, str] | None = None, transport
     env = os.environ if env is None else env
     settings = Settings(general=General())
     guard = Guard(live=bool(live), job=OPERATOR_STOP)
-    guard.configure(bounds=boundaries_for(settings, (env.get("US_OUTBOUND_SETTINGS_SHEET_ID") or "").strip(),
-                                          job=OPERATOR_STOP))
+    guard.configure(bounds=boundaries_for(settings, (env.get("US_OUTBOUND_SETTINGS_SHEET_ID") or "").strip()))
     store = MemoryStore(guard)
     secrets = secrets or Secrets(guard, env)
     if transport is None:
@@ -229,7 +228,7 @@ def build_context(
     live = resolve_live(live_flag, settings, operator=operator)
     secrets = secrets or Secrets(guard, env)
     ping_url = watchdog.read(secrets)[0] if job == watchdog.JOB else ""
-    guard.configure(live=live, bounds=boundaries_for(settings, sheet_id, job=job, watchdog_url=ping_url),
+    guard.configure(live=live, bounds=boundaries_for(settings, sheet_id, watchdog_url=ping_url),
                     protective_only=protective)
     if live_flag and not live:
         log("live_refused", job=job, reason="live_sending is not yes in the settings sheet; running dry")

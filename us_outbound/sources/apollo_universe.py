@@ -12,8 +12,9 @@ universe is every company that fits the sheet's Industries, States and size band
          max_employees (10 to 249 by default; Harry, 6 Oct 2026), one search per size band it touches
          (Settings.size_bands), each band clipped to the range; insurers and brokers (NAICS 524) left
          out by Apollo, other partners by Python.
-     A search Apollo says holds over 50,000 companies (its display limit) is split by size band (SPEC 7),
-     and so is one whose first page carries no employee counts, so the band comes from the filter.
+     Every search is by size band from the start (SPEC 7's split over 50,000, and Apollo's rows carrying no
+     employee count, both made it so), and the band comes from the search's own filter. (The unbanded search, its
+     split and backfill_bands, the one-off for the 2 Oct 2026 accounts with no band, went with W2-1, 20 Oct 2026.)
   2. Each company is mapped to exactly one Industries label (best_label: its NAICS codes, then its
      Apollo keywords) and skipped if none fits or the best fit is switched off. Its root domain and
      name are cleaned (clean/), and it comes in by the front door (accounts.admit: one account per
@@ -83,7 +84,7 @@ import math
 import re
 from collections import Counter, deque
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -131,7 +132,6 @@ SOURCED_BY = "sourced_by"  # the fact naming the search that found an account (s
 OPEN_STATUSES = ("new", "queued", "verified")  # waiting to be enrolled
 OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 NEVER_STATES = frozenset({"CA", "WA"})  # SPEC 1.3
-MAX_RESULTS = MAX_PAGE * MAX_PER_PAGE  # Apollo shows at most 50,000 companies per search
 # organization_naics_codes takes 2 to 5 digits (Apollo's docs), so a 6-digit code is sent as its 5-digit
 # prefix and Python checks the full code. Confirmed live 2 Oct 2026: the active industries' searches by
 # 5-digit prefixes found the 432 accounts. Whether six digits work is untried (it would only narrow a search).
@@ -140,11 +140,8 @@ NAICS = "naics"  # a search by NAICS codes; otherwise it is a label's keyword se
 MAX_PAGES_PER_RUN = 200  # well inside the 60-minute timeout
 # Apollo's search rows carry no estimated_num_employees (2 Oct 2026, the first live run: none on 432
 # accounts), so a search without a size filter gives accounts no size band at all. Every search is
-# therefore read by size band from the start, and the band comes from the search's own filter.
-# None: the bands the General size range touches (Settings.size_bands; Harry, 6 Oct 2026), each searched with
-# its range clipped to min_employees and max_employees.
-START_BANDS: tuple[str, ...] | None = None
-BACKFILL_BATCH = 100  # accounts per size-band backfill search (one page; Apollo's per_page limit)
+# therefore read by size band, the bands the General size range touches (Settings.size_bands; Harry, 6 Oct 2026),
+# each searched with its range clipped to min_employees and max_employees, and the band comes from the filter.
 QUOTE_LIMIT = 300  # SPEC 6
 DESCRIPTION_LIMIT = 600  # the description fact, for the opener's "what they do" phrase
 APOLLO_ORG_URL = "https://app.apollo.io/#/organizations/{}"
@@ -237,9 +234,6 @@ class Slice:
             f["not_organization_naics_codes"] = list(PARTNER_FILTER)
         return f
 
-    def by_band(self, settings: Settings) -> list[Slice]:
-        return [replace(self, band=b, employees=settings.employee_range(b)) for b in settings.size_bands()]
-
 
 def rotated(states: Sequence[str], week: int) -> list[str]:
     """The states in turn from index week mod their number: ISO week 43 over GA, IL, MA, NJ, NY, PA, TX starts at IL."""
@@ -266,9 +260,8 @@ def plan(settings: Settings, groups: Sequence[str], states: Sequence[str], *, we
         umbrella = next((i.industry for i in labels if i.is_umbrella), "")
         searches = [(NAICS, tuple(codes), umbrella)] if codes else []
         searches += [(i.industry, i.apollo_keywords, i.industry) for i in labels if not i.naics_prefixes]
-        bands = START_BANDS if START_BANDS is not None else settings.size_bands()
-        out[group] = [Slice(group, st, what, terms, label, band, settings.employee_range(band) if band else "")
-                      for what, terms, label in searches for band in bands for st in order]
+        out[group] = [Slice(group, st, what, terms, label, band, settings.employee_range(band))
+                      for what, terms, label in searches for band in settings.size_bands() for st in order]
     return out
 
 
@@ -450,11 +443,10 @@ def created_this_week(ctx: Context) -> int:
 class Cursor:
     page: int = 0  # the last page read this month
     pages: int | None = None  # the pages Apollo said the search has
-    split: bool = False  # over 50,000 companies: searched by size band instead
 
     @property
     def done(self) -> bool:
-        return self.split or (self.pages is not None and self.page >= min(self.pages, MAX_PAGE))
+        return self.pages is not None and self.page >= min(self.pages, MAX_PAGE)
 
 
 def cursors(ctx: Context) -> dict[str, Cursor]:
@@ -474,20 +466,12 @@ def cursors(ctx: Context) -> dict[str, Cursor]:
         page = int(note.get("page") or 0) - (1 if note.get("cut") else 0)  # a cut page is read again
         if page >= c.page:
             c.page, c.pages = page, note.get("pages")
-        c.split = c.split or bool(note.get("split"))
     return out
 
 
-def _lane(slices: Iterable[Slice], progress: Mapping[str, Cursor], settings: Settings) -> deque[Slice]:
-    """The searches still to read, in turn; a split search is read as its four size bands."""
-    out: deque[Slice] = deque()
-    for sl in slices:
-        c = progress.get(sl.key)
-        if c is not None and c.split:
-            out.extend(b for b in sl.by_band(settings) if not progress.get(b.key, Cursor()).done)
-        elif c is None or not c.done:
-            out.append(sl)
-    return out
+def _lane(slices: Iterable[Slice], progress: Mapping[str, Cursor]) -> deque[Slice]:
+    """The searches still to read, in turn."""
+    return deque(sl for sl in slices if not progress.get(sl.key, Cursor()).done)
 
 
 def _pages(body: Mapping[str, Any], page: int, found: int) -> int | None:
@@ -877,17 +861,13 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
             run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
             return False
         orgs = organizations_in(body)
-        total = total_entries(body)
-        split = page == 1 and not sl.band and bool(split_reason(orgs, total))
         note = {"slice": sl.key, "page": page, "pages": _pages(body, page, len(orgs)), "results": len(orgs),
-                "total": total, "split": split, "why": split_reason(orgs, total) if split else ""}
+                "total": total_entries(body)}
         spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps(note))
-    cur.page, cur.pages, cur.split = page, _pages(body, page, len(orgs)), split
+    cur.page, cur.pages = page, _pages(body, page, len(orgs))
     room.spend(spent)
     run.pages += 1
     run.credits += spent
-    if split and split_reason(orgs, total) == "no employee counts":
-        return True  # no size on these rows: the size-band searches that follow take the same companies
     rows: list[dict] = []
     events: list[dict] = []
     partners: dict[str, dict] = {}
@@ -905,66 +885,6 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
             events.append(sourced_by(str(got.account_id), sl, page, ctx.run_id, ctx.now))
     _write(ctx, rows, events, partners, run)
     return True
-
-
-def backfill_bands(ctx: Context, run: _Run, room: credits.Room) -> int:
-    """Give open accounts with no size band one, from size-band searches filtered to their Apollo ids.
-
-    Accounts made before START_BANDS (the 2 Oct 2026 run) came from searches with no size filter and
-    Apollo sent no employee count, so they have no band and verify_accounts cannot place them. Per
-    BACKFILL_BATCH accounts it runs one search per band, filtered to their organization ids; a
-    company a band's search returns is in that band. A page with results costs 1 credit, so about 4
-    per 100 accounts. Accounts no band search returns keep no band and are tried next run.
-    Confirmed live 5 Oct 2026: organization_ids with organization_num_employees_ranges on
-    mixed_companies/search (8 band searches placed 138 accounts in a band).
-    """
-    todo = [a for a in ctx.store.select("accounts", {"status": list(OPEN_STATUSES)})
-            if not a.get("size_band") and a.get("apollo_org_id") and a.get("employees") is None]
-    banded = 0
-    for i in range(0, len(todo), BACKFILL_BATCH):
-        batch = {str(a["apollo_org_id"]): a for a in todo[i : i + BACKFILL_BATCH]}
-        for band in ctx.settings.size_bands():
-            if not batch or not room.allows():
-                return banded
-            filters = {"organization_ids": list(batch),
-                       "organization_num_employees_ranges": [ctx.settings.employee_range(band)]}
-            what = {"backfill": band, "asked": len(batch)}
-            with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
-                try:
-                    body = ctx.clients.apollo.search_organizations(filters, page=1, per_page=MAX_PER_PAGE)
-                except ApiError as exc:
-                    spent = paid.fail(exc, note=ledger.failed_note(what, exc))
-                    room.spend(spent)
-                    run.credits += spent
-                    if isinstance(exc, AuthError):
-                        raise
-                    run.errors.append(f"size-band backfill {band}: {str(exc)[:200]}")
-                    return banded
-                found = [apollo_org_id(o) for o in organizations_in(body)]
-                rows = [{"account_id": batch.pop(oid)["account_id"], "size_band": band} for oid in found if oid in batch]
-                spent = paid.settle(1.0 if found else 0.0, note=json.dumps(
-                    {"backfill": band, "asked": len(batch) + len(rows), "banded": len(rows)}))
-            room.spend(spent)
-            run.pages += 1
-            run.credits += spent
-            if rows:
-                ctx.store.upsert("accounts", rows)  # partial rows: only size_band changes
-                banded += len(rows)
-    return banded
-
-
-def split_reason(orgs: Sequence[Mapping[str, Any]], total: int | None) -> str:
-    """Why a search is read again by size band, or "": over Apollo's 50,000 (SPEC 7), or no employee counts.
-
-    Confirmed live 2 Oct 2026: search rows carry no estimated_num_employees (none of 432). With none on a
-    page, the size band comes from the search's own size filter instead, so accounts can still pass the
-    size check.
-    """
-    if total is not None and total > MAX_RESULTS:
-        return "over 50,000 companies"
-    if orgs and all(parse.integer(o.get("estimated_num_employees")) is None for o in orgs):
-        return "no employee counts"
-    return ""
 
 
 def _depth(depth: Counter[str], groups: Iterable[str]) -> int:
@@ -994,8 +914,6 @@ def run(ctx: Context) -> dict:
 
     room = credits.room(ctx, JOB, SOURCING_SHARE)
     r = _Run(states=frozenset(states))
-    # Before the supply check: accounts already queued with no size band are the ones it fills.
-    summary["size_bands_backfilled"] = backfill_bands(ctx, r, room)
     # Each pool's raw need: its share of the target less its contactable supply, at the yields (loop L1).
     needs = [(pool, pool_target, raw_need(pool_target - supply.of(pool), supply)) for pool, pool_target in todo]
     week_before = created_this_week(ctx)
@@ -1025,7 +943,7 @@ def run(ctx: Context) -> dict:
         return min(need - _depth(depth, pool), allowance - sum(depth.values()))
 
     for pool, _, need in needs:
-        lane = _lane((sl for g in pool for sl in searches.get(g, ())), progress, s) if room_left(pool, need) > 0 else None
+        lane = _lane((sl for g in pool for sl in searches.get(g, ())), progress) if room_left(pool, need) > 0 else None
         while lane is not None and not halt and room_left(pool, need) > 0:
             if r.pages >= MAX_PAGES_PER_RUN:
                 halt = f"the limit of {MAX_PAGES_PER_RUN} pages a run"
@@ -1039,9 +957,7 @@ def run(ctx: Context) -> dict:
                 cur = progress.setdefault(sl.key, Cursor())
                 if not read_page(ctx, sl, cur, r, room, depth, limit=room_left(pool, need)):
                     continue  # refused: that search waits for the next run
-                if cur.split:
-                    lane.extendleft(reversed([b for b in sl.by_band(s) if not progress.get(b.key, Cursor()).done]))
-                elif not cur.done:
+                if not cur.done:
                     lane.append(sl)
         if halt:
             break

@@ -69,8 +69,6 @@ EXPECTED: dict[str, int] = {
     "apollo_enrich": 26 * _H,  # 05:00 weekdays (weekday time; build addition, Harry, 2 Oct 2026; 04:10 until W1-3a)
     "apollo_people": 26 * _H,  # 04:20 weekdays (weekday time; build addition, Harry, 5 Oct 2026)
     "site_visits": 26 * _H,  # 06:00 daily
-    "public_signals": 8 * _DAY,  # Mon 04:00
-    "verify_in_clay": 26 * _H,  # 04:30 weekdays (weekday time)
     "verify_accounts": 26 * _H,  # 04:30 weekdays (weekday time; build addition)
     "pick_contacts": 26 * _H,  # 05:30 weekdays (weekday time)
     "enrol": 26 * _H,  # 12:00 weekdays (weekday time)
@@ -96,9 +94,9 @@ EXPECTED: dict[str, int] = {
     "hand_check_draw": 8 * _DAY,  # Mon 05:45 (W1-5, 19 Oct 2026; hand_check_post at Mon 08:00 before)
     "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
-# score has no schedule of its own: it runs inside settings_sync, verify_in_clay, verify_accounts and site_visits.
+# score has no schedule of its own: it runs inside settings_sync, verify_accounts, pick_contacts and site_visits.
 WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people",
-                          "verify_in_clay", "verify_accounts", "pick_contacts", "enrol"})
+                          "verify_accounts", "pick_contacts", "enrol"})
 
 
 class Skip(Exception):

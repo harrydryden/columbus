@@ -7,8 +7,16 @@ safety job, after its writes, and again every 15 minutes: the marker was never w
 
 from __future__ import annotations
 
-from tests.fakes_replies import JANE
+from datetime import timedelta
+
+import pytest
+
+from tests.fakes_replies import CAMPAIGNS, HANNAH as HANNAH_ADDR, JANE, NOW as REPLY_NOW, make_world
 from tests.test_suppression import deleted, hubspot_opts_out, in_flight_world
+from us_outbound.clients import instantly as instantly_client
+from us_outbound.clients.instantly import LEAD_BOUNCED, LEAD_UNSUBSCRIBED
+from us_outbound.enrol import capacity
+from us_outbound.logs import hash_email
 from us_outbound.replies import account_stop, outcomes
 
 
@@ -95,3 +103,103 @@ def test_a_refused_stop_whose_alert_failed_is_tried_again_and_seen_by_heartbeat_
     w.at(t0 + timedelta(minutes=30))
     third = run_job(w.ctx, outcomes.run)["account_stops"]
     assert (third["errors"], "refused_alert" in third) == ([], False) and len(refused_posts(w)) == 1
+
+
+# -- two leads at one account: the sweep stops the colleague's (Harry, 6 Oct 2026) --------------------------------
+# Kept from tests/test_second_contact.py when second contacts went (W2-1, 20 Oct 2026): the sweep stays, for any
+# account with two leads in flight, and the suppressed-in-flight stop above runs through it.
+
+OMAR = "omar@acmecreative.com"
+
+
+def stop_world(default_settings, *, live=True, colleague=True):
+    """Acme's Jane in flight (fakes_replies), and, with colleague, Omar in Hannah's campaign at the same account."""
+    w = make_world(default_settings, live=live)
+    w.ctx.job = "sync_outcomes"
+    if colleague:
+        w.ctx.store.insert("contacts", [{
+            "contact_id": "k-omar", "account_id": "acc-acme", "first_name": "Omar", "last_name": "Reyes",
+            "title": "CEO", "role": "Founder or executive", "email": OMAR, "email_sha256": hash_email(OMAR),
+            "enrolment_month": "2026-10", "enrolled_at": REPLY_NOW - timedelta(days=6),
+            "instantly_campaign": CAMPAIGNS["cmp-hannah"], "instantly_lead_id": "L-omar", "mailbox": HANNAH_ADDR,
+            "contact_slot": 2}])
+    return w
+
+
+def deletes(w) -> list[str]:
+    return [r.url.rsplit("/", 1)[1] for r in w.transport.requests if r.method == "DELETE"]
+
+
+@pytest.mark.parametrize("who, status, stopped", [("L-jane", LEAD_BOUNCED, "L-omar"),
+                                                  ("L-jane", LEAD_UNSUBSCRIBED, "L-omar"),
+                                                  ("L-omar", LEAD_BOUNCED, "L-jane"),
+                                                  ("L-omar", LEAD_UNSUBSCRIBED, "L-jane")])
+def test_a_bounce_or_unsubscribe_stops_the_colleague_s_lead_and_suppresses_only_the_address(
+        default_settings, who, status, stopped):
+    w = stop_world(default_settings)
+    address = JANE if who == "L-jane" else OMAR
+    other = OMAR if who == "L-jane" else JANE
+    w.lead(who, address, status)
+    out = outcomes.run(w.ctx)
+    assert out["account_stops"]["stopped"] == {"deleted": 1} and deletes(w) == [stopped]
+    other_id = "k-omar" if who == "L-jane" else "k-jane"
+    ev = w.ctx.store.get("events", event_id=f"lead_stopped:{other_id}")
+    assert (ev["type"], ev["account_id"], ev["occurred_at"]) == ("lead_stopped", "acc-acme", w.ctx.now)
+    # Per address: the one who bounced or unsubscribed is suppressed (and blocklisted for an unsubscribe); the
+    # colleague's emails stop, but they are not suppressed, nor blocklisted.
+    assert w.suppressed(address) and not w.suppressed(other)
+    assert not w.ctx.store.get("contacts", contact_id=other_id).get("suppressed")
+    assert all(other not in b for b in w.blocked)
+    assert other_id in capacity.stopped_contacts(w.ctx.store)  # its later steps hold no slot
+    w.at(w.ctx.now + timedelta(minutes=15))
+    assert outcomes.run(w.ctx)["account_stops"]["to_stop"] == 0 and deletes(w) == [stopped]  # once
+
+
+@pytest.mark.parametrize("cls, stops", [("positive", True), ("negative", True), ("referral", True),
+                                        ("unsubscribe", True), ("other", True), ("out_of_office", False),
+                                        (None, False)])
+def test_a_reply_stops_the_colleague_s_lead_once_it_is_classified(default_settings, cls, stops):
+    w = stop_world(default_settings)
+    w.ctx.store.insert("events", [{"event_id": "em-1", "contact_id": "k-jane", "account_id": "acc-acme",
+                                   "type": "replied", "reply_class": cls, "occurred_at": REPLY_NOW - timedelta(hours=1)}])
+    out = account_stop.sweep(w.ctx)
+    assert deletes(w) == (["L-omar"] if stops else []), out
+    assert out["stopped"] == ({"deleted": 1} if stops else {})
+
+
+def test_a_complaint_stops_the_colleague_and_the_lead_is_paused_once_instantly_s_pause_is_confirmed(
+        default_settings, monkeypatch):
+    monkeypatch.setattr(instantly_client, "LEAD_PAUSE_CONFIRMED", True)
+    w = stop_world(default_settings)
+    w.ctx.store.insert("events", [{"event_id": "c-1", "contact_id": "k-omar", "account_id": "acc-acme",
+                                   "type": "complained", "occurred_at": REPLY_NOW - timedelta(hours=1)}])
+    assert account_stop.sweep(w.ctx)["stopped"] == {"paused": 1}
+    assert w.lead_patches == [("L-jane", {"status": instantly_client.LEAD_PAUSED})] and deletes(w) == []
+
+
+def test_the_sweep_in_a_dry_run_calls_nothing(default_settings):
+    w = stop_world(default_settings, live=False)
+    w.lead("L-jane", JANE, LEAD_BOUNCED)
+    out = outcomes.run(w.ctx)["account_stops"]
+    assert out["to_stop"] == 1 and out["would_stop"] == [{"account_id": "acc-acme", "contact_id": "k-omar",
+                                                          "because": "bounced"}]
+    assert deletes(w) == [] and w.lead_patches == [] and not w.events("lead_stopped")
+
+
+def test_with_one_contact_per_account_the_sweep_calls_nothing(default_settings):
+    w = stop_world(default_settings, colleague=False)
+    w.lead("L-jane", JANE, LEAD_BOUNCED)
+    out = outcomes.run(w.ctx)
+    assert out["bounced"] == 1 and out["account_stops"] == {"to_stop": 0, "stopped": {}, "errors": [], "refused": []}
+    assert deletes(w) == [] and w.lead_patches == []
+
+
+def test_is_stop_reads_every_stop_type_and_waits_for_a_reply_s_class():
+    """account_stop.is_stop (moved from enrol/second.py with W2-1): a bounce, an unsubscribe or a complaint stops at
+    once; a reply stops once classified, unless out of office; with classified_only an unclassified reply waits."""
+    assert all(account_stop.is_stop({"type": t}) for t in ("bounced", "unsubscribed", "complained"))
+    assert account_stop.is_stop({"type": "replied", "reply_class": "positive"})
+    assert not account_stop.is_stop({"type": "replied", "reply_class": "out_of_office"})
+    assert account_stop.is_stop({"type": "replied"}) and not account_stop.is_stop({"type": "replied"},
+                                                                                     classified_only=True)
+    assert not account_stop.is_stop({"type": "sent"}) and not account_stop.is_stop({"type": "lead_stopped"})

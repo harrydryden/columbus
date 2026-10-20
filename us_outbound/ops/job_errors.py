@@ -25,8 +25,8 @@ LOOKBACK and posts what it finds to the alert channel, with the approvers mentio
   * failure_rate a frequent job (one that runs more often than daily) whose last RATE_RUNS runs hold RATE_ERRORS or
                 more errors: each failure alone waits for the next run (transient, or missed), so a job failing one
                 run in four never reached anyone (code-platform-ops B13). Posted once a day, with the latest error.
-A count under "errors" itself is no error list (settings_sync's sheet errors, which it posts itself; pick_contacts'
-Clay lookups), and is left out. Each finding quotes its first error, shortened (QUOTE) and passed through
+A count under "errors" itself is no error list (settings_sync's sheet errors, which it posts itself), and is left
+out. Each finding quotes its first error, shortened (QUOTE) and passed through
 logs.redact.
 A failure that says a service rejected its key (HTTP 401 or 403 from a client, Slack's invalid_auth, not_authed,
 token_revoked or account_inactive, Google's 401 or 403 or a service-account key refused, Anthropic's
@@ -112,7 +112,6 @@ def foot(stopped: bool = False) -> str:
 # system -> (who Harry knows it as, the Railway variable holding its key)
 KEYS = {
     "apollo": ("Apollo", SECRET_NAMES["apollo"]),
-    "clay": ("Clay", SECRET_NAMES["clay"]),
     "instantly": ("Instantly", SECRET_NAMES["instantly"]),
     "hubspot": ("HubSpot", SECRET_NAMES["hubspot"]),
     "slack": ("Slack", SECRET_NAMES["slack"]),
@@ -122,7 +121,7 @@ KEYS = {
 # How a rejected key reads in an error: clients/http.ApiError ("hubspot HTTP 401 for /crm/..."), Slack's error
 # codes (it answers HTTP 200 with ok false), clients/claude.ClaudeError ("Claude API error 401"), google-auth.
 AUTH = (
-    (re.compile(r"\b(apollo|clay|instantly|hubspot|sheets|slack)\s+HTTP\s+(?:401|403)\b", re.I), ""),
+    (re.compile(r"\b(apollo|instantly|hubspot|sheets|slack)\s+HTTP\s+(?:401|403)\b", re.I), ""),
     (re.compile(r"\b(?:invalid_auth|not_authed|token_revoked|token_expired|account_inactive)\b"), "slack"),
     (re.compile(r"\bClaude API error (?:401|403)\b|\bauthentication_error\b|\bpermission_error\b"), "claude"),
     (re.compile(r"\bRefreshError\b|\binvalid_grant\b"), "sheets"),

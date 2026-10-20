@@ -90,11 +90,11 @@ def contacts3() -> list[dict]:
 
 
 def make(*, live=False, settings=None, now=NOW, accounts=None, contacts=None, hand_check="handled", transport=None,
-         auto_send=True, optout_tested=True):
-    """The enrol world. auto_send = yes by default: leads go straight to Instantly, as before Harry's 2 Oct 2026
-    switch; tests/test_send_approvals.py runs it with auto_send = no. The opt-out test is done (optout_tested)."""
+         optout_tested=True):
+    """The enrol world: leads go straight to Instantly (send approvals were removed: W2-1). The opt-out test is done
+    (optout_tested)."""
     s = settings or make_settings(live_sending=live)
-    s = dataclasses.replace(s, general=dataclasses.replace(s.general, auto_send=auto_send, optout_tested=optout_tested))
+    s = dataclasses.replace(s, general=dataclasses.replace(s.general, optout_tested=optout_tested))
     t = transport or FakeTransport()
     t.route("GET", "/campaigns", CAMPAIGNS)
     t.route("POST", "/crm/v3/objects/companies/search", {"results": []})
@@ -518,20 +518,23 @@ def test_accounts_enrolled_earlier_this_week_count_against_the_target():
 
 
 def test_budgets_never_hold_back_accounts_already_verified():
-    """Clay and Apollo are spent before enrollment, so a spent week limits the queue, not the day."""
+    """Apollo is spent before enrollment, so a spent month limits the queue, not the day. (Clay's budget went with
+    Clay, W2-1: a clay row on the ledger counts for nothing.)"""
     ctx, _ = make()
     ctx.store.insert("credit_ledger", [
         {"entry_id": "e1", "system": "clay", "credits": 2100.0, "occurred_at": NOW - timedelta(days=1)},
-        {"entry_id": "e2", "system": "clay", "credits": 5000.0, "occurred_at": datetime(2026, 9, 20, tzinfo=UTC)},  # September
-        {"entry_id": "e3", "system": "apollo", "credits": 120.0, "occurred_at": NOW - timedelta(hours=2)},
+        {"entry_id": "e2", "system": "apollo", "credits": 2100.0, "occurred_at": NOW - timedelta(hours=2)},
+        {"entry_id": "e3", "system": "apollo", "credits": 5000.0, "occurred_at": datetime(2026, 9, 20, tzinfo=UTC)},
     ])
     out = enrol.run(ctx)
     assert out["prepared"] == 3 and out["number_terms"]["binding"] == "ready_accounts"
-    clay = out["number_terms"]["budgets"]["clay"]
-    assert (clay["budget"], clay["used"], clay["remaining"]) == (2000.0, 2100.0, -100.0)
-    assert any(line.startswith("Clay: 2,100 of 2,000 credits used this month (105%)") and line.endswith("none left this month.")
-               for line in out["limits"])
-    assert any(line.startswith("Apollo: 120 of 2,000 credits used this month (6%)") for line in out["limits"])
+    assert set(out["number_terms"]["budgets"]) == {"apollo"}
+    apollo = out["number_terms"]["budgets"]["apollo"]
+    # October's 2,100 against 2,000 (September's 5,000 is another month): 100 over.
+    assert (apollo["budget"], apollo["used"], apollo["remaining"]) == (2000.0, 2100.0, -100.0)
+    assert any(line.startswith("Apollo: 2,100 of 2,000 credits used this month (105%)")
+               and line.endswith("none left this month.") for line in out["limits"])
+    assert not any(line.startswith("Clay") for line in out["limits"])
 
 
 def queue_of(tiers: dict[str, int], **settings) -> tuple:
@@ -927,7 +930,7 @@ def test_an_unanswered_add_keeps_the_owner_so_the_retry_goes_to_the_same_campaig
     ctx.store.insert("accounts", [fresh])
     ctx.store.insert("contacts", [contact(contact_id="con-f", account_id="acc-f", email="jo@freshco.com")])
     s2 = make_settings(live_sending=True)
-    s2 = dataclasses.replace(s2, general=dataclasses.replace(s2.general, auto_send=True, optout_tested=True))
+    s2 = dataclasses.replace(s2, general=dataclasses.replace(s2.general, optout_tested=True))
     from tests.fakes import make_context as fresh_context
 
     ctx2 = fresh_context(s2, live=True, now=NOW + timedelta(days=1), transport=t, store=ctx.store)
@@ -1102,13 +1105,12 @@ def test_the_random_walk_counts_against_the_focus_quota():
     assert out["focus"] == f"Focus this week: {TECH} 13 of 50, {AGENCIES} 12 of 50."
 
 
-def test_a_second_contact_s_hubspot_failure_counts_with_the_first_contacts():
-    """A second contact's skip is "second contact: <reason>" (enrol._walk); job_errors reads failures by reason, so
-    3 first-contact and 2 second-contact HubSpot failures are 5, and 1 second-contact copy block is 1. An ordinary
-    skip is no failure."""
-    skipped = {"HubSpot check failed": 3, "second contact: HubSpot check failed": 2,
-               "second contact: copy blocked": 1, "sender full today": 7}
-    assert enrol._failures(skipped) == {"HubSpot check failed": 5, "copy blocked": 1}
+def test_the_failures_are_the_skips_job_errors_reads():
+    """job_errors reads the run's failures by reason (FAILURE_REASONS): 3 HubSpot failures and 1 copy block are
+    {HubSpot 3, copy 1}; an ordinary skip is no failure. (A second contact's "second contact: <reason>" skip went
+    with second contacts, W2-1.)"""
+    skipped = {"HubSpot check failed": 3, "copy blocked": 1, "sender full today": 7}
+    assert enrol._failures(skipped) == {"HubSpot check failed": 3, "copy blocked": 1}
     assert enrol._failures({"sender full today": 7}) == {}
 
 
@@ -1299,3 +1301,23 @@ def test_accounts_verified_at_a_wider_range_are_not_enrolled_or_picked_for_once_
     enrolled = {c["account_id"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
     assert enrolled == {f"fit{i}" for i in range(10)}
     assert {c["size_band_at_enrol"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")} == {"50-99"}
+
+
+def test_thirty_ready_and_25_today_go_straight_to_instantly_with_no_send_approval():
+    """W2-1 (Harry's D6): send approvals and auto_send are gone, so each day's leads go straight to Instantly. 30
+    Priority accounts are ready; today's number is 25: weekly_enrol_cap 100 over the 4 send days left (Tue 27 Oct,
+    none enrolled yet this ISO week) is 25, under sending capacity (31) and the 30 ready. All 25 are added and
+    enrolled, none is held, and no send_approval item is written; the 25 are the top scores in queue order, p29 down
+    to p5 (score 60 + i)."""
+    accts = [account(account_id=f"p{i}", domain=f"p{i}.com", score=60 + i) for i in range(30)]
+    cons = [contact(contact_id=f"k-p{i}", account_id=f"p{i}", email=f"x@p{i}.com") for i in range(30)]
+    ctx, t = make(live=True, settings=make_settings(live_sending=True, weekly_enrol_cap=100), accounts=accts,
+                  contacts=cons)
+    out = enrol.run(ctx)
+    assert (out["status"], out["number"], out["prepared"], out["enrolled"]) == ("ok", 25, 25, 25)
+    assert sum(len(r.json["leads"]) for r in instantly_posts(t) if r.url.endswith("/leads/add")) == 25
+    assert not {"send_approvals", "auto_send", "second_contacts"} & set(out)
+    assert [i for i in ctx.store.select("hitl_items") if i["kind"] == "send_approval"] == []
+    enrolled = {a["account_id"] for a in ctx.store.select("accounts") if a["status"] == "enrolled"}
+    assert enrolled == {f"p{i}" for i in range(5, 30)}
+    assert {c["contact_slot"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")} == {1}

@@ -200,8 +200,8 @@ def test_at_most_two_reveals_then_no_contact_and_limits_say_so(ctx, transport):
     [outcome] = facts(ctx, pick.OUTCOME_FACT)
     assert outcome["value"]["outcome"] == "none" and outcome["value"]["reason"] == reason
     assert pick.no_contact(ctx.store, ctx.now) == {"acc-1": reason}
-    assert limits.behind_ready(ctx, 0, {s: limits.budget.monthly(ctx.store, ctx.settings, s, ctx.now)
-                                        for s in ("clay", "apollo")}) == (
+    assert limits.behind_ready(ctx, 0, {"apollo": limits.budget.monthly(ctx.store, ctx.settings, "apollo",
+                                                                         ctx.now)}) == (
         "Behind it: 1 verified accounts have no email yet. At 1 of them pick_contacts found no suitable contact "
         f"(mostly: {reason}); it tries again after 14 days.")
 
@@ -260,19 +260,18 @@ def pause_source(ctx, source: str, reason: str = "5% bounced", status: str = "op
 
 
 def test_a_kill_rule_pausing_the_apollo_source_stops_every_reveal_and_says_so(ctx, transport):
-    """Harry, 7 Oct 2026: no Apollo reveal (no credit) while a kill rule pauses the apollo email source, as no Clay
-    lookup is made while it pauses the clay source; and Clay alone is not used meanwhile, even when it is on."""
-    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified(), clay_email_fallback=True)
+    """Harry, 7 Oct 2026: no Apollo reveal (no credit) while a kill rule pauses the apollo email source. (Clay's
+    email waterfall went with W2-1, so there is no other source to fall back on.)"""
+    apollo = setup(ctx, transport, [account()], {ORG: TEAM}, everyone_verified())
     pause_source(ctx, "apollo")
     out = pick.run(ctx)
-    why = ("a kill rule pauses the apollo email source (5% bounced): no Apollo reveals, and Clay alone is not used, "
-           "as it is the fallback for Apollo's misses; `us-outbound killrules clear ITEM_ID --live` lifts it once "
-           "checked")
+    why = ("a kill rule pauses the apollo email source (5% bounced): no Apollo reveals; `us-outbound killrules clear "
+           "ITEM_ID --live` lifts it once checked")
     assert (out["status"], out["reason"], out["apollo_paused"]) == ("skipped", why, why)
-    assert apollo.searches == [] and apollo.revealed == [] and transport.requests == []  # nor Clay, nor the balance
+    assert apollo.searches == [] and apollo.revealed == [] and transport.requests == []  # nor the balance
     assert ctx.store.select("credit_ledger") == [] and ctx.store.select("contacts") == []
     assert facts(ctx, pick.OUTCOME_FACT) == []  # nobody is marked "no contact": it is tried again once cleared
-    # Clay's own pause leaves Apollo's reveals going, as before.
+    # Another source's pause (an old clay hold) leaves Apollo's reveals going.
     pause_source(ctx, "apollo", status="handled")
     pause_source(ctx, "clay")
     out = pick.run(ctx)

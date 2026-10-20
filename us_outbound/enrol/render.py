@@ -29,8 +29,8 @@ to action.
     General email1_subject_share of accounts, by sha256 of the salted account id (its own salt, so the split is
     independent of the opener holdout's), are personal: email 1's subject is General email1_subject ("support
     for the {{company}} team") instead of the Copy row's s1_subject. The rest are copy. Emails 2 to 4 keep the
-    Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so the send card, the
-    auto_send path, `copy preview` and `seed send` show the subject that is sent; enrol records the arm on the
+    Copy row's subjects either way. render_sequence(subject_arm=...) renders the arm, so enrol, `copy preview`
+    and `seed send` show the subject that is sent; enrol records the arm on the
     contact (contacts.subject_arm), and `signals review` and the daily post compare the arms' replies.
   * UTM tags (Harry, 6 Oct 2026; enrol/utm.py): with General utm_links = yes, the HTML's links to Spill's site
     and the signature's site or booking link carry utm_source, utm_medium, utm_campaign (the Copy row's
@@ -58,7 +58,6 @@ from us_outbound.copy import copy_markup, copy_rules
 from us_outbound.copy.variables import OPTIONAL_VARIABLES, PRICE_LINE, VARIABLES
 from us_outbound.enrol import utm
 from us_outbound.settings.model import (
-    CLAY_SKIP,
     COPY_STEPS,
     GENERAL_COPY,
     LEGAL_GROUP,
@@ -399,18 +398,9 @@ def signature(settings: Settings, sender_name: str = "", *, body: copy_markup.Re
                    text=f"{name}\n{sig.text}" if name else sig.text), missing, kind
 
 
-def signature_texts(settings: Settings, sender_name: str = "") -> set[str]:
-    """Every line a signature can show, as plain text: the sender's full name and each kind's line.
-    approvals takes a signature pasted into an edit back off with these (render_step adds its own)."""
-    out = {copy_markup.render(line, {}).text.strip() for line, _ in _filled_lines(settings).values()}
-    return out | ({sender_name.strip()} if sender_name.strip() else set())
-
-
 def data_sources(settings: Settings) -> str:
-    """The contact-data providers in use: Clay only once it runs (clay_verification)."""
-    if settings.general.clay_verification == CLAY_SKIP:
-        return "Apollo"
-    return "Apollo and Clay"
+    """The contact-data providers in use: Apollo (Clay never ran, and was removed: W2-1, 20 Oct 2026)."""
+    return "Apollo"
 
 
 def data_record(settings: Settings) -> dict[str, Any]:

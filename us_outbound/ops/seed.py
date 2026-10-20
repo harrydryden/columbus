@@ -1,4 +1,4 @@
-"""The seed-inbox test of the opt-out (golive's "Opt-out tested"; Harry, 5 Oct 2026).
+"""The seed-inbox test of the opt-out (General optout_tested; Harry, 5 Oct 2026).
 
 Before any prospect is emailed, one email goes the real way to an inbox of ours: into the owner's own
 campaign, through its step template with Instantly's unsubscribe link, with a Copy row rendered as
@@ -20,7 +20,7 @@ status -2 (instantly.LEAD_UNSUBSCRIBED) is the pass. It passed on 6 Oct 2026 (co
 
 Instantly sends nothing from a campaign in Draft: the seed goes out once `us-outbound start --live`
 activates the campaign, in its window (Mon–Fri 09:00–16:00 ET). start needs live_sending = yes; while
-optout_tested is no, no prospect is added even then (enrol.gate posts no cards, and a ✅ is held).
+optout_tested is no, no prospect is added even then (enrol.gate refuses a live run).
 A seed lead is no contact of ours, so sync_outcomes leaves it out ("lead: no contact of ours") and the
 daily post does not count it.
 """
