@@ -72,13 +72,14 @@ def check_copy(ctx: Context) -> Check:
         return Check(FAIL, "Copy", f"no industry is active: switch one on on the Industries tab{SYNC}")
     rows = enrol.sendable_copy(s)
     roles = contacted_roles(ctx)
+    policy = labels.active_policy(ctx)  # what enrol applies: None while General copy_level_policy is no
     detail, statuses, own = [], [], 0
     for ind in active:
         # A label the label check confirmed (labels.py): the most specific copy any of its companies can get.
         account = {"industry": ind.industry, "industry_group": ind.industry_group, "label_source": labels.AGREED}
         missing, general, notes, used = [], [], [], set()
         for role in roles:
-            row, note = enrol.pick_copy(account, role, s, rows)
+            row, note = enrol.pick_copy(account, role, s, rows, labels.copy_level(account, policy))
             if row is None:
                 missing.append(role)
                 if note:

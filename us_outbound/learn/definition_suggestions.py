@@ -31,7 +31,7 @@ from us_outbound.clients.claude import BudgetExceeded, ClaudeError
 from us_outbound.clients.sheets import read_tab, write_tab
 from us_outbound.context import ConfigError, Context
 from us_outbound.logs import log
-from us_outbound.settings.definitions import COLUMNS, TAB
+from us_outbound.settings.definitions import COLUMNS, SUGGESTION_COLUMNS, SUGGESTIONS_TAB, TAB
 from us_outbound.settings.model import Industry, Settings
 
 PURPOSE = "definition_suggestions"
@@ -204,3 +204,27 @@ def suggest(ctx: Context, sample_rows: Sequence[Mapping[str, str]], answer_key: 
     log(PURPOSE, run_id=ctx.run_id, month=month, misses=len(misses), drafted=len(rows), now=out["now"],
         later=out["later"])
     return out
+
+
+# -- the Suggestions tab (W3-2, 20 Oct 2026): the ICP rules proposed from the hand-check -----------------------------
+
+
+def write_suggestions(ctx: Context, rows: Sequence[Mapping[str, str]]) -> dict[str, Any]:
+    """Add proposal rows (settings/definitions.SUGGESTION_COLUMNS; learn/precision.propose drafts the kinds
+    definition_not, exclude_naics and entity_text) to the Suggestions tab. Live only. Append-only: a row whose id is
+    on the tab already is left exactly as it is, Harry's status with it, so a rerun of the month never undoes a
+    decision; the tab is written whole only when it has no rows (new, or only its header). A read refused for any
+    reason but "no such tab" raises (clients/sheets.read_tab), so the tab is never replaced by this month's rows."""
+    sheet_id = ctx.guard.bounds.settings_sheet_id
+    if not ctx.live or not sheet_id or not rows:
+        return {"added": 0, "written": False}
+    kept = read_tab(ctx.clients.sheets, sheet_id, SUGGESTIONS_TAB)
+    there = {str(r.get("id") or "").strip().casefold() for r in kept or []}
+    added = [{c: str(r.get(c) or "") for c in SUGGESTION_COLUMNS} for r in rows
+             if str(r.get("id") or "").strip().casefold() not in there]
+    if not kept:
+        write_tab(ctx.clients.sheets, sheet_id, SUGGESTIONS_TAB, SUGGESTION_COLUMNS, added, kept)
+    elif added:
+        ctx.clients.sheets.append_rows(sheet_id, SUGGESTIONS_TAB, added)
+    log("suggestions_written", run_id=ctx.run_id, added=len(added), kept=len(kept or []))
+    return {"added": len(added), "written": bool(added)}

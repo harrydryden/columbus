@@ -146,8 +146,11 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("retention", "40 0 * * *", live=True, enabled=True, timeout_minutes=30, phase=2),
     # Harry, 11 Oct 2026: the labels judged by hand, a batch a month (ops/label_sample.py). The 1st at 09:15, after
     # the daily post: last month's batch scored, this month's added to the Label sample tab, and both posted with a
-    # link to the tab. It writes the sheet and posts to the alert channel, so --live; no model, no credits.
-    ScheduledJob("label_sample_monthly", "15 9 1 * *", live=True, enabled=True, timeout_minutes=15, phase=2),
+    # link to the tab. It writes the sheet and posts to the alert channel, so --live. It asks the models too (the
+    # definition drafts and their answer-key passes, learn/definition_suggestions, 10 minutes at most; and from W3-2,
+    # 20 Oct 2026, the ICP rule proposals' answer-key passes, learn/precision.propose, 10 minutes more), so its timeout
+    # is 30 minutes, above both budgets (the cadence is unchanged).
+    ScheduledJob("label_sample_monthly", "15 9 1 * *", live=True, enabled=True, timeout_minutes=30, phase=2),
     # W2-4, 20 Oct 2026 (code-replies-crm M5): each not-now reply whose date has come, one Slack line and a HubSpot
     # task for Harry (replies/follow_up.py). Daily at 08:45 UK, before the daily post; it posts and writes HubSpot,
     # so --live.

@@ -44,8 +44,8 @@ surface to make the system better over time". It covers the day before, and read
     pages, or, when its tracker sends no data, to check it (sources/site_visits.py); and, on the morning of
     the monthly lookalike_leads run (the 1st, 02:50), what it found, with the yield of US and non-US seeds
     (sources/lookalike_leads.py);
-  * Labels (Harry, 7 Oct 2026; labels.py): the industry label check's companies checked in the period and their
-    decisions (agreed, overruled, the group's or General copy, held, disqualified), the companies the last
+  * Labels (Harry, 7 Oct 2026; learn/label_metrics.py): the industry label check's companies checked in the period
+    and their decisions (agreed, overruled, the group's or General copy, held, disqualified), the companies the last
     verify_accounts left unchecked and why, and the industry corrections made by hand;
   * Mailboxes: each mailbox's sends, its bounces over its last 100 sends (v_mailbox_health) and
     its place on the sending ramp (registry/ramp.py);
@@ -146,7 +146,7 @@ from us_outbound.enrol.enrol import Candidate
 from us_outbound.enrol.openers import HOLDOUT, OPENER
 from us_outbound.enrol.render import COPY_SUBJECT, PERSONAL_SUBJECT
 from us_outbound.facts import newest_by
-from us_outbound.learn import kill_rules, outcomes, spend
+from us_outbound.learn import kill_rules, label_metrics, outcomes, spend
 from us_outbound.limits import Limits
 from us_outbound.logs import clip, log
 from us_outbound.ops import retention
@@ -700,7 +700,7 @@ def full(ctx: Context, day: Day) -> tuple[list[str], dict[str, Any]]:
     lines = list(day.lines)
     failed: list[str] = []
     for title, make in (("Sources", lambda: _sources(ctx)),
-                        ("Labels", lambda: (["*Labels*", *labels.post_lines(ctx, day.start, day.end)], {}))):
+                        ("Labels", lambda: (["*Labels*", *label_metrics.post_lines(ctx, day.start, day.end)], {}))):
         section, more = _section(ctx, title, make)
         failed += more.pop("sections_failed", [])
         lines += ["", *section]

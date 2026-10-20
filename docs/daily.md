@@ -138,12 +138,19 @@ to bottom:
    copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
    table, `us-outbound report cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
    two versions, `us-outbound cohorts changes`.
-7. **Industry labels** (Harry, 7 Oct 2026): the corrections made by hand (`Games studios → Technology &
-   Startups (2)`), how often the rules and the model agreed, and the companies held or left out. How often a
-   label is right is the label sample's figure (the monthly `label_sample_monthly` post), not this block's (the send cards'
-   "right N of N" went with them). Many of one
-   correction means a definition or keywords on the Industries tab need a change; run `us-outbound labels eval
-   --live` before and after.
+7. **ICP precision** (since 20 Oct 2026, W3-2): the hand-check's random rows judged fine over the last four
+   weeks, with a 95% interval (`Fine: 38 of 48 (79%, 95% 66%–88%)`), the reasons for leaving out, and the same by
+   gate version (the labels' and ICP rules' versions the companies passed), so a change to the gate shows apart from
+   a change in who was drawn. The 0.90 target takes about 150 rows to show. A split (by group, size band, state,
+   slice, score decile, arm, label source) prints only when every cell has 15 rows; otherwise it says "pooled only".
+   **Industry labels:** the corrections made by hand (`Games studios → Technology & Startups (2)`), how often the
+   rules and the model agreed, the companies held or left out; then how often a label is right, which only a person
+   can say: the label sample's exact and group figures with intervals, the emails sent a label's own copy apart
+   (October: 4 of 30 pitched the wrong label), how often a company you judged twice got the same verdict, and the
+   label policy: which ways of deciding a label earn its own copy (exactly right in at least 90% of 20 or more
+   judged), and whether it is applied (General `copy_level_policy`, no by default: then it only says what it would
+   change). Many of one correction means a definition or keywords on the Industries tab need a change; run
+   `us-outbound labels eval --live` before and after.
 8. **Signal value:** the signals whose companies replied more or less than the companies without them, as
    monitoring: at this volume most such gaps are chance, so none is a "Needs action" item (since 19 Oct 2026).
    Nothing re-weights itself.
@@ -457,6 +464,16 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
   `decision` to approve or reject; the next settings sync (02:00, or 11:30 on weekdays) writes each
   approved line into its label's `definition` on the Industries tab and dates `applied`. A changed
   definition sends every company back through the label check, about $0.01 each.
+  Since 20 Oct 2026 (W3-2) two of the batch's rows are companies you judged before, unmarked, so the post
+  can say how often your second verdict matches the first; each company is still scored once. The run
+  also stores the label policy (above) and drafts ICP rules from the hand-check: each leave-out reason
+  given 3 or more times in four weeks (media or publisher, IT services or outsourcing, subsidiary, not an
+  operating business) becomes a row on the **Suggestions** tab with its evidence (`catches 3 of 3
+  leave-outs; excludes 0 of 38 fine rows; answer key 50 → 51 of 63 right`). A rule that would leave out a
+  company you judged fine, or does worse on the answer key, is written `rejected by eval`. Set `status` to
+  `approved` (or `rejected`); only an approved row is applied, at the next settings sync: a "not X" line
+  added to the labels' definitions, and for IT services the NAICS code added to the label's
+  `exclude_naics`. An `entity_text` row is a change to the label check's prompt that engineering makes.
 
 ## Where the data is
 
@@ -517,8 +534,8 @@ commands instead.
 | `stop --live` | The brake |
 | `seed send ADDRESS --owner NAME --live`, `seed check` | The seed-inbox test of the unsubscribe link (`--subject personal`: email 1 with the personal subject) |
 | `labels set DOMAIN "Fintech" --live`, `labels show DOMAIN` | Set a company's industry label (as *wrong industry* on the Hand-check tab does), or show its label and its check history |
-| (the `label_sample_monthly` job, the 1st at 09:15) | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed, added to the Label sample tab as this month's batch, under the rows already there, with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); the next month's run scores the batch: the share right with a 95% interval, how many emails would have carried a pitch that is not true, and, where the right label is known, how often our label, the rules and the model each had it. Judged rows are never redrawn. It asks no model and spends nothing |
-| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies corrected by hand, `--from-sample` the companies judged on the Label sample tab, about $0.01 each). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer |
+| (the `label_sample_monthly` job, the 1st at 09:15) | Labels judged by you, not by the label check: 50 companies drawn at random from those emailed or to be emailed, added to the Label sample tab as this month's batch, under the rows already there, with each one's site, what it does, our label, the copy it gets and how the label was decided. Fill `your_verdict` with the right label (any case), or `right`, `right group`, `wrong group` or `outside` (and `right_label` when ours is wrong); the next month's run scores the batch: the share right with a 95% interval, how many emails carried a pitch that is not true (by the copy each was sent), and, where the right label is known, how often our label, the rules and the model each had it (for `outside`, the model's or the rules' "no label" is right). Judged rows are never redrawn. The monthly run asks the models for its definition drafts and its answer-key checks (above); `labels sample` alone asks none |
+| `labels eval --live` | Scores the model on the first cards' 13 companies (about $0.15; `--from-corrections` adds the companies corrected by hand, `--from-sample` the companies judged on the Label sample tab, about $0.01 each). Run it before changing a definition, keywords or the prompt; it exits 1 below 90% acceptable or on any unsafe answer. Since 20 Oct the sample's `outside` rows are in the answer key as companies to leave out, so a label with its own copy on one of them counts as unsafe: `--from-sample` can exit 1 where it passed before, and that row is the one to look at |
 | `replies list`, `replies send ID --live` (`--text "…"` sends your text), `replies skip ID --live` | Reply cards without Slack |
 | `killrules show`, `killrules clear ID --live` | Kill-rule holds |
 | `mailbox check --live --fix` | Mailbox health now, each sender name set to its owner's full name, and the campaigns put right |

@@ -19,7 +19,7 @@ from tests.test_scoring import sig
 from us_outbound import labels, verify
 from us_outbound.contacts import pick
 from us_outbound.enrol import openers
-from us_outbound.learn import daily_post
+from us_outbound.learn import daily_post, label_metrics
 from us_outbound.ops import relabel
 from us_outbound.scoring import score
 from us_outbound.contacts import precheck as apollo_people
@@ -91,14 +91,7 @@ def labels_home_page(ctx, specs):
 def labels_tally(ctx, specs):
     stored(ctx, [row(t, at, labels.JOB, labels.VERDICT_FACT, {"asked": True, "rules": "", "model": t})
                  for t, at in specs])
-    return labels.tally(ctx, None, NOW).no_rules.get("a1")
-
-
-def labels_gap_codes(ctx, specs):
-    codes = _codes(specs)
-    stored(ctx, [row(t, at, labels.APOLLO_SOURCE, "naics", [codes[t]]) for t, at in specs])
-    got, _ = labels.gap_codes(ctx, {"a1": "Dental"})
-    return {c: t for t, c in codes.items()}[got[0][0]] if got else None
+    return label_metrics.tally(ctx, None, NOW).no_rules.get("a1")
 
 
 def labels_corrected_rows(ctx, specs):
@@ -234,8 +227,7 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "labels.Material.of": (labels_material, True),
     "labels.rules_input": (labels_rules_material, True),
     "labels._home_page": (labels_home_page, True),
-    "labels.tally": (labels_tally, True),
-    "labels.gap_codes": (labels_gap_codes, True),
+    "label_metrics.tally": (labels_tally, True),
     "labels.corrected_rows": (labels_corrected_rows, True),
     "score.latest_facts": (score_latest_facts, True),
     "score.unread_sources": (score_unread, True),

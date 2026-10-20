@@ -160,14 +160,20 @@ class ConfigVersion:
     code_sha: str = DEV  # the deploy the version was computed in: kept beside it, never hashed (module docstring)
 
 
-def snapshot(settings: Settings) -> dict[str, Any]:
-    """Everything a contact enrolled now is rendered and sent under (the module docstring)."""
+def snapshot(settings: Settings, label_policy: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Everything a contact enrolled now is rendered and sent under (the module docstring). label_policy: the label
+    policy in force (labels.active_policy; W3-2, 20 Oct 2026): it decides which copy level a new company's label
+    earns, so while General copy_level_policy is yes it is content, in `general` as copy_level_policy (each label
+    source and its level). None (the switch no, the default) adds nothing, so no id changes until it applies."""
     from us_outbound import labels  # it builds on the sources, which build on enrol: imported when used
 
+    general = general_values(settings.general)
+    if label_policy:
+        general["copy_level_policy"] = ", ".join(f"{s}: {label_policy[s]}" for s in sorted(label_policy))
     return {
         "settings_versions": {t: _iso(settings.versions[t]) for t in CONTENT_TABS if settings.versions.get(t)},
         "copy_hashes": sendable_hashes(settings),
-        "general": general_values(settings.general),
+        "general": general,
         "signature_hash": signature_hash(),
         "labels_hash": labels.labels_hash(settings),
         "copy_test": copy_test(settings),
@@ -177,7 +183,9 @@ def snapshot(settings: Settings) -> dict[str, Any]:
 
 
 def current(ctx: Context) -> ConfigVersion:
-    snap = snapshot(ctx.settings)
+    from us_outbound import labels
+
+    snap = snapshot(ctx.settings, labels.active_policy(ctx))
     return ConfigVersion(_hash(snap), snap, code_sha())
 
 

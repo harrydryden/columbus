@@ -102,8 +102,9 @@ def _keyed_rows(tabs) -> int:
 def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     summary = sync.run(ctx)
     # The approved definition changes first (settings/definitions.py), then the tabs every sheet has in one read,
-    # then each optional tab on its own (a missing tab is a 400).
-    assert ctx.clients.sheets.reads == [(TEST_SHEET_ID, ["Definition suggestions"]),
+    # then each optional tab on its own (a missing tab is a 400). The Suggestions tab's approved ICP rules are read
+    # beside the definition changes (W3-2); the Industries tab only when one is approved.
+    assert ctx.clients.sheets.reads == [(TEST_SHEET_ID, ["Definition suggestions"]), (TEST_SHEET_ID, ["Suggestions"]),
                                         (TEST_SHEET_ID, [t for t in TABS if t not in OPTIONAL_TABS]),
                                         (TEST_SHEET_ID, ["Focus"])]  # Named accounts went with W2-1
     rows = [r for r in _rows(ctx) if r["tab"] in TABS]

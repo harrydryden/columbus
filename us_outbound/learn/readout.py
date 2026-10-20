@@ -36,12 +36,17 @@ to bottom:
     their companies have reached after email 1, and what changed last week in the settings, the copy, the campaign
     constants and the code (config versions, and the campaign changes made under leads in flight). No pair is judged
     (W2-3: the verdicts were chance at these numbers). `us-outbound report cohorts` has the full table.
-  * Industry labels (Harry, 7 Oct 2026; labels.py): last week's and all cards with the right industry against the 95%
-    target (a rate from 30 cards), the approvers' corrections, how often the rules and the model agreed, and the
-    companies held or disqualified.
   * Hand-check (enrol/hand_check.readout_lines; Harry's D5, 19 Oct 2026): last week's sample, how many were judged
     and each decision counted, the reasons for leaving out, and the companies sent unjudged (released 7 days after
     the draw) or still held. Counts only: at 10 to 20 rows a week a rate's interval would be about ±25 points.
+  * ICP precision (learn/precision.readout_lines; W3-2, 20 Oct 2026): T1, the hand-check's random rows judged fine
+    pooled over the four weeks ending with last week (this week's rows are drawn but not judged yet at 08:30), with
+    its Wilson interval and by gate version; the leave-out reasons (T2); the contact and opener answers; a split only
+    when every cell has 15 rows.
+  * Industry labels (learn/label_metrics.readout_lines; W3-2): last week's label check and corrections; the label
+    sample's exact and group precision (T3) with intervals and the label-copy emails apart; the label policy and
+    whether it is applied (General copy_level_policy, D20); the hand-check's wrong-industry rows. (The cards' "right
+    N of N" went with them in W2-1.)
   * Signals (learn/signal_review.py, descriptive from W2-3): the explore arm and the signals with 15 companies a side,
     replies with against without, each with its Jeffreys interval, as monitoring and never a "Needs action" item
     (v_signal_value and its below_control flag went: with equal true rates it flagged about 46% of signals,
@@ -68,7 +73,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from us_outbound import budget, fmt, labels
+from us_outbound import budget, fmt
 from us_outbound.base import notify, say
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
@@ -502,6 +507,45 @@ def signal_section(ctx: Context) -> tuple[list[str], int | None]:
     return [f"  {x}" for x in (text[1:] if signals.companies else text)], sum(sp.readable for sp in signals.splits)
 
 
+def precision_section(ctx: Context, start: datetime) -> tuple[list[str], dict[str, Any]]:
+    """The ICP precision block (learn/precision.readout_lines) and its numbers: T1 pooled with its interval, the
+    reasons, the gate versions, over the four weeks ending with the week starting at start (the week the hand-check
+    section reports). Not this week: the readout runs Monday 08:30 UK, after hand_check_draw has drawn the new week's
+    rows and before any is judged, so this week would count as judged none of them and push the oldest judged week out
+    of the pool. Monitoring: a failure says so in its section and never stops the readout."""
+    from us_outbound.enrol import enrol  # imported when used, as build imports hand_check
+    from us_outbound.learn import precision
+
+    try:
+        t = precision.tally(ctx, through=enrol.iso_week(start.astimezone(UK).date()))
+        lines = precision.readout_lines(ctx, t)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("readout_precision_failed", run_id=ctx.run_id, error=f"{type(exc).__name__}: {exc}"[:200])
+        return ["", "*ICP precision*", f"  could not be built ({type(exc).__name__}); the rest of the readout is "
+                                       "complete."], {}
+    k, n = t.fine
+    return lines, {"weeks": list(t.weeks), "fine": k, "judged": n,
+                   "interval": [round(x, 4) for x in t.interval] if n else None, "reasons": t.reasons,
+                   "by_gate": {g: list(v) for g, v in t.by_gate.items()}, "wrong_industry": (t.wrong_industry, n)}
+
+
+def label_section(ctx: Context, start: datetime, end: datetime,
+                  wrong_industry: tuple[int, int] | None) -> list[str]:
+    """The Industry labels block (learn/label_metrics.readout_lines), in its own guard."""
+    from us_outbound.learn import label_metrics
+
+    try:
+        return label_metrics.readout_lines(ctx, start, end, wrong_industry)
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("readout_labels_failed", run_id=ctx.run_id, error=f"{type(exc).__name__}: {exc}"[:200])
+        return ["", "*Industry labels*", f"  could not be built ({type(exc).__name__}); the rest of the readout is "
+                                         "complete."]
+
+
 # -- the job -------------------------------------------------------------------------------------------------------
 
 
@@ -528,11 +572,15 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     body += section
     body += ["", "*Sourcing and throughput* (where sourcing looks this week, and what held last week's enrolment)",
              *sourcing_lines(ctx)]
-    body += labels.readout_lines(ctx, start, end)  # the industry label check (labels.py; Harry, 7 Oct 2026)
     from us_outbound.enrol import hand_check  # imported when used, as mailboxes_ahead imports enrol/today
 
     checked, by_hand = hand_check.readout_lines(ctx, start)
     body += checked
+    # ICP precision (T1, T2) pooled over four weeks, and the industry labels (the check, the label sample's T3, the
+    # label policy): W3-2, each in its own guard, so neither stops the readout.
+    t1, precision_nums = precision_section(ctx, start)
+    body += t1
+    body += label_section(ctx, start, end, precision_nums.get("wrong_industry"))
     # Monitoring, not a decision (metrics-audit H5; W2-3): counts and intervals, no verdict, never a "Needs action".
     signal_lines, signals_readable = signal_section(ctx)
     body += ["", "*Signals* (replies with each buying signal at enrolment against without, and the random arm against "
@@ -565,6 +613,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "signals_readable": signals_readable,
         "tests_at_a_look": at_look,
         "hand_check": by_hand,
+        "icp_precision": precision_nums,
         **by_cohort,  # the counts by enrolment week, and how many settings changes last week
     }
     return lines, nums

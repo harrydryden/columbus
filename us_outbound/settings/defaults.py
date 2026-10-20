@@ -68,6 +68,14 @@ _GENERAL: list[tuple[str, str, str]] = [
         "enrolment pauses as well as the alert. no: the alert only. Added by the build (Harry, 19 Oct 2026).",
     ),
     (
+        "copy_level_policy",
+        "no",
+        "yes: a company's emails use its industry label's own copy only when the monthly label sample shows labels "
+        "decided that way are exactly right at least 90% of the time (20 or more judged); otherwise its group's "
+        "copy. no: as today. The Monday readout says what it would change either way. Added by the build "
+        "(20 Oct 2026).",
+    ),
+    (
         "apollo_monthly_credits",
         "2000",
         "Apollo credits the jobs may spend each calendar month (UK time), about 500 a week. "

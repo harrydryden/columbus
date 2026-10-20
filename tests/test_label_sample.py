@@ -122,14 +122,15 @@ def test_the_monthly_job_scores_last_month_adds_this_months_and_posts_a_link_to_
     live.clients.sheets.gids = {ls.TAB: 1234}
     live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
     out = ls.monthly(live)
-    assert (out["batch"], out["drawn"], out["last_batch"]) == ("2026-11", 25, "2026-10")
+    # 25 new companies and REJUDGE (2) of October's 40 judged put back unmarked (W3-2, T1r): 27 rows, 50 + 27 = 77.
+    assert (out["batch"], out["drawn"], out["rejudged"], out["last_batch"]) == ("2026-11", 25, 2, "2026-10")
     assert (out["last"]["judged"], out["last"]["label_right"]) == (40, 40)
-    assert len(live.clients.sheets.tabs[ls.TAB]) == 75
+    assert len(live.clients.sheets.tabs[ls.TAB]) == 77
     [text] = posts
     sheet = live.guard.bounds.settings_sheet_id
     tab = f"<https://docs.google.com/spreadsheets/d/{sheet}/edit#gid=1234|Label sample tab>"
-    assert text.startswith(":raised_hand: *25 companies to check: is our industry label right?*")
-    assert f"25 new companies to judge (2026-11) are on the {tab}." in text
+    assert text.startswith(":raised_hand: *27 companies to check: is our industry label right?*")
+    assert f"27 new companies to judge (2026-11) are on the {tab}." in text
     assert (f"On the {tab}, fill `your_verdict` for each new row: the right label, or right, right "
             "group, wrong group or outside.") in text
     assert "Untrue pitch: the email said more about the company than the verdict allows." in text  # the terms explained
@@ -238,17 +239,166 @@ def test_the_judged_companies_join_the_eval_with_their_facts_and_home_page():
     tab = ctx.clients.sheets.tabs[ls.TAB]
     tab[0]["your_verdict"] = "Fintech"  # a000: we said Technology & Startups
     tab[1]["your_verdict"] = "right"  # a001: we said Fintech
-    tab[2]["your_verdict"] = "outside"  # no label to expect: left out of the eval
+    tab[2]["your_verdict"] = "outside"  # a negative: the eval expects it left out (W3-2; B11)
     ctx.store.insert("signal_events", [
         {"event_id": "a000-d", "account_id": "a000", "source": "apollo_org", "fact": "description",
          "value": "Payments software.", "observed_at": AT},
         {"event_id": "a000-h", "account_id": "a000", "source": "careers_pages", "fact": "home_page",
          "value": {"title": "Company 0", "text": "Card payments for shops."}, "observed_at": AT}])
     judged = ls.sample_rows(ctx)
-    assert [(d, i.industry) for d, i in judged] == [("a000.com", "Fintech"), ("a001.com", "Fintech")]
+    assert [(d, getattr(i, "industry", i)) for d, i in judged] == [
+        ("a000.com", "Fintech"), ("a001.com", "Fintech"), ("a002.com", ls.OUTSIDE)]
     rows = labels.judged_rows(ctx, judged)
-    assert [r["expect"]["accept"] for r in rows] == [["Fintech", TECH], ["Fintech", TECH]]
+    assert [r["expect"] for r in rows] == [{"accept": ["Fintech", TECH], "action": "verify"},
+                                           {"accept": ["Fintech", TECH], "action": "verify"},
+                                           {"accept": [], "action": "disqualify"}]
     assert rows[0]["description"] == "Payments software." and rows[0]["home"]["text"] == "Card payments for shops."
     events = labels.gold_events(rows[0])
     assert {e["fact"] for e in events} == {"description", "home_page"}
     assert labels.Material.of({"domain": "a000.com"}, events).home  # the model is shown the page
+
+
+# -- W3-2 (20 Oct 2026; code-verify-labels B11, RT §1.5, §3 L4) ------------------------------------------------------
+
+
+def test_outside_scores_an_opinion_of_no_label_as_right():
+    """A company judged outside: the model's none and the rules' "no label" are right (they read as a wrong group
+    before); a label is a wrong group; "not asked" is no opinion."""
+    rows = [{"domain": "o.org", "our_label": TECH, "copy": "general", "rules_said": "no label",
+             "model_said": "none (high)", "your_verdict": "outside"},
+            {"domain": "p.org", "our_label": TECH, "copy": "general", "rules_said": TECH,
+             "model_said": "not asked", "your_verdict": "outside"}]
+    out = ls.score(rows, DEFAULT)
+    assert out["opinions"]["model"] == {"judged": 2, "gave_none": 1, "label_right": 1, "group_right": 1}
+    assert out["opinions"]["rules"] == {"judged": 2, "gave_none": 0, "label_right": 1, "group_right": 1}
+    assert [t for _, t in out["truths"]] == [ls.OUTSIDE, ls.OUTSIDE]
+
+
+def test_the_untrue_pitch_reads_the_copy_level_enrol_stamped():
+    """The row's copy column is the level at the draw (group: the account was umbrella then); enrol later sent it the
+    label's own copy (contacts.copy_level = label). Judged "right group" (the label was Fintech, the right one
+    Healthtech): with label copy that pitch was untrue, so it counts; by the draw-time column it would not. The
+    label-copy rows are counted apart: 1 judged, 0 exactly right, 1 at group, 1 wrong pitch."""
+    rows = [{"domain": "b.com", "our_label": "Fintech", "copy": "group", "decided_by": "umbrella (medium)",
+             "your_verdict": "right group", "right_label": "Healthtech"}]
+    assert ls.score(rows, DEFAULT)["wrong_pitch"] == 0
+    out = ls.score(rows, DEFAULT, {"b.com": "label"})
+    assert out["wrong_pitch"] == 1
+    assert out["label_copy"] == {"judged": 1, "label_right": 0, "group_right": 1, "wrong_pitch": 1}
+    ctx = world(n=2)
+    ctx.store.insert("contacts", [{"contact_id": "c1", "account_id": "a001", "enrolled_at": AT, "copy_level": "label"},
+                                  {"contact_id": "c2", "account_id": "a000", "copy_level": "label"}])  # not enrolled
+    assert ls.sent_levels(ctx, ["a000", "a001"]) == {"a001": "label"}
+    assert {r["domain"]: r["copy"] for r in ls.draw(ctx, 2)} == {"a000.com": "group", "a001.com": "label"}
+
+
+def test_a_row_not_yet_emailed_shows_the_level_the_label_policy_gives_once_it_is_switched_on():
+    """The copy column for a company not emailed yet is the level enrol would send now. a001 is rules+model (label
+    copy by its source); the stored policy routes rules+model to group copy (no judged rows: policy({}) is group for
+    every source). With General copy_level_policy no, the policy is not read: label. With yes: group, as enrol would
+    stamp it. a003 was emailed with label copy (contacts.copy_level): its column stays what was sent either way."""
+    import dataclasses
+
+    from us_outbound import labels
+
+    ctx = world(n=4)
+    ctx.store.insert("contacts", [{"contact_id": "c3", "account_id": "a003", "enrolled_at": AT, "copy_level": "label"}])
+    labels.store_policy(ctx, {}, ["2026-09"])
+    assert {r["domain"]: r["copy"] for r in ls.draw(ctx, 4)} == {
+        "a000.com": "group", "a001.com": "label", "a002.com": "group", "a003.com": "label"}
+    ctx.settings = dataclasses.replace(DEFAULT, general=dataclasses.replace(DEFAULT.general, copy_level_policy=True))
+    assert {r["domain"]: r["copy"] for r in ls.draw(ctx, 4)} == {
+        "a000.com": "group", "a001.com": "group", "a002.com": "group", "a003.com": "label"}
+
+
+def test_the_score_by_how_the_label_was_decided_feeds_the_policy():
+    """October (data-crm-settings §Label sample), by decided_by: rules+model 20 of 21 exact, model 6 of 9, umbrella 5
+    of 10. by_source counts (exactly right, judged); labels.policy routes rules+model to label copy and the other two
+    to group copy."""
+    def rows(source, right, n):
+        return [{"domain": f"{source}{i}.com", "our_label": "Fintech", "copy": "label",
+                 "decided_by": f"{source} (high)", "your_verdict": "right" if i < right else "Healthtech"}
+                for i in range(n)]
+
+    out = ls.score(rows("rules+model", 20, 21) + rows("model", 6, 9) + rows("umbrella", 5, 10), DEFAULT)
+    assert out["by_source"] == {"rules+model": [20, 21], "model": [6, 9], "umbrella": [5, 10]}
+    assert labels_policy({k: tuple(v) for k, v in out["by_source"].items()}) == {
+        "rules+model": "label", "model": "group", "umbrella": "group", "rules": "group"}
+    # The 40 label-copy rows: 31 exactly right; the 9 others are Healthtech, in Fintech's group: 40 at group.
+    assert out["label_copy"] == {"judged": 40, "label_right": 31, "group_right": 40, "wrong_pitch": 9}
+
+
+def labels_policy(counts):
+    from us_outbound import labels
+
+    return labels.policy(counts)
+
+
+def test_two_earlier_rows_come_back_unmarked_and_their_agreement_is_reported(monkeypatch):
+    """The re-judge draw (T1r): November's batch is 25 new companies and 2 of October's judged ones, as rows of the
+    batch with nothing to mark them (blank verdict columns, in domain order with the rest). They are scored once,
+    by their first verdict (the October score keeps 40 judged), and December's post reports the second verdict
+    against the first: both given again the same, 2 of 2."""
+    from us_outbound.base import notify
+
+    posts: list[str] = []
+    monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
+    live = world(live=True)
+    ls.run(live)
+    for r in live.clients.sheets.tabs[ls.TAB][:40]:
+        r["your_verdict"] = "right"
+    october = {r["domain"] for r in live.clients.sheets.tabs[ls.TAB][:40]}
+    live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
+    out = ls.monthly(live)
+    tab = live.clients.sheets.tabs[ls.TAB]
+    november = [r for r in tab if r["batch"] == "2026-11"]
+    again = [r for r in november if r["domain"] in october]
+    assert (len(november), len(again)) == (27, 2)
+    assert list(again[0]) == ls.COLUMNS and {r["your_verdict"] for r in november} == {""}
+    assert [r["domain"] for r in november] == sorted(r["domain"] for r in november)  # unmarked: domain order
+    assert out["agreement"] == (0, 0)  # none judged twice yet
+    first, repeats = ls.split_repeats(tab)
+    assert (len(first), len(repeats)) == (75, 2)
+    for r in november:
+        r["your_verdict"] = "right"
+    live.now = datetime(2026, 12, 1, 9, 15, tzinfo=UTC)
+    december = ls.monthly(live)
+    assert december["agreement"] == (2, 2)
+    assert december["all"]["judged"] == 40 + 25  # each company once: the 2 again are not counted twice
+    assert ("Judged again: 2 companies you judged before came back unmarked; your verdict matched the first for 2 "
+            "of 2.") in posts[-1]
+    # A second verdict that differs (the right label is Healthtech, not the Fintech/Tech label given before).
+    for r in live.clients.sheets.tabs[ls.TAB]:
+        if r["batch"] == "2026-11" and r["domain"] in october:
+            r["your_verdict"] = "Healthtech"
+    assert ls.agreement(live.clients.sheets.tabs[ls.TAB], live.settings) == (0, 2)
+
+
+def test_the_monthly_job_stores_the_label_policy(monkeypatch):
+    """Each month the policy is computed from the last labels.POLICY_BATCHES batches' first verdicts, by decided_by,
+    and stored as this month's label_policy fact with the sample's score; the post says what it routes and that it
+    is not applied (copy_level_policy no)."""
+    from us_outbound import labels
+    from us_outbound.base import notify
+
+    posts: list[str] = []
+    monkeypatch.setattr(notify, "alert", lambda ctx, text, **k: posts.append(text) or {"posted": True})
+    live = world(live=True)
+    ls.run(live)
+    tab = live.clients.sheets.tabs[ls.TAB]
+    for r in tab:
+        r["your_verdict"] = "right"  # 25 rules+model (Fintech) and 25 umbrella (the group's label), each right
+    by = {}
+    for r in tab:
+        by[r["decided_by"]] = by.get(r["decided_by"], 0) + 1
+    live.now = datetime(2026, 11, 1, 9, 15, tzinfo=UTC)
+    out = ls.monthly(live)
+    stored = labels.stored_policy(live)
+    assert stored == out["policy"] and stored["batches"] == ["2026-10"]
+    n_agreed = by["rules+model (high)"]
+    assert stored["counts"]["rules+model"] == [n_agreed, n_agreed]
+    assert stored["policy"]["rules+model"] == ("label" if n_agreed >= 20 else "group")
+    assert stored["sample"]["judged"] == 50 and stored["sample"]["label_right"] == 50
+    [e] = live.store.select("signal_events", {"fact": labels.POLICY_FACT})
+    assert e["event_id"] == "label_policy:2026-11" and e["account_id"] is None
+    assert "not applied: General `copy_level_policy` is no, so nothing changes" in posts[-1]

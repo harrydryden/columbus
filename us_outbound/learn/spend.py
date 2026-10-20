@@ -22,8 +22,8 @@ rerun or a restart never repeats a line):
   * Claude's spend this month (credit_ledger, the UTC month, as clients/claude.py counts it) at 50%, 80% and 100%
     of claude_monthly_cap_usd, once a UTC month each. 100% is where the client refuses every call (the cap less
     its reserve, claude.cap_reached_at): replies are then classified "other" with no draft and copy QA stops.
-  * The industry label check (labels.asks; Harry, 7 Oct 2026): many industry corrections at the cards, the rules and
-    the model agreeing on too few companies, or the check unable to ask the model while new companies wait.
+  * The industry label check (learn/label_metrics.asks; Harry, 7 Oct 2026): many industry corrections by hand, or
+    the check unable to ask the model while new companies wait.
   * Apollo's website-visitor credits while site visits are on (SITE_VISIT_DOMAIN set, site_visits scheduled):
     under VISITOR_WARN_SHARE left, once a month. Not by pace: Apollo spends them itself each time its tracker names
     a visiting company, so credit_ledger has no record of their pace, and its answer gives no cycle dates.
@@ -358,12 +358,13 @@ def drift_ask(ctx: Context, sp: Spend) -> tuple[str, str] | None:
 
 
 def asks(ctx: Context, sp: Spend) -> list[tuple[str, str]]:
-    """Every (key, line) due today, before deduplication; the industry label check's asks last (labels.asks)."""
-    from us_outbound import labels
+    """Every (key, line) due today, before deduplication; the industry label check's asks last
+    (learn/label_metrics.asks)."""
+    from us_outbound.learn import label_metrics
 
     found = [apollo_floor_ask(ctx, sp), *(budget_ask(ctx, sp.budgets[sys]) for sys in budget.MONTHLY_KEYS),
              claude_ask(ctx, sp), visitors_ask(ctx, sp), drift_ask(ctx, sp)]
-    return [a for a in found if a is not None] + labels.asks(ctx)
+    return [a for a in found if a is not None] + label_metrics.asks(ctx)
 
 
 def head(lines: list[tuple[str, str]]) -> str:

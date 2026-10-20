@@ -753,6 +753,7 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
     with --generic the General tab's generic line), or with --account a stored account, its contact and the
     opener enrol would give it (no model call). Email 1's subject is the account's own arm, or with --subject
     personal|copy that arm (General email1_subject, or the Copy row's s1_subject; Harry, 5 Oct 2026)."""
+    from us_outbound import labels
     from us_outbound.enrol import enrol, openers
     from us_outbound.settings.model import ROLE_LINE_COLUMNS
 
@@ -785,8 +786,10 @@ def _preview(ctx: Context, settings: Any, args: argparse.Namespace, copy_desk: A
     contact = contact or (sorted(contacts, key=lambda c: str(c.get("created_at") or ""))[:1] or [{}])[0]
     role = args.role or str(contact.get("role") or "") or next(iter(ROLE_LINE_COLUMNS))
     rows = _pick_rows(settings, args.version, args.industry, role) if args.version or args.industry else []
+    # The copy level enrol would use: with General copy_level_policy yes, the label policy's (labels.active_policy).
     row = rows[0] if rows else enrol.pick_copy(
-        account, role, settings, {c.copy_version: c for c in settings.copy if c.status != "retired"})[0]
+        account, role, settings, {c.copy_version: c for c in settings.copy if c.status != "retired"},
+        labels.copy_level(account, labels.active_policy(ctx)))[0]
     if row is None:
         raise Refused("no Copy row for this account; give --version")
     events = ctx.store.select("signal_events", {"account_id": account["account_id"]})

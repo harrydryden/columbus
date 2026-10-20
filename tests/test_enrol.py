@@ -397,6 +397,29 @@ def test_the_label_check_says_how_specific_the_copy_may_be(source, jane, lee):
     assert len(targets) == {"rules+model": 6, "umbrella": 4, "disputed": 2}.get(source, len(targets))
 
 
+@pytest.mark.parametrize("switch, source, jane, level", [
+    (False, "model", "advertising-v1", "label"),  # copy_level_policy no (the default, D20): nothing changes
+    (True, "model", "agencies-v1", "group"),  # yes: the model alone measured 6 of 9 exact, so its group's copy
+    (True, "rules+model", "advertising-v1", "label"),  # 20 of 21: it keeps its label's own copy
+    (True, "override", "advertising-v1", "label"),  # a person's label is never routed
+])
+def test_the_label_policy_picks_the_copy_only_when_switched_on(switch, source, jane, level):
+    """W3-2 (L4; Harry's D20 not yet decided): the stored label policy routes the model's labels to group copy (6 of 9
+    exact < 0.90) and keeps rules+model's (20 of 21, lower bound 0.773 >= 0.75). enrol reads it only while General
+    copy_level_policy is yes: the Copy row chosen and the contact's copy_level stamp follow it then, and not before."""
+    from us_outbound import labels
+
+    label = copy_row("advertising-v1", "Advertising agencies")
+    ops = copy_row("agencies-ops-v1", AGENCIES, role="Operations")
+    s = make_settings(live_sending=True, copy=COPY + (ops, label))
+    s = dataclasses.replace(s, general=dataclasses.replace(s.general, copy_level_policy=switch))
+    ctx, _ = make(live=True, settings=s, accounts=checked(source))
+    labels.store_policy(ctx, {"model": (6, 9), "rules+model": (20, 21)}, ["2026-10"])
+    enrol.run(ctx)
+    jane_row = rows(ctx, "contacts", "contact_id")["con-1"]
+    assert (jane_row["copy_version"], jane_row["copy_level"]) == (jane, level)
+
+
 def test_with_no_copy_at_its_level_the_reason_says_which_level():
     s = make_settings(copy=(copy_row("advertising-v1", "Advertising agencies"),))  # the label's own row only
     accounts = [{**accounts3()[0], "label_source": "disputed"}]
