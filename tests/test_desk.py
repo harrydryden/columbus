@@ -1,5 +1,6 @@
-"""The reply desk (replies/desk.py): the poll_approvals job (desk.poll_desk), the CLI path, re-posts and escalation
-(SPEC 11; D11), and the close of the send approvals left open when they were removed (W2-1)."""
+"""The reply desk (replies/desk.py, and since W2-4 replies/poll_desk.py and replies/escalation.py): the
+poll_approvals job (poll_desk.poll_desk), the CLI path, re-posts and escalation (SPEC 11; D11), and the close of the
+send approvals left open when they were removed (W2-1)."""
 
 from __future__ import annotations
 
@@ -13,8 +14,8 @@ from tests.test_hubspot_writes import HANNAH, NOW, Transport, reply_row, world
 from us_outbound.clients.http import Response
 from us_outbound.context import Secrets
 from us_outbound.ops import bootstrap, cli
-from us_outbound.replies import desk
-from us_outbound.replies.items import ReplyItem, claim
+from us_outbound.replies import desk, poll_desk
+from us_outbound.replies.desk import ReplyItem, claim
 
 ITEM = "item-0001-aaaa"
 ALERT_TS = "100.000100"
@@ -120,7 +121,7 @@ def row_of(ctx, item_id=ITEM) -> dict:
 
 
 def poll(ctx) -> dict:
-    return desk.poll_desk(ctx)
+    return poll_desk.poll_desk(ctx)
 
 
 # -- approving in Slack ------------------------------------------------------------------------------
@@ -298,7 +299,9 @@ def test_a_hubspot_write_a_guardrail_refuses_leaves_the_item_open_for_its_answer
     def refuse(ctx, item):
         raise GuardViolation("hubspot deal.update is not allowed")
 
-    monkeypatch.setattr(desk.hw, "record_reply", refuse)
+    from us_outbound.crm import hubspot_writes
+
+    monkeypatch.setattr(hubspot_writes, "record_reply", refuse)
     ctx, t, crm, sl, inst = desk_world(settings)
     out = poll(ctx)  # no approval yet
     assert row_of(ctx)["status"] == "open" and out["by_hand"] == [] and inst.replies == []
@@ -628,17 +631,17 @@ def test_the_reply_desk_failing_still_applies_the_hand_check_tab_then_fails_the_
     """The reply desk's own failure (escalate raising, after the scripted item was sent) does not stop the hand-check
     tab, and is then raised: run through the heartbeat, the poll_approvals row is status error with the desk's error,
     which heartbeat_check's failure_rate and missed rules count (an ok run with an errors line would be dropped as
-    transient by job_errors.passing for a job every 5 minutes)."""
+    transient by health.passing for a job every 5 minutes)."""
     from us_outbound.enrol import hand_check_tab
-    from us_outbound.ops import heartbeat as hb
+    from us_outbound.ops import health as hb
 
     ran = []
-    monkeypatch.setattr(desk, "escalate", lambda *a: (_ for _ in ()).throw(RuntimeError("escalation broke")))
+    monkeypatch.setattr(poll_desk, "escalate", lambda *a: (_ for _ in ()).throw(RuntimeError("escalation broke")))
     monkeypatch.setattr(hand_check_tab, "apply", lambda ctx: ran.append(1) or {"applied": [], "hand_check_errors": []})
     ctx, t, crm, sl, inst = desk_world(settings)
     sl.say(HARRY_ID, "send")
     with pytest.raises(RuntimeError, match="escalation broke"):
-        hb.run_job(ctx, desk.poll_desk)
+        hb.run_job(ctx, poll_desk.poll_desk)
     assert ran == [1]  # the tab ran before the raise
     [sent] = inst.replies  # the item worked before escalate is handled
     assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["status"] == "handled"
@@ -656,7 +659,7 @@ def test_a_guardrail_refusing_the_reply_desk_is_raised_after_the_hand_check_tab(
         raise GuardViolation("slack chat.postMessage to a channel not allowed")
 
     ran = []
-    monkeypatch.setattr(desk, "escalate", refuse)
+    monkeypatch.setattr(poll_desk, "escalate", refuse)
     monkeypatch.setattr(hand_check_tab, "apply", lambda ctx: ran.append(1) or {"applied": [], "hand_check_errors": []})
     ctx, t, crm, sl, inst = desk_world(settings)
     sl.say(HARRY_ID, "send")
@@ -688,7 +691,7 @@ def test_the_send_approvals_left_open_are_closed_once_as_expired_and_never_escal
     for item_id in ("sa-1", "sa-2"):
         row = row_of(ctx, item_id)
         assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", "system", "expired")
-        assert row["payload"]["reason"] == desk.SEND_APPROVALS_REMOVED and row["payload"]["company"] == "Acme Creative"
+        assert row["payload"]["reason"] == poll_desk.SEND_APPROVALS_REMOVED and row["payload"]["company"] == "Acme Creative"
         event = ctx.store.get("events", event_id=f"send-approval:{item_id}")
         assert (event["type"], event["approval"], event["approved_by"]) == ("send_approval", "expired", "system")
     assert row_of(ctx, "sa-3")["status"] == "sending" and not row_of(ctx, "sa-3").get("escalated_at")
@@ -697,12 +700,12 @@ def test_the_send_approvals_left_open_are_closed_once_as_expired_and_never_escal
     again = poll(ctx)
     assert again["send_approvals"]["closed"] == [] and again["send_approvals"]["sending_errors"] == stuck
     # heartbeat_check reads the run as one "errors" finding with that line, and posts it (not an outage, so
-    # job_errors.passing keeps it for a job every 5 minutes)
-    from us_outbound.ops import job_errors
+    # health.passing keeps it for a job every 5 minutes)
+    from us_outbound.ops import health
 
-    [found] = job_errors.findings("poll_approvals", {"status": "ok", "detail": again})
+    [found] = health.findings("poll_approvals", {"status": "ok", "detail": again})
     assert (found.kind, found.texts) == ("errors", stuck)
-    assert job_errors.passing("poll_approvals", [found], None) == [found]
+    assert health.passing("poll_approvals", [found], None) == [found]
 
 
 def test_a_dry_run_says_which_send_approvals_it_would_close_and_closes_none(settings):
@@ -821,14 +824,14 @@ def test_cli_refuses_an_unknown_or_ambiguous_id(settings, capsys):
     ("approved by me", None, None), ("no thanks", None, None),
 ])
 def test_parse_command(text, kind, body):
-    cmd = desk.parse_command(text)
+    cmd = poll_desk.parse_command(text)
     assert (cmd.kind if cmd else None, cmd.text if cmd else None) == (kind, body)
 
 
 def test_slack_text_unwraps_links():
-    assert desk.slack_text("<https://meetings.hubspot.com/x|meetings.hubspot.com/x> and <https://a.com|our page>") == \
+    assert poll_desk.slack_text("<https://meetings.hubspot.com/x|meetings.hubspot.com/x> and <https://a.com|our page>") == \
         "https://meetings.hubspot.com/x and our page (https://a.com)"
-    assert desk.slack_text("<mailto:a@b.com|a@b.com> &lt;3 &amp; <#C1|us-outbound>") == "a@b.com <3 & #us-outbound"
+    assert poll_desk.slack_text("<mailto:a@b.com|a@b.com> &lt;3 &amp; <#C1|us-outbound>") == "a@b.com <3 & #us-outbound"
 
 
 def test_items_without_a_kind_we_know_are_left_alone(settings):

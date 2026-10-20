@@ -17,7 +17,7 @@ import pytest
 
 from tests.fakes import FakeTransport, make_context
 from us_outbound.clients.http import ApiError
-from us_outbound.ops import cli, heartbeat, schedule
+from us_outbound.ops import cli, health, schedule
 from us_outbound.ops import scheduler as sch
 from us_outbound.scoring.score import score_account
 from us_outbound.settings.model import SOURCE_FIELDS
@@ -362,11 +362,11 @@ def test_dry_run_writes_only_the_database(default_settings, monkeypatch):
 
 def test_once_a_month_and_the_daily_post(default_settings, monkeypatch):
     ctx, _ = world(default_settings, monkeypatch)
-    first = heartbeat.run_job(ctx, ll.run)
+    first = health.run_job(ctx, ll.run)
     assert first["status"] == "ok" and first["admitted"] == 3
     later = NOW + timedelta(hours=6)
     ctx2, _ = world(default_settings, monkeypatch, now=later, store=ctx.store)
-    second = heartbeat.run_job(ctx2, ll.run)
+    second = health.run_job(ctx2, ll.run)
     assert second["skipped"] and second["reason"].startswith("it ran on 01 Nov already")
     assert len(created(ctx2)) == 3  # nothing spent or added twice
 
@@ -382,7 +382,7 @@ def test_once_a_month_and_the_daily_post(default_settings, monkeypatch):
 
     # Next month it runs again, with that month's seeds.
     ctx4, _ = world(default_settings, monkeypatch, now=datetime(2026, 12, 1, 2, 50, tzinfo=UTC), store=ctx.store)
-    assert heartbeat.run_job(ctx4, ll.run)["status"] == "ok"
+    assert health.run_job(ctx4, ll.run)["status"] == "ok"
 
 
 def test_parked_off_the_schedule_and_not_expected_but_still_runnable_by_hand(default_settings):
@@ -394,14 +394,14 @@ def test_parked_off_the_schedule_and_not_expected_but_still_runnable_by_hand(def
     assert ll.JOB in schedule.PARKED and ll.JOB not in schedule.enabled_names()
     assert ll.JOB not in [j.name for j, _ in sch.Scheduler().jobs]
     assert cli.JOBS[ll.JOB] == "us_outbound.sources.lookalike_leads:run" and ll.JOB in cli.built_jobs()
-    assert ll.JOB not in heartbeat.scheduled_jobs() and ll.JOB not in heartbeat.EXPECTED
+    assert ll.JOB not in health.scheduled_jobs() and ll.JOB not in health.EXPECTED
     # A run by hand on 1 Oct, then nothing for five weeks: a monthly job would be missed by 3 Nov (32 days of
     # slack), a parked one is never flagged.
     ctx = make_context(default_settings, now=datetime(2026, 11, 3, 3, 0, tzinfo=UTC))
     last = datetime(2026, 10, 1, 1, 55, tzinfo=UTC)
     ctx.store.insert("heartbeats", [{"run_id": "hand-1", "job": ll.JOB, "started_at": last, "finished_at": last,
                                      "status": "ok", "dry_run": False, "detail": {}, "error": None}])
-    assert heartbeat.check_heartbeats(ctx, [ll.JOB]) == []
+    assert health.check_heartbeats(ctx, [ll.JOB]) == []
 
 
 def test_run_from_the_command_line(default_settings, monkeypatch, capsys):

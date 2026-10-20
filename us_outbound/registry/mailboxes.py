@@ -76,7 +76,7 @@ from typing import Any
 
 from us_outbound import config_version, parse
 from us_outbound.base import holds, say
-from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP
+from us_outbound.ops.health import OPERATOR_START, OPERATOR_STOP
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX
 from us_outbound.clients.http import ApiError
 from us_outbound.clients.instantly import (
@@ -121,7 +121,7 @@ def campaign_steps(text_only: bool = False) -> tuple[dict[str, str], ...]:
 
     In HTML the body variable sits in a <div>: Instantly drops text that is outside any tag when it saves a
     step, so a bare "{{s1_body}}<p>…</p>" was saved as the unsubscribe line alone (the first live create,
-    2 Oct 2026, read back with `us-outbound campaigns show`).
+    2 Oct 2026, read back with the `campaigns show` command of the time).
     """
     def body(i: int) -> str:
         var = f"{{{{s{i}_body}}}}"
@@ -527,7 +527,7 @@ def _lower_limit(row: Mapping[str, Any]) -> bool:
 def went_live(store: Any) -> datetime | None:
     """When sending went live and still is: the latest live `start` that finished ok, if no `stop` came after it.
 
-    The same rule as base/heartbeats.enrolment_paused: a stop counts in any mode and whatever its
+    The same rule as ops/health.enrolment_paused: a stop counts in any mode and whatever its
     outcome (the safe direction); a start only when it ran live and finished ok.
     """
     rows = store.select("heartbeats", {"job": [OPERATOR_STOP, OPERATOR_START]})

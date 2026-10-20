@@ -759,13 +759,13 @@ def test_a_hubspot_401_or_403_ends_the_run_with_an_error(status):
     failed" and the day read as an ok run that enrolled nobody. An AuthError now ends the run before any add, so its
     heartbeat is an error and job_errors reports it."""
     from us_outbound.clients.http import AuthError
-    from us_outbound.ops import heartbeat
+    from us_outbound.ops import health
 
     t = FakeTransport()
     ctx, _ = make(live=True, settings=make_settings(live_sending=True), transport=t)
     t.route("POST", "/crm/v3/objects/companies/search", {"message": "expired"}, status=status)
     with pytest.raises(AuthError):
-        heartbeat.run_job(ctx, enrol.run)
+        health.run_job(ctx, enrol.run)
     [row] = ctx.store.select("heartbeats")
     assert row["status"] == "error" and row["error"].startswith("AuthError: hubspot HTTP")
     assert instantly_posts(t) == []  # prepare runs before any add
@@ -776,14 +776,14 @@ def test_hubspot_down_for_every_candidate_is_a_job_errors_finding():
     """25 candidates, HubSpot answering 500 to each: enrolled 0, failures {"HubSpot check failed": 25} beside
     candidates 25, so job_errors raises a failures finding (25 >= 3 and 25 >= 50% of 25) instead of the day reading as
     an ok run with errors == []. Today's number: weekly_enrol_cap 100 ÷ 4 send days left on Tuesday = 25."""
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     ctx, posted, _ = explore_world(0, 25)
     ctx.clients.transport.route("POST", "/crm/v3/objects/companies/search", {"message": "down"}, status=500)
     out = enrol.run(ctx)
     assert (out["number"], out["candidates"], out["enrolled"], out["prepared"]) == (25, 25, 0, 0)
     assert out["failures"] == {"HubSpot check failed": 25} and out["errors"] == []
-    [finding] = job_errors.findings("enrol", {"status": "ok", "detail": out})
+    [finding] = health.findings("enrol", {"status": "ok", "detail": out})
     assert finding.kind == "failures" and finding.count == 25
 
 

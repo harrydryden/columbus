@@ -67,7 +67,6 @@ _GENERAL: list[tuple[str, str, str]] = [
         "yes: when the early warning fires (no human reply from 100 companies whose reply window has closed), new "
         "enrolment pauses as well as the alert. no: the alert only. Added by the build (Harry, 19 Oct 2026).",
     ),
-    ("score_cap", "100", "Cap on an account's total score."),
     (
         "apollo_monthly_credits",
         "2000",
@@ -82,8 +81,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "Slack member ids (U…) whose ✅ counts on reply drafts, comma-separated. Harry: U098X453UAG. "
         "A mailbox owner's slack_id (Mailboxes tab) can also approve replies to their own mailbox.",
     ),
-    ("escalation_email", "harry@spill.chat", "Where human-in-the-loop items go after escalation_hours."),
-    ("escalation_hours", "24", "Hours before an open item is emailed to escalation_email."),
+    ("escalation_email", "harry@spill.chat", "Where human-in-the-loop items go after 24 hours open."),
     ("alert_channel", "#us-outbound", "Alerts, approvals, the daily post and the Monday readout."),
     ("dev_channel", "#us-outbound-dev", "The only channel dry-run posts to. Added by the build."),
     ("booking_link", "https://meetings.hubspot.com/harry336/us-demo-link",
@@ -128,38 +126,12 @@ _GENERAL: list[tuple[str, str, str]] = [
     ),
     ("hubspot_pipeline", "Spill 3.0", "Deals go in this pipeline."),
     ("hubspot_pipeline_id", "",
-     "The pipeline's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
+     "The pipeline's id (HubSpot: Settings, Objects, Deals, Pipelines). Without it, a positive reply creates no "
+     "HubSpot deal."),
     ("hubspot_deal_stage_id", "",
-     "Its first stage's id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
+     "Its first stage's id (the same HubSpot page). Without it, a positive reply creates no HubSpot deal."),
     ("hubspot_owner_id", "",
-     "Harry's HubSpot owner id. From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal."),
-    (
-        "apollo_enrich_groups",
-        "Technology & Startups",
-        "Industry groups whose queued accounts apollo_enrich enriches through Apollo for funding and an exact "
-        "employee count, comma-separated (1 credit per company found, within 15% of apollo_monthly_credits; again "
-        "after 180 days). Blank enriches none. Harry, 2 Oct 2026: funding as a sign of change and growth, where "
-        "funding is common. Added by the build.",
-    ),
-    (
-        "site_visit_domain",
-        "spill.chat",
-        "The website Apollo's visitor tracker is installed on. Each morning at 06:00 UK, site_visits reads the "
-        "companies that visited it in the last 30 days for the website-visit signals (a few Apollo credits a "
-        "day). Blank: nothing is read. Added by the build.",
-    ),
-    (
-        "site_visit_us_paths",
-        "/us",
-        "Pages that count as a visit to the US site, comma-separated. A page counts when its path contains one "
-        "of these, so /us also counts /us/pricing. Added by the build.",
-    ),
-    (
-        "site_visit_intent_paths",
-        "/us/pricing, /us/demo, /us/book",
-        "Pages that count as a pricing or demo visit, comma-separated, matched the same way, so /us/book counts "
-        "/us/book-demo. Blank: no pricing or demo signal. Added by the build.",
-    ),
+     "Harry's HubSpot owner id (HubSpot: Settings, Users). Without it, a positive reply creates no HubSpot deal."),
     (
         "min_employees",
         "10",
@@ -231,7 +203,7 @@ _GENERAL: list[tuple[str, str, str]] = [
         "0.5",
         "Share of companies whose email 1 uses email1_subject instead of the Copy row's s1_subject, chosen by a "
         "hash of the account id (independent of the opener holdout), so replies can compare the two "
-        "(contacts.subject_arm; `us-outbound signals review`). 0: every email 1 keeps the Copy row's subject. "
+        "(contacts.subject_arm; `us-outbound report signals`). 0: every email 1 keeps the Copy row's subject. "
         "Added by the build (Harry, 5 Oct 2026).",
     ),
 ]
@@ -498,7 +470,7 @@ _SIGNALS: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]
         "standard_threshold, and on 5 Oct Control held 300 of 432 open accounts. So a close lookalike with no "
         "observed signal is Standard now, and Control holds the accounts that fit less well. On 5 Oct any weight "
         "from +5 to +15 gave the same tiers (Standard 163 of 421, 39%), and +10 leaves room for observed signals "
-        "to order them. `us-outbound lookalikes fit` shows the fits and the tier mix these rows give.",
+        "to order them. `us-outbound report lookalikes` shows the top cells and what the signal scores.",
     ),
     (
         "Some match to Spill's customers", "lookalike", "lookalike_fit >= 45 AND lookalike_fit < 70",

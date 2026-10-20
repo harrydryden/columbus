@@ -11,7 +11,7 @@ rescore scores the new facts, first a home-page pass (home_pass) for the label c
 the page could settle (never checked, the model unsure, or a label the model gave alone) and whose home page has not
 been read (labels.wants_home_page; Harry, 7 Oct 2026: the first audit held half the queue on Apollo's facts alone; 10
 Oct 2026: a label the model gives alone earns its own copy only with the page), robots.txt and the home page only, so verify_accounts asks the model once
-more with the page (labels.second_look); `labels audit --live` makes the same pass first. Then, for queue accounts
+more with the page (labels.second_look); verify_accounts asks after it. Then, for queue accounts
 (new, queued or verified, not Excluded or Held) with a domain: the Focus tab's groups first, then
 accounts never read, then queue order. An account is read again after REFRESH_DAYS, or after
 RETRY_DAYS when the read failed (error). At most MAX_ACCOUNTS_PER_RUN accounts and RUN_SECONDS a run
@@ -45,7 +45,7 @@ not overwrite an earlier good read_status, so what an earlier read found still c
 
 Coverage (Harry: "we should enhance this functionality if we're unable to get the data we need
 after testing live on the first few batches"): coverage() counts, for the last run and for every
-account read so far, the outcomes, the share with any benefits text and the accounts each page signal matches on these facts alone. `us-outbound pages show`
+account read so far, the outcomes, the share with any benefits text and the accounts each page signal matches on these facts alone. `us-outbound report pages`
 prints it and the daily post carries it, with the decision rule of docs/roadmap.md: after
 DECIDE_AFTER accounts, under ENHANCE_BELOW with benefits text means enhance the reader.
 
@@ -635,7 +635,7 @@ def decision(cov: Coverage) -> str:
 
 
 def report(ctx: Context) -> list[str]:
-    """What `us-outbound pages show` prints: every account read so far, the last run and the decision."""
+    """What `us-outbound report pages` prints: every account read so far, the last run and the decision."""
     today = ctx.today_uk()
     total = coverage(ctx.store, ctx.settings, today)
     lines = ["Careers and benefits pages (read_pages; Harry, 2 Oct 2026)", "So far:"]

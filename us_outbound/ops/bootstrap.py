@@ -20,7 +20,7 @@ alone, and neither reaches a prospect. So does heartbeat_check (Harry, 7 Oct 202
 sheet is still told in Slack and to the outside watchdog: on the defaults it is live with --live
 alone too (ALERTS_ON_DEFAULTS), since live_sending is unknown then and it only posts to the alert
 channel and pings. Its context alone also reads US_OUTBOUND_WATCHDOG_URL, through the secrets
-client, into the guard's boundaries (ops/watchdog.py).
+client, into the guard's boundaries (ops/health.py).
 
 The brakes on a broken sheet (W1-1, 19 Oct 2026; RS P0-1): when the version in force fails validation, the
 SAFETY_JOBS (the kill rules, the blackout pause, reading replies and email results, the do-not-contact list, the
@@ -46,14 +46,14 @@ import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from us_outbound.base.heartbeats import OPERATOR_STOP
 from us_outbound.base.holds import with_holds
 from us_outbound.clients.db import Store
 from us_outbound.clients.guard import Guard
 from us_outbound.clients.http import Transport
 from us_outbound.context import Clients, ConfigError, Context, Secrets, boundaries_for, effective_live
 from us_outbound.logs import log
-from us_outbound.ops import watchdog
+from us_outbound.ops import health
+from us_outbound.ops.health import OPERATOR_STOP
 from us_outbound.settings.model import General, Settings
 
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
@@ -61,13 +61,13 @@ UNENROL_JOB = "unenrol"  # ops/cli.py cmd_unenrol
 # Jobs that may start from the General defaults when no valid settings are in force: the ones that
 # repair the sheet, and the kill switch (`stop --live` and `unenrol --live` must never wait for a fix).
 DEFAULTS_OK = frozenset({"settings_sync", "settings_bootstrap", "settings_load", OPERATOR_STOP, UNENROL_JOB,
-                         watchdog.JOB})
+                         health.JOB})
 # Jobs that, started on the defaults, are live with --live alone: heartbeat_check's writes are a post to the alert
 # channel and the watchdog's ping, which reach no prospect, and its alert must not go to the dev channel just
 # because the sheet that says live_sending = yes cannot be read.
-ALERTS_ON_DEFAULTS = frozenset({watchdog.JOB})
+ALERTS_ON_DEFAULTS = frozenset({health.JOB})
 # Jobs that run on the last-good settings, protective-only, when the version in force fails (module docstring).
-SAFETY_JOBS = frozenset({"kill_rules", "blackout", "sync_outcomes", "poll_replies", "suppression_load", watchdog.JOB,
+SAFETY_JOBS = frozenset({"kill_rules", "blackout", "sync_outcomes", "poll_replies", "suppression_load", health.JOB,
                          OPERATOR_STOP, UNENROL_JOB})
 DATABASE_VAR = "DATABASE_URL"
 GOOGLE_KEY_VAR = "US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON"
@@ -83,7 +83,7 @@ class SettingsUnusable(Exception):
         self.store = store
         tabs = ", ".join(self.errors) or "unknown"
         super().__init__(
-            f"settings are unusable ({tabs}); fix the sheet, then run `us-outbound settings sync`"
+            f"settings are unusable ({tabs}); fix the sheet, then run `us-outbound sync`"
         )
 
 
@@ -225,7 +225,7 @@ def build_context(
 
     live = resolve_live(live_flag, settings, operator=operator)
     secrets = secrets or Secrets(guard, env)
-    ping_url = watchdog.read(secrets)[0] if job == watchdog.JOB else ""
+    ping_url = health.watchdog_url(secrets)[0] if job == health.JOB else ""
     guard.configure(live=live, bounds=boundaries_for(settings, sheet_id, watchdog_url=ping_url),
                     protective_only=protective)
     if live_flag and not live:

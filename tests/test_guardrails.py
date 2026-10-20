@@ -36,7 +36,7 @@ import pytest
 import us_outbound.clients
 from tests.fakes import FakeTransport
 from us_outbound.clients.apollo import Apollo
-from us_outbound.clients.db import MemoryStore, PostgresStore
+from us_outbound.clients.db import MemoryStore, PostgresStore, SessionLock
 from us_outbound.clients.claude import Claude
 from us_outbound.clients.guard import Boundaries, CallRecord, Guard, GuardViolation, Op
 from us_outbound.clients.hubspot import HubSpot
@@ -62,7 +62,7 @@ ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
 APPROVER = "U_HARRY"  # approver_slack_ids (SPEC 1.3): the only reply approver, and the only Slack DM recipient
 HANNAH_SLACK = "U_HANNAH"  # D11: Hannah approves replies to her own mailbox only
-WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/watchdog.py; Harry, 7 Oct 2026)
+WATCHDOG = "https://hc-ping.com/0f1e2d3c-test"  # US_OUTBOUND_WATCHDOG_URL (ops/health.py; Harry, 7 Oct 2026)
 
 BOUNDS = Boundaries(
     registry_addresses=frozenset(ADDRESSES),
@@ -440,6 +440,7 @@ def make_world(live: bool, tmp: Path) -> World:
         "Claude": Claude(guard, memory, api_key=None, model="claude-haiku-4-5", monthly_cap_usd=10.0, sdk=sdk),
         "MemoryStore": memory,
         "PostgresStore": PostgresStore(guard, "postgresql://fake", connect=pg.connect),
+        "SessionLock": SessionLock(guard, "postgresql://fake", 0x75736F7574626F, connect=pg.connect),
     }
     return World(guard, t, pg, sdk, tmp, clients)
 
@@ -467,6 +468,8 @@ def _store_exercises() -> dict[str, Ex]:
         "transaction": lambda s, w: _locked(s),
         "advisory_lock": lambda s, w: _locked(s),
         "close": lambda s, w: s.close(),
+        "claim": lambda s, w: s.claim("heartbeats", {"run_id": "enrol:2026-10-20T11:00", "job": "enrol",
+                                                     "status": "running", "started_at": NOW}),
     }
 
 
@@ -558,6 +561,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
              "custom_variables": {"s1_subject": "Hi", "s1_body": "Hello Jane"}}]),
         "list_leads": lambda c, w: c.list_leads(HANNAH_CAMPAIGN),
         "delete_lead": lambda c, w: c.delete_lead(HANNAH_CAMPAIGN, "L1"),
+        "get_lead": lambda c, w: c.get_lead(HANNAH_CAMPAIGN, "L1"),  # the read-back after a booking (W2-4)
         "list_emails": lambda c, w: c.list_emails(["hannah@meetspill.org"], since=NOW),
         "get_email": lambda c, w: c.get_email("hannah@meetspill.org", "E1"),
         "set_lead_paused": lambda c, w: c.set_lead_paused(HANNAH_CAMPAIGN, "L1", True),
@@ -605,10 +609,16 @@ EXERCISES: dict[str, dict[str, Ex]] = {
     },
     "MemoryStore": _store_exercises(),
     "PostgresStore": _store_exercises(),
+    # The scheduler's lock (W2-4): a read of the database, authorized as one, on its own connection.
+    "SessionLock": {
+        "try_acquire": lambda c, w: c.try_acquire(),
+        "held": lambda c, w: c.held(),
+        "close": lambda c, w: c.close(),
+    },
 }
 
 CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Public, Watchdog,
-                                                Claude, MemoryStore, PostgresStore)}
+                                                Claude, MemoryStore, PostgresStore, SessionLock)}
 # HttpClient's own plumbing: request() is the guarded path every method above goes through
 # (the negative cases call it directly), and headers() builds auth headers.
 PLUMBING = frozenset({"request", "headers"})

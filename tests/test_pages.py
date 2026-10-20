@@ -457,7 +457,7 @@ def test_pages_show_and_the_daily_post(world, capsys):
     ctx, _ = world
     ctx.store.insert("signal_events", [_read_fact("a1", "read", snippets=3)])
     ctx.store.insert("accounts", [account("waiting", domain="w.com")])
-    assert cli.main(["pages", "show"], context_factory=lambda job, live, **kw: ctx) == 0
+    assert cli.main(["report", "pages"], context_factory=lambda job, live, **kw: ctx) == 0
     out = capsys.readouterr().out
     assert "So far:\n  1 accounts: read 1, no pages found 0, blocked 0, error 0" in out
     assert "With benefits text: 1 (100%)" in out

@@ -614,6 +614,6 @@ def test_kill_rules_runs_as_a_job_from_the_cli():
     from tests.test_cli import Harness
 
     h = Harness()
-    assert h.run("dry-run", "kill_rules") == 0
+    assert h.run("run", "kill_rules") == 0
     [beat] = h.beats("kill_rules")
     assert beat["status"] == "ok" and beat["detail"]["fired"] == []

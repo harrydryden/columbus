@@ -16,7 +16,7 @@ needs you today; the asks follow, numbered, each with where to go or the command
 lines, today's number with what limits it and each sender's room, the pipeline, the one-line spend summary, and a
 "Worth a look" block only for what needs a look (a mailbox bouncing BOUNCE_WATCH or more, a kill rule, a campaign
 not sending, the To improve lines), ending with the areas checked that are fine. Every number is
-gathered once (gather) and the full post below is kept as it was, for `us-outbound daily --full`; the summary
+gathered once (gather) and the full post below is kept as it was, for `us-outbound report daily --full`; the summary
 numbers in the heartbeat are the same either way. What follows describes the full post.
 
 Harry, 2 Oct 2026: "the number of emails sent, the number of companies and contacts identified, the
@@ -38,7 +38,7 @@ surface to make the system better over time". It covers the day before, and read
     non-send day, an operator stop, the stop rule, a positive reply waiting too long), plus the hand-check while
     it gates the day (enrol.hand_check), and a note when live_sending is no (enrol then runs dry);
   * Sources: the careers and benefits page reader's coverage, its last run, every account read so
-    far and the decision rule for enhancing it (sources/pages.py, `us-outbound pages show`); and
+    far and the decision rule for enhancing it (sources/pages.py, `us-outbound report pages`); and
     what Apollo's organization enrich found, with funding in the last 180 and 365 days
     (sources/apollo_enrich.py); one line on website visits: the companies Apollo saw on the US
     pages, or, when its tracker sends no data, to check it (sources/site_visits.py); and, on the morning of
@@ -86,7 +86,7 @@ from us_outbound.logs import clip, log
 from us_outbound.ops import retention
 from us_outbound.registry import ramp
 from us_outbound.replies import kinds
-from us_outbound.replies.items import is_reply
+from us_outbound.replies.desk import is_reply
 from us_outbound.sources import apollo_enrich, lookalike_leads, pages, site_visits
 from us_outbound.timeparse import uk_midnight, utc
 
@@ -100,7 +100,7 @@ HAND_CHECK = "hand_check"  # hitl_items.kind of the weekly hand-check (enrol/han
 # as holds, never as waiting for approval.
 KIND_LABELS = {"reply": "replies", "reply_approval": "reply approvals", HAND_CHECK: "hand-checks",
                "manual_merge": "manual merges"}
-SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind (replies/desk.close_send_approvals)
+SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind (replies/poll_desk.close_send_approvals)
 MAILBOX_HEALTH_SQL = "SELECT address, sends_last_100, bounces_last_100 FROM {schema}.v_mailbox_health"
 
 
@@ -201,7 +201,7 @@ def needs_you(ctx: Context, w: ForYou) -> str:
 
 @dataclass
 class Day:
-    """Everything the post reads, gathered once: the full post's lines (`us-outbound daily --full`), the numbers
+    """Everything the post reads, gathered once: the full post's lines (`us-outbound report daily --full`), the numbers
     for the summary, and what the short post (compact) picks from."""
 
     start: datetime
@@ -226,7 +226,7 @@ class Day:
 
 
 def build(ctx: Context, spent: spend.Spend | None = None) -> tuple[list[str], dict[str, Any]]:
-    """(the full post's lines, the numbers for the summary): `us-outbound daily --full`. The job posts the short
+    """(the full post's lines, the numbers for the summary): `us-outbound report daily --full`. The job posts the short
     post (compact) made from the same day."""
     day = gather(ctx, spent)
     return day.lines, day.nums
@@ -579,7 +579,7 @@ def _watch(day: Day) -> tuple[list[str], list[str]]:
 
 def compact(ctx: Context, day: Day) -> list[str]:
     """The short post: whether anything needs you, the asks, yesterday, today, the pipeline, and only what needs a
-    look; the rest is in `us-outbound daily --full` and the Monday readout."""
+    look; the rest is in `us-outbound report daily --full` and the Monday readout."""
     needs = _needs(ctx, day.waiting_on)
     date = f"{ctx.now.astimezone(UK):%a %-d %b}"
     if needs:
@@ -596,7 +596,7 @@ def compact(ctx: Context, day: Day) -> list[str]:
     if day.retention:
         lines += ["", day.retention]
     listed = " and ".join([", ".join(fine[:-1]), fine[-1]] if len(fine) > 1 else fine)
-    lines += ["", (f"Fine: {listed}. " if fine else "") + f"Full report: {say.command('daily --full')}"]
+    lines += ["", (f"Fine: {listed}. " if fine else "") + f"Full report: {say.command('report daily --full')}"]
     return lines
 
 

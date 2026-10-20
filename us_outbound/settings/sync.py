@@ -66,11 +66,11 @@ from us_outbound.timeparse import utc_strict
 
 TABLE = "settings"
 SLACK_ERROR_LINES = 20
-# What unusable settings stop (W1-1: the brakes run on load_fallback); ops/heartbeat.settings_fault says it too.
+# What unusable settings stop (W1-1: the brakes run on load_fallback); ops/health.settings_fault says it too.
 REFUSE_WORDS = "every job but the safety jobs refuses to start (the safety jobs run on a fallback that only pauses)"
 FALLBACK_VERSIONS = 5  # how many earlier versions of a failing tab the fallback tries, the latest first
 FALLBACK_EARLIER, FALLBACK_DEFAULTS = "earlier versions", "defaults"  # Settings.fallback_mode
-HEADLINE = "The settings sheet has errors"  # format_errors' headline opens with it (ops/job_errors quotes it)
+HEADLINE = "The settings sheet has errors"  # format_errors' headline opens with it (ops/health quotes it)
 # When the worker reads the sheet by itself (ops/schedule.py: 02:00 daily, 11:30 weekdays; ops/scheduler.AT_START).
 SYNC_TIMES = "each time the worker starts, and at 02:00 UK daily and 11:30 UK on weekdays"
 # Tabs whose rows name rows on another tab. If one of these has to keep its previous
@@ -354,7 +354,7 @@ def _and(items: list[str]) -> str:
 def format_errors(report: Mapping[str, list[RowError]], unusable: list[str], ctx: Context | None = None) -> str:
     """One Slack message (Harry, 12 Oct 2026: clear to a newcomer; base/say.py): what was not applied and what that
     stops, up to SLACK_ERROR_LINES row errors, and the fix. With ctx each tab links to itself on the sheet.
-    ops/job_errors points to this message (HEADLINE) when the jobs refuse to start on unusable settings."""
+    ops/health points to this message (HEADLINE) when the jobs refuse to start on unusable settings."""
     from us_outbound.base import say
 
     def tab(t: str) -> str:

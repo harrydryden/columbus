@@ -132,6 +132,6 @@ def test_nothing_emailed_says_so_and_the_command_is_read_only(capsys):
     assert signal_review.lines(signal_review.review(world([]))) == [
         "No company has been emailed yet, so there is nothing to review."]
     h = Harness(dataclasses.replace(SETTINGS))
-    assert h.run("signals", "review") == 0
+    assert h.run("report", "signals") == 0  # `signals review` until W2-4
     assert "nothing to review" in capsys.readouterr().out
     assert h.store.tables.get("heartbeats", []) == []

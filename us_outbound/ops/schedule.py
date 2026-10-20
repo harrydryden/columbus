@@ -10,8 +10,14 @@ live:     the scheduler adds --live. Only jobs that write outside the database (
           edit counts from the next settings_sync (02:00, and 11:30 on weekdays) or
           `us-outbound sync`.
 enabled:  False for jobs of a later phase (SPEC 14); the scheduler never starts them.
-timeout:  minutes before the scheduler kills a run. Keep it at 60 or less: ops/heartbeat.py
-          treats a "running" row older than 60 minutes as dead.
+timeout:  minutes before the scheduler stops a run, and how long a run's "running" row blocks the next
+          (ops/health.lock_minutes; W2-4, 20 Oct 2026: it was 60 minutes for every job). At most about 3 times
+          the run's observed time (code-platform-ops §2: 1 to 260 s): verify_accounts 15, enrol 15,
+          pick_contacts 10, suppression_load 10, mailbox_health 5, and 5 for the light jobs that run hourly or
+          daily (kill_rules, blackout, hubspot_readback, daily_post, heartbeat_check, follow_up). A job with a
+          time budget of its own keeps a timeout above it (poll_replies 6 minutes, read_pages 30, apollo_people
+          9), and the rest keep theirs until heartbeats.duration_s (persisted from W2-4) shows their p95 at
+          production volume.
 phase:    the SPEC 14 phase the job belongs to.
 
 This table replaced deploy/jobs.yaml (Cloud Run Jobs and Cloud Scheduler) when the jobs
@@ -52,7 +58,7 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # before verify_accounts, whose rescore scores its facts; public GETs and database writes only, so no --live.
     # It stops starting accounts after 30 minutes (sources/pages.py RUN_SECONDS), well inside the timeout.
     ScheduledJob("read_pages", "45 3 * * 1-5", live=False, enabled=True, timeout_minutes=40, phase=1),
-    # Harry, 2 Oct 2026: funding and an exact headcount from Apollo's organization enrich, for apollo_enrich_groups.
+    # Harry, 2 Oct 2026: funding and an exact headcount from Apollo's organization enrich, for APOLLO_ENRICH_GROUPS (settings/model.py).
     # W1-3a, 19 Oct 2026 (code-sources B4): after verify_accounts (04:30, its 30-minute timeout), for verified accounts
     # only, the exact count the last size check; it was 04:10, for every new account. No rescore of its own (RS P0-8):
     # pick_contacts' rescore at 05:30 scores its facts. Apollo reads and database writes only, so no --live. At most
@@ -66,34 +72,41 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # list). After pick_contacts and before enrol, whose tiers its rescore sets; Apollo reads and database writes
     # only, so no --live (sources/site_visits.py).
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=True, timeout_minutes=30, phase=1),
-    ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=30, phase=1),
+    ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=15, phase=1),
     # score runs inside settings_sync, verify_accounts, pick_contacts (at its start, W1-3a) and
-    # site_visits (SPEC 9); by hand: `us-outbound rescore`.
+    # site_visits (SPEC 9); by hand: `us-outbound run score`.
     ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
     # On for the pilot from Mon 5 Oct 2026, ahead of enrol at 12:00. It writes only to the database
     # (its Apollo calls are reads), so it never needs --live; reveals spend credits within the budget.
-    ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=True, timeout_minutes=60, phase=2),
+    ScheduledJob("pick_contacts", "30 5 * * 1-5", live=False, enabled=True, timeout_minutes=10, phase=2),
     # Enabled for the 5 Oct go-live (Harry, 1 Oct 2026). It runs dry, writing only the database, until
     # live_sending = yes on the General tab: that flag stays Harry's sign-off (SPEC 0.3, 14).
-    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=True, timeout_minutes=30, phase=2),
+    ScheduledJob("enrol", "0 12 * * 1-5", live=True, enabled=True, timeout_minutes=15, phase=2),
     ScheduledJob("poll_replies", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("poll_approvals", "*/5 * * * *", live=True, enabled=True, timeout_minutes=4, phase=2),
-    ScheduledJob("hubspot_readback", "*/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
-    # Every 15 minutes, not SPEC 9's 01:00: the kill rules and the send forecast need today's sends and
-    # stops, and opt-outs are honored the same day (SPEC 13). Offset from poll_replies by 7 minutes.
-    ScheduledJob("sync_outcomes", "7-59/15 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
-    ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=10, phase=0),
-    # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4).
-    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    # Hourly (W2-4, 20 Oct 2026; RS §2 W2-4), not every 15 minutes: a booking needs no answer within the quarter
+    # hour, each run reads three days of changes, and its "not ours" records are cached (crm/readback.py).
+    ScheduledJob("hubspot_readback", "0 * * * *", live=True, enabled=True, timeout_minutes=5, phase=2),
+    # Not SPEC 9's 01:00: the kill rules and the send forecast need today's sends and stops, and opt-outs are honored
+    # the same day (SPEC 13). Every 15 minutes inside Instantly's send window (09:00 to 16:00 US Eastern is 13:00 to
+    # 22:59 UK on weekdays, both clocks' changes included), hourly otherwise (W2-4, 20 Oct 2026; RS §2 W2-4): 40 + 14
+    # = 54 starts on a weekday, 24 on a weekend day, against 96 before. Offset from poll_replies by 7 minutes.
+    # health.EXPECTED allows 75 minutes (one missed run outside the window).
+    ScheduledJob("sync_outcomes", "7-59/15 13-22 * * 1-5", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("sync_outcomes", "7 0-12,23 * * 1-5", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("sync_outcomes", "7 * * * 0,6", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("mailbox_health", "0 7 * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
+    # Brought forward to the first sends (Harry, 1 Oct 2026; docs/gtm-review/README.md §4.2 D4). Hourly, unchanged.
+    ScheduledJob("kill_rules", "0 * * * *", live=True, enabled=True, timeout_minutes=5, phase=2),
     # Harry, 7 Oct 2026 (docs/open-questions.md item 78): pause the campaigns over the blackout dates and start them
     # again after, as Instantly's schedule knows weekdays only (registry/blackout.py). Hourly, deciding in US Eastern
     # dates: the pause lands from 16:00 ET on the last send day before a blackout and the start from midnight ET after
     # it, so many runs fall before 09:00 ET either way, whatever the UK and US clocks do. Instantly writes: --live.
-    ScheduledJob("blackout", "40 * * * *", live=True, enabled=True, timeout_minutes=10, phase=2),
+    ScheduledJob("blackout", "40 * * * *", live=True, enabled=True, timeout_minutes=5, phase=2),
     # Tuesday to Saturday from 19 Oct 2026 (the metrics review): each post covers the day before, the previous US send
     # day, so Friday is posted once on Saturday rather than on Saturday, Sunday and Monday (learn/daily_post.py). The
-    # Monday readout makes Monday's asks; heartbeat.EXPECTED allows the 72 hours from Saturday to Tuesday.
-    ScheduledJob("daily_post", "0 9 * * 2-6", live=True, enabled=True, timeout_minutes=10, phase=2),
+    # Monday readout makes Monday's asks; health.EXPECTED allows the 72 hours from Saturday to Tuesday.
+    ScheduledJob("daily_post", "0 9 * * 2-6", live=True, enabled=True, timeout_minutes=5, phase=2),
     # W1-2 (19 Oct 2026; RT §1.6): Mondays at 07:30, before the readout, the reply read checked two ways: Instantly's
     # own counts against our events, and the seed inbox's answer to last week's canary (replies/capture.py). It adds
     # one lead, to the seed inbox only, and deletes it once checked (the canary is sent only once Harry's D10 e is
@@ -106,7 +119,7 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # Build additions (README "Deviations").
     ScheduledJob("heartbeat_check", "5 * * * *", live=True, enabled=True, timeout_minutes=5, phase=0),
     # HubSpot opt-outs and bounces, and Spill's customers' domains (Harry, 7 Oct 2026: daily, not monthly).
-    ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=30, phase=0),
+    ScheduledJob("suppression_load", "30 1 * * *", live=False, enabled=True, timeout_minutes=10, phase=0),
     # The 1st of each month at 02:30, after settings_sync and before source_universe and apollo_signals (Harry,
     # 1 Oct 2026; monthly from 5 Oct 2026: "The customer base for Spill is fairly static"). Day-of-week is *, so
     # the day of the month alone decides (ops/scheduler.Cron.matches). It reads HubSpot and Apollo and writes
@@ -133,6 +146,10 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # the daily post: last month's batch scored, this month's added to the Label sample tab, and both posted with a
     # link to the tab. It writes the sheet and posts to the alert channel, so --live; no model, no credits.
     ScheduledJob("label_sample_monthly", "15 9 1 * *", live=True, enabled=True, timeout_minutes=15, phase=2),
+    # W2-4, 20 Oct 2026 (code-replies-crm M5): each not-now reply whose date has come, one Slack line and a HubSpot
+    # task for Harry (replies/follow_up.py). Daily at 08:45 UK, before the daily post; it posts and writes HubSpot,
+    # so --live.
+    ScheduledJob("follow_up", "45 8 * * *", live=True, enabled=True, timeout_minutes=5, phase=2),
 )
 
 

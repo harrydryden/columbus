@@ -30,7 +30,7 @@ later change is never lost (code-approvals-handcheck-copy B1). A decision that c
 company stays held; one whose domain has no company says so and counts as settled (B2). Every applied row writes one
 hand_check judgement fact (hand_check.event_id: one per account and week, upserted), so a row applied twice is still
 one fact, and so are the doubt and label facts it writes (B3); a fine is recorded like any other (B4). Errors go to
-hand_check_errors, a list heartbeat_check reads (ops/job_errors.py), and never stop poll_approvals: a Sheets failure
+hand_check_errors, a list heartbeat_check reads (ops/health.py), and never stop poll_approvals: a Sheets failure
 ends the pass there, and the next poll goes on from the row it stopped at (a row done whose cell could not be
 written is listed as unmarked, not applied: the next poll applies it again, to the same end). The two columns the old
 tab had for a missing fact (right_hq_state, right_employees, kept by migrate-tab where they hold a value) are not read:

@@ -860,6 +860,6 @@ def clear(ctx: Context, item_id: str, by: str) -> dict:
     next_step = ""
     if p.get("action") == PAUSE_MAILBOX:
         next_step = ("The mailbox stays Paused on the Mailboxes tab until you set it Active there; then "
-                     "`us-outbound settings sync` and `us-outbound campaigns ensure --fix --live` put it back on its sending list.")
+                     "`us-outbound sync` and `us-outbound campaigns ensure --fix --live` put it back on its sending list.")
     return {"item_id": item_id, "changed": ctx.live, "dry_run": ctx.dry_run, "rule": p.get("rule"),
             "action": p.get("action"), "target": p.get("target"), "next": next_step}

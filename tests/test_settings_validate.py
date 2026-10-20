@@ -310,14 +310,21 @@ W21_RETIRED_LIVE = {
     "apollo_credits_per_account": "1", "opener_focus": "no",
     "opener_focus_line": "I came across {company} and its work on {focus}.",
 }
-# The 17 live keys W2-1 retired, W1-C's control_share and W2-2's three tier keys: the live sheet's 21 warnings, in its
-# row order.
-LIVE_RETIRED = ["auto_send", "control_share", "priority_threshold", "standard_threshold", "auto_thresholds",
-                "clay_monthly_credits", "recontact_person_months",
-                "recontact_account_months", "hubspot_deal_stage", "clay_accounts_function_id", "clay_contacts_function_id",
-                "clay_credits_per_account", "clay_verification", "clay_email_fallback", "clay_cross_check",
-                "second_contact", "second_contact_min_employees", "second_contact_delay_days",
-                "apollo_credits_per_account", "opener_focus", "opener_focus_line"]
+# The live values of the six constants W2-4 moved to code (settings/model.py; 20 Oct 2026): the live sheet has each
+# at its default (data-crm-settings: score_cap 100; the others are among the 54 at default).
+W24_RETIRED_LIVE = {
+    "score_cap": "100", "escalation_hours": "24", "apollo_enrich_groups": "Technology & Startups",
+    "site_visit_domain": "spill.chat", "site_visit_us_paths": "/us", "site_visit_intent_paths": "/us/pricing, /us/demo, /us/book",
+}
+# The 17 live keys W2-1 retired, W1-C's control_share, W2-2's three tier keys and W2-4's six constants: the live
+# sheet's 18 + 3 + 6 = 27 warnings, in its row order (the fixture's).
+_RETIRED_BY = {"auto_send", "control_share", "priority_threshold", "standard_threshold", "auto_thresholds",
+               "clay_monthly_credits", "recontact_person_months",
+               "recontact_account_months", "hubspot_deal_stage", "clay_accounts_function_id", "clay_contacts_function_id",
+               "clay_credits_per_account", "clay_verification", "clay_email_fallback", "clay_cross_check",
+               "second_contact", "second_contact_min_employees", "second_contact_delay_days",
+               "apollo_credits_per_account", "opener_focus", "opener_focus_line", *W24_RETIRED_LIVE}
+LIVE_RETIRED = [k for k in LIVE_KEYS if k in _RETIRED_BY]
 
 
 def _live_general() -> list[dict]:
@@ -325,23 +332,31 @@ def _live_general() -> list[dict]:
     build's default; control_share (retired by W1-C) at its live 0.15, the keys W2-1 retired at their live values, and
     the tier keys W2-2 retired at theirs (auto_thresholds yes, standard_threshold 20, priority_threshold 40)."""
     build = {r["key"]: r["value"] for r in BASE["General"] if r.get("key")}
-    values = {**W21_RETIRED_LIVE, **build, "control_share": "0.15", "standard_threshold": "20",
+    values = {**W21_RETIRED_LIVE, **W24_RETIRED_LIVE, **build, "control_share": "0.15", "standard_threshold": "20",
               "auto_thresholds": "yes", **LIVE_VALUES}
     return [{"key": k, "value": values[k], "note": ""} for k in LIVE_KEYS]
 
 
-def test_the_live_general_keys_less_the_retired_are_45_and_the_build_has_them_all():
-    """W2-1's acceptance: General has at most 48 keys. 66 live keys less the 21 retired ones (W2-1's 18 and W2-2's
-    priority_threshold, standard_threshold and auto_thresholds) = 45, every one of them a build key; the build's others
-    are the ones Wave 1 added (explore_share, hand_check_sample, early_warning_pause, hand_check_gate), which the sheet
-    has no row for yet, so they take their code defaults."""
+def test_the_live_general_keys_less_the_retired_are_39_and_the_build_has_them_all():
+    """W2-1's acceptance (General has at most 48 keys), with W2-2's tier keys and W2-4's six constants in code: 66 live
+    keys less the 27 retired ones (W2-1's 18, W2-2's priority_threshold, standard_threshold and auto_thresholds, and
+    W2-4's 6) = 39, every one of them a build key; the build's others are the ones Wave 1 added (explore_share,
+    hand_check_sample, early_warning_pause, hand_check_gate), which the sheet has no row for yet, so they take their
+    code defaults."""
     from us_outbound.settings.validate import RETIRED_GENERAL
 
     build = [r["key"] for r in BASE["General"] if r.get("key")]
-    assert set(LIVE_RETIRED) <= set(RETIRED_GENERAL) and len(LIVE_RETIRED) == 21 == len(set(LIVE_RETIRED))
+    assert set(LIVE_RETIRED) <= set(RETIRED_GENERAL) and len(LIVE_RETIRED) == 18 + 3 + 6 == len(set(LIVE_RETIRED))
     kept = [k for k in LIVE_KEYS if k not in RETIRED_GENERAL]
-    assert len(kept) == 66 - 21 == 45 and set(kept) <= set(build)
+    assert len(kept) == 66 - 27 == 39 and set(kept) <= set(build)
     assert not set(build) & set(RETIRED_GENERAL)
+    # W2-4: the constants are in code at the live sheet's values, and the General model no longer has them.
+    from us_outbound.settings import model
+
+    assert (model.SCORE_CAP, model.ESCALATION_HOURS, model.APOLLO_ENRICH_GROUPS) == (100, 24, ("Technology & Startups",))
+    assert (model.SITE_VISIT_DOMAIN, model.SITE_VISIT_US_PATHS, model.SITE_VISIT_INTENT_PATHS) == (
+        "spill.chat", ("/us",), ("/us/pricing", "/us/demo", "/us/book"))
+    assert not any(hasattr(model.General(), k) for k in W24_RETIRED_LIVE)
 
 
 def test_the_live_general_rows_validate_with_no_errors(tabs):
@@ -446,9 +461,9 @@ def test_general_conversions(tabs):
 
 
 def test_missing_general_keys_take_model_defaults(tabs):
-    tabs["General"] = [r for r in tabs["General"] if r["key"] != "score_cap"]
+    tabs["General"] = [r for r in tabs["General"] if r["key"] != "apollo_floor"]
     settings, _ = validate_all(tabs)
-    assert settings.general.score_cap == 100
+    assert settings.general.apollo_floor == 5000
 
 
 def test_a_missing_blackout_dates_row_keeps_the_spec_blackouts(tabs):
@@ -801,11 +816,12 @@ def test_a_mistyped_header_is_refused_by_name(tabs):
 
 
 def test_general_lists_split_on_semicolons_too(tabs):
-    """9 Oct 2026: "/us/pricing; /us/demo" was read as one path that never matches."""
-    n, row = _row(tabs, "General", key="site_visit_intent_paths")
-    row["value"] = "/us/pricing; /us/demo"
+    """9 Oct 2026: "/us/pricing; /us/demo" was read as one path that never matches (site_visit_intent_paths, a
+    constant in code since W2-4); every General list splits the same way."""
+    n, row = _row(tabs, "General", key="approver_slack_ids")
+    row["value"] = "U01HARRY; U02OTHER"
     settings, errors = validate_all(tabs)
-    assert not any(errors.values()) and settings.general.site_visit_intent_paths == ("/us/pricing", "/us/demo")
+    assert not any(errors.values()) and settings.general.approver_slack_ids == ("U01HARRY", "U02OTHER")
 
 
 def test_tests(tabs):

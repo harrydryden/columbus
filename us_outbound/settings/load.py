@@ -50,7 +50,7 @@ command merges them into the sheet without losing Harry's own edits:
 Dry-run (the default) prints what would change and writes nothing: the rows added, and for each row the sheet
 already has, every cell the load would change, column by column, as "Fintech: definition: blank → '…'" (a long
 cell shows the part that differs, with a little either side). --live rewrites the tab (values only; the sheet's
-formatting stays), then `us-outbound settings sync` brings it in.
+formatting stays), then `us-outbound sync` brings it in.
 """
 
 from __future__ import annotations

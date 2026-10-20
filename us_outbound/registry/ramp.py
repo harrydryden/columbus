@@ -24,7 +24,7 @@ Who uses it (one place computes the number):
     ramped caps), so the daily drift check reports a campaign whose limit is behind the ramp
     and `campaigns ensure --fix --live` sets it (the existing drift fix); and each Instantly
     account's own daily limit, which mailbox_health sets every morning;
-  * `us-outbound status`, `us-outbound golive` and the daily post show it.
+  * `us-outbound status` and the daily post show it.
 PHASE0-CONFIRM: that an Instantly account's daily_limit counts every campaign email it sends
 (step 1 and follow-ups alike) and not warmup, so a cap of 10 is 10 prospect emails a day.
 """

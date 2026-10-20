@@ -44,11 +44,11 @@ A verdict is kept for good, as a label_verdict fact (source label_check), and as
 (the prompt version, the label list, a definition or keywords), or once when a verdict the page could improve (short
 of high, or a label the rules did not give) was asked before the company's home page was read (second_look): the page
 is new material. The first audit (7 Oct 2026) held half the
-queue on Apollo's facts alone, so read_pages and `labels audit` read the home page of a company the model was unsure
+queue on Apollo's facts alone, so read_pages (and then the `labels audit` command) read the home page of a company the model was unsure
 of first (sources/pages.home_pass). Each call is about $0.01 on Sonnet 5.5 (effort
 low, at most MAX_TOKENS; the system block is cached), within the monthly Claude cap, and written to credit_ledger
 (job label_check). A verdict is a paid read that reaches no prospect, like an Apollo search page, so verify_accounts
-asks in every mode; the command line (`us-outbound labels audit`) asks only with --live.
+asks in every mode (the `labels audit` command, which asked only with --live, went in W2-4).
 """
 
 from __future__ import annotations
@@ -465,7 +465,7 @@ def rules_input(events: Iterable[Mapping[str, Any]]) -> RulesInput:
 
 def rules_label(account: Mapping[str, Any], events: Iterable[Mapping[str, Any]], settings: Settings) -> Industry | None:
     """The label the Industries rules give the company now (best_label over its newest Apollo NAICS codes, keywords
-    and Apollo industry, as `us-outbound relabel` reads them). A company with none of those on file keeps the label
+    and Apollo industry, as the one-off relabel read them). A company with none of those on file keeps the label
     its source gave it."""
     inp = rules_input(events)
     if not inp:
@@ -634,7 +634,7 @@ class Budget:
 class Checker:
     """One run's label checks: the label list and prompt built once, the run's budget, and what it cost.
 
-    spend: ask the model (verify_accounts in every mode; `labels audit --live`). Without it a stored verdict is used
+    spend: ask the model (verify_accounts in every mode). Without it a stored verdict is used
     and nothing is asked. unavailable: the first reason the model could not be asked this run (the cap, no key, a
     connection or status error after the SDK's retries), after which nothing more is asked. failed: the companies
     whose own answer could not be used this run (UnusableAnswer: a refusal, max_tokens, not JSON), each kept as a
@@ -780,7 +780,7 @@ def judge(checker: Checker, account: Mapping[str, Any], events: Sequence[Mapping
         d = decide(rules, None, s, mode=SKIP)
         if d is not None and rules is None:
             # The rules give no label, from nothing on file or from codes no row matches: the label the company
-            # has stays, as `us-outbound relabel` keeps it (9 Oct 2026: clearing it held the company for "Apollo
+            # has stays, as the one-off relabel kept it (9 Oct 2026: clearing it held the company for "Apollo
             # gives no industry", a doubt the hand-check cannot clear).
             d = Decision(account.get("industry") or None, account.get("industry_group") or None, RULES, "",
                          GROUP_COPY, VERIFY)

@@ -9,7 +9,7 @@ import pytest
 from tests.fakes import FakeTransport, make_context
 from tests.test_cli import LIVE_SETTINGS, SETTINGS, Harness
 from tests.test_registry import FakeInstantly, StubSheets, slack_routes
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli
@@ -81,7 +81,7 @@ def test_sync_is_settings_sync_and_says_what_is_in_force(capsys):
     assert lines[-2].startswith("Settings synced from the sheet just now: ") and lines[-2].endswith("rows changed.")
     assert lines[-1] == "In force now: live_sending yes."  # auto_send went with the send approvals (W2-1)
     assert load_current(w.store)[0].general.live_sending is True  # a dry-run sync still brings the sheet in
-    assert w.run("settings", "sync") == 0  # the same command
+    assert w.run("sync") == 0  # again (`settings sync` went in W2-4: `sync` is the one command)
     lines = report(capsys.readouterr().out)
     assert lines[-2] == "Settings synced from the sheet just now: nothing had changed."
     assert [b["job"] for b in w.store.select("heartbeats")] == ["settings_sync", "settings_sync"]
@@ -104,17 +104,17 @@ def test_sync_says_when_the_sheet_is_unusable(capsys):
 def test_start_live_syncs_first_so_live_sending_just_set_on_the_sheet_counts(capsys):
     w = SheetWorld()
     assert w.run("sync") == 0 and w.run("stop", "--live") == 0  # live_sending no in force; enrollment stopped
-    assert heartbeats.enrolment_paused(w.store) is not None
+    assert health.enrolment_paused(w.store) is not None
     capsys.readouterr()
     live_sheet(w.sheet)  # Harry's edits on the sheet, not synced yet
     assert w.run("start", "--live") == 0
     lines = report(capsys.readouterr().out)
-    assert w.calls[-2:] == [("settings_sync", True, False), (heartbeats.OPERATOR_START, True, False)]
+    assert w.calls[-2:] == [("settings_sync", True, False), (health.OPERATOR_START, True, False)]
     assert lines[0] == "Settings synced from the sheet just now: 4 rows changed."  # two keys: one closed, one opened each
     assert not any("Dry-run" in line or "Running dry" in line for line in lines)
-    [start] = [b for b in w.store.select("heartbeats") if b["job"] == heartbeats.OPERATOR_START]
+    [start] = [b for b in w.store.select("heartbeats") if b["job"] == health.OPERATOR_START]
     assert start["dry_run"] is False and start["status"] == "ok"
-    assert heartbeats.enrolment_paused(w.store) is None  # resumed
+    assert health.enrolment_paused(w.store) is None  # resumed
 
 
 def test_start_live_with_the_sheet_still_at_no_runs_dry_and_says_how_to_go_live(capsys):
@@ -132,7 +132,7 @@ def test_start_without_live_does_not_sync(capsys):
     assert w.run("sync") == 0
     capsys.readouterr()
     assert w.run("start") == 0
-    assert w.calls[-1] == (heartbeats.OPERATOR_START, False, False) and len(w.calls) == 2
+    assert w.calls[-1] == (health.OPERATOR_START, False, False) and len(w.calls) == 2
     lines = report(capsys.readouterr().out)
     assert lines[-1] == "Dry-run: campaigns were not activated and enrollment stays stopped. Nothing was sent. Needs --live."
 
@@ -151,7 +151,7 @@ def test_start_goes_on_when_the_sync_fails(capsys, monkeypatch):
     lines = report(capsys.readouterr().out)
     assert lines[0] == ("Could not sync the settings first (RuntimeError: the Sheets API is down); "
                         "going on with the settings in force.")
-    [start] = [b for b in w.store.select("heartbeats") if b["job"] == heartbeats.OPERATOR_START]
+    [start] = [b for b in w.store.select("heartbeats") if b["job"] == health.OPERATOR_START]
     assert start["dry_run"] is False  # live_sending was already yes in force
 
 
@@ -243,7 +243,7 @@ def test_status_lists_only_the_jobs_that_need_a_look(capsys):
     (["replies", "approve", "item-000", "--edit", "Thanks"], {"action": "approve", "edit": "Thanks"}),
     (["mailbox", "check", "--fix", "--live"], {"action": "check", "fix": True, "live": True}),
     (["mailbox", "check"], {"fix": False}),
-    (["settings", "bootstrap", "--force"], {"action": "bootstrap", "force": True}),
+    (["settings", "load", "--tab", "General", "--take", "note"], {"action": "load", "tab": ["General"], "take": ["note"]}),
 ])
 def test_the_slack_words_parse(argv, expected):
     args = cli.build_parser().parse_args(argv)
@@ -251,23 +251,22 @@ def test_the_slack_words_parse(argv, expected):
         assert getattr(args, key) == value
 
 
-def test_build_commands_are_hidden_from_help_but_still_parse():
+def test_every_command_is_in_the_help_and_the_removed_ones_do_not_parse():
+    """W2-4 (RS P0-10): one table, every command in --help (none hidden); the one-off and folded commands no longer
+    parse."""
     text = cli.build_parser().format_help()
-    for name in cli.HIDDEN:
-        assert f"\n    {name} " not in text and f",{name}," not in text and f"{{{name}," not in text, name
-    for name in ("status", "accounts", "sync", "start", "stop", "replies", "killrules", "mailbox",
-                 "campaigns", "copy", "settings", "handcheck", "erase", "schedule", "run", "seed", "signals"):
+    for name in [c.name for c in cli.COMMANDS]:
         assert f"\n    {name} " in text, name
     # The one-off and removed commands went with W2-1 (20 Oct 2026): they no longer parse.
-    for name in ("golive", "approvals", "phase0", "clay"):
+    for name in ("golive", "approvals", "phase0", "clay", "dry-run", "rescore", "daily", "readout", "signals",
+                 "pages", "lookalikes", "capture", "hubspot", "data", "relabel", "suppression"):
         assert f"\n    {name} " not in text, name
         with pytest.raises(SystemExit):
             cli.build_parser().parse_args([name])
     assert ("`--live` makes a command act. Anything that reaches a prospect (start, replies send, every "
             "scheduled job) also needs live_sending = yes in the synced settings.") in " ".join(text.split())
-    for argv in (["dry-run", "enrol"], ["rescore"], ["suppression", "load"], ["scheduler"], ["db", "apply"],
-                 ["hubspot", "ids"], ["lookalikes", "show"], ["lookalikes", "fit"], ["pages", "show"], ["data", "show"],
-                 ["test", "read", "t1"], ["unenrol", "--month", "2026-11"]):
+    for argv in (["run", "enrol"], ["run", "score"], ["run", "suppression_load"], ["scheduler"], ["db", "apply"],
+                 ["report", "lookalikes"], ["report", "pages"], ["test", "read", "t1"], ["unenrol", "--month", "2026-11"]):
         assert cli.build_parser().parse_args(argv).command == argv[0]
 
 
@@ -367,13 +366,10 @@ def test_a_scheduled_run_prints_its_summary_as_one_line_with_long_lists_cut(monk
     assert printed["fired"] == []
     [beat] = h.beats("kill_rules")
     assert beat["detail"]["checked"] == list(range(100))
-    assert h.run("dry-run", "kill_rules") == 0
-    pretty = [line for line in capsys.readouterr().out.splitlines() if not line.startswith('{"event"')]
-    assert pretty[0] == "{" and len(pretty) > 100
 
 
 @pytest.mark.parametrize("argv", [["replies", "list"], ["killrules", "show"],
-                                  ["copy", "check"], ["campaigns", "show"]])
+                                  ["copy", "check"], ["seed", "check"]])
 def test_live_on_a_read_only_action_says_it_does_nothing(argv, capsys):
     h = Harness(SETTINGS)
     h.run(*argv, "--live")

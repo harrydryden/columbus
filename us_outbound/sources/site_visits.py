@@ -6,10 +6,10 @@ Harry, 5 Oct 2026: "Switch on website visits. It's the strongest intent signal."
 enrol at 12:00, whose tiers the rescore at the end of the run sets.
 
   1. Apollo's visitor list, read only: an organization search with its website-visitor filters
-     (clients/apollo.search_website_visitors) for the General site_visit_domain (spill.chat), three ways:
-       * us_today: the site_visit_us_paths (/us), the last 1 day: who visited since the last run;
+     (clients/apollo.search_website_visitors) for SITE_VISIT_DOMAIN (spill.chat; settings/model.py), three ways:
+       * us_today: SITE_VISIT_US_PATHS (/us), the last 1 day: who visited since the last run;
        * us: the same pages, the last 30 days: the us_visits_30d facts, and new companies;
-       * intent: the site_visit_intent_paths (/us/pricing, /us/demo, /us/book), the last 30 days:
+       * intent: SITE_VISIT_INTENT_PATHS (/us/pricing, /us/demo, /us/book), the last 30 days:
          the pricing_or_demo_visits_30d facts.
      Apollo matches a page whose path contains a listed path. The tracker's own settings are never
      read or changed: Apollo's tracker endpoint creates a tracker when there is none (a write).
@@ -93,7 +93,7 @@ from us_outbound.industry.material import ENTITY_REASONS, RulesInput, entity
 from us_outbound.facts import newest_by
 from us_outbound.logs import log
 from us_outbound.scoring import score, tiers
-from us_outbound.settings.model import Industry, Settings
+from us_outbound.settings.model import SITE_VISIT_DOMAIN, SITE_VISIT_INTENT_PATHS, SITE_VISIT_US_PATHS, Industry, Settings
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.sources import apollo_universe as universe
 from us_outbound.timeparse import utc, utc_strict
@@ -130,15 +130,14 @@ class Search:
 
 def plan(settings: Settings) -> list[Search]:
     """The searches in the order they are read: the one-day list first, as a visit not read today is lost."""
-    g = settings.general
-    out = [Search(US_TODAY, 1, g.site_visit_us_paths, ""), Search(US, WINDOW_DAYS, g.site_visit_us_paths, US_FACT)]
-    if g.site_visit_intent_paths:
-        out.append(Search(INTENT, WINDOW_DAYS, g.site_visit_intent_paths, INTENT_FACT))
+    out = [Search(US_TODAY, 1, SITE_VISIT_US_PATHS, ""), Search(US, WINDOW_DAYS, SITE_VISIT_US_PATHS, US_FACT)]
+    if SITE_VISIT_INTENT_PATHS:
+        out.append(Search(INTENT, WINDOW_DAYS, SITE_VISIT_INTENT_PATHS, INTENT_FACT))
     return out
 
 
 def tracked_domain(settings: Settings) -> str:
-    return settings.general.site_visit_domain.strip().lower()
+    return SITE_VISIT_DOMAIN.strip().lower()
 
 
 # -- small helpers -----------------------------------------------------------------------------------
@@ -598,8 +597,8 @@ def run(ctx: Context) -> dict:
     s = ctx.settings
     domain = tracked_domain(s)
     summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "domain": domain}
-    if not domain or not s.general.site_visit_us_paths:
-        why = "site_visit_domain is blank" if not domain else "site_visit_us_paths is blank"
+    if not domain or not SITE_VISIT_US_PATHS:
+        why = "SITE_VISIT_DOMAIN is blank" if not domain else "SITE_VISIT_US_PATHS is blank"
         summary.update(skipped=True, reason=f"{why}, so no website visit is read")
         return _done(ctx, summary)
     floor = credits.floor_reason(ctx)

@@ -539,27 +539,46 @@ def test_each_reply_is_handled_once(world):
     assert len(world.sdk.calls) == calls and len(world.slack_posts) == posts
 
 
-def test_a_run_that_stopped_after_the_item_gives_the_event_its_class(world):
+def test_a_run_that_stopped_after_the_class_and_before_the_item_is_finished_by_the_next(world):
+    """W2-4: the class is written first and the item after it, so a run that stopped between the two left the reply
+    with a class and no item; the next run handles it again and writes the item (no repair write from the item, as
+    before: an item is never on record without its class). One event, one item, the class kept."""
     world.reply("E1")
     run(world)
-    world.ctx.store.update("events", {"event_id": "E1"}, {"reply_class": None})  # as if it stopped there
-    calls = len(world.sdk.calls)
+    world.ctx.store.delete("hitl_items", {"item_id": "reply:E1"})  # as if it stopped there
     world.at(NOW + timedelta(minutes=15))
-    run(world)
+    out = run(world)
+    assert out["already_handled"] == 0 and out["classified"] == {"positive": 1}
+    assert len(world.items()) == 1 and len(world.events("replied")) == 1
     assert world.ctx.store.get("events", event_id="E1")["reply_class"] == "positive"
-    assert len(world.sdk.calls) == calls and len(world.items()) == 1
+    again = run(world)
+    assert again["already_handled"] == 1 and len(world.items()) == 1
 
 
-def test_sync_outcomes_writing_the_reply_first_does_not_stop_its_classification(world):
+def test_a_reply_is_on_record_before_it_is_classified(world):
+    """RS §2 W2-4: the first pass writes each new reply's replied row (no class), with the step it answers and its
+    mailbox, before the model is asked; the account is engaged once the class is known. An email Instantly flags as an
+    automatic reply waits for its class (it would free the contact's later send slots)."""
+    world.sent("S1", at=NOW - timedelta(days=10))
+    world.sent("S2", at=NOW - timedelta(days=3))
+    world.reply("E1")
+    world.reply("E2", BOB, text="I am out of the office.", is_auto_reply=1)
+    from collections import Counter
+
     from us_outbound.replies import outcomes
 
-    world.reply("E1")
-    outcomes.run(world.ctx)
-    assert world.events("replied")[0].get("reply_class") is None
+    outcomes.run(world.ctx)  # the two sends on record, so the reply's step is known
+    out = {"dropped": Counter(), "unmatched": 0, "auto_replies_left_to_classify": 0}
+    received = [e for e in world.emails if e["_type"] == "received"]
+    kept = poll.record(world.ctx, outcomes.Directory(world.ctx), received, out)
+    assert sorted(e["id"] for e, _ in kept) == ["E1", "E2"]
+    [ev] = world.events("replied")
+    assert (ev["event_id"], ev.get("reply_class"), ev["step"], ev["mailbox"]) == ("E1", None, 2, HANNAH)
+    assert out["recorded"] == 1 and out["auto_replies_left_to_classify"] == 1
+    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "enrolled"  # not yet engaged
     run(world)
-    assert world.events("replied")[0]["reply_class"] == "positive" and len(world.items()) == 1
-    outcomes.run(world.ctx)  # and a later sync never clears the class
-    assert world.events("replied")[0]["reply_class"] == "positive"
+    assert world.ctx.store.get("events", event_id="E1")["reply_class"] == "positive"
+    assert world.ctx.store.get("accounts", account_id="acc-acme")["status"] == "engaged"
 
 
 # -- the Claude cap and model errors -------------------------------------------------------------------------------
@@ -608,8 +627,15 @@ def test_a_model_error_is_retried_then_handed_to_a_person(world):
     world.sdk.raises = exc
     world.reply("E1", at=NOW - timedelta(minutes=5))
     out = run(world)
-    assert out["retry_later"] == 1 and world.items() == [] and world.events("replied") == []
-    assert out["claude_error"] == "Claude API error 529"  # for heartbeat_check (ops/job_errors.py; 7 Oct 2026)
+    # Recorded before it was classified (RS §2 W2-4): the replied event exists, unclassified; no item yet; one
+    # error for heartbeat_check (ops/health.py: a key ending "_error").
+    assert out["retry_later"] == 1 and world.items() == []
+    [ev] = world.events("replied")
+    assert ev["event_id"] == "E1" and ev.get("reply_class") is None
+    assert out["claude_error"] == "Claude API error 529"
+    from us_outbound.ops import health
+
+    assert [f.kind for f in health.findings("poll_replies", {"status": "ok", "detail": out})] == ["claude_error"]
     world.at(NOW + timedelta(minutes=40))
     run(world)
     p = only_item(world)["payload"]
@@ -675,7 +701,7 @@ def test_dry_run_calls_no_model_writes_no_item_and_sends_nothing(default_setting
 
 
 def test_the_job_runs_from_the_cli_with_a_heartbeat(default_settings):
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     world = make_world(default_settings)
     world.reply("E1")
@@ -690,7 +716,7 @@ def test_a_backlog_stops_at_the_time_budget_and_the_next_run_takes_the_rest(worl
     """Each draft can take a minute: past RUN_SECONDS no new reply is started, and none is lost."""
     import itertools
 
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops.health import run_job
 
     world.reply("E1", at=NOW - timedelta(days=5))
     world.reply("E2", at=NOW - timedelta(days=4))  # older than the two days every run re-reads
@@ -789,16 +815,22 @@ def test_an_opt_out_still_waiting_on_instantly_or_hubspot_says_it_is_retried():
 
 
 def test_each_email_dropped_from_the_read_is_counted_by_why(world):
-    """Five received emails: a campaign send, one from the mailbox itself, a bounce notice at the prospect's domain,
-    one from a Spill address and a prospect's reply. The first four are dropped, each counted; one is processed."""
+    """Seven received emails: a campaign send, one from the mailbox itself, a bounce notice at the prospect's domain,
+    one from a Spill address, one from another of our mailboxes, one with no sender and a prospect's reply. The first
+    six are dropped, each counted by its reason (the M3 counts sync_outcomes kept too until W2-4); one is recorded and
+    processed."""
     world.reply("D1", HANNAH, ue_type=1, text="A campaign step listed as received")
     world.reply("D2", HANNAH, text="From the mailbox itself")
     world.reply("D3", "mailer-daemon@acmecreative.com", text="Delivery failed")
     world.reply("D4", "hello@spill.chat", text="Internal")
+    world.reply("D5", "harry@meetspill.org", text="One of our own mailboxes")
+    world.reply("D6", "", text="No sender at all")
     world.reply("E1")
     out = run(world)
-    assert out["dropped"] == {"campaign_send": 1, "from_self": 1, "system_sender": 1, "spill_domain": 1}
-    assert out["classified"] == {"positive": 1} and out["received"] == 5
+    assert out["dropped"] == {"campaign_send": 1, "from_self": 1, "system_sender": 1, "spill_domain": 1,
+                              "registry_sender": 1, "no_sender": 1}
+    assert out["classified"] == {"positive": 1} and out["received"] == 7 and out["recorded"] == 1
+    assert [e["event_id"] for e in world.events("replied")] == ["E1"]
 
 
 def test_a_warm_reply_that_asked_to_stop_retries_its_opt_out_and_keeps_its_item(world):

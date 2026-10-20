@@ -14,7 +14,7 @@ ReadTimeout"} (W1-1, 19 Oct 2026: it reached the kill rules after their pause an
 learn/kill_rules.py now posts it again from its outbox).
 
 post_once (Harry, 7 Oct 2026) is for the alerts that ask for a decision or a purchase (learn/spend.py,
-learn/capacity_ahead.py, enrol/plan.py, ops/job_errors.py): one message with the approvers mentioned,
+learn/capacity_ahead.py, enrol/plan.py, ops/health.py): one message with the approvers mentioned,
 holding only the lines not posted before. Each line has a key that carries its own period
 ("apollo_floor:2026-10-07" once a day, "claude_cap_80:2026-10" once a month), and each key posted is an
 events row of type alert (event_id "alert:{key}"), so a restart or a rerun never repeats it. A key is

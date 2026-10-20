@@ -5,7 +5,7 @@ SPEC 9 ("enrol", "Daily enrolment number", "Test assignment", "Instantly campaig
 SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; optout_tested yes (a live run); no positive reply waiting longer
-     than escalation_hours (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while the General
+     than ESCALATION_HOURS (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while the General
      key hand_check_gate is yes, this week's hand-check approved (SPEC 11). With hand_check_gate = no (Harry's D5,
      19 Oct 2026) it holds only the companies it sampled until they are judged, for 7 days at most (hand_check()).
      Accounts pulled at the hand-check are left out either way.
@@ -72,7 +72,7 @@ from datetime import date
 from typing import Any
 
 from us_outbound.base import holds
-from us_outbound.base.heartbeats import enrolment_paused
+from us_outbound.ops.health import enrolment_paused
 from us_outbound.clean.domains import is_generic_mailbox, is_personal_domain, is_public_body
 from us_outbound.clean.people import company_size, rank_person, state_code
 from us_outbound.clients.db import new_id
@@ -84,7 +84,7 @@ from us_outbound.enrol import capacity, focus, openers, plan, queue, render, var
 from us_outbound.logs import hash_email, log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import MATCH_FACT, SCORING_SOURCE, score_account
-from us_outbound.settings.model import AB_TEST, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
+from us_outbound.settings.model import AB_TEST, ESCALATION_HOURS, GENERAL_COPY, CopyRow, CopyStep, Mailbox, Settings
 from us_outbound.timeparse import utc
 
 
@@ -103,7 +103,7 @@ LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
 NOT_ADDED = "not added by Instantly (blocklist, or already in another campaign)"  # contacts.suppressed_reason
 # Per-candidate skips that are failures of the run, not facts about the account: counted in the summary's failures
-# ({reason: count}, beside candidates; the W1-1 contract, ops/heartbeat.py), so a day where every candidate fell to
+# ({reason: count}, beside candidates; the W1-1 contract, ops/health.py), so a day where every candidate fell to
 # one of them raises a job-errors finding instead of reading as an ok run that enrolled nobody (W1-6).
 HUBSPOT_FAILED, COPY_BLOCKED = "HubSpot check failed", "copy blocked"
 FAILURE_REASONS = (HUBSPOT_FAILED, COPY_BLOCKED)
@@ -148,14 +148,14 @@ def operator_pause(ctx: Context) -> str | None:
 
 
 def reply_pause(ctx: Context) -> str | None:
-    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
+    """SPEC 11: while any positive reply has waited more than ESCALATION_HOURS (24), new enrollment pauses.
 
-    The reply items are poll_replies' (kind "reply"; replies/items.py reads them, and the first kind
+    The reply items are poll_replies' (kind "reply"; replies/desk.py reads them, and the first kind
     name too): positive or referral, not yet handled, escalated included.
     """
-    from us_outbound.replies.items import positive_waiting
+    from us_outbound.replies.desk import positive_waiting
 
-    hours = ctx.settings.general.escalation_hours
+    hours = ESCALATION_HOURS
     old = positive_waiting(ctx.store, ctx.now, hours)
     if not old:
         return None
@@ -1036,7 +1036,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
 
 def _failures(skipped: Mapping[str, int]) -> dict[str, int]:
     """The summary's failures: {reason: count} for the skips that are failures of the run (FAILURE_REASONS), so
-    job_errors sees them."""
+    heartbeat_check sees them."""
     out = {why: skipped.get(why, 0) for why in FAILURE_REASONS}
     return {why: k for why, k in out.items() if k}
 

@@ -64,11 +64,13 @@ BUILD_ADDITIONS: dict[str, set[str]] = {
                  "test_arm",  # the running copy test's arm (enrol/variants.py; Harry, 7 Oct 2026)
                  *W1C_COLUMNS["contacts"]},
     "suppression": {"expires_at"},
-    "events": {"source"},  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
+    "events": {"source",  # where a booking was read from (crm/readback.py; Harry, 6 Oct 2026)
+               "analytics_source"},  # a booker's hs_analytics_source (crm/readback.py; W2-4, 20 Oct 2026)
 }
 # Tables the build adds, with the layouts every agent codes to.
 BUILD_TABLES: dict[str, set[str]] = {
-    "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"},
+    "heartbeats": {"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error",
+                   "duration_s", "exit_code"},  # the last two from W2-4 (20 Oct 2026; ops/health.py)
     "credit_ledger": {"entry_id", "system", "job", "run_id", "account_id", "credits", "usd", "occurred_at", "note"},
     "hitl_items": {
         "item_id", "kind", "account_id", "contact_id", "event_id", "slack_channel", "slack_ts", "payload", "status",
@@ -107,8 +109,9 @@ RETIRED_VIEWS = {"v_credits_month"}  # replaced by v_budgets when budgets became
 TIMESTAMPS = {"first_seen", "last_scored", "effective_from", "effective_to"}  # plus every *_at
 DATES = {"recheck_after"}  # a re-check falls due on a day (W1-C, 19 Oct 2026)
 INTS = {"employees", "us_employees", "founded_year", "score", "step", "active_customers", "churned_customers",
-        "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight"}
-FLOATS = {"clay_credits_used", "credits", "usd", "strength"}
+        "us_active", "us_churned", "score_at_enrol", "contact_slot", "leads_in_flight",
+        "exit_code"}  # heartbeats.exit_code (W2-4, 20 Oct 2026; ops/health.py)
+FLOATS = {"clay_credits_used", "credits", "usd", "strength", "duration_s"}  # duration_s: heartbeats (W2-4)
 BOOLS = {"suppressed", "dry_run"}
 
 # Indexes the brief asks for (table -> leading columns); more are fine.
@@ -150,9 +153,14 @@ ENUMS: dict[tuple[str, str], set[str]] = {
         "reply_sent",  # replies/desk.py: a desk reply is no campaign send
         "lead_stopped",  # replies/account_stop.py: the account-level stop (Harry, 6 Oct 2026)
         "alert",  # base/notify.post_once: an alert key posted, so it is never posted twice (Harry, 7 Oct 2026)
+        "readback_seen",  # crm/readback.py: the negative cache of "not ours" records (W2-4, 20 Oct 2026)
+        "follow_up",  # replies/follow_up.py: a not-now reply's date came and was told (W2-4)
     },
     ("events", "source"): {"hubspot_meeting", "hubspot_deal",  # crm/readback.py (Harry, 6 Oct 2026)
-                           "suppression"},  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
+                           "suppression",  # replies/account_stop.py: suppressed while in flight (7 Oct 2026)
+                           "guard_refused",  # replies/account_stop.py: a stop the guard refused (W1-2)
+                           "meeting_booked",  # crm/readback.py: a booked lead still active after stop_lead (W2-4)
+                           "unenrolled"},  # ops/campaigns.unenrol (W2-4, 20 Oct 2026)
     ("events", "reply_class"): {
         "positive", "referral", "objection", "not_now", "negative", "out_of_office", "wrong_person", "unsubscribe",
         "other",
@@ -559,15 +567,6 @@ S = SCHEMA
         f"CREATE VIEW {S}.v AS SELECT 1",
         "CREATE OR REPLACE VIEW other.v AS SELECT 1",
         f"CREATE OR REPLACE FUNCTION {S}.f() RETURNS int LANGUAGE sql AS 'SELECT 1'",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM other.t",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM accounts",
-        f'CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM "other".t',
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a JOIN other.t AS t ON t.x = a.x",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a, other.t AS t",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM {S}.a AS a WHERE a.x IN (SELECT x FROM other.t)",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT other.f(a.x) FROM {S}.a AS a",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM db.{S}.a",
-        f"CREATE OR REPLACE VIEW {S}.v AS SELECT * FROM pg_catalog.pg_tables",
         f"CREATE OR REPLACE VIEW {S}.v AS SELECT 1; DROP TABLE {S}.accounts",
         f"CREATE OR REPLACE VIEW {S}.v AS SELECT 'unterminated",
         f"CREATE OR REPLACE VIEW {S}.v AS SELECT 1 /* unterminated",
@@ -604,14 +603,25 @@ def test_check_statement_targets():
 # -- ops/ddl.py: apply ---------------------------------------------------------------
 
 
-class FakeConnection:
-    """Records what apply() runs; stands in for a psycopg connection."""
+class FakeCursor:
+    def __init__(self, rows):
+        self.rows = rows
 
-    def __init__(self, log: list):
+    def fetchall(self):
+        return list(self.rows)
+
+
+class FakeConnection:
+    """Records what apply() runs; stands in for a psycopg connection. columns: the (table, column) pairs
+    information_schema answers with (none: an empty database)."""
+
+    def __init__(self, log: list, columns=()):
         self.log = log
+        self.columns = list(columns)
 
     def execute(self, sql, params=None):
         self.log.append(("execute", sql))
+        return FakeCursor(self.columns if sql == ddl.COLUMNS_SQL else [])
 
     def commit(self):
         self.log.append(("commit", None))
@@ -633,9 +643,13 @@ def test_apply_dry_run_returns_statements_and_connects_to_nothing():
 
 
 def test_apply_runs_every_statement_in_one_transaction_through_the_guard():
+    """lock_timeout first (W2-4; code-platform-ops B10), then the column read, then every statement: an empty
+    database has none of the added columns, so each ALTER runs."""
     guard, log = Guard(), []
     statements = ddl.apply(guard, "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log))
-    assert log == [("execute", s) for s in statements] + [("commit", None), ("close", None)]
+    assert log == ([("execute", ddl.LOCK_TIMEOUT), ("execute", ddl.COLUMNS_SQL)] + [("execute", s) for s in statements]
+                   + [("commit", None), ("close", None)])
+    assert ddl.LOCK_TIMEOUT == "SET lock_timeout = '5s'"
     calls = [c for c in guard.calls if c.system == "db"]
     assert len(calls) == len(statements)
     assert all(c.action == "ddl" and c.write and c.sent for c in calls)
@@ -645,16 +659,34 @@ def test_apply_runs_every_statement_in_one_transaction_through_the_guard():
     assert set(targets) == objects | {"us_outbound.schema"} | {f"us_outbound.{v}" for v in RETIRED_VIEWS}
 
 
+def test_apply_against_a_full_schema_alters_nothing_and_sets_the_lock_timeout():
+    """W2-4 (code-platform-ops B10): ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column is there, so a
+    column information_schema already has is skipped. Against a database holding every added column: 0 ALTER run;
+    every other statement runs, after SET lock_timeout."""
+    add = re.compile(r"ALTER TABLE us_outbound\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) ")
+    statements = [s for _, s in ddl.statements()]
+    full = [m.groups() for s in statements if (m := add.search(s))]
+    assert full  # the DDL adds columns (the contracts commit's 11 among them)
+    log = []
+    ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log, full))
+    ran = [sql for kind, sql in log if kind == "execute"]
+    assert ran[0] == ddl.LOCK_TIMEOUT
+    assert not [s for s in ran if "ADD COLUMN" in s]
+    assert len(ran) == 2 + len(statements) - len(full)
+    half = full[: len(full) // 2]  # a database a deploy behind: only the missing columns are added
+    log.clear()
+    ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=lambda: FakeConnection(log, half))
+    assert len([sql for kind, sql in log if kind == "execute" and "ADD COLUMN" in sql]) == len(full) - len(half)
+
+
 def test_apply_checks_every_file_before_running_any(tmp_path):
     (tmp_path / "ddl").mkdir()
     (tmp_path / "views").mkdir()
     (tmp_path / "ddl" / "00_schema.sql").write_text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA};\n")
-    (tmp_path / "views" / "00_v_bad.sql").write_text(
-        f"CREATE OR REPLACE VIEW {SCHEMA}.v_bad AS SELECT * FROM crm.companies;\n"
-    )
-    with pytest.raises(GuardViolation, match="crm"):
+    (tmp_path / "views" / "00_v_bad.sql").write_text(f"DROP TABLE {SCHEMA}.accounts;\n")
+    with pytest.raises(GuardViolation, match="not an allowed DDL statement"):
         ddl.apply(Guard(), "postgresql://unused", dry_run=False, connect=no_connection, root=tmp_path)
-    with pytest.raises(GuardViolation, match="crm"):
+    with pytest.raises(GuardViolation, match="not an allowed DDL statement"):
         ddl.statements(tmp_path)
 
 

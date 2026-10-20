@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import json
+import argparse
 import dataclasses
+import json
 import re
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from tests.fakes import FakeTransport, make_context
 from tests.test_registry import C_HANNAH, C_HARRY, C_SAM, HANNAH, HARRY, HARRY2, SAM, SETTINGS, FakeInstantly, StubSheets, slack_routes
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.clients.db import MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.ops import bootstrap, cli, schedule
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.settings.model import General, Settings
 from us_outbound.settings.model import Test as CopyTest
 
@@ -74,22 +76,21 @@ class Harness:
         (["mailbox", "retire", SAM], {"action": "retire", "address": SAM}),
         (["mailbox", "check"], {"action": "check", "address": None}),
         (["unenrol", "--month", "2026-11"], {"command": "unenrol", "month": "2026-11"}),
-        (["rescore"], {"command": "rescore", "live": False}),
-        (["dry-run", "enrol"], {"command": "dry-run", "job": "enrol"}),
+        (["run", "score"], {"command": "run", "job": "score", "live": False}),  # `rescore` until W2-4
+        (["run", "enrol"], {"command": "run", "job": "enrol", "due": None}),  # `dry-run enrol` until W2-4
         (["run", "settings_sync", "--live"], {"command": "run", "job": "settings_sync", "live": True}),
+        (["run", "enrol", "--live", "--due", "2026-10-20T11:00"], {"job": "enrol", "due": "2026-10-20T11:00"}),
         (["erase", "--email", "jane@acme.com"], {"command": "erase", "email": "jane@acme.com", "live": False}),
         (["test", "start", "t1-eap-opener"], {"action": "start", "test_id": "t1-eap-opener"}),
         (["test", "read", "t1-eap-opener"], {"action": "read", "test_id": "t1-eap-opener"}),
-        (["settings", "sync"], {"command": "settings", "action": "sync"}),
-        (["settings", "bootstrap", "--live"], {"action": "bootstrap", "live": True, "force": False}),
+        (["sync"], {"command": "sync", "live": False}),  # `settings sync` until W2-4
+        (["settings", "load", "--live"], {"command": "settings", "action": "load", "live": True}),
         (["db", "apply"], {"command": "db", "action": "apply", "live": False}),
         (["db", "apply", "--live"], {"action": "apply", "live": True}),
-        (["capture", "check", "--live"], {"action": "check", "live": True}),
-        (["hubspot", "ids"], {"action": "ids"}),
+        (["report", "capture", "--live"], {"command": "report", "name": "capture", "live": True}),  # `capture check`
         (["campaigns", "ensure", "--fix"], {"action": "ensure", "fix": True}),
-        (["campaigns", "show"], {"action": "show"}),
-        (["suppression", "load"], {"action": "load"}),
-        (["pages", "show"], {"command": "pages", "action": "show"}),
+        (["run", "suppression_load"], {"command": "run", "job": "suppression_load"}),  # `suppression load` until W2-4
+        (["report", "pages"], {"command": "report", "name": "pages"}),  # `pages show` until W2-4
         (["schedule"], {"command": "schedule"}),
         (["scheduler"], {"command": "scheduler", "list": False}),
         (["scheduler", "--list"], {"command": "scheduler", "list": True}),
@@ -103,9 +104,21 @@ def test_every_command_parses(argv, expected):
         assert getattr(args, key) == value
 
 
-def test_dry_run_takes_no_live_flag():
-    with pytest.raises(SystemExit):
-        cli.build_parser().parse_args(["dry-run", "enrol", "--live"])
+def test_a_due_minute_is_written_as_the_scheduler_writes_it(capsys):
+    """`run --due` takes the UTC minute the scheduler started the job for (ops/scheduler.command); anything else is
+    refused before a context is built."""
+    h = Harness()
+    assert h.run("run", "suppression_load", "--due", "20 Oct 11:00") == 2
+    assert "--due is the minute it was due" in capsys.readouterr().err and h.contexts == []
+    capsys.readouterr()
+    assert h.run("run", "suppression_load", "--due", "2026-10-20T00:30") == 0
+    [beat] = h.beats("suppression_load")
+    assert beat["run_id"] == "suppression_load:2026-10-20T00:30" and beat["status"] == "ok"
+    # The claim id replaces the context's run id; one log line names both, so the "context" line can be matched up.
+    [claim] = [json.loads(line) for line in capsys.readouterr().out.splitlines() if '"run_claim"' in line]
+    assert claim["run_id"] == beat["run_id"] and claim["context_run_id"] not in ("", None, beat["run_id"])
+    assert h.run("run", "suppression_load", "--due", "2026-10-20T00:30") == 0  # the same minute again: nothing runs
+    assert len(h.beats("suppression_load")) == 1
 
 
 # -- the job registry ----------------------------------------------------------------------------
@@ -117,7 +130,7 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert not any(target.startswith("not built") for target in cli.JOBS.values())
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
                                                "hand_check_draw", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
-                                               "blackout", "retention", "label_sample_monthly", "capture"}
+                                               "blackout", "retention", "label_sample_monthly", "capture", "follow_up"}
     assert cli.JOBS["source_universe"] == "us_outbound.sources.apollo_universe:run"
     assert cli.JOBS["apollo_signals"] == "us_outbound.sources.apollo_jobs:run"
     assert cli.JOBS["read_pages"] == "us_outbound.sources.pages:run"
@@ -129,12 +142,12 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["score"] == "us_outbound.scoring.score:rescore"
     assert cli.JOBS["enrol"] == "us_outbound.enrol.enrol:run"
     assert cli.JOBS["mailbox_health"] == "us_outbound.registry.mailboxes:mailbox_health"
-    assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.heartbeat:run"
+    assert cli.JOBS["heartbeat_check"] == "us_outbound.ops.health:run"  # ops/heartbeat.py until W2-4
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
     assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
     assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
     # The job keeps its name (EXPECTED, the overlap lock, heartbeat history); the function is the desk's (W2-1).
-    assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_desk"
+    assert cli.JOBS["poll_approvals"] == "us_outbound.replies.poll_desk:poll_desk"  # desk.py split in W2-4
     assert cli.JOBS["hubspot_readback"] == "us_outbound.crm.readback:hubspot_readback"
     assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
     assert cli.JOBS["blackout"] == "us_outbound.registry.blackout:run"  # Harry, 7 Oct 2026: pause over blackouts
@@ -221,9 +234,12 @@ def test_scheduler_command_reads_the_parallel_limit(monkeypatch, capsys):
     from us_outbound.ops import scheduler
 
     seen = []
-    monkeypatch.setattr(scheduler.Scheduler, "run", lambda self: seen.append(self.max_parallel) or 0)
+    monkeypatch.setattr(scheduler.Scheduler, "run", lambda self: seen.append(self) or 0)
     monkeypatch.setenv("US_OUTBOUND_MAX_PARALLEL", "3")
-    assert cli.main(["scheduler"]) == 0 and seen == [3]
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u@db.invalid/x")  # the lock connects only when it is tried
+    assert cli.main(["scheduler"]) == 0 and seen[0].max_parallel == 3
+    # The worker runs with the scheduler lock and the watchdog's /fail (W2-4; RS P0-4).
+    assert seen[0].lock.key == scheduler.SCHEDULER_KEY and seen[0].fail is scheduler.watchdog_fail
     monkeypatch.setenv("US_OUTBOUND_MAX_PARALLEL", "none")
     assert cli.main(["scheduler"]) == 2
     assert "US_OUTBOUND_MAX_PARALLEL" in capsys.readouterr().err
@@ -253,7 +269,7 @@ def test_live_needs_both_the_flag_and_the_setting():
     h = Harness(LIVE_SETTINGS)
     assert h.run("run", "suppression_load", "--live") == 0
     assert h.last.live
-    assert h.run("dry-run", "suppression_load") == 0
+    assert h.run("run", "suppression_load") == 0
     assert h.last.dry_run
 
 
@@ -265,7 +281,7 @@ def test_live_needs_both_the_flag_and_the_setting():
 def test_unbuilt_jobs_exit_non_zero(job, message, capsys):
     h = Harness()
     assert h.run("run", job) == 2
-    assert h.run("dry-run", job) == 2
+    assert h.run("run", job, "--live") == 2
     assert message in capsys.readouterr().err
     assert h.contexts == []
 
@@ -351,22 +367,12 @@ def test_stop_pauses_every_us_campaign_and_enrolment():
     harry = h.instantly.add_campaign(C_HARRY, status=0)
     eu = h.instantly.add_campaign("EU Outbound – Anna", status=1)
     assert h.run("stop") == 0  # dry-run: enrolment stops, campaigns do not
-    assert heartbeats.enrolment_paused(h.store) is not None
+    assert health.enrolment_paused(h.store) is not None
     assert hannah["status"] == 1
     assert h.run("stop", "--live") == 0  # operator command: --live alone
     assert hannah["status"] == 2 and harry["status"] == 0 and eu["status"] == 1
     assert not [r for r in h.transport.requests if f"/{eu['id']}" in r.url]
-    assert [b["status"] for b in h.beats(heartbeats.OPERATOR_STOP)] == ["ok", "ok"]
-
-
-def test_campaigns_show_prints_each_owner_campaign_as_instantly_holds_it(capsys):
-    h = Harness(SETTINGS)
-    h.instantly.standard(C_HANNAH, [HANNAH], 30)
-    assert h.run("campaigns", "show") == 0
-    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{"campaign"')]
-    by = {line["campaign"]: line["instantly"] for line in lines}
-    assert by[C_HANNAH]["name"] == C_HANNAH and by[C_SAM] is None  # Sam's is not created yet
-    assert not [r for r in h.transport.requests if r.method != "GET"]  # read-only
+    assert [b["status"] for b in h.beats(health.OPERATOR_STOP)] == ["ok", "ok"]
 
 
 def test_start_needs_live_sending_and_checks_drift():
@@ -379,7 +385,7 @@ def test_start_needs_live_sending_and_checks_drift():
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0  # live_sending is no: stays dry
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())
-    assert heartbeats.enrolment_paused(h.store) is not None
+    assert health.enrolment_paused(h.store) is not None
 
     live = Harness(LIVE_SETTINGS)
     live.store, live.instantly, live.transport = h.store, h.instantly, h.transport
@@ -390,7 +396,7 @@ def test_start_needs_live_sending_and_checks_drift():
     h.instantly.by_name(C_SAM)["open_tracking"] = False
     assert live.run("start", "--live") == 0
     assert all(c["status"] == 1 for c in h.instantly.campaigns.values())
-    assert heartbeats.enrolment_paused(h.store) is None
+    assert health.enrolment_paused(h.store) is None
 
 
 # -- operator commands ----------------------------------------------------------------------------------
@@ -438,6 +444,48 @@ def test_unenrol_removes_that_months_leads_only(capsys):
     assert h.run("unenrol", "--month", "2026-11", "--live") == 0
     assert set(h.instantly.leads) == {dec["id"]}
     assert h.run("unenrol", "--month", "Nov 2026") == 2
+
+
+def test_unenrol_records_each_lead_it_removes_and_never_makes_the_account_eligible_again(capsys):
+    """W2-4 (code-platform-ops B6; RS P0-9). Three October contacts; the second's lead is in Sam's campaign, not the
+    Hannah campaign stored for it, so the client refuses to delete it (GuardViolation). Live: the first and third are
+    deleted, each with lead_deleted_at, its lead id cleared and a lead_stopped row (source unenrolled); their
+    accounts keep status enrolled with status_reason unenrolled (verified again, enrol would add them back); the
+    second is listed under refused and the run goes on: exit 0. No contact is suppressed (being pulled is no
+    opt-out). Then enrol's candidates hold none of the three accounts. A dry run before it records nothing."""
+    from us_outbound.enrol import enrol
+
+    h = Harness()
+    hannah, sam = h.instantly.add_campaign(C_HANNAH), h.instantly.add_campaign(C_SAM)
+    leads = [h.instantly.add_lead(hannah["id"], "a@x.com"), h.instantly.add_lead(sam["id"], "b@y.com"),
+             h.instantly.add_lead(hannah["id"], "c@z.com")]
+    h.store.insert("accounts", [{"account_id": f"a{i}", "domain": f"d{i}.com", "status": "enrolled", "tier": "Priority",
+                                 "score": 50} for i in (1, 2, 3)])
+    h.store.insert("contacts", [
+        {"contact_id": f"k{i}", "account_id": f"a{i}", "email": lead["email"], "enrolment_month": "2026-10",
+         "instantly_campaign": C_HANNAH, "instantly_lead_id": lead["id"], "mailbox": HANNAH}
+        for i, lead in zip((1, 2, 3), leads)])
+    assert h.run("unenrol", "--month", "2026-10") == 0  # dry-run
+    assert h.store.select("events", {"type": "lead_stopped"}) == [] and len(h.instantly.leads) == 3
+    capsys.readouterr()
+    assert h.run("unenrol", "--month", "2026-10", "--live") == 0
+    [beat] = [b for b in h.beats("unenrol") if b["dry_run"] is False]
+    out = beat["detail"]
+    assert (out["leads_removed"], out["leads_found"]) == (2, 3)
+    assert [r["contact_id"] for r in out["refused"]] == ["k2"]
+    assert set(h.instantly.leads) == {leads[1]["id"]}
+    for i in (1, 3):
+        c = h.store.get("contacts", contact_id=f"k{i}")
+        assert c["lead_deleted_at"] is not None and c.get("instantly_lead_id") is None and not c.get("suppressed")
+        ev = h.store.get("events", event_id=f"lead_stopped:k{i}")
+        assert (ev["type"], ev["source"], ev["account_id"]) == ("lead_stopped", "unenrolled", f"a{i}")
+        a = h.store.get("accounts", account_id=f"a{i}")
+        assert (a["status"], a["status_reason"]) == ("enrolled", "unenrolled")
+    assert h.store.get("contacts", contact_id="k2")["instantly_lead_id"] == leads[1]["id"]
+    assert h.store.get("accounts", account_id="a2").get("status_reason") is None
+    assert h.store.select("suppression") == []
+    found, _ = enrol.candidates(h.contexts[-1], frozenset())
+    assert not {c.account["account_id"] for c in found} & {"a1", "a2", "a3"}
 
 
 def test_erase_through_the_cli_lists_the_manual_steps(capsys):
@@ -606,7 +654,7 @@ def test_no_http_library_outside_the_http_client():
     from pathlib import Path
 
     root = Path(cli.__file__).resolve().parents[1]
-    mine = ["ops/cli.py", "ops/heartbeat.py", "base/heartbeats.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py",
+    mine = ["ops/cli.py", "ops/health.py", "ops/erase.py", "ops/bootstrap.py", "ops/schedule.py",
             "ops/scheduler.py", "ops/retention.py", "registry/mailboxes.py", "suppression.py", "crm/hubspot_writes.py",
             "__main__.py"]
     for rel in mine:
@@ -675,3 +723,104 @@ def test_operate_refuses_in_the_jobs_words_and_lets_a_bug_through(capsys):
     _, summary = cli._operate(factory, "x", False, lambda c: {"done": 1}, dry_note="nothing was changed.")
     out = capsys.readouterr().out
     assert summary == {"done": 1} and '"done": 1' in out and "Dry-run: nothing was changed." in out
+
+
+# -- the command table (W2-4, 20 Oct 2026; RS P0-10) ----------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parents[1]
+# The commands the plan keeps (design-final W2-4, change 5, with RS P0-10's), and the ones W2-4 keeps beside them:
+# copy (a Copy row is sendable only once `copy qa` passes it), verify (W1-4's one-off migration, run once after its
+# deploy) and scheduler (the worker's start command).
+KEEP = {"run", "status", "sync", "start", "stop", "unenrol", "erase", "db", "schedule", "replies", "handcheck",
+        "labels", "accounts", "killrules", "campaigns", "mailbox", "cohorts", "test", "settings", "seed", "report"}
+ALSO_KEPT = {"copy", "verify", "scheduler"}
+# Records of their day, not runbooks: they name commands as they were then, under a header that says so.
+HISTORICAL = {"build-plan.md", "open-questions.md", "phase0-confirm.md", "phase0-facts.md", "phase0-runbook.md",
+              "system-review-2026-10-04.md"}
+NAMED = re.compile(r"(?:`|-- )us-outbound ([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
+SAID = re.compile(r"\bcommand\(\s*f?[\"']([a-z][a-z-]*)(?: ([a-z][a-z-]*))?")
+GONE = re.compile(r"\b(?:removed|no longer|went in|went with|retired|folded)\b", re.I)
+
+
+def _actions() -> dict[str, set[str]]:
+    """command -> the choices of its first positional argument (its action), when it has one."""
+    out: dict[str, set[str]] = {}
+    sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    for name, parser in sub.choices.items():
+        for action in parser._actions:
+            if not action.option_strings and action.choices:
+                out[name] = set(action.choices)
+                break
+    return out
+
+
+def _named(text: str) -> list[tuple[int, str, str]]:
+    """(line, command, second word) for every command the text names, outside lines that say it was removed."""
+    found = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if GONE.search(line):
+            continue
+        for rx in (NAMED, SAID):
+            found += [(n, m.group(1), m.group(2) or "") for m in rx.finditer(line)]
+    return found
+
+
+def test_the_help_lists_the_command_table_in_order(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = capsys.readouterr().out
+    names = [c.name for c in cli.COMMANDS]
+    assert set(names) == KEEP | ALSO_KEPT
+    listed = [line.split()[0] for line in out.splitlines() if re.match(r"    \S", line)]  # not a wrapped line
+    assert [n for n in listed if n in set(names)] == names
+
+
+def test_every_command_an_alert_or_a_doc_names_is_one_the_parser_has():
+    """A command an alert or a runbook tells Harry to run must parse (RS P0-10). Read: every module's text (alerts
+    are built with say.command or written out in backticks), docs/*.md bar the historical records, and the README; a
+    line that says a command was removed may name it."""
+    commands, actions = {c.name for c in cli.COMMANDS}, _actions()
+    paths = [*(ROOT / "us_outbound").rglob("*.py"), *(ROOT / "docs").glob("*.md"), ROOT / "README.md"]
+    bad = []
+    for p in paths:
+        if p.name in HISTORICAL:
+            continue
+        for n, cmd, word in _named(p.read_text(encoding="utf-8")):
+            if cmd not in commands:
+                bad.append(f"{p.relative_to(ROOT)}:{n}: us-outbound {cmd}")
+            elif word and cmd in actions and word not in actions[cmd]:
+                bad.append(f"{p.relative_to(ROOT)}:{n}: us-outbound {cmd} {word}")
+    assert not bad, "\n".join(bad)
+
+
+def test_the_grep_catches_a_command_the_parser_no_longer_has():
+    """The probe: a removed command named in an alert is found; one named as removed is not."""
+    assert _named("Run `us-outbound relabel --live` now.") == [(1, "relabel", "")]
+    assert _named(f"x {'say'}.command('labels audit --live')") == [(1, "labels", "audit")]
+    assert _named("`us-outbound relabel` was removed in W2-4.") == []
+
+
+def test_the_historical_docs_say_they_are_records():
+    for name in HISTORICAL:
+        head = (ROOT / "docs" / name).read_text(encoding="utf-8")[:800]
+        assert "A record of its day" in head, name
+
+
+def test_the_commands_the_alerts_name_parse():
+    """killrules clear, campaigns ensure --fix --live and mailbox check --live (learn/kill_rules.py's alert text), and
+    the rest an alert or runbook names (RS P0-10)."""
+    p = cli.build_parser()
+    for argv in (["killrules", "clear", "ITEM", "--live"], ["campaigns", "ensure", "--fix", "--live"],
+                 ["campaigns", "ensure", "--fix", "--in-flight", "--live"], ["mailbox", "check", "--live"],
+                 ["mailbox", "check", "--fix", "--live"], ["killrules", "show"], ["cohorts", "in-flight"],
+                 ["cohorts", "changes"], ["stop", "--live", "--no-db"], ["report", "capture", "--live"],
+                 ["report", "daily", "--full"], ["run", "enrol", "--due", "2026-10-20T11:00"],
+                 ["mailbox", "add", "a@b.com", "--owner", "A B", "--live"], ["mailbox", "pause", "a@b.com"],
+                 ["test", "start", "t1"], ["test", "read", "t1"], ["settings", "load", "--live"],
+                 ["seed", "check"], ["seed", "send", "a@b.com", "--owner", "A B"], ["unenrol", "--month", "2026-10"]):
+        assert p.parse_args(argv).fn is not None, argv
+    for gone in (["relabel"], ["daily"], ["readout"], ["signals", "review"], ["dry-run", "enrol"], ["rescore"],
+                 ["hubspot", "ids"], ["data", "show"], ["campaigns", "show"], ["labels", "audit"],
+                 ["settings", "bootstrap"], ["capture", "check"]):
+        with pytest.raises(SystemExit):
+            p.parse_args(gone)

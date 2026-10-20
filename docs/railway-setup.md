@@ -153,11 +153,11 @@ Every command runs dry unless it says `--live`, and `live_sending` stays `no` in
 
 ```
 railway ssh -- us-outbound schedule                     # the jobs, their UK times and next runs
-railway ssh -- us-outbound dry-run settings_sync        # reads the sheet into the database; errors go to #us-outbound-dev
+railway ssh -- us-outbound run settings_sync            # reads the sheet into the database; errors go to #us-outbound-dev
 railway ssh -- us-outbound status                       # settings synced, heartbeats, mailboxes, campaigns
-railway ssh -- us-outbound dry-run heartbeat_check
-railway ssh -- us-outbound dry-run mailbox_health       # needs the Instantly key
-railway ssh -- us-outbound dry-run suppression_load     # needs the HubSpot token
+railway ssh -- us-outbound run heartbeat_check
+railway ssh -- us-outbound run mailbox_health           # needs the Instantly key
+railway ssh -- us-outbound run suppression_load         # needs the HubSpot token
 ```
 
 Then open the service's **Deployments → View logs**. You should see:
@@ -187,7 +187,8 @@ phase-0 steps are in [phase0-runbook.md](phase0-runbook.md).
 Every Slack alert comes from inside the worker, so if the worker, the database or the Slack token
 dies, nothing is said at all. So `heartbeat_check`, at five past every hour, ends by pinging a
 Healthchecks.io check, which emails Harry when the ping is late or says something is wrong (Harry,
-7 Oct 2026; `us_outbound/ops/watchdog.py`).
+7 Oct 2026; `us_outbound/ops/health.py`). The scheduler also pings /fail itself when it has waited 3 minutes for its
+lock, or 5 minutes for Postgres (W2-4).
 
 1. At healthchecks.io, sign in (the free plan is enough) and choose **Add Check**. Name it
    **US Outbound worker**. Under **Schedule**, keep **Simple** and set **Period** to **1 hour** and
@@ -222,14 +223,20 @@ logged and skipped, and a ping that fails never fails the job.
 - It checks the schedule at each minute boundary, in Europe/London time.
 - Each due job runs as its own process, `python -m us_outbound run <job> [--live]`, so a
   failing job cannot stop the scheduler. The job's output goes to the same log.
+- One scheduler runs (W2-4, 20 Oct 2026). Before it starts anything it takes a Postgres advisory lock; over a
+  redeploy the new worker logs `scheduler_lock_wait` every 2 seconds until the old one's SIGTERM frees the lock
+  (4 to 13 seconds), then `scheduler_lock_held`. It never exits for want of the lock: past 3 minutes (or 5 minutes
+  with Postgres out of reach) it pings the outside watchdog's /fail and waits on.
 - A job is never run twice at once. A job that is due while still running is skipped and
-  logged. `heartbeat.run_job` also refuses a second run through the database, which covers
-  the few seconds of a redeploy when the old and new worker overlap.
+  logged. `health.run_job` also refuses a second run through the database: a run of the job still "running" and
+  younger than its timeout, and a second start for the same due minute (each start claims the heartbeats row
+  `<job>:<minute>`).
 - At most `US_OUTBOUND_MAX_PARALLEL` jobs run at once (default 2). Other due jobs wait, in
   schedule order.
 - A run that passes its timeout (`ops/schedule.py`) is stopped.
-- Missed minutes are not run afterwards: after a restart or redeploy, a job waits for its
-  next time. `heartbeat_check` alerts in Slack on any job that misses its heartbeat, and
+- A daily (or rarer) job whose time fell in the 90 minutes before the scheduler started, with no heartbeat since,
+  is caught up once, for that minute (W2-4). Other missed minutes are not run afterwards: a frequent job waits for
+  its next time. `heartbeat_check` alerts in Slack on any job that misses its heartbeat, and
   `us-outbound run <job> --live` runs it by hand.
 - The UK clock changes:
   - On the spring change (29 Mar 2026), 01:00–01:59 does not exist, so `suppression_load`

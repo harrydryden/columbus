@@ -142,7 +142,7 @@ class Boundaries:
     approver_slack_ids: frozenset[str] = frozenset()  # General approver_slack_ids; the only Slack DM recipients
     # (mailbox address, its owner's Slack id): D11, owners approve replies to their own mailbox.
     owner_slack_ids: frozenset[tuple[str, str]] = frozenset()
-    # The outside watchdog's ping URL (US_OUTBOUND_WATCHDOG_URL; ops/watchdog.py), set for heartbeat_check only.
+    # The outside watchdog's ping URL (US_OUTBOUND_WATCHDOG_URL; ops/health.py), set for heartbeat_check only.
     watchdog_url: str = ""
     db_schema: str = DB_SCHEMA
 
@@ -479,7 +479,7 @@ class Guard:
         return True
 
     def _check_watchdog(self, op: Op) -> bool:
-        """The outside watchdog (Harry, 7 Oct 2026; ops/watchdog.py): a GET of exactly the configured ping URL, or
+        """The outside watchdog (Harry, 7 Oct 2026; ops/health.py): a GET of exactly the configured ping URL, or
         of its /fail form, and nothing else. Sent in dry-run too: it tells Healthchecks.io the worker is alive (or
         that it needs a look), reaches no prospect and changes nothing of ours, and a dead worker is as dead before
         go-live as after. The URL is never put in a reason or a log line: it is a secret."""

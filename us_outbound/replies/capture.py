@@ -20,7 +20,7 @@ nobody counted (code-replies-crm M3, M4; RT §1.6). This job checks the read two
       The plan named the steps analytics; it has no bounce count (Instantly's OpenAPI), so the campaign totals
       are read instead, which also state their unit (leads) for replies and bounces.
   (b) canary: an email to the seed inbox through the existing seed send path (ops/seed.send: the owner's own
-      campaign, its step template, a Copy row), and at the next run (or `us-outbound capture check`) the
+      campaign, its step template, a Copy row), and at the next run (or `us-outbound report capture`) the
       check that a received email from the seed address came back through the same read poll_replies uses
       (Instantly.list_emails, mode emode_all), tied to that canary: Instantly's lead field is the canary's
       address, or the email is in the thread of a send to it, and it came no earlier than the first send read
@@ -41,7 +41,7 @@ nobody counted (code-replies-crm M3, M4; RT §1.6). This job checks the read two
       and until then each week's fact is capture_unverified with the reason canary_send:off, and no error.
 
 A drift, a canary with no answer, or a canary that could not be sent are entries under the summary's errors (so
-heartbeat_check's ops/job_errors.py posts them) and make the week's fact capture_unverified (signal_events,
+heartbeat_check's ops/health.py posts them) and make the week's fact capture_unverified (signal_events,
 source capture, event_id capture:{ISO week}, no account) for the readout to print on every outcome line;
 otherwise the week's fact is capture_verified. Our own counts include the last canary's send when it fell inside
 the window (Instantly counts it, and we have no contact for it), and its answer only if
@@ -69,7 +69,7 @@ from us_outbound.replies import outcomes
 from us_outbound.timeparse import utc
 
 JOB = "capture"
-CHECK_JOB = "capture_check"  # `us-outbound capture check`: the canary check alone, by hand
+CHECK_JOB = "capture_check"  # `us-outbound report capture`: the canary check alone, by hand
 WINDOW = timedelta(days=7)  # what reconcile compares
 CANARY_WAIT = timedelta(hours=20)  # a canary younger than this is not checked yet (it goes out in the US window)
 # A canary not sent yet is checked again at the next run, its lead kept, until it is this old: the Tuesday check
@@ -97,7 +97,7 @@ UNITS = {"sent": "emails", "replied": "leads (distinct; automatic replies and ou
 SOURCE = "capture"  # signal_events.source of the facts below
 VERIFIED, UNVERIFIED, CANARY_SENT = "capture_verified", "capture_unverified", "canary_sent"
 CANARY_TAG = "+canary-"
-FACT_FRESH = timedelta(days=8)  # the week's fact stands this long (heartbeat.EXPECTED for capture)
+FACT_FRESH = timedelta(days=8)  # the week's fact stands this long (health.EXPECTED for capture)
 NOT_SET_UP, OFF = "not_set_up", "off"
 
 
@@ -488,6 +488,6 @@ def readout_caveat(ctx: Context) -> str | None:
 
 
 def check_only(ctx: Context) -> dict:
-    """`us-outbound capture check`: the last canary's check alone (on a Tuesday, the day after it went)."""
+    """`us-outbound report capture`: the last canary's check alone (on a Tuesday, the day after it went)."""
     out = check(ctx)
     return {"job": CHECK_JOB, "dry_run": ctx.dry_run, "canary_check": out, "errors": canary_errors(out)}

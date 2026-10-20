@@ -29,11 +29,12 @@ from tests.test_registry import (
     setup,
 )
 from us_outbound import config_version
-from us_outbound.base import heartbeats, holds
+from us_outbound.base import holds
+from us_outbound.ops import health
 from us_outbound.context import ET
 from us_outbound.enrol import capacity
 from us_outbound.learn import cohorts
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.ops.schedule import by_name
 from us_outbound.registry import blackout
 from us_outbound.registry import mailboxes as reg
@@ -223,7 +224,7 @@ def test_after_it_exactly_the_campaigns_it_paused_start_again():
 def test_an_operator_stop_over_the_blackout_keeps_them_paused_and_says_so():
     ctx, t, inst = world(EVE)
     blackout.run(ctx)
-    ctx.store.insert("heartbeats", [{"run_id": "stop-1", "job": heartbeats.OPERATOR_STOP, "status": "ok",
+    ctx.store.insert("heartbeats", [{"run_id": "stop-1", "job": health.OPERATOR_STOP, "status": "ok",
                                      "dry_run": False, "started_at": DURING}])
     out = blackout.run(at(ctx, AFTER))
     assert out["resumed"] == [] and set(out["left_paused"]) == {C_HANNAH, C_SAM}
@@ -302,7 +303,7 @@ def test_a_dry_run_says_what_it_would_do_and_changes_nothing():
 
 def test_the_job_is_hourly_live_and_its_heartbeat_is_expected():
     job = by_name()["blackout"]
-    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("40 * * * *", True, True, 10)
+    assert (job.cron, job.live, job.enabled, job.timeout_minutes) == ("40 * * * *", True, True, 5)  # 5 from W2-4
     assert hb.EXPECTED["blackout"] == 150 and "blackout" not in hb.WEEKDAY_JOBS
 
 
@@ -354,7 +355,7 @@ def test_start_over_a_blackout_resumes_enrolment_and_leaves_the_campaigns_for_th
         h.instantly.standard(name, accounts, 30 * len(accounts), status=2)
     assert h.run("stop", "--live") == 0
     assert h.run("start", "--live") == 0
-    assert heartbeats.enrolment_paused(h.store) is None  # enrolment resumes
+    assert health.enrolment_paused(h.store) is None  # enrolment resumes
     assert all(c["status"] == 2 for c in h.instantly.campaigns.values())  # the campaigns wait for the job
     assert "paused for the blackout until Mon 30 Nov: the blackout job starts them then" in capsys.readouterr().out
     assert set(blackout.paused(h.store)) == {C_HANNAH, C_SAM, C_HARRY}

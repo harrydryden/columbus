@@ -1,102 +1,62 @@
 """The us-outbound command line (SPEC 13 Operations): the same entrypoints as the jobs.
 
-What Harry uses (`us-outbound --help` lists these, in this order):
-  status                              live_sending and what it means, when the settings were synced,
-                                      what waits for him (replies, kill-rule holds), the jobs that failed
-                                      or missed their heartbeat, what the retention job last deleted,
-                                      mailboxes, this week's number, the campaigns, and the three go-live
-                                      checks kept from golive (ops/live_checks.py: Copy, Campaigns, Watchdog)
-  accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py):
-    [--tier T] [--industry TEXT]      a summary and the list in queue order, one company in full (exits 1
-    [--limit N] [--csv]               for a domain we do not hold), or a CSV to stdout (personal data)
-  sync                                settings_sync now: the sheet's edits into force (jobs read the
-                                      synced copy; settings_sync runs at 02:00, and 11:30 on weekdays).
-                                      The same as `settings sync`
-  start | stop                        resume or pause every US Outbound campaign, and enrollment. start
-                                      --live syncs the sheet first, so live_sending just set counts.
-                                      stop --live is the brake: live_sending = no does not stop Instantly.
-                                      stop --live --no-db pauses the campaigns while the database is down
-                                      (no settings, no operator_stop row: run stop --live once it is back)
-                                      Over a blackout start leaves the campaigns paused, and the blackout
-                                      job starts them after it (registry/blackout.py; 7 Oct 2026)
-  labels audit [--limit N] | eval     the industry label check (us_outbound/labels.py; Harry, 7 Oct 2026):
-    [--from-corrections] | set        audit: the model asked about every open company with no fresh verdict
-    DOMAIN LABEL | show DOMAIN        now (verify_accounts asks about 150 a run); dry-run says how many,
-                                      the cost and a sample prompt. eval: the model scored on the gold set
-                                      (and, with --from-corrections, the corrections made by hand); exits 1
-                                      below 90% acceptable or on any unsafe answer. set: a company's label
-                                      (a correction). show: its label and check history. audit and eval call
-                                      the model only with --live (about $0.01 a company)
-  replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py): send = ✅ (--text
-    [--text "..."]                    "..." sends that instead; --edit is the same), or skip; the same
-                                      send, HubSpot and close path as Slack. approve is the same as send
-  signals review | value              which signals predict replies (learn/signal_review.py), or the
-                                      signal-value table from v_signal_value, with meetings and the rates
-                                      against the companies without each signal (learn/signal_value.py)
-  readout                             the Monday readout for last week (learn/readout.py), printed only
-  cohorts [--cut CUT] [--age N]       each enrolment week's companies at 7, 14, 21 and 28 days after email 1,
-    [--weeks N] | changes [A B] |     with what changed between them (learn/cohorts.py; Harry, 7 Oct 2026);
-    in-flight                         changes: what differs between two config versions (default the last
-                                      two); in-flight: each campaign's leads with a step still to send
-  test start|read <test_id>           start a test on the Tests tab (SPEC 12; kind ab, variant or holdout:
-                                      a variant changes one part of one email, enrol/variants.py, Harry,
-                                      7 Oct 2026), or read it at its latest pre-registered look; read refuses
-                                      before the first look, so nobody peeks (learn/looks.py; 6 Oct 2026)
-  killrules show|clear <item>         the kill-rule holds in force, and lifting one (learn/kill_rules.py)
-  mailbox add|pause|retire <address>  the registry commands of SPEC 9 (add takes --owner); mailbox check
-  mailbox check [--fix]               is mailbox_health by hand, and --fix also sets each sender name to
-                                      its owner's full name and runs campaigns ensure --fix
-  campaigns show | ensure [--fix]     each owner's campaign as Instantly holds it (read-only); or create
-    [--in-flight]                     the missing ones (paused) and put drift right. Drift in the steps,
-                                      delays or text_only is held while leads are in flight, unless
-                                      --in-flight (registry/mailboxes.IN_FLIGHT_KEYS; Harry, 7 Oct 2026)
-  copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): check every Copy row,
-                                      preview one, QA it (task model), draft one (writing model)
-  settings sync|load|bootstrap        sync; load the build's tabs (or, with --take note, the General
-                                      notes) into the sheet; create the sheet
-  handcheck show|approve [--pull ID]  this week's hand-check without Slack (enrol/hand_check.py)
-  handcheck export [--live]           every decided Hand-check row, every week's, as a judgement fact in
-                                      the database (enrol/hand_check_tab.export); dry-run counts them
-  handcheck migrate-tab [--live]      the Hand-check tab moved to its new columns once, after a backup tab,
-                                      and its dropdowns set (enrol/hand_check_tab.migrate); dry-run prints
-                                      the header before and after
-  capture check [--live]              the reply read's weekly canary checked by hand, the day after it went
-                                      (replies/capture.py; the Monday capture job checks it otherwise)
+The commands are one table (COMMANDS, W2-4, 20 Oct 2026; RS P0-10), listed by `us-outbound --help` in its order:
+  status                              live_sending and what it means, when the settings were synced, what waits
+                                      for Harry (replies, kill-rule holds), the jobs that failed or missed their
+                                      heartbeat, retention, mailboxes, this week's number, the campaigns, and the
+                                      three go-live checks (ops/live_checks.py: Copy, Campaigns, Watchdog)
+  accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py), or a CSV
+  sync                                settings_sync now: the sheet's edits into force (else 02:00, and 11:30 weekdays)
+  start | stop [--no-db]              resume or pause every US Outbound campaign, and enrolment. stop --live is the
+                                      brake (live_sending = no does not stop Instantly); --no-db pauses the campaigns
+                                      while the database is down. Over a blackout start leaves the campaigns paused
+  replies list | send | skip [ITEM]   the reply desk without Slack (replies/desk.py); approve is the same as send
+  handcheck show|approve|export|migrate-tab   the weekly hand-check (enrol/hand_check.py, hand_check_tab.py)
+  killrules show | clear <item>       the kill-rule holds in force, and lifting one (learn/kill_rules.py)
+  mailbox add|pause|retire|check      the registry commands of SPEC 9 (check is mailbox_health by hand; --fix)
+  campaigns ensure [--fix] [--in-flight]   create the missing campaigns (paused) and put drift right; drift in the
+                                      steps, delays or text_only waits while leads are in flight unless --in-flight
+                                      (docs/developing-while-live.md: the one way a pinned campaign constant ships)
+  cohorts in-flight | changes [A B]   the leads with a step still to send; what differs between two config versions
+  test start | read <test_id>         a test on the Tests tab, started or read at a pre-registered look
+  labels set | show | eval            a company's label set or shown; the label check scored on the gold set
+  copy check|preview|qa|draft         the copy desk (enrol/copy_desk.py): a Copy row is sendable only once QA passes
+  seed send | check                   the seed-inbox test of the unsubscribe link (ops/seed.py)
+  settings load                       the build's tabs (or with --take note, the General notes) into the sheet
+  report <name>                       a read-only report: cohorts, signals, readout, lookalikes, pages, daily, and
+                                      capture (the reply read's canary checked by hand; with --live it deletes the
+                                      canary's own lead, which reaches no prospect)
   erase --email <address>             an erasure request (SPEC 6)
+  unenrol --month YYYY-MM             a month's leads out of their campaigns, recorded as stopped (ops/campaigns.py)
+  verify migrate-parked               once after W1-4: the companies left out while their industry was off, parked
+  db apply                            the DDL in sql/ (ops/ddl.py)
   schedule                            the job table and next runs (UK time)
-  run <job> [--live]                  one job, what the scheduler starts; its summary printed as one JSON
-                                      line, each list cut to its first 10 (Railway drops lines at its rate
-                                      limit: 1,276 on 19 Oct 2026)
-Build and duplicate commands, left out of --help but unchanged (HIDDEN): unenrol --month YYYY-MM
-(remove that month's leads), rescore (the score job), dry-run <job>, db apply, hubspot ids,
-suppression load, lookalikes show [--top N] [--all]
-(the cells the lookalikes job last stored), lookalikes fit (the accounts' lookalike fits and the scores the
-build's lookalike rows would give, scored in memory), pages show (the careers and benefits page reader's
-coverage), data show (what the sources have stored, in aggregate), and scheduler (the always-on
-Railway worker, ops/scheduler.py). On Railway, run a command inside the worker with
-`railway ssh -- us-outbound <command>` (docs/railway-setup.md).
+  run <job> [--live] [--due MINUTE]   one job, what the scheduler starts (--due: the minute it was due, which the run
+                                      claims, ops/health.run_job); its summary as one JSON line
+  scheduler                           the always-on Railway worker (ops/scheduler.py)
+On Railway, run a command inside the worker with `railway ssh -- us-outbound <command>` (docs/railway-setup.md).
+Commands folded in W2-4: daily, signals, readout, lookalikes show, pages show and capture check are `report <name>`;
+rescore, dry-run and suppression load are `run score`, `run <job>` and `run suppression_load`; settings sync is
+`sync`. Removed: relabel and labels audit (verify_accounts asks the label check about 150 companies a run), labels
+sample (the label_sample_monthly job), settings bootstrap, campaigns show, hubspot ids, lookalikes fit, data show.
+tests/test_cli.py greps every `us-outbound <command>` in the code and docs/*.md against this table.
 
 Dry-run is the default everywhere. Two kinds of live:
-  * jobs (run, rescore, sync, settings sync, suppression load) and start: --live AND
-    live_sending = yes in the synced settings, as SPEC 0.3 says (a dry-run sync still brings the
-    sheet in: only its Slack message goes to the dev channel);
-  * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase,
-    test start, settings bootstrap|load, copy qa|draft, campaigns ensure,
-    handcheck show|approve|export|migrate-tab, killrules clear, replies skip, capture check): --live alone, so the
-    setup and the kill switch work while live_sending is still no.
-    `replies send` sends to a prospect, so it is live like a job: --live AND live_sending = yes.
-    copy qa and copy draft call Claude only with --live, so a dry run spends nothing.
-  A read-only action given --live (replies list, killrules show, campaigns show,
-  copy check|preview, hubspot ids, test read) says that --live does nothing there.
-  A --live run that stays dry says when the settings in force were synced, and how to bring a
-  sheet edit in (`us-outbound sync`).
-Every run writes a heartbeats row (ops/heartbeat.run_job). stop and start write theirs
-under operator_stop / operator_start, which is the enrollment pause enrol checks (enrol.operator_pause).
+  * jobs (run, sync) and start: --live AND live_sending = yes in the synced settings, as SPEC 0.3 says (a dry-run
+    sync still brings the sheet in: only its Slack message goes to the dev channel);
+  * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase, test start, settings load,
+    copy qa|draft, campaigns ensure, handcheck show|approve|export|migrate-tab, killrules clear, replies skip,
+    report capture, labels set, verify): --live alone, so the setup and the kill switch work while live_sending is
+    still no. `replies send` sends to a prospect, so it is live like a job: --live AND live_sending = yes.
+  A read-only action given --live says that --live does nothing there. A --live run that stays dry says when the
+  settings in force were synced, and how to bring a sheet edit in (`us-outbound sync`).
+Every run writes a heartbeats row (ops/health.run_job). stop and start write theirs under operator_stop /
+operator_start, which is the enrolment pause enrol checks (enrol.operator_pause).
 
-Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError
-or JSON/Unicode decoding error, which are bugs rather than bad input); 2 refused (not built,
-bad input, unusable settings); 3 blocked by a guardrail (GuardViolation); 143 stopped by
-SIGTERM while a job ran (the scheduler's timeout, or a redeploy; the heartbeat says error).
+Exit codes: 0 done; 1 unexpected error (with its traceback, including a KeyError, IndexError or JSON/Unicode
+decoding error, which are bugs rather than bad input), or a job that reported status error; 2 refused (not built,
+bad input, unusable settings); 3 blocked by a guardrail (GuardViolation); 143 stopped by SIGTERM while a job ran
+(the scheduler's timeout, or a redeploy; the heartbeat says error).
 """
 
 from __future__ import annotations
@@ -113,20 +73,20 @@ import traceback
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, redirect_stdout
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from us_outbound import fmt
-from us_outbound.base.heartbeats import OPERATOR_START, OPERATOR_STOP, enrolment_paused, latest_runs
 from us_outbound.base.holds import held_mailboxes
-from us_outbound.clients.db import new_id
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import Context
 from us_outbound.logs import log, redact
 from us_outbound.learn import copy_tests
-from us_outbound.ops import bootstrap, campaigns
-from us_outbound.ops.heartbeat import overdue_minutes, run_job, scheduled_jobs
+from us_outbound.ops import bootstrap, campaigns, health
+from us_outbound.ops.health import (ERROR, OPERATOR_START, OPERATOR_STOP, Terminated, enrolment_paused, latest_runs,
+                                    overdue_minutes, run_job, scheduled_jobs)
 
 # Every SPEC 9 job: "module:function", or why it cannot run yet.
 JOBS: dict[str, str] = {
@@ -144,7 +104,7 @@ JOBS: dict[str, str] = {
     "pick_contacts": "us_outbound.contacts.pick:run",
     "enrol": "us_outbound.enrol.enrol:run",
     "poll_replies": "us_outbound.replies.poll:run",
-    "poll_approvals": "us_outbound.replies.desk:poll_desk",  # the job keeps its name (W2-1): the reply desk, the hand-check tab
+    "poll_approvals": "us_outbound.replies.poll_desk:poll_desk",  # the job keeps its name (W2-1): the reply desk, the hand-check tab
     "hubspot_readback": "us_outbound.crm.readback:hubspot_readback",
     "sync_outcomes": "us_outbound.replies.outcomes:run",
     "mailbox_health": "us_outbound.registry.mailboxes:mailbox_health",
@@ -154,7 +114,7 @@ JOBS: dict[str, str] = {
     "capture": "us_outbound.replies.capture:run",  # W1-2, 19 Oct 2026: is the reply read working? Mondays
     "monday_readout": "us_outbound.learn.readout:run",  # Harry, 6 Oct 2026: the learning loop
     # Build additions (README "Deviations").
-    "heartbeat_check": "us_outbound.ops.heartbeat:run",  # missed jobs, caught errors, the outside watchdog
+    "heartbeat_check": "us_outbound.ops.health:run",  # missed jobs, caught errors, the outside watchdog (W2-4)
     "suppression_load": "us_outbound.suppression:load_from_hubspot",
     "lookalikes": "us_outbound.sources.lookalikes:run",  # Harry, 1 Oct 2026: Spill's HubSpot customers as lookalikes
     "lookalike_leads": "us_outbound.sources.lookalike_leads:run",  # Harry, 5 Oct 2026: Apollo's lookalikes, monthly
@@ -162,25 +122,19 @@ JOBS: dict[str, str] = {
     "retention": "us_outbound.ops.retention:run",  # SPEC 6 and 13: what we hold leaves when its time is up
     # Harry, 11 Oct 2026: a batch of companies to judge by hand each month, last month's scored, to Slack.
     "label_sample_monthly": "us_outbound.ops.label_sample:monthly",
+    "follow_up": "us_outbound.replies.follow_up:sweep",  # W2-4, 20 Oct 2026: the not-now dates kept, daily
 }
 # The module of every job, so one import of each proves no job lost a module it needs (W2-1, 20 Oct 2026: a removal
 # wide enough to miss an importer; tests/test_cli.py imports them all).
 JOB_MODULES: tuple[str, ...] = tuple(dict.fromkeys(t.partition(":")[0] for t in JOBS.values() if ":" in t))
 MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
+DUE_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")  # `run --due`: the minute the scheduler started it for (UTC)
 
 Factory = Callable[..., Context]
 
 
 class Refused(Exception):
     """The command cannot go ahead as asked (exit code 2)."""
-
-
-class Terminated(BaseException):
-    """SIGTERM reached a running job: the scheduler's timeout, or a redeploy (exit code 143).
-
-    A BaseException, so no `except Exception` inside a job swallows it. run_job records the
-    run as an error, so its heartbeat is not left "running" to block the next run.
-    """
 
 
 # -- the job registry -------------------------------------------------------------------
@@ -258,7 +212,7 @@ def _only_reads(args: argparse.Namespace) -> None:
 
 def _operate(factory: Factory, job: str, live: bool, fn: Callable[[Context], Any], *, operator: bool = False,
              dry_note: str = "", show: bool = True) -> tuple[Context, Any]:
-    """Run fn as the job (heartbeat.run_job) in a fresh context. What fn refuses (a LookupError or ValueError) is the
+    """Run fn as the job (health.run_job) in a fresh context. What fn refuses (a LookupError or ValueError) is the
     command's refusal, in fn's words (exit 2); a KeyError or IndexError is a bug and goes to main as one. Then its
     summary is printed (show) and what a dry run left alone (dry_note). 9 Oct 2026: 30 commands repeated this."""
     ctx = factory(job, live, operator=True) if operator else factory(job, live)
@@ -285,34 +239,33 @@ def _dry_note(ctx: Context, what: str) -> None:
     print(_live_sending_note(ctx))
 
 
-def _record_unusable(exc: bootstrap.SettingsUnusable, job: str) -> None:
-    """A job that cannot start still leaves a heartbeat, so the miss is visible."""
-    if exc.store is None:
-        return
-    now = datetime.now(UTC)
-    try:
-        exc.store.upsert("heartbeats", [{
-            "run_id": new_id(), "job": job, "started_at": now, "finished_at": now, "status": "error",
-            "dry_run": True, "detail": {"unusable": sorted(exc.errors)}, "error": str(exc),
-        }])
-    except Exception as write_error:  # the refusal is what matters; the log says why no row
-        log("heartbeat_write_failed", job=job, error=str(write_error))
-
-
-def _job(name: str, live_flag: bool, factory: Factory, *, one_line: bool = False) -> int:
-    """One job run. one_line: the summary as one JSON line (`run`, what the scheduler starts); pretty otherwise."""
+def _job(name: str, live_flag: bool, factory: Factory, *, one_line: bool = False, due: str = "") -> int:
+    """One job run. one_line: the summary as one JSON line (`run`, what the scheduler starts); pretty otherwise. due:
+    the minute the scheduler started it for, which the run claims (ops/health.run_job). A job that reports status
+    error exits 1, as one that raised."""
     fn = resolve_job(name)
+    when = None
+    if due:
+        if not DUE_RE.fullmatch(due):
+            raise Refused("--due is the minute it was due, in UTC: YYYY-MM-DDTHH:MM")
+        when = datetime.fromisoformat(due).replace(tzinfo=UTC)
     try:
         ctx = factory(name, live_flag)
     except bootstrap.SettingsUnusable as exc:
-        _record_unusable(exc, name)
+        health.record_unusable(exc.store, name, exc.errors, str(exc))
         raise
+    if when is not None:
+        ctx.due = when
+        # The claim id replaces the run id the "context" line logged; this line ties the two together.
+        claim = health.due_run_id(name, when)
+        log("run_claim", job=name, context_run_id=ctx.run_id, run_id=claim)
+        ctx.run_id = claim
     if live_flag and ctx.dry_run:
         print(_live_sending_note(ctx))
     with _sigterm_ends_the_run():
         summary = run_job(ctx, fn)
     (_print_line if one_line else _print)(summary)
-    return 0
+    return 1 if summary.get("status") == ERROR else 0
 
 
 def _sync(live_flag: bool, factory: Factory) -> tuple[Context, dict]:
@@ -325,7 +278,7 @@ def _sync(live_flag: bool, factory: Factory) -> tuple[Context, dict]:
     try:
         ctx = factory("settings_sync", live_flag)
     except bootstrap.SettingsUnusable as exc:
-        _record_unusable(exc, "settings_sync")
+        health.record_unusable(exc.store, "settings_sync", exc.errors, str(exc))
         raise
     with _sigterm_ends_the_run():
         summary = run_job(ctx, fn)
@@ -390,15 +343,7 @@ def _sigterm_ends_the_run() -> Iterator[None]:
 
 
 def cmd_run(args: argparse.Namespace, factory: Factory) -> int:
-    return _job(args.job, args.live, factory, one_line=True)
-
-
-def cmd_dry_run(args: argparse.Namespace, factory: Factory) -> int:
-    return _job(args.job, False, factory)
-
-
-def cmd_rescore(args: argparse.Namespace, factory: Factory) -> int:
-    return _job("score", args.live, factory)
+    return _job(args.job, args.live, factory, one_line=True, due=args.due or "")
 
 
 def _status_heartbeats(store: Any, now: datetime) -> None:
@@ -467,16 +412,6 @@ def _status_limits(ctx: Context) -> None:
     print(f"  {lim.explanation}")
     for line in lim.detail:
         print(f"  {line}")
-
-
-def cmd_daily(args: argparse.Namespace, factory: Factory) -> int:
-    """`us-outbound daily [--full]`: the short post the 09:00 job posts, or the full one (Harry, 9 Oct 2026)."""
-    from us_outbound.learn import daily_post
-
-    ctx = factory("daily_preview", False)
-    day = daily_post.gather(ctx)
-    print("\n".join(day.lines if args.full else daily_post.compact(ctx, day)))
-    return 0
 
 
 def cmd_status(args: argparse.Namespace, factory: Factory) -> int:
@@ -666,29 +601,6 @@ def cmd_unenrol(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def cmd_relabel(args: argparse.Namespace, factory: Factory) -> int:
-    """`us-outbound relabel [--live]`: the queued companies under the labels the Industries rules give now
-    (ops/relabel.py; Harry, 7 Oct 2026)."""
-    from us_outbound.ops import relabel
-
-    ctx = factory("relabel", args.live, operator=True)
-    out = run_job(ctx, relabel.run)
-    print(f"{out['changed']} of {out['queued_accounts']} companies in the queue change label.")
-    for move, n in out["moves"].items():
-        print(f"  {n:>4}  {move}")
-    if args.all:
-        for line in out["changes"]:
-            print(f"  {line}")
-    if out.get("restored"):
-        print(f"{'Put back' if ctx.live else 'Would put back'} {len(out['restored'])} compan"
-              f"{'y' if len(out['restored']) == 1 else 'ies'} an earlier relabel disqualified on the rules alone: the "
-              "label check decides them (`us-outbound labels audit --live`, or verify_accounts at 04:30).")
-        if args.all:
-            print("  " + ", ".join(out["restored"]))
-    _dry_note(ctx, "no company was changed.")
-    return 0
-
-
 def cmd_verify(args: argparse.Namespace, factory: Factory) -> int:
     """`us-outbound verify migrate-parked [--live]` (W1-4, 19 Oct 2026; RS P0-3), once after the deploy: the companies
     the label check left out for good while their industry was switched off (~50 on 13 Oct) are parked, so the next
@@ -753,41 +665,28 @@ def cmd_test(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_settings(args: argparse.Namespace, factory: Factory) -> int:
-    if args.action == "sync":
-        return cmd_sync(args, factory)
-    if args.action == "load":
-        from us_outbound.settings.load import DEFAULT_TABS, load
+    """`settings load`: the build's tabs (or the General notes) into the sheet (settings/load.py)."""
+    from us_outbound.settings.load import DEFAULT_TABS, load
 
-        ctx = factory("settings_load", args.live, operator=True)
-        tabs = args.tab or list(DEFAULT_TABS)
-        sets = {}
-        for item in args.set or ():
-            key, sep, value = item.partition("=")
-            if not sep or not key.strip():
-                raise Refused(f"--set takes key=value, not {item!r}")
-            sets[key.strip()] = value.strip()
-        try:
-            summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
-                                                   take=args.take or (), keep=args.keep or ()))
-        except ValueError as exc:
-            raise Refused(str(exc)) from exc
-        for t in summary["tabs"]:
-            _print(t)
-        _dry_note(ctx, "the sheet is unchanged.")
-        if ctx.live:
-            print("Now run `us-outbound sync` to bring the tabs into force (or wait for the next sync: 02:00, and "
-                  "11:30 UK on weekdays).")
-        return 0
-    from us_outbound.settings.sync import bootstrap as create_sheet
-
-    ctx = factory("settings_bootstrap", args.live, operator=True)
-    summary = run_job(ctx, lambda c: {"sheet_id": create_sheet(c, force=args.force), "dry_run": c.dry_run})
-    _print(summary)
-    if summary.get("sheet_id"):
-        print("Set US_OUTBOUND_SETTINGS_SHEET_ID to this id in the Railway service's variables, share the sheet "
-              "with the Sheets service account as Editor, then run `us-outbound sync`.")
-    else:
-        _dry_note(ctx, "no sheet was created.")
+    ctx = factory("settings_load", args.live, operator=True)
+    tabs = args.tab or list(DEFAULT_TABS)
+    sets = {}
+    for item in args.set or ():
+        key, sep, value = item.partition("=")
+        if not sep or not key.strip():
+            raise Refused(f"--set takes key=value, not {item!r}")
+        sets[key.strip()] = value.strip()
+    try:
+        summary = run_job(ctx, lambda c: load(c, tabs, sets, replace_drafts=args.replace_drafts,
+                                               take=args.take or (), keep=args.keep or ()))
+    except ValueError as exc:
+        raise Refused(str(exc)) from exc
+    for t in summary["tabs"]:
+        _print(t)
+    _dry_note(ctx, "the sheet is unchanged.")
+    if ctx.live:
+        print("Now run `us-outbound sync` to bring the tabs into force (or wait for the next sync: 02:00, and "
+              "11:30 UK on weekdays).")
     return 0
 
 
@@ -1013,79 +912,6 @@ def cmd_replies(args: argparse.Namespace, factory: Factory) -> int:
     return 0 if summary.get("sent") or ctx.dry_run else 2
 
 
-def _audit_report(out: dict, live: bool) -> None:
-    print(f"{out['to_check']} of {out['open_accounts']} open companies have no fresh label check"
-          f" ({out['stale']} with an earlier one: an older label list or prompt, or a home page read since).")
-    hp = out.get("home_pages") or {}
-    if hp.get("accounts"):
-        late = f", {hp['not_reached']} not reached in time" if hp.get("not_reached") else ""
-        print(f"Read the home page of {hp['accounts']} companies whose label the page could settle: "
-              f"{hp['said_what_they_do']} say what they do, {hp['said_nothing']} say nothing, {hp['blocked']} refused, {hp['error']} did not "
-              f"answer{late}. Those with a page are asked again.")
-    elif not live and out.get("home_pages_to_read"):
-        print(f"A live audit first reads the home page of {out['home_pages_to_read']} companies whose label "
-              "the page could settle, then asks about those with a page again.")
-    if not live:
-        print(f"A live audit asks {out['model']} about each: at most ${out['per_call_usd']:.4f} a company, "
-              f"${out['most_usd']:.2f} in all (the Claude cap applies).")
-        if out.get("sample_prompt"):
-            print("The first company's prompt, as the model reads it:\n" + out["sample_prompt"])
-        stored = out.get("stored") or {}
-        print(f"From the rules and the stored checks alone, {stored.get('changed', 0)} companies change:")
-        for move, n in (stored.get("moves") or {}).items():
-            print(f"  {n:>4}  {move}")
-        return
-    print(f"Asked {out['asked']} (${out['usd']:.2f})." + (f" Stopped: {out['unavailable']}." if out["unavailable"] else ""))
-    print("Decisions: " + (", ".join(f"{k} {v}" for k, v in sorted(out["decisions"].items())) or "none"))
-    if out["disagreements"]:
-        print("Where the rules and the model differ:")
-        for d in out["disagreements"]:
-            quote = f" · “{d['evidence']}”" if d.get("evidence") else ""
-            print(f"  {d['domain']} · rules {d['rules'] or 'no label'} · model {d['model']} ({d['confidence']}, "
-                  f"{d['entity']}) · now {d['now']}{quote}")
-    for line in out["relabelled"]:
-        print(f"  {line}")
-
-
-def _sample_report(out: dict, live: bool) -> None:
-    from us_outbound.ops import label_sample
-
-    print(f"{out['drawn']} companies drawn at random from those emailed or to be emailed.")
-    for r in out["rows"]:
-        print(f"  {r['domain']} · {r['our_label']} ({r['copy']} copy) · {r['decided_by']}")
-    if out["verdicts_kept"]:
-        print(f"The {label_sample.TAB} tab already holds {out['verdicts_kept']} verdict(s), so it was not rewritten; "
-              "score it with `labels sample --score`, or clear the your_verdict column to draw again.")
-    elif out["tab_written"]:
-        print(f"Written to the {label_sample.TAB} tab. Fill your_verdict with the right label, or one of: "
-              f"{', '.join(label_sample.VERDICTS)} (and right_label when ours is wrong), then run "
-              "`us-outbound labels sample --score`.")
-
-
-def _score_report(out: dict) -> None:
-    n = out["judged"]
-    print(f"{n} of {out['rows']} companies judged" + (f"; unreadable verdicts: {', '.join(out['unreadable'])}"
-                                                     if out["unreadable"] else "") + ".")
-    if not n:
-        return
-    for key, title in (("label_right", "Label right"), ("group_right", "Group right"),
-                       ("wrong_pitch", "Email copy saying more than is true")):
-        lo, hi = out["intervals"][key]
-        print(f"  {title}: {out[key]} of {n} ({out[key] / n:.0%}; 95% interval {lo:.0%} to {hi:.0%})")
-    names = {"ours": "Our label (what the email uses)", "rules": "The rules (Apollo's codes and keywords)",
-             "model": "The label check (the model)"}
-    for key, o in out.get("opinions", {}).items():
-        if o["judged"]:
-            none = f", gave no label for {o['gave_none']}" if o["gave_none"] else ""
-            print(f"  {names[key]}: label right {o['label_right']} of {o['judged']} ({o['label_right'] / o['judged']:.0%}), "
-                  f"group right {o['group_right']} ({o['group_right'] / o['judged']:.0%}){none}")
-    if out["wrong"]:
-        print("Not right:")
-        for w in out["wrong"]:
-            fix = f" → {w['right_label']}" if w["right_label"] else ""
-            print(f"  {w['domain']} · ours {w['ours']} ({w['copy']} copy) · {w['verdict']}{fix}")
-
-
 def _eval_report(out: dict, live: bool) -> int:
     if not live:
         print(f"{out['rows']} companies; a live eval asks {out['model']} about each, at most ${out['most_usd']:.2f}.")
@@ -1103,30 +929,10 @@ def _eval_report(out: dict, live: bool) -> int:
 
 
 def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
-    """`us-outbound labels audit | eval | set | show` (us_outbound/labels.py, ops/relabel.py; Harry, 7 Oct 2026)."""
+    """`us-outbound labels set | show | eval` (us_outbound/labels.py, ops/relabel.py; Harry, 7 Oct 2026)."""
     from us_outbound import labels
     from us_outbound.ops import relabel
 
-    if args.action == "audit":  # the model is asked only with --live; it reaches no prospect: --live alone
-        ctx = factory(relabel.AUDIT_JOB, args.live, operator=True)
-        out = run_job(ctx, lambda c: relabel.audit(c, args.limit))
-        _audit_report(out, ctx.live)
-        _dry_note(ctx, "no model was asked and no company was changed.")
-        return 0
-    if args.action == "sample":  # reads only; with --live it writes the Label sample tab, --score reads it back
-        from us_outbound.ops import label_sample
-
-        if args.score:
-            ctx = factory(label_sample.JOB, False, operator=True)
-            try:
-                _score_report(run_job(ctx, label_sample.run_score))
-            except LookupError as exc:
-                raise Refused(str(exc)) from exc
-            return 0
-        ctx = factory(label_sample.JOB, args.live, operator=True)
-        _sample_report(run_job(ctx, lambda c: label_sample.run(c, args.size or label_sample.SIZE)), ctx.live)
-        _dry_note(ctx, f"the {label_sample.TAB} tab was not written.")
-        return 0
     if args.action == "eval":
         ctx = factory("labels_eval", args.live, operator=True)
         rows = labels.gold_rows() + (labels.corrected_rows(ctx) if args.from_corrections else [])
@@ -1149,10 +955,8 @@ def cmd_labels(args: argparse.Namespace, factory: Factory) -> int:
         return 0
     if not args.label:
         raise Refused('labels set needs the label: `us-outbound labels set acme.com "Fintech" --live`')
-    ctx, summary = _operate(
-        factory, "labels_set", args.live, lambda c: relabel.set_label(c, args.domain, args.label),
-        operator=True, dry_note="the label and the Overrides tab are unchanged.",
-    )  # it reaches no prospect: --live alone
+    _operate(factory, "labels_set", args.live, lambda c: relabel.set_label(c, args.domain, args.label),
+             operator=True, dry_note="the label and the Overrides tab are unchanged.")  # it reaches no prospect
     return 0
 
 
@@ -1171,35 +975,12 @@ def cmd_db(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def cmd_hubspot(args: argparse.Namespace, factory: Factory) -> int:
-    """`hubspot ids`: the ids for the General tab (reads only). `hubspot setup` went with the six us_outbound_*
-    properties (W1-2, 19 Oct 2026; Harry's D9): they were never created, and nothing read them."""
-    from us_outbound.crm import hubspot_writes as hw
-
-    _only_reads(args)
-    ctx = factory("hubspot_ids", False)
-    ids = hw.lookup_pipeline(ctx)
-    print("Paste these into the General tab (they are never written automatically):")
-    for key, value in ids.items():
-        print(f"  {key}: {value if value else 'NOT FOUND'}")
-    return 0
-
-
 def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
-    from us_outbound.registry.mailboxes import campaign_name, ensure_campaigns, held_words
+    """`campaigns ensure [--fix] [--in-flight]` (registry/mailboxes.ensure_campaigns)."""
+    from us_outbound.registry.mailboxes import ensure_campaigns, held_words
 
-    if args.in_flight and not (args.action == "ensure" and args.fix):
+    if args.in_flight and not args.fix:
         raise Refused("--in-flight goes with ensure --fix")
-    if args.action == "show":
-        # Read-only: each owner's campaign as Instantly holds it, one JSON line each, for checking what
-        # Instantly kept of the settings and step templates it was given (docs/phase0-confirm.md).
-        _only_reads(args)
-        ctx = factory("campaigns_show", False)
-        for owner in ctx.settings.owners():
-            name = campaign_name(owner)
-            body = ctx.clients.instantly.get_campaign(name)
-            print(json.dumps({"campaign": name, "instantly": body}, sort_keys=True, default=str))
-        return 0
     ctx = factory("campaigns_ensure", args.live, operator=True)
     summary = run_job(ctx, lambda c: ensure_campaigns(c, fix=args.fix, in_flight=args.in_flight))
     _print(summary)
@@ -1210,8 +991,8 @@ def cmd_campaigns(args: argparse.Namespace, factory: Factory) -> int:
 
 
 def cmd_cohorts(args: argparse.Namespace, factory: Factory) -> int:
-    """The cohort report (learn/cohorts.py; Harry, 7 Oct 2026): performance by enrolment week at fixed ages, what
-    changed between versions, or the leads in flight per campaign. Read-only."""
+    """`cohorts in-flight | changes [A B]` (learn/cohorts.py; Harry, 7 Oct 2026): the leads in flight per campaign, or
+    what changed between two config versions. Read-only; the weekly table is `report cohorts`."""
     from us_outbound.learn import cohorts
 
     ctx = factory("cohorts", False)
@@ -1219,76 +1000,63 @@ def cmd_cohorts(args: argparse.Namespace, factory: Factory) -> int:
         if len(args.versions) not in (0, 2):
             raise Refused("cohorts changes takes two config versions, or none for the last two")
         lines = cohorts.changes_lines(ctx, *args.versions)
-    elif args.action == "in-flight":
-        lines = cohorts.in_flight_lines(ctx)
     else:
         if args.versions:
             raise Refused("config versions go with `cohorts changes`")
-        lines = cohorts.lines(ctx, cut=args.cut, age=args.age, weeks=args.weeks)
+        lines = cohorts.in_flight_lines(ctx)
     for line in lines:
         print(line)
     return 0
 
 
-def cmd_suppression(args: argparse.Namespace, factory: Factory) -> int:
-    return _job("suppression_load", args.live, factory)
+# -- report: the read-only reports in one command (W2-4) ---------------------------------------------------------------
 
 
-def _fit_row(value: str | None, flag: str) -> tuple[int, int] | bool | None:
-    """--close / --some LOWEST_FIT:WEIGHT as (lowest fit, weight); --some off as False; absent as None."""
-    if not value:
-        return None
-    if flag == "--some" and value.strip().lower() == "off":
-        return False
-    try:
-        low, weight = (int(v) for v in value.split(":"))
-    except ValueError:
-        raise Refused(f"{flag} takes LOWEST_FIT:WEIGHT, like 90:10, not {value!r}") from None
-    if not (0 <= low <= 100 and 0 < weight <= 100):
-        raise Refused(f"{flag}: the lowest fit is 0 to 100 and the weight 1 to 100, not {value!r}")
-    return low, weight
+REPORTS = ("cohorts", "signals", "readout", "lookalikes", "pages", "daily", "capture")
 
 
-def cmd_lookalikes(args: argparse.Namespace, factory: Factory) -> int:
-    """show: the lookalike cells from the last lookalikes run, for the Focus tab and sourcing. fit: the accounts'
-    lookalike fits and the scores the build's lookalike rows would give, worked out in memory (Harry's check before
-    the Signals tab changes). Both read the database only and write nothing."""
-    from us_outbound.sources import lookalikes
+def cmd_report(args: argparse.Namespace, factory: Factory) -> int:
+    """`report <name>`: the read-only reports, one command (W2-4, 20 Oct 2026). capture is the one that acts with
+    --live: it deletes the canary's own lead from its campaign (replies/capture.check_only), which reaches no
+    prospect, so --live alone."""
+    name = args.name
+    if name == "capture":
+        from us_outbound.replies import capture
 
-    if args.action == "fit":
-        close, some = _fit_row(args.close, "--close"), _fit_row(args.some, "--some")
-        ctx = factory("lookalikes_fit", False)
-        try:
-            lines = lookalikes.fit_report(ctx, close, some)
-        except ValueError as exc:
-            raise Refused(str(exc)) from exc
-        for line in lines:
-            print(line)
-        return 0
-    if args.top < 1:
-        raise Refused("--top must be 1 or more")
-    ctx = factory("lookalikes_show", False)
-    for line in lookalikes.report(ctx.settings, ctx.store, top=args.top, all_bands=args.all):
-        print(line)
-    return 0
+        _, summary = _operate(factory, capture.CHECK_JOB, args.live, capture.check_only, operator=True,
+                              dry_note="the canary's lead was not deleted and its check was not recorded.")
+        return 0 if not summary.get("errors") else 2
+    _only_reads(args)
+    if name == "cohorts":
+        from us_outbound.learn import cohorts
 
+        lines = cohorts.lines(factory("cohorts", False), cut=args.cut, age=args.age, weeks=args.weeks)
+    elif name == "signals":
+        from us_outbound.learn import signal_review
 
-def cmd_pages(args: argparse.Namespace, factory: Factory) -> int:
-    """What the careers and benefits page reader has found (the database only): coverage and the decision rule."""
-    from us_outbound.sources import pages
+        lines = signal_review.lines(signal_review.review(factory("signals_review", False)))
+    elif name == "readout":
+        from us_outbound.learn import readout
 
-    ctx = factory("pages_show", False)
-    for line in pages.report(ctx):
-        print(line)
-    return 0
+        lines, _ = readout.build(factory("readout_show", False))
+    elif name == "lookalikes":
+        from us_outbound.sources import lookalikes
 
+        if args.top < 1:
+            raise Refused("--top must be 1 or more")
+        ctx = factory("lookalikes_show", False)
+        lines = lookalikes.report(ctx.settings, ctx.store, top=args.top, all_bands=args.all)
+    elif name == "pages":
+        from us_outbound.sources import pages
 
-def cmd_data(args: argparse.Namespace, factory: Factory) -> int:
-    """What the sources have stored, in aggregate (the database only; ops/data_health.py)."""
-    from us_outbound.ops import data_health
+        lines = pages.report(factory("pages_show", False))
+    else:  # daily
+        from us_outbound.learn import daily_post
 
-    ctx = factory("data_show", False)
-    for line in data_health.report(ctx):
+        ctx = factory("daily_preview", False)
+        day = daily_post.gather(ctx)
+        lines = day.lines if args.full else daily_post.compact(ctx, day)
+    for line in lines:
         print(line)
     return 0
 
@@ -1401,33 +1169,6 @@ def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def cmd_signals(args: argparse.Namespace, factory: Factory) -> int:
-    """Which signals predict replies (learn/signal_review.py), or the signal-value table (learn/signal_value.py,
-    from v_signal_value; Harry, 6 Oct 2026): read-only, the evidence for reweighting the Signals tab."""
-    if args.action == "value":
-        from us_outbound.learn import signal_value
-
-        ctx = factory("signals_value", False)
-        for line in signal_value.table_lines(signal_value.rows(ctx)):
-            print(line)
-        return 0
-    from us_outbound.learn import signal_review
-
-    for line in signal_review.lines(signal_review.review(factory("signals_review", False))):
-        print(line)
-    return 0
-
-
-def cmd_readout(args: argparse.Namespace, factory: Factory) -> int:
-    """The Monday readout (learn/readout.py), printed here and posted nowhere: read-only."""
-    from us_outbound.learn import readout
-
-    lines, _ = readout.build(factory("readout_show", False))
-    for line in lines:
-        print(line)
-    return 0
-
-
 def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     """The seed-inbox test of the opt-out (ops/seed.py): add a seed lead to a campaign, or read seed leads back."""
     from us_outbound.ops import seed
@@ -1479,17 +1220,6 @@ def cmd_seed(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
-def cmd_capture(args: argparse.Namespace, factory: Factory) -> int:
-    """`capture check` (replies/capture.py): the last canary's check alone, the day after it went (the weekly capture
-    job does it at its next run otherwise). An operator command: its one write takes the seed inbox's own lead out of
-    its campaign, which reaches no prospect, so --live alone."""
-    from us_outbound.replies import capture
-
-    _, summary = _operate(factory, capture.CHECK_JOB, args.live, capture.check_only, operator=True,
-                          dry_note="the canary's lead was not deleted and its check was not recorded.")
-    return 0 if not summary.get("errors") else 2
-
-
 def cmd_killrules(args: argparse.Namespace, factory: Factory) -> int:
     """The kill-rule holds in force (learn/kill_rules.py), and lifting one once Harry has checked it."""
     from us_outbound.learn import kill_rules
@@ -1539,7 +1269,8 @@ def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
     if args.list:
         return cmd_schedule(args, factory)
     return scheduler.Scheduler(max_parallel=scheduler.max_parallel_from_env(), at_start=scheduler.AT_START,
-                               store_factory=scheduler.heartbeat_store).run()
+                               store_factory=scheduler.heartbeat_store, lock=scheduler.scheduler_lock(),
+                               fail=scheduler.watchdog_fail).run()
 
 
 # -- parser and entrypoint ----------------------------------------------------------------
@@ -1548,35 +1279,22 @@ def cmd_scheduler(args: argparse.Namespace, factory: Factory) -> int:
 HELP = ("Spill's US Outbound engine. Dry-run by default. `--live` makes a command act. Anything that reaches a "
         "prospect (start, replies send, every scheduled job) also needs live_sending = yes in the "
         "synced settings.")
-# Build and duplicate commands (4 Oct 2026): each still works as before, but `--help` lists only what Harry uses.
-HIDDEN = frozenset({"unenrol", "rescore", "dry-run", "db", "hubspot", "suppression", "lookalikes", "pages",
-                    "data", "scheduler", "verify"})
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="us-outbound", description=HELP)
-    sub = p.add_subparsers(dest="command", required=True)
-    live = argparse.ArgumentParser(add_help=False)
-    live.add_argument("--live", action="store_true",
-                      help="act for real (anything that reaches a prospect also needs live_sending = yes)")
+@dataclass(frozen=True)
+class Command:
+    """One row of the command table: its name, its line in --help, what runs it, whether it takes --live, and its own
+    arguments (args adds them to its parser)."""
 
-    def command(name: str, about: str, fn: Callable[..., int], *, takes_live: bool = False) -> argparse.ArgumentParser:
-        """A subcommand; a hidden one has no help=, so argparse leaves it out of the list (it still parses)."""
-        kw: dict[str, Any] = {"description": about, "parents": [live] if takes_live else []}
-        if name not in HIDDEN:
-            kw["help"] = about
-        parser = sub.add_parser(name, **kw)
-        parser.set_defaults(fn=fn)
-        return parser
+    name: str
+    about: str
+    fn: Callable[[argparse.Namespace, Factory], int]
+    live: bool = False
+    args: Callable[[argparse.ArgumentParser], None] | None = None
 
-    # What Harry uses, in the order `--help` lists it.
-    command("status", "live_sending, what waits for you, jobs, mailboxes, campaigns and the go-live checks",
-            cmd_status)
-    dp = command("daily", "the daily post as it would read now (read-only; posts nothing)", cmd_daily)
-    dp.add_argument("--full", action="store_true", help="every section: sources, labels, mailboxes, credits")
+
+def _accounts_args(ac: argparse.ArgumentParser) -> None:
     # The choices are written out here, so --help does not import the view (ops/accounts_view.py STATUSES, TIERS).
-    ac = command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV "
-                 "(read-only)", cmd_accounts)
     ac.add_argument("domain", nargs="?", metavar="DOMAIN",
                     help="one company in full: its facts, its contacts with their emails, signals, events and Slack "
                          "cards (a domain or a web address)")
@@ -1595,83 +1313,74 @@ def build_parser() -> argparse.ArgumentParser:
                          "with no contact gets one row), the same filters, times in UK time. It holds personal data "
                          "(names and emails): save it with `railway ssh -- us-outbound accounts --csv > "
                          "companies.csv`, keep it private and delete it when you are done")
-    command("sync", "bring the sheet's edits into force now (the same as settings sync)", cmd_sync, takes_live=True)
-    command("start", "sync the sheet, then resume the campaigns and enrollment", cmd_start, takes_live=True)
-    so = command("stop", "pause every US Outbound campaign and enrollment (the brake)", cmd_stop, takes_live=True)
+
+
+def _stop_args(so: argparse.ArgumentParser) -> None:
     so.add_argument("--no-db", action="store_true",
                     help="the database is down: pause the campaigns through Instantly alone (no settings, no "
                          "operator_stop row; run stop --live again once it is back)")
 
-    rp = command("replies", "the replies waiting, without Slack: list, send the draft (or your text), or skip",
-                 cmd_replies, takes_live=True)
+
+def _replies_args(rp: argparse.ArgumentParser) -> None:
     rp.add_argument("action", choices=["list", "send", "skip", "approve"], help="send = ✅ (approve)")
     rp.add_argument("item_id", nargs="?", help="send, skip: the id `replies list` shows (or its first characters)")
-    rp.add_argument("--text", "--edit", dest="edit",
-                    help="send: send this text instead of the draft (recorded as edited)")
+    rp.add_argument("--text", "--edit", dest="edit", help="send: send this text instead of the draft (recorded as edited)")
 
-    sg = command("signals", "which signals predict replies (review), or the signal-value table (value); read-only",
-                 cmd_signals)
-    sg.add_argument("action", choices=["review", "value"],
-                    help="review: each signal's verdict from the events; value: the table, with meetings, against "
-                         "the companies without it")
-    command("readout", "the Monday readout for last week, printed here and posted nowhere (read-only)", cmd_readout)
-    # The choices are written out here, so --help does not import the report (learn/cohorts.py CUTS, AGES).
-    ch = command("cohorts", "each enrolment week's results at 7, 14, 21 and 28 days; what changed between versions "
-                 "(changes); the leads in flight (in-flight). Read-only", cmd_cohorts)
-    ch.add_argument("action", nargs="?", choices=["changes", "in-flight"],
-                    help="changes: what differs between two config versions (default: the last two); in-flight: "
-                         "each campaign's leads with a step still to send")
-    ch.add_argument("versions", nargs="*", metavar="VERSION", help="changes: two config versions, older first")
-    ch.add_argument("--cut", default="all",
-                    choices=["all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm",
-                             "opener_arm", "config_version"],
-                    help="split each week by this (default all)")
-    ch.add_argument("--age", type=int, choices=[7, 14, 21, 28], help="only this age, in days after email 1")
-    ch.add_argument("--weeks", type=int, default=8, help="how many enrolment weeks, the latest first (default 8)")
-    ts = command("test", "start a test on the Tests tab, or read it at a pre-registered look", cmd_test,
-                 takes_live=True)
-    ts.add_argument("action", choices=["start", "read"],
-                    help="read refuses before the test's first look (its looks, then read_date), so nobody peeks")
-    ts.add_argument("test_id")
 
-    sd = command("seed", "the seed-inbox test of the unsubscribe link: send a seed email, or check it",
-                 cmd_seed, takes_live=True)
-    sd.add_argument("action", choices=["send", "check"])
-    sd.add_argument("address", nargs="?", help="send: the seed inbox (one of ours, never a prospect's)")
-    sd.add_argument("--owner", help="send: whose campaign sends it, e.g. \"Hannah Spalding\"")
-    sd.add_argument("--industry", help="send: whose Copy row to use (default: the first active industry)")
-    sd.add_argument("--role", help="send: the copy role (default: People leader)")
-    sd.add_argument("--subject", choices=["personal", "copy"], default="copy",
-                    help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
-                         "s1_subject, the default)")
+def _handcheck_args(hc: argparse.ArgumentParser) -> None:
+    hc.add_argument("action", choices=["show", "approve", "export", "migrate-tab"])
+    hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
+                    help="approve: accounts to leave out (ids or domains)")
 
-    cp = command("capture", "the reply read's canary: check that the seed inbox's answer to the last one came back",
-                 cmd_capture, takes_live=True)
-    cp.add_argument("action", choices=["check"])
 
-    kr = command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, takes_live=True)
+def _killrules_args(kr: argparse.ArgumentParser) -> None:
     kr.add_argument("action", choices=["show", "clear"])
     kr.add_argument("item", nargs="?", help="clear: the item id")
 
-    mb = command("mailbox", "add, pause, retire or check a mailbox", cmd_mailbox, takes_live=True)
+
+def _mailbox_args(mb: argparse.ArgumentParser) -> None:
     mb.add_argument("action", choices=["add", "pause", "retire", "check"])
     mb.add_argument("address", nargs="?")
     mb.add_argument("--owner", help="the real person named on the address (add)")
     mb.add_argument("--domain", help="the address's domain (add; defaults to it)")
     mb.add_argument("--daily-cap", type=int, default=30, help="sends per day (add; at most 30)")
     mb.add_argument("--fix", action="store_true",
-                    help="check: also set each sender name to its owner's full name, create missing campaigns "
-                         "and put drifted ones right (campaigns ensure --fix)")
+                    help="check: also set each sender name to its owner's full name, create missing campaigns and put "
+                         "drifted ones right (campaigns ensure --fix)")
 
-    cp = command("campaigns", "show each sender's campaign, or create them (paused) and put drift right",
-                 cmd_campaigns, takes_live=True)
-    cp.add_argument("action", choices=["ensure", "show"])
+
+def _campaigns_args(cp: argparse.ArgumentParser) -> None:
+    cp.add_argument("action", choices=["ensure"])
     cp.add_argument("--fix", action="store_true", help="put drifted settings and sending lists right")
     cp.add_argument("--in-flight", action="store_true",
                     help="ensure --fix: also apply drift in the steps, delays or text_only to campaigns with leads in "
                          "flight (held otherwise; it reaches every lead's remaining emails, and is logged)")
 
-    co = command("copy", "check, preview, QA (task model) or draft (writing model) copy", cmd_copy, takes_live=True)
+
+def _cohorts_args(ch: argparse.ArgumentParser) -> None:
+    ch.add_argument("action", choices=["changes", "in-flight"],
+                    help="changes: what differs between two config versions (default: the last two); in-flight: each "
+                         "campaign's leads with a step still to send")
+    ch.add_argument("versions", nargs="*", metavar="VERSION", help="changes: two config versions, older first")
+
+
+def _test_args(ts: argparse.ArgumentParser) -> None:
+    ts.add_argument("action", choices=["start", "read"],
+                    help="read refuses before the test's first look (its looks, then read_date), so nobody peeks")
+    ts.add_argument("test_id")
+
+
+def _labels_args(lb: argparse.ArgumentParser) -> None:
+    lb.add_argument("action", choices=["set", "show", "eval"])
+    lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
+    lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
+    lb.add_argument("--from-corrections", action="store_true",
+                    help="eval: also score the companies corrected by hand, expecting their new label")
+    lb.add_argument("--from-sample", action="store_true",
+                    help="eval: also score the companies judged on the Label sample tab, expecting their right label")
+
+
+def _copy_args(co: argparse.ArgumentParser) -> None:
     co.add_argument("action", choices=["check", "preview", "qa", "draft"])
     co.add_argument("--version", action="append", help="a copy_version (repeatable)")
     co.add_argument("--industry", help="an Industries label, an industry group, or General")
@@ -1684,7 +1393,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="preview --opener: the line for a contact who is the new People leader (opener_self)")
     co.add_argument("--generic", action="store_true",
                     help="preview --opener: the generic line, for an account with no signal line (General "
-                         "opener_generic_*; Control accounts too)")
+                         "opener_generic_*)")
     co.add_argument("--account", metavar="DOMAIN",
                     help="preview: a stored account, its contact and the opener enrol would give it")
     co.add_argument("--subject", choices=["personal", "copy"],
@@ -1696,84 +1405,134 @@ def build_parser() -> argparse.ArgumentParser:
                     help="qa: only the rows of industries active on the Industries tab, and General's")
     co.add_argument("--synced", action="store_true", help="use the synced settings, not the sheet as it is now")
 
-    st = command("settings", "sync the sheet, load the build's tabs or notes into it, or create it", cmd_settings,
-                 takes_live=True)
-    st.add_argument("action", choices=["sync", "load", "bootstrap"])
-    st.add_argument("--force", action="store_true", help="bootstrap even if a sheet id is set")
+
+def _seed_args(sd: argparse.ArgumentParser) -> None:
+    sd.add_argument("action", choices=["send", "check"])
+    sd.add_argument("address", nargs="?", help="send: the seed inbox (one of ours, never a prospect's)")
+    sd.add_argument("--owner", help="send: whose campaign sends it, e.g. \"Hannah Spalding\"")
+    sd.add_argument("--industry", help="send: whose Copy row to use (default: the first active industry)")
+    sd.add_argument("--role", help="send: the copy role (default: People leader)")
+    sd.add_argument("--subject", choices=["personal", "copy"], default="copy",
+                    help="send: email 1's subject: personal (General email1_subject) or copy (the Copy row's "
+                         "s1_subject, the default)")
+
+
+def _settings_args(st: argparse.ArgumentParser) -> None:
+    st.add_argument("action", choices=["load"])
     st.add_argument("--tab", action="append",
                     choices=["General", "Industries", "Copy", "Roles", "Signals", "Focus", "Tests"],
-                    help="load: the tab (default General, Industries, Copy and Roles)")
+                    help="the tab (default General, Industries, Copy and Roles)")
     st.add_argument("--take", action="append", metavar="COLUMN",
-                    help="load: let the build's value win for a column Harry owns (Industries active, priority; "
-                         "any Signals column, like weight; General note)")
+                    help="let the build's value win for a column Harry owns (Industries active, priority; any "
+                         "Signals column, like weight; General note)")
     st.add_argument("--keep", action="append", metavar="COLUMN",
-                    help="load: keep the sheet's value in this column for this load, where the build's would win "
-                         "(an edit made on the sheet, like a page_faqs line)")
-    st.add_argument("--set", action="append", metavar="KEY=VALUE", help="load: a General value Harry has decided")
+                    help="keep the sheet's value in this column for this load, where the build's would win (an edit "
+                         "made on the sheet, like a page_faqs line)")
+    st.add_argument("--set", action="append", metavar="KEY=VALUE", help="a General value Harry has decided")
     st.add_argument("--replace-drafts", action="store_true",
-                    help="load: replace the Copy rows Harry has not approved with the build's (approved rows stay)")
+                    help="replace the Copy rows Harry has not approved with the build's (approved rows stay)")
 
-    hc = command("handcheck", "this week's hand-check: show it, or approve it; export every decided row of the "
-                 "Hand-check tab to the database; or move the tab to its new columns (migrate-tab)", cmd_handcheck,
-                 takes_live=True)
-    hc.add_argument("action", choices=["show", "approve", "export", "migrate-tab"])
-    hc.add_argument("--pull", nargs="+", action="extend", metavar="ACCOUNT_ID",
-                    help="approve: accounts to leave out (ids or domains)")
 
-    lb = command("labels", "the industry label check: check the queue (audit), score the model (eval), set a "
-                 "company's label, show its label and history, or draw a sample for you to judge by hand (sample)",
-                 cmd_labels, takes_live=True)
-    lb.add_argument("action", choices=["audit", "eval", "set", "show", "sample"])
-    lb.add_argument("domain", nargs="?", help="set, show: the company's domain")
-    lb.add_argument("label", nargs="?", help="set: the Industries label, like \"Fintech\"")
-    lb.add_argument("--limit", type=int, help="audit: ask about at most this many companies (default: all)")
-    lb.add_argument("--from-corrections", action="store_true",
-                    help="eval: also score the companies corrected by hand, expecting their new label")
-    lb.add_argument("--from-sample", action="store_true",
-                    help="eval: also score the companies judged on the Label sample tab, expecting their right label")
-    lb.add_argument("--size", type=int, help="sample: how many companies to draw (default 50)")
-    lb.add_argument("--score", action="store_true", help="sample: read your verdicts back from the tab and count them")
-    rl = command("relabel", "put the companies in the queue under the industry labels the rules give now",
-                 cmd_relabel, takes_live=True)
-    rl.add_argument("--all", action="store_true", help="list every company that changes, not only the counts")
-    er = command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, takes_live=True)
+def _report_args(rp: argparse.ArgumentParser) -> None:
+    # The choices are written out here, so --help does not import the reports (learn/cohorts.py CUTS, AGES).
+    rp.add_argument("name", choices=list(REPORTS),
+                    help="cohorts: each enrolment week at 7, 14, 21 and 28 days; signals: which signals predict "
+                         "replies; readout: the Monday readout for last week; lookalikes: the top lookalike cells; "
+                         "pages: the careers and benefits page reader's coverage; daily: the daily post as it would "
+                         "read now; capture: the reply read's canary checked by hand")
+    rp.add_argument("--cut", default="all",
+                    choices=["all", "tier", "angle", "industry_group", "sender", "copy_version", "subject_arm",
+                             "opener_arm", "config_version"], help="cohorts: split each week by this (default all)")
+    rp.add_argument("--age", type=int, choices=[7, 14, 21, 28], help="cohorts: only this age, in days after email 1")
+    rp.add_argument("--weeks", type=int, default=8, help="cohorts: how many enrolment weeks, the latest first")
+    rp.add_argument("--top", type=int, default=20, help="lookalikes: how many cells to list (default 20)")
+    rp.add_argument("--all", action="store_true", help="lookalikes: every size band, not only 10 to 249 staff")
+    rp.add_argument("--full", action="store_true", help="daily: every section: sources, labels, mailboxes, credits")
+
+
+def _erase_args(er: argparse.ArgumentParser) -> None:
     er.add_argument("--email", required=True)
 
-    command("schedule", "the job table and each job's next run (UK time)", cmd_schedule)
-    rn = command("run", "run one job now (what the scheduler starts)", cmd_run, takes_live=True)
-    rn.add_argument("job")
 
-    # Hidden: build and duplicate commands, unchanged.
-    un = command("unenrol", "remove a month's leads from their campaigns", cmd_unenrol, takes_live=True)
+def _unenrol_args(un: argparse.ArgumentParser) -> None:
     un.add_argument("--month", required=True, help="YYYY-MM")
-    vf = command("verify", "one-off: park the companies left out while their industry was switched off (W1-4)",
-                 cmd_verify, takes_live=True)
+
+
+def _verify_args(vf: argparse.ArgumentParser) -> None:
     vf.add_argument("action", choices=["migrate-parked"])
-    command("rescore", "run the score job", cmd_rescore, takes_live=True)
-    dr = command("dry-run", "run a job in dry-run", cmd_dry_run)
-    dr.add_argument("job")
-    db = command("db", "create the tables and views in DATABASE_URL (prints them unless --live)", cmd_db, takes_live=True)
+
+
+def _db_args(db: argparse.ArgumentParser) -> None:
     db.add_argument("action", choices=["apply"])
-    hs = command("hubspot", "the ids for the General tab (reads only)", cmd_hubspot, takes_live=True)
-    hs.add_argument("action", choices=["ids"])
-    sp = command("suppression", "load HubSpot opt-outs and bounces", cmd_suppression, takes_live=True)
-    sp.add_argument("action", choices=["load"])
-    lk = command("lookalikes", "the top lookalike cells from Spill's HubSpot customers, or the accounts' fits",
-                 cmd_lookalikes)
-    lk.add_argument("action", choices=["show", "fit"])
-    lk.add_argument("--top", type=int, default=20, help="how many cells to list (default 20)")
-    lk.add_argument("--all", action="store_true", help="every size band, not only 10 to 249 staff")
-    lk.add_argument("--close", metavar="FIT:WEIGHT", help="fit: try Close match at this lowest fit and weight, like 90:10")
-    lk.add_argument("--some", metavar="FIT:WEIGHT", help="fit: try Some match from this lowest fit up to Close match's, "
-                    "like 60:4, or off")
-    pg = command("pages", "what the careers and benefits page reader has found, and its coverage", cmd_pages)
-    pg.add_argument("action", choices=["show"])
-    dt = command("data", "what the sources have stored, in aggregate (read-only)", cmd_data)
-    dt.add_argument("action", choices=["show"])
-    sc = command("scheduler", "the always-on worker: start every job on its schedule", cmd_scheduler)
+
+
+def _run_args(rn: argparse.ArgumentParser) -> None:
+    rn.add_argument("job")
+    rn.add_argument("--due", metavar="YYYY-MM-DDTHH:MM",
+                    help="the minute (UTC) the scheduler started it for: the run claims it, so a second start for the "
+                         "same minute runs nothing")
+
+
+def _scheduler_args(sc: argparse.ArgumentParser) -> None:
     sc.add_argument("--list", action="store_true", help="print the job table instead (same as `schedule`)")
 
-    sub.metavar = "{" + ",".join(name for name in sub.choices if name not in HIDDEN) + "}"
+
+# The command table (W2-4, 20 Oct 2026; RS P0-10): every command, in --help's order. Every alert and doc that names a
+# command names one of these (tests/test_cli.py greps them).
+COMMANDS: tuple[Command, ...] = (
+    Command("status", "live_sending, what waits for you, jobs, mailboxes, campaigns and the go-live checks", cmd_status),
+    Command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV (read-only)",
+            cmd_accounts, args=_accounts_args),
+    Command("sync", "bring the sheet's edits into force now", cmd_sync, live=True),
+    Command("start", "sync the sheet, then resume the campaigns and enrolment", cmd_start, live=True),
+    Command("stop", "pause every US Outbound campaign and enrolment (the brake)", cmd_stop, live=True, args=_stop_args),
+    Command("replies", "the replies waiting, without Slack: list, send the draft (or your text), or skip", cmd_replies,
+            live=True, args=_replies_args),
+    Command("handcheck", "this week's hand-check: show it, or approve it; export every decided row of the Hand-check "
+            "tab to the database; or move the tab to its new columns (migrate-tab)", cmd_handcheck, live=True,
+            args=_handcheck_args),
+    Command("killrules", "the kill-rule holds in force, or lift one", cmd_killrules, live=True, args=_killrules_args),
+    Command("mailbox", "add, pause, retire or check a mailbox", cmd_mailbox, live=True, args=_mailbox_args),
+    Command("campaigns", "create the campaigns (paused) and put drift right (ensure)", cmd_campaigns, live=True,
+            args=_campaigns_args),
+    Command("cohorts", "the leads in flight per campaign (in-flight), or what changed between two config versions "
+            "(changes); read-only", cmd_cohorts, args=_cohorts_args),
+    Command("test", "start a test on the Tests tab, or read it at a pre-registered look", cmd_test, live=True,
+            args=_test_args),
+    Command("labels", "a company's industry label: set it or show it; or score the label check (eval)", cmd_labels,
+            live=True, args=_labels_args),
+    Command("copy", "check, preview, QA (task model) or draft (writing model) copy", cmd_copy, live=True,
+            args=_copy_args),
+    Command("seed", "the seed-inbox test of the unsubscribe link: send a seed email, or check it", cmd_seed,
+            live=True, args=_seed_args),
+    Command("settings", "load the build's tabs or notes into the sheet", cmd_settings, live=True, args=_settings_args),
+    Command("report", "a read-only report: cohorts, signals, readout, lookalikes, pages, daily; or the reply read's "
+            "canary checked by hand (capture)", cmd_report, live=True, args=_report_args),
+    Command("erase", "an erasure request: remove a person everywhere we hold them", cmd_erase, live=True,
+            args=_erase_args),
+    Command("unenrol", "take a month's leads out of their campaigns, recorded as stopped", cmd_unenrol, live=True,
+            args=_unenrol_args),
+    Command("verify", "one-off: park the companies left out while their industry was switched off (W1-4)", cmd_verify,
+            live=True, args=_verify_args),
+    Command("db", "create the tables and views in DATABASE_URL (prints them unless --live)", cmd_db, live=True,
+            args=_db_args),
+    Command("schedule", "the job table and each job's next run (UK time)", cmd_schedule),
+    Command("run", "run one job now (what the scheduler starts)", cmd_run, live=True, args=_run_args),
+    Command("scheduler", "the always-on worker: start every job on its schedule", cmd_scheduler, args=_scheduler_args),
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="us-outbound", description=HELP)
+    sub = p.add_subparsers(dest="command", required=True)
+    live = argparse.ArgumentParser(add_help=False)
+    live.add_argument("--live", action="store_true",
+                      help="act for real (anything that reaches a prospect also needs live_sending = yes)")
+    for c in COMMANDS:
+        parser = sub.add_parser(c.name, help=c.about, description=c.about, parents=[live] if c.live else [])
+        parser.set_defaults(fn=c.fn)
+        if c.args is not None:
+            c.args(parser)
     return p
 
 

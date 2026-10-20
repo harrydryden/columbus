@@ -21,7 +21,7 @@ from tests.test_enrol import accounts3 as enrol_accounts
 from us_outbound.clients.db import LockTimeout, MemoryStore
 from us_outbound.clients.guard import Guard
 from us_outbound.enrol import enrol
-from us_outbound.ops import heartbeat
+from us_outbound.ops import health
 from us_outbound.scoring import score
 from us_outbound.settings.defaults import default_tabs
 from us_outbound.settings.model import State
@@ -186,7 +186,7 @@ def test_a_rescore_that_finds_the_lock_held_past_the_wait_skips(monkeypatch):
         b = make_context(S, now=NOW.replace(hour=7), store=store, job="B")
         out = score.rescore(b)
         assert out == {"skipped": True, "reason": "rescore already running"}
-        assert heartbeat.summary_status(out) == heartbeat.SKIPPED
+        assert health.summary_status(out) == health.SKIPPED
     finally:
         go.set()
         ta.join(10)

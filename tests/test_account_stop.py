@@ -50,12 +50,12 @@ def test_a_refused_stop_is_told_even_when_a_later_clean_run_is_the_latest(defaul
     """The whole-wave review's probe: Jane opts out in HubSpot while her lead sits in a campaign other than the stored
     one, so account_stop is the only thing that could stop her sequence, and the guard refuses it. The :22 run refuses
     and writes the marker; the :37 run is clean; at the next :05, heartbeat_check reads only the :37 run. Before, the
-    refusing run's one errors line was the only signal, so job_errors.check found nothing and nobody was told. Now the
+    refusing run's one errors line was the only signal, so health.check found nothing and nobody was told. Now the
     sweep posts it to the alert channel itself, once: not again from the clean run, nor from heartbeat_check."""
     from datetime import timedelta
 
-    from us_outbound.ops import job_errors
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops import health
+    from us_outbound.ops.health import run_job
 
     w = in_flight_world(default_settings)
     w.lead("L-jane", JANE, 1, campaign="cmp-harry")
@@ -71,7 +71,7 @@ def test_a_refused_stop_is_told_even_when_a_later_clean_run_is_the_latest(defaul
     assert (second["to_stop"], second["errors"], second["refused"]) == (0, [], [])
     assert "refused_alert" not in second
     w.at(t0 + timedelta(minutes=58))
-    checked = job_errors.check(w.ctx, ["sync_outcomes"])
+    checked = health.report_errors(w.ctx, ["sync_outcomes"])
     assert checked["found"] == [] and len(refused_posts(w)) == 1  # told once, by the sweep
 
 
@@ -80,8 +80,8 @@ def test_a_refused_stop_whose_alert_failed_is_tried_again_and_seen_by_heartbeat_
     has it if that run is the latest), and the next run posts it and is clean; the run after that says nothing."""
     from datetime import timedelta
 
-    from us_outbound.ops import job_errors
-    from us_outbound.ops.heartbeat import run_job
+    from us_outbound.ops import health
+    from us_outbound.ops.health import run_job
 
     w = in_flight_world(default_settings)
     w.lead("L-jane", JANE, 1, campaign="cmp-harry")
@@ -93,7 +93,7 @@ def test_a_refused_stop_whose_alert_failed_is_tried_again_and_seen_by_heartbeat_
     [line] = first["errors"]
     assert line.startswith("k-jane: not stopped, the guard refused it") and "stop it by hand in Instantly" in line
     [hb] = [r for r in w.ctx.store.tables["heartbeats"] if r["job"] == "sync_outcomes"]
-    [finding] = job_errors.findings("sync_outcomes", hb)
+    [finding] = health.findings("sync_outcomes", hb)
     assert (finding.kind, finding.texts) == ("errors", [line])
     w.transport.route("POST", "chat.postMessage", fn=w._post)  # Slack is back
     w.at(t0 + timedelta(minutes=15))

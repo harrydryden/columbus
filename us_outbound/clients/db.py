@@ -139,10 +139,12 @@ COLUMNS: dict[str, frozenset[str]] = {
         "event_id", "account_id", "source", "fact", "value", "quote", "source_url", "observed_at"}),
     "events": frozenset({
         "event_id", "contact_id", "account_id", "type", "step", "mailbox", "reply_class", "reply_text",
-        "language_terms", "competitor_named", "approval", "approved_by", "occurred_at", "source"}),
+        "language_terms", "competitor_named", "approval", "approved_by", "occurred_at", "source",
+        "analytics_source"}),  # W2-4 (20 Oct 2026): a booker's hs_analytics_source (crm/readback.py)
     "suppression": frozenset({"email_sha256", "domain", "reason", "source", "added_at", "expires_at"}),
     "settings": frozenset({"tab", "key", "values", "effective_from", "effective_to", "synced_at"}),
-    "heartbeats": frozenset({"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error"}),
+    "heartbeats": frozenset({"run_id", "job", "started_at", "finished_at", "status", "dry_run", "detail", "error",
+                             "duration_s", "exit_code"}),  # the last two from W2-4 (20 Oct 2026; ops/health.py)
     "credit_ledger": frozenset({
         "entry_id", "system", "job", "run_id", "account_id", "credits", "usd", "occurred_at", "note"}),
     "hitl_items": frozenset({
@@ -239,6 +241,11 @@ class Store(ABC):
     @abstractmethod
     def upsert(self, table: str, rows: Iterable[dict]) -> int:
         """Insert rows, replacing any existing row with the same primary key (TABLE_KEYS)."""
+
+    @abstractmethod
+    def claim(self, table: str, row: dict) -> bool:
+        """Insert the row unless one with its primary key exists; True if it was inserted. One statement, so of two
+        callers with the same key exactly one gets True (the scheduler's claim row, ops/health.run_job)."""
 
     @abstractmethod
     def select(self, table: str, where: Where | None = None) -> list[dict]: ...
@@ -433,6 +440,18 @@ class MemoryStore(Store):
             else:
                 existing.append(r)
         return len(rows)
+
+    def claim(self, table, row):
+        row = _stored(table, row)
+        self._authorize("insert", table, write=True)
+        key = TABLE_KEYS[table]
+        if key is None:
+            raise ValueError(f"{table} has no key to claim")
+        k = tuple(row.get(c) for c in key)
+        if any(tuple(old.get(c) for c in key) == k for old in self.tables[table]):
+            return False
+        self.tables[table].append(row)
+        return True
 
     def select(self, table, where=None):
         self._authorize("select", table, write=False)
@@ -630,6 +649,17 @@ class PostgresStore(Store):
                 cur.executemany(query, params)
         return len(rows)
 
+    def claim(self, table, row):
+        row = dict(row)
+        self._authorize("insert", table, write=True)
+        key = TABLE_KEYS[table]
+        if key is None:
+            raise ValueError(f"{table} has no key to claim")
+        cols = sorted(set(row) | set(key))
+        query = SQL("{} ON CONFLICT ({}) DO NOTHING").format(
+            self._insert_sql(table, cols), SQL(", ").join(Identifier(c) for c in key))
+        return self._connection().execute(query, self._row(table, cols, row)).rowcount == 1
+
     def _upsert_sql(self, table: str, key: tuple[str, ...], cols: list[str]) -> Composable:
         sets = [SQL("{0} = EXCLUDED.{0}").format(Identifier(c)) for c in cols if c not in key]
         action = SQL("DO UPDATE SET {}").format(SQL(", ").join(sets)) if sets else SQL("DO NOTHING")
@@ -689,3 +719,74 @@ class PostgresStore(Store):
                 return conn.execute(sql, params, binary=True).fetchall()
         except psycopg.errors.ReadOnlySqlTransaction as exc:
             raise GuardViolation("Store.query is read only; it may not change data") from exc
+
+
+# -- the scheduler's lock (W2-4, 20 Oct 2026; RS P0-4) -----------------------------------------------------------
+
+
+class LockUnavailable(Exception):
+    """The database could not be reached to take or check the lock. The message names the error's type only (a
+    connection error's text can carry the host)."""
+
+
+class SessionLock:
+    """A Postgres session advisory lock on a connection of its own (ops/scheduler.py: one live scheduler).
+
+    pg_try_advisory_lock never waits: try_acquire() says at once whether this session holds the lock. A session lock
+    is released when its connection ends, so the old container's SIGTERM (or its death) frees it; the connection asks
+    the server for TCP keepalives every 10 s after 30 s idle, so a peer that vanished without a goodbye is noticed in
+    about a minute, not after the system's two hours. held() checks the connection is still alive: a lock whose
+    connection dropped is gone, and the caller must take it again before it runs anything."""
+
+    KEEPALIVE = "-c tcp_keepalives_idle=30 -c tcp_keepalives_interval=10 -c tcp_keepalives_count=3"
+
+    def __init__(self, guard: Guard, dsn: str, key: int, *, connect: Callable[[], Any] | None = None,
+                 connect_timeout: int = 5, statement_timeout_ms: int = 5000):
+        self.guard, self.dsn, self.key = guard, dsn, key
+        self._connect = connect
+        self._kwargs: dict[str, Any] = {
+            "connect_timeout": connect_timeout, "autocommit": True,
+            "options": f"{self.KEEPALIVE} -c statement_timeout={statement_timeout_ms}",
+            "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 3}
+        self._conn: Any = None
+        self._held = False
+
+    def _connection(self) -> Any:
+        if self._conn is None or self._conn.closed:
+            self._held = False
+            self._conn = self._connect() if self._connect is not None else psycopg.connect(self.dsn, **self._kwargs)
+        return self._conn
+
+    def try_acquire(self) -> bool:
+        """True once this session holds the lock (at once if it already does); LockUnavailable if Postgres cannot be
+        reached."""
+        self.guard.authorize("db", Op("advisory_lock", target=f"{DB_SCHEMA}.scheduler_lock", write=False))
+        try:
+            row = self._connection().execute("SELECT pg_try_advisory_lock(%s) AS got", [self.key]).fetchone()
+        except psycopg.Error as exc:
+            self.close()
+            raise LockUnavailable(type(exc).__name__) from exc
+        got = next(iter(row.values()), False) if isinstance(row, Mapping) else row[0]
+        self._held = bool(got)
+        return self._held
+
+    def held(self) -> bool:
+        """Whether the lock is still held: this session took it and its connection still answers."""
+        if not self._held or self._conn is None or self._conn.closed:
+            self._held = False
+            return False
+        try:
+            self._conn.execute("SELECT 1")
+        except psycopg.Error:
+            self.close()
+            return False
+        return True
+
+    def close(self) -> None:
+        """Drop the connection, and with it the lock."""
+        conn, self._conn, self._held = self._conn, None, False
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

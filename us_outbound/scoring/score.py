@@ -11,7 +11,7 @@ still validates, and never matches.
 
 SPEC 9 steps:
   1. Score: the sum of every active Score signal with a fact fresher than its
-     counts_for_days, each capped at its max_weight, the total capped at score_cap.
+     counts_for_days, each capped at its max_weight, the total capped at SCORE_CAP (settings/model.py).
      A term signal with max_weight counts weight once per DISTINCT term found; without
      max_weight it counts weight once. Negative weights are allowed and the total is not
      floored at 0.
@@ -50,7 +50,7 @@ from us_outbound.logs import log
 from us_outbound.scoring import angle as angles
 from us_outbound.scoring import tiers
 from us_outbound.settings.conditions import find_terms
-from us_outbound.settings.model import AGED_FACTS, Settings, Signal
+from us_outbound.settings.model import AGED_FACTS, SCORE_CAP, Settings, Signal
 from us_outbound.settings.overrides import effective
 from us_outbound.settings.overrides import parse_value as parse_override
 from us_outbound.timeparse import uk_day, utc
@@ -391,7 +391,7 @@ def score_account(
 
     matches = [m for s in settings.active_signals()
                if (m := match_signal(s, events, today, overrides=overrides, account=acct))]
-    score = total_score(matches, settings.general.score_cap)
+    score = total_score(matches, SCORE_CAP)
     exclusion = tiers.hard_exclusion(acct, facts, settings, today)
     partner = icp.partner_category(acct, facts)
     tier_name, reason = tier(score, matches, exclusion)

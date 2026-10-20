@@ -24,8 +24,9 @@ from psycopg.rows import dict_row
 
 from us_outbound.clients.db import JSON_COLUMNS, TABLE_KEYS, LockTimeout, MemoryStore, PostgresStore
 from us_outbound.clients.guard import Guard, GuardViolation
+import us_outbound
 from us_outbound import budget
-from us_outbound.base import heartbeats
+from us_outbound.ops import health
 from us_outbound.ops import ddl, erase
 
 DSN_ENV = "US_OUTBOUND_TEST_DSN"
@@ -899,7 +900,7 @@ def test_close_and_reconnect(store):
 
 
 def test_erase_and_heartbeat_sql_run_on_postgres(store):
-    """ops/erase.py and base/heartbeats.py query the database directly; their SQL must run on it."""
+    """ops/erase.py and ops/health.py query the database directly; their SQL must run on it."""
     store.insert("contacts", [{"contact_id": "k1", "email": "Jane.Doe@Acme.com "}, {"contact_id": "k2", "email": "j@x.com"}])
     store.insert("raw_clay_contacts", [{"key": "acme.com|Jane Doe", "payload": {"email": "Jane.Doe@acme.com"}},
                                        {"key": "x.com|J", "payload": {"email": "j@x.com"}}])
@@ -915,7 +916,7 @@ def test_erase_and_heartbeat_sql_run_on_postgres(store):
     assert [i["item_id"] for i in items] == ["i1"] and [e["event_id"] for e in events] == ["e1"]
     now = datetime.now(UTC)
     store.insert("heartbeats", [{"run_id": "r1", "job": "enrol", "status": "ok", "started_at": now, "finished_at": now}])
-    runs = heartbeats.latest_runs(store)
+    runs = health.latest_runs(store)
     assert runs["enrol"]["run_id"] == "r1" and runs["enrol"]["last_ok_at"] == now
 
 
@@ -962,10 +963,10 @@ def test_retention_finds_the_same_stale_universe_rows_on_postgres(store):
 
 
 def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
-    """ops/job_errors.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
+    """ops/health.py reads each job's latest finished run with its detail; notify.post_once keeps its keys in
     events (Harry, 7 Oct 2026)."""
     from us_outbound.base import notify
-    from us_outbound.ops import job_errors
+    from us_outbound.ops import health
 
     now = datetime.now(UTC)
     store.insert("heartbeats", [
@@ -977,7 +978,7 @@ def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
         {"run_id": "k1", "job": "kill_rules", "status": "ok", "started_at": now - timedelta(hours=30), "detail": {}},
     ])
     ctx = SimpleNamespace(store=store, now=now)
-    runs = job_errors.latest_finished(ctx, ["enrol", "kill_rules"])
+    runs, _ = health.two_latest(ctx, ["enrol", "kill_rules"])
     assert set(runs) == {"enrol"} and runs["enrol"]["run_id"] == "e2"
     assert runs["enrol"]["detail"] == {"errors": ["latest"], "send_approvals": {"errors": []}}
     store.upsert("events", [{"event_id": "alert:apollo_floor:2026-10-07", "type": "alert", "occurred_at": now}])
@@ -988,8 +989,7 @@ def test_job_errors_sql_and_the_alert_keys_run_on_postgres(store):
 def test_the_w1_1_reads_and_writes_run_on_postgres(store):
     """W1-1 on the real database: the failure-rate query (each job's last 12 finished runs), the scheduler's error
     row for a failed run (Range on started_at, then an upsert), and the fallback's earlier versions of a tab."""
-    from us_outbound.ops import job_errors
-    from us_outbound.ops import scheduler as sch
+    from us_outbound.ops import health
     from us_outbound.settings import sync
 
     now = datetime.now(UTC)
@@ -1000,18 +1000,18 @@ def test_the_w1_1_reads_and_writes_run_on_postgres(store):
          "started_at": now - timedelta(minutes=15 * (i + 1)), "error": f"boom {i}" if i in (1, 5, 9, 13) else None}
         for i in range(14)])
     ctx = SimpleNamespace(store=store, now=now)
-    runs = job_errors.recent_runs(ctx, ["hubspot_readback"])["hubspot_readback"]
+    runs = health.recent_runs(ctx, ["hubspot_readback"])["hubspot_readback"]
     assert [r["run_id"] for r in runs] == [f"h{i}" for i in range(12)]
-    [rate] = job_errors.failure_rates(ctx, ["hubspot_readback"])
+    [rate] = health.failure_rates(ctx, ["hubspot_readback"])
     assert (rate.count, rate.texts) == (3, ["boom 1"])
     # A run the loop launched at `start`: its own row still running is set to error; none at all is written.
     start = now - timedelta(minutes=3)
     store.insert("heartbeats", [{"run_id": "m1", "job": "mailbox_health", "status": "running",
                                  "started_at": start + timedelta(seconds=2), "dry_run": False}])
-    assert sch.record_failed_run(store, "mailbox_health", start, now, -9, "timeout", 180.0) == "updated"
+    assert health.record_failed_run(store, "mailbox_health", start, now, -9, "timeout", 180.0) == "updated"
     assert store.get("heartbeats", run_id="m1")["status"] == "error"
     assert store.get("heartbeats", run_id="m1")["detail"] == {"exit_code": -9, "seconds": 180.0}
-    assert sch.record_failed_run(store, "enrol", start, now, 1, "error", 1.0) == "written"
+    assert health.record_failed_run(store, "enrol", start, now, 1, "error", 1.0) == "written"
     [row] = store.select("heartbeats", {"job": "enrol"})
     assert row["status"] == "error" and row["error"] == "exited 1 (error)"
     # Two versions of a tab: the earlier one comes back as it stood before the change.
@@ -1042,7 +1042,7 @@ def test_the_scheduler_heartbeat_store_writes_the_error_row_and_cannot_hang_the_
     hb = sch.heartbeat_store({"DATABASE_URL": dsn})
     try:
         assert hb._connection().execute("SHOW statement_timeout").fetchone()["statement_timeout"] == "5s"
-        assert sch.record_failed_run(hb, "enrol", now - timedelta(seconds=60), now, 1, "error", 60.0) == "written"
+        assert health.record_failed_run(hb, "enrol", now - timedelta(seconds=60), now, 1, "error", 60.0) == "written"
     finally:
         hb.close()
     [row] = store.select("heartbeats", {"job": "enrol"})
@@ -1068,12 +1068,136 @@ def test_the_scheduler_heartbeat_store_writes_the_error_row_and_cannot_hang_the_
         hb = sch.heartbeat_store({"DATABASE_URL": dsn})
         began = time.monotonic()
         with pytest.raises(psycopg.errors.QueryCanceled):
-            sch.record_failed_run(hb, "mailbox_health", start, now, -9, "timeout", 120.0)
+            health.record_failed_run(hb, "mailbox_health", start, now, -9, "timeout", 120.0)
         assert 4.0 <= time.monotonic() - began < 15.0  # about STATEMENT_TIMEOUT_MS, not for ever
         hb.close()
     finally:
         release.set()
         locker.join(30)
+
+
+# -- W2-4: the claim row, the scheduler lock, DDL that alters nothing on a full schema --------------------------------
+
+
+def test_a_claim_is_taken_once_on_postgres(store):
+    """Store.claim is one INSERT ... ON CONFLICT DO NOTHING: of two claims of one key exactly one is True, and the row
+    is the first claimer's. run_job on it: two starts for (enrol, 2026-10-20T11:00) leave one row and one run."""
+    from tests.fakes import make_context
+    from us_outbound.settings.model import General, Settings
+
+    row = {"run_id": "enrol:2026-10-20T11:00", "job": "enrol", "status": "running", "started_at": T0}
+    assert store.claim("heartbeats", row) is True
+    assert store.claim("heartbeats", {**row, "status": "ok"}) is False
+    assert store.get("heartbeats", run_id="enrol:2026-10-20T11:00")["status"] == "running"
+    store.delete("heartbeats", {"run_id": "enrol:2026-10-20T11:00"})
+    when, ran = datetime(2026, 10, 20, 11, 0, tzinfo=UTC), []
+    for second in (0, 1):
+        ctx = make_context(Settings(general=General()), job="enrol", now=when, store=store)
+        ctx.due, ctx.run_id = when, health.due_run_id("enrol", when)
+        health.run_job(ctx, lambda c, n=second: ran.append(n) or {})
+    assert ran == [0] and [r["run_id"] for r in store.select("heartbeats")] == ["enrol:2026-10-20T11:00"]
+    [done] = store.select("heartbeats")
+    assert done["status"] == "ok" and done["exit_code"] == 0 and done["duration_s"] >= 0
+
+
+def test_the_scheduler_lock_is_held_by_one_session_and_freed_with_its_connection(dsn):
+    """pg_try_advisory_lock on SCHEDULER_KEY: the first session holds it, a second cannot, and once the first closes
+    (its container's SIGTERM ends the connection) the second takes it at once. held() follows the connection."""
+    from us_outbound.clients.db import SessionLock
+    from us_outbound.ops import scheduler as sch
+
+    a = SessionLock(Guard(), dsn, sch.SCHEDULER_KEY)
+    b = SessionLock(Guard(), dsn, sch.SCHEDULER_KEY)
+    try:
+        assert a.try_acquire() is True and a.held() is True
+        assert b.try_acquire() is False and b.held() is False
+        a.close()
+        assert a.held() is False and b.try_acquire() is True and b.held() is True
+        b._conn.close()  # the connection dropped: the lock went with it
+        assert b.held() is False
+    finally:
+        a.close()
+        b.close()
+
+
+def test_two_scheduler_processes_one_runs_the_other_waits_and_takes_over_after_sigterm(dsn, tmp_path):
+    """RS P0-4 with real processes: scheduler A takes the lock; B, started 1 s later, logs scheduler_lock_wait and
+    runs nothing; SIGTERM to A (a redeploy) closes its lock as it stops, and B holds the lock within 5 s."""
+    import signal as signals
+    import subprocess
+    import sys
+    import time
+
+    script = tmp_path / "one_scheduler.py"
+    script.write_text(
+        "import sys\n"
+        "from us_outbound.clients.db import SessionLock\n"
+        "from us_outbound.clients.guard import Guard\n"
+        "from us_outbound.ops import scheduler as sch\n"
+        "lock = SessionLock(Guard(), sys.argv[1], sch.SCHEDULER_KEY)\n"
+        "sys.exit(sch.Scheduler([], lock=lock, fail=lambda r: print('FAIL', r, flush=True)).run())\n")
+    # The child imports the us_outbound this test imported (the tree under test), not whatever an editable
+    # install in the venv points at: the script runs from tmp_path, so the tree is not on its path otherwise.
+    tree = os.path.dirname(os.path.dirname(os.path.abspath(us_outbound.__file__)))
+    env = {**os.environ, "PYTHONUNBUFFERED": "1",
+           "PYTHONPATH": os.pathsep.join(p for p in (tree, os.environ.get("PYTHONPATH")) if p)}
+
+    def start():
+        return subprocess.Popen([sys.executable, str(script), dsn], stdout=subprocess.PIPE, text=True, env=env)
+
+    def wait_for(proc, event, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if f'"{event}"' in line:
+                return time.monotonic()
+        raise AssertionError(f"no {event} within {seconds} s")
+
+    a = start()
+    b = None
+    try:
+        wait_for(a, "scheduler_lock_held", 30)
+        time.sleep(1)
+        b = start()
+        wait_for(b, "scheduler_lock_wait", 30)
+        a.send_signal(signals.SIGTERM)
+        sent = time.monotonic()
+        assert a.wait(timeout=30) == 0
+        assert wait_for(b, "scheduler_lock_held", 10) - sent < 5.0
+    finally:
+        for p in (a, b):
+            if p is not None and p.poll() is None:
+                p.kill()
+                p.wait(10)
+            if p is not None:
+                p.stdout.close()
+
+
+def test_ddl_against_a_full_schema_runs_no_alter_and_sets_the_lock_timeout(dsn, capsys):
+    """The session database already has every column: applying the DDL again runs no ADD COLUMN (each is counted as
+    already there), under SET lock_timeout = '5s' (code-platform-ops B10)."""
+    import json
+    import re
+
+    added = [s for _, s in ddl.statements() if re.search(r"ADD COLUMN IF NOT EXISTS", s)]
+    seen = []
+
+    def connect():
+        conn = psycopg.connect(dsn)
+        real = conn.execute
+
+        def execute(query, params=None, **kw):
+            seen.append(str(query))
+            return real(query, params, **kw)
+
+        conn.execute = execute
+        return conn
+
+    ddl.apply(Guard(), dsn, dry_run=False, connect=connect)
+    assert seen[0] == ddl.LOCK_TIMEOUT and not [q for q in seen if "ADD COLUMN" in q]
+    [done] = [json.loads(line) for line in capsys.readouterr().out.splitlines()
+              if line.startswith("{") and '"ddl_apply"' in line and '"dry_run": false' in line]
+    assert done["columns_already_there"] == len(added) > 0
 
 
 # -- DB-free: the store's rules hold before any SQL ---------------------------------------------

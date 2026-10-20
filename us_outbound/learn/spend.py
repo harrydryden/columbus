@@ -18,7 +18,7 @@ rerun or a restart never repeats a line):
     its reserve, claude.cap_reached_at): replies are then classified "other" with no draft and copy QA stops.
   * The industry label check (labels.asks; Harry, 7 Oct 2026): many industry corrections at the cards, the rules and
     the model agreeing on too few companies, or the check unable to ask the model while new companies wait.
-  * Apollo's website-visitor credits while site visits are on (site_visit_domain set, site_visits scheduled):
+  * Apollo's website-visitor credits while site visits are on (SITE_VISIT_DOMAIN set, site_visits scheduled):
     under VISITOR_WARN_SHARE left, once a month. Not by pace: Apollo spends them itself each time its tracker names
     a visiting company, so credit_ledger has no record of their pace, and its answer gives no cycle dates.
 Only the highest threshold reached is asked about, so a month that jumps from 70% to 100% gets one line.
@@ -38,9 +38,9 @@ from us_outbound.base import notify, say
 from us_outbound.clients.apollo import VISITOR_CREDIT, credit_stats, credits_left
 from us_outbound.clients.claude import cap_reached_at, month_spend_usd
 from us_outbound.clients.guard import GuardViolation
-from us_outbound.context import UK, Context
+from us_outbound.context import Context
 from us_outbound.logs import log
-from us_outbound.settings.model import Settings
+from us_outbound.settings.model import SITE_VISIT_DOMAIN, SITE_VISIT_US_PATHS, Settings
 from us_outbound.settings.validate import CLAUDE_CAP_USD
 from us_outbound.timeparse import utc
 
@@ -96,8 +96,7 @@ def site_visits_on(settings: Settings) -> bool:
     """site_visits reads Apollo's visitors: a tracked domain and US paths, and the job on the schedule."""
     from us_outbound.ops.schedule import enabled_names
 
-    g = settings.general
-    return bool(g.site_visit_domain.strip() and g.site_visit_us_paths) and "site_visits" in enabled_names()
+    return bool(SITE_VISIT_DOMAIN.strip() and SITE_VISIT_US_PATHS) and "site_visits" in enabled_names()
 
 
 def _floor_skip(ctx: Context) -> str:

@@ -63,7 +63,7 @@ CAMPAIGN_SETTINGS: dict[str, Any] = {
 TRACKING_FIELDS = frozenset({"open_tracking", "link_tracking"})
 # Instantly's GET /campaigns/{id} (read 2 Oct 2026) leaves out a setting that is at its default, so a
 # setting we want false and that is missing is false. is_evergreen is never returned, so it cannot be
-# checked (confirmed live 2 Oct 2026 by `campaigns show`; what it does is still to confirm, above).
+# checked (confirmed live 2 Oct 2026 by reading the campaign back; what it does is still to confirm, above).
 NOT_RETURNED = frozenset({"is_evergreen"})
 # The opt-out every email carries (Harry, 1 Oct 2026): Instantly's own unsubscribe link, not a page
 # of ours. It goes in the campaign's step template after the lead's rendered body, since Instantly
@@ -800,6 +800,23 @@ class Instantly(HttpClient):
         if dropped:
             log("instantly_dropped", action="lead.list", dropped=dropped, reason="lead of another campaign")
         return out
+
+    def get_lead(self, name: str, lead_id: str) -> dict | None:
+        """One lead of this campaign (GET /leads/{id}), as Instantly holds it now (its status: 1 active, 2 paused,
+        3 completed); None when Instantly has no such lead, or it is in another campaign (logged). Read only: the
+        read-back after a booking's stop_lead (crm/readback.py; code-replies-crm M7)."""
+        cid = self._campaign_id(name, "lead.get", False)
+        try:
+            lead = self.request("GET", f"/leads/{_segment(lead_id)}",
+                                Op("lead.get", target=name, detail={"lead_id": lead_id}))
+        except ApiError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if str((lead or {}).get("campaign") or "") != cid:
+            log("instantly_dropped", action="lead.get", dropped=1, reason="lead of another campaign")
+            return None
+        return dict(lead)
 
     def delete_lead(self, name: str, lead_id: str) -> None:
         """Delete one lead, after checking it belongs to this campaign. A lead already gone is fine."""

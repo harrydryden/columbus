@@ -34,7 +34,7 @@ to bottom:
   * Cohorts (learn/cohorts.py; Harry, 7 Oct 2026): the last four enrolment weeks in a line each, at the latest age
     their companies have reached after email 1; the latest two compared where both have 30 companies; and what
     changed last week in the settings, the copy, the campaign constants and the code (config versions, and the
-    campaign changes made under leads in flight). `us-outbound cohorts` has the full table.
+    campaign changes made under leads in flight). `us-outbound report cohorts` has the full table.
   * Industry labels (Harry, 7 Oct 2026; labels.py): last week's and all cards with the right industry against the 95%
     target (a rate from 30 cards), the approvers' corrections, how often the rules and the model agreed, and the
     companies held or disqualified.
@@ -55,7 +55,7 @@ reads and posts: it writes nothing but its heartbeat and, through base/notify.po
 made. The job (run) first makes Monday's asks, as the daily post does on the other days and there is no Monday post
 since 19 Oct 2026: the credit and spend asks (learn/spend.check) and the mailboxes to add three weeks ahead
 (learn/capacity_ahead.check), each once (post_once). The post goes to the dev channel until live_sending = yes.
-`us-outbound readout` prints it without posting.
+`us-outbound report readout` prints it without posting.
 """
 
 from __future__ import annotations

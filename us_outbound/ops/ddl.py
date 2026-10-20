@@ -4,8 +4,10 @@ sql/ddl/NN_<table>.sql creates the schema and then one table per file, with its 
 comments; sql/views/NN_<view>.sql creates the views, numbered so a view comes after the
 views it reads. A file holds one or more statements, each ending in a semicolon.
 
-statements() checks every statement before any runs (SPEC 1.2, for the database: write
-only to schema us_outbound). A statement must be one of
+statements() checks every statement before any runs (SPEC 1.2, for the database: write only to schema
+us_outbound): each must start with one of the allowed forms (W2-4, 20 Oct 2026: the check is the prefix, and the
+object it names; the regex firewall that also read every FROM and JOIN of our own view files went, as
+tests/test_sql.py parses every view with sqlglot and refuses any name outside the schema):
     CREATE SCHEMA IF NOT EXISTS us_outbound
     CREATE TABLE IF NOT EXISTS us_outbound.<table> (...)
     CREATE [UNIQUE] INDEX IF NOT EXISTS <name> ON us_outbound.<table> (...)
@@ -13,21 +15,18 @@ only to schema us_outbound). A statement must be one of
     ALTER TABLE us_outbound.<table> ADD COLUMN IF NOT EXISTS <column> <type>
     DROP VIEW IF EXISTS us_outbound.<view>
     COMMENT ON SCHEMA | TABLE | VIEW | COLUMN us_outbound[.<object>[.<column>]] IS '...'
-The ALTER form only adds a column to a table created before it (no default, nothing
-dropped); the DROP form removes a view that was replaced, and without CASCADE, so a view
-another view reads cannot go. Neither can touch stored rows.
-Every name after FROM, JOIN or REFERENCES must be us_outbound.<name>, a CTE of the
-statement, or an unqualified function call such as unnest(...); unqualified table names are
-refused. Any other dotted name must start with us_outbound or with an alias the statement
-declares with AS. The check reads FROM literally, so views use date_part() rather than
-EXTRACT(... FROM ...). Comments and string literals are ignored; escape strings (E'...') and
-dollar quoting are refused, since the check cannot read them.
+The ALTER form only adds a column (a type, no default, nothing dropped); the DROP form removes a view that was
+replaced, without CASCADE; a CREATE TABLE names no REFERENCES (a foreign key changes the table it names) and no LIKE. Neither can touch stored rows. One statement at a time; comments and string literals are
+ignored, and escape strings (E'...') and dollar quoting are refused, since the split cannot read them.
 
 apply() runs every statement in one transaction, each after
-guard.authorize("db", Op("ddl", target="us_outbound.<object>", write=True)). Tables and
-indexes are IF NOT EXISTS, so applying again changes no table. Every view is dropped and
-created again (dependents first), because CREATE OR REPLACE VIEW cannot change a view's
-columns; readers never see the gap, as the whole apply is one transaction.
+guard.authorize("db", Op("ddl", target="us_outbound.<object>", write=True)), with SET lock_timeout = '5s' first
+(W2-4; code-platform-ops B10): the pre-deploy runs against a live worker, and a statement that would wait for a lock
+fails the deploy instead of queueing every query on the table behind it. An ADD COLUMN whose column
+information_schema already has is skipped: ALTER TABLE takes an ACCESS EXCLUSIVE lock even when the column exists,
+and every column the DDL adds is in production already but the newest. Tables and indexes are IF NOT EXISTS, so
+applying again changes no table. Every view is dropped and created again (dependents first), because CREATE OR
+REPLACE VIEW cannot change a view's columns; readers never see the gap, as the whole apply is one transaction.
 Dry-run (the default) returns the statements and connects to nothing.
 """
 
@@ -46,22 +45,22 @@ SCHEMA_TARGET = f"{DB_SCHEMA}.schema"  # the guard target of CREATE SCHEMA and C
 
 IDENT = r'(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*)'
 NAME = rf"{IDENT}(?:\s*\.\s*{IDENT})*"
+LOCK_TIMEOUT = "SET lock_timeout = '5s'"
+COLUMNS_SQL = ("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = %s")
+# The allowed forms, each matched from the statement's start (the module docstring).
 FORMS = {
     "schema": re.compile(rf"CREATE\s+SCHEMA\s+IF\s+NOT\s+EXISTS\s+(?P<name>{NAME})$", re.I),
     "table": re.compile(rf"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+(?P<name>{NAME})\s*\(", re.I),
     "index": re.compile(rf"CREATE\s+(?:UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+{IDENT}\s+ON\s+(?P<name>{NAME})\s*\(", re.I),
     "view": re.compile(rf"CREATE\s+OR\s+REPLACE\s+VIEW\s+(?P<name>{NAME})\s+AS\s", re.I),
     "add_column": re.compile(
-        rf"ALTER\s+TABLE\s+(?P<name>{NAME})\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+{IDENT}\s+[A-Za-z][A-Za-z ]*(?:\[\])?$", re.I
-    ),
+        rf"ALTER\s+TABLE\s+(?P<name>{NAME})\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(?P<column>{IDENT})"
+        rf"\s+[A-Za-z][A-Za-z ]*(?:\[\])?$", re.I),
     "drop_view": re.compile(rf"DROP\s+VIEW\s+IF\s+EXISTS\s+(?P<name>{NAME})$", re.I),
     "comment": re.compile(rf"COMMENT\s+ON\s+(?P<on>SCHEMA|TABLE|VIEW|COLUMN)\s+(?P<name>{NAME})\s+IS\s+''$", re.I),
 }
-REFERENCE_RE = re.compile(rf"\b(?P<kw>FROM|JOIN|REFERENCES)\s+(?:(?:LATERAL|ONLY)\s+)?(?P<name>{NAME})(?P<call>\s*\()?", re.I)
-CTE_RE = re.compile(rf"(?:\bWITH(?:\s+RECURSIVE)?|,)\s*(?P<name>{IDENT})\s*(?:\([^()]*\)\s*)?AS\s*(?:NOT\s+)?(?:MATERIALIZED\s+)?\(", re.I)
-ALIAS_RE = re.compile(rf"\bAS\s+(?P<name>{IDENT})", re.I)
-NAME_RE = re.compile(NAME)
 SPECIAL_RE = re.compile(r"""--|/\*|['"$;]""")
+TABLE_LINK_RE = re.compile(r"\b(?:REFERENCES|LIKE)\b", re.I)
 
 
 def files(root: Path = SQL_DIR) -> list[Path]:
@@ -139,7 +138,8 @@ def _in_schema(parts: list[str], what: str) -> str:
 
 
 def check_statement(sql: str) -> str:
-    """The guard target ("us_outbound.<object>") of one statement, or GuardViolation."""
+    """The guard target ("us_outbound.<object>") of one statement, or GuardViolation: it must be one statement, of an
+    allowed form, on an object of schema us_outbound."""
     code = _code_only(sql).strip().removesuffix(";").rstrip()
     if ";" in code:
         raise GuardViolation("one statement at a time")
@@ -151,28 +151,20 @@ def check_statement(sql: str) -> str:
     if form == "schema" or on == "SCHEMA":
         if parts != [DB_SCHEMA]:
             raise GuardViolation(f"the only schema is {DB_SCHEMA}, not {'.'.join(parts)!r} (SPEC 1.2)")
-        target = SCHEMA_TARGET
-    elif on == "COLUMN":
+        return SCHEMA_TARGET
+    if on == "COLUMN":
         if len(parts) != 3:
             raise GuardViolation(f"COMMENT ON COLUMN names {DB_SCHEMA}.<table>.<column>, not {'.'.join(parts)!r}")
-        target = _in_schema(parts[:2], "COMMENT ON COLUMN")
-    else:
-        target = _in_schema(parts, f"{form} statement on")
+        return _in_schema(parts[:2], "COMMENT ON COLUMN")
+    if form == "table" and TABLE_LINK_RE.search(code):  # a foreign key adds a trigger to the table it names
+        raise GuardViolation("a table here neither references another (REFERENCES) nor copies one (LIKE)")
+    return _in_schema(parts, f"{form} statement on")
 
-    ctes = {_parts(c["name"])[0] for c in CTE_RE.finditer(code)}
-    for ref in REFERENCE_RE.finditer(code):
-        if code[: ref.start()].rstrip().upper().endswith("DISTINCT"):
-            continue  # IS [NOT] DISTINCT FROM
-        ref_parts = _parts(ref["name"])
-        if len(ref_parts) == 1 and (ref_parts[0] in ctes or (ref["call"] and ref["kw"].upper() != "REFERENCES")):
-            continue  # a CTE, or a function in FROM such as unnest(...)
-        _in_schema(ref_parts, f"statement for {target} reads")
-    aliases = ctes | {_parts(a["name"])[0] for a in ALIAS_RE.finditer(code)}
-    for name in NAME_RE.findall(code):
-        name_parts = _parts(name)
-        if len(name_parts) > 1 and name_parts[0] != DB_SCHEMA and name_parts[0] not in aliases:
-            raise GuardViolation(f"statement for {target} names {name!r}, outside {DB_SCHEMA} (SPEC 1.2)")
-    return target
+
+def added_column(sql: str) -> tuple[str, str] | None:
+    """(table, column) of an ADD COLUMN statement, or None for any other."""
+    m = FORMS["add_column"].match(_code_only(sql).strip().removesuffix(";").rstrip())
+    return (_parts(m["name"])[-1], _parts(m["column"])[0]) if m else None
 
 
 REFRESH_FILE = "views/(drop before recreate)"
@@ -223,7 +215,8 @@ def apply(
     if not dsn and connect is None:
         raise ValueError("ddl.apply needs a database URL unless dry_run")
     conn = None
-    ran = 0
+    ran, present = 0, 0
+    have: set[tuple[str, str]] = set()
     try:
         for name, sql, target in todo:
             if not guard.authorize("db", Op("ddl", target=target, write=True, detail={"file": name})):
@@ -231,6 +224,11 @@ def apply(
                 continue
             if conn is None:
                 conn = connect() if connect is not None else _psycopg_connect(dsn)
+                conn.execute(LOCK_TIMEOUT)
+                have = _columns(conn)
+            if added_column(sql) in have:
+                present += 1  # no ALTER, and no ACCESS EXCLUSIVE lock, for a column already there
+                continue
             conn.execute(sql)
             ran += 1
         if conn is not None:
@@ -238,8 +236,16 @@ def apply(
     finally:
         if conn is not None:
             conn.close()  # uncommitted work is rolled back
-    log("ddl_apply", dry_run=False, statements=ran, targets=targets)
+    log("ddl_apply", dry_run=False, statements=ran, columns_already_there=present, targets=targets)
     return [s for _, s, _ in todo]
+
+
+def _columns(conn: Any) -> set[tuple[str, str]]:
+    """(table, column) of every column schema us_outbound has now (information_schema)."""
+    cur = conn.execute(COLUMNS_SQL, [DB_SCHEMA])
+    rows = cur.fetchall() if cur is not None else []
+    return {(str(r[0] if not isinstance(r, dict) else r["table_name"]),
+             str(r[1] if not isinstance(r, dict) else r["column_name"])) for r in rows}
 
 
 def _psycopg_connect(dsn: str) -> Any:

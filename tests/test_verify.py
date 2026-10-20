@@ -221,7 +221,7 @@ def test_harry_can_run_each_job_by_hand(job, capsys):
         contexts.append(ctx)
         return ctx
 
-    assert cli.main(["dry-run", job], context_factory=factory) == 0
+    assert cli.main(["run", job], context_factory=factory) == 0
     assert cli.main(["run", job], context_factory=factory) == 0
     assert contexts[-1].dry_run and contexts[-1].job == job
     assert store.get("heartbeats", run_id=contexts[-1].run_id)["status"] in ("ok", "skipped")

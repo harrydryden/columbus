@@ -67,7 +67,7 @@ def test_general_spec_values(tabs, settings):
     # The W1-C keys: the random arm at Harry's 0.15 (D7, from W2-2), the hand-check's 10, the early warning alerts only.
     assert (raw["explore_share"], raw["hand_check_sample"], raw["early_warning_pause"]) == ("0.15", "10", "no")
     assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 10, False)
-    assert (g.apollo_monthly_credits, g.apollo_floor, g.escalation_hours) == (2000, 5000, 24)
+    assert (g.apollo_monthly_credits, g.apollo_floor) == (2000, 5000)
     assert g.claude_monthly_cap_usd == 10.0
 
 
@@ -79,8 +79,10 @@ def test_the_general_notes_harry_reads(tabs):
     assert notes["live_sending"].endswith("To stop sending that is already under way, run `us-outbound stop --live`.")
     assert "Harry: U098X453UAG" in notes["approver_slack_ids"] and "slack_id (Mailboxes tab)" in notes["approver_slack_ids"]
     assert notes["optout_tested"].endswith("Live sending waits for it.")
-    for key in ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id"):
-        assert notes[key].endswith("From `us-outbound hubspot ids`. Without it, a positive reply creates no HubSpot deal.")
+    for key in ("hubspot_pipeline_id", "hubspot_deal_stage_id", "hubspot_owner_id"):  # `hubspot ids` went in W2-4
+        assert notes[key].endswith("Without it, a positive reply creates no HubSpot deal.")
+        assert "HubSpot" in notes[key].removesuffix("Without it, a positive reply creates no HubSpot deal.")
+        assert "us-outbound" not in notes[key]
     assert notes["booking_link"] == "Harry's HubSpot meetings link: the signature's 'Book a call here', and reply drafts."
     assert notes["booking_page"] == "The demo page each email's call to action links to."
     assert notes["apollo_floor"].startswith("Safety floor: no job spends Apollo credits")

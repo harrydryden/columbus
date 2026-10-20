@@ -185,7 +185,7 @@ class Slack(HttpClient):
     def auth_test(self) -> dict:
         """auth.test (no scope needed): Slack's answer for this token. Raises ApiError when Slack rejects it
         (invalid_auth, not_authed, token_revoked, account_inactive): the outside watchdog's check that alerts can
-        still be posted (ops/watchdog.py)."""
+        still be posted (ops/health.py)."""
         body = self._api("GET", "auth.test", Op("auth.test")) or {}
         if body.get("user_id"):
             self._bot_user = str(body["user_id"])

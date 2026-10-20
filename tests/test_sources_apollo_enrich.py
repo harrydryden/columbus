@@ -1,5 +1,5 @@
 """apollo_enrich (sources/apollo_enrich.py; Harry, 2 Oct 2026): funding and an exact headcount from Apollo's
-organization enrich, for the General apollo_enrich_groups, against a fake Apollo. Which accounts and in what
+organization enrich, for settings/model.APOLLO_ENRICH_GROUPS (the General key until W2-4), against a fake Apollo. Which accounts and in what
 order, the facts and their ages, not found against no funding, the 180-day refresh, the account's size, the
 credits, and the funding signals firing in the rescore that follows."""
 
@@ -15,7 +15,7 @@ from tests.fakes import FakeTransport, make_context
 from us_outbound import verify
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
 from us_outbound.ops import cli, schedule
-from us_outbound.ops import heartbeat as hb
+from us_outbound.ops import health as hb
 from us_outbound.scoring import score
 from us_outbound.settings import load as loader
 from us_outbound.settings.defaults import default_tabs
@@ -111,7 +111,7 @@ def ledger(ctx) -> list[dict]:
 # -- which accounts, in what order ---------------------------------------------------------------------
 
 
-def test_targets_are_verified_accounts_in_the_named_groups_never_enriched_first_in_enrol_order():
+def test_targets_are_verified_accounts_in_the_named_groups_never_enriched_first_in_enrol_order(monkeypatch):
     """W1-3a (code-sources B4): only accounts verify_accounts has passed are paid for. A new or queued account, which
     the label check may still leave out (13 Oct: 62 of 103), is not enriched however high it scores."""
     ctx, _, fake = make([
@@ -131,18 +131,33 @@ def test_targets_are_verified_accounts_in_the_named_groups_never_enriched_first_
     assert fake.bulk_asked == [["priority.com", "standard.com", "control.com", "old.com"]]
     assert facts_of(ctx, "new") == {} and facts_of(ctx, "queued") == {}
 
-    both = settings_with(apollo_enrich_groups=(TECH, AGENCIES), focus=(Focus(AGENCIES, 0.6), Focus(TECH, 0.4)))
-    ctx.settings = both
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", (TECH, AGENCIES))
+    ctx.settings = settings_with(focus=(Focus(AGENCIES, 0.6), Focus(TECH, 0.4)))
     ctx.store.delete("signal_events", {"fact": enrich.MARKER})
     # The Focus tab's largest share first, then enrol's order (tier, then score) within the group.
     assert [a["account_id"] for a in enrich.candidates(ctx)[0]] == ["agency", "old", "recent", "priority", "standard",
                                                                     "control"]
 
 
-def test_a_blank_apollo_enrich_groups_enriches_nothing():
-    ctx, t, _ = make([acct("a1")], settings=settings_with(apollo_enrich_groups=()))
+def test_no_enrich_group_enriches_nothing(monkeypatch):
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", ())
+    ctx, t, _ = make([acct("a1")], settings=settings_with())
     out = enrich.run(ctx)
-    assert out["skipped"] is True and "apollo_enrich_groups is blank" in out["reason"] and t.requests == []
+    assert out["skipped"] is True and "APOLLO_ENRICH_GROUPS is empty" in out["reason"] and t.requests == []
+
+
+def test_a_group_renamed_on_the_industries_tab_fails_the_run_before_any_apollo_call(monkeypatch):
+    """The sync-time check that the groups name Industries groups went with the General key (W2-4); in its place the
+    run itself refuses: "Tech & Startups" (a rename of TECH on the tab, say) matches no group on BASE's Industries
+    tab, so the run raises naming it and Apollo is never asked (the error heartbeat is what heartbeat_check reports).
+    The group's own name in another case still matches (the comparison is casefold, as candidates' is)."""
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", ("Tech & Startups",))
+    ctx, t, _ = make([acct("a1")], settings=settings_with())
+    with pytest.raises(ValueError, match="'Tech & Startups', not an industry_group on the Industries tab"):
+        enrich.run(ctx)
+    assert t.requests == []
+    monkeypatch.setattr(enrich, "APOLLO_ENRICH_GROUPS", (TECH.upper(),))
+    assert "groups" in enrich.run(ctx)
 
 
 def test_nothing_due_spends_nothing():
@@ -476,7 +491,7 @@ def test_harry_can_run_it_by_hand():
         contexts.append(ctx)
         return ctx
 
-    assert cli.main(["dry-run", "apollo_enrich"], context_factory=factory) == 0
+    assert cli.main(["run", "apollo_enrich"], context_factory=factory) == 0
     assert cli.main(["run", "apollo_enrich"], context_factory=factory) == 0
     assert contexts[-1].dry_run and contexts[-1].job == "apollo_enrich"
     first, second = (store.get("heartbeats", run_id=c.run_id) for c in contexts)
@@ -484,33 +499,24 @@ def test_harry_can_run_it_by_hand():
     assert first["detail"]["found"] == 1 and second["detail"]["candidates"] == 0  # enriched once, not again
 
 
-# -- the General key ----------------------------------------------------------------------------------------------
+# -- the groups: a constant in code since W2-4 ----------------------------------------------------------------------
 
 
-def _general_with(value: str) -> dict:
+def test_the_enrich_groups_are_a_constant_naming_an_industries_group_and_the_sheet_row_is_retired():
+    """W2-4 (20 Oct 2026): apollo_enrich_groups left the General tab for settings/model.APOLLO_ENRICH_GROUPS, at the
+    live sheet's value. It names a group on the build's Industries tab, so a rename there fails this test rather than
+    enriching nothing; a row left on the sheet only warns, and `settings load` no longer adds it."""
+    from us_outbound.settings.validate import RETIRED_GENERAL, general_warnings
+
+    assert enrich.APOLLO_ENRICH_GROUPS == (TECH,)
+    assert {i.industry_group for i in BASE.industries} >= set(enrich.APOLLO_ENRICH_GROUPS)
     tabs = default_tabs()
-    for r in tabs["General"]:
-        if r["key"] == "apollo_enrich_groups":
-            r["value"] = value
-    return tabs
-
-
-def test_apollo_enrich_groups_names_industry_groups_on_the_industries_tab():
-    assert BASE.general.apollo_enrich_groups == (TECH,)
-    s, _ = validate_all(_general_with("technology & startups, Legal Teams"))
-    assert s.general.apollo_enrich_groups == (TECH, "Legal Teams")  # as the Industries tab writes them
-    s, _ = validate_all(_general_with(""))
-    assert s.general.apollo_enrich_groups == ()
-    s, errors = validate_all(_general_with("Technology & Startup"))
-    assert s is None and [e.message for e in errors["General"]] == [
-        "apollo_enrich_groups: 'Technology & Startup' is not an industry_group on the Industries tab "
-        "(did you mean Technology & Startups?)"]
-
-
-def test_settings_load_brings_the_key_to_a_sheet_without_it_and_the_default_applies_until_then():
-    sheet = [r for r in default_tabs()["General"] if r["key"] != "apollo_enrich_groups"]
-    plan = loader.plan_tab("General", sheet, default_tabs()["General"])
-    assert "apollo_enrich_groups = Technology & Startups" in plan.added
-    tabs = default_tabs()
-    tabs["General"] = sheet
-    assert validate_all(tabs)[0].general.apollo_enrich_groups == (TECH,)
+    assert "apollo_enrich_groups" in RETIRED_GENERAL and not any(r["key"] == "apollo_enrich_groups"
+                                                                 for r in tabs["General"])
+    tabs["General"].append({"key": "apollo_enrich_groups", "value": "Legal Teams", "note": ""})
+    s, errors = validate_all(tabs)
+    assert s is not None and not any(errors.values()) and not hasattr(s.general, "apollo_enrich_groups")
+    assert [w.label for w in general_warnings(tabs["General"], strict=True)] == ["apollo_enrich_groups"]
+    plan = loader.plan_tab("General", [r for r in tabs["General"] if r["key"] != "apollo_enrich_groups"],
+                           default_tabs()["General"])
+    assert not [a for a in plan.added if a.startswith("apollo_enrich_groups")]

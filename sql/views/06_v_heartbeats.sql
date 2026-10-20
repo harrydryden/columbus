@@ -5,7 +5,7 @@
 --   age_minutes:       since the latest run finished, or started if it has not finished.
 --   minutes_since_ok:  since the latest run with status ok finished (NULL if none).
 --   last_alive_at:     the latest ok run, or skip for a reason of its own; a skip behind a
---                      run still going (or killed) is no sign of life (ops/heartbeat.py).
+--                      run still going (or killed) is no sign of life (ops/health.py).
 --   runs:              how many runs the job has on record.
 -- Durations are whole seconds or minutes, rounded toward zero.
 CREATE OR REPLACE VIEW us_outbound.v_heartbeats AS
