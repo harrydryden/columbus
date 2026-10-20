@@ -1282,6 +1282,34 @@ def test_a_nul_character_is_dropped_rather_than_failing_the_write(store):
     assert store.get("accounts", account_id="n2")["clean_name"] == "Nul Inc"
 
 
+def test_accounts_dedupe_then_the_unique_domain_index_and_an_admit_that_loses_the_race_makes_no_row(dsn, store):
+    """W3-3 (code-sources B7): two rows for acme.com merge into the older; the deferred unique index then applies (0
+    duplicates); an insert for acme.com after another run's row is there makes nothing (ON CONFLICT DO NOTHING with
+    no target), and admit returns the account that is there. The index is dropped after: this session's other tests
+    insert duplicate domains."""
+    from tests.fakes import make_context
+    from us_outbound import accounts
+    from us_outbound.ops.cli import UNIQUE_INDEX_FILE
+    from us_outbound.settings.defaults import default_tabs
+    from us_outbound.settings.validate import validate_all
+
+    t0 = datetime(2026, 10, 1, 9, tzinfo=UTC)
+    store.insert("accounts", [{"account_id": "a1", "domain": "acme.com", "first_seen": t0},
+                              {"account_id": "a2", "domain": "acme.com", "first_seen": t0 + timedelta(days=2)}])
+    settings, _ = validate_all(default_tabs())
+    ctx = make_context(settings, job="accounts_dedupe", live=True, store=store)
+    assert accounts.dedupe(ctx)["remaining"] == 0
+    try:
+        ddl.apply_deferred(Guard(), dsn, UNIQUE_INDEX_FILE, dry_run=False)
+        assert not store.insert_new("accounts", {"account_id": "a3", "domain": "acme.com", "first_seen": t0})
+        assert store.insert_new("accounts", {"account_id": "b1", "domain": "other.com", "first_seen": t0})
+        assert accounts.admit(store, "acme.com", source="apollo", now=t0).account_id == "a1"
+        assert [r["account_id"] for r in store.select("accounts", {"domain": "acme.com"})] == ["a1"]
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("DROP INDEX IF EXISTS us_outbound.accounts_domain_unique_idx")
+
+
 def v_signal_value_gone(store) -> bool:
     return not store.query("SELECT 1 FROM information_schema.views WHERE table_schema = %(s)s AND table_name = %(v)s",
                            {"s": SCHEMA, "v": "v_signal_value"})

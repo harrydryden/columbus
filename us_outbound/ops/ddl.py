@@ -247,6 +247,43 @@ def apply(
     return [s for _, s, _ in todo]
 
 
+DEFERRED_DIR = "deferred"  # sql/deferred: statements `db apply` never runs; a command applies each when it is safe
+
+
+def deferred_statements(name: str, root: Path = SQL_DIR) -> list[tuple[str, str, str]]:
+    """(file, statement, guard target) of one sql/deferred file, every statement checked as apply checks them."""
+    path = root / DEFERRED_DIR / name
+    return [(f"{DEFERRED_DIR}/{name}", s, check_statement(s)) for s in split(path.read_text(encoding="utf-8"))]
+
+
+def apply_deferred(guard: Guard, dsn: str, name: str, *, dry_run: bool = True,
+                   connect: Callable[[], Any] | None = None, root: Path = SQL_DIR) -> list[str]:
+    """One sql/deferred file (W3-3: the unique index on accounts(domain), which `accounts dedupe --live` applies once
+    no duplicate domain is left), in one transaction with the same lock_timeout and guard as apply()."""
+    todo = deferred_statements(name, root)
+    if dry_run:
+        log("ddl_apply_deferred", dry_run=True, file=name, statements=len(todo))
+        return [s for _, s, _ in todo]
+    if not dsn and connect is None:
+        raise ValueError("ddl.apply_deferred needs a database URL unless dry_run")
+    conn = None
+    try:
+        for file, sql, target in todo:
+            if not guard.authorize("db", Op("ddl", target=target, write=True, detail={"file": file})):
+                continue
+            if conn is None:
+                conn = connect() if connect is not None else _psycopg_connect(dsn)
+                conn.execute(LOCK_TIMEOUT)
+            conn.execute(sql)
+        if conn is not None:
+            conn.commit()
+    finally:
+        if conn is not None:
+            conn.close()
+    log("ddl_apply_deferred", dry_run=False, file=name, statements=len(todo))
+    return [s for _, s, _ in todo]
+
+
 def _columns(conn: Any) -> set[tuple[str, str]]:
     """(table, column) of every column schema us_outbound has now (information_schema)."""
     cur = conn.execute(COLUMNS_SQL, [DB_SCHEMA])

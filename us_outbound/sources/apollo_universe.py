@@ -82,7 +82,7 @@ import hashlib
 import json
 import math
 import re
-from collections import Counter, deque
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -105,6 +105,7 @@ from us_outbound.scoring import tiers
 from us_outbound.settings.conditions import find_terms
 from us_outbound.settings.model import Industry, Settings
 from us_outbound.settings.overrides import effective
+from us_outbound.sources import allocation, source_state
 from us_outbound.sources import apollo_credits as credits
 from us_outbound.timeparse import iso_date
 
@@ -435,7 +436,7 @@ def created_this_week(ctx: Context) -> int:
     return len(ctx.store.select("accounts", {"source": ACCOUNT_SOURCE, "first_seen": Range(start, end)}))
 
 
-# -- where each search got to this month (credit_ledger notes) ------------------------------------
+# -- where each search got to this month (source_state; W3-3) ----------------------------------------
 
 
 @dataclass
@@ -449,28 +450,24 @@ class Cursor:
 
 
 def cursors(ctx: Context) -> dict[str, Cursor]:
-    """Each search's place this month (UK), from this job's credit_ledger notes: a settled page's "slice" (a
-    reservation, ledger.reserved_note, carries none, so a page never answered is read again). A page the ceiling
-    cut short ("cut") counts as the page before it, so the next run reads it again."""
-    start, end = budget.month_bounds(ctx.now)
+    """Each search's place this month (UK), from source_state (W3-3, code-sources B11: until then from this job's
+    credit_ledger notes, which now record money only). The month's ledger-note cursors are copied in once, by
+    `us-outbound source migrate-state` or the first run that finds no copy, so the month does not restart at page 1."""
+    source_state.migrate_cursors(ctx.store, credits.SYSTEM, JOB, ctx.now)
+    raw = source_state.get(ctx.store, source_state.cursors_key(ctx.now)) or {}
     out: dict[str, Cursor] = {}
-    for r in ctx.store.select("credit_ledger", {"system": credits.SYSTEM, "job": JOB, "occurred_at": Range(start, end)}):
-        try:
-            note = json.loads(r.get("note") or "")
-        except ValueError:
-            continue
-        if not isinstance(note, dict) or not note.get("slice"):
-            continue
-        c = out.setdefault(str(note["slice"]), Cursor())
-        page = int(note.get("page") or 0) - (1 if note.get("cut") else 0)  # a cut page is read again
-        if page >= c.page:
-            c.page, c.pages = page, note.get("pages")
+    for key, c in raw.items():
+        if isinstance(c, Mapping):
+            pages = parse.integer(c.get("pages"))
+            out[str(key)] = Cursor(parse.integer(c.get("page")) or 0, pages)
     return out
 
 
-def _lane(slices: Iterable[Slice], progress: Mapping[str, Cursor]) -> deque[Slice]:
-    """The searches still to read, in turn."""
-    return deque(sl for sl in slices if not progress.get(sl.key, Cursor()).done)
+def save_cursors(ctx: Context, progress: Mapping[str, Cursor]) -> None:
+    """This month's places into source_state (a search not read yet this month has none)."""
+    source_state.put(ctx.store, source_state.cursors_key(ctx.now),
+                     {k: {"page": c.page, "pages": c.pages} for k, c in progress.items() if c.page or c.pages is not None},
+                     ctx.now)
 
 
 def _pages(body: Mapping[str, Any], page: int, found: int) -> int | None:
@@ -845,14 +842,16 @@ def sourced_by(account_id: str, sl: Slice, page: int, run_id: str, now: datetime
 
 
 def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Room, depth: Counter[str],
-              limit: int | None = None) -> bool:
+              limit: int | None = None, progress: Mapping[str, Cursor] | None = None) -> bool:
     """Read the search's next page into accounts and facts; False if Apollo refused it.
 
     limit: the most accounts the page may create (the run's and the week's ceilings). The companies after the one
-    that reaches it are left for the next run, which reads the page again (its note says "cut"), so none of them is
-    lost for the month; the ones already accounts are only found again then."""
+    that reaches it are left for the next run, which reads the page again (its cursor stays on the page before), so
+    none of them is lost for the month; the ones already accounts are only found again then. progress: the month's
+    cursors, saved to source_state once the page is read (save_cursors). The ledger row records what was paid for
+    (the search, the page, its results), never a place: nothing reads it back (W3-3)."""
     page = cur.page + 1
-    what = {"search": sl.key, "page": page}  # never "slice" until settled: cursors() reads that key
+    what = {"search": sl.key, "page": page}
     with ledger.charge(ctx, credits.SYSTEM, JOB, 1.0, note=ledger.reserved_note(what)) as paid:
         try:
             body = ctx.clients.apollo.search_organizations(sl.filters(ctx.settings), page=page, per_page=MAX_PER_PAGE)
@@ -865,8 +864,7 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
             run.errors.append(f"{sl.key} page {page}: {str(exc)[:200]}")
             return False
         orgs = organizations_in(body)
-        note = {"slice": sl.key, "page": page, "pages": _pages(body, page, len(orgs)), "results": len(orgs),
-                "total": total_entries(body)}
+        note = {"search": sl.key, "page": page, "results": len(orgs), "total": total_entries(body)}
         spent = paid.settle(1.0 if orgs else 0.0, note=json.dumps(note))
     cur.page, cur.pages = page, _pages(body, page, len(orgs))
     room.spend(spent)
@@ -880,7 +878,6 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
         if limit is not None and made >= limit:
             # The ceiling is reached: the rest of the page waits for the next run, which reads the page again.
             run.cut += len(orgs) - i
-            paid.settle(spent, note=json.dumps({**note, "cut": len(orgs) - i}))
             cur.page = page - 1
             break
         got = take(ctx, org, sl, run, depth, rows, events, partners)
@@ -888,6 +885,8 @@ def read_page(ctx: Context, sl: Slice, cur: Cursor, run: _Run, room: credits.Roo
             made += 1
             events.append(sourced_by(str(got.account_id), sl, page, ctx.run_id, ctx.now))
     _write(ctx, rows, events, partners, run)
+    if progress is not None:
+        save_cursors(ctx, progress)
     return True
 
 
@@ -938,7 +937,12 @@ def run(ctx: Context) -> dict:
     else:
         ceiling = f"the ceiling of {RUN_CEILING_WEEKS} × weekly_enrol_cap ({run_ceiling}) raw accounts a run"
     progress = cursors(ctx)
-    searches = plan(s, groups, states, week=ctx.today_uk().isocalendar()[1])
+    week = ctx.today_uk().isocalendar()[1]
+    searches = plan(s, groups, states, week=week)
+    # The week's pages per state (sources/allocation.py, loop L2; W3-3): the lanes read in its order and spend it.
+    week_plan = allocation.this_week(ctx, [(sl.group, sl.state, sl.band) for g in groups for sl in searches.get(g, ())],
+                                     states)
+    order = rotated(states, week)
     depth: Counter[str] = Counter()  # accounts this run created, per industry group
     halt, short = "", []
 
@@ -947,7 +951,8 @@ def run(ctx: Context) -> dict:
         return min(need - _depth(depth, pool), allowance - sum(depth.values()))
 
     for pool, _, need in needs:
-        lane = _lane((sl for g in pool for sl in searches.get(g, ())), progress) if room_left(pool, need) > 0 else None
+        todo_here = [sl for g in pool for sl in searches.get(g, ()) if not progress.get(sl.key, Cursor()).done]
+        lane = allocation.Lane(todo_here, week_plan, order) if room_left(pool, need) > 0 else None
         while lane is not None and not halt and room_left(pool, need) > 0:
             if r.pages >= MAX_PAGES_PER_RUN:
                 halt = f"the limit of {MAX_PAGES_PER_RUN} pages a run"
@@ -959,8 +964,10 @@ def run(ctx: Context) -> dict:
             else:
                 sl = lane.popleft()
                 cur = progress.setdefault(sl.key, Cursor())
-                if not read_page(ctx, sl, cur, r, room, depth, limit=room_left(pool, need)):
+                if not read_page(ctx, sl, cur, r, room, depth, limit=room_left(pool, need), progress=progress):
                     continue  # refused: that search waits for the next run
+                week_plan.spend(sl.state)
+                allocation.save(ctx, week_plan)
                 if not cur.done:
                     lane.append(sl)
         if halt:
@@ -982,6 +989,7 @@ def run(ctx: Context) -> dict:
         pools=[{"groups": list(g), "target": t, "contactable": round(supply.of(g), 1), "raw_need": n,
                 "created": _depth(depth, g)} for g, t, n in needs],
         credits_per_account=round(r.credits / max(1, created), 3),
+        allocation={"week": week_plan.week, "pages": week_plan.pages, "left": week_plan.left},
         budget=room.as_dict(), errors=r.errors[:20],
     )
     log("source_universe_done", run_id=ctx.run_id, **summary)

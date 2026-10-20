@@ -6,6 +6,7 @@ The commands are one table (COMMANDS, W2-4, 20 Oct 2026; RS P0-10), listed by `u
                                       heartbeat, retention, mailboxes, this week's number, the campaigns, and the
                                       three go-live checks (ops/live_checks.py: Copy, Campaigns, Watchdog)
   accounts [DOMAIN] [--status S]      the companies and contacts we hold, read-only (ops/accounts_view.py), or a CSV
+  accounts dedupe [--live]            the domains more than one account holds, merged; then the unique index (W3-3)
   sync                                settings_sync now: the sheet's edits into force (else 02:00, and 11:30 weekdays)
   start | stop [--no-db]              resume or pause every US Outbound campaign, and enrolment. stop --live is the
                                       brake (live_sending = no does not stop Instantly); --no-db pauses the campaigns
@@ -29,6 +30,7 @@ The commands are one table (COMMANDS, W2-4, 20 Oct 2026; RS P0-10), listed by `u
   erase --email <address>             an erasure request (SPEC 6)
   unenrol --month YYYY-MM             a month's leads out of their campaigns, recorded as stopped (ops/campaigns.py)
   verify migrate-parked               once after W1-4: the companies left out while their industry was off, parked
+  source migrate-state                once after W3-3: the sources' place this month out of the ledger notes
   db apply                            the DDL in sql/ (ops/ddl.py)
   schedule                            the job table and next runs (UK time)
   run <job> [--live] [--due MINUTE]   one job, what the scheduler starts (--due: the minute it was due, which the run
@@ -46,7 +48,7 @@ Dry-run is the default everywhere. Two kinds of live:
     sync still brings the sheet in: only its Slack message goes to the dev channel);
   * operator commands whose writes never reach a prospect (stop, mailbox, unenrol, erase, test start, settings load,
     copy qa|draft, campaigns ensure, handcheck show|approve|export|migrate-tab, killrules clear, replies skip,
-    report capture, labels set, verify): --live alone, so the setup and the kill switch work while live_sending is
+    report capture, labels set, verify, source migrate-state, accounts dedupe): --live alone, so the setup and the kill switch work while live_sending is
     still no. `replies send` sends to a prospect, so it is live like a job: --live AND live_sending = yes.
   A read-only action given --live says that --live does nothing there. A --live run that stays dry says when the
   settings in force were synced, and how to bring a sheet edit in (`us-outbound sync`).
@@ -617,6 +619,30 @@ def cmd_verify(args: argparse.Namespace, factory: Factory) -> int:
     return 0
 
 
+def cmd_source(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound source migrate-state [--live]` (W3-3, 20 Oct 2026; RS §2 W3-3), once after the deploy: this month's
+    place in each Apollo search and site_visits' judged visitors, from the credit_ledger notes into source_state, so
+    the month does not restart at page 1 and no visitor is paid for again (sources/source_state.migrate). The jobs
+    make the same copy on their first run if this has not run. A database write that reaches no prospect: --live
+    alone."""
+    from us_outbound.sources import source_state
+
+    ctx = factory("source_migrate_state", args.live, operator=True)
+    out = run_job(ctx, source_state.migrate)
+    c, j = out["cursors"], out["judged"]
+    if c.get("already") and j.get("already"):
+        print(f"Already copied: source_state holds {out['month']}'s places and the judged visitors.")
+        return 0
+    verb = "Copied" if ctx.live else "Would copy"
+    print(f"{verb} {c['cursors']} search places for {out['month']} and {j['judged']} judged visitors into "
+          "source_state" + (" (the places were copied before)" if c.get("already") else "")
+          + (" (the visitors were copied before)" if j.get("already") else "") + ".")
+    for key, place in sorted((c.get("copied") or {}).items()):
+        print(f"  {key}: page {place['page']} of {place['pages'] if place['pages'] is not None else '?'}")
+    _dry_note(ctx, "source_state was not changed.")
+    return 0
+
+
 def cmd_erase(args: argparse.Namespace, factory: Factory) -> int:
     from us_outbound.ops.erase import erase
 
@@ -1070,6 +1096,10 @@ def cmd_accounts(args: argparse.Namespace, factory: Factory) -> int:
     Exits 1 for a domain we hold no company for."""
     from us_outbound.ops import accounts_view as view
 
+    if args.domain == DEDUPE:
+        return _accounts_dedupe(args, factory)
+    if args.live:
+        print("--live does nothing here: the companies and contacts are only read.", file=sys.stderr)
     try:
         f = view.Filters.parse(args.status, args.tier, args.industry)
     except ValueError as exc:
@@ -1098,6 +1128,47 @@ def cmd_accounts(args: argparse.Namespace, factory: Factory) -> int:
     for line in lines:
         print(line)
     return 0 if found else 1
+
+
+DEDUPE = "dedupe"  # `accounts dedupe`: the word in the domain's place (no root domain is one word)
+UNIQUE_INDEX_FILE = "01_accounts_domain_unique.sql"  # sql/deferred
+
+
+def _accounts_dedupe(args: argparse.Namespace, factory: Factory) -> int:
+    """`us-outbound accounts dedupe [--live]` (W3-3, 20 Oct 2026; code-sources B7): the domains more than one account
+    holds; with --live each is merged into one (accounts.dedupe: the older, or the one with the enrolled contact; two
+    with enrolled contacts are refused and listed for a person), and once none is left the unique index on
+    accounts(domain) is applied (sql/deferred), never before: on a duplicate it would fail. A database write that
+    reaches no prospect: --live alone."""
+    from us_outbound import accounts
+    from us_outbound.clients.guard import Guard
+    from us_outbound.ops import ddl
+
+    if args.status or args.tier or args.industry or args.limit is not None or args.csv:
+        raise Refused("dedupe takes only --live")
+    ctx = factory("accounts_dedupe", args.live, operator=True)
+    out = run_job(ctx, accounts.dedupe)
+    print(f"{out['duplicates']} domains are held by more than one account.")
+    for p in out["pairs"]:
+        if p["refused"]:
+            print(f"  {p['domain']}: left for you to look at ({p['refused']}): {', '.join(p['merge'])}")
+        else:
+            print(f"  {p['domain']}: {'merged' if ctx.live else 'would merge'} {', '.join(p['merge'])} into {p['keep']}")
+    if not ctx.live:
+        _dry_note(ctx, "no account was merged and the unique index was not made.")
+        return 0
+    if out["remaining"]:
+        print(f"{out['remaining']} duplicate domains remain, so the unique index on accounts(domain) was not made. "
+              "Merge or remove the ones listed by hand, then run `us-outbound accounts dedupe --live` again.")
+        return 0
+    dsn = (os.environ.get(bootstrap.DATABASE_VAR) or "").strip()
+    if not dsn:
+        print("No duplicate domain is left. DATABASE_URL is not set here, so the unique index was not made: run "
+              "`us-outbound accounts dedupe --live` where it is.")
+        return 0
+    ddl.apply_deferred(Guard(job="db_apply"), dsn, UNIQUE_INDEX_FILE, dry_run=False)
+    print("No duplicate domain is left: the unique index on accounts(domain) is made (one account per domain).")
+    return 0
 
 
 def cmd_handcheck(args: argparse.Namespace, factory: Factory) -> int:
@@ -1463,6 +1534,10 @@ def _verify_args(vf: argparse.ArgumentParser) -> None:
     vf.add_argument("action", choices=["migrate-parked"])
 
 
+def _source_args(so: argparse.ArgumentParser) -> None:
+    so.add_argument("action", choices=["migrate-state"])
+
+
 def _db_args(db: argparse.ArgumentParser) -> None:
     db.add_argument("action", choices=["apply"])
 
@@ -1482,8 +1557,9 @@ def _scheduler_args(sc: argparse.ArgumentParser) -> None:
 # command names one of these (tests/test_cli.py greps them).
 COMMANDS: tuple[Command, ...] = (
     Command("status", "live_sending, what waits for you, jobs, mailboxes, campaigns and the go-live checks", cmd_status),
-    Command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV (read-only)",
-            cmd_accounts, args=_accounts_args),
+    Command("accounts", "the companies and contacts we hold: a summary, a list, one company, or a CSV (read-only); "
+            "or `accounts dedupe`, the domains more than one account holds, merged with --live", cmd_accounts,
+            live=True, args=_accounts_args),
     Command("sync", "bring the sheet's edits into force now", cmd_sync, live=True),
     Command("start", "sync the sheet, then resume the campaigns and enrolment", cmd_start, live=True),
     Command("stop", "pause every US Outbound campaign and enrolment (the brake)", cmd_stop, live=True, args=_stop_args),
@@ -1515,6 +1591,8 @@ COMMANDS: tuple[Command, ...] = (
             args=_unenrol_args),
     Command("verify", "one-off: park the companies left out while their industry was switched off (W1-4)", cmd_verify,
             live=True, args=_verify_args),
+    Command("source", "one-off: copy the sources' place this month and the judged visitors out of the credit "
+            "ledger's notes into source_state (migrate-state; W3-3)", cmd_source, live=True, args=_source_args),
     Command("db", "create the tables and views in DATABASE_URL (prints them unless --live)", cmd_db, live=True,
             args=_db_args),
     Command("schedule", "the job table and each job's next run (UK time)", cmd_schedule),
