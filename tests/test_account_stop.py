@@ -20,7 +20,7 @@ def test_a_lead_no_longer_in_its_stored_campaign_is_marked_once_and_the_run_goes
     stops = out["account_stops"]
     # Jane's delete is refused by the client's own check (her lead is in another campaign); Omar's goes through.
     assert stops["to_stop"] == 2 and stops["stopped"] == {"deleted": 1}
-    assert [e.split(":", 1)[0] for e in stops["errors"]] == ["k-jane"]  # told once (the test below)
+    assert stops["errors"] == [] and stops["refused_alert"] == {"told": ["k-jane"], "unsent": []}  # the tests below
     assert [r["contact_id"] for r in stops["refused"]] == ["k-jane"]
     assert "not in campaign" in stops["refused"][0]["why"]
     assert deleted(w) == ["L-omar"]
@@ -34,23 +34,64 @@ def test_a_lead_no_longer_in_its_stored_campaign_is_marked_once_and_the_run_goes
     assert [r for r in w.transport.requests[before:] if "/leads/" in r.url] == []
 
 
-def test_a_refused_stop_is_posted_once_by_heartbeat_check(default_settings):
-    """W1-2 review: the refused stop was listed only under refused, which ops/job_errors.py does not read, so the
-    safety signal the failed run used to give went silent. The run that writes the marker also puts one line under
-    errors (heartbeat_check posts it); the next run makes no call and says nothing."""
+def refused_posts(w) -> list[str]:
+    return [p["text"] for p in w.slack_posts if "contact k-jane" in p.get("text", "")]
+
+
+def test_a_refused_stop_is_told_even_when_a_later_clean_run_is_the_latest(default_settings):
+    """The whole-wave review's probe: Jane opts out in HubSpot while her lead sits in a campaign other than the stored
+    one, so account_stop is the only thing that could stop her sequence, and the guard refuses it. The :22 run refuses
+    and writes the marker; the :37 run is clean; at the next :05, heartbeat_check reads only the :37 run. Before, the
+    refusing run's one errors line was the only signal, so job_errors.check found nothing and nobody was told. Now the
+    sweep posts it to the alert channel itself, once: not again from the clean run, nor from heartbeat_check."""
+    from datetime import timedelta
+
     from us_outbound.ops import job_errors
     from us_outbound.ops.heartbeat import run_job
 
     w = in_flight_world(default_settings)
     w.lead("L-jane", JANE, 1, campaign="cmp-harry")
     hubspot_opts_out(w, JANE)
+    t0 = w.ctx.now
     first = run_job(w.ctx, outcomes.run)["account_stops"]
+    assert [r["contact_id"] for r in first["refused"]] == ["k-jane"] and first["errors"] == []
+    [text] = refused_posts(w)
+    assert "Find the lead in Instantly and delete it" in text and "cmp-harry" not in text  # the stored campaign
+    assert account_stop.REFUSED_HEAD in text
+    w.at(t0 + timedelta(minutes=15))
+    second = run_job(w.ctx, outcomes.run)["account_stops"]
+    assert (second["to_stop"], second["errors"], second["refused"]) == (0, [], [])
+    assert "refused_alert" not in second
+    w.at(t0 + timedelta(minutes=58))
+    checked = job_errors.check(w.ctx, ["sync_outcomes"])
+    assert checked["found"] == [] and len(refused_posts(w)) == 1  # told once, by the sweep
+
+
+def test_a_refused_stop_whose_alert_failed_is_tried_again_and_seen_by_heartbeat_check(default_settings):
+    """Slack down at the refusing run: nothing is recorded as told, the run puts it under errors (so heartbeat_check
+    has it if that run is the latest), and the next run posts it and is clean; the run after that says nothing."""
+    from datetime import timedelta
+
+    from us_outbound.ops import job_errors
+    from us_outbound.ops.heartbeat import run_job
+
+    w = in_flight_world(default_settings)
+    w.lead("L-jane", JANE, 1, campaign="cmp-harry")
+    hubspot_opts_out(w, JANE)
+    w.transport.route("POST", "chat.postMessage", {"ok": False, "error": "service_unavailable"})
+    t0 = w.ctx.now
+    first = run_job(w.ctx, outcomes.run)["account_stops"]
+    assert first["refused_alert"] == {"told": [], "unsent": ["k-jane"]} and refused_posts(w) == []
     [line] = first["errors"]
-    assert line.startswith("k-jane: not stopped, the guard refused it (") and "stop it by hand in Instantly" in line
+    assert line.startswith("k-jane: not stopped, the guard refused it") and "stop it by hand in Instantly" in line
     [hb] = [r for r in w.ctx.store.tables["heartbeats"] if r["job"] == "sync_outcomes"]
     [finding] = job_errors.findings("sync_outcomes", hb)
     assert (finding.kind, finding.texts) == ("errors", [line])
+    w.transport.route("POST", "chat.postMessage", fn=w._post)  # Slack is back
+    w.at(t0 + timedelta(minutes=15))
     second = run_job(w.ctx, outcomes.run)["account_stops"]
-    assert (second["to_stop"], second["errors"], second["refused"]) == (0, [], [])
-    [hb] = [r for r in w.ctx.store.tables["heartbeats"] if r["job"] == "sync_outcomes"]
-    assert job_errors.findings("sync_outcomes", hb) == []
+    assert second["refused_alert"] == {"told": ["k-jane"], "unsent": []} and second["errors"] == []
+    assert len(refused_posts(w)) == 1
+    w.at(t0 + timedelta(minutes=30))
+    third = run_job(w.ctx, outcomes.run)["account_stops"]
+    assert (third["errors"], "refused_alert" in third) == ([], False) and len(refused_posts(w)) == 1

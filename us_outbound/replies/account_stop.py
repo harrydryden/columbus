@@ -48,9 +48,11 @@ A stop the guard refuses (W1-2, 19 Oct 2026; code-replies-crm L2): Instantly.del
 in the campaign stored for the contact. Until then the GuardViolation failed sync_outcomes, a safety job, after its
 writes and again every 15 minutes, as the marker was never written. Now the marker is written with source
 guard_refused, the contact is listed once under the summary's refused, and the next run makes no call for them.
-That run also puts one line under the summary's errors, so heartbeat_check (ops/job_errors.py) posts it once (W1-2
-review): the lead was due to stop, sits in a campaign other than the stored one and may still be sending, and the
-marker means no later run tries again, so a person must stop it in Instantly. Before, the failed run said so.
+The lead was due to stop, sits in a campaign other than the stored one and may still be sending, and the marker
+means no later run tries again, so a person must stop it in Instantly: tell_refused posts it to the alert channel,
+once per contact, from every run until the post goes (the whole-wave review, 20 Oct 2026). One errors line in the
+refusing run (W1-2 review) was seen only when that run was the latest at heartbeat_check's :05, about 1 time in 4.
+While the post fails, each run also puts it under errors, for heartbeat_check. Before W1-2, the failed run said so.
 
 Dry-run: it counts what it would stop, calls nothing and writes nothing.
 """
@@ -60,6 +62,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from us_outbound.base import notify, say
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, GuardViolation
 from us_outbound.clients.http import ApiError
@@ -73,6 +76,8 @@ SUPPRESSION_SOURCE = "suppression"  # events.source on the lead_stopped rows it 
 # events.source on a lead_stopped row whose stop the guard refused (W1-2, 19 Oct 2026; code-replies-crm L2): the
 # lead is not in the campaign stored for it, so no call of ours can stop it; the summary's refused lists it once.
 REFUSED_SOURCE = "guard_refused"
+REFUSED_ALERT = "account_stop_refused"  # its alert's post_once key, with the contact id (tell_refused)
+REFUSED_HEAD = f"{say.URGENT} *A sequence that should have stopped may still be sending*"
 ID_CHUNK = 1000
 LIST_LIMIT = 50
 
@@ -178,9 +183,6 @@ def sweep(ctx: Context) -> dict:
             how, refused = REFUSED_SOURCE, str(exc)[:160]
             if len(out["refused"]) < LIST_LIMIT:
                 out["refused"].append({"contact_id": cid, "account_id": c.get("account_id"), "why": refused})
-            if len(out["errors"]) < LIST_LIMIT:  # told once: the marker below means no run tries again
-                out["errors"].append(f"{cid}: not stopped, the guard refused it ({refused}); its lead may still be "
-                                     f"sending: stop it by hand in Instantly")
             log("account_stop_refused", run_id=ctx.run_id, contact_id=cid, error=refused)
         except (ApiError, LookupError, ConfigError) as exc:  # tried again by the next run
             if len(out["errors"]) < LIST_LIMIT:
@@ -200,5 +202,47 @@ def sweep(ctx: Context) -> dict:
         log("account_stop", run_id=ctx.run_id, contact_id=cid, account_id=c.get("account_id"), how=how,
             because=e.get("type"), because_event=e.get("event_id"))
     out["stopped"] = dict(out["stopped"])
+    tell = tell_refused(ctx)
+    if tell["told"] or tell["unsent"]:
+        out["refused_alert"] = tell
+    for cid in tell["unsent"][: max(0, LIST_LIMIT - len(out["errors"]))]:  # Slack failed: heartbeat_check sees it too
+        out["errors"].append(f"{cid}: not stopped, the guard refused it; its lead may still be sending: stop it by "
+                             f"hand in Instantly (the Slack alert failed and is tried again next run)")
     return out
+
+
+def refused_key(contact_id: str) -> str:
+    """The post_once key of a refused stop's alert: once per contact, for good, as the marker is."""
+    return f"{REFUSED_ALERT}:{contact_id}"
+
+
+def tell_refused(ctx: Context) -> dict[str, list[str]]:
+    """Post each refused stop (a lead_stopped marker with source guard_refused) not posted before, every run until the
+    post goes (the whole-wave review, 20 Oct 2026). Before, the refusing run's one errors line was the only signal:
+    heartbeat_check reads only each job's latest run, and sync_outcomes runs four times an hour, so a later clean run
+    hid it 3 times in 4, and the marker meant no run tried again, so a person who had opted out could go on getting
+    emails with nobody told. The alert is keyed on the contact (notify.post_once), so it is posted once, and a Slack
+    failure leaves it for the next run, which also puts it under errors for heartbeat_check."""
+    rows = ctx.store.select("events", {"type": STOPPED, "source": REFUSED_SOURCE})
+    ids = sorted({str(r["contact_id"]) for r in rows if r.get("contact_id")})
+    keys = {refused_key(cid): cid for cid in ids}
+    done = notify.sent_before(ctx, keys)
+    new = [cid for k, cid in keys.items() if k not in done]
+    if not new:
+        return {"told": [], "unsent": []}
+    contacts = {str(c["contact_id"]): c for c in ctx.store.select("contacts", {"contact_id": new})}
+    aids = sorted({str(c.get("account_id")) for c in contacts.values() if c.get("account_id")})
+    domain = {str(a["account_id"]): str(a.get("domain") or "")
+              for a in (ctx.store.select("accounts", {"account_id": aids}) if aids else [])}
+
+    def line(cid: str) -> str:
+        c = contacts.get(cid, {})
+        who = " ".join(str(c.get(f) or "") for f in ("first_name", "last_name")).strip() or "a contact"
+        at = domain.get(str(c.get("account_id") or ""), "") or "their company"
+        return (f"• {who} at {at} (contact {cid}): their sequence was due to stop, but the lead is not in its stored "
+                f"campaign ({c.get('instantly_campaign') or 'none stored'}), so it may still be sending. Find the lead "
+                f"in Instantly and delete it; no run will try again.")
+
+    sent = notify.post_once(ctx, [(refused_key(cid), line(cid)) for cid in new], head=REFUSED_HEAD)
+    return {"told": [keys[k] for k in sent["keys"]], "unsent": [keys[k] for k in sent["unsent"]]}
 
