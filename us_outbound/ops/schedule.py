@@ -93,7 +93,9 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # the same day (SPEC 13). Every 15 minutes inside Instantly's send window (09:00 to 16:00 US Eastern is 13:00 to
     # 22:59 UK on weekdays, both clocks' changes included), hourly otherwise (W2-4, 20 Oct 2026; RS §2 W2-4): 40 + 14
     # = 54 starts on a weekday, 24 on a weekend day, against 96 before. Offset from poll_replies by 7 minutes.
-    # health.EXPECTED allows 75 minutes (one missed run outside the window).
+    # heartbeat_check misses it by these rows (health.BY_SCHEDULE): two failed runs in a row, whichever the cadence;
+    # health.EXPECTED's 75 minutes is the fallback. Moving the :07 moves when it is missed (the sweep in
+    # tests/test_heartbeat.py checks each outage is posted once).
     ScheduledJob("sync_outcomes", "7-59/15 13-22 * * 1-5", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("sync_outcomes", "7 0-12,23 * * 1-5", live=True, enabled=True, timeout_minutes=10, phase=2),
     ScheduledJob("sync_outcomes", "7 * * * 0,6", live=True, enabled=True, timeout_minutes=10, phase=2),

@@ -379,6 +379,111 @@ def test_weekday_jobs_do_not_miss_over_the_weekend():
     assert hb.check_heartbeats(tuesday_2pm, jobs=["enrol"]) == ["enrol"]
 
 
+# -- sync_outcomes is missed by its schedule (W2-4: every 15 minutes in the ET send window, hourly otherwise) -----
+
+BST = timedelta(hours=1)  # UK summer time to 25 Oct 2026
+
+
+def uk(y, mo, d, h, mi, offset=BST):
+    return datetime(y, mo, d, h, mi, tzinfo=UTC) - offset
+
+
+def sync_starts(start, end):
+    """sync_outcomes' due starts in [start, end), from the real schedule rows."""
+    from us_outbound.ops import schedule
+    from us_outbound.ops import scheduler as sch
+
+    rows = [sch.Cron.parse(c) for c in schedule.crons("sync_outcomes")]
+    out, t = [], start.replace(second=0, microsecond=0)
+    while t < end:
+        if any(sch.due(c, t) for c in rows):
+            out.append(t)
+        t += timedelta(minutes=1)
+    return out
+
+
+def test_one_failed_hourly_sync_outcomes_run_is_no_alert_and_two_are_one():
+    """The first night after the W2-4 deploy (review, live-day lens): Wed 21 Oct, outside the ET send window, so runs
+    at :07. 02:07 ok (finished 02:08), 03:07 failed (an Instantly 502). The second run due after 02:08 is 04:07, so the
+    job is missed from 04:12: at 04:05 it is not (a flat 75 minutes had it 117 - 75 = 42 overdue and posted). 04:07
+    fails too: at 05:05 it is missed 05:05 - 04:12 = 53 minutes, within CHECK_EVERY, so posted once; at 06:05 it is
+    113, so no second post."""
+    t = slack_transport()
+    ctx = ctx_at(uk(2026, 10, 21, 4, 5), job="heartbeat_check", transport=t)
+    beat(ctx.store, "sync_outcomes", uk(2026, 10, 21, 2, 7))
+    beat(ctx.store, "sync_outcomes", uk(2026, 10, 21, 3, 7), status="error",
+         error="ApiError: instantly HTTP 502 for /api/v2/emails")
+    assert hb.overdue_minutes("sync_outcomes", hb.latest_runs(ctx.store)["sync_outcomes"], ctx.now) == -7
+    assert hb.check_heartbeats(ctx, jobs=["sync_outcomes"]) == [] and posts(t) == []
+    beat(ctx.store, "sync_outcomes", uk(2026, 10, 21, 4, 7), status="error", error="ApiError: instantly HTTP 429")
+    five = ctx_at(uk(2026, 10, 21, 5, 5), job="heartbeat_check", transport=t, store=ctx.store)
+    assert hb.check_heartbeats(five, jobs=["sync_outcomes"]) == ["sync_outcomes"]
+    [post] = posts(t)
+    assert "has stopped running" in post["text"]
+    assert "last good run Wed 21 Oct 02:08 UK" in post["text"]
+    six = ctx_at(uk(2026, 10, 21, 6, 5), job="heartbeat_check", transport=t, store=ctx.store)
+    assert hb.check_heartbeats(six, jobs=["sync_outcomes"]) == ["sync_outcomes"] and len(posts(t)) == 1
+
+
+def test_three_failed_runs_in_the_send_window_are_missed_at_the_next_check():
+    """Wed 21 Oct in the ET send window (runs at :07, :22, :37, :52): 14:07 ok (finished 14:08), then 14:22, 14:37 and
+    14:52 fail. The second run due after 14:08 is 14:37, so missed from 14:42: at 15:05, 23 minutes on, it is missed
+    and posted (a flat 75 minutes had it 57 - 75 = -18: not missed until 15:24, after a fifth failure)."""
+    t = slack_transport()
+    ctx = ctx_at(uk(2026, 10, 21, 15, 5), job="heartbeat_check", transport=t)
+    beat(ctx.store, "sync_outcomes", uk(2026, 10, 21, 14, 7))
+    for mi in (22, 37, 52):
+        beat(ctx.store, "sync_outcomes", uk(2026, 10, 21, 14, mi), status="error", error="TimeoutError")
+    assert hb.overdue_minutes("sync_outcomes", hb.latest_runs(ctx.store)["sync_outcomes"], ctx.now) == 23
+    assert hb.check_heartbeats(ctx, jobs=["sync_outcomes"]) == ["sync_outcomes"] and len(posts(t)) == 1
+
+
+@pytest.mark.parametrize("runs, checks", [
+    # Mon 26 Oct (GMT): every run ok across the cadence change at 13:07 (the 12:07 run, then 13:07, 13:22, ...).
+    ([(datetime(2026, 10, 26, h, m, tzinfo=UTC), "ok") for h, m in ((11, 7), (12, 7), (13, 7), (13, 22), (13, 37),
+                                                                     (13, 52), (14, 7))],
+     [datetime(2026, 10, 26, 13, 5, tzinfo=UTC), datetime(2026, 10, 26, 14, 5, tzinfo=UTC)]),
+    # Fri 23 Oct 22:52 ok, the 23:07 run fails, Sat 00:07 and 01:07 ok: at 00:05 the second run due after 22:53 is
+    # 00:07 (23:07, then the Saturday :07), so one failure across the change to hourly is no miss.
+    ([(uk(2026, 10, 23, 22, 52), "ok"), (uk(2026, 10, 23, 23, 7), "error"), (uk(2026, 10, 24, 0, 7), "ok"),
+      (uk(2026, 10, 24, 1, 7), "ok")],
+     [uk(2026, 10, 23, 23, 5), uk(2026, 10, 24, 0, 5), uk(2026, 10, 24, 1, 5), uk(2026, 10, 24, 2, 5)]),
+])
+def test_a_healthy_sync_outcomes_is_never_missed_where_its_cadence_changes(runs, checks):
+    t = slack_transport()
+    store = ctx_at(checks[0]).store
+    for when in checks:
+        for started, status in runs:
+            if started < when:
+                beat(store, "sync_outcomes", started, status=status, error=None if status == "ok" else "Boom")
+        ctx = ctx_at(when, job="heartbeat_check", transport=t, store=store)
+        assert hb.check_heartbeats(ctx, jobs=["sync_outcomes"]) == [], when
+    assert posts(t) == []
+
+
+def test_every_sync_outcomes_outage_is_posted_exactly_once(monkeypatch):
+    """Each due start from Fri 23 Oct noon to Mon 26 Oct 15:00 UK (the send window's edges, a weekend and the clocks
+    going back on Sun 25 Oct) as the last good run, every later run failing, and heartbeat_check at :05 for six hours:
+    exactly one post each, at the first check two failed runs on (missed SCHEDULE_GRACE after its second missed start,
+    at :12, :27, :42 or :57, never within 7 minutes of a :05 check)."""
+    monkeypatch.setattr(hb, "REMINDER_HOUR_UK", 99)  # the 09:00 repeat is another rule
+    starts = sync_starts(uk(2026, 10, 23, 12, 0), datetime(2026, 10, 26, 15, 0, tzinfo=UTC))
+    # Fri 12:07, 13:07-22:52 and 23:07; Sat 24 and Sun 25 (01:07 twice) hourly; Mon 00:07-12:07 and 13:07-14:52.
+    assert len(starts) == 1 + 10 * 4 + 1 + 24 + 25 + 13 + 2 * 4 == 112
+    for good in starts:
+        t = slack_transport()
+        store = ctx_at(good).store
+        beat(store, "sync_outcomes", good)
+        first = good.replace(minute=5) + timedelta(hours=1)
+        hits = []
+        for k in range(6):
+            when = first + timedelta(hours=k)
+            if hb.check_heartbeats(ctx_at(when, job="heartbeat_check", transport=t, store=store), ["sync_outcomes"]):
+                hits.append(when)
+        second = sync_starts(good + timedelta(minutes=2), hits[0])[1]
+        assert len(posts(t)) == 1 and hits[0] - timedelta(hours=1) < second + timedelta(minutes=5) <= hits[0], good
+
+
 def test_never_run_jobs_are_not_flagged():
     ctx = ctx_at(MON_NOON, job="heartbeat_check")
     assert hb.check_heartbeats(ctx, jobs=["settings_sync", "mailbox_health"]) == []

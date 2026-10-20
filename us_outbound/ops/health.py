@@ -30,13 +30,16 @@ rule), whether Slack can take alerts (slack_problem), then the outside watchdog'
 a look. When the settings are unusable heartbeat_check starts on the General defaults (ops/bootstrap.py), so it
 still alerts and pings.
 
-Missed: a job is missed when it last showed it is alive longer ago than EXPECTED[job]; weekday jobs count only
-weekday time (UK), so a weekend is not a miss. Alive is a run that finished ok, or skipped for a reason of its own (a
-blackout date). A "running" row is no evidence, nor a skip behind one, except a job's only run so far, still within
-OVERLAP_MINUTES of its start. One Slack message when a job is newly missed, repeated at the 09:00 UK check each day
-while anything is still missed (Harry, 12 Oct 2026: clear to a newcomer; base/say.py): the jobs in plain words, what
-has stopped happening (IMPACT), and the fix. When the jobs refuse to start because the settings are unusable, that
-cause is said once, with a link to each failing tab and its first errors (settings_fault).
+Missed: a job is missed when it last showed it is alive longer ago than EXPECTED[job]; weekday jobs count only weekday
+time (UK), so a weekend is not a miss. A job whose cadence changes over the week (BY_SCHEDULE: sync_outcomes, every 15
+minutes in the ET send window and hourly otherwise, W2-4) is missed by its own schedule instead: when the second run due
+after it last showed it is alive has been due SCHEDULE_GRACE minutes, so two failed runs in a row, whichever the cadence
+(a flat 75 minutes alerted on one failed hourly run and let four 15-minute ones fail). Alive is a run that finished ok,
+or skipped for a reason of its own (a blackout date). A "running" row is no evidence, nor a skip behind one, except a
+job's only run so far, still within OVERLAP_MINUTES of its start. One Slack message when a job is newly missed, repeated
+at the 09:00 UK check each day while anything is still missed (Harry, 12 Oct 2026: clear to a newcomer; base/say.py):
+the jobs in plain words, what has stopped happening (IMPACT), and the fix. When the jobs refuse to start because the
+settings are unusable, that cause is said once, with a link to each failing tab and its first errors (settings_fault).
 
 Caught errors (Harry, 7 Oct 2026). A job that meets a failure it can live with records it and finishes ok; its
 heartbeat keeps it and nobody was told. report_errors reads each scheduled job's latest finished run in the last
@@ -96,6 +99,8 @@ OPERATOR_STOP, OPERATOR_START = "operator_stop", "operator_start"
 ERROR_LIMIT = 1000  # characters of error text kept on the row
 OVERLAP_MINUTES = 60  # the lock age of a job with no timeout of its own, and a first run's grace in check_heartbeats
 NEW_MISS_WINDOW = 75  # minutes: a job overdue by less than this at an hourly check is "newly missed"
+CHECK_EVERY = 60  # minutes: heartbeat_check's cadence, the newly-missed window of a BY_SCHEDULE job
+SCHEDULE_GRACE = 5  # minutes a BY_SCHEDULE job's second missed run has been due before the job is missed
 REMINDER_HOUR_UK = 9  # the daily repeat of the missed list, beside the daily post
 EXIT_GUARD, EXIT_SIGTERM, EXIT_ERROR = 3, 143, 1  # ops/cli.py's exit codes, stored on the row
 
@@ -396,6 +401,11 @@ EXPECTED: dict[str, int] = {
     "hand_check_draw": 8 * _DAY,  # Mon 05:45 (W1-5, 19 Oct 2026)
     "retention": 26 * _H,  # 00:40 daily (build addition: SPEC 6 and 13, ops/retention.py)
 }
+# Missed by their schedule, not by EXPECTED (which stays their fallback and their "due at least every"): the module
+# docstring. sync_outcomes is due at :07, :22, :37 and :52 in the ET send window and at :07 outside it, and missed
+# SCHEDULE_GRACE minutes after its second missed start, so at :12, :27, :42 or :57: 7 minutes either side of
+# heartbeat_check at :05, so the check that first sees it, 8 to 53 minutes on, is the only one within CHECK_EVERY.
+BY_SCHEDULE = frozenset({"sync_outcomes"})
 # score has no schedule of its own: it runs inside settings_sync, verify_accounts, pick_contacts and site_visits.
 WEEKDAY_JOBS = frozenset({"source_universe", "apollo_signals", "read_pages", "apollo_enrich", "contact_precheck",
                           "verify_accounts", "pick_contacts", "enrol"})
@@ -456,14 +466,35 @@ def _last_healthy(run: Mapping[str, Any], now: datetime) -> datetime | None:
     return None
 
 
+def _second_due(job: str, after: datetime) -> datetime | None:
+    """The second minute after `after` in which the job is due by any of its schedule rows; None without one."""
+    from us_outbound.ops.schedule import crons
+    from us_outbound.ops.scheduler import Cron, due
+
+    rows = [Cron.parse(c) for c in crons(job)]
+    minute = timedelta(minutes=1)
+    t, seen = after.replace(second=0, microsecond=0) + minute, 0
+    for _ in range(DAILY if rows else 0):  # minute by minute (next_run walks each row on to its own next start)
+        if any(due(c, t) for c in rows):
+            seen += 1
+            if seen == 2:
+                return t
+        t += minute
+    return None
+
+
 def overdue_minutes(job: str, run: Mapping[str, Any] | None, now: datetime) -> float | None:
     """How far past EXPECTED[job] the job is (positive = missed); None if it never ran. A job that has runs but never
-    a healthy one is missed without end (inf), so it is alerted in the daily reminder rather than as newly missed."""
+    a healthy one is missed without end (inf), so it is alerted in the daily reminder rather than as newly missed.
+    A BY_SCHEDULE job: how long since its second run due after it last showed it is alive has been due
+    SCHEDULE_GRACE minutes."""
     if not run:
         return None
     last = _last_healthy(run, now)
     if last is None:
         return float("inf")
+    if job in BY_SCHEDULE and (second := _second_due(job, last)) is not None:
+        return (now - second).total_seconds() / 60 - SCHEDULE_GRACE
     elapsed = _weekday_minutes(last, now) if job in WEEKDAY_JOBS else (now - last).total_seconds() / 60
     return elapsed - EXPECTED[job]
 
@@ -580,7 +611,7 @@ def check_heartbeats(ctx: Context, jobs: Iterable[str] | None = None) -> list[st
         over = overdue_minutes(job, run, now)
         if over is not None and over > 0:
             missed.append(job)
-            if over <= NEW_MISS_WINDOW:
+            if over <= (CHECK_EVERY if job in BY_SCHEDULE else NEW_MISS_WINDOW):
                 new.append(job)
     reminder = bool(missed) and now.astimezone(UK).hour == REMINDER_HOUR_UK
     if new or reminder:
