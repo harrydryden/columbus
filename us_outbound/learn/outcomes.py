@@ -75,6 +75,7 @@ class Outcome:
     first_unsubscribed_at: datetime | None = None
     first_meeting_at: datetime | None = None
     meeting_source: str = ""
+    meeting_analytics_source: str = ""  # the booker's hs_analytics_source (crm/readback.py): O1b (W3-1)
     steps_sent: int = 0
     mailbox_paused: bool = False
     stamps: dict[str, Any] = field(default_factory=dict)
@@ -193,6 +194,7 @@ def per_company(ctx: Context, events: Sequence[Mapping[str, Any]] | None = None)
                 o.negative_in_window = o.negative_in_window or _clean(c) == "negative"
         elif kind == "meeting_booked" and o.first_meeting_at is None:
             o.first_meeting_at, o.meeting_source = t, str(e.get("source") or "")
+            o.meeting_analytics_source = str(e.get("analytics_source") or "").strip().upper()
         elif kind == "unsubscribed" and o.first_unsubscribed_at is None:
             o.first_unsubscribed_at = t
     for aid, s in steps.items():

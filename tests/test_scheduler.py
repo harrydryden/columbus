@@ -868,6 +868,7 @@ SPEC9_CRONS = {
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *",
     "daily_post": "0 9 * * 2-6",  # 19 Oct 2026: Tuesday to Saturday, each post the day before (learn/daily_post.py)
     "monday_readout": "30 8 * * 1",  # Harry, 6 Oct 2026: after the hand-check, before the daily post
+    "metrics_daily": "50 8 * * *",  # W3-1, 20 Oct 2026: the persisted metrics series (learn/metrics.py)
     "blackout": "40 * * * *",  # Harry, 7 Oct 2026: hourly, the campaigns paused over the blackout dates
     # Build additions.
     "heartbeat_check": "5 * * * *", "suppression_load": "30 1 * * *", "verify_accounts": "30 4 * * 1-5",
@@ -940,7 +941,7 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     assert enabled == ["settings_sync", "source_universe", "apollo_signals", "read_pages", "apollo_enrich",
                        "contact_precheck", "site_visits", "verify_accounts", "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback",
                        "sync_outcomes", "mailbox_health", "kill_rules", "blackout", "daily_post", "capture",
-                       "monday_readout", "heartbeat_check",
+                       "monday_readout", "metrics_daily", "heartbeat_check",
                        "suppression_load", "lookalikes", "hand_check_draw", "retention", "label_sample_monthly",
                        "follow_up"]
     # lookalike_leads is parked before its first run on Sun 1 Nov (W0, 19 Oct 2026; code-sources B6): it paid for
@@ -957,6 +958,11 @@ def test_enabled_jobs_are_the_ones_heartbeat_check_expects():
     # follow_up (W2-4, 20 Oct 2026): registered everywhere a new job must be, in the same commit.
     assert cli.JOBS["follow_up"] == "us_outbound.replies.follow_up:sweep" and hb.EXPECTED["follow_up"] == 26 * 60
     assert by_name()["follow_up"].live is True and "follow_up" in hb.IMPACT
+    # metrics_daily (W3-1, 20 Oct 2026): registered everywhere a new job must be, in the same commit; daily, so its
+    # 26 hours are wall time, and it writes only the database (no --live).
+    assert cli.JOBS["metrics_daily"] == "us_outbound.learn.metrics:run" and hb.EXPECTED["metrics_daily"] == 26 * 60
+    assert by_name()["metrics_daily"].live is False and "metrics_daily" in hb.IMPACT
+    assert "metrics_daily" not in hb.WEEKDAY_JOBS
     # capture (W1-2, 19 Oct 2026; RS §2 W1-2): registered everywhere a new job must be, in the same commit.
     assert cli.JOBS["capture"] == "us_outbound.replies.capture:run" and hb.EXPECTED["capture"] == 8 * 24 * 60
     assert by_name()["capture"].live is True and "capture" in hb.IMPACT

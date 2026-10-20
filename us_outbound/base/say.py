@@ -61,6 +61,7 @@ JOB_NAMES: dict[str, str] = {
     "blackout": "pausing sends on holidays",
     "daily_post": "the daily summary",
     "monday_readout": "the Monday readout",
+    "metrics_daily": "keeping the daily numbers",  # W3-1, 20 Oct 2026 (learn/metrics.py)
     "heartbeat_check": "checking every job ran",
     "suppression_load": "loading the do-not-contact list",
     "lookalikes": "finding companies like our customers",

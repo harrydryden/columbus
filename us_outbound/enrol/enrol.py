@@ -138,13 +138,15 @@ def iso_week(d: date) -> str:
 
 # -- gates -------------------------------------------------------------------------------
 
+OPERATOR_STOPPED = "enrollment is stopped by an operator"  # how operator_pause's reason starts (daily_post reads it)
+
 
 def operator_pause(ctx: Context) -> str | None:
     """Why enrollment is paused by the stop command (SPEC 13); the stop rule's pause is holds.enrolment_stop."""
     stop = enrolment_paused(ctx.store)
     if stop is None:
         return None
-    return f"enrollment is stopped by an operator (stop at {stop.get('started_at')}); run `us-outbound start --live` to resume"
+    return f"{OPERATOR_STOPPED} (stop at {stop.get('started_at')}); run `us-outbound start --live` to resume"
 
 
 def reply_pause(ctx: Context) -> str | None:

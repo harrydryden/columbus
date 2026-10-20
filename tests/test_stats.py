@@ -178,3 +178,23 @@ def test_min_n_ok():
     assert not stats.min_n_ok({"GA": 14, "NY": 22}, 15)
     assert stats.min_n_ok([15, 15])
     assert not stats.min_n_ok({})
+
+
+def test_newcombe_hybrid_score_interval_for_a_difference():
+    """Newcombe (1998), Table II, example (a): 56 of 70 against 48 of 80, a difference of 0.2000 with the method-10
+    interval 0.0524 to 0.3339. A Wald difference interval, ±1.96 × √(0.8 × 0.2 ÷ 70 + 0.6 × 0.4 ÷ 80) = ±1.96 ×
+    0.07270 = ±0.1425, gives 0.0575 to 0.3425 and fails it. W3-1 reads the A/A sham arm with it."""
+    lo, hi = stats.newcombe(56, 70, 48, 80)
+    assert (round(lo, 4), round(hi, 4)) == (0.0524, 0.3339)
+    lo, hi = stats.newcombe(3, 100, 3, 100)  # the same rate: symmetric about 0
+    assert lo == pytest.approx(-hi) and lo < 0 < hi
+    assert stats.newcombe(1, 0, 1, 5) == (-1.0, 1.0)
+
+
+def test_binomial_quantile():
+    """Binomial(40, 0.01): P(X = 0) = 0.99^40 = 0.6690; P(X ≤ 1) = 0.6690 + 40 × 0.01 × 0.99^39 = 0.9393;
+    P(X ≤ 2) = 0.9393 + 780 × 0.0001 × 0.99^38 = 0.9925. The 5% quantile is 0, the 95% is 2 (0.9393 < 0.95)."""
+    assert stats.binomial_quantile(0.05, 40, 0.01) == 0
+    assert stats.binomial_quantile(0.95, 40, 0.01) == 2
+    assert stats.binomial_quantile(0.93, 40, 0.01) == 1
+    assert stats.binomial_quantile(0.5, 0, 0.3) == 0 and stats.binomial_quantile(0.5, 5, 1.0) == 5

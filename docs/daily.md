@@ -86,8 +86,8 @@ for the blackout until Mon 30 Nov": there is nothing to do.
 | :- | :- | :- |
 | 07:00 | Mailbox check, only when something changed or is wrong: a mailbox promoted to Active, a campaign's daily limit raised with the ramp, a new campaign created or activated, a sender name that is not the owner's full name | Usually nothing. If it asks you to run `us-outbound start --live` or `us-outbound mailbox check --fix --live`, run it |
 | Monday 05:45 | The weekly hand-check: `hand_check_sample` companies (10 until you set 20) picked at random from those the coming send days would email, after today's own (so Monday's sending is never held up). Since 14 Oct nothing is held here for doubtful facts or an unclear industry: a company missing its HQ state, size or industry is left out by itself ("incomplete information"), as is one the AI cannot place in our industries, and a borderline size (near a band edge) goes ahead on Apollo's count. With `hand_check_gate` = no only the picked companies wait for you, for 7 days at most; with yes the week's new leads wait for the whole check. A check still open on Wednesday 09:00 posts one reminder. If the Monday draw fails, the 5-minute poll draws the week itself from 06:15; with the whole-day gate, a week that found no company ready at 05:45 is drawn again once one is | Open the **Hand-check** tab (the post links it) and pick a `decision` on each row: *fine*, *leave out* (never emailed: say why in `reason`), or *wrong industry* with the right one in `right_label`; pick *no* in `contact_ok` or `opener_ok` when the person or the opening line is wrong. Each choice is applied within 5 minutes, and a change later is applied too (a leave out changed to fine puts the company back). A choice that cannot be applied says why in `note`. The check closes when every row is applied, or after 7 days; the Monday readout counts the decisions and any company sent unjudged (`handcheck approve` still works from a terminal). Every week's rows stay on the tab, and each applied row is kept in the database as a judgement |
-| Monday 08:30 | The Monday readout: last week, the targets, the exit criteria to scale, the cuts, the signal table and the tests | See **Mondays: the readout** below |
-| 09:00 Tue–Sat | The daily post, short since 9 Oct 2026, Tuesday to Saturday since 19 Oct 2026 (each covers the day before alone: Saturday's is Friday, Tuesday's is Monday; weekend replies are in the Monday readout): **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. `us-outbound report daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
+| Monday 08:30 | The Monday readout: last week, the operating metric, the north star as counts until it can be read, throughput and supply, ICP precision and labels, delivery and capture, the splits, the tests, the forecasts, the decisions waiting | See **Mondays: the readout** below |
+| 09:00 Tue–Sat | The daily post, short since 9 Oct 2026, Tuesday to Saturday since 19 Oct 2026 (each covers the day before alone: Saturday's is Friday, Tuesday's is Monday; weekend replies are in the Monday readout): **Needs you** (one bullet per thing to do), **Yesterday** (sends and outcomes in one line, what was found in another, any positive reply or objection), **Today** (up to how many new contacts, what limits it, each sender's share, the week so far), **Pipeline** (ready, and what stands behind it), and **Watch** only when something needs a look (a loud mailbox, a kill rule, a campaign not sending, what the data says to tune) | Read **Needs you** first. From 20 Oct 2026 it also asks when sourcing has stalled (no new company and no new contact on the last 3 send days while 50 or more wait), when the week's reply-capture check found Instantly's counts and ours apart or the canary did not come back, and when yesterday's enrolment was held by a gate or lost leads to errors (not when the gate was an operator's own `us-outbound stop`: the pause someone chose). `us-outbound report daily --full` prints the full post as it was before: sources, labels, every mailbox and the credit budgets. The Monday readout carries the weekly detail |
 | 12:00 | Enrol adds the day's leads to Instantly (no card since 20 Oct 2026) | Nothing |
 | Any time | Reply cards, each with a draft | Answer within 2 hours, or the card is re-posted (13:00 to 23:00 UK). Answer within 24 hours: a positive reply waiting longer pauses new sends and is emailed to you |
 | Hourly | Kill-rule alerts: a mailbox, an email source or an industry group held back, with the reason | Check it, then `us-outbound killrules show` and `us-outbound killrules clear ID --live` |
@@ -112,53 +112,58 @@ At 08:30 UK, after the hand-check's draw and before the daily post, `monday_read
 Sunday, UK time) to #us-outbound. `us-outbound report readout` prints the same text without posting. Read it top
 to bottom:
 
-1. **Last week:** emails sent, the companies that replied (people, not out-of-office; each company once,
-   however many times it wrote, with the reply emails beside when they differ) and how many positively,
-   meetings booked, bounces and unsubscribes.
-2. **So far** (since 19 Oct 2026): only companies whose 28-day reply window has closed are judged. Under 30
-   of them it gives counts and how many have had the 28 days, and no rate; from 30, each rate with its 95%
-   range ("5.7% (2 of 35; 95% 1.6–18.6)") and the working assumption beside it (3 to 5%, about 1%, 0.5 to
-   1%), with no "on track" or "below": at these numbers the range spans the assumption either way. Meetings
-   are judged 45 days after email 1.
-3. **Against the targets:** companies enrolled against `weekly_enrol_cap`; the companies emailed so far; the
-   stop rule's progress.
-4. **Exit criteria to scale**, each "Met" or "Not met" with its numbers: bounces under 2% of the contacts sent
-   email 1 (from 100 contacts, with its range: 100 contacts cannot show 2% is met for sure), unsubscribes
-   confirmed end to end, every reply classified and routed, no unexplained refusal. Spam complaints are "not
-   measured" (nothing reports them yet), so they are not counted. When all four are met and last week reached
-   90% of `weekly_enrol_cap`, raise it with the ramp (docs/roadmap.md §3). Beside them, each email source's
-   bounces per contact over the last 7 days, next to the per-send figure the source's safety pause uses.
-   Before the readout, Monday's credit and spend asks and the mailboxes to add (there is no Monday daily post).
-5. **By tier, angle, industry group, sender and step:** last week's sends, replies and meetings, and for
-   each the companies emailed so far and how many replied.
-6. **Cohorts:** the last four enrolment weeks (a company counts in the UK week its first contact was
-   enrolled), each at the latest age its companies have reached after email 1 (7, 14, 21 or 28 days); the
-   latest two compared at the latest age at which each has 30 companies, with what changed between them ("a
-   coincidence to test, not a cause"); and **Settings changes**: what changed last week in the settings,
-   copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
-   table, `us-outbound report cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
-   two versions, `us-outbound cohorts changes`.
-7. **ICP precision** (since 20 Oct 2026, W3-2): the hand-check's random rows judged fine over the last four
-   weeks, with a 95% interval (`Fine: 38 of 48 (79%, 95% 66%–88%)`), the reasons for leaving out, and the same by
-   gate version (the labels' and ICP rules' versions the companies passed), so a change to the gate shows apart from
-   a change in who was drawn. The 0.90 target takes about 150 rows to show. A split (by group, size band, state,
-   slice, score decile, arm, label source) prints only when every cell has 15 rows; otherwise it says "pooled only".
-   **Industry labels:** the corrections made by hand (`Games studios → Technology & Startups (2)`), how often the
-   rules and the model agreed, the companies held or left out; then how often a label is right, which only a person
-   can say: the label sample's exact and group figures with intervals, the emails sent a label's own copy apart
-   (October: 4 of 30 pitched the wrong label), how often a company you judged twice got the same verdict, and the
-   label policy: which ways of deciding a label earn its own copy (exactly right in at least 90% of 20 or more
-   judged), and whether it is applied (General `copy_level_policy`, no by default: then it only says what it would
-   change). Many of one correction means a definition or keywords on the Industries tab need a change; run
-   `us-outbound labels eval --live` before and after.
-8. **Signal value:** the signals whose companies replied more or less than the companies without them, as
-   monitoring: at this volume most such gaps are chance, so none is a "Needs action" item (since 19 Oct 2026).
-   Nothing re-weights itself.
-9. **Tests:** a test that reached one of its pre-registered looks last week, with its reply rates, or how
-   far each running test has got.
+Rebuilt on 20 Oct 2026 (W3-1): it prints what can be read now and no verdict ("below", "on track", "raise"); every
+rate has its counts and a 95% range, a split shows only when each part has 15 companies, and a line at the end says
+how many of the ranges would miss by chance alone. Read it top to bottom:
 
-**Small numbers read as small.** A rate on fewer than 30 companies says "too few to read" and gives the
-counts only. A bounce rate on fewer than 100 sends says that one bounce moves it a lot.
+1. **The headline and last week:** how many decisions wait for you; emails sent, the companies that replied
+   (people, not out-of-office; each company once, with the reply emails beside when they differ) and how many
+   positively, meetings booked, bounces and unsubscribes.
+2. **Operating metric** (until replies mature): companies contacted last week (of `weekly_enrol_cap`) × the share
+   the hand-check judged right for us over four weeks × the share delivered, "≈ N ICP companies reached". The
+   hand-check holds its sampled companies until judged, so this overstates by at most about 2 points.
+3. **North star:** companies engaged (a positive or referral reply within 28 days of email 1, or a meeting within
+   45), each company once, a bounced one kept in. Until 30 companies have had 45 days it gives counts and the reply
+   curve (by day 7, 14, 21 and 28 since email 1); from 30, the rate with its range ("1 of 30 (3.3%, 95%
+   0.4–14.5%)"). Meetings two ways: at any time, and not from an ad (the booker's HubSpot source is not paid search).
+   From 30 companies past 28 days, the positive and the human reply rates. Exposure (how many got all four emails, a
+   safety pause, the hand-check's hold). "Reply capture unverified" on the block until the week's capture check
+   passes. The stop rule's count.
+4. **Throughput and supply:** the week's sourcing plan, what held each send day and the leads lost by cause,
+   mailbox use, and the contactable supply in send days with the yields it rests on.
+5. **Hand-check, ICP precision and industry labels:** the week's hand-check; the random rows judged fine over the
+   last four weeks with a 95% range (`Fine: 38 of 48 (79%, 95% 66%–88%)`), the reasons for leaving out, the same by
+   gate version (the labels' and ICP rules' versions the companies passed); a split (group, size band, state, slice,
+   score decile, arm, label source) only when every cell has 15 rows, else "pooled only". The 0.90 target takes
+   about 150 rows to show. **Industry labels:** the corrections made by hand, how often the rules and the model
+   agreed, the label sample's exact and group figures with ranges, the emails sent a label's own copy apart
+   (October: 4 of 30 pitched the wrong label), the rater's agreement with himself, and the label policy and whether
+   it is applied (General `copy_level_policy`). Many of one correction means a definition or keywords on the
+   Industries tab need a change; run `us-outbound labels eval --live` before and after.
+6. **Delivery and capture:** step-1 bounces per contact with its range (contacts whose first email bounced, of those
+   sent it), each email source's bounces per contact beside the per-send figure its safety pause uses, each
+   mailbox's last 100 sends, the reply-capture check, complaints "not measured", and whether opt-outs, replies and
+   safety-check refusals were all dealt with (each with what to do when not).
+7. **Splits:** the share of last week's companies drawn at random (the explore arm); human replies within 28 days
+   by explore arm, industry group and size band, each only when every part has 15 matured companies; the A/A check
+   (the sham arm, a label that changes nothing: a difference outside its range is a counting problem, not an
+   effect). Then last week's activity by arm, angle, group, sender and step, as counts.
+8. **Tests** and **Signals:** a test that reached a pre-registered look (a decision for you), or how far each has
+   got; each signal's companies with and without it, with ranges, as monitoring.
+9. **Forecasts:** last week's forecasts (companies contacted, ICP precision, positive replies from the companies
+   reaching 28 days) against what they came to; one outside its range three weeks running is flagged for a look at
+   its definition.
+10. **Cohorts and changes:** the last four enrolment weeks at the latest age reached, and what changed last week in
+    the settings, copy, campaign constants and code (`us-outbound report cohorts`, `us-outbound cohorts changes`).
+11. **Decisions waiting**, last, each with where to act. Before the readout, Monday's credit and spend asks and the
+    mailboxes to add (there is no Monday daily post).
+
+The numbers behind it are kept daily by `metrics_daily` (08:50 UK, from 20 Oct 2026) in the database's `metrics`
+table, one row per day, cut and measure, so a later look can read a series rather than old posts.
+
+**Small numbers read as small.** A rate is given only from 30 companies whose window has closed; before that, counts.
+A split shows only when every part has 15 companies ("pooled only" otherwise). Every rate carries its counts and a
+95% range, and about 1 in 20 ranges misses the true rate by chance, which the readout's last line counts for you.
 
 **Meetings** count bookings on your HubSpot calendar (the signature's "Book a call here", and the website's
 demo page, which books into the same calendar) and Spill 3.0 deals at "Demo requested" or later at a company
@@ -422,8 +427,8 @@ The jobs only read Apollo's visitor list and never touch the tracker, so this is
   well inside the month's Claude cap; run it without `--live` first to see the rows and the most it can cost.
   Every email has two links at most, body and signature together (Harry, 6 Oct 2026): the body's one link is
   its call to action, and a row with a second body link fails the check and is never sent.
-- **Volume:** raise `weekly_enrol_cap` on the General tab as the ramp rises and the exit criteria
-  hold (docs/roadmap.md §3).
+- **Volume:** `weekly_enrol_cap` on the General tab is yours to change as the ramp rises (docs/roadmap.md §3); the
+  readout shows what held each send day, so you can see whether the cap is what binds.
 - **Email 1's subject split** (5 Oct 2026): half the companies (General `email1_subject_share`, 0.5)
   get the personal subject `email1_subject` ("support for the {{company}} team"; `{{company}}` and
   `{{first_name}}` only) in email 1 instead of the Copy row's. Emails 2 to 4 are unchanged. Each
