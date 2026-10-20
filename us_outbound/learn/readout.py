@@ -29,10 +29,13 @@ Top to bottom:
   * delivery and capture: step-1 bounces per contact (D1) and by email source beside the per-send pause, each
     mailbox's last 100 sends (D2), the reply-capture check (D3), complaints "not measured" (D4), and whether
     opt-outs, replies and safety-check refusals were all dealt with;
-  * splits: the explore arm (with its realised share) and the A/A sham arm (a label that changes nothing: a difference
-    outside its interval is pipeline bias), industry group and size band, each on human replies within 28 days, and
-    last week's activity by cut (v_readout_weekly), counts only;
-  * the tests (the one experiment, learn/looks.py) and the signals (learn/signal_review.py), as monitoring;
+  * splits: the explore arm against ranked (learn/experiments.arms_table, W3-4: O2-O4 with Jeffreys intervals, the
+    realised share by step-1 week, and the one read at 300 random companies matured) and the A/A sham arm (a label
+    that changes nothing: a difference outside its interval is pipeline bias), industry group and size band on human
+    replies within 28 days, and last week's activity by cut (v_readout_weekly), counts only;
+  * the tests: the registry (learn/experiments.registry_lines, W3-4: General live_split, each split's
+    pre-registration, planned n, reached, matured and projected date), then each running test at its looks
+    (learn/looks.py); the signals (learn/signal_review.py), as monitoring;
   * the forecast scorecard (learn/metrics.scorecard: last week's forecasts against what they came to, and any
     outside its interval 3 weeks running);
   * the cohorts and the week's changes (learn/cohorts.py);
@@ -54,7 +57,7 @@ from us_outbound import budget, fmt
 from us_outbound.base import notify, say
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
-from us_outbound.learn import cohorts, kill_rules, looks, outcomes, signal_review, spend
+from us_outbound.learn import cohorts, experiments, kill_rules, looks, outcomes, signal_review, spend
 from us_outbound.learn.outcomes import Outcome
 from us_outbound.learn.stats import jeffreys, min_n_ok, newcombe, wilson
 from us_outbound.logs import log
@@ -78,7 +81,8 @@ CUTS = (("arm", "By explore arm", "random: picked at random from the queue; rank
         ("step", "By step", "which email of the sequence"))
 CUT_LIMIT = 8  # values listed per cut, the busiest first
 # The splits of the outcomes (learn/metrics.cut_value), each on human replies within 28 days (O4: L8's read).
-SPLITS = (("arm", "explore arm"), ("group", "industry group"), ("size_band", "size band"))
+# The explore arm has its own table above them (learn/experiments.arms_table: O2-O4, the realised share, the read).
+SPLITS = (("group", "industry group"), ("size_band", "size band"))
 REPLY_ITEM, OOO_ITEM, OPT_OUT = "reply:", "out_of_office:", "unsubscribed:"  # poll_replies' and optout's ids
 FORECAST_WORDS = {"contacted": "companies contacted", "icp_precision": "ICP precision",
                   "positive_maturing": "positive replies from the companies reaching 28 days"}
@@ -275,16 +279,19 @@ def sham_line(a: tuple[int, int], b: tuple[int, int]) -> str:
             f"{hi * 100:+.1f}): {verdict}.")
 
 
-def split_lines(found: Sequence[Outcome], start: datetime, end: datetime) -> list[str]:
-    from us_outbound.learn import metrics
+def split_lines(ctx: Context, found: Sequence[Outcome], counts: dict[str, Any] | None = None) -> list[str]:
+    """The splits: the explore arm's table (W3-4: learn/experiments.arms_table: O2-O4 by arm, the realised share by
+    step-1 week, the one read when it is due), the group and size-band splits on human replies, and the sham arm.
+    counts gets the table's numbers; its intervals (written without "95% ") join the multiplicity line in build."""
+    from us_outbound.learn import experiments, metrics
 
     m28 = [o for o in found if o.window_closed_28]
     out = ["", f"*Splits* (human replies within {REPLY_DAYS} days, on companies that have had them; monitoring: the "
                "explore arm is read once, at 300 matured in the random arm)"]
-    week = [o for o in found if start <= o.step1_at < end]
-    drawn = sum(o.stamp("arm") == "random" for o in week)
-    out.append(f"  Realised explore share last week: {drawn} of {fmt.plural(len(week), 'company', 'companies')} "
-               "contacted were drawn at random.")
+    table, table_nums = experiments.arms_table(ctx, found)
+    if counts is not None:
+        counts.update(table_nums)
+    out += table
     for cut, label in SPLITS:
         cells = {v: (sum(o.replied_in_window for o in g), len(g)) for v, g in metrics.by_cut(m28, cut, {}).items()}
         out.append(split_line(label, cells))
@@ -669,14 +676,15 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
             *checked, *t1, *label_section(ctx, start, end, precision_nums.get("wrong_industry"))]
     delivery, delivery_nums, todo = delivery_lines(ctx, ev, start, end)
     body += delivery
-    body += _guarded(ctx, "splits", "*Splits*", lambda: split_lines(found, start, end))
+    arm_nums: dict[str, Any] = {}
+    body += _guarded(ctx, "splits", "*Splits*", lambda: split_lines(ctx, found, arm_nums))
     if rows is not None:
         cut_block = [line for cut, title, about in CUTS for line in cut_lines(rows, cut, title, about, start)]
         if cut_block:
             body += ["", "*Last week by cut* (activity · companies emailed so far)", *cut_block]
     tests, at_look = looks.readout_lines(ctx, ctx.now - timedelta(days=7))
     body += ["", "*Tests* (the one experiment, read only at points fixed in advance on the Tests tab, called looks)",
-             *tests]
+             *_guarded(ctx, "registry", "*Experiment registry*", lambda: experiments.registry_lines(ctx)), *tests]
     todo += [f"decide on test {t}" for t in at_look]
     body += ["", "*Signals* (monitoring: replies with each buying signal at enrolment against without, with 95% "
                  "intervals)", *signal_section(ctx)]
@@ -697,7 +705,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
     else:
         head = say.compose(say.INFO, f"Monday readout, {days}: no decision waiting")
     lines = [head, week_line(week), *body]
-    intervals = count_intervals(lines)
+    intervals = count_intervals(lines) + int(arm_nums.get("intervals") or 0)
     lines += ["", multiplicity_line(intervals),
               "*Decisions waiting:* " + (" · ".join(todo) if todo else "none")]
     nums: dict[str, Any] = {
@@ -705,7 +713,7 @@ def build(ctx: Context) -> tuple[list[str], dict[str, Any]]:
         "so_far": dict(so_far(rows)["all"]) if rows is not None else None, "views": rows is not None,
         "operating": operating_nums, "north_star": star_nums, **delivery_nums,
         "decisions_waiting": todo, "hand_check": by_hand, "icp_precision": precision_nums,
-        "forecasts": card, "intervals": intervals,
+        "forecasts": card, "intervals": intervals, "explore_arm": arm_nums,
         **by_cohort,  # the counts by enrolment week, and how many settings changes last week
     }
     return lines, nums
