@@ -14,7 +14,8 @@ tier's control_share): the accounts pick_contacts drew at random from the eligib
 (split), and stamped accounts.arm = random. The rest are taken in order: tier (until the tiers are retired), score,
 size band (20 to 99 first), then industry priority. A shortfall in either is filled from the other, so capacity is
 never left idle while verified accounts wait. explore_share is 0 until Harry sets it on the General tab, and while
-it is 0 there is no random arm: every account is taken in order.
+it is 0 there is no random arm: control_share of the number comes from the Control tier first, as before W1-6, and
+the rest in order (control_count), so a sheet without the row changes nothing.
 
 SPEC 9 "Test assignment": the version is hash(account_id + test_id) % 2, so an account's
 version never changes and both contacts at an account get the same one.
@@ -92,7 +93,18 @@ def explore_count(n: int, settings: Settings, available: int) -> int:
 
     The Control tier's count, on the new key: a new key with default 0, not a rename of control_share, which is
     retired, so a sheet without the row (or a rollback) changes nothing (RS P0-2)."""
-    share = Decimal(str(settings.general.explore_share))
+    return _share_of(n, settings.general.explore_share, available)
+
+
+def control_count(n: int, settings: Settings, available: int) -> int:
+    """control_share of n (the retired key's code default, 0.15), by explore_count's rule: the Control tier's places
+    while explore_share is 0, so that a sheet without an explore_share row keeps today's comparison arm (enrol.run;
+    the whole-wave review, 20 Oct 2026). Once explore_share is above 0 the random arm takes its place."""
+    return _share_of(n, settings.general.control_share, available)
+
+
+def _share_of(n: int, share_value: float, available: int) -> int:
+    share = Decimal(str(share_value))
     if n <= 0 or available <= 0 or share <= 0:
         return 0
     want = int((share * n).quantize(Decimal(1), rounding=ROUND_HALF_UP))

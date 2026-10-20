@@ -28,7 +28,8 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      hold back an industry group or an email source (base/holds.py). This is one check (eligible),
      and a send approval's ✅ runs it again for the card's contact (enrol/approvals.recheck).
   4. explore_share of today's number from the random arm pick_contacts drew (accounts.arm = random; Harry's D7,
-     in place of the Control tier's share; 0 by default, so none), the rest in queue order (queue.order_key),
+     in place of the Control tier's share), the rest in queue order (queue.order_key); while explore_share is 0
+     (the default, so no random arm) control_share from the Control tier first, as before W1-6 (queue.control_count),
      each account gets: its sender (kept for life; a paused sender's accounts
      wait), its Copy row (the most specific approved, QA-passed row for its industry and its
      contact's role, else its group's, else General; a running ab test's hash split takes
@@ -1151,31 +1152,41 @@ def run(ctx: Context) -> dict:
     # The random walk ignores tier and the Focus quota's allows(): pick drew it within the Focus shares already, so
     # holding it to today's quota would bend the arm towards whichever group the ranked accounts left room in. Its
     # accounts still count against the quota, so the day's groups keep their shares. With explore_share 0 (the
-    # default) there is no random walk and every account is walked in queue order, those pick drew while the share
-    # was above 0 included, so setting it back to 0 is today's order exactly; their contacts are stamped ranked.
+    # default) there is no random walk: the Control tier keeps its control_share first, as before W1-6, and the rest
+    # are walked in queue order, those pick drew while the share was above 0 included, so a sheet without the row is
+    # today's walk exactly (the plan's W1-6 acceptance; the whole-wave review, 20 Oct 2026); their contacts are
+    # stamped ranked. The Control lane goes through the quota, as it did.
     in_order = sorted(cands, key=lambda c: queue.order_key(c.account, s))
     exploring = s.general.explore_share > 0
 
     def in_random_arm(account: Mapping[str, Any]) -> bool:
         return exploring and account.get("arm") == queue.RANDOM
 
+    def in_first_lane(account: Mapping[str, Any]) -> bool:
+        return in_random_arm(account) if exploring else account.get("tier") == queue.CONTROL
+
     drawn = [c for c in in_order if in_random_arm(c.account)]
-    random_lane = iter(drawn)
-    ranked_lane = iter([c for c in in_order if not in_random_arm(c.account)])
+    first = [c for c in in_order if in_first_lane(c.account)]
+    first_lane = iter(first)
+    ranked_lane = iter([c for c in in_order if not in_first_lane(c.account)])
     n_random = queue.explore_count(n, s, len(drawn))
+    n_lead = n_random if exploring else queue.control_count(n, s, len(first))
     counts, approved = running_test_counts(ctx), sendable_copy(s)
     # Industry focus (enrol/focus.py): each share first; then, if a share had too few ready
     # accounts, the rest of the day in queue order whatever the group.
     quota = focus.today(ctx, lim.terms["send_days_left_in_week"])
     held_ranked: list[Candidate] = []
-    held_random: list[Candidate] = []
-    prepared = _walk(ctx, random_lane, n_random, free, counts, approved, r, pace, not_sending=stopped)
-    for p in prepared:
-        quota.take(p.account)
+    held_first: list[Candidate] = []  # the first lane's: the random arm's, or (explore_share 0) the Control tier's
+    if exploring:
+        prepared = _walk(ctx, first_lane, n_lead, free, counts, approved, r, pace, not_sending=stopped)
+        for p in prepared:
+            quota.take(p.account)
+    else:
+        prepared = _walk(ctx, first_lane, n_lead, free, counts, approved, r, pace, quota, held_first, stopped)
     prepared += _walk(ctx, ranked_lane, n - len(prepared), free, counts, approved, r, pace, quota, held_ranked, stopped)
-    prepared += _walk(ctx, random_lane, n - len(prepared), free, counts, approved, r, pace, quota, held_random,
+    prepared += _walk(ctx, first_lane, n - len(prepared), free, counts, approved, r, pace, quota, held_first,
                       stopped)
-    for held in (held_ranked, held_random):
+    for held in (held_ranked, held_first):
         fill = _walk(ctx, iter(held), n - len(prepared), free, counts, approved, r, pace, not_sending=stopped)
         for p in fill:
             quota.take(p.account)
@@ -1272,6 +1283,10 @@ def run(ctx: Context) -> dict:
         failures=_failures(r.skipped),
         explore={"share": s.general.explore_share, "drawn_ready": len(drawn), "target": n_random,
                  "prepared": sum(p.arm == queue.RANDOM for p in prepared[:n_first])},
+        # The Control tier's places while explore_share is 0 (control_count); None once the random arm has them.
+        control=None if exploring else {
+            "share": s.general.control_share, "ready": len(first), "target": n_lead,
+            "prepared": sum(p.account.get("tier") == queue.CONTROL for p in prepared[:n_first])},
         prepared=len(prepared),
         enrolled=sum(enrolled.values()),
         by_owner=dict(enrolled) if ctx.live else dict(would),

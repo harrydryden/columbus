@@ -76,6 +76,17 @@ def test_explore_count_rounds_half_up_with_one_from_four_and_never_more_than_ava
     assert queue.explore_count(30, explore(0.15), 0) == 0
 
 
+def test_control_count_is_control_share_by_the_same_rule():
+    """The Control tier's places while explore_share is 0 (as at ef2ce5f): control_share's code default 0.15."""
+    assert S.general.control_share == 0.15
+    assert queue.control_count(30, S, 100) == 5  # 15% of 30 is 4.5
+    assert queue.control_count(20, S, 100) == 3
+    assert queue.control_count(4, S, 100) == 1  # 0.6 rounds to 1
+    assert queue.control_count(3, S, 100) == 0  # 0.45 rounds to 0, and 3 is under 4
+    assert queue.control_count(30, S, 2) == 2  # never more than there are
+    assert queue.control_count(30, S, 0) == 0
+
+
 def test_apportion_gives_the_largest_remainders_the_places_left():
     # k = 9 over 50/30/20: exact 4.5, 2.7, 1.8; whole parts 4, 2, 1 (7); the 2 left go to the largest fractions,
     # Legal's 0.8 and Creative's 0.7, so 4, 3, 2 (sums to 9). (The plan's "5, 3, 1" sums to 9 but is neither

@@ -555,20 +555,39 @@ def tiers_of(posted: list[dict]) -> list[str]:
     return [lead["email"].split("@")[1].split(".")[0].rstrip("0123456789").capitalize() for lead in posted]
 
 
-def test_queue_order_with_the_tiers_until_they_are_retired():
-    """The Control tier no longer has a share of its own (D7; the random arm replaced it): 30 Priority and 10 Control
-    accounts, 30 today (weekly 120 ÷ 4 send days left), so the 30 Priority, in queue order (tier first, until W2-2)."""
+def test_control_share_and_queue_order_while_explore_share_is_0():
+    """explore_share 0 (no General row, as the live sheet is on deploy): the Control tier keeps control_share of the
+    day first, as before W1-6, so the comparison arm does not stop before the random arm starts (the whole-wave
+    review, 20 Oct 2026). 30 Priority and 10 Control accounts, 30 today (weekly 120 ÷ 4 send days left): 5 Control
+    (15% of 30 is 4.5, rounded half up) and 25 Priority. Each contact is stamped ranked: the arm column is the random
+    arm's, and tier_at_enrol says Control."""
     ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120)
     out = enrol.run(ctx)
     assert out["number"] == 30 and out["prepared"] == 30
     # In proportion to each owner's pace (cap ÷ 4, rounded up): Harry 15, Hannah 8, Sam 8.
     assert out["by_owner"] == {"Harry Dryden": 14, "Hannah Spalding": 8, "Sam Jackson": 8}
-    assert tiers_of(posted).count("Control") == 0
+    assert tiers_of(posted).count("Control") == 5
+    assert out["control"] == {"share": 0.15, "ready": 10, "target": 5, "prepared": 5}
+
+
+def test_a_short_control_tier_is_filled_from_standard():
+    ctx, posted = queue_of({"Control": 1, "Standard": 40}, weekly_enrol_cap=120)
+    assert enrol.run(ctx)["prepared"] == 30
+    assert tiers_of(posted).count("Control") == 1 and len(posted) == 30
+
+
+def test_the_random_arm_replaces_the_control_tier_once_explore_share_is_set():
+    """explore_share 0.15 with no random-arm account ready (pick has not drawn one yet): the Control tier has no lane
+    of its own, so the 30 are the 30 Priority in queue order, and the summary says the Control lane is off."""
+    ctx, posted = queue_of({"Priority": 30, "Control": 10}, weekly_enrol_cap=120, explore_share=0.15)
+    out = enrol.run(ctx)
+    assert out["prepared"] == 30 and tiers_of(posted).count("Control") == 0
+    assert out["control"] is None and out["explore"]["target"] == 0
 
 
 def test_short_priority_and_standard_are_filled_from_control():
     ctx, posted = queue_of({"Control": 10, "Priority": 2}, weekly_enrol_cap=12)  # 12 ÷ 4 send days left
-    assert enrol.run(ctx)["prepared"] == 3  # the 2 Priority, then the first Control in order
+    assert enrol.run(ctx)["prepared"] == 3  # 15% of 3 rounds to no Control, but only 2 others wait
     assert sorted(tiers_of(posted)) == ["Control", "Priority", "Priority"]
 
 
@@ -982,21 +1001,21 @@ def ids_of(posted: list[dict]) -> list[str]:
 
 
 def test_explore_share_0_the_default_walks_today_s_queue_order():
-    """explore_share 0 (no General row): no random walk, so the 25 prepared are the first 25 in queue order, and
-    every contact is stamped ranked, the lane it was walked in. 60 ranked and 5 random-arm accounts ready (drawn while
-    the share was above 0); rnd0 is Priority with the top score, so it is first in queue order and walked there, not
-    after the ranked ones (the other four, Control with scores 1-4, come last and are not reached). Its contact is
-    ranked, not random: it was chosen by rank, so the readout must not count it in the random arm (the round-1 review
-    found it stamped random, and summary.explore.prepared 1, at share 0). The Control tier's 15% (control_share) is
-    gone with D7: before W1-6, 4 of the 25 (0.15 × 25 = 3.75 → 4) were taken from the Control tier first."""
+    """explore_share 0 (no General row): no random walk, so the walk is today's (ef2ce5f's): control_share of the 25
+    from the Control tier first (0.15 × 25 = 3.75 → 4), then the first 21 others in queue order, and every contact is
+    stamped ranked. 60 ranked and 5 random-arm accounts ready (drawn while the share was above 0); rnd0 is Priority
+    with the top score, so it is first in queue order and walked there; the other four (Control, scores 1-4) are the
+    Control tier's 4. Each contact is ranked, not random: none was chosen at random, so the readout must not count it
+    in the random arm (the round-1 review found rnd0 stamped random, and summary.explore.prepared 1, at share 0)."""
     ctx, posted, ordered = explore_world(5, 60, live=True)
     ctx.store.update("accounts", {"account_id": "rnd0"}, {"tier": "Priority", "score": 999})
     ordered = sorted(ctx.store.select("accounts"), key=lambda a: queue.order_key(a, ctx.settings))
     assert ctx.settings.general.explore_share == 0.0 and ordered[0]["account_id"] == "rnd0"
     out = enrol.run(ctx)
     assert (out["number"], out["prepared"], out["enrolled"]) == (25, 25, 25)
-    assert sorted(ids_of(posted)) == sorted(a["account_id"] for a in ordered[:25])
+    assert sorted(ids_of(posted)) == sorted([f"rnd{i}" for i in range(1, 5)] + [a["account_id"] for a in ordered[:21]])
     assert out["explore"] == {"share": 0.0, "drawn_ready": 0, "target": 0, "prepared": 0}
+    assert out["control"] == {"share": 0.15, "ready": 4, "target": 4, "prepared": 4}
     enrolled = {c["account_id"]: c["arm"] for c in ctx.store.select("contacts") if c.get("instantly_lead_id")}
     assert len(enrolled) == 25 and "rnd0" in enrolled and set(enrolled.values()) == {queue.RANKED}
     assert ctx.store.get("accounts", account_id="rnd0")["arm"] == queue.RANDOM  # pick's draw is left as it was
