@@ -230,6 +230,10 @@ class General:
     # Whether the early warning (no human reply in 100 matured companies) pauses new enrolment as well as alerting.
     # no, the default: it only alerts (Harry's D13 decides).
     early_warning_pause: bool = False
+    # (build) W3-2 (20 Oct 2026): whether the label policy (labels.policy, from the label sample) decides which label
+    # sources earn a label's own copy. no, the default, changes nothing (Harry's D20 is not decided): the policy is
+    # computed and reported monthly, and applied only with yes.
+    copy_level_policy: bool = False
     apollo_monthly_credits: int = 2000  # Harry, 30 Sep 2026: 2,000 a month (about 500 a week)
     apollo_floor: int = 5000
     approver_slack_ids: tuple[str, ...] = ()

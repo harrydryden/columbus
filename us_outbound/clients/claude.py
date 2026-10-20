@@ -214,8 +214,11 @@ class Claude:
         timeout: float | None = None,
         effort: str | None = None,
         cache_system: bool = False,
+        run_id: str | None = None,
     ) -> dict:
-        """One structured-output call; returns the parsed JSON object. cache_system: the system prompt is cached."""
+        """One structured-output call; returns the parsed JSON object. cache_system: the system prompt is cached.
+        run_id: the run the call belongs to, written on its credit_ledger row (the label check's spend is summed by
+        it: labels.Checker.usd, W3-2)."""
         import anthropic
 
         _check_schema(schema)
@@ -266,7 +269,7 @@ class Claude:
         note = (f"{self.model} in={getattr(usage, 'input_tokens', 0)} out={getattr(usage, 'output_tokens', 0)}"
                 + (f" cache_read={getattr(usage, 'cache_read_input_tokens', 0) or 0}"
                    f" cache_write={getattr(usage, 'cache_creation_input_tokens', 0) or 0}" if cache_system else ""))
-        self.store.insert(ledger.TABLE, [ledger.entry("claude", purpose, 0.0, run_id=None, now=now, note=note, usd=cost)])
+        self.store.insert(ledger.TABLE, [ledger.entry("claude", purpose, 0.0, run_id=run_id, now=now, note=note, usd=cost)])
         stop = getattr(response, "stop_reason", None)
         log("claude_call", model=self.model, purpose=purpose, stop_reason=stop, usd=round(cost, 6),
             input_tokens=getattr(usage, "input_tokens", None), output_tokens=getattr(usage, "output_tokens", None),

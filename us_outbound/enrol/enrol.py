@@ -454,10 +454,11 @@ def _find(rows: Iterable[CopyRow], industry: str, role: str) -> CopyRow | None:
 
 
 def pick_copy(account: Mapping[str, Any], role: str, settings: Settings,
-              rows: Mapping[str, CopyRow]) -> tuple[CopyRow | None, str]:
-    """(the most specific sendable row, a note when a more specific row exists but cannot be sent yet)."""
+              rows: Mapping[str, CopyRow], level: str | None = None) -> tuple[CopyRow | None, str]:
+    """(the most specific sendable row, a note when a more specific row exists but cannot be sent yet). level: the
+    copy level, when not the account's own (copy_targets)."""
     note = ""
-    for target in copy_targets(account, role, settings):
+    for target in copy_targets(account, role, settings, level):
         row = _find(rows.values(), *target)
         if row is not None:
             return row, note
@@ -493,7 +494,8 @@ def running_test_counts(ctx: Context) -> Counter[str]:
 
 
 def choose_copy(
-    account: Mapping[str, Any], role: str, settings: Settings, counts: Mapping[str, int], rows: Mapping[str, CopyRow]
+    account: Mapping[str, Any], role: str, settings: Settings, counts: Mapping[str, int], rows: Mapping[str, CopyRow],
+    level: str | None = None,
 ) -> tuple[CopyRow | None, str, str, str, str]:
     """(Copy row, test_id or "", its arm "a" or "b" or "", why there is none, fallback note).
 
@@ -501,12 +503,13 @@ def choose_copy(
     (copy_targets). A running ab test takes accounts that would get its version_a (the Control tier's were left out
     until the tiers went, W2-2), and sends some of them (by account hash; share_a stay on version_a) version_b instead, while
     each arm has fewer than its cap (accounts_per_version, scaled to its share: Test.cap). (A variant test
-    changes the row's emails instead: variants.choose.)
+    changes the row's emails instead: variants.choose.) level: the copy level, when not the account's own (prepare
+    passes the label policy's, labels.active_policy: the account's own while General copy_level_policy is no).
     """
-    row, note = pick_copy(account, role, settings, rows)
+    level = level or labels.copy_level(account)
+    row, note = pick_copy(account, role, settings, rows, level)
     if row is None:
         label = str(account.get("industry") or settings.industry_group_of(account) or "its industry")
-        level = labels.copy_level(account)
         where = {labels.LABEL_COPY: f"{label}, its group or General",
                  labels.GROUP_COPY: f"{label}'s group or General (its label earns the group's copy)",
                  labels.GENERAL_COPY_LEVEL: f"General (the label check left {label} in doubt)"}[level]
@@ -665,7 +668,10 @@ def prepare(
     boxes: tuple[Mailbox, ...] = s.mailboxes_for(owner, "Active")
     mb = boxes[0]
 
-    row, test_id, test_arm, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows)
+    # The copy level: the account's own (labels.copy_level), or, with General copy_level_policy yes (Harry's D20),
+    # the label policy's (W3-2): None while the switch is no, so nothing changes and nothing is read.
+    level = labels.copy_level(a, labels.active_policy(ctx))
+    row, test_id, test_arm, why, copy_note = choose_copy(a, str(c.get("role") or ""), s, counts, rows, level)
     if row is None:
         return Skip("no approved copy", [why, copy_note] if copy_note else [why])
 
@@ -724,7 +730,7 @@ def prepare(
         account=a, contact=c, owner=owner, mailbox=mb.address if len(boxes) == 1 else "",
         copy_version=row.copy_version, angle=str(a.get("angle") or ""), test_id=test_id, lead=lead,
         opener_note="; ".join(op.notes), copy_note=copy_note, opener_arm=op.arm, opener_source=op.source,
-        subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, copy_hash=row.content_hash(), label_check=verdict or {}, copy_level=labels.copy_level(a),
+        subject_arm=arm, rendered=rendered, values=values, render_mailbox=mb.address, copy_hash=row.content_hash(), label_check=verdict or {}, copy_level=level,
         test_arm=test_arm, test_note=variant.note if variant is not None else "",
         written=written,
     )
