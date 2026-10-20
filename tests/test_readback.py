@@ -687,3 +687,131 @@ def test_a_failing_contacts_search_leaves_the_companies_and_deals_to_run(default
     assert [e["event_id"] for e in events(ctx, "hubspot_company_created")] == [f"hs-company:{co}"]
     assert [e["event_id"] for e in events(ctx, "deal_created")] == [f"hs-deal:{did}"]
     assert [e.split(":")[0] for e in out["errors"]] == ["created contacts"]
+
+
+# -- step 5, second review (20 Oct 2026): _deal_hits gives _match's answers from what _emailed read -------------------
+# A HubSpot contact or company here only to be a deal's association is made 30 days ago (OLD), outside the 3-day
+# window, so the contacts and companies searches never see it and only the deal can count. Each deal is in the sales
+# pipeline, which steps 2 and 4 (Spill 3.0 only) pass by.
+
+OLD = NOW - timedelta(days=30)
+
+
+def sales_deal(crm, **links):
+    return crm.add("deals", {"dealname": "Acme Creative", "pipeline": "pipe-sales", "dealstage": "s1",
+                             **made("AUTOMATION_PLATFORM", WORKFLOW)}, **links)
+
+
+def test_a_deal_on_no_company_matches_through_its_contact_s_email_hash(default_settings):
+    """The deal has no company and one contact, made a month ago, whose email is JANE in capitals. con-1 holds no
+    HubSpot id, so the contact is read (one get_record) and its email, lower-cased, hashes to con-1: deal_created
+    hs-deal:{id} for acc-1 with contact_id con-1, the person we emailed. (Matched by the email's domain alone,
+    acmecreative.com, it would be a colleague: contact_id None.) The contact itself is not recorded: no search
+    found it."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    kid = crm.add("contacts", {"email": JANE.upper(), **made("FORM", FORM, created=OLD)})
+    did = sales_deal(crm, contacts=[kid])
+    out = hubspot_readback(ctx)
+    [e] = events(ctx, "deal_created")
+    assert (e["event_id"], e["account_id"], e["contact_id"], e["source"]) == (
+        f"hs-deal:{did}", "acc-1", "con-1", "automation_platform")
+    assert len(lookups(t, "contacts", kid)) == 1 and events(ctx, "hubspot_contact_created") == []
+    assert (out["counts"]["created_deals_seen"], out["counts"].get("created_contacts_seen", 0)) == (1, 0)
+
+
+def test_a_deal_on_a_company_whose_id_we_hold_needs_no_company_read(default_settings):
+    """acc-1 holds co-x, whose HubSpot domain is other.co (no account's). The deal's only company is co-x: the stored
+    id alone matches it, so deal_created for acc-1 (contact_id None), and co-x is never read (no company get_record;
+    read for its domain, other.co, it would not be ours)."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled", hubspot_company_id="co-x")
+    emailed(ctx)
+    crm.objects["companies"]["co-x"] = {"name": "Acme Creative", "domain": "other.co", **made("CRM_UI", created=OLD)}
+    did = sales_deal(crm, companies=["co-x"])
+    hubspot_readback(ctx)
+    assert [(e["event_id"], e["account_id"], e["contact_id"]) for e in events(ctx, "deal_created")] == [
+        (f"hs-deal:{did}", "acc-1", None)]
+    assert lookups(t, "companies", "co-x") == []
+
+
+def test_a_deal_matched_by_a_domain_counts_only_at_an_enrolled_account(default_settings):
+    """acc-1 was sent step 1 5 days ago and is now disqualified (outside ENROLLED). Two deals: one on a company at
+    acmecreative.com whose id we do not hold, one on a contact sam@acmecreative.com we do not hold. Both match acc-1
+    only by domain, and a deal's domain match needs an enrolled account (as _match): 0 deal_created, created_not_ours
+    2, not_ours_cached 2 (one readback_seen row each). The same two deals with acc-1 enrolled: 2 deal_created for
+    acc-1, contact_id None (a colleague, and the company), 0 not ours."""
+    def run(status):
+        ctx, t, crm, stops = setup(default_settings, status=status)
+        emailed(ctx)
+        co = crm.add("companies", {"name": "Acme Creative", "domain": "acmecreative.com", **made("CRM_UI", created=OLD)})
+        sam = crm.add("contacts", {"email": "sam@acmecreative.com", **made("EXTENSION", created=OLD)})
+        ids = sales_deal(crm, companies=[co]), sales_deal(crm, contacts=[sam])
+        return ctx, hubspot_readback(ctx)["counts"], ids
+
+    ctx, counts, _ = run("disqualified")
+    assert events(ctx, "deal_created") == []
+    assert (counts["created_deals_seen"], counts["created_not_ours"], counts["not_ours_cached"]) == (2, 2, 2)
+    assert len(events(ctx, "readback_seen")) == 2
+    ctx, counts, (on_company, on_contact) = run("enrolled")
+    assert sorted((e["event_id"], e["account_id"], e["contact_id"]) for e in events(ctx, "deal_created")) == sorted([
+        (f"hs-deal:{on_company}", "acc-1", None), (f"hs-deal:{on_contact}", "acc-1", None)])
+    assert counts["deal_created"] == 2 and "created_not_ours" not in counts and "not_ours_cached" not in counts
+
+
+def test_a_colleague_and_company_known_only_from_a_reply_item_count_on_another_domain(default_settings):
+    """Sam (sam@acme-group.com, a parent company's domain no account has) replied for Jane; record_reply made his
+    HubSpot contact and the company co-r (acme-group.com) through our private app and kept both ids on the reply
+    item only (payload.hubspot). Only those ids match them: hubspot_contact_created and hubspot_company_created for
+    acc-1, contact_id None (a colleague; the company), source "columbus" (made by us, INTEGRATION). A workflow deal on
+    co-r matches through the same id, with no read of co-r: deal_created for acc-1, contact_id None."""
+    from us_outbound.replies.desk import save_payload
+
+    ctx, t, crm, stops = setup(default_settings, status="engaged")
+    emailed(ctx)
+    sam = crm.add("contacts", {"email": "sam@acme-group.com", **made("INTEGRATION")})
+    crm.objects["companies"]["co-r"] = {"name": "Acme Group", "domain": "acme-group.com", **made("INTEGRATION")}
+    did = sales_deal(crm, companies=["co-r"])
+    save_payload(ctx.store, "item-0001-aaaa", hubspot={"status": "written", "contact_id": sam, "contact_created": True,
+                                                       "company_id": "co-r", "company_created": True,
+                                                       "replier": "sam@acme-group.com"})
+    hubspot_readback(ctx)
+    created = [(e["type"], e["event_id"], e["account_id"], e["contact_id"], e["source"])
+               for kind in ("hubspot_contact_created", "hubspot_company_created", "deal_created")
+               for e in events(ctx, kind)]
+    assert created == [("hubspot_contact_created", f"hs-contact:{sam}", "acc-1", None, "columbus"),
+                       ("hubspot_company_created", "hs-company:co-r", "acc-1", None, "columbus"),
+                       ("deal_created", f"hs-deal:{did}", "acc-1", None, "automation_platform")]
+    assert lookups(t, "companies", "co-r") == []
+
+
+def test_a_company_id_two_accounts_hold_counts_for_the_first_of_them_by_account_id(default_settings):
+    """acc-1 and acc-0 (acmeholdings.com) both hold co-x (domain other.co), both sent step 1 5 days ago. As _match
+    did, the id matches both, and the record goes to the first by account_id: hubspot_company_created and a deal on
+    co-x's deal_created, both for acc-0 (acc-1, the first row in the table, would win if only one holder were kept)."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled", hubspot_company_id="co-x")
+    ctx.store.upsert("accounts", [{"account_id": "acc-0", "domain": "acmeholdings.com", "clean_name": "Acme Holdings",
+                                   "status": "enrolled", "hubspot_company_id": "co-x"}])
+    emailed(ctx)
+    emailed(ctx, "acc-0", contact_id="con-0")
+    crm.objects["companies"]["co-x"] = {"name": "Acme Creative", "domain": "other.co", **made("CRM_UI")}
+    did = sales_deal(crm, companies=["co-x"])
+    hubspot_readback(ctx)
+    assert [(e["event_id"], e["account_id"]) for e in events(ctx, "hubspot_company_created")] == [
+        ("hs-company:co-x", "acc-0")]
+    assert [(e["event_id"], e["account_id"]) for e in events(ctx, "deal_created")] == [(f"hs-deal:{did}", "acc-0")]
+
+
+def test_a_contact_a_reply_item_holds_is_the_person_we_emailed_when_her_email_says_so(default_settings):
+    """A reply item holds Jane's HubSpot contact id (payload.hubspot.contact_id) but con-1 does not (hubspot_contact_id
+    empty). Her new contact (JANE, a form fill) matches the reply item's id, which names no contact of ours, and
+    her email's hash, which names con-1: hubspot_contact_created for acc-1 with contact_id con-1 (the person we
+    emailed), not None (a colleague)."""
+    from us_outbound.replies.desk import save_payload
+
+    ctx, t, crm, stops = setup(default_settings, status="engaged")
+    emailed(ctx)
+    kid = crm.add("contacts", {"email": JANE, **made("FORM", FORM)})
+    save_payload(ctx.store, "item-0001-aaaa", hubspot={"status": "written", "contact_id": kid, "replier": JANE})
+    hubspot_readback(ctx)
+    assert [(e["event_id"], e["account_id"], e["contact_id"], e["source"])
+            for e in events(ctx, "hubspot_contact_created")] == [(f"hs-contact:{kid}", "acc-1", "con-1", "form")]

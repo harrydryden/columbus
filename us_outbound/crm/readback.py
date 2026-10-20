@@ -491,7 +491,7 @@ class _Emailed:
     first: dict[str, datetime]  # account_id -> its first step-1 send (its "emailed at")
     accounts: dict[str, dict]  # account_id -> its row
     domains: dict[str, list[str]]  # root domain -> account ids (no personal-mail domain)
-    companies: dict[str, str]  # a HubSpot company id we hold (accounts row, else a reply item) -> account_id
+    companies: dict[str, list[str]]  # a HubSpot company id we hold (accounts rows, else reply items) -> account ids
     by_hash: dict[str, list[tuple[str, str]]]  # email_sha256 -> [(account_id, contact_id)]: our contacts
     by_contact: dict[str, list[tuple[str, str | None]]]  # a HubSpot contact id we hold -> [(account_id, contact_id)]
     own_contacts: set[str]  # HubSpot contact ids our private app made or we hold (contacts rows, reply items)
@@ -520,7 +520,7 @@ def _emailed(ctx: Context) -> _Emailed:
         if (domain := _root(a.get("domain"))) and not is_personal_domain(domain):  # gmail.com is nobody's company
             out.domains.setdefault(domain, []).append(aid)
         if a.get("hubspot_company_id"):
-            out.companies.setdefault(str(a["hubspot_company_id"]), aid)
+            out.companies.setdefault(str(a["hubspot_company_id"]), []).append(aid)  # every holder, as _match
             out.own_companies.add(str(a["hubspot_company_id"]))
     for c in store.select("contacts", {"account_id": ids}) if ids else []:
         aid, cid = str(c["account_id"]), str(c["contact_id"])
@@ -532,7 +532,7 @@ def _emailed(ctx: Context) -> _Emailed:
     for row in store.select("hitl_items", {"kind": list(REPLY_KINDS), "account_id": ids}) if ids else []:
         hub, aid = ReplyItem(row).hubspot, str(row["account_id"])
         if hub.get("company_id"):
-            out.companies.setdefault(str(hub["company_id"]), aid)
+            out.companies.setdefault(str(hub["company_id"]), [aid])  # an accounts row that holds the id comes first
             if hub.get("company_created"):
                 out.own_companies.add(str(hub["company_id"]))
         if hub.get("contact_id"):
@@ -586,10 +586,14 @@ def _created_contacts(ctx: Context, run: _Run, since: datetime, idx: _Emailed) -
         if event_id in have:
             continue
         email = str(p.get("email") or "").strip().lower()
-        ours = idx.by_contact.get(rid) or (idx.by_hash.get(hash_email(email), []) if "@" in email else [])
+        ours = list(idx.by_contact.get(rid) or [])
+        if "@" in email and not any(contact_id for _, contact_id in ours):
+            # No contacts row holds the id (a reply item's alone names no one of ours): the email's hash may still be
+            # the person we emailed.
+            ours += idx.by_hash.get(hash_email(email), [])
         hits: dict[str, str | None] = {}
         for aid, contact_id in ours:  # the person we emailed, or a colleague whose reply record_reply wrote
-            hits.setdefault(aid, contact_id)
+            hits[aid] = hits.get(aid) or contact_id
         domain = _root(email.rsplit("@", 1)[1] if "@" in email else p.get("hs_email_domain"))
         for aid in _at_domain(idx, domain):  # a colleague at the company
             hits.setdefault(aid, None)
@@ -608,7 +612,7 @@ def _created_companies(ctx: Context, run: _Run, since: datetime, idx: _Emailed) 
         event_id = f"{COMPANY_EVENT}{rid}"
         if event_id in have:
             continue
-        hits: dict[str, str | None] = {idx.companies[rid]: None} if rid in idx.companies else {}
+        hits: dict[str, str | None] = dict.fromkeys(idx.companies.get(rid, []))
         for aid in _at_domain(idx, _root(p.get("domain"))):
             hits.setdefault(aid, None)
         source, detail = _origin(p)
@@ -627,7 +631,8 @@ def _deal_hits(ctx: Context, idx: _Emailed, company_ids: Iterable[str], contact_
     hits: dict[str, str | None] = {}
     for cid in sorted(set(company_ids)):
         if cid in idx.companies:
-            hits.setdefault(idx.companies[cid], None)
+            for aid in idx.companies[cid]:
+                hits.setdefault(aid, None)
             continue
         rec = hs.get_record("companies", cid, ("domain",))
         for aid in _at_domain(idx, _root(((rec or {}).get("properties") or {}).get("domain")), ENROLLED):
