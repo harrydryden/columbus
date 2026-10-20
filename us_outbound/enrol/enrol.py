@@ -5,7 +5,7 @@ SPEC 9 ("enrol", "Daily enrolment number", "Test assignment", "Instantly campaig
 SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
 
   1. Gates: not a blackout date or a non-send day; optout_tested yes (a live run); no positive reply waiting longer
-     than escalation_hours (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while the General
+     than ESCALATION_HOURS (SPEC 11); no stop rule in force (SPEC 12, learn/kill_rules.py); and, while the General
      key hand_check_gate is yes, this week's hand-check approved (SPEC 11). With hand_check_gate = no (Harry's D5,
      19 Oct 2026) it holds only the companies it sampled until they are judged, for 7 days at most (hand_check()).
      Accounts pulled at the hand-check are left out either way.
@@ -106,7 +106,7 @@ LIST_LIMIT = 100  # per-account lists in the summary
 ID_CHUNK = 1000
 NOT_ADDED = "not added by Instantly (blocklist, or already in another campaign)"  # contacts.suppressed_reason
 # Per-candidate skips that are failures of the run, not facts about the account: counted in the summary's failures
-# ({reason: count}, beside candidates; the W1-1 contract, ops/heartbeat.py), so a day where every candidate fell to
+# ({reason: count}, beside candidates; the W1-1 contract, ops/health.py), so a day where every candidate fell to
 # one of them raises a job-errors finding instead of reading as an ok run that enrolled nobody (W1-6).
 HUBSPOT_FAILED, COPY_BLOCKED = "HubSpot check failed", "copy blocked"
 FAILURE_REASONS = (HUBSPOT_FAILED, COPY_BLOCKED)
@@ -151,7 +151,7 @@ def operator_pause(ctx: Context) -> str | None:
 
 
 def reply_pause(ctx: Context) -> str | None:
-    """SPEC 11: while any positive reply has waited more than escalation_hours, new enrollment pauses.
+    """SPEC 11: while any positive reply has waited more than ESCALATION_HOURS (24), new enrollment pauses.
 
     The reply items are poll_replies' (kind "reply"; replies/desk.py reads them, and the first kind
     name too): positive or referral, not yet handled, escalated included.
@@ -1047,7 +1047,7 @@ def _record_enrolled(ctx: Context, items: Sequence[Prepared], ids: Mapping[int, 
 
 def _failures(skipped: Mapping[str, int]) -> dict[str, int]:
     """The summary's failures: {reason: count} for the skips that are failures of the run (FAILURE_REASONS), so
-    job_errors sees them."""
+    heartbeat_check sees them."""
     out = {why: skipped.get(why, 0) for why in FAILURE_REASONS}
     return {why: k for why, k in out.items() if k}
 

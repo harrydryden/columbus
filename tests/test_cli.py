@@ -441,6 +441,48 @@ def test_unenrol_removes_that_months_leads_only(capsys):
     assert h.run("unenrol", "--month", "Nov 2026") == 2
 
 
+def test_unenrol_records_each_lead_it_removes_and_never_makes_the_account_eligible_again(capsys):
+    """W2-4 (code-platform-ops B6; RS P0-9). Three October contacts; the second's lead is in Sam's campaign, not the
+    Hannah campaign stored for it, so the client refuses to delete it (GuardViolation). Live: the first and third are
+    deleted, each with lead_deleted_at, its lead id cleared and a lead_stopped row (source unenrolled); their
+    accounts keep status enrolled with status_reason unenrolled (verified again, enrol would add them back); the
+    second is listed under refused and the run goes on: exit 0. No contact is suppressed (being pulled is no
+    opt-out). Then enrol's candidates hold none of the three accounts. A dry run before it records nothing."""
+    from us_outbound.enrol import enrol
+
+    h = Harness()
+    hannah, sam = h.instantly.add_campaign(C_HANNAH), h.instantly.add_campaign(C_SAM)
+    leads = [h.instantly.add_lead(hannah["id"], "a@x.com"), h.instantly.add_lead(sam["id"], "b@y.com"),
+             h.instantly.add_lead(hannah["id"], "c@z.com")]
+    h.store.insert("accounts", [{"account_id": f"a{i}", "domain": f"d{i}.com", "status": "enrolled", "tier": "Priority",
+                                 "score": 50} for i in (1, 2, 3)])
+    h.store.insert("contacts", [
+        {"contact_id": f"k{i}", "account_id": f"a{i}", "email": lead["email"], "enrolment_month": "2026-10",
+         "instantly_campaign": C_HANNAH, "instantly_lead_id": lead["id"], "mailbox": HANNAH}
+        for i, lead in zip((1, 2, 3), leads)])
+    assert h.run("unenrol", "--month", "2026-10") == 0  # dry-run
+    assert h.store.select("events", {"type": "lead_stopped"}) == [] and len(h.instantly.leads) == 3
+    capsys.readouterr()
+    assert h.run("unenrol", "--month", "2026-10", "--live") == 0
+    [beat] = [b for b in h.beats("unenrol") if b["dry_run"] is False]
+    out = beat["detail"]
+    assert (out["leads_removed"], out["leads_found"]) == (2, 3)
+    assert [r["contact_id"] for r in out["refused"]] == ["k2"]
+    assert set(h.instantly.leads) == {leads[1]["id"]}
+    for i in (1, 3):
+        c = h.store.get("contacts", contact_id=f"k{i}")
+        assert c["lead_deleted_at"] is not None and c.get("instantly_lead_id") is None and not c.get("suppressed")
+        ev = h.store.get("events", event_id=f"lead_stopped:k{i}")
+        assert (ev["type"], ev["source"], ev["account_id"]) == ("lead_stopped", "unenrolled", f"a{i}")
+        a = h.store.get("accounts", account_id=f"a{i}")
+        assert (a["status"], a["status_reason"]) == ("enrolled", "unenrolled")
+    assert h.store.get("contacts", contact_id="k2")["instantly_lead_id"] == leads[1]["id"]
+    assert h.store.get("accounts", account_id="a2").get("status_reason") is None
+    assert h.store.select("suppression") == []
+    found, _ = enrol.candidates(h.contexts[-1], frozenset())
+    assert not {c.account["account_id"] for c in found} & {"a1", "a2", "a3"}
+
+
 def test_erase_through_the_cli_lists_the_manual_steps(capsys):
     h = Harness()
     assert h.run("erase", "--email", "jane@acme.com") == 0

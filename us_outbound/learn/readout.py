@@ -33,7 +33,7 @@ to bottom:
   * Cohorts (learn/cohorts.py; Harry, 7 Oct 2026): the last four enrolment weeks in a line each, at the latest age
     their companies have reached after email 1; the latest two compared where both have 30 companies; and what
     changed last week in the settings, the copy, the campaign constants and the code (config versions, and the
-    campaign changes made under leads in flight). `us-outbound cohorts` has the full table.
+    campaign changes made under leads in flight). `us-outbound report cohorts` has the full table.
   * Industry labels (Harry, 7 Oct 2026; labels.py): last week's and all cards with the right industry against the 95%
     target (a rate from 30 cards), the approvers' corrections, how often the rules and the model agreed, and the
     companies held or disqualified.

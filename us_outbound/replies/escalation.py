@@ -9,7 +9,7 @@ link and how to act added. Anything else, or a reply whose forward fails (PHASE0
 our plan), becomes a HubSpot task for Harry due now, which HubSpot emails him, and a Slack DM to the approvers when
 Slack is set up. A reply item then becomes "escalated" (still open to approval), an escalated event is recorded and
 its thread says so. Other kinds keep their status, so the jobs that own them still find them; escalated_at marks
-them. Enrolment pauses while a positive reply waits longer than escalation_hours (enrol.reply_pause reads the same
+them. Enrolment pauses while a positive reply waits longer than ESCALATION_HOURS (enrol.reply_pause reads the same
 items: replies/desk.positive_waiting). Split from replies/desk.py in W2-4 (20 Oct 2026).
 
 Dry-run: what would be escalated is listed; nothing is forwarded, tasked, posted or changed.
@@ -196,7 +196,7 @@ def _escalate_other(ctx: Context, row: Mapping[str, Any], slack: Any) -> str:
 
 
 def escalate(ctx: Context, slack: Any, run: Any) -> None:
-    """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11). run: the
+    """Every human-in-the-loop item open longer than ESCALATION_HOURS (24, settings/model.py) goes to escalation_email (SPEC 11). run: the
     poll_approvals run (replies/poll_desk._Run), which keeps what was escalated and the errors.
 
     Send approvals are left out: they were removed, and close_send_approvals closes any still open. So is the weekly

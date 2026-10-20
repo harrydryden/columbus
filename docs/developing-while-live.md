@@ -6,7 +6,7 @@ robust as possible."
 
 The short version: a contact's emails are fixed when they are enrolled; what every lead in a campaign shares is
 held while leads are in flight; safety always applies to everyone; and every contact carries the version of
-everything it was enrolled under, so the Monday readout and `us-outbound cohorts` compare like with like.
+everything it was enrolled under, so the Monday readout and `us-outbound report cohorts` compare like with like.
 
 ## What is fixed, what is shared, what always applies
 
@@ -29,8 +29,8 @@ campaign's last one finishes.
    check (`labels.py`; Harry, 7 Oct 2026) is content too: its prompt (`PROMPT_VERSION`), the label list and the
    Industries `definition` and `apollo_keywords` decide which label, and so which copy, a new company earns
    (`labels_hash`, in the config version). An edit to one makes every stored verdict stale: verify_accounts asks
-   again about 150 companies a run, so the queue is re-checked over about three weekdays (`us-outbound labels
-   audit --live` does it at once). Run `us-outbound labels eval --live` before shipping a change to the prompt,
+   again about 150 companies a run, so the queue is re-checked over about three weekdays (the `labels audit`
+   command that did it at once went in W2-4). Run `us-outbound labels eval --live` before shipping a change to the prompt,
    the decision rule, a definition or keywords, and put its score in the commit message.
    **A copy test changes what new contacts get; contacts in flight keep theirs** (Harry, 7 Oct 2026). Starting,
    stopping or changing an `ab` or `variant` test on the Tests tab (`enrol/variants.py`) reaches only contacts
@@ -51,17 +51,22 @@ campaign's last one finishes.
 3. **Safety always applies to everyone:** unsubscribes, bounces, complaints, kill rules, `stop`, the
    account-level stop, suppression, erasure. Never gate these on a cohort or a version.
 4. **Measurement changes move every cohort:** a view, the reply classifier or `sync_outcomes` changes the
-   numbers for old cohorts too. Say so in the commit; `us-outbound cohorts` prints the code each cohort was
+   numbers for old cohorts too. Say so in the commit; `us-outbound report cohorts` prints the code each cohort was
    enrolled under.
 5. **DDL is additive** (`CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`; `ops/ddl.py` refuses anything
    else) and is applied by `us-outbound db apply --live` on deploy. New columns are nullable; code reads NULL
    as "before this existed" (contacts enrolled before 8 Oct 2026 are "unstamped").
-6. **Dry-run first**, then `us-outbound status` (its go-live checks: Copy, Campaigns, Watchdog; `golive` went with
+6. **One scheduler runs** (W2-4, 20 Oct 2026): over a deploy the new worker waits for the old one's Postgres
+   advisory lock (`scheduler_lock_wait` in the log, every 2 s, usually 4 to 13 s in all) and starts nothing until
+   it holds it (`scheduler_lock_held`). Past 3 minutes it pings the outside watchdog's /fail and keeps waiting:
+   look for a second worker or a stuck old container. `heartbeat_check` at :05 shows the jobs ran.
+   **Dry-run first**, then `us-outbound status` (its go-live checks: Copy, Campaigns, Watchdog; `golive` went with
    W2-1, 20 Oct 2026). A deploy while enrol (12:00 UK) or poll_approvals runs is
    fine: jobs are idempotent and the scheduler drains for 30 seconds. **Not from 06:55 to 07:15 UK**
-   (whole-wave review, 20 Oct 2026): mailbox_health runs only at 07:00, the scheduler does not backfill a minute
-   it missed, and a run cut off after 25 s stops part-way through its Instantly writes (warmup, daily limits,
-   sender names). Either way it next runs the following 07:00, so the ramp's step-up of the daily limits is missed
+   (whole-wave review, 20 Oct 2026): mailbox_health runs only at 07:00, and a run cut off after 25 s stops part-way
+   through its Instantly writes (warmup, daily limits, sender names). The new scheduler catches up a daily job
+   whose time fell in the 90 minutes before it started only when no run of it began since (W2-4, 20 Oct 2026): a
+   run cut off has its error row, so it is not run again, and next runs the following 07:00, so the ramp's step-up of the daily limits is missed
    for a day and heartbeat_check posts it failed (exit 143) or missed. Deploy after its 07:00 heartbeat reads ok
    (07:15 to 08:45 is clear on a Tuesday to Friday; on a Monday, capture runs at 07:30 and the readout at 08:30).
    If a deploy lands near 07:00 anyway, run `us-outbound run mailbox_health --live` by hand at once.

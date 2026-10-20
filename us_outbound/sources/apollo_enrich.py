@@ -116,7 +116,7 @@ def history(ctx: Context, account_ids: Sequence[str]) -> tuple[dict[str, datetim
 
 
 def candidates(ctx: Context) -> tuple[list[dict], dict[str, set[str]]]:
-    """Verified accounts in apollo_enrich_groups with a domain, not enriched within REFRESH_DAYS, in enriching order;
+    """Verified accounts in APOLLO_ENRICH_GROUPS with a domain, not enriched within REFRESH_DAYS, in enriching order;
     and the apollo_org facts each has stored. Verified only: credits buy facts for companies that passed the free
     checks and the label check (code-sources B4)."""
     s = ctx.settings

@@ -291,7 +291,7 @@ def _classify(ctx: Context, text: str, received: datetime, info: Mapping[str, An
         out["claude_cap_reached"] += 1
         return classify.Verdict.fallback("Claude's monthly cap is used up")
     except ClaudeError as exc:
-        out.setdefault("claude_error", str(exc)[:200])  # the run's first, for heartbeat_check (ops/job_errors.py)
+        out.setdefault("claude_error", str(exc)[:200])  # the run's first, for heartbeat_check (ops/health.py)
         if ctx.now - received < RETRY:
             out["retry_later"] += 1
             return None

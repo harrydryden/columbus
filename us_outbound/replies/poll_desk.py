@@ -380,7 +380,7 @@ def close_send_approvals(ctx: Context) -> dict:
         closed.append(str(r["item_id"]))
     out = {"closed": closed, "would_close": [] if ctx.live else sorted(str(r["item_id"]) for r in todo)}
     if stuck:
-        out["sending_errors"] = [SEND_APPROVAL_STUCK.format(item_id=i) for i in stuck]  # job_errors posts these
+        out["sending_errors"] = [SEND_APPROVAL_STUCK.format(item_id=i) for i in stuck]  # heartbeat_check posts these
     if closed or stuck:
         log("send_approvals_closed", run_id=ctx.run_id, closed=len(closed), sending=len(stuck))
     return out
@@ -389,7 +389,7 @@ def close_send_approvals(ctx: Context) -> dict:
 def poll_desk(ctx: Context) -> dict:
     """The poll_approvals job (JOB CONTRACT: run(ctx) -> summary): the reply desk, then the weekly hand-check tab, each
     in its own guard, so one failing never stops the other. The hand-check tab's failure is listed
-    (hand_check_errors: job_errors reads it) and the run is ok. The reply desk's own failure (escalate, reply_items,
+    (hand_check_errors: heartbeat_check reads it) and the run is ok. The reply desk's own failure (escalate, reply_items,
     a store error) and a guardrail's refusal of either part are raised once the hand-check tab has run, so the
     heartbeat records status error with its text and heartbeat_check's failure_rate and missed rules see it, as
     before W2-1 (run truth, W1-1). One item's trouble is still listed under errors and the other items go on."""
@@ -428,7 +428,7 @@ def poll_desk(ctx: Context) -> dict:
     except GuardViolation as exc:
         checked, refused_by = None, refused_by or exc
         hand_check_errors.append(f"refused by a guardrail: {str(exc)[:160]}")
-    except Exception as exc:  # the reply desk has run; job_errors reads the line
+    except Exception as exc:  # the reply desk has run; heartbeat_check reads the line
         checked = None
         hand_check_errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
         log("poll_desk_failed", run_id=ctx.run_id, part="hand_check", error=f"{type(exc).__name__}: {str(exc)[:200]}")

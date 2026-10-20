@@ -8,7 +8,7 @@ W2-4 (20 Oct 2026) split the old replies/desk.py three ways and folded replies/i
     reply (write_hubspot), and the command line (list_items, approve, skip);
   * replies/poll_desk.py: the poll_approvals job, every 5 minutes: each item's Slack thread read for an approver's
     decision, re-posts, then escalation and the weekly hand-check tab;
-  * replies/escalation.py: an item open longer than escalation_hours goes to escalation_email (SPEC 11).
+  * replies/escalation.py: an item open longer than ESCALATION_HOURS (24) goes to escalation_email (SPEC 11).
 
 THE ITEM (the hitl_items contract with poll_replies, replies/poll.py). One row for each reply that needs a human:
 kind "reply", status "open", and a payload with contact_id, account_id, mailbox (the registry address the prospect
@@ -21,7 +21,7 @@ instantly_reply_to for the id Instantly's reply endpoint answers. The desk keeps
 and the HubSpot writes under payload.hubspot; nothing else in the payload is changed, except draft when an approver
 edits it (the first version is kept as draft_original).
 
-Status: open → handled (sent or skipped), or → escalated after escalation_hours (still open to approval). "sending"
+Status: open → handled (sent or skipped), or → escalated after ESCALATION_HOURS (still open to approval). "sending"
 is held only while a reply goes out (a compare-and-set on status, so a scheduled run and `us-outbound replies send`
 can never both send it).
 

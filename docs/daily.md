@@ -128,11 +128,11 @@ to bottom:
    latest two compared at the latest age at which each has 30 companies, with what changed between them ("a
    coincidence to test, not a cause"); and **Settings changes**: what changed last week in the settings,
    copy, campaign constants and code, and any change made to campaigns with leads in flight. For the full
-   table, `us-outbound cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
+   table, `us-outbound report cohorts` (`--cut tier`, `--cut config_version`, `--age 14`); for what changed between
    two versions, `us-outbound cohorts changes`.
 7. **Industry labels** (Harry, 7 Oct 2026): the corrections made by hand (`Games studios → Technology &
    Startups (2)`), how often the rules and the model agreed, and the companies held or left out. How often a
-   label is right is the label sample's figure (`labels sample --score`), not this block's (the send cards'
+   label is right is the label sample's figure (the monthly `label_sample_monthly` post), not this block's (the send cards'
    "right N of N" went with them). Many of one
    correction means a definition or keywords on the Industries tab need a change; run `us-outbound labels eval
    --live` before and after.
@@ -378,7 +378,8 @@ so that no campaign in the workspace emails them again, as our suppression list 
 ## Website visits
 
 `site_visits` runs at 06:00 UK every day. It asks Apollo which companies visited spill.chat's US
-pages (General `site_visit_us_paths`, `/us`) and its pricing and demo pages (`site_visit_intent_paths`)
+pages (`/us`) and its pricing and demo pages (`/us/pricing`, `/us/demo`, `/us/book`; constants in
+`settings/model.py` since W2-4)
 in the last 30 days. A visit lifts that company's score before the 12:00 enrol ("Visited the US site"
 +35, "Viewed US pricing or demo page" +25, so both make Priority). A new visitor is looked up in
 Apollo: one in the US (in any state: a visitor is never excluded on its state) within the General size

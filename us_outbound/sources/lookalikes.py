@@ -38,7 +38,7 @@ happen on a monthly cadence." It:
          customer's domain or name. A search that did not reach every customer keeps the stored counts,
          so a part-read never skews them.
        * Open accounts in the queue: a fresh headcount_growth_12m fact (apollo_enrich writes it for
-         apollo_enrich_groups) gives the band with no search; the same band search fills the gaps for
+         APOLLO_ENRICH_GROUPS) gives the band with no search; the same band search fills the gaps for
          accounts whose band is missing or older than GROWTH_REFRESH_DAYS. Either way the band is a
          fact (source apollo_org, headcount_growth_band; "unknown" when no band search returned the
          account, so it is not searched again for GROWTH_REFRESH_DAYS).

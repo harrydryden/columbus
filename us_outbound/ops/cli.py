@@ -212,7 +212,7 @@ def _only_reads(args: argparse.Namespace) -> None:
 
 def _operate(factory: Factory, job: str, live: bool, fn: Callable[[Context], Any], *, operator: bool = False,
              dry_note: str = "", show: bool = True) -> tuple[Context, Any]:
-    """Run fn as the job (heartbeat.run_job) in a fresh context. What fn refuses (a LookupError or ValueError) is the
+    """Run fn as the job (health.run_job) in a fresh context. What fn refuses (a LookupError or ValueError) is the
     command's refusal, in fn's words (exit 2); a KeyError or IndexError is a bug and goes to main as one. Then its
     summary is printed (show) and what a dry run left alone (dry_note). 9 Oct 2026: 30 commands repeated this."""
     ctx = factory(job, live, operator=True) if operator else factory(job, live)

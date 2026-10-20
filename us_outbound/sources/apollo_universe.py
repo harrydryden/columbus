@@ -31,7 +31,7 @@ universe is every company that fits the sheet's Industries, States and size band
      the opener's optional "what they do" phrase reads; enrol/openers.py). open_roles is not one of
      them: it belongs to apollo_jobs (docs/pipeline.md, change 4). Search rows carry no funding and
      no employee count (2 Oct 2026), so apollo_enrich (sources/apollo_enrich.py) writes those from
-     Apollo's organization enrich, through org_facts, for the General apollo_enrich_groups.
+     Apollo's organization enrich, through org_facts, for settings/model.APOLLO_ENRICH_GROUPS.
 
 When to stop (W1-3a, 19 Oct 2026; code-sources B1, loop L1). The queue should hold two weeks of the
 weekly target, 2 × weekly_enrol_cap (SPEC 2: "a two-week queue"), counted in companies enrol could

@@ -41,7 +41,7 @@ nobody counted (code-replies-crm M3, M4; RT §1.6). This job checks the read two
       and until then each week's fact is capture_unverified with the reason canary_send:off, and no error.
 
 A drift, a canary with no answer, or a canary that could not be sent are entries under the summary's errors (so
-heartbeat_check's ops/job_errors.py posts them) and make the week's fact capture_unverified (signal_events,
+heartbeat_check's ops/health.py posts them) and make the week's fact capture_unverified (signal_events,
 source capture, event_id capture:{ISO week}, no account) for the readout to print on every outcome line;
 otherwise the week's fact is capture_verified. Our own counts include the last canary's send when it fell inside
 the window (Instantly counts it, and we have no contact for it), and its answer only if
@@ -97,7 +97,7 @@ UNITS = {"sent": "emails", "replied": "leads (distinct; automatic replies and ou
 SOURCE = "capture"  # signal_events.source of the facts below
 VERIFIED, UNVERIFIED, CANARY_SENT = "capture_verified", "capture_unverified", "canary_sent"
 CANARY_TAG = "+canary-"
-FACT_FRESH = timedelta(days=8)  # the week's fact stands this long (heartbeat.EXPECTED for capture)
+FACT_FRESH = timedelta(days=8)  # the week's fact stands this long (health.EXPECTED for capture)
 NOT_SET_UP, OFF = "not_set_up", "off"
 
 

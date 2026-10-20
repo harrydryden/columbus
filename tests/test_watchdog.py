@@ -253,3 +253,29 @@ def test_heartbeat_check_runs_on_the_defaults_when_the_settings_are_unusable_and
     assert pings(t) == [PING + "/fail"]
     [row] = [r for r in store.select("heartbeats") if r["job"] == "heartbeat_check"]
     assert row["status"] == "ok" and row["dry_run"] is False and row["detail"]["failed"] == ["settings_sync"]
+
+
+# -- the scheduler's own /fail, from the environment alone (W2-4, 20 Oct 2026; RS P0-4) -------------------------------
+
+
+def test_the_scheduler_pings_fail_from_the_environment_alone_and_never_raises():
+    """While it waits for its lock or for Postgres, the scheduler has no settings and no database: health.ping_from_env
+    reads the URL from the environment, GETs exactly its /fail form through a guarded client (the ping goes in
+    dry-run, as heartbeat_check's does), and never raises: no URL, a bad URL or a transport that fails each come back
+    as a result, and the URL is never in it."""
+    t = FakeTransport()
+    t.route("GET", "hc-ping.com", {})
+    out = health.ping_from_env("the scheduler has waited 180 s for its lock", env={"US_OUTBOUND_WATCHDOG_URL": PING},
+                               transport=t)
+    assert out == {"pinged": True, "fail": True, "status": 200,
+                   "reasons": ["the scheduler has waited 180 s for its lock"]}
+    assert [(r.method, r.url) for r in t.requests] == [("GET", f"{PING}/fail")]
+    assert health.ping_from_env("x", env={})["off"] == "US_OUTBOUND_WATCHDOG_URL is not set"
+    assert health.ping_from_env("x", env={"US_OUTBOUND_WATCHDOG_URL": "http://hc-ping.com/x"})["pinged"] is False
+
+    class Down(FakeTransport):
+        def send(self, *a, **kw):
+            raise ConnectionError(f"cannot reach {PING}")
+
+    down = health.ping_from_env("x", env={"US_OUTBOUND_WATCHDOG_URL": PING}, transport=Down())
+    assert down["pinged"] is False and SECRET_ID not in str(down)

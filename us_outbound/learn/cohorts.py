@@ -31,7 +31,7 @@ vs 6.2%, p = 0.07)" and then what changed between them, "a coincidence to test, 
 one week, likewise; and a reply rate that has risen or fallen three cohorts running. Nothing re-weights or decides:
 a line points at a change worth a pre-registered test on the Tests tab.
 
-Shown in the Monday readout (readout_lines, after the cuts) and by `us-outbound cohorts` (lines, changes_lines,
+Shown in the Monday readout (readout_lines, after the cuts) and by `us-outbound report cohorts` (lines, changes_lines,
 in_flight_lines). Read-only: it writes nothing. Python over the tables, like learn/looks.py, so it runs on a
 MemoryStore as on Postgres.
 """
@@ -628,7 +628,7 @@ def cohort_head(c: Cohort) -> str:
 
 
 def lines(ctx: Context, cut: str = "all", age: int | None = None, weeks: int = WEEKS) -> list[str]:
-    """`us-outbound cohorts`: each week (the latest first) and cut value at each age, then the insights."""
+    """`us-outbound report cohorts`: each week (the latest first) and cut value at each age, then the insights."""
     found = companies(ctx)
     cohorts = rows(ctx, cut, weeks, found)
     out = [f"Cohorts by enrolment week (UK), by {cut}: each company counts in the week its first contact was enrolled, "

@@ -58,7 +58,7 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # before verify_accounts, whose rescore scores its facts; public GETs and database writes only, so no --live.
     # It stops starting accounts after 30 minutes (sources/pages.py RUN_SECONDS), well inside the timeout.
     ScheduledJob("read_pages", "45 3 * * 1-5", live=False, enabled=True, timeout_minutes=40, phase=1),
-    # Harry, 2 Oct 2026: funding and an exact headcount from Apollo's organization enrich, for apollo_enrich_groups.
+    # Harry, 2 Oct 2026: funding and an exact headcount from Apollo's organization enrich, for APOLLO_ENRICH_GROUPS (settings/model.py).
     # W1-3a, 19 Oct 2026 (code-sources B4): after verify_accounts (04:30, its 30-minute timeout), for verified accounts
     # only, the exact count the last size check; it was 04:10, for every new account. No rescore of its own (RS P0-8):
     # pick_contacts' rescore at 05:30 scores its facts. Apollo reads and database writes only, so no --live. At most
@@ -105,7 +105,7 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     ScheduledJob("blackout", "40 * * * *", live=True, enabled=True, timeout_minutes=5, phase=2),
     # Tuesday to Saturday from 19 Oct 2026 (the metrics review): each post covers the day before, the previous US send
     # day, so Friday is posted once on Saturday rather than on Saturday, Sunday and Monday (learn/daily_post.py). The
-    # Monday readout makes Monday's asks; heartbeat.EXPECTED allows the 72 hours from Saturday to Tuesday.
+    # Monday readout makes Monday's asks; health.EXPECTED allows the 72 hours from Saturday to Tuesday.
     ScheduledJob("daily_post", "0 9 * * 2-6", live=True, enabled=True, timeout_minutes=5, phase=2),
     # W1-2 (19 Oct 2026; RT §1.6): Mondays at 07:30, before the readout, the reply read checked two ways: Instantly's
     # own counts against our events, and the seed inbox's answer to last week's canary (replies/capture.py). It adds

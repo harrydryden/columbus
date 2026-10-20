@@ -228,3 +228,106 @@ def test_a_meeting_records_its_source(default_settings):
     meeting(crm, contacts=[kid])
     hubspot_readback(ctx)
     assert [e["source"] for e in events(ctx, "meeting_booked")] == ["hubspot_meeting"]
+
+
+# -- W2-4 (20 Oct 2026): the negative cache, the booking read-back, the analytics source ---------------------------
+
+
+def lookups(t, obj, rid):
+    return [r for r in t.requests if r.method == "GET" and r.url.split("?")[0].endswith(f"/crm/v3/objects/{obj}/{rid}")]
+
+
+def test_a_meeting_that_is_not_ours_is_looked_up_once_until_hubspot_changes_it(default_settings):
+    """The negative cache (RS §2 W2-4): run 1 looks a "not ours" meeting up (get_record) and records it as
+    readback_seen under its hs_lastmodifieddate; run 2 makes 0 lookups for it; once HubSpot changes the meeting (a
+    later hs_lastmodifieddate) it is looked up again. Dry-run writes no cache row."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    other = crm.add("contacts", {"email": "pat@unrelated.org"})
+    mid = meeting(crm, contacts=[other])
+    first = hubspot_readback(ctx)
+    assert len(lookups(t, "meetings", mid)) == 1 and first["counts"]["meetings_not_ours"] == 1
+    stamp = crm.objects["meetings"][mid]["hs_lastmodifieddate"]
+    [seen] = events(ctx, "readback_seen")
+    assert seen["event_id"] == f"seen:meeting:{mid}:{stamp}"
+    second = hubspot_readback(ctx)
+    assert len(lookups(t, "meetings", mid)) == 1 and second["counts"]["meetings_not_ours_before"] == 1
+    crm.objects["meetings"][mid]["hs_lastmodifieddate"] = ms(NOW - timedelta(minutes=5))  # HubSpot changed it
+    hubspot_readback(ctx)
+    assert len(lookups(t, "meetings", mid)) == 2 and len(events(ctx, "readback_seen")) == 2
+    dry, t2, crm2, _ = setup(default_settings, live=False, status="enrolled")
+    other2 = crm2.add("contacts", {"email": "pat@unrelated.org"})
+    meeting(crm2, contacts=[other2])
+    hubspot_readback(dry)
+    assert events(dry, "readback_seen") == []
+
+
+def test_a_booking_before_the_first_enrolment_is_not_ours(default_settings):
+    """M6 alone (code-replies-crm): a booking inside the 3-day window, by our contact, but made before we enrolled
+    anyone at the company (2 hours ago; the contact was enrolled 30 minutes ago): no event, no lead stopped, no deal."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    ctx.store.update("contacts", {"contact_id": "con-1"}, {"enrolled_at": NOW - timedelta(minutes=30)})
+    kid = crm.add("contacts", {"email": JANE})
+    meeting(crm, contacts=[kid], created=NOW - timedelta(hours=2))
+    out = hubspot_readback(ctx)
+    assert events(ctx, "meeting_booked") == [] and stops == [] and crm.objects["deals"] == {}
+    assert "leads_stopped" not in out["counts"]
+
+
+def instantly_lead(t, status):
+    """Instantly's lead-1 as the read-back sees it; the requests to it are recorded."""
+    t.route("GET", "api.instantly.ai/api/v2/leads/lead-1", {"id": "lead-1", "campaign": "c-hannah", "status": status})
+    t.route("DELETE", "api.instantly.ai/api/v2/leads/lead-1", {"id": "lead-1"})
+
+
+def test_a_booked_lead_still_active_after_stop_lead_is_deleted_and_recorded(default_settings):
+    """M7 (code-replies-crm), until D10 d settles it: stop_lead marks the lead "Meeting booked"; the read-back shows
+    it still active (status 1), so it is deleted, the stop that is certain: the contact gets lead_deleted_at and its
+    lead id cleared, and a lead_stopped row with source meeting_booked; leads_stopped 1, leads_deleted 1."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    instantly_lead(t, 1)
+    kid = crm.add("contacts", {"email": JANE})
+    meeting(crm, contacts=[kid])
+    out = hubspot_readback(ctx)
+    assert stops == [{"lead_email": JANE, "campaign_id": "c-hannah", "interest_value": 2}]
+    assert (out["counts"]["leads_stopped"], out["counts"]["leads_deleted"]) == (1, 1)
+    assert [r.method for r in t.requests if r.url.endswith("/leads/lead-1")].count("DELETE") == 1
+    c = ctx.store.get("contacts", contact_id="con-1")
+    assert c["lead_deleted_at"] == NOW and c.get("instantly_lead_id") is None
+    ev = ctx.store.get("events", event_id="lead_stopped:con-1")
+    assert (ev["type"], ev["source"], ev["account_id"]) == ("lead_stopped", "meeting_booked", "acc-1")
+
+
+def test_a_booked_lead_the_read_back_shows_stopped_is_not_deleted(default_settings):
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    instantly_lead(t, 3)  # completed: stop_lead did stop it
+    kid = crm.add("contacts", {"email": JANE})
+    meeting(crm, contacts=[kid])
+    out = hubspot_readback(ctx)
+    assert out["counts"]["leads_stopped"] == 1 and "leads_deleted" not in out["counts"]
+    assert not [r for r in t.requests if r.method == "DELETE"]
+    assert ctx.store.get("contacts", contact_id="con-1")["instantly_lead_id"] == "lead-1"
+    assert ctx.store.get("events", event_id="lead_stopped:con-1") is None
+
+
+def test_a_new_booking_records_where_the_booker_came_from(default_settings):
+    """hs_analytics_source on meeting_booked (design §2.1 O1b): the booking's first contact's, else its first
+    company's; read once, for the new event only."""
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    kid = crm.add("contacts", {"email": JANE, "hs_analytics_source": "PAID_SEARCH"})
+    meeting(crm, contacts=[kid])
+    hubspot_readback(ctx)
+    [booked] = events(ctx, "meeting_booked")
+    assert booked["analytics_source"] == "PAID_SEARCH"
+
+    def source_reads():
+        return [r for r in t.requests if "hs_analytics_source" in str(r.params or "") + r.url]
+
+    assert len(source_reads()) == 1
+    hubspot_readback(ctx)
+    assert len(source_reads()) == 1  # not read again for a booking already recorded
+    ctx2, t2, crm2, _ = setup(default_settings, status="enrolled")
+    co = crm2.add("companies", {"name": "Acme Creative", "domain": "acmecreative.com", "hs_analytics_source": "OFFLINE"})
+    kid2 = crm2.add("contacts", {"email": JANE})
+    meeting(crm2, contacts=[kid2], companies=[co])
+    hubspot_readback(ctx2)
+    assert [e["analytics_source"] for e in events(ctx2, "meeting_booked")] == ["OFFLINE"]
