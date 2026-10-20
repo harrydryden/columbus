@@ -675,6 +675,21 @@ def test_a_lock_lost_with_its_connection_is_taken_again_before_anything_more_run
     assert utc(2026, 10, 6, 9, 3) in minutes and minutes == sorted(set(minutes))
 
 
+def test_a_postgres_that_refuses_the_lock_connection_is_lock_unavailable_never_a_crash(capsys):
+    """The real SessionLock against a port nothing listens on (psycopg, no DSN needed): try_acquire raises
+    LockUnavailable naming the error's type only (a connection error's text carries the host), held() is False, and
+    the scheduler's wait goes on with backoff (test above) rather than exiting."""
+    from us_outbound.clients.db import LockUnavailable, SessionLock
+    from us_outbound.clients.guard import Guard
+
+    lock = SessionLock(Guard(), "postgresql://us_outbound@127.0.0.1:1/railway", sch.SCHEDULER_KEY, connect_timeout=2)
+    with pytest.raises(LockUnavailable) as caught:
+        lock.try_acquire()
+    assert str(caught.value) == "OperationalError" and "127.0.0.1" not in str(caught.value)
+    assert lock.held() is False
+    lock.close()
+
+
 # -- the sync_outcomes cadence (W2-4; RS §2 W2-4) ------------------------------------------------------------------
 
 
