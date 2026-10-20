@@ -476,6 +476,7 @@ def run(ctx: Context) -> dict:
         current = dataclasses.replace(ctx, settings=settings)
         lookalike = _lookalikes(current)
         rescored = _rescore(current)
+    widened = _post_widening(ctx, ctx.settings, settings) if settings is not None else []
 
     summary = {
         "sheet_id": sheet_id,
@@ -493,6 +494,7 @@ def run(ctx: Context) -> dict:
         "general_warnings": [str(w) for w in warnings],
         "warnings_posted": warned,
         "fallback": fallback,
+        "icp_widened": widened,
     }
     if sheet.get("Copy") and is_legacy_copy(set().union(*(set(r) for r in sheet["Copy"]))):
         summary["copy_notice"] = ("the Copy tab is still one row per step, so no copy is in force; "
@@ -508,6 +510,52 @@ def run(ctx: Context) -> dict:
     if alert_error is not None:
         raise alert_error
     return summary
+
+
+WIDENED_HEAD = "This sync widened who the system emails"
+
+
+def widening(before: Settings | None, after: Settings) -> list[str]:
+    """What a sync widened in the ICP (W3-4, 21 Oct 2026; design-final W3-4 change 6): more active industry labels on
+    the Industries tab, or a wider General size range. A narrowing is not listed: it only leaves companies out."""
+    if before is None:
+        return []
+    out = []
+    was = {i.industry for i in before.industries if i.active}
+    now = {i.industry for i in after.industries if i.active}
+    added = sorted(now - was)
+    if was and added:
+        out.append(f"{len(added)} more industries active ({', '.join(added[:8])}{', ...' if len(added) > 8 else ''})")
+    g0, g1 = before.general, after.general
+    if g1.max_employees > g0.max_employees:
+        out.append(f"max_employees {g0.max_employees} → {g1.max_employees}")
+    if g1.min_employees < g0.min_employees:
+        out.append(f"min_employees {g0.min_employees} → {g1.min_employees}")
+    return out
+
+
+def _post_widening(ctx: Context, before: Settings | None, after: Settings) -> list[str]:
+    """One post for a sync that widened the ICP, so docs/decisions.md can record why (a person's reason is the log's
+    entry). Once per change and day (post_once). Never raises: the sync goes on."""
+    import hashlib
+
+    from us_outbound.base import notify, say
+
+    try:
+        lines = widening(before, after)
+        if not lines:
+            return []
+        digest = hashlib.sha256("|".join(lines).encode()).hexdigest()[:12]
+        notify.post_once(ctx, [(notify.once_key(ctx, "icp_widened", digest), "\n".join(f"• {x}" for x in lines))],
+                         head=f"{say.ACTION} *{WIDENED_HEAD}*",
+                         foot="_Add a dated line to docs/decisions.md with the reason (your words), so the change "
+                              "and why are on record beside the numbers it moves._")
+        return lines
+    except GuardViolation:
+        raise
+    except Exception as exc:
+        log("icp_widening_not_posted", error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return []
 
 
 WARNING_HEAD = "The settings sheet has General rows the jobs do not read"

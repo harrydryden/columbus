@@ -34,6 +34,9 @@ SPEC 1.5 (recipients). Runs at 12:00 UK (07:00 ET) on weekdays.
      email1_subject_share get General email1_subject, the rest the Copy row's s1_subject; Harry, 5 Oct 2026),
      a running variant test's arm (enrol/variants.py; Harry, 7 Oct 2026: one part of one email changed for every
      account, whatever its Copy row; an account where the change cannot be made is left out of the test),
+     each split drawn only while General live_split lets it (W3-4, 21 Oct 2026: both, the default, draws all
+     three as before; opener, subject or test draws that one alone, none draws none; Settings.drawn_test,
+     draws_opener_holdout, draws_subject_split; a subject split not drawn records subject_arm n/a),
      its four rendered emails (any copy-rule violation skips it), and a HubSpot
      re-check (a customer, another owner, an open deal or an opted-out contact excludes it).
   5. Each owner's leads are bulk-added to "US Outbound – {owner}" with the

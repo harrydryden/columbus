@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tests.fakes import make_context
+from tests.test_db import db, dsn, store  # noqa: F401  (the Postgres fixtures)
 from us_outbound.learn import segments
 from us_outbound.learn.outcomes import Outcome
 from us_outbound.settings import suggestions as tab
@@ -175,3 +176,19 @@ def test_registered_on_the_schedule_heartbeat_and_cli():
     assert cli.JOBS[segments.JOB] == "us_outbound.learn.segments:run" and health.EXPECTED[segments.JOB] == 32 * 24 * 60
     assert segments.JOB in health.IMPACT and say.job_name(segments.JOB) == "the monthly segment prior from HubSpot"
     assert schedule.by_name()["lookalikes"].cron == "30 2 1 * *"
+
+
+def test_the_prior_round_trips_through_postgres(store):  # noqa: F811
+    """On Postgres (tests/test_db.py's store): the prior's rows in the metrics table (day a date, the prior's own
+    definition_version) read back as lookalikes.segment_prior; and the replied event keeps ai_interest_value, the
+    W3-4 column (sql/ddl/04_events.sql)."""
+    from us_outbound.clients.guard import Guard
+
+    store.guard = Guard()
+    settings, _ = validate_all(default_tabs())
+    ctx = make_context(settings, store=store, now=NOW)
+    ctx.clients.hubspot.iter_deals = lambda groups, properties: iter(DEALS)
+    assert segments.refresh(ctx)["stored"]
+    assert lk.segment_prior(store) == {LEGAL: (9, 15), TECH: (72, 167), BUILD: (5, 27)}
+    store.upsert("events", [{"event_id": "em-pg", "type": "replied", "ai_interest_value": "1", "occurred_at": NOW}])
+    assert store.get("events", event_id="em-pg")["ai_interest_value"] == "1"

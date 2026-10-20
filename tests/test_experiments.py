@@ -160,3 +160,20 @@ def test_the_readout_prints_the_registry_with_a_date_and_no_n_of_1500_advice():
     assert tests[2].startswith("  t1 (A/B copy test; drawing arms): O4 (any human reply within 28 days) · fisher_exact")
     assert "readable about Mon " in tests[2]
     assert not [x for x in lines if re.search(r"\d of 1,500", x)]
+
+
+def test_acceptance_the_decisions_log_and_no_p_value():
+    """W3-4's acceptance: docs/decisions.md exists with at least 12 dated entries (the settled CLAUDE.md decisions,
+    the 14 Oct EAP/absenteeism note and the 6 Oct bookings ruling among them), and `grep p_value us_outbound` finds
+    nothing (the pooled z-test is gone; reads are exact)."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    log = (root / "docs" / "decisions.md").read_text()
+    dated = re.findall(r"^\| (\d{1,2} [A-Z][a-z]{2} 2026) \|", log, re.M)
+    assert len(dated) >= 12
+    for words in ("Productivity/absenteeism", "Bookings count", "No postal address", "Rank + 15% random arm"):
+        assert words in log, words
+    hits = [p for p in (root / "us_outbound").rglob("*.py") if "p_value" in p.read_text()]
+    assert hits == []

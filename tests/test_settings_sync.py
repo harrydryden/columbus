@@ -4,7 +4,7 @@ import copy
 import dataclasses
 import sys
 import types
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -546,3 +546,44 @@ def test_anything_apply_approved_did_not_foresee_is_recorded_and_the_sync_goes_o
     summary = sync.run(ctx)
     assert summary["definition_apply_errors"] == [{"id": "", "label": "", "error": "KeyError: 'suggested_definition'"}]
     assert _in_force(ctx, "States", "NC")["values"]["active"] == "yes"
+
+
+# -- W3-4 (21 Oct 2026): the ICP widening post; Tests keeps General's version with its own ------------------------------
+
+
+def test_a_sync_that_activates_10_more_labels_posts_once_so_the_decision_log_can_say_why(ctx, sheet):
+    """The default sheet has some labels switched off; switching 10 of them on widens the ICP: one post naming "10
+    more industries active". The same sync again posts nothing more (post_once); a narrowing is no widening."""
+    off = [r for r in sheet["Industries"] if r["active"].strip().lower() == "no"][:10]
+    assert len(off) == 10
+    for r in off:
+        r["active"] = "yes"
+    summary = sync.run(ctx)
+    assert summary["icp_widened"][0].startswith("10 more industries active (")
+    posts = [text for _, text in ctx.clients.slack.posts if sync.WIDENED_HEAD in text]
+    assert len(posts) == 1 and "10 more industries active" in posts[0] and "docs/decisions.md" in posts[0]
+    sync.run(ctx)
+    assert len([t for _, t in ctx.clients.slack.posts if sync.WIDENED_HEAD in t]) == 1
+    before, _ = validate_all(default_tabs())
+    narrower = dataclasses.replace(before, general=dataclasses.replace(before.general, max_employees=200))
+    assert sync.widening(before, narrower) == []
+    assert sync.widening(narrower, before) == ["max_employees 200 → 249"]
+
+
+def test_a_tests_tab_kept_back_keeps_general_with_it(ctx, sheet):
+    """A test started from 21 Oct runs only while General live_split names its split (W3-4). The version in force has
+    a running copy test and live_split = test; the sheet then sets live_split back to both. The Tests tab in force
+    no longer fits, so it is rejected, and General (which it now depends on: spec.EXTRA_DEPENDS) is held back with
+    it: the settings in force stay usable, with live_split = test."""
+    for c in sheet["Copy"]:
+        c.update(status="approved", approved_by="Harry")
+    next(r for r in sheet["General"] if r["key"] == "live_split")["value"] = "test"
+    sheet["Tests"][0].update(status="running", start_date="2026-10-26", read_date="2027-02-01",
+                             version_a=sheet["Copy"][0]["copy_version"], version_b=sheet["Copy"][1]["copy_version"])
+    first = sync.run(ctx)
+    assert first["rejected"] == [], first
+    next(r for r in sheet["General"] if r["key"] == "live_split")["value"] = "both"
+    second = sync.run(dataclasses.replace(ctx, now=ctx.now + timedelta(hours=1)))
+    assert {"General", "Tests"} <= set(second["rejected"]) and second["unusable"] == []
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and settings.general.live_split == "test" and settings.running_test() is not None
