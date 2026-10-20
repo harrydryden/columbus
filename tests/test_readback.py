@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from tests.test_hubspot_writes import ACCOUNT, HANNAH, NOW, world
 from us_outbound.crm.readback import hubspot_readback
 
@@ -667,6 +669,39 @@ def test_a_bulk_import_costs_no_more_reads_than_a_few_records(default_settings):
         return made_reads
 
     assert run(20) == run(2000) == 6
+
+
+def test_an_unexpected_fault_in_step_5_is_an_error_of_the_run_and_steps_1_to_4_still_report(default_settings,
+                                                                                             monkeypatch):
+    """Step 5 raises a RuntimeError (not an ApiError): the booking steps 1 to 4 made is kept (1 meeting_booked), the
+    job returns its summary with the one error "created: RuntimeError: boom", and step 5 records nothing. A guard
+    refusal in step 5, and any fault in steps 1 to 4, still stop the job as before."""
+    from us_outbound.clients.guard import GuardViolation
+    from us_outbound.crm import readback
+
+    ctx, t, crm, stops = setup(default_settings, status="enrolled")
+    emailed(ctx)
+    kid = crm.add("contacts", {"email": JANE, **made("FORM", FORM)})
+    meeting(crm, contacts=[kid])
+
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(readback, "_emailed", boom)
+    out = hubspot_readback(ctx)
+    assert len(events(ctx, "meeting_booked")) == 1 and events(ctx, "hubspot_contact_created") == []
+    assert out["errors"] == ["created: RuntimeError: boom"]
+
+    def refused(*_a, **_k):
+        raise GuardViolation("refused")
+
+    monkeypatch.setattr(readback, "_emailed", refused)
+    with pytest.raises(GuardViolation):
+        hubspot_readback(ctx)
+    monkeypatch.setattr(readback, "_emailed", boom)
+    monkeypatch.setattr(readback, "meetings", boom)
+    with pytest.raises(RuntimeError):
+        readback.hubspot_readback(ctx)
 
 
 def test_a_failing_contacts_search_leaves_the_companies_and_deals_to_run(default_settings):

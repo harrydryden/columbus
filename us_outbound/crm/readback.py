@@ -61,7 +61,8 @@ are read each run, so a missed run loses nothing.
      pipeline matched through its associations at an emailed account, so, as for a Spill 3.0 deal, retention's
      WARM_EVENTS keeps that company's people, step 3 counts the company as having had a deal, and ensure_deal takes
      such a deal, while it is open, as the company's deal (no "US Outbound –" deal is made beside it). Each search has
-     its own try, so one failing leaves the other two to run.
+     its own try, so one failing leaves the other two to run; any other fault in step 5 (not a guard refusal) is an
+     error of the run, not a failed job, so a reporting step can never cost steps 1 to 4 their summary.
 events.source says where a booking came from: hubspot_meeting (step 1) or hubspot_deal (steps 2 and 4), or how a
 created record was made (step 5).
 A negative cache (W2-4): a meeting, or a step 4 deal, that turned out not to be ours is recorded as an events row of
@@ -707,6 +708,15 @@ def hubspot_readback(ctx: Context) -> dict:
             step(ctx, run)
         except ApiError as exc:  # the other step still runs; the next run reads the same window again
             run.errors.append(f"{step.__name__}: {str(exc)[:200]}")
+        except GuardViolation:
+            raise
+        except Exception as exc:
+            if step is not created:
+                raise
+            # Step 5 only reports (20 Oct 2026): any other fault in it (a record of a shape HubSpot has not sent before)
+            # is an error of the run, not a failed job, so steps 1 to 4's bookings and lead stops still report.
+            run.errors.append(f"created: {type(exc).__name__}: {str(exc)[:160]}")
+            log("hubspot_created_failed", run_id=ctx.run_id, error=run.errors[-1])
     summary = {"job": JOB, "dry_run": ctx.dry_run, "counts": dict(run.counts), "events": run.events,
                "errors": run.errors}
     log("hubspot_readback_done", run_id=ctx.run_id, counts=dict(run.counts), errors=run.errors)
