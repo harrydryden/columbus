@@ -673,10 +673,26 @@ def capture_ask(ctx: Context) -> str | None:
         return (f"Capture drift: this week's check found Instantly's counts and ours apart ({what}), so replies may be "
                 f"going unread: look in Instantly's inbox, then {say.command('report capture')}")
     failed = [r for r in value.get("reasons") or () if r in CANARY_FAILED]
+    if "canary:not_sent" in failed and canary_kept(ctx, utc(latest.get("observed_at")) or ctx.now):
+        failed.remove("canary:not_sent")  # not failed yet: its lead is kept and the next check looks again
     if failed:
         return (f"Canary failed ({', '.join(failed)}): the seed inbox's answer did not come back through the reply "
                 f"read: {say.command('report capture')}")
     return None
+
+
+def canary_kept(ctx: Context, checked_at: datetime) -> bool:
+    """A canary the check at checked_at found not sent and kept (replies/capture._check_one): unchecked, added at
+    least CANARY_WAIT before that check (so not the canary the same run added) and younger than CANARY_GIVE_UP."""
+    from us_outbound.replies import capture
+
+    for r in capture._facts(ctx, capture.CANARY_SENT):
+        if (r.get("value") or {}).get("checked_at"):
+            continue
+        added = capture._added(r, ctx.now)
+        if added <= checked_at - capture.CANARY_WAIT and ctx.now - added < capture.CANARY_GIVE_UP:
+            return True
+    return False
 
 
 def lost_ask(ctx: Context, start: datetime, end: datetime) -> str | None:

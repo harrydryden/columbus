@@ -13,6 +13,7 @@ from tests.test_learn_outcomes import world as ten_companies
 from tests.test_precision import judgement
 from tests.test_throughput import NOW as THROUGHPUT_NOW
 from tests.test_throughput import week as five_summaries
+from us_outbound.enrol import queue
 from us_outbound.learn import metrics
 from us_outbound.ops import health
 from us_outbound.settings.defaults import default_tabs
@@ -59,8 +60,8 @@ def test_the_ten_company_world_matured_by_50_days_and_a_second_run_upserts():
     assert (one(ctx.store, "human_rate_28")["k"], one(ctx.store, "human_rate_28")["n"]) == (2, 10)
     assert (one(ctx.store, "positive_rate_28")["k"], one(ctx.store, "negative_rate_28")["k"]) == (1, 1)
     assert (one(ctx.store, "delivered")["k"], one(ctx.store, "delivered")["n"]) == (9, 10)
-    # The cohort week of 1 Sep (Tuesday of 2026-W36, whose Monday is 31 Aug) is still open on 21 Oct: 31 Aug + 52 days
-    # = 22 Oct. Its row sits on its Monday.
+    # The cohort week of 1 Sep (Tuesday of 2026-W36, whose Monday is 31 Aug) is still open on 21 Oct: 31 Aug + 53 days
+    # (metrics.OPEN_DAYS) = 23 Oct. Its row sits on its Monday.
     assert out["cohorts"] == ["2026-W36"]
     c = one(ctx.store, "engaged_rate_45", "cohort=2026-W36")
     assert (c["day"], c["k"], c["n"]) == (date(2026, 8, 31), 2, 10)
@@ -68,6 +69,73 @@ def test_the_ten_company_world_matured_by_50_days_and_a_second_run_upserts():
     run(ctx)  # the same day again: the same keys, upserted
     assert len(ctx.store.select("metrics")) == before
     assert one(ctx.store, "engaged_rate_45")["k"] == 2
+
+
+def test_matured_rates_count_only_the_companies_whose_window_has_closed():
+    """metrics-audit H2 (a rate read on open windows), on a staggered world read Wed 21 Oct 10:00 UTC:
+      g0-g9 sent step 1 50 days before (Tue 1 Sep, cohort W36): g0 a positive reply on day 3; g1 a meeting on day
+        20; g2 unsubscribed on day 5; g3 unsubscribed on day 35 (after the 28 days); g4 a negative reply on day 4;
+        g5 sampled by the hand-check.
+      m0-m4 sent 29 days before (Tue 22 Sep, W39): m0 a positive reply on day 2.
+      y0-y4 sent 10 days before (Sun 11 Oct, W41): y0 a positive reply on day 1 and a meeting on day 3; y1 a negative
+        reply on day 2; y2 sent step 2 on day 7, which bounced; y3 bounced at step 1.
+    Matured at 45 days: the 10 g's; at 28 days: the 10 g's and the 5 m's = 15.
+      engaged_rate_45 (O2): g0, g1 = 2 of 10 (over all 20 it would be g0, g1, m0, y0 = 4 of 20).
+      positive_rate_28 (O3): g0, m0 = 2 of 15 (all: + y0 = 3 of 20); positive_all 3 of 20.
+      human_rate_28 (O4): g0, g4, m0 = 3 of 15 (all: + y0, y1 = 5 of 20).
+      negative_rate_28 (O6): g2 (unsubscribed inside 28 days) and g4 = 2 of 15; g3's unsubscribe is after the 28 days
+        and y1 has not matured.
+      engaged (O1, all ages): g0, g1, m0, y0 = 4 of 20. hand_check_held (X1): g5 = 1 of 20.
+      D1: the step-1 sends of the last 30 days are the m's and y's, 10 contacts; bounced at step 1 y3 = 1 of 10 (y2's
+        bounce is at step 2).
+    The cohort rows: W39 has none at 45 days (0 of 0) and all 5 at 28 days (m0: 1 of 5 positive, 1 of 5 human); W41
+    has none matured at either (0 of 0)."""
+    now = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    old, mid, young = now - timedelta(days=50), now - timedelta(days=29), now - timedelta(days=10)
+    ev = ([sent(f"g{i}", old) for i in range(10)] + [sent(f"m{i}", mid) for i in range(5)]
+          + [sent(f"y{i}", young) for i in range(5)] + [sent("y2", young + timedelta(days=7), step=2)])
+
+    def reply(aid: str, at: datetime, cls: str) -> dict:
+        return {"event_id": f"r-{aid}", "type": "replied", "account_id": aid, "contact_id": f"c-{aid}",
+                "reply_class": cls, "occurred_at": at}
+
+    def other(kind: str, aid: str, at: datetime, **kw) -> dict:
+        return {"event_id": f"{kind}-{aid}", "type": kind, "account_id": aid, "contact_id": f"c-{aid}",
+                "occurred_at": at, **kw}
+
+    ev += [reply("g0", old + timedelta(days=3), "positive"), other("meeting_booked", "g1", old + timedelta(days=20)),
+           other("unsubscribed", "g2", old + timedelta(days=5)), other("unsubscribed", "g3", old + timedelta(days=35)),
+           reply("g4", old + timedelta(days=4), "negative"), reply("m0", mid + timedelta(days=2), "positive"),
+           reply("y0", young + timedelta(days=1), "positive"), other("meeting_booked", "y0", young + timedelta(days=3)),
+           reply("y1", young + timedelta(days=2), "negative"),
+           other("bounced", "y2", young + timedelta(days=7, minutes=5), step=2),
+           other("bounced", "y3", young + timedelta(minutes=5), step=1)]
+    ctx = make_context(BASE, now=now, job=metrics.JOB)
+    ctx.store.insert("events", ev)
+    ctx.store.insert("signal_events", [{"event_id": "hand_check:2026-W36:g5", "account_id": "g5",
+                                        "source": "hand_check", "fact": "judgement", "observed_at": old,
+                                        "value": {"account_id": "g5", "decision": "fine"}}])
+    run(ctx)
+
+    def kn(metric: str, segment: str = "all") -> tuple[int, int]:
+        r = one(ctx.store, metric, segment)
+        return r["k"], r["n"]
+
+    assert kn("engaged_rate_45") == (2, 10) and one(ctx.store, "engaged_rate_45")["value"] == 0.2
+    assert kn("positive_rate_28") == (2, 15) and kn("positive_all") == (3, 20)
+    assert kn("human_rate_28") == (3, 15)
+    assert kn("negative_rate_28") == (2, 15)
+    assert kn("engaged") == (4, 20) and kn("hand_check_held") == (1, 20)
+    assert (kn("matured_45"), kn("matured_28")) == ((10, 20), (15, 20))
+    assert kn("step1_bounce_contact") == (1, 10)
+    w39, w41 = "cohort=2026-W39", "cohort=2026-W41"
+    assert [kn(m, w39) for m in ("engaged_rate_45", "positive_rate_28", "human_rate_28")] == [(0, 0), (1, 5), (1, 5)]
+    assert [kn(m, w41) for m in ("engaged_rate_45", "positive_rate_28", "human_rate_28")] == [(0, 0), (0, 0), (0, 0)]
+    assert one(ctx.store, "engaged_rate_45", w39)["value"] is None  # no rate on no matured company
+    # No contact here carries a sham_arm stamp (enrolled before it existed): the cut falls back to the same hash.
+    ids = [f"{g}{i}" for g, size in (("g", 10), ("m", 5), ("y", 5)) for i in range(size)]
+    in_a = sum(queue.sham_arm(x) == "a" for x in ids)
+    assert (kn("contacted", "sham_arm=a")[0], kn("contacted", "sham_arm=b")[0]) == (in_a, 20 - in_a)
 
 
 def test_the_reply_curve_o1b_and_exposure():
@@ -134,9 +202,10 @@ def test_lost_leads_from_five_enrol_summaries_and_two_leads_never_sent():
 
 def test_a_definition_version_bump_recomputes_the_open_cohorts_and_the_8_closed_weeks_before_them(monkeypatch):
     """One company sent step 1 on the Monday of each of the 18 weeks W26 to W43, read on Wed 21 Oct (W43).
-    Open on 21 Oct (Monday + 52 days still ahead): W36 (31 Aug + 52 = 22 Oct) to W43; W35 (24 Aug + 52 = 15 Oct) is
+    Open on 21 Oct (Monday + 53 days still ahead): W36 (31 Aug + 53 = 23 Oct) to W43; W35 (24 Aug + 53 = 16 Oct) is
     closed. The 8 calendar weeks before W36 are W28 to W35.
-    A run a week earlier (14 Oct) under version 1: open then W35 to W42, closed and recomputed W27 to W34.
+    A run a week earlier (14 Oct) under version 1: open then W35 (closing 16 Oct) to W42, closed and recomputed W27
+    (W34 closed 9 Oct) to W34.
     Then version 2 on 21 Oct: open W36 to W43 and closed W28 to W35 are written under version 2; W27, the ninth
     closed week, keeps version 1 only. The reader takes version 2 wherever both exist."""
     now = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
@@ -163,8 +232,60 @@ def test_a_definition_version_bump_recomputes_the_open_cohorts_and_the_8_closed_
     assert versions("2026-W43") == {"2026-10-21"} and versions("2026-W26") == set()
     assert one(ctx.store, "contacted", "cohort=2026-W30")["definition_version"] == "2026-10-21"
     assert one(ctx.store, "contacted", "cohort=2026-W27")["definition_version"] == "2026-10-14"
-    # A third run the same day under version 2 recomputes the open weeks only: the closed ones have their rows.
+    # A third run the same day under version 2 recomputes the open weeks only: the closed ones have version-2 rows
+    # computed after they closed.
     assert run(ctx2)["cohorts"] == [f"2026-W{n}" for n in range(36, 44)]
+
+
+def test_a_cohort_stays_open_until_its_sunday_company_has_had_45_days_and_is_recomputed_once_after_it_closes():
+    """W36 (Monday 31 Aug): A sent Mon 31 Aug 14:00 UTC, B Sun 6 Sep 20:00 UTC (21:00 UK, still W36). B has had 45
+    days at 21 Oct 20:00 UTC. W36 closes at 31 Aug 00:00 UK + 53 days = 23 Oct 00:00 UK = 22 Oct 23:00 UTC.
+      Wed 21 Oct 08:50 UK: open, B not matured: matured_45 1 of 2.
+      Thu 22 Oct 08:50 UK: still open (with 52 days it would have closed at the start of the day), B matured: 2 of 2.
+      Then a booking for A on day 30 is read back late. Fri 23 Oct: W36 has closed; its rows were computed before it
+      closed, so it is recomputed once: engaged 1 of 2. Sat 24 Oct: its row was computed after it closed: not again."""
+    a = sent("A", datetime(2026, 8, 31, 14, tzinfo=UTC))
+    b = sent("B", datetime(2026, 9, 6, 20, tzinfo=UTC))
+    assert metrics.closes("2026-W36") == datetime(2026, 10, 22, 23, tzinfo=UTC)
+    st = make_context(BASE).store
+    st.insert("events", [a, b])
+
+    def run_on(day: int) -> dict:
+        return run(make_context(BASE, now=datetime(2026, 10, day, 7, 50, tzinfo=UTC), job=metrics.JOB, store=st))
+
+    def kn(metric: str) -> tuple[int, int]:
+        r = one(st, metric, "cohort=2026-W36")
+        return r["k"], r["n"]
+
+    assert run_on(21)["cohorts"] == ["2026-W36"] and kn("matured_45") == (1, 2)
+    assert run_on(22)["cohorts"] == ["2026-W36"] and kn("matured_45") == (2, 2)
+    st.insert("events", [{"event_id": "m-A", "type": "meeting_booked", "account_id": "A",
+                             "occurred_at": a["occurred_at"] + timedelta(days=30)}])
+    assert run_on(23)["cohorts"] == ["2026-W36"] and kn("engaged_rate_45") == (1, 2)
+    assert run_on(24)["cohorts"] == []
+
+
+def test_o9_counts_the_month_of_the_rows_day():
+    """Sun 1 Nov 2026 08:50 UK (GMT): the row is for Sat 31 Oct, so October's spend over October's companies. October:
+    4 companies sent step 1 (20 Oct), 100 Apollo credits (15 Oct) and $2.00 of Claude (20 Oct): 25 credits and $0.50
+    per company. November so far (1 company, 7 credits, $0.50 before the run) is not in it."""
+    now = datetime(2026, 11, 1, 8, 50, tzinfo=UTC)
+    ctx = make_context(BASE, now=now, job=metrics.JOB)
+    ctx.store.insert("events", [sent(f"o{i}", datetime(2026, 10, 20, 15, tzinfo=UTC)) for i in range(4)]
+                     + [sent("n0", datetime(2026, 11, 1, 7, tzinfo=UTC))])
+    ctx.store.insert("credit_ledger", [
+        {"entry_id": "a1", "system": "apollo", "job": "pick_contacts", "credits": 100,
+         "occurred_at": datetime(2026, 10, 15, 12, tzinfo=UTC)},
+        {"entry_id": "a2", "system": "apollo", "job": "pick_contacts", "credits": 7,
+         "occurred_at": datetime(2026, 11, 1, 7, tzinfo=UTC)},
+        {"entry_id": "c1", "system": "claude", "job": "poll_replies", "usd": 2.0,
+         "occurred_at": datetime(2026, 10, 20, 12, tzinfo=UTC)},
+        {"entry_id": "c2", "system": "claude", "job": "poll_replies", "usd": 0.5,
+         "occurred_at": datetime(2026, 11, 1, 6, tzinfo=UTC)}])
+    run(ctx)
+    apollo, claude = one(ctx.store, "apollo_credits_per_contacted"), one(ctx.store, "claude_usd_per_contacted")
+    assert (apollo["day"], apollo["k"], apollo["n"], apollo["value"]) == (date(2026, 10, 31), 100, 4, 25.0)
+    assert (claude["n"], claude["value"]) == (4, 0.5)
 
 
 # -- forecasts -------------------------------------------------------------------------------------------------------
@@ -230,6 +351,32 @@ def test_the_positive_maturing_forecast_uses_the_prior_under_30_matured():
     got = {r["metric"]: r["value"] for r in metrics.latest(ctx.store) if r["metric"].startswith("forecast:positive")}
     assert got == {"forecast:positive_maturing": pytest.approx(0.4), "forecast:positive_maturing:low": 0.0,
                    "forecast:positive_maturing:high": 2.0}
+
+
+def _positive(companies: list[dict], replies: int) -> list[dict]:
+    """A positive reply a day after step 1 from the first `replies` of these companies' step-1 sends."""
+    return [{"event_id": f"r-{e['account_id']}", "type": "replied", "account_id": e["account_id"],
+             "contact_id": e["contact_id"], "reply_class": "positive", "occurred_at": e["occurred_at"] + timedelta(days=1)}
+            for e in companies[:replies]]
+
+
+def test_the_positive_maturing_forecast_switches_to_the_observed_rate_at_30_matured():
+    """The same 40 maturing in W43 (sent in W39). 29 companies sent in W36 (1 Sep: 28 days had passed by Mon 19 Oct),
+    3 of them positive: under 30 matured, so still the 1% prior: point 0.4, 0 to 2 (the test above).
+    With a 30th W36 company: 30 matured, 3 positive, p = 0.1: point 40 × 0.1 = 4.0; Binomial(40, 0.1):
+    P(X = 0) = 0.9^40 = 0.0148, P(X ≤ 1) = 0.0148 + 40 × 0.1 × 0.9^39 = 0.0805 ≥ 0.05, so low 1;
+    P(X ≤ 6) = 0.9005 < 0.95 and P(X ≤ 7) = 0.9005 + C(40, 7) × 0.1^7 × 0.9^33 = 0.9581, so high 7."""
+    def forecast(matured: int) -> dict:
+        w36 = _week(36, matured)
+        ctx = make_context(BASE, now=_monday(43), job=metrics.JOB)
+        ctx.store.insert("events", _week(39, 40) + w36 + _positive(w36, 3))
+        run(ctx)
+        return {r["metric"]: r["value"] for r in metrics.latest(ctx.store) if r["metric"].startswith("forecast:pos")}
+
+    assert forecast(29) == {"forecast:positive_maturing": pytest.approx(0.4), "forecast:positive_maturing:low": 0.0,
+                            "forecast:positive_maturing:high": 2.0}
+    assert forecast(30) == {"forecast:positive_maturing": pytest.approx(4.0), "forecast:positive_maturing:low": 1.0,
+                            "forecast:positive_maturing:high": 7.0}
 
 
 # -- every id readable now, and a block that fails ----------------------------------------------------------------------

@@ -459,6 +459,7 @@ def test_supply_stalled_after_three_send_days_with_nothing_found_while_50_wait()
         "or a contact: see what finding new companies and choosing who to email last said with "
         "`railway ssh -- us-outbound status`")
     assert daily_post.stalled(ctx, 49) is None
+    assert daily_post.stalled(ctx, 50).startswith("Supply stalled")  # 50 is "at least 50"
     ctx.store.insert("accounts", [{"account_id": "f1", "status": "new",
                                    "first_seen": datetime(2026, 10, 23, 4, tzinfo=UTC)}])
     assert daily_post.stalled(ctx, 60) is None
@@ -482,6 +483,26 @@ def test_capture_drift_or_a_failed_canary_is_an_ask_and_a_canary_not_set_up_is_n
     assert daily_post.capture_ask(ctx) is None
     _capture_fact(ctx, "capture_verified", [])
     assert daily_post.capture_ask(ctx) is None
+
+
+def test_a_canary_not_sent_is_an_ask_only_once_its_lead_is_given_up():
+    """Monday 26 Oct 09:00's check found the canary added Thu 22 Oct 07:30 not sent: it is under CANARY_GIVE_UP (6
+    days) old, so its lead is kept, unchecked, for the next check: no ask yet. The canary the same run added (Mon 26
+    09:00) is not the one checked. Once a check gives it up (checked_at set), not_sent is the ask."""
+    ctx, _ = world()
+    _capture_fact(ctx, "capture_unverified", ["canary:not_sent"])
+
+    def canary(day: int, hour: int, checked: bool) -> dict:
+        added = datetime(2026, 10, day, hour, 0 if hour == 9 else 30, tzinfo=UTC)
+        return {"event_id": f"capture:canary:202610{day}", "account_id": None, "source": "capture",
+                "fact": "canary_sent", "observed_at": added,
+                "value": {"address": f"seed+canary-202610{day}@spill.chat", "added_at": added.isoformat(),
+                          "checked_at": TUE_9.isoformat() if checked else None}}
+
+    ctx.store.upsert("signal_events", [canary(22, 7, False), canary(26, 9, False)])
+    assert daily_post.capture_ask(ctx) is None
+    ctx.store.upsert("signal_events", [canary(22, 7, True)])
+    assert daily_post.capture_ask(ctx).startswith("Canary failed (canary:not_sent)")
 
 
 def test_leads_lost_to_a_gate_or_to_errors_yesterday():

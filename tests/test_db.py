@@ -1332,3 +1332,4 @@ def test_ci_runs_the_suite_with_a_throwaway_postgres_and_requires_it():
     assert f"{DSN_ENV}: postgresql://postgres:postgres@localhost:5432/postgres" in text
     assert f'{REQUIRE_ENV}: "1"' in text and "python -m pytest" in text
     assert "secrets." not in text and "DATABASE_URL" not in text  # never production's database or a secret
+    assert re.search(r"^permissions:\n  contents: read", text, re.MULTILINE)  # its token can write nothing

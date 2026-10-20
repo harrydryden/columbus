@@ -31,11 +31,16 @@ What it writes (IDS maps each metric to its design-final §4 id):
     :low and :high rows. After the week ends, forecast_score:<name> (k 1 inside, 0 outside; value the actual).
     flags() names a forecast outside its interval FLAG_WEEKS weeks running: a definition or model check.
 
+Two clocks. Every row but a cohort's and a forecast's is dated yesterday (UK). P1 and S1 count that UK day and O9 its
+month; everything else is as of the run itself (08:50 UK the next day): the rolling windows of P2, P3, D1, D2, O8 and
+S3 end then, and every company's age (matured at 28 and 45 days, the reply curve, exposure) is taken then.
+
 Definition versions (RT §6.7). DEFINITION_VERSION is a module constant; a change to any definition above bumps it.
-Each run recomputes every open cohort (a company in it could still change: the 45-day window); a cohort week among the
-CLOSED_WEEKS most recent closed ones with no row under the current version is recomputed too, so a bump backfills
-them once, and a cohort older than that keeps only its old version. Readers take the latest version per (day,
-segment, metric) (latest()).
+Each run recomputes every open cohort (a company in it could still change: the 45-day window, OPEN_DAYS); a cohort week
+among the CLOSED_WEEKS most recent closed ones is recomputed too when it has no row under the current version computed
+after it closed: so once more on the first run after it closes (a reply class corrected or a booking read back in its
+last day), and once after a bump, which backfills them; a cohort older than that keeps only its old version. Readers
+take the latest version per (day, segment, metric) (latest()).
 
 Each block is computed in its own try: one that fails is named under the summary's errors (heartbeat_check posts
 it) and the rest are written.
@@ -54,6 +59,7 @@ from us_outbound.clients.claude import month_spend_usd
 from us_outbound.clients.db import Range
 from us_outbound.clients.guard import GuardViolation
 from us_outbound.context import UK, Context
+from us_outbound.enrol import queue
 from us_outbound.enrol.enrol import iso_week
 from us_outbound.learn import outcomes, stats
 from us_outbound.learn.outcomes import Outcome
@@ -67,7 +73,9 @@ DEFINITION_VERSION = "2026-10-20"  # bump on any change to a definition in this 
 ALL = "all"
 COHORT = "cohort"
 CLOSED_WEEKS = 8  # closed cohorts recomputed under a new version (RT §6.7)
-OPEN_DAYS = outcomes.MEETING_DAYS + 7  # a cohort week is open while its last possible step 1 is under 45 days old
+# A cohort week is open until its Monday + 53 days: its last possible step 1 (Sunday 23:59 UK, Monday + 7 days) has
+# had 45 days by Monday + 52 days, so the 08:50 run that day, still open, reads every company in it matured.
+OPEN_DAYS = outcomes.MEETING_DAYS + 8
 CURVE_DAYS = (7, 14, 21, 28)  # O5
 FULL_SEQUENCE_DAYS = 22  # step 4 goes on day 21 (STEP_DAYS 0/7/14/21); a day's grace for the US send window
 D1_DAYS = 30
@@ -209,8 +217,8 @@ def cut_value(o: Outcome, cut: str, states: Mapping[str, str]) -> str | None:
     """The company's value in a cut; None leaves it out of that cut (an unstamped sham arm)."""
     if cut == "arm":
         return o.stamp("arm", "ranked")  # NULL reads as ranked (enrol/queue.py)
-    if cut == "sham_arm":
-        return o.stamp("sham_arm") or None
+    if cut == "sham_arm":  # a contact enrolled before the stamp existed: the same hash (queue.sham_arm)
+        return o.stamp("sham_arm") or (queue.sham_arm(o.account_id) if o.account_id else None)
     if cut == "state":
         return states.get(o.account_id) or "unknown"
     key = {"group": "industry_group_at_enrol", "size_band": "size_band_at_enrol", "slice": "sourced_by",
@@ -248,14 +256,26 @@ def cohorts(found: Iterable[Outcome]) -> dict[str, list[Outcome]]:
     return dict(out)
 
 
+def closes(week: str) -> datetime:
+    """When the cohort week closes (OPEN_DAYS)."""
+    return uk_midnight(monday(week)) + timedelta(days=OPEN_DAYS)
+
+
 def is_open(week: str, now: datetime) -> bool:
-    """A company in it could still change: its last possible step 1 is under OPEN_DAYS before now."""
-    return now < uk_midnight(monday(week)) + timedelta(days=OPEN_DAYS)
+    """A company in it could still change (OPEN_DAYS)."""
+    return now < closes(week)
+
+
+def _final(ctx: Context, week: str) -> bool:
+    """The closed week has a row under DEFINITION_VERSION computed after it closed (the module docstring)."""
+    rows = ctx.store.select(TABLE, {"segment_key": f"{COHORT}={week}", "metric": "contacted",
+                                    "definition_version": DEFINITION_VERSION})
+    return any((at := utc(r.get("computed_at"))) is not None and at >= closes(week) for r in rows)
 
 
 def cohort_weeks(ctx: Context, weeks: Iterable[str]) -> list[str]:
     """The cohort weeks to (re)compute now: every open one, and each of the CLOSED_WEEKS weeks before the oldest open
-    one (calendar weeks) that has no row under DEFINITION_VERSION (the module docstring)."""
+    one (calendar weeks) with no row under DEFINITION_VERSION computed after it closed (the module docstring)."""
     now = ctx.now
     this = budget.week_start(now).date()
     first_open = this - timedelta(days=7 * (OPEN_DAYS // 7 + 1))
@@ -266,8 +286,7 @@ def cohort_weeks(ctx: Context, weeks: Iterable[str]) -> list[str]:
     for w in sorted(set(weeks)):
         if is_open(w, now):
             out.append(w)
-        elif w in recent_closed and not ctx.store.select(TABLE, {
-                "segment_key": f"{COHORT}={w}", "metric": "contacted", "definition_version": DEFINITION_VERSION}):
+        elif w in recent_closed and not _final(ctx, w):
             out.append(w)
     return out
 
@@ -441,11 +460,13 @@ def response_block(ctx: Context, day: date) -> list[dict]:
 
 
 def cost_block(ctx: Context, day: date, found: Sequence[Outcome]) -> list[dict]:
-    """O9: this UK month's Apollo credits (credit_ledger) and Claude dollars per company sent step 1 this month."""
-    start, end = budget.month_bounds(ctx.now)
+    """O9: day's UK month's Apollo credits (credit_ledger) and Claude dollars per company sent step 1 that month (the
+    month of the row's date, so the 1st's run writes the old month's last day with the old month's spend)."""
+    noon = uk_midnight(day) + timedelta(hours=12)
+    start, end = budget.month_bounds(noon)
     contacted = sum(start <= o.step1_at < end for o in found)
     credits = budget.spent_in(ctx.store, "apollo", start, end)
-    usd = month_spend_usd(ctx.store, ctx.now)
+    usd = month_spend_usd(ctx.store, noon)
     return [row(day, ALL, "apollo_credits_per_contacted", k=round(credits), n=contacted,
                 value=credits / contacted if contacted else None),
             row(day, ALL, "claude_usd_per_contacted", k=round(usd), n=contacted,

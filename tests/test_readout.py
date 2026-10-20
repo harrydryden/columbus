@@ -93,10 +93,12 @@ def block(lines: list[str], head: str) -> list[str]:
 
 
 def test_the_operating_metric_with_its_caveat():
-    """Last week (5-11 Oct) 35 companies were sent email 1; 13 more in the three weeks before, 2 of which bounced:
-    48 contacted in 4 weeks, 46 delivered. The hand-check judged 38 of 48 rows fine over W38-W41 (the four weeks
+    """Last week (5-11 Oct) 35 companies were sent email 1; 13 more in the three weeks before (8 on 30 Sep, 5 on 18
+    Sep, inside the 4 weeks from Mon 14 Sep but not 3 weeks from 21 Sep), 2 of the 18 Sep ones bounced: 48 contacted
+    in 4 weeks, 46 delivered. The hand-check judged 38 of 48 rows fine over W38-W41 (the four weeks
     ending with last week). 35 × 38/48 × 46/48 = 35 × 0.79167 × 0.95833 = 26.55 ICP companies reached."""
-    rows = outcome_rows(35, days_ago=5, prefix="w") + outcome_rows(13, days_ago=12, bounced=2, prefix="v")
+    rows = (outcome_rows(35, days_ago=5, prefix="w") + outcome_rows(8, days_ago=12, prefix="v")
+            + outcome_rows(5, days_ago=24, bounced=2, prefix="u"))
     ctx, _ = world(weekly=[], outcomes=rows)
     weeks = ("2026-W38", "2026-W39", "2026-W40", "2026-W41")
     ctx.store.insert("signal_events", [judgement(i, weeks[i // 12], "fine" if i < 38 else "leave out",
@@ -157,6 +159,10 @@ def test_the_north_star_from_30_companies_that_have_had_45_days_and_bookings_two
     ctx.store.update("events", {"event_id": "m-o50-0"}, {"analytics_source": "PAID_SEARCH"})
     star = block(readout.build(ctx)[0], "*North star*")
     assert star[1].startswith("  Meetings booked: 2 at any time · 1 not from an ad")
+    # One fewer at 45 days (29 of 39): still counts, no rate. Engaged so far: the day-10 booking.
+    rows = outcome_rows(29, days_ago=50, meeting_day={0: 10, 1: 47}) + outcome_rows(10, days_ago=40)
+    star = block(readout.build(world(weekly=[], outcomes=rows)[0])[0], "*North star*")
+    assert star[0] == "  29 of 39 companies have had 45 days, so no rate until 30 have. So far, 1 engaged."
 
 
 def test_the_stop_rule_line_is_a_count_not_advice():
@@ -248,6 +254,10 @@ def test_a_split_prints_only_when_every_cell_has_15():
     assert ("  By explore arm: random 2 of 20 (10.0%, 95% 2.1–28.4%) · ranked 1 of 15 (6.7%, 95% 0.7–27.2%).") in splits
     # The size band has one cell (no stamp: unknown): no split to print.
     assert "  By size band: pooled only (matured companies: unknown 35; a split prints once every cell has 15)." in splits
+    # The edge: a cell of 14 is under 15 (pooled only), one of 15 is enough.
+    assert readout.split_line("arm", {"random": (1, 21), "ranked": (0, 14)}) == (
+        "  By arm: pooled only (matured companies: random 21, ranked 14; a split prints once every cell has 15).")
+    assert readout.split_line("arm", {"random": (1, 20), "ranked": (0, 15)}).startswith("  By arm: random 1 of 20")
 
 
 def _sham_world():

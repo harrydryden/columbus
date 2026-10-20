@@ -10,6 +10,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read  # it reads the code and writes nothing back
+
 jobs:
   pytest:
     runs-on: ubuntu-latest
