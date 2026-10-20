@@ -163,8 +163,10 @@ CAMPAIGN_STATUS = {
 # PHASE0-CONFIRM: 2 (`phase0 check --seed`), 3, -1 and -3, and that the List-Unsubscribe header sets -2 too.
 LEAD_ACTIVE, LEAD_PAUSED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED = 1, 2, -1, -2
 # PHASE0-CONFIRM: that PATCH /leads/{id} takes status 2 (paused) and 1 (active), and that a lead set
-# back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused:
-# an out-of-office reply only records the return date (replies/poll.py).
+# back to active goes on with its next step. Until phase 0 says so, nothing calls set_lead_paused. Switching it on
+# pauses a human reply Instantly flagged as automatic (replies/poll._pause_if_needed) and the account stop's
+# colleagues (replies/account_stop.py), and nothing sets a paused lead going again: the out-of-office re-timing that
+# did was removed with W2-1 (20 Oct 2026, never switched on), so an out-of-office reply only records its return date.
 LEAD_PAUSE_CONFIRMED = False
 
 # POST /leads/update-interest-status values. PHASE0-CONFIRM: that 2 is "Meeting booked" and that a

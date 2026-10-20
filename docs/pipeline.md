@@ -1,5 +1,7 @@
 # How an account is found, qualified, cleaned and enriched
 
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). Where this page describes Clay's two jobs, the Work Email waterfall, the second contact or send approvals, read it as what was built, not what runs. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
+
 Apollo, Clay and Instantly can each find companies, find emails and enrich records, and Apollo, Clay, Instantly and HubSpot each have their own idea of an ICP. This page covers:
 - which tool does which job, and where the ICP lives;
 - the order in which an account is found, checked and paid for;

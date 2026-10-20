@@ -52,7 +52,8 @@ Then escalation (SPEC 11), for every kind of human-in-the-loop item:
      escalation_hours (enrol.reply_pause reads the same items: replies/items.positive_waiting).
 Send approvals (an approver's ✅ on a card before its lead went to Instantly, General auto_send) were removed with
 Harry's D6 (W2-1, 20 Oct 2026). A send_approval item still open is closed as expired by the next live run
-(close_send_approvals), and is never escalated meanwhile.
+(close_send_approvals), and is never escalated meanwhile; one caught "sending" is listed under sending_errors, which
+heartbeat_check posts (job_errors). The pass costs one select a run once none is left: remove it in W2-4.
 
 Without Slack (no US_OUTBOUND_SLACK_BOT_TOKEN, as may be so for the pilot), steps 2 and 4 are left
 out and logged, escalation still forwards (or tasks) to escalation_email, and the command line does
@@ -104,6 +105,10 @@ JOB = "poll_approvals"
 SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind: closed, never escalated (close_send_approvals)
 SEND_APPROVAL_EVENT, SEND_APPROVAL_PREFIX = "send_approval", "send-approval:"  # events.type, events.event_id prefix
 SEND_APPROVALS_REMOVED = "send approvals were removed (W2-1, 20 Oct 2026); nothing was sent"
+# A send approval caught "sending" when they were removed: its lead may or may not be in Instantly. Posted by
+# heartbeat_check (a key ending "_errors"), once a UK day, until a person closes the row.
+SEND_APPROVAL_STUCK = ("send approval {item_id} was caught sending when send approvals were removed: look for the lead "
+                       "in the owner's Instantly campaign, then set the hitl_items row's status to handled")
 HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while it gates the day (gates())
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
@@ -882,7 +887,8 @@ def close_send_approvals(ctx: Context) -> dict:
     """Close the send approvals still open, as expired by "system" (W2-1, 20 Oct 2026): the code that answered them is
     gone, and the escalation loop must never meet a kind nothing handles. Live only; idempotent, so it costs one
     select once none is left. An item caught "sending" (an add that may have reached Instantly) is not closed: it is
-    listed for a person to check the campaign by hand."""
+    listed under sending_errors (SEND_APPROVAL_STUCK), which heartbeat_check posts, for a person to check the
+    campaign by hand. Remove this pass in W2-4 (design-final W2-1 review)."""
     rows = ctx.store.select(TABLE, {"kind": SEND_APPROVAL_KIND, "status": [OPEN, SENDING]})
     stuck = sorted(str(r.get("item_id")) for r in rows if r.get("status") == SENDING)
     todo = [r for r in rows if r.get("status") == OPEN]
@@ -902,7 +908,7 @@ def close_send_approvals(ctx: Context) -> dict:
         closed.append(str(r["item_id"]))
     out = {"closed": closed, "would_close": [] if ctx.live else sorted(str(r["item_id"]) for r in todo)}
     if stuck:
-        out["sending"] = stuck  # a person checks the owner's campaign for the lead
+        out["sending_errors"] = [SEND_APPROVAL_STUCK.format(item_id=i) for i in stuck]  # job_errors posts these
     if closed or stuck:
         log("send_approvals_closed", run_id=ctx.run_id, closed=len(closed), sending=len(stuck))
     return out
@@ -910,14 +916,18 @@ def close_send_approvals(ctx: Context) -> dict:
 
 def poll_desk(ctx: Context) -> dict:
     """The poll_approvals job (JOB CONTRACT: run(ctx) -> summary): the reply desk, then the weekly hand-check tab, each
-    in its own guard. A failure in one is listed (errors, hand_check_errors: job_errors reads both) and the other
-    still runs; a guardrail's refusal is raised, after the other part has run."""
+    in its own guard, so one failing never stops the other. The hand-check tab's failure is listed
+    (hand_check_errors: job_errors reads it) and the run is ok. The reply desk's own failure (escalate, reply_items,
+    a store error) and a guardrail's refusal of either part are raised once the hand-check tab has run, so the
+    heartbeat records status error with its text and heartbeat_check's failure_rate and missed rules see it, as
+    before W2-1 (run truth, W1-1). One item's trouble is still listed under errors and the other items go on."""
     from us_outbound.enrol import hand_check_tab  # the weekly hand-check's decisions on the sheet (12 Oct 2026)
 
     slack = slack_or_none(ctx)
     run = _Run()
     items: list[ReplyItem] = []
     refused_by: GuardViolation | None = None
+    failed_by: Exception | None = None  # the reply desk's own failure, raised once the hand-check tab has run
     try:
         items = reply_items(ctx.store, WAITING)
         for item in items:
@@ -936,8 +946,8 @@ def poll_desk(ctx: Context) -> dict:
     except GuardViolation as exc:
         refused_by, sends = exc, {}
         run.errors.append(f"the reply desk was refused by a guardrail: {str(exc)[:160]}")
-    except Exception as exc:  # the hand-check tab still runs; job_errors reads the line
-        sends = {}
+    except Exception as exc:  # the hand-check tab still runs; then it is raised (failed_by)
+        failed_by, sends = exc, {}
         run.errors.append(f"the reply desk failed: {type(exc).__name__}: {str(exc)[:160]}")
         log("poll_desk_failed", run_id=ctx.run_id, part="desk", error=f"{type(exc).__name__}: {str(exc)[:200]}")
     hand_check_errors: list[str] = []
@@ -963,6 +973,8 @@ def poll_desk(ctx: Context) -> dict:
         **{k: v for k, v in summary.items() if k not in ("sent", "would")}, sent=len(run.sent))
     if refused_by is not None:
         raise refused_by
+    if failed_by is not None:
+        raise failed_by
     return summary
 
 

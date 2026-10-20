@@ -1,6 +1,8 @@
 # Phase 0 runbook: Foundations (29 Sep – 9 Oct 2026)
 
 > **Setup history (done); for day-to-day see [docs/daily.md](daily.md).**
+>
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). §12's check and §8's Clay steps cannot be run any more. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
 
 The SPEC 14 phase-0 checklist, in the order to do it, with who does each step and the
 command to run. "Harry" means a step in a vendor's UI or a decision. "jobs" means a

@@ -624,16 +624,47 @@ def test_the_hand_check_tab_failing_is_listed_and_the_reply_is_still_sent(settin
     assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["status"] == "handled" and out["errors"] == []
 
 
-def test_the_reply_desk_failing_still_applies_the_hand_check_tab(settings, monkeypatch):
+def test_the_reply_desk_failing_still_applies_the_hand_check_tab_then_fails_the_run(settings, monkeypatch):
+    """The reply desk's own failure (escalate raising, after the scripted item was sent) does not stop the hand-check
+    tab, and is then raised: run through the heartbeat, the poll_approvals row is status error with the desk's error,
+    which heartbeat_check's failure_rate and missed rules count (an ok run with an errors line would be dropped as
+    transient by job_errors.passing for a job every 5 minutes)."""
+    from us_outbound.enrol import hand_check_tab
+    from us_outbound.ops import heartbeat as hb
+
     ran = []
     monkeypatch.setattr(desk, "escalate", lambda *a: (_ for _ in ()).throw(RuntimeError("escalation broke")))
-    from us_outbound.enrol import hand_check_tab
-
     monkeypatch.setattr(hand_check_tab, "apply", lambda ctx: ran.append(1) or {"applied": [], "hand_check_errors": []})
     ctx, t, crm, sl, inst = desk_world(settings)
-    out = poll(ctx)
-    assert ran == [1] and out["hand_check"] == {"applied": [], "hand_check_errors": []}
-    assert out["errors"] == ["the reply desk failed: RuntimeError: escalation broke"]
+    sl.say(HARRY_ID, "send")
+    with pytest.raises(RuntimeError, match="escalation broke"):
+        hb.run_job(ctx, desk.poll_desk)
+    assert ran == [1]  # the tab ran before the raise
+    [sent] = inst.replies  # the item worked before escalate is handled
+    assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["status"] == "handled"
+    [beat] = [r for r in ctx.store.tables["heartbeats"] if r["job"] == "poll_approvals"]
+    assert beat["status"] == "error" and beat["error"] == "RuntimeError: escalation broke"
+
+
+def test_a_guardrail_refusing_the_reply_desk_is_raised_after_the_hand_check_tab(settings, monkeypatch):
+    """escalate refused by a guardrail: the hand-check tab still runs, then the GuardViolation is raised (never
+    swallowed: SPEC guardrails). The scripted item, approved in its thread, was sent before escalate."""
+    from us_outbound.clients.guard import GuardViolation
+    from us_outbound.enrol import hand_check_tab
+
+    def refuse(*a):
+        raise GuardViolation("slack chat.postMessage to a channel not allowed")
+
+    ran = []
+    monkeypatch.setattr(desk, "escalate", refuse)
+    monkeypatch.setattr(hand_check_tab, "apply", lambda ctx: ran.append(1) or {"applied": [], "hand_check_errors": []})
+    ctx, t, crm, sl, inst = desk_world(settings)
+    sl.say(HARRY_ID, "send")
+    with pytest.raises(GuardViolation, match="not allowed"):
+        poll(ctx)
+    assert ran == [1]
+    [sent] = inst.replies
+    assert sent["reply_to_uuid"] == "em-1" and row_of(ctx)["status"] == "handled"
 
 
 def _send_approval(item_id: str, status: str = "open", **kw) -> dict:
@@ -645,12 +676,15 @@ def _send_approval(item_id: str, status: str = "open", **kw) -> dict:
 def test_the_send_approvals_left_open_are_closed_once_as_expired_and_never_escalated(settings):
     """Two cards left open and one caught sending (an add that may have reached Instantly), all over 24 hours old.
     Live: the 2 open ones are handled by "system" as expired, each with its send-approval event; the sending one is
-    listed for a person, not closed; none is escalated (no task, no DM). A second run closes nothing."""
+    listed for a person under sending_errors (heartbeat_check posts it), not closed; none is escalated (no task, no
+    DM). A second run closes nothing and lists the sending one again."""
     ctx, t, crm, sl, inst = desk_world(settings)
     ctx.store.upsert("hitl_items", [_send_approval("sa-1"), _send_approval("sa-2"),
                                     _send_approval("sa-3", status="sending")])
     out = poll(ctx)
-    assert out["send_approvals"] == {"closed": ["sa-1", "sa-2"], "would_close": [], "sending": ["sa-3"]}
+    stuck = ["send approval sa-3 was caught sending when send approvals were removed: look for the lead in the "
+             "owner's Instantly campaign, then set the hitl_items row's status to handled"]
+    assert out["send_approvals"] == {"closed": ["sa-1", "sa-2"], "would_close": [], "sending_errors": stuck}
     for item_id in ("sa-1", "sa-2"):
         row = row_of(ctx, item_id)
         assert (row["status"], row["handled_by"], row["payload"]["outcome"]) == ("handled", "system", "expired")
@@ -660,7 +694,15 @@ def test_the_send_approvals_left_open_are_closed_once_as_expired_and_never_escal
     assert row_of(ctx, "sa-3")["status"] == "sending" and not row_of(ctx, "sa-3").get("escalated_at")
     assert not [x for x in crm.objects["tasks"].values() if "send approval" in x["hs_task_subject"]]
     assert not [p for p in sl.posts if p["channel"] == HARRY_ID]
-    assert poll(ctx)["send_approvals"] == {"closed": [], "would_close": [], "sending": ["sa-3"]}
+    again = poll(ctx)
+    assert again["send_approvals"]["closed"] == [] and again["send_approvals"]["sending_errors"] == stuck
+    # heartbeat_check reads the run as one "errors" finding with that line, and posts it (not an outage, so
+    # job_errors.passing keeps it for a job every 5 minutes)
+    from us_outbound.ops import job_errors
+
+    [found] = job_errors.findings("poll_approvals", {"status": "ok", "detail": again})
+    assert (found.kind, found.texts) == ("errors", stuck)
+    assert job_errors.passing("poll_approvals", [found], None) == [found]
 
 
 def test_a_dry_run_says_which_send_approvals_it_would_close_and_closes_none(settings):

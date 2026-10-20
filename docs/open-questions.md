@@ -1,5 +1,7 @@
 # Open questions for Harry
 
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). Items below that name them are history. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
+
 SPEC says: "If something is missing or ambiguous, stop and ask Harry rather than guess." Every item below either blocks progress or has a safe default already in the code, so the build is not stalled on any of them. To change a default, edit the sheet where the item lives there, or say which item and the code changes.
 
 ## Open now (4 Oct 2026)
