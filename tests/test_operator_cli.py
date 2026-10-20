@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -80,7 +79,7 @@ def test_sync_is_settings_sync_and_says_what_is_in_force(capsys):
     lines = report(capsys.readouterr().out)
     assert w.calls == [("settings_sync", False, False)]
     assert lines[-2].startswith("Settings synced from the sheet just now: ") and lines[-2].endswith("rows changed.")
-    assert lines[-1] == "In force now: live_sending yes, auto_send no."
+    assert lines[-1] == "In force now: live_sending yes."  # auto_send went with the send approvals (W2-1)
     assert load_current(w.store)[0].general.live_sending is True  # a dry-run sync still brings the sheet in
     assert w.run("settings", "sync") == 0  # the same command
     lines = report(capsys.readouterr().out)
@@ -197,14 +196,15 @@ def status_lines(h, capsys):
 def test_status_opens_with_the_switches_the_sync_and_what_waits(capsys):
     h = Harness(SETTINGS)
     lines = status_lines(h, capsys)
-    assert lines[0] == ("Switches: live_sending no · auto_send no (dry: nothing new reaches Instantly or a prospect; "
+    assert lines[0] == ("Switch: live_sending no (dry: nothing new reaches Instantly or a prospect; "
                         "`us-outbound stop --live` pauses what already sends)")
     assert lines[1] == ("Settings synced: never (sheet edits apply at 02:00 and 11:30 UK on weekdays, or now with "
                         "`us-outbound sync`)")
-    assert lines[2] == "Waiting for you: 0 send approvals, 0 replies, 0 kill-rule holds"
+    assert lines[2] == "Waiting for you: 0 replies, 0 kill-rule holds"
 
     h = Harness(LIVE_SETTINGS)
     h.store.insert("hitl_items", [
+        # A send approval left open from before W2-1 waits for nobody (the desk closes it): it is not counted.
         {"item_id": "s1", "kind": "send_approval", "status": "open", "created_at": NOW,
          "payload": {"state": "waiting", "expires_on": "2026-10-28"}},
         {"item_id": "r1", "kind": "reply", "status": "escalated", "created_at": NOW, "payload": {}},
@@ -212,11 +212,8 @@ def test_status_opens_with_the_switches_the_sync_and_what_waits(capsys):
         {"item_id": "k2", "kind": "kill_rule", "status": "open", "created_at": NOW, "payload": {}},
     ])
     lines = status_lines(h, capsys)
-    assert lines[0].startswith("Switches: live_sending yes · auto_send no (live: every email waits for an approver's ✅")
-    assert lines[2] == "Waiting for you: 1 send approval, 1 reply, 2 kill-rule holds"
-    auto = dataclasses.replace(LIVE_SETTINGS, general=dataclasses.replace(LIVE_SETTINGS.general, auto_send=True))
-    assert status_lines(Harness(auto), capsys)[0].endswith(
-        "(live: emails go straight to Instantly once the weekly hand-check is approved)")
+    assert lines[0] == "Switch: live_sending yes (live: enrol adds each send day's leads straight to Instantly)"
+    assert lines[2] == "Waiting for you: 1 reply, 2 kill-rule holds"
 
 
 def test_status_lists_only_the_jobs_that_need_a_look(capsys):
@@ -242,11 +239,6 @@ def test_status_lists_only_the_jobs_that_need_a_look(capsys):
 
 
 @pytest.mark.parametrize("argv, expected", [
-    (["approvals", "send", "ab12cd34"], {"action": "send", "item_id": "ab12cd34", "live": False}),
-    (["approvals", "contact", "ab12cd34", "--live"], {"action": "contact", "live": True}),
-    (["approvals", "company", "ab12cd34"], {"action": "company"}),
-    (["approvals", "approve", "ab12cd34"], {"action": "approve"}),  # the old words still work
-    (["approvals", "reject", "ab12cd34", "--contact"], {"action": "reject", "contact": True}),
     (["replies", "send", "item-000", "--text", "Thanks, Jane"], {"action": "send", "edit": "Thanks, Jane"}),
     (["replies", "approve", "item-000", "--edit", "Thanks"], {"action": "approve", "edit": "Thanks"}),
     (["mailbox", "check", "--fix", "--live"], {"action": "check", "fix": True, "live": True}),
@@ -263,10 +255,15 @@ def test_build_commands_are_hidden_from_help_but_still_parse():
     text = cli.build_parser().format_help()
     for name in cli.HIDDEN:
         assert f"\n    {name} " not in text and f",{name}," not in text and f"{{{name}," not in text, name
-    for name in ("status", "golive", "accounts", "sync", "start", "stop", "approvals", "replies", "killrules", "mailbox",
+    for name in ("status", "accounts", "sync", "start", "stop", "replies", "killrules", "mailbox",
                  "campaigns", "copy", "settings", "handcheck", "erase", "schedule", "run", "seed", "signals"):
         assert f"\n    {name} " in text, name
-    assert ("`--live` makes a command act. Anything that reaches a prospect (start, approvals send, replies send, every "
+    # The one-off and removed commands went with W2-1 (20 Oct 2026): they no longer parse.
+    for name in ("golive", "approvals", "phase0", "clay"):
+        assert f"\n    {name} " not in text, name
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args([name])
+    assert ("`--live` makes a command act. Anything that reaches a prospect (start, replies send, every "
             "scheduled job) also needs live_sending = yes in the synced settings.") in " ".join(text.split())
     for argv in (["dry-run", "enrol"], ["rescore"], ["suppression", "load"], ["scheduler"], ["db", "apply"],
                  ["hubspot", "ids"], ["lookalikes", "show"], ["lookalikes", "fit"], ["pages", "show"], ["data", "show"],
@@ -279,23 +276,6 @@ def recorder(calls, result):
         calls.append((ctx.job, args, kw))
         return dict(result)
     return fn
-
-
-def test_approvals_send_contact_and_company_take_the_approve_and_reject_paths(monkeypatch, capsys):
-    from us_outbound.enrol import approvals
-
-    calls = []
-    monkeypatch.setattr(approvals, "approve", recorder(calls, {"added": True}))
-    monkeypatch.setattr(approvals, "reject_item", recorder(calls, {"done": True}))
-    h = Harness(LIVE_SETTINGS)
-    assert h.run("approvals", "send", "ab12cd34", "--live") == 0
-    assert h.run("approvals", "contact", "ab12cd34", "--live") == 0
-    assert h.run("approvals", "company", "ab12cd34", "--live") == 0
-    assert calls == [(approvals.APPROVALS_CLI_JOB, ("ab12cd34",), {}),
-                     ("approvals_reject", ("ab12cd34", "contact"), {}),
-                     ("approvals_reject", ("ab12cd34", "company"), {})]
-    assert h.run("approvals", "contact", "ab12cd34", "--company") == 2
-    assert "takes no --contact or --company" in capsys.readouterr().err
 
 
 def test_replies_send_takes_the_approve_path_with_your_text(monkeypatch, capsys):
@@ -392,7 +372,7 @@ def test_a_scheduled_run_prints_its_summary_as_one_line_with_long_lists_cut(monk
     assert pretty[0] == "{" and len(pretty) > 100
 
 
-@pytest.mark.parametrize("argv", [["approvals", "list"], ["replies", "list"], ["killrules", "show"],
+@pytest.mark.parametrize("argv", [["replies", "list"], ["killrules", "show"],
                                   ["copy", "check"], ["campaigns", "show"]])
 def test_live_on_a_read_only_action_says_it_does_nothing(argv, capsys):
     h = Harness(SETTINGS)

@@ -12,7 +12,7 @@ was enrolled under, so the cohort report (learn/cohorts.py) can compare like wit
   settings_versions  the effective_from of the version in force of each content tab (CONTENT_TABS): the tabs
                      render and the openers read at enrolment. General and Copy are in by value instead (below),
                      so an edit to live_sending, the Claude cap or a draft Copy row starts no new version.
-                     Mailboxes, States, Focus and Named accounts change who is enrolled and by whom, which
+                     Mailboxes, States and Focus change who is enrolled and by whom, which
                      each contact records already (sender, copy_version, test_id) and the weekly cuts show; of the
                      Tests tab, only the running copy test changes what is sent, and it is in by value (copy_test);
   copy_hashes        copy_version -> CopyRow.content_hash for every sendable Copy row (approved, QA passed);
@@ -37,8 +37,9 @@ new version, so cohorts split on code changes that change nothing a contact is s
 copy test's arms could not be pooled across a deploy. weekly_enrol_cap and control_share left CONTENT_KEYS for the
 same reason: the first changes how many are enrolled, not what any of them gets, and the second is retired. The ids
 changed once, discontinuously, from the deploy that made these changes; `cohorts changes` reads the old rows as
-they are. log_change writes a config_log row for
-each change to what in-flight leads share.
+they are. The ids changed once more from W2-1 (20 Oct 2026), when opener_focus, opener_focus_line and the three
+second_contact keys left General and CONTENT_KEYS with the code that read them (opener_focus was off and no second
+contact was ever enrolled, so what a contact is sent did not change). log_change writes a config_log row for each change to what in-flight leads share.
 """
 
 from __future__ import annotations
@@ -71,9 +72,8 @@ CONTENT_TABS = ("Signals", "Angles", "Industries", "Roles", "Overrides")
 # (contacts.arm), and its emails are made as any other's (W1-6).
 CONTENT_KEYS = (
     "email_format", "email1_subject", "email1_subject_share", "opener_holdout_share", "opener_generic",
-    "opener_generic_people", "opener_generic_founder", "opener_generic_ops", "opener_focus", "opener_focus_line",
+    "opener_generic_people", "opener_generic_founder", "opener_generic_ops",
     "price_from", "booking_link", "booking_page", "site_url", "demo_host", "utm_links", "send_window",
-    "second_contact", "second_contact_min_employees", "second_contact_delay_days",
     "label_check",  # Harry, 7 Oct 2026: required or skip decides which copy a new company's label earns (labels.py)
 )
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")

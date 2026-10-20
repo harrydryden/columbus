@@ -151,7 +151,8 @@ def test_expected_matches_the_spec9_schedules():
     # Tuesday to Saturday (19 Oct 2026): Saturday 09:00 to Tuesday 09:00 is 72 hours, 73 when the clocks go back on
     # the Sunday between; in wall time, as the job runs on Saturdays.
     assert hb.EXPECTED["daily_post"] == 74 * 60 and "daily_post" not in hb.WEEKDAY_JOBS
-    assert hb.EXPECTED["monday_readout"] == hb.EXPECTED["public_signals"] == 8 * 24 * 60
+    assert hb.EXPECTED["monday_readout"] == hb.EXPECTED["hand_check_draw"] == 8 * 24 * 60
+    assert not {"public_signals", "verify_in_clay"} & (set(hb.EXPECTED) | set(hb.IMPACT))  # removed with W2-1
     # Build, 1 Oct 2026: the sources and verify_accounts run each weekday (ops/schedule.py), in weekday time.
     for job in ("source_universe", "apollo_signals", "read_pages", "apollo_enrich", "apollo_people", "verify_accounts"):
         assert hb.EXPECTED[job] == 26 * 60 and job in hb.WEEKDAY_JOBS

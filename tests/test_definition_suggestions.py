@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from tests.fakes import make_context
-from tests.test_crosswalk import Sheet
+from tests.test_copy_desk import Sheet
 from tests.test_labels import DEFAULT
 from us_outbound import labels
 from us_outbound.learn import definition_suggestions as ds

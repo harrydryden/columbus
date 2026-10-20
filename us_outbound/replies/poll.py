@@ -64,9 +64,8 @@ Routing (SPEC 11, and docs/gtm-review/README.md D12: a draft for every class a h
       the rule and became an unsubscribe with "Nothing to do".
   out_of_office
       the return date is stored on a hitl_items row of kind "out_of_office", status "handled" (there
-      is nothing for a person to do), and the lead is re-timed: paused now and set going again two
-      send days after the return date. Re-timing waits for phase 0 to confirm Instantly can pause a
-      lead (clients/instantly.py LEAD_PAUSE_CONFIRMED); until then the row only notes the date.
+      is nothing for a person to do). (Re-timing the lead round the return date waited for phase 0 to confirm
+      Instantly's lead pause, never confirmed, and went with W2-1, 20 Oct 2026.)
 Every email listed as received but not from outside Spill (a campaign send, our own mailbox, a system
 sender, a Spill address; outcomes.received_reason) is counted by why in the summary's dropped (W1-2;
 code-replies-crm M3: until then a misread field would have looked exactly like "no replies yet").
@@ -101,9 +100,9 @@ them and its resume_from (the first one's time) makes the next run read from the
 
 Dry-run reads Instantly, applies the stop rule (writing its suppression, which only protects), and
 reports how many replies it would classify and the most that would cost. It calls no model and
-writes no item or class, so a dry run never uses up a reply that a live run must still alert, opt
-out or re-time (the copy desk calls Claude only with --live for the same reason). Live runs then
-also retry pending opt-outs, set out-of-office leads going again, and post any item not yet in Slack.
+writes no item or class, so a dry run never uses up a reply that a live run must still alert or opt
+out (the copy desk calls Claude only with --live for the same reason). Live runs then also retry pending opt-outs
+and post any item not yet in Slack.
 """
 
 from __future__ import annotations
@@ -116,7 +115,6 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from us_outbound.base import say
-from us_outbound.budget import is_send_day
 from us_outbound.clients import instantly as instantly_client
 from us_outbound.clients.claude import BudgetExceeded, ClaudeError
 from us_outbound.clients.guard import US_CAMPAIGN_PREFIX, WARM_REPLY_CLASSES
@@ -151,7 +149,6 @@ NOT_NOW_DEFAULT = timedelta(days=90)  # the follow-up date when a not-now reply 
 # The alert's line, and the item's, for a reply kept for a person although it asked to stop (W1-2, 19 Oct 2026).
 ALSO_STOP = ("They also asked to be taken off the list: suppressed, so the desk will not send to them. Answer by "
              "hand, or lift the suppression knowingly.")
-OOO_RESUME_SEND_DAYS = 2  # set going again two send days after the return date (gtm-review 03 §6)
 INTERESTED_CLASSES = frozenset({"positive"})  # marked "Interested" in Instantly (not referral: see the docstring)
 INTERESTED = "interested"  # the payload's instantly_interest once it is set
 # The alert's last section: what each reaction or thread reply does (replies/desk.py reads them; the words themselves
@@ -183,17 +180,6 @@ def owner_of(settings: Settings, mailbox: str, account: Mapping[str, Any]) -> st
     """The person who owns the mailbox the prospect wrote to (replies are signed by them; SPEC 5)."""
     found = next((m for m in settings.mailboxes if m.address.lower() == mailbox), None)
     return found.owner_name if found else str(account.get("sender") or "")
-
-
-def resume_on(back: date, settings: Settings) -> date:
-    """OOO_RESUME_SEND_DAYS send days after the return date."""
-    d, n = back, 0
-    for _ in range(60):
-        d += timedelta(days=1)
-        n += is_send_day(d, settings)
-        if n >= OOO_RESUME_SEND_DAYS:
-            break
-    return d
 
 
 def _subject(email: Mapping[str, Any]) -> str:
@@ -344,30 +330,9 @@ def _pause_if_needed(ctx: Context, email: Mapping[str, Any], info: Mapping[str, 
     return True, True
 
 
-def _record_ooo(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any], text: str, out: dict) -> None:
-    """The return date, and the re-timing (when Instantly's pause is confirmed), on an out_of_office row."""
-    back = verdict.ooo_return_date
-    today = ctx.now_et().date()
-    campaign, lead_id = info.get("instantly_campaign"), info.get("instantly_lead_id")
-    resume = resume_on(back, ctx.settings) if back else None
-    retime: dict[str, Any] = {"status": "noted", "resume_on": resume.isoformat() if resume else None,
-                              "campaign": campaign, "lead_id": lead_id}
-    if back is None:
-        retime["note"] = "the reply gives no return date"
-    elif not instantly_client.LEAD_PAUSE_CONFIRMED:
-        retime["note"] = "re-timing waits for phase 0 to confirm Instantly can pause a lead (LEAD_PAUSE_CONFIRMED)"
-    elif not (campaign and lead_id):
-        retime["note"] = "no Instantly lead to pause"
-    elif resume is not None and resume <= today:
-        retime["note"] = "they are already back"
-    else:
-        try:
-            ctx.clients.instantly.set_lead_paused(str(campaign), str(lead_id), True)
-            retime.update(status="paused", paused_at=ctx.now.isoformat())
-            out["ooo_paused"] += 1
-        except (ApiError, LookupError) as exc:
-            retime["note"] = f"pausing the lead failed: {str(exc)[:200]}"
-    payload = {**info, **verdict.as_payload(), "reply_excerpt": text[:EXCERPT_CHARS], "retime": retime}
+def _record_ooo(ctx: Context, verdict: classify.Verdict, info: Mapping[str, Any], text: str) -> None:
+    """The return date (verdict.ooo_return_date, in the payload) on an out_of_office row."""
+    payload = {**info, **verdict.as_payload(), "reply_excerpt": text[:EXCERPT_CHARS]}
     ctx.store.upsert("hitl_items", [{
         "item_id": f"{OOO_KIND}:{info['instantly_email_id']}", "kind": OOO_KIND, "status": HANDLED,
         "account_id": info["account_id"], "contact_id": info["contact_id"], "event_id": info["instantly_email_id"],
@@ -503,7 +468,7 @@ def _process(ctx: Context, d: Directory, email: Mapping[str, Any], seen: _Seen, 
             result = _opt_out(ctx, email, m, info, received, done, out)
         _note(ctx, opt_out_note(info, from_is_contact=m.from_is_contact, by_rule=verdict.by_rule, result=result))
     elif cls == "out_of_office":
-        _record_ooo(ctx, verdict, info, text, out)
+        _record_ooo(ctx, verdict, info, text)
         ctx.store.upsert("events", [event])
     else:
         follow_up, given = None, False
@@ -569,26 +534,6 @@ def _sweep_opt_outs(ctx: Context, d: Directory, done: set[str], out: dict) -> No
                                 mailbox=mailbox, occurred_at=utc(ev.get("occurred_at")) or ctx.now,
                                 source=REPLY_SOURCE, done=done, keep_item=f"{KIND}:{ev['event_id']}")
         out["opted_out_on_retry"][result] += 1
-
-
-def _resume_ooo(ctx: Context, out: dict) -> None:
-    """Out-of-office leads paused until after their return date are set going again."""
-    today = ctx.now_et().date()
-    for row in ctx.store.select("hitl_items", {"kind": OOO_KIND}):
-        payload = dict(row.get("payload") or {})
-        retime = dict(payload.get("retime") or {})
-        resume = iso_date(retime.get("resume_on"))
-        if retime.get("status") != "paused" or resume is None or resume > today:
-            continue
-        try:
-            ctx.clients.instantly.set_lead_paused(str(retime["campaign"]), str(retime["lead_id"]), False)
-        except (ApiError, LookupError) as exc:
-            retime["note"] = f"setting the lead going again failed: {str(exc)[:200]}"
-        else:
-            retime.update(status="resumed", resumed_at=ctx.now.isoformat())
-            out["ooo_resumed"] += 1
-        payload["retime"] = retime
-        ctx.store.update("hitl_items", {"item_id": row["item_id"]}, {"payload": payload})
 
 
 def _slack(ctx: Context):
@@ -731,7 +676,7 @@ def run(ctx: Context) -> dict:
     start = outcomes.since(ctx, JOB, live_only=True, earliest=d.earliest_enrolled())
     out: dict[str, Any] = {k: Counter() for k in ("classified", "items", "opted_out", "opted_out_on_retry", "dropped")}
     out.update({k: 0 for k in ("unmatched", "already_handled", "retry_later", "claude_cap_reached", "would_classify",
-                               "would_opt_out", "ooo_paused", "ooo_resumed", "alerts_posted", "slack_errors",
+                               "would_opt_out", "alerts_posted", "slack_errors",
                                "left_for_next_run", "marked_interested", "also_asked_to_stop")})
     out["would_spend_usd_at_most"] = 0.0
     seen = _Seen(ctx)
@@ -749,7 +694,6 @@ def run(ctx: Context) -> dict:
         _process(ctx, d, email, seen, done, out)
     if ctx.live:
         _sweep_opt_outs(ctx, d, done, out)
-        _resume_ooo(ctx, out)
         _post_pending(ctx, out)
     summary = {"job": JOB, "dry_run": ctx.dry_run, "since": start.isoformat(), "received": len(emails),
                **{k: dict(v) if isinstance(v, Counter) else v for k, v in out.items()}}

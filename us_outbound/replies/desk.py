@@ -1,4 +1,8 @@
-"""The reply desk: poll_approvals, every 5 minutes (SPEC 9; SPEC 11 "Approval" and "Escalation"; D11).
+"""The reply desk: the poll_approvals job, every 5 minutes (SPEC 9; SPEC 11 "Approval" and "Escalation"; D11).
+
+The job keeps its name (heartbeat history, the overlap lock, heartbeat.EXPECTED, docs/daily.md); its function is
+poll_desk, which runs the reply desk (steps 1 to 5 below) and then the weekly hand-check tab (enrol/hand_check_tab.apply),
+each in its own guard, so one failing never stops the other (W2-1, 20 Oct 2026).
 
 For each reply item not yet handled (replies/items.py; poll_replies creates them):
   1. HubSpot. A positive or referral reply not yet written to HubSpot gets the SPEC 11 writes
@@ -8,7 +12,7 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      approver counts (decision D11, approved by Harry, 1 Oct 2026): a Slack id on approver_slack_ids,
      or the owner of the mailbox the prospect wrote to (Mailboxes slack_id), for that mailbox only.
      Anyone else is ignored.
-       ✅ on the draft, or "send"   send the draft ("approve" too, as on a send-approval card);
+       ✅ on the draft, or "send"   send the draft ("approve" too);
        "send: <text>"              send that text instead (SPEC 11);
        "edit: <text>"              the text replaces the draft, which is posted again in the thread;
                                    ✅ on that message, or "send", then sends it;
@@ -36,8 +40,8 @@ For each reply item not yet handled (replies/items.py; poll_replies creates them
      which is 4 pm ET). Once per item.
 Then escalation (SPEC 11), for every kind of human-in-the-loop item:
   5. Open longer than escalation_hours (24), except the weekly hand-check while it gates no day's enrolment
-     (auto_send or hand_check_gate no: nothing but its own sample waits for it, and it reminds once on
-     Wednesday itself, enrol/hand_check.remind): a reply item is forwarded from the mailbox that
+     (hand_check_gate no: nothing but its own sample waits for it, and it reminds once on Wednesday itself,
+     enrol/hand_check.remind): a reply item is forwarded from the mailbox that
      received it to escalation_email (harry@spill.chat) through Instantly's forward endpoint, with
      the draft, the Slack link, the HubSpot link and how to act added. Anything else, or a reply
      whose forward fails (PHASE0-CONFIRM that the endpoint exists on our plan), becomes a HubSpot task
@@ -46,10 +50,10 @@ Then escalation (SPEC 11), for every kind of human-in-the-loop item:
      recorded and its thread says so. Other kinds keep their status, so the jobs that own them still
      find them; escalated_at marks them. Enrolment pauses while a positive reply waits longer than
      escalation_hours (enrol.reply_pause reads the same items: replies/items.positive_waiting).
-Then send approvals (Harry, 2 Oct 2026; while auto_send = no every email waits for an approver's ✅
-before its lead is added to Instantly): enrol/approvals.poll reads their cards' threads and
-reactions and acts, with the patterns above. They are never re-posted or escalated: an item not
-approved by the end of its next send day expires instead.
+Send approvals (an approver's ✅ on a card before its lead went to Instantly, General auto_send) were removed with
+Harry's D6 (W2-1, 20 Oct 2026). A send_approval item still open is closed as expired by the next live run
+(close_send_approvals), and is never escalated meanwhile; one caught "sending" is listed under sending_errors, which
+heartbeat_check posts (job_errors). The pass costs one select a run once none is left: remove it in W2-4.
 
 Without Slack (no US_OUTBOUND_SLACK_BOT_TOKEN, as may be so for the pilot), steps 2 and 4 are left
 out and logged, escalation still forwards (or tasks) to escalation_email, and the command line does
@@ -74,6 +78,7 @@ from us_outbound import fmt, suppression
 from us_outbound.base import notify, say
 from us_outbound.clients.guard import CLI_APPROVER, GuardViolation
 from us_outbound.clients.http import ApiError
+from us_outbound.clients.slack import APPROVE_REACTIONS, SKIP_REACTIONS
 from us_outbound.context import UK, ConfigError, Context
 from us_outbound.crm import hubspot_writes as hw
 from us_outbound.copy.copy_rules import content_violations, structure_violations
@@ -97,12 +102,16 @@ from us_outbound.settings.model import Settings
 from us_outbound.timeparse import utc
 
 JOB = "poll_approvals"
-SEND_APPROVAL_KIND = "send_approval"  # enrol/approvals/ KIND: never re-posted or escalated here
+SEND_APPROVAL_KIND = "send_approval"  # the removed send approvals' kind: closed, never escalated (close_send_approvals)
+SEND_APPROVAL_EVENT, SEND_APPROVAL_PREFIX = "send_approval", "send-approval:"  # events.type, events.event_id prefix
+SEND_APPROVALS_REMOVED = "send approvals were removed (W2-1, 20 Oct 2026); nothing was sent"
+# A send approval caught "sending" when they were removed: its lead may or may not be in Instantly. Posted by
+# heartbeat_check (a key ending "_errors"), once a UK day, until a person closes the row.
+SEND_APPROVAL_STUCK = ("send approval {item_id} was caught sending when send approvals were removed: look for the lead "
+                       "in the owner's Instantly campaign, then set the hitl_items row's status to handled")
 HAND_CHECK_KIND = "hand_check"  # enrol/hand_check.py KIND: escalated only while it gates the day (gates())
 REPOST_AFTER = timedelta(hours=2)  # SPEC 11
 REPOST_FROM, REPOST_UNTIL = time(13), time(23)  # UK time; D11 (Harry, 1 Oct 2026): until 23:00, not 21:00
-APPROVE_REACTIONS = frozenset({"white_check_mark", "heavy_check_mark"})  # ✅ (and ✔️)
-SKIP_REACTIONS = frozenset({"x"})  # ❌
 SEED_REACTIONS = ("white_check_mark", "x")  # the bot's own ✅ and ❌ on an alert or a changed draft: one click decides
 APPROVED, EDITED, SKIPPED = "approved", "edited", "skipped"  # events.approval (SPEC 6)
 ESCALATED_EVENT = "escalated:"  # events.event_id of an escalation: the item's id, prefixed
@@ -169,8 +178,7 @@ HOW_TO_ANSWER = ("✅ on the draft (or reply `send`) sends it · `edit: &lt;new 
 # -- Slack text -----------------------------------------------------------------------------------
 
 _SLACK_LINK = re.compile(r"<([^<>|]+)(?:\|([^<>]*))?>")
-# The words a send-approval card takes (enrol/approvals._COMMANDS; 9 Oct 2026: "approve" in a reply thread was
-# dropped without a word).
+# The words a draft takes (9 Oct 2026: "approve" in a reply thread was dropped without a word).
 _SEND = re.compile(r"^(?:send|approve)[\s.!]*$", re.I)
 _SKIP = re.compile(r"^(?:skip|no|reject|don'?t send)[\s.!]*$", re.I)
 _SEND_TEXT = re.compile(r"^send\s*:\s*(.*)$", re.I | re.S)
@@ -828,18 +836,17 @@ def _escalate_other(ctx: Context, row: Mapping[str, Any], slack: Any) -> str:
 def escalate(ctx: Context, slack: Any, run: _Run) -> None:
     """Every human-in-the-loop item open longer than escalation_hours goes to escalation_email (SPEC 11).
 
-    Send approvals are left out: they expire at the end of their next send day instead (enrol/approvals/).
-    So is the weekly hand-check while it gates no day's enrolment (enrol/hand_check.gates): with auto_send = no
-    every email is approved in Slack, and with hand_check_gate = no (D5) only its sampled companies wait, for 7 days
-    at most, and it posts its own reminder on Wednesday (enrol/hand_check.remind), so a task and a DM every week
-    would ask for nothing more.
+    Send approvals are left out: they were removed, and close_send_approvals closes any still open. So is the weekly
+    hand-check while it gates no day's enrolment (enrol/hand_check.gates): with hand_check_gate = no (D5) only its
+    sampled companies wait, for 7 days at most, and it posts its own reminder on Wednesday (enrol/hand_check.remind),
+    so a task and a DM every week would ask for nothing more.
     """
     g = ctx.settings.general
     cutoff = ctx.now - timedelta(hours=g.escalation_hours)
     for row in ctx.store.select(TABLE, {"status": OPEN}):
         if row.get("escalated_at") or row.get("kind") == SEND_APPROVAL_KIND:
             continue
-        if row.get("kind") == HAND_CHECK_KIND and not (g.auto_send and g.hand_check_gate):
+        if row.get("kind") == HAND_CHECK_KIND and not g.hand_check_gate:
             continue
         reply = is_reply(row)
         item = ReplyItem(row)
@@ -876,41 +883,98 @@ def escalate(ctx: Context, slack: Any, run: _Run) -> None:
 # -- the job ----------------------------------------------------------------------------------------
 
 
-def poll_approvals(ctx: Context) -> dict:
-    """The poll_approvals job (JOB CONTRACT: run(ctx) -> summary)."""
-    from us_outbound.enrol import approvals  # send approvals (Harry, 2 Oct 2026): their own module
+def close_send_approvals(ctx: Context) -> dict:
+    """Close the send approvals still open, as expired by "system" (W2-1, 20 Oct 2026): the code that answered them is
+    gone, and the escalation loop must never meet a kind nothing handles. Live only; idempotent, so it costs one
+    select once none is left. An item caught "sending" (an add that may have reached Instantly) is not closed: it is
+    listed under sending_errors (SEND_APPROVAL_STUCK), which heartbeat_check posts, for a person to check the
+    campaign by hand. Remove this pass in W2-4 (design-final W2-1 review)."""
+    rows = ctx.store.select(TABLE, {"kind": SEND_APPROVAL_KIND, "status": [OPEN, SENDING]})
+    stuck = sorted(str(r.get("item_id")) for r in rows if r.get("status") == SENDING)
+    todo = [r for r in rows if r.get("status") == OPEN]
+    closed: list[str] = []
+    for r in todo if ctx.live else ():
+        payload = dict(r.get("payload") or {}) if isinstance(r.get("payload"), Mapping) else {}
+        payload.update(outcome="expired", reason=SEND_APPROVALS_REMOVED, state="done",
+                       decided={"by": "system", "at": ctx.now.isoformat(), "via": "removed", "outcome": "expired"})
+        if not ctx.store.update(TABLE, {"item_id": r["item_id"], "status": OPEN},
+                                {"status": HANDLED, "handled_at": ctx.now, "handled_by": "system", "payload": payload}):
+            continue  # closed in the meantime
+        ctx.store.upsert("events", [{
+            "event_id": f"{SEND_APPROVAL_PREFIX}{r['item_id']}", "type": SEND_APPROVAL_EVENT, "approval": "expired",
+            "approved_by": "system", "account_id": r.get("account_id") or None,
+            "contact_id": r.get("contact_id") or None, "step": 1, "occurred_at": ctx.now,
+        }])
+        closed.append(str(r["item_id"]))
+    out = {"closed": closed, "would_close": [] if ctx.live else sorted(str(r["item_id"]) for r in todo)}
+    if stuck:
+        out["sending_errors"] = [SEND_APPROVAL_STUCK.format(item_id=i) for i in stuck]  # job_errors posts these
+    if closed or stuck:
+        log("send_approvals_closed", run_id=ctx.run_id, closed=len(closed), sending=len(stuck))
+    return out
+
+
+def poll_desk(ctx: Context) -> dict:
+    """The poll_approvals job (JOB CONTRACT: run(ctx) -> summary): the reply desk, then the weekly hand-check tab, each
+    in its own guard, so one failing never stops the other. The hand-check tab's failure is listed
+    (hand_check_errors: job_errors reads it) and the run is ok. The reply desk's own failure (escalate, reply_items,
+    a store error) and a guardrail's refusal of either part are raised once the hand-check tab has run, so the
+    heartbeat records status error with its text and heartbeat_check's failure_rate and missed rules see it, as
+    before W2-1 (run truth, W1-1). One item's trouble is still listed under errors and the other items go on."""
+    from us_outbound.enrol import hand_check_tab  # the weekly hand-check's decisions on the sheet (12 Oct 2026)
 
     slack = slack_or_none(ctx)
     run = _Run()
-    items = reply_items(ctx.store, WAITING)
-    for item in items:
-        try:
-            if item.status == SENDING:
-                _stuck(ctx, item, slack, run)
-            else:
-                _work(ctx, item, slack, run)
-        except (ApiError, LookupError) as exc:  # one item's trouble never stops the others
-            run.errors.append(f"{item.short_id}: {type(exc).__name__}: {str(exc)[:160]}")
-        except GuardViolation as exc:  # a guardrail refused it: a person answers by hand; the rest go on (M2)
-            run.errors.append(f"{item.short_id}: refused by a guardrail: {str(exc)[:160]}")
-            run.add("by_hand", refused(ctx, item, exc))
-    escalate(ctx, slack, run)
-    sends = approvals.poll(ctx, slack)
-    from us_outbound.enrol import hand_check_tab  # the weekly hand-check's decisions on the sheet (12 Oct 2026)
-
-    checked = hand_check_tab.apply(ctx)
+    items: list[ReplyItem] = []
+    refused_by: GuardViolation | None = None
+    failed_by: Exception | None = None  # the reply desk's own failure, raised once the hand-check tab has run
+    try:
+        items = reply_items(ctx.store, WAITING)
+        for item in items:
+            try:
+                if item.status == SENDING:
+                    _stuck(ctx, item, slack, run)
+                else:
+                    _work(ctx, item, slack, run)
+            except (ApiError, LookupError) as exc:  # one item's trouble never stops the others
+                run.errors.append(f"{item.short_id}: {type(exc).__name__}: {str(exc)[:160]}")
+            except GuardViolation as exc:  # a guardrail refused it: a person answers by hand; the rest go on (M2)
+                run.errors.append(f"{item.short_id}: refused by a guardrail: {str(exc)[:160]}")
+                run.add("by_hand", refused(ctx, item, exc))
+        escalate(ctx, slack, run)
+        sends = close_send_approvals(ctx)
+    except GuardViolation as exc:
+        refused_by, sends = exc, {}
+        run.errors.append(f"the reply desk was refused by a guardrail: {str(exc)[:160]}")
+    except Exception as exc:  # the hand-check tab still runs; then it is raised (failed_by)
+        failed_by, sends = exc, {}
+        run.errors.append(f"the reply desk failed: {type(exc).__name__}: {str(exc)[:160]}")
+        log("poll_desk_failed", run_id=ctx.run_id, part="desk", error=f"{type(exc).__name__}: {str(exc)[:200]}")
+    hand_check_errors: list[str] = []
+    try:
+        checked = hand_check_tab.apply(ctx)
+    except GuardViolation as exc:
+        checked, refused_by = None, refused_by or exc
+        hand_check_errors.append(f"refused by a guardrail: {str(exc)[:160]}")
+    except Exception as exc:  # the reply desk has run; job_errors reads the line
+        checked = None
+        hand_check_errors.append(f"{type(exc).__name__}: {str(exc)[:160]}")
+        log("poll_desk_failed", run_id=ctx.run_id, part="hand_check", error=f"{type(exc).__name__}: {str(exc)[:200]}")
     summary = {
         "job": JOB, "dry_run": ctx.dry_run, "slack": slack is not None, "items": len(items),
         "sent": run.sent, "skipped": run.skipped, "not_sent": run.blocked, "edited": run.edited,
         "reposted": run.reposted, "escalated": run.escalated, "unsure": run.stuck, "by_hand": run.by_hand,
         "hubspot": dict(run.hubspot), "ignored_non_approvers": sum(run.ignored.values()), "errors": run.errors,
-        "send_approvals": sends, "hand_check": checked,
+        "send_approvals": sends, "hand_check": checked, "hand_check_errors": hand_check_errors,
     }
     if ctx.dry_run:
         summary["would"] = run.would
     log("poll_approvals_done", run_id=ctx.run_id,
-        **{k: v for k, v in summary.items() if k not in ("sent", "would", "send_approvals")},
-        sent=len(run.sent), send_approvals={k: v for k, v in sends.items() if k != "would"})
+        **{k: v for k, v in summary.items() if k not in ("sent", "would")}, sent=len(run.sent))
+    if refused_by is not None:
+        raise refused_by
+    if failed_by is not None:
+        raise failed_by
     return summary
 
 

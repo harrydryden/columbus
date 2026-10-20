@@ -47,8 +47,8 @@ enrol at 12:00, whose tiers the rescore at the end of the run sets.
      no country, no employee count, no industry, a count near a size edge: verify.doubts) is not
      left out (Harry, 6 Oct 2026: "include the visitors the system isn't confident to disqualify in
      the weekly check"): it comes in held, with a doubtful_facts fact, so the weekly hand-check
-     (enrol/hand_check.py) shows it and verify_accounts waits for Harry. Clay's cross-check of HQ
-     state and size (verify.cross_check) is the other lookup once Clay's Accounts function exists.
+     (enrol/hand_check.py) shows it and verify_accounts waits for Harry. (Clay's cross-check of HQ
+     state and size went with Clay: W2-1, 20 Oct 2026.)
      A visitor decided on is not judged again for LOOK_AGAIN_DAYS (credit_ledger notes "judged");
      one the run's credits did not reach is looked up next run.
   5. The rescore (SPEC 9: score runs after site_visits), when the run wrote a fact or an account.

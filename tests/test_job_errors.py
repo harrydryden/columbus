@@ -87,8 +87,6 @@ def test_a_daily_job_s_failure_is_told_on_its_own_day_and_not_again_after_midnig
      "Anthropic (Claude)", "US_OUTBOUND_CLAUDE_API_KEY"),
     ("settings_sync", None, "RefreshError: ('invalid_grant: Invalid JWT Signature.', {'error': 'invalid_grant'})",
      "Google", "US_OUTBOUND_GOOGLE_SERVICE_ACCOUNT_JSON"),
-    ("pick_contacts", None, "ApiError: clay HTTP 401 for /v1/sources: unauthorized",
-     "Clay", "US_OUTBOUND_CLAY_API_KEY"),
 ])
 def test_a_rejected_key_names_the_railway_variable_to_replace(job, detail, error, name, var):
     ctx, t = world()

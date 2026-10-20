@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Callable
 from datetime import datetime
 from functools import lru_cache
 
@@ -90,21 +89,6 @@ GENERIC_LOCAL_PARTS = frozenset(
 )
 # Words that may accompany a generic word without making it a person ("us.sales", "hr-team").
 _GENERIC_QUALIFIERS = frozenset({"us", "usa", "na", "dept", "department", "main", "global", "group", "desk", "the", "our"})
-
-# Redirect targets that are never a company's own site: adopting them as the root would
-# merge unrelated accounts (parked domains, site builders, social profiles, shorteners).
-REDIRECT_IGNORE = frozenset(
-    {
-        "facebook.com", "fb.com", "instagram.com", "linkedin.com", "twitter.com", "x.com", "youtube.com",
-        "tiktok.com", "pinterest.com", "yelp.com", "google.com", "goo.gl", "bit.ly", "linktr.ee",
-        "medium.com", "substack.com", "github.com", "amazon.com", "etsy.com", "ebay.com",
-        "godaddy.com", "secureserver.net", "afternic.com", "dan.com", "sedo.com", "sedoparking.com",
-        "parkingcrew.net", "bodis.com", "hugedomains.com", "namecheap.com", "domainmarket.com", "above.com",
-        "squarespace.com", "wix.com", "wixsite.com", "weebly.com", "wordpress.com", "shopify.com",
-        "myshopify.com", "webflow.io", "carrd.co", "cloudflare.com", "gstatic.com",
-    }
-)
-
 
 @lru_cache(maxsize=1)
 def _extractor() -> tldextract.TLDExtract:
@@ -194,30 +178,6 @@ def is_generic_mailbox(local_part: str | None) -> bool:
         and any(p in GENERIC_LOCAL_PARTS for p in parts)
         and all(p in GENERIC_LOCAL_PARTS or p in _GENERIC_QUALIFIERS for p in parts)
     )
-
-
-def follow_redirect(domain: str, resolver: Callable[[str], str | None]) -> tuple[str | None, str | None]:
-    """(root, alias): follow one redirect from https://{domain}.
-
-    resolver is ctx.clients.public.resolve_redirect in production: one HEAD, returning the
-    absolute Location (or the URL itself). If the redirect lands on a different root, that
-    root is the account's domain and the old one is returned as its alias. Redirects to
-    parking pages, site builders and hosted sites ("acme.wixsite.com"), social profiles or
-    personal mailbox domains are ignored: the company's own domain stays the root.
-    """
-    host = host_of(domain)
-    root = root_domain(host)
-    if not root:
-        return None, None
-    final = resolver(f"https://{host}")
-    new_root = root_domain(final) if final else None
-    if not new_root or new_root == root:
-        return root, None
-    if new_root in REDIRECT_IGNORE or is_personal_domain(new_root) or _extractor()(new_root).is_private:
-        log("redirect_ignored", domain=root, target=new_root)
-        return root, None
-    log("redirect_followed", domain=root, target=new_root)
-    return new_root, root
 
 
 def canonical_domain(store: Store, domain: str | None) -> str | None:

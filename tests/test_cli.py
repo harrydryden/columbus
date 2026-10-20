@@ -19,8 +19,9 @@ from us_outbound.ops import heartbeat as hb
 from us_outbound.settings.model import General, Settings
 from us_outbound.settings.model import Test as CopyTest
 
+# SPEC 9's jobs less public_signals and verify_in_clay, never built and removed with W2-1 (20 Oct 2026).
 SPEC9_JOBS = [
-    "settings_sync", "source_universe", "apollo_signals", "site_visits", "public_signals", "verify_in_clay", "score",
+    "settings_sync", "source_universe", "apollo_signals", "site_visits", "score",
     "pick_contacts", "enrol", "poll_replies", "poll_approvals", "hubspot_readback", "sync_outcomes", "mailbox_health",
     "kill_rules", "daily_post", "monday_readout",
 ]
@@ -112,6 +113,8 @@ def test_dry_run_takes_no_live_flag():
 
 def test_jobs_cover_spec9_and_the_build_additions():
     assert set(SPEC9_JOBS) <= set(cli.JOBS)
+    assert not {"public_signals", "verify_in_clay"} & set(cli.JOBS)
+    assert not any(target.startswith("not built") for target in cli.JOBS.values())
     assert set(cli.JOBS) - set(SPEC9_JOBS) == {"heartbeat_check", "suppression_load", "verify_accounts", "lookalikes",
                                                "hand_check_draw", "read_pages", "apollo_enrich", "apollo_people", "lookalike_leads",
                                                "blackout", "retention", "label_sample_monthly", "capture"}
@@ -130,7 +133,8 @@ def test_jobs_cover_spec9_and_the_build_additions():
     assert cli.JOBS["suppression_load"] == "us_outbound.suppression:load_from_hubspot"
     assert cli.JOBS["poll_replies"] == "us_outbound.replies.poll:run"
     assert cli.JOBS["sync_outcomes"] == "us_outbound.replies.outcomes:run"
-    assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_approvals"
+    # The job keeps its name (EXPECTED, the overlap lock, heartbeat history); the function is the desk's (W2-1).
+    assert cli.JOBS["poll_approvals"] == "us_outbound.replies.desk:poll_desk"
     assert cli.JOBS["hubspot_readback"] == "us_outbound.crm.readback:hubspot_readback"
     assert cli.JOBS["kill_rules"] == "us_outbound.learn.kill_rules:run"
     assert cli.JOBS["blackout"] == "us_outbound.registry.blackout:run"  # Harry, 7 Oct 2026: pause over blackouts
@@ -141,6 +145,26 @@ def test_jobs_cover_spec9_and_the_build_additions():
     # W0, 19 Oct 2026) is expected by the heartbeat check.
     assert schedule.PARKED == {"lookalike_leads"}
     assert set(hb.EXPECTED) == set(cli.JOBS) - {"score"} - schedule.PARKED
+
+
+def test_every_job_s_module_imports_and_names_its_function():
+    """W2-1's acceptance (RS P0-11): the removal was wide enough to miss an importer, so every job's module is
+    imported in a fresh interpreter (no module another test already loaded can hide a broken import), and each job's
+    function is there. The enabled schedule has none of the removed or parked jobs."""
+    import subprocess
+    import sys
+
+    code = ("import importlib, us_outbound.ops.cli as c; "
+            "[importlib.import_module(m) for m in set(c.JOB_MODULES)]; print(len(set(c.JOB_MODULES)))")
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    assert int(done.stdout.strip().splitlines()[-1]) == len({t.partition(":")[0] for t in cli.JOBS.values()})
+    import importlib
+
+    for name, target in cli.JOBS.items():
+        module, _, fn = target.partition(":")
+        assert callable(getattr(importlib.import_module(module), fn)), name
+    assert not {"hand_check_post", "lookalike_leads", "public_signals", "verify_in_clay"} & set(schedule.enabled_names())
 
 
 def test_the_google_cloud_commands_are_gone():
@@ -234,7 +258,8 @@ def test_live_needs_both_the_flag_and_the_setting():
 
 
 @pytest.mark.parametrize("job, message", [
-    ("verify_in_clay", "not built yet (phase 1)"),
+    ("verify_in_clay", "unknown job"),  # never built, and gone with Clay (W2-1)
+    ("public_signals", "unknown job"),  # never built (W2-1)
     ("no_such_job", "unknown job"),
 ])
 def test_unbuilt_jobs_exit_non_zero(job, message, capsys):
@@ -429,7 +454,8 @@ def test_status_prints_jobs_and_mailboxes(capsys):
                                    "finished_at": datetime(2026, 10, 27, 2, 1, tzinfo=UTC), "status": "ok", "dry_run": True}])
     assert h.run("status") == 0
     out = capsys.readouterr().out
-    assert any(line.startswith("Switches: live_sending no · auto_send no (dry: ") for line in out.splitlines())
+    assert any(line.startswith("Switch: live_sending no (dry: ") for line in out.splitlines())
+    assert "auto_send" not in out  # it went with the send approvals (W2-1)
     assert "  1 job ok" in out and "Not run yet: " in out and "poll_replies" in out  # settings_sync ran ok
     assert HANNAH in out and "Campaigns:" in out
     assert "Credit budgets this month (UK time):" in out and "Enrolment this week (Monday to Sunday, UK time):" in out
@@ -526,7 +552,7 @@ def test_test_read_reports_reply_rate_per_version_at_the_read_date(capsys):
     out = capsys.readouterr().out
     result = cli.read_test(h.last, "t1")
     assert result["versions"]["eap-v1"] == {"accounts": 2, "delivered": 1, "replied": 1, "positive": 1, "meetings": 0,
-                                            "edited": 0, "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
+                                            "reply_rate": 1.0, "positive_rate": 1.0, "meeting_rate": 0.0}
     assert result["versions"]["general-v1"]["delivered"] == 2 and result["versions"]["general-v1"]["reply_rate"] == 0.0
     assert result["look"]["final"] and "Read at look 1 (the read date)" in out and "Harry writes the result" in out
     assert h.store.tables["heartbeats"] == []  # a read writes nothing

@@ -37,7 +37,6 @@ from tests.fakes import FakeTransport
 from us_outbound.clients.apollo import Apollo
 from us_outbound.clients.db import MemoryStore, PostgresStore
 from us_outbound.clients.claude import Claude
-from us_outbound.clients.clay import Clay
 from us_outbound.clients.guard import Boundaries, CallRecord, Guard, GuardViolation, Op
 from us_outbound.clients.hubspot import HubSpot
 from us_outbound.clients.http import HttpClient
@@ -57,7 +56,6 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDRESSES = ("hannah@meetspill.org", "sam@meetspill.org", "harry@meetspill.org", "harry@tryspill.org")
 OWNERS = ("Hannah Spalding", "Sam Jackson", "Harry Dryden")
 PIPELINE, FIRST_STAGE = "pipe-spill3", "stage-first"
-CLAY_FUNCTIONS = ("fn-us-accounts", "fn-us-contacts")
 SHEET = "sheet-test"
 ALERT, DEV = "#us-outbound", "#us-outbound-dev"
 ESCALATION = "harry@spill.chat"  # SPEC 11: reply items are forwarded only here
@@ -70,7 +68,6 @@ BOUNDS = Boundaries(
     registry_owners=frozenset(OWNERS),
     hubspot_pipeline_id=PIPELINE,
     hubspot_deal_stage_id=FIRST_STAGE,
-    clay_function_ids=frozenset(CLAY_FUNCTIONS),
     settings_sheet_id=SHEET,
     alert_channel=ALERT,
     dev_channel=DEV,
@@ -109,7 +106,6 @@ READS_OVER_POST = {
         ("people.bulk_match", "/people/bulk_match"),
         ("organizations.bulk_enrich", "/organizations/bulk_enrich"),
     },
-    "clay": {("function.run", "/run")},  # SPEC 8: only the two US Outbound functions (checked below)
 }
 HOSTS = {
     "api.hubapi.com": "hubspot",
@@ -117,7 +113,6 @@ HOSTS = {
     "sheets.googleapis.com": "sheets",
     "api.instantly.ai": "instantly",
     "api.apollo.io": "apollo",
-    "api.clay.com": "clay",
     "hc-ping.com": "watchdog",
 }
 
@@ -393,15 +388,8 @@ def install_routes(t: FakeTransport) -> None:
             fn=lambda r: {"items": [{"id": "E1", "eaccount": r.params["eaccount"], "subject": "Re: hi"}]})
     t.route("GET", "/emails/E1", {"id": "E1", "eaccount": "hannah@meetspill.org", "subject": "Re: hi", "campaign_id": "cmp-h"})
     t.route("POST", "/leads/update-interest-status", {"status": "ok"})
-    # Clay.
-    t.route("POST", "api.clay.com/public/v0/routines/", {"routine_run_id": "R1"})
-    t.route("GET", "/routines/run/R1/results", {"status": "complete", "results": [
-        {"id": "1", "status": "complete", "output": {"clean_name": "Acme Creative"}},
-        {"id": "2", "status": "complete", "output": {"email": JANE, "status": "valid"}},
-    ]})
     # Public.
     t.route("GET", "boards-api.greenhouse.io", {"jobs": []})
-    t.route("HEAD", "acmecreative.com", status=301, headers={"Location": "https://www.acmecreative.com/"})
 
 
 @dataclass
@@ -437,7 +425,6 @@ def make_world(live: bool, tmp: Path) -> World:
         "Sheets": Sheets(guard, t),
         "Instantly": Instantly(guard, t, "tok"),
         "Apollo": Apollo(guard, t, "tok"),
-        "Clay": Clay(guard, t, "tok", sleep=lambda s: None),
         "Public": Public(guard, t),
         "Watchdog": Watchdog(guard, t, WATCHDOG),
         "Claude": Claude(guard, memory, api_key=None, model="claude-haiku-4-5", monthly_cap_usd=10.0, sdk=sdk),
@@ -537,7 +524,6 @@ EXERCISES: dict[str, dict[str, Ex]] = {
             {"General": [{"key": "live_sending", "value": "no"}]}, {"General": ["key", "value"]}),
     },
     "Instantly": {
-        "list_accounts": lambda c, w: c.list_accounts(ADDRESSES),
         "warmup_status": lambda c, w: c.warmup_status(ADDRESSES),
         "enable_warmup": lambda c, w: c.enable_warmup(ADDRESSES),
         "list_campaigns": lambda c, w: c.list_campaigns(),
@@ -581,22 +567,13 @@ EXERCISES: dict[str, dict[str, Ex]] = {
         "job_postings": lambda c, w: c.job_postings("org-1"),
         "search_people": lambda c, w: c.search_people({"person_titles[]": ["Head of People"]}),
         "bulk_match": lambda c, w: c.bulk_match([{"first_name": "Jane", "last_name": "Doe", "domain": "acmecreative.com"}]),
-        "website_visitor_aggregates": lambda c, w: c.website_visitor_aggregates("spill.chat", ["org-1"]),
         "search_website_visitors": lambda c, w: c.search_website_visitors(["spill.chat"], days=30, pages=["/us"]),
         # Pages a caller's own read (9 Oct 2026): every request is still one of the methods above.
         "iter_pages": lambda c, w: list(c.iter_pages(
             lambda page: c.search_organizations({"organization_locations[]": ["Ohio, US"]}, page=page), max_pages=2)),
     },
-    "Clay": {
-        "run_function": lambda c, w: c.run_function(CLAY_FUNCTIONS[0], {"domain": "acmecreative.com"}),
-        "run_function_batch": lambda c, w: c.run_function_batch(
-            CLAY_FUNCTIONS[1], {"1": {"full_name": "Jane Doe"}, "2": {"full_name": "John Roe"}}),
-        "write_import_csv": lambda c, w: c.write_import_csv([{"domain": "acmecreative.com"}], w.tmp / "import.csv"),
-        "read_export_csv": lambda c, w: c.read_export_csv(w.tmp / "import.csv"),
-    },
     "Public": {
         "get": lambda c, w: c.get("https://boards-api.greenhouse.io/v1/boards/acme/jobs", params={"content": "true"}),
-        "resolve_redirect": lambda c, w: c.resolve_redirect("https://acmecreative.com"),
         "site_get": lambda c, w: c.site_get("https://www.acmecreative.com/careers", "acmecreative.com"),
     },
     "Claude": {
@@ -611,7 +588,7 @@ EXERCISES: dict[str, dict[str, Ex]] = {
     "PostgresStore": _store_exercises(),
 }
 
-CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Clay, Public, Watchdog,
+CLIENT_CLASSES = {cls.__name__: cls for cls in (HubSpot, Slack, Sheets, Instantly, Apollo, Public, Watchdog,
                                                 Claude, MemoryStore, PostgresStore)}
 # HttpClient's own plumbing: request() is the guarded path every method above goes through
 # (the negative cases call it directly), and headers() builds auth headers.
@@ -692,11 +669,13 @@ def test_live_writes_stay_inside_the_allowed_containers(live_world):
     assert sent["apollo"] == 0 and sent["public"] == 0 and sent["claude"] == 0
 
 
-def test_clay_runs_only_the_two_us_outbound_functions(live_world):
-    runs = [c for c in live_world.guard.calls if c.system == "clay" and c.action == "function.run"]
-    assert runs and {c.target for c in runs} <= set(CLAY_FUNCTIONS)
-    assert all(re.search(r"/routines/function:fn-us-(accounts|contacts)/run$", r.url)
-               for r in live_world.transport.requests if r.url.endswith("/run"))
+def test_clay_is_no_system_the_guard_knows(live_world):
+    """Clay was removed (Harry's D18; W2-1, 20 Oct 2026): no client calls it, and a call naming it is refused as an
+    unknown system, live or dry, read or write."""
+    assert not [c for c in live_world.guard.calls if c.system == "clay"]
+    for op in (Op("function.run", target="fn-us-accounts"), Op("function.get"), Op("table.write", write=True)):
+        with pytest.raises(GuardViolation, match="unknown system 'clay'"):
+            live_world.guard.authorize("clay", op)
 
 
 def test_every_request_pairs_with_an_authorized_call(live_world):
@@ -822,7 +801,7 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     "instantly EU leads list": lambda w: w.clients["Instantly"].list_leads(EU_CAMPAIGN),
     "instantly emails of a non-registry account": lambda w: w.clients["Instantly"].list_emails(["anna@spill.eu"]),
     "instantly emails unfiltered": lambda w: w.clients["Instantly"].list_emails([]),
-    "instantly accounts outside the registry": lambda w: w.clients["Instantly"].list_accounts(["anna@spill.eu"]),
+    "instantly accounts outside the registry": lambda w: w.clients["Instantly"].warmup_status(["anna@spill.eu"]),
     "instantly warmup outside the registry": lambda w: w.clients["Instantly"].enable_warmup(["anna@spill.eu"]),
     # The sender name (Harry, 5 Oct 2026): a registry mailbox only, and only a mailbox owner's full name.
     "instantly sender name outside the registry": lambda w: w.clients["Instantly"].set_sender_name(
@@ -863,10 +842,9 @@ NEGATIVE: dict[str, Callable[[World], Any]] = {
     # Apollo: read only.
     "apollo contact save": lambda w: w.clients["Apollo"].request("POST", "/contacts", Op("contacts.create", write=True)),
     "apollo label (not an allowed read)": lambda w: w.clients["Apollo"].request("GET", "/labels", Op("labels.list")),
-    # Clay: only the two US Outbound functions.
-    "clay Work Email function": lambda w: w.clients["Clay"].run_function("t_0tk0v4lhJ895hhhhTHJ", {"domain": "a.com"}),
-    "clay Company Latest Funding function": lambda w: w.clients["Clay"].run_function("t_0tk0v4ehpQ6WaeuCoQf", {}),
-    "clay table write": lambda w: w.clients["Clay"].request("POST", "/tables/t1/rows", Op("table.write", write=True)),
+    # Public sources: a HEAD to follow a redirect went with resolve_redirect (W2-1); one is refused now.
+    "public HEAD on a prospect's domain": lambda w: w.clients["Public"].request(
+        "HEAD", "https://acmecreative.com", Op("resolve_redirect", target="acmecreative.com"), raw=True),
     # The outside watchdog (Harry, 7 Oct 2026): a GET of the configured ping URL or its /fail form only.
     "watchdog ping to another URL": lambda w: Watchdog(w.guard, w.transport, "https://hc-ping.com/someone-else").ping(),
     "watchdog ping to a look-alike of the URL": lambda w: Watchdog(w.guard, w.transport, WATCHDOG + "/start").ping(),

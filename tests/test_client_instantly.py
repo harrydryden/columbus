@@ -262,7 +262,7 @@ def test_list_emails_one_filtered_call_per_account_and_drops_others():
     assert [list(c.detail["accounts"]) for c in guard.calls] == [redact([a]) for a in (HANNAH, HANNAH, SAM)]
 
 
-def test_list_accounts_and_warmup_status_filtered_to_registry():
+def test_warmup_status_filtered_to_registry():
     inst, t, _ = make()
     t.route("GET", f"/accounts/{HANNAH}", body={
         "email": HANNAH, "status": 1, "warmup_status": 1, "stat_warmup_score": 98,
@@ -272,8 +272,7 @@ def test_list_accounts_and_warmup_status_filtered_to_registry():
     t.route("POST", "/accounts/warmup-analytics", body={
         "aggregate_data": {HANNAH: {"health_score": 97, "health_score_label": "Excellent"}, OUTSIDER: {"health_score": 1}},
     })
-    assert [a["email"] for a in inst.list_accounts([HANNAH, SAM])] == [HANNAH]
-    status = inst.warmup_status([HANNAH, SAM])
+    status = inst.warmup_status([HANNAH, SAM])  # (list_accounts, never called, went with W2-1)
     assert set(status) == {HANNAH, SAM}
     assert status[HANNAH]["warmup_enabled"] is True
     assert (status[HANNAH]["warmup_score"], status[HANNAH]["health_score_label"], status[HANNAH]["status"]) == (98, "Excellent", "active")
@@ -286,7 +285,7 @@ def test_list_accounts_and_warmup_status_filtered_to_registry():
     with pytest.raises(GuardViolation):
         inst.warmup_status([OUTSIDER])
     with pytest.raises(GuardViolation):
-        inst.list_accounts([HANNAH, OUTSIDER])
+        inst.warmup_status([HANNAH, OUTSIDER])
     assert t.requests == []
 
 

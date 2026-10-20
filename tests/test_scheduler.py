@@ -597,7 +597,7 @@ SPEC9_CRONS = {
     # Build, 1 Oct 2026: source_universe and apollo_signals each weekday (SPEC 9: the 1st, and Mondays).
     "settings_sync": "0 2 * * *", "source_universe": "0 3 * * 1-5",
     "apollo_signals": "10 5 * * 1-5",  # W1-3a, 19 Oct 2026: after verify_accounts and apollo_enrich (03:30 before)
-    "site_visits": "0 6 * * *", "public_signals": "0 4 * * 1", "verify_in_clay": "30 4 * * 1-5", "score": "",
+    "site_visits": "0 6 * * *", "score": "",  # public_signals and verify_in_clay: never built, removed (W2-1)
     "pick_contacts": "30 5 * * 1-5", "enrol": "0 12 * * 1-5", "poll_replies": "*/15 * * * *",
     "poll_approvals": "*/5 * * * *", "hubspot_readback": "*/15 * * * *", "sync_outcomes": "7-59/15 * * * *",
     "mailbox_health": "0 7 * * *", "kill_rules": "0 * * * *",

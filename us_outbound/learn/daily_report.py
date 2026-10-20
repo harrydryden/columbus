@@ -1,23 +1,11 @@
-"""The daily post's funnel sections (learn/daily_post.py): Approvals, Found, Pipeline and To improve.
+"""The daily post's funnel sections (learn/daily_post.py): Found, Pipeline and To improve.
 
 Harry, 2 Oct 2026: the daily report should carry "the number of emails sent, the number of companies
 and contacts identified, the pipeline of companies to send to, the [un]subscribes, the replies, and
 anything else important to surface to make the system better over time". Sends, replies and
 unsubscribes were already in the post; this module adds the rest. It only reads the database, and
-only in aggregate: no company or person is named here.
-
-Approvals: the Slack send approvals, where General auto_send = no makes every email wait for an
-approver's ✅. It reads the contract enrol/approvals/ writes:
-  * hitl_items, kind send_approval: status open (payload.state waiting, rejected or editing),
-    sending or handled; created_at, handled_at; payload outcome, owner, copy_version, industry,
-    industry_group, role, tier, opener_source, edited and send_day;
-  * events, type send_approval: approval is approved, approved_edited, contact_rejected,
-    company_rejected, expired or blocked, with approved_by, account_id, contact_id and occurred_at.
-For the period: approved (and how many after an edit), contact declined, company dropped, expired
-and blocked; how many wait now, by state, and how long the oldest has waited; and the General
-auto_send. With auto_send = yes and no approval ever made, the section is left out.
-Each send-approval row, with its payload, is read once: the items not yet handled with the other
-open items (Rows.load, filtered by status in the query), and the handled ones only for To improve.
+only in aggregate: no company or person is named here. (Its Approvals section, the Slack send approvals, went
+with them: W2-1, 20 Oct 2026.)
 
 Found, in the period daily_post.period sets:
   * companies: accounts first seen in the period (accounts.first_seen, which the front door sets,
@@ -26,15 +14,15 @@ Found, in the period daily_post.period sets:
     rescore), so the tiers are those of the new accounts as they stand at 09:00;
   * verified: the verify_accounts runs that started in the period, from their heartbeat summaries
     (heartbeats.detail.verified). The summary keeps no list, so this is a total, not by tier;
-  * contacts: contacts created in the period (contacts.created_at, which pick_contacts and the
-    Clay waterfall set) by email source (apollo, clay) and by role;
+  * contacts: contacts created in the period (contacts.created_at, which pick_contacts sets) by email source and
+    by role;
   * no suitable contact: accounts whose contact_pick fact in the period (contacts/pick.py) says
     none, with the top reasons.
 
 Pipeline, now:
   * ready to send: enrol.candidates as the enrol job calls it (verified, Priority, Standard or
     Control, domain not suppressed or a partner, industry on, a sendable contact, not enrolled
-    before, and no send approval waiting: enrol/approvals.waiting); by tier, and by the Focus
+    before); by tier, and by the Focus
     tab's groups (enrol/focus.py), or by industry group when the tab is empty;
   * supply: ready accounts ÷ today's number before the ready accounts limit it (the smaller of
     the weekly target's share for today and sending capacity, limits.py); on a day with neither
@@ -52,16 +40,12 @@ Pipeline, now:
 
 To improve: the last LEARN_DAYS days, at most MAX_IMPROVE lines, each only once there is enough
 data to say something, and as counts, not conclusions:
-  * where ❌ concentrates: send approvals declined (contact or company) by industry group, role and
-    opener source, once there are MIN_DECISIONS decisions and MIN_DECLINES declines; a sign that
-    targeting or scoring is off there;
-  * copy rows edited before approval, each named once edited MIN_EDITS times: fix them on the Copy tab;
   * replies, opener against holdout (contacts.opener_arm), once each arm has MIN_PER_ARM contacts
     emailed (step 1 sent and not bounced); email 1's personal subject against the Copy row's
     (contacts.subject_arm; Harry, 5 Oct 2026) the same way; by angle and by copy version, for those that have
     MIN_PER_ARM each, once two can be compared. A human reply is any but out-of-office, as the
     kill rules count it, at any time after step 1, so recent sends have had less time to reply;
-  * bounces by email source (apollo, clay): of the contacts sent step 1, how many bounced, for a
+  * bounces by email source (kill_rules.SOURCES): of the contacts sent step 1, how many bounced, for a
     source with MIN_PER_ARM;
   * data gaps: verified accounts with no size band, accounts waiting for verification with none,
     the main reason pick_contacts found nobody suitable, and a pointer to the page reader's own
@@ -79,7 +63,7 @@ import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from us_outbound import fmt, labels, verify
@@ -96,26 +80,14 @@ from us_outbound.learn import kill_rules
 from us_outbound.limits import Limits
 from us_outbound.replies import kinds
 from us_outbound.scoring import score, tiers
-from us_outbound.settings.model import CLAY_REQUIRED, TIERS, Settings
+from us_outbound.settings.model import TIERS, Settings
 from us_outbound.timeparse import utc, utc_strict
 
-# The send-approval contract (hitl_items.kind and events.type).
-KIND = "send_approval"
-OPEN_STATUSES = ("open", "escalated")  # waiting for an approver; payload.state says how
-SENDING = "sending"  # approved, going out now
-HANDLED = "handled"  # closed: approved, declined, expired or blocked
-APPROVED, EDITED = "approved", "approved_edited"
-CONTACT_REJECTED, COMPANY_REJECTED = "contact_rejected", "company_rejected"
-EXPIRED, BLOCKED = "expired", "blocked"
-DECLINED = (CONTACT_REJECTED, COMPANY_REJECTED)
-DECIDED = (APPROVED, EDITED, *DECLINED)
+OPEN_STATUSES = ("open", "escalated")  # hitl_items waiting for a person
 
 # To improve.
 LEARN_DAYS = 90  # the window it reads: recent enough to tune on, long enough to reach the minimums below
 MAX_IMPROVE = 6  # lines at most, the "too early" line last
-MIN_DECISIONS = 20  # send-approval decisions before naming where declines concentrate
-MIN_DECLINES = 3  # ... and declines among them
-MIN_EDITS = 3  # edits before approval before a copy row is named
 MIN_PER_ARM = 50  # contacts emailed per arm (opener, holdout; personal, copy; an angle, a copy version, an email source)
 TOP = 3  # values named per list
 
@@ -133,11 +105,6 @@ SOURCES_POINTER = " The page reader's coverage is under Sources."  # the full po
 def _in(v: Any, start: datetime, end: datetime) -> bool:
     t = utc(v)
     return t is not None and start <= t < end
-
-
-def _payload(row: Mapping[str, Any]) -> Mapping[str, Any]:
-    p = row.get("payload")
-    return p if isinstance(p, Mapping) else {}
 
 
 def _lower(v: Any) -> str:
@@ -158,8 +125,6 @@ class Rows:
     contacts: list[dict]
     no_contact: dict[str, str]  # account_id -> why nobody suitable was found (pick.no_contact)
     open_items: list[dict] = field(default_factory=list)  # hitl_items open or escalated, every kind
-    sending: list[dict] = field(default_factory=list)  # send approvals being added to Instantly now
-    decisions: list[dict] = field(default_factory=list)  # events of type send_approval
     by_account: dict[str, dict] = field(default_factory=dict)
     by_contact: dict[str, dict] = field(default_factory=dict)
 
@@ -167,18 +132,11 @@ class Rows:
         self.by_account = {str(a.get("account_id")): a for a in self.accounts}
         self.by_contact = {str(c.get("contact_id")): c for c in self.contacts}
 
-    @property
-    def pending(self) -> list[dict]:
-        """Send approvals not yet handled: open (waiting for an approver) or sending."""
-        return [i for i in self.open_items if i.get("kind") == KIND] + self.sending
-
     @classmethod
     def load(cls, ctx: Context) -> Rows:
         store = ctx.store
         return cls(store.select("accounts"), store.select("contacts"), pick.no_contact(store, ctx.now),
-                   open_items=store.select("hitl_items", {"status": list(OPEN_STATUSES)}),
-                   sending=store.select("hitl_items", {"kind": KIND, "status": SENDING}),
-                   decisions=store.select("events", {"type": KIND}))
+                   open_items=store.select("hitl_items", {"status": list(OPEN_STATUSES)}))
 
 
 def headline(short: str, nums: Mapping[str, Any]) -> str:
@@ -187,39 +145,6 @@ def headline(short: str, nums: Mapping[str, Any]) -> str:
             f"({nums.get('positive', 0)} positive) · {fmt.plural(nums.get('unsubscribed', 0), 'unsubscribe')} · "
             f"{fmt.plural(nums.get('found_companies', 0), 'company', 'companies')}, "
             f"{fmt.plural(nums.get('found_contacts', 0), 'contact')} found · {nums.get('ready_to_send', 0)} ready to send")
-
-
-# -- Approvals -------------------------------------------------------------------------------------
-
-
-def approvals(ctx: Context, rows: Rows, start: datetime, end: datetime) -> tuple[list[str], dict[str, Any]]:
-    """The Approvals section and its numbers; ([], {}) with auto_send on and no send approval ever made."""
-    items, events = rows.pending, rows.decisions
-    auto = ctx.settings.general.auto_send
-    if auto and not items and not events:  # approvals off and none ever made (each close is an event)
-        return [], {}
-    state = "auto_send: yes, so emails go without a ✅" if auto else "auto_send: no, so every email waits for a ✅ in Slack"
-    got = Counter(str(e.get("approval") or "") for e in events if _in(e.get("occurred_at"), start, end))
-    approved = got[APPROVED] + got[EDITED]
-    lines = [f"*Approvals* · {state}",
-             f"  Approved {approved}" + (f" ({got[EDITED]} after an edit)" if got[EDITED] else "")
-             + f" · contact declined {got[CONTACT_REJECTED]} · company dropped {got[COMPANY_REJECTED]}"
-             f" · expired {got[EXPIRED]} · blocked {got[BLOCKED]}"]
-    waiting = [i for i in items if i.get("status") in OPEN_STATUSES]
-    sending = sum(1 for i in items if i.get("status") == SENDING)
-    also = f" · sending {sending}" if sending else ""
-    if waiting:
-        states = Counter(str(_payload(i).get("state") or "waiting") for i in waiting)
-        oldest = min((t for i in waiting if (t := utc(i.get("created_at"))) is not None), default=None)
-        age = f"; the oldest has waited {fmt.hours(ctx.now - oldest)}" if oldest else ""
-        lines.append(f"  Waiting now: {len(waiting)} ({fmt.counts(states)}){age}{also}.")
-    else:
-        lines.append(f"  Waiting now: none{also}.")
-    nums = {"auto_send": auto, "approved": approved, "approved_edited": got[EDITED],
-            "contact_declined": got[CONTACT_REJECTED], "company_dropped": got[COMPANY_REJECTED],
-            "approvals_expired": got[EXPIRED], "approvals_blocked": got[BLOCKED],
-            "approvals_waiting": len(waiting), "approvals_sending": sending}
-    return lines, nums
 
 
 # -- Found -----------------------------------------------------------------------------------------
@@ -264,9 +189,7 @@ def found(ctx: Context, rows: Rows, start: datetime, end: datetime, label: str) 
         line += f" ({fmt.counts(by_source)}); tiers now: {fmt.counts(by_tier, order=(*TIERS, NOT_SCORED))}"
     lines.append(line)
     verified = verified_in(ctx.store, start, end)
-    if ctx.settings.general.clay_verification == CLAY_REQUIRED:
-        lines.append(f"  Verified: {verified or 0} (clay_verification is required, so accounts wait for Clay)")
-    elif verified is None:
+    if verified is None:
         lines.append("  Verified: 0 (verify_accounts did not run)")
     else:
         lines.append(f"  Verified: {verified}")
@@ -347,14 +270,11 @@ def parked_line(parked: Mapping[str, int]) -> str:
     return f"Parked: {total:,} ({', '.join(p for p in parts if p)})"
 
 
-def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set[str],
-             lim: Limits) -> tuple[list[str], dict[str, Any]]:
+def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], lim: Limits) -> tuple[list[str], dict[str, Any]]:
     """The Pipeline section: what is ready to send now, and what stands behind it."""
     s = ctx.settings
     tiers_ = Counter(str(c.account.get("tier")) for c in ready)
     line = f"  Ready to send: {len(ready)} (" + ", ".join(f"{t} {tiers_.get(t, 0)}" for t in queue.QUEUE_TIERS) + ")"
-    if awaiting:
-        line += f"; {len(awaiting)} more wait for a ✅"
     lines = ["*Pipeline* · now", line]
     if ready:
         lines.append(f"    {_groups(ready, s)}")
@@ -372,8 +292,6 @@ def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set
     notes = []
     if doubtful:
         notes.append(f"{doubtful} with doubtful Apollo facts, for the hand-check")
-    if s.general.clay_verification == CLAY_REQUIRED:
-        notes.append("clay_verification is required, so they wait for Clay")
     lines.append(f"  Waiting for verification: {len(unverified)}" + (f" ({'; '.join(notes)})" if notes else ""))
     parked = Counter(str(a.get("status_reason") or labels.INDUSTRY_OFF) for a in rows.accounts
                      if a.get("status") == labels.PARKED)
@@ -382,7 +300,7 @@ def pipeline(ctx: Context, rows: Rows, ready: Sequence[Candidate], awaiting: set
     seq = sequence_states(ctx, rows.contacts)
     lines.append(f"  In sequence: {fmt.plural(seq[IN_SEQUENCE], 'account')} with follow-ups to come · finished {seq[FINISHED]}"
                  f" · stopped {seq[STOPPED]} (reply, bounce or unsubscribe)")
-    nums = {"ready_to_send": len(ready), "ready_by_tier": dict(tiers_), "awaiting_approval": len(awaiting),
+    nums = {"ready_to_send": len(ready), "ready_by_tier": dict(tiers_),
             "supply_days": supply, "supply_pace": pace, "waiting_for_contact": len(need), "no_suitable_contact": stuck,
             "waiting_for_verification": len(unverified), "doubtful_facts": doubtful, "in_sequence": seq[IN_SEQUENCE],
             "parked": sum(parked.values()), "parked_by_reason": dict(parked),
@@ -421,67 +339,6 @@ class _Emailed:
             if _lower(r.get("reply_class")) in WARM_REPLY_CLASSES:
                 warm.add(cid)
         return cls(step1, {cid for cid, s in step1.items() if not s.bounced}, replied, warm)
-
-
-def _approval_index(items: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], Mapping[str, Any]]:
-    """("contact" or "account", id) -> the payload of its latest send_approval item."""
-    out: dict[tuple[str, str], Mapping[str, Any]] = {}
-    epoch = datetime(1970, 1, 1, tzinfo=UTC)
-    for i in sorted(items, key=lambda i: utc(i.get("created_at")) or epoch):
-        p = _payload(i)
-        if i.get("contact_id"):
-            out[("contact", str(i["contact_id"]))] = p
-        if i.get("account_id"):
-            out[("account", str(i["account_id"]))] = p
-    return out
-
-
-def _segment(e: Mapping[str, Any], key: str, index: Mapping[tuple[str, str], Mapping[str, Any]], rows: Rows,
-             settings: Settings) -> str:
-    """The event's industry_group, role, opener_source or copy_version: its item's payload, else the tables."""
-    cid, aid = str(e.get("contact_id") or ""), str(e.get("account_id") or "")
-    p = index.get(("contact", cid)) or index.get(("account", aid)) or {}
-    v = str(p.get(key) or "").strip()
-    if v:
-        return v
-    if key == "industry_group":
-        return settings.industry_group_of(rows.by_account.get(aid, {}))
-    return str(rows.by_contact.get(cid, {}).get(key) or "").strip()
-
-
-def _declines(ctx: Context, rows: Rows, since: datetime, early: list[str]) -> list[str]:
-    """Where ❌ concentrates, and the copy rows edited most before approval."""
-    events = [e for e in rows.decisions
-              if (t := utc(e.get("occurred_at"))) is not None and t >= since and e.get("approval") in DECIDED]
-    if not events:
-        return []
-    # A decision closes its item, so the handled items carry the payloads (read once, only here).
-    index = _approval_index(ctx.store.select("hitl_items", {"kind": KIND, "status": HANDLED}))
-    out: list[str] = []
-    declined = [e for e in events if e.get("approval") in DECLINED]
-    if len(events) < MIN_DECISIONS:
-        early.append(f"❌ by segment, {len(events)} of {MIN_DECISIONS} decisions")
-    elif len(declined) >= MIN_DECLINES:
-        parts = []
-        for key, label in (("industry_group", ""), ("role", ""), ("opener_source", "opener ")):
-            total = Counter(_segment(e, key, index, rows, ctx.settings) for e in events)
-            bad = Counter(_segment(e, key, index, rows, ctx.settings) for e in declined)
-            bad.pop("", None)
-            if bad:
-                top = min(bad, key=lambda v: (-bad[v], -bad[v] / total[v], v))
-                parts.append(f"{label}{top} {bad[top]} of {total[top]}")
-        where = (f", most in {', '.join(parts)}. *What to do:* check who we aim at and how we score them there "
-                 "(Industries, Roles and Signals tabs)") if parts else ""
-        out.append(f"  Declined at approval (❌): {len(declined)} of {len(events)} emails{where}.")
-    approved = [e for e in events if e.get("approval") in (APPROVED, EDITED)]
-    total = Counter(_segment(e, "copy_version", index, rows, ctx.settings) for e in approved)
-    edits = Counter(_segment(e, "copy_version", index, rows, ctx.settings) for e in approved if e.get("approval") == EDITED)
-    edits.pop("", None)
-    most = [(v, n) for v, n in sorted(edits.items(), key=lambda kv: (-kv[1], kv[0])) if n >= MIN_EDITS][:TOP]
-    if most:
-        out.append("  Edited before approval: " + ", ".join(f"copy {v} {n} of {total[v]} times" for v, n in most)
-                   + ". *What to do:* fix that copy on the Copy tab.")
-    return out
 
 
 def _cut(m: _Emailed, rows: Rows, key: str) -> list[tuple[str, int, int]]:
@@ -599,7 +456,6 @@ def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:
     """The To improve section: what the data says to tune, once there is enough of it."""
     since = ctx.now - timedelta(days=LEARN_DAYS)
     early: list[str] = []
-    approval_lines = _declines(ctx, rows, since, early)
     m = _Emailed.read(ctx, since)
     if m.step1:
         opener, cuts = _replies(m, rows, early)
@@ -608,7 +464,7 @@ def to_improve(ctx: Context, rows: Rows) -> tuple[list[str], dict[str, Any]]:
         opener, cuts, bounces = [], [], []
         early.append(f"no email sent in the last {LEARN_DAYS} days")
     # In this order, so that past MAX_IMPROVE the cuts by angle and copy version go first, then "too early".
-    body = [*approval_lines, *_review_ready(ctx), *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
+    body = [*_review_ready(ctx), *opener, *bounces, *_gaps(rows), *_tier_mix(ctx, rows), *cuts]
     if early:
         body.append("  Too early to compare: " + "; ".join(early) + ".")
     body = body[:MAX_IMPROVE]

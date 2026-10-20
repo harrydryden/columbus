@@ -106,8 +106,7 @@ class RequestsTransport:
         import requests
 
         retry = RETRY_STATUSES if idempotent else {RATE_LIMITED}
-        # HEAD is only used to see one redirect (Public.resolve_redirect), so never follow it;
-        # and never let a redirect carry a key to another host.
+        # A HEAD never follows a redirect, and a redirect never carries a key to another host.
         follow = (self.follow_redirects and method.upper() != "HEAD"
                   and not any(k.lower() in CREDENTIAL_HEADERS for k in headers))
         delay = self.backoff

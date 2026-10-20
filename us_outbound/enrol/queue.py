@@ -6,9 +6,8 @@ Today's number is the smallest of (Harry, 30 Sep 2026):
   * sending capacity: each sender's free slots today, from the follow-ups already due
     (enrol/capacity.py), summed over senders;
   * ready accounts: verified accounts with a sendable contact.
-SPEC 9 also listed the Clay and Apollo budgets here. The enrol job spends neither, so they
-are applied where credits are spent (source_universe, verify_in_clay, pick_contacts); when
-they bind, it shows up here as too few ready accounts, and ops/limits.py says so.
+SPEC 9 also listed the credit budgets here. The enrol job spends none, so they are applied where credits are spent
+(source_universe, pick_contacts); when they bind, it shows up here as too few ready accounts, and limits.py says so.
 Of that number, explore_share comes from the random explore arm (Harry's D7, 19 Oct 2026, in place of the Control
 tier's control_share): the accounts pick_contacts drew at random from the eligible queue, within the Focus shares
 (split), and stamped accounts.arm = random. The rest are taken in order: tier (until the tiers are retired), score,

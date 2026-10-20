@@ -45,7 +45,7 @@ campaign's last one finishes.
    `us-outbound campaigns ensure --fix --live`, or apply it to everyone in flight with
    `us-outbound campaigns ensure --fix --in-flight --live` (logged, with the lead count; it shows in the
    readout's *Settings changes*). `mailbox_health` and `mailbox check --fix` never apply these. Until then,
-   the morning mailbox check says what is held, `golive` warns, and `start` goes ahead (the campaign is
+   the morning mailbox check says what is held, the Campaigns check in `us-outbound status` warns, and `start` goes ahead (the campaign is
    consistent for its leads in flight). A step that has lost Instantly's unsubscribe link is put back for
    everyone at once: the opt-out is never held.
 3. **Safety always applies to everyone:** unsubscribes, bounces, complaints, kill rules, `stop`, the
@@ -56,7 +56,8 @@ campaign's last one finishes.
 5. **DDL is additive** (`CREATE … IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`; `ops/ddl.py` refuses anything
    else) and is applied by `us-outbound db apply --live` on deploy. New columns are nullable; code reads NULL
    as "before this existed" (contacts enrolled before 8 Oct 2026 are "unstamped").
-6. **Dry-run first**, then `us-outbound golive`. A deploy while enrol (12:00 UK) or poll_approvals runs is
+6. **Dry-run first**, then `us-outbound status` (its go-live checks: Copy, Campaigns, Watchdog; `golive` went with
+   W2-1, 20 Oct 2026). A deploy while enrol (12:00 UK) or poll_approvals runs is
    fine: jobs are idempotent and the scheduler drains for 30 seconds. **Not from 06:55 to 07:15 UK**
    (whole-wave review, 20 Oct 2026): mailbox_health runs only at 07:00, the scheduler does not backfill a minute
    it missed, and a run cut off after 25 s stops part-way through its Instantly writes (warmup, daily limits,
@@ -72,11 +73,12 @@ campaign's last one finishes.
 
 ## The config version
 
-Each contact carries `config_version`, `code_sha` and `copy_hash` (`config_version.py`, written by enrol and by a
-send approval's ✅). The version is a 12-character hash of: the versions in force of the Signals, Angles,
+Each contact carries `config_version`, `code_sha` and `copy_hash` (`config_version.py`, written by enrol; and by a
+send approval's ✅ until W2-1 removed them, 20 Oct 2026). The version is a 12-character hash of: the versions in force of the Signals, Angles,
 Industries, Roles and Overrides tabs; each sendable Copy row's content hash; the General keys that shape what is
 sent (`config_version.CONTENT_KEYS`: the subject and opener keys, `price_from`, the links, `email_format`,
-`send_window`, `utm_links`, the second-contact keys, `label_check`); the running copy test (`copy_test`: an `ab` or
+`send_window`, `utm_links`, `label_check`; the second-contact and `opener_focus` keys until W2-1 retired them, which
+moved every version once, 20 Oct 2026); the running copy test (`copy_test`: an `ab` or
 `variant` test's id, arms and, for a variant, its change and texts); the signature template; the campaign
 constants; and the label check's `labels_hash` (its prompt version, label list and definitions). An edit to
 `live_sending`, the Claude cap, `weekly_enrol_cap`, `explore_share`, a draft Copy row or a mailbox's status starts no

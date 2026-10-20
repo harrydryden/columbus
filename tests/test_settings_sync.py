@@ -105,7 +105,7 @@ def test_first_sync_stores_one_version_per_row(ctx, sheet, fake_score):
     # then each optional tab on its own (a missing tab is a 400).
     assert ctx.clients.sheets.reads == [(TEST_SHEET_ID, ["Definition suggestions"]),
                                         (TEST_SHEET_ID, [t for t in TABS if t not in OPTIONAL_TABS]),
-                                        (TEST_SHEET_ID, ["Focus"]), (TEST_SHEET_ID, ["Named accounts"])]
+                                        (TEST_SHEET_ID, ["Focus"])]  # Named accounts went with W2-1
     rows = [r for r in _rows(ctx) if r["tab"] in TABS]
     assert len(rows) == _keyed_rows(sheet) == summary["rows_opened"]
     assert all(r["effective_from"] == r["synced_at"] == T1 and r["effective_to"] is None for r in _rows(ctx))
@@ -331,6 +331,24 @@ def test_the_sync_lists_the_general_rows_it_does_not_read_and_posts_the_unknown_
     assert sync.WARNING_HEAD in post[1] and "unknown key 'live_sendng'" in post[1] and "postal_address" not in post[1]
     ctx.now = T2
     assert sync.run(ctx)["warnings_posted"] == [] and len(ctx.clients.slack.posts) == 1  # the same week
+
+
+def test_the_live_sheet_s_retired_keys_sync_with_no_error_and_are_listed_never_posted(ctx, sheet):
+    """W2-1: the live General tab still has auto_send = yes, second_contact = no and clay_verification = skip (and
+    15 other keys W2-1 and W1-C retired). The sync brings the sheet in with no error and no unusable tab, lists each
+    retired row once among its warnings (the build's own rows plus these 3 = 3 warnings), posts none (a retired row
+    is harmless), and none is read into the settings in force."""
+    for key, value in (("auto_send", "yes"), ("second_contact", "no"), ("clay_verification", "skip")):
+        sheet["General"].append({"key": key, "value": value, "note": ""})
+    summary = sync.run(ctx)
+    assert (summary["rejected"], summary["unusable"], summary["errors"]) == ([], [], 0)
+    warned = summary["general_warnings"]
+    assert len(warned) == 3 and all(sum(f"'{k}'" in w for w in warned) == 1
+                                    for k in ("auto_send", "second_contact", "clay_verification"))
+    assert summary["warnings_posted"] == [] and ctx.clients.slack.posts == []
+    settings, errors = sync.load_current(ctx.store)
+    assert settings is not None and not any(errors.values())
+    assert not any(hasattr(settings.general, k) for k in ("auto_send", "second_contact", "clay_verification"))
 
 
 def test_a_failed_alert_is_raised_after_the_writes_and_rescore(ctx, sheet, fake_score):

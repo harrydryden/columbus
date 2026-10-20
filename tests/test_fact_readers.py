@@ -16,13 +16,13 @@ from typing import Any
 import pytest
 
 from tests.test_scoring import sig
-from us_outbound import clay_cross_check, labels, verify
+from us_outbound import labels, verify
 from us_outbound.contacts import pick
-from us_outbound.enrol import approvals, openers
+from us_outbound.enrol import openers
 from us_outbound.learn import daily_report
 from us_outbound.ops import relabel
 from us_outbound.scoring import score
-from us_outbound.sources import apollo_enrich, apollo_people, lookalikes, named, pages, site_visits
+from us_outbound.sources import apollo_enrich, apollo_people, lookalikes, pages, site_visits
 
 NOW = datetime(2026, 10, 27, 12, 0, tzinfo=UTC)  # the ctx fixture's now
 TODAY = date(2026, 10, 27)
@@ -148,20 +148,10 @@ def openers_newest_leader(ctx, specs):
         "apollo_person_id")
 
 
-def openers_focus_material(ctx, specs):
-    return openers.focus_material([row(t, at, "apollo_org", "description", t) for t, at in specs])[1] or None
-
-
 def openers_person_id(ctx, specs):
     return openers.contact_person_id({"contact_id": "c1"}, [
         row(t, at, pick.SOURCE, pick.OUTCOME_FACT, {"contact_id": "c1", "apollo_person_id": t}) for t, at in specs
     ]) or None
-
-
-def openers_stored_focus(ctx, specs):
-    v = openers.stored_focus([row(t, at, openers.FOCUS_SOURCE, openers.FOCUS_FACT, {"tag": t}) for t, at in specs],
-                             NOW)
-    return v and v["tag"]
 
 
 def verify_doubts(ctx, specs):
@@ -176,31 +166,15 @@ def pick_outcomes(ctx, specs):
     return got and got[1]["tag"]
 
 
-def clay_answers(ctx, specs):
-    stored(ctx, [row(t, at, clay_cross_check.SOURCE, clay_cross_check.FACT, {"tag": t}) for t, at in specs])
-    return clay_cross_check.answers(ctx.store, ["a1"]).get("a1", {}).get("tag")
-
-
 def lookalikes_latest(ctx, specs):
     got = lookalikes._latest([row(t, at, lookalikes.SOURCE, "lookalike_fit", t) for t, at in specs])
     return got[("a1", "lookalike_fit")][1] if got else None
-
-
-def named_latest(ctx, specs):
-    return which(specs, lambda marked: named._latest(
-        [row(t, at, named.SOURCE, named.FACT, marked(t)) for t, at in specs]).get("a1", False))
 
 
 def site_visits_latest(ctx, specs):
     stored(ctx, [row(t, at, site_visits.SOURCE, site_visits.US_FACT, t) for t, at in specs])
     got = site_visits.latest_facts(ctx).get(("a1", site_visits.US_FACT))
     return got and got[1]
-
-
-def approvals_recipient(ctx, specs):
-    stored(ctx, [row(t, at, approvals.PICK_SOURCE, approvals.PICK_FACT, {"contact_id": "c1", "apollo_person_id": t})
-                 for t, at in specs])
-    return approvals.recipient_source(ctx, "a1", {"contact_id": "c1"})["apollo_person_id"] or None
 
 
 def relabel_show(ctx, specs):
@@ -276,16 +250,11 @@ READERS: dict[str, tuple[Callable[[Any, Specs], str | None], bool]] = {
     "score._match_terms": (score_terms, True),
     "openers.tokens": (openers_tokens, False),  # fresh_facts leaves out a fact with no time
     "openers.newest_leader": (openers_newest_leader, False),
-    "openers.focus_material": (openers_focus_material, True),
     "openers.contact_person_id": (openers_person_id, True),
-    "openers.stored_focus": (openers_stored_focus, False),  # undated is older than FOCUS_REFRESH_DAYS
     "verify.doubt_history": (verify_doubts, True),
     "pick.history": (pick_outcomes, False),
-    "clay_cross_check.answers": (clay_answers, True),
     "lookalikes._latest": (lookalikes_latest, True),
-    "named._latest": (named_latest, True),
     "site_visits.latest_facts": (site_visits_latest, False),
-    "approvals.recipient_source": (approvals_recipient, True),
     "relabel.show": (relabel_show, True),
     "pages.history": (pages_history, False),
     "pages.coverage": (pages_coverage, False),
@@ -344,8 +313,3 @@ def test_keywords_stored_as_text_read_as_a_list_by_labels():
     m = labels.Material.of({"domain": "a1.com"}, [row("e1", T, "apollo_org", "keywords", "payroll, hr software")])
     assert m.keywords == ("payroll", "hr software")
 
-
-def test_keywords_stored_as_text_read_as_a_list_by_the_opener_focus():
-    """facts.texts: as labels read them (before 9 Oct 2026 the opener read text keywords as none)."""
-    keywords, _ = openers.focus_material([row("e1", T, "apollo_org", "keywords", "payroll, hr software")])
-    assert keywords == ["payroll", "hr software"]

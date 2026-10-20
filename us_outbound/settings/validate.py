@@ -56,7 +56,6 @@ from us_outbound.settings.model import (
     AB_TEST,
     ACTIONS,
     COPY_TEST_KINDS,
-    CLAY_VERIFICATION_MODES,
     LABEL_CHECK_MODES,
     HAND_CHECK_SAMPLE_MAX,
     HAND_CHECK_SAMPLE_MIN,
@@ -65,7 +64,6 @@ from us_outbound.settings.model import (
     COPY_STEPS,
     EMAIL1_SUBJECT_VARIABLES,
     EMAIL_FORMATS,
-    FOCUS_LINE_TOKENS,
     GENERAL_COPY,
     GENERIC_LINE_TOKENS,
     GENERIC_OPENER_KEY,
@@ -102,7 +100,6 @@ from us_outbound.settings.model import (
     Industry,
     IndustryPage,
     Mailbox,
-    NamedAccount,
     Override,
     Role,
     SendWindow,
@@ -143,8 +140,7 @@ KEY_COLUMNS: dict[str, tuple[str, ...]] = {tab: spec.keys(tab) for tab in TABS} 
 # General keys that must not be blank. Other text keys may be blank until phase 0 fills them.
 _GENERAL_REQUIRED_TEXT = frozenset(
     {"escalation_email", "alert_channel", "dev_channel", "booking_link", "booking_page", "demo_host",
-     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "clay_verification",
-     "label_check"}
+     "hubspot_pipeline", "claude_model", "claude_task_model", "email_format", "site_url", "label_check"}
 )
 
 _DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -423,7 +419,6 @@ _GENERAL_TYPES: dict[str, Any] = typing.get_type_hints(General)
 # the credit budgets monthly, like Apollo's and Clay's own.
 RENAMED_GENERAL = {
     "daily_enrol_cap": ("weekly_enrol_cap", "the enrolment target is weekly, Monday to Sunday, UK time"),
-    "clay_weekly_credits": ("clay_monthly_credits", "credit budgets are monthly, like Clay's own"),
     "apollo_weekly_credits": ("apollo_monthly_credits", "credit budgets are monthly, like Apollo's own"),
 }
 # Keys no longer used (Harry, 1 Oct 2026): emails carry no postal address and no privacy link, and
@@ -439,6 +434,25 @@ RETIRED_GENERAL = {
     # this one, which would carry 0.15 into the new key and put the arm live on deploy. General.control_share stays
     # until the package that removes its reader, at its code default, 0.15, the live sheet's value: nothing moves.
     "control_share": "the Control tier gives way to a random explore arm, explore_share (Harry, 19 Oct 2026)",
+    # W2-1 (20 Oct 2026): the dormant code went, and with it the keys it read (design-final §3.3).
+    "auto_send": "send approvals were removed: enrol adds each day's leads to Instantly (Harry's D6, 19 Oct 2026)",
+    "second_contact": "second contacts were removed (Harry, 19 Oct 2026); one contact per company",
+    "second_contact_min_employees": "second contacts were removed (Harry, 19 Oct 2026)",
+    "second_contact_delay_days": "second contacts were removed (Harry, 19 Oct 2026)",
+    "clay_monthly_credits": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_weekly_credits": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_accounts_function_id": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_contacts_function_id": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_credits_per_account": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_verification": "Clay was removed (Harry's D18, 19 Oct 2026): accounts are verified on Apollo data and HubSpot",
+    "clay_email_fallback": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "clay_cross_check": "Clay was removed (Harry's D18, 19 Oct 2026)",
+    "recontact_person_months": "never read (W2-1, 20 Oct 2026)",
+    "recontact_account_months": "never read (W2-1, 20 Oct 2026)",
+    "hubspot_deal_stage": "never read: hubspot_deal_stage_id names the stage (W2-1, 20 Oct 2026)",
+    "apollo_credits_per_account": "never read (W2-1, 20 Oct 2026)",
+    "opener_focus": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
+    "opener_focus_line": "the \"what they do\" opener was removed while off (W2-1, 20 Oct 2026)",
 }
 
 
@@ -473,10 +487,9 @@ _GENERIC_KEYS = frozenset({GENERIC_OPENER_KEY, *GENERIC_OPENER_KEYS.values()})
 
 
 def _line_problems(value: str, tokens: Iterable[str]) -> list[str]:
-    """A General opener line (opener_focus_line, the generic lines): its tokens, one line, no funding or money.
+    """A General opener line (the generic lines): its tokens, one line, no funding or money.
 
-    Refusing money here is safe: the generic lines are new and the focus line has none, so the General tab in
-    force stays valid. The Signals tab's lines may still hold the old funding lines, so `copy check` and the
+    Refusing money here is safe: the generic lines are new, so the General tab in force stays valid. The Signals tab's lines may still hold the old funding lines, so `copy check` and the
     render-time check read those instead (copy_rules.money_violations), and a refusal never empties settings.
     """
     problems = opener_token_problems(value, tokens)
@@ -529,23 +542,12 @@ def _check_general_value(key: str, value: Any) -> None:
         problems = email1_subject_problems(value)
         if problems:
             raise ValueError("; ".join(problems))
-    if key == "opener_focus_line" and value:
-        problems = _line_problems(value, FOCUS_LINE_TOKENS)
-        if not problems and "{focus}" not in value.replace(" ", ""):
-            problems.append("must use {focus}, the phrase it exists for")
-        if problems:
-            raise ValueError("; ".join(problems))
     if key in _GENERIC_KEYS and value:
         problems = _line_problems(value, GENERIC_LINE_TOKENS)
         if problems:
             raise ValueError("; ".join(problems))
     if key == "escalation_hours" and value < 1:
         raise ValueError("must be at least 1")
-    # A second contact (enrol/second.py; Harry, 6 Oct 2026).
-    if key == "second_contact_min_employees" and value < 1:
-        raise ValueError("is a number of staff, like 50")
-    if key == "second_contact_delay_days" and value < 1:
-        raise ValueError("must be at least 1, so the two people's first emails never arrive the same day")
     if key == "claude_monthly_cap_usd" and value > CLAUDE_CAP_USD:
         raise ValueError(f"may not exceed ${CLAUDE_CAP_USD:.0f} a month (a guard against a typo: settings/validate.py)")
     if key == "escalation_email":
@@ -556,9 +558,6 @@ def _check_general_value(key: str, value: Any) -> None:
         raise ValueError(f"must be a Claude model id like claude-opus-5-5 or claude-sonnet-5-5, not {value!r}")
     if key == "email_format" and value not in EMAIL_FORMATS:
         raise ValueError(f"must be one of {', '.join(EMAIL_FORMATS)}")
-    if key == "clay_verification" and value not in CLAY_VERIFICATION_MODES:
-        raise ValueError(f"must be one of {', '.join(CLAY_VERIFICATION_MODES)} (required: every account goes "
-                         "through Clay; skip: verified on Apollo data and HubSpot)")
     if key == "label_check" and value not in LABEL_CHECK_MODES:
         raise ValueError(f"must be one of {', '.join(LABEL_CHECK_MODES)} (required: the task model checks each new "
                          "company's industry label before it is verified; skip: the rules alone)")
@@ -644,9 +643,6 @@ def _general(rows: list[_Row], strict: bool = True, warnings: list[RowError] | N
         err("live_sending", "cannot be yes while approver_slack_ids is blank")
     if g.min_employees > g.max_employees:
         err("min_employees", f"must not be above max_employees ({g.max_employees})")
-    if g.clay_cross_check and not g.clay_accounts_function_id.strip():
-        err("clay_cross_check", "cannot be yes while clay_accounts_function_id is blank: build the \"US Outbound – "
-                                "Accounts\" function in Clay first (docs/pipeline.md), then paste its id")
     if g.email1_subject_share > 0 and not g.email1_subject.strip():
         err("email1_subject", f"cannot be blank while email1_subject_share is above 0 ({g.email1_subject_share:g}); "
                               "write a subject, or set the share to 0")
@@ -1031,24 +1027,6 @@ def _focus(rows: list[_Row]) -> list[tuple[Focus, int]]:
     return out
 
 
-def _named_accounts(rows: list[_Row]) -> list[tuple[NamedAccount, int]]:
-    from us_outbound.clean.domains import is_personal_domain
-
-    out: list[tuple[NamedAccount, int]] = []
-    seen: dict[str, int] = {}
-    for r in rows:
-        v = r.fields()
-        domain = v["domain"]
-        if domain and is_personal_domain(domain):
-            r.fail("domain", f"{domain} is a personal email domain, not a company")
-        elif domain == SPILL_DOMAIN:
-            r.fail("domain", "spill.chat is Spill")
-        _unique(r, "domain", domain, seen, domain or "")
-        if r.ok:
-            out.append((NamedAccount(domain=domain, name=v["name"], note=v["note"]), r.number))
-    return out
-
-
 def _holdout_arms(a: str, b: str) -> str:
     """Why a holdout test's versions are not the two arms of one split, or ""."""
     col_a, col_b = HOLDOUT_ARMS.get(a.casefold()), HOLDOUT_ARMS.get(b.casefold())
@@ -1187,7 +1165,6 @@ _VALIDATORS: dict[str, Callable[[list[_Row]], Any]] = {
     "Overrides": _overrides,
     "Tests": _tests,
     "Focus": _focus,
-    "Named accounts": _named_accounts,
 }
 
 
@@ -1368,7 +1345,7 @@ def validate_all(tabs: Mapping[str, Iterable[Mapping[str, Any]] | None], *,
             for field, tab in (
                 ("signals", "Signals"), ("angles", "Angles"), ("industries", "Industries"), ("states", "States"),
                 ("roles", "Roles"), ("copy", "Copy"), ("mailboxes", "Mailboxes"), ("overrides", "Overrides"),
-                ("tests", "Tests"), ("focus", "Focus"), ("named_accounts", "Named accounts"),
+                ("tests", "Tests"), ("focus", "Focus")
             )
         },
     )

@@ -129,7 +129,6 @@ def test_without_the_key_it_falls_back_to_application_default_credentials(monkey
 def test_the_key_variables():
     assert SECRET_NAMES == {
         "apollo": "US_OUTBOUND_APOLLO_API_KEY",
-        "clay": "US_OUTBOUND_CLAY_API_KEY",
         "instantly": "US_OUTBOUND_INSTANTLY_API_KEY",
         "hubspot": "US_OUTBOUND_HUBSPOT_TOKEN",
         "slack": "US_OUTBOUND_SLACK_BOT_TOKEN",

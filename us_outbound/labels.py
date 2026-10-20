@@ -813,9 +813,9 @@ def corrected_id(week: str, account_id: str) -> str:
     return f"{CORRECTED_FACT}:{week}:{account_id}"
 
 
-def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: str, via: str, item_id: str = "",
-            card_label: str = "", who: str = "", week: str = "") -> dict:
-    """An approver's label for a company (a card's thread reply, `approvals industry` or `labels set`), live.
+def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: str, via: str, who: str = "",
+            week: str = "") -> dict:
+    """A person's label for a company (a Hand-check tab row, or `labels set`), live.
 
     The account takes the label as label_source approver (it earns the label's own copy, and the label check,
     relabel and the universe refresh never move it); a label_corrected fact records the change and what the rules
@@ -834,11 +834,11 @@ def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: st
     aid, domain = account["account_id"], str(account.get("domain") or "").strip().lower()
     stored = latest_verdict(ctx.store.select("signal_events", {"account_id": aid, "source": JOB,
                                                                 "fact": VERDICT_FACT})) or {}
-    was = card_label or str(account.get("industry") or "")
+    was = str(account.get("industry") or "")
     ctx.store.upsert("accounts", [{"account_id": aid, "industry": label.industry, "industry_group": label.industry_group,
                                    "label_source": APPROVER, "label_confidence": HIGH, "label_checked_at": ctx.now}])
     value = {"from": was or None, "from_source": account.get("label_source") or None, "to": label.industry,
-             "to_group": label.industry_group, "by": by, "via": via, "item_id": item_id or None,
+             "to_group": label.industry_group, "by": by, "via": via,
              "rules": stored.get("rules"), "model": stored.get("model"), "confidence": stored.get("confidence")}
     fact = {"event_id": corrected_id(week, str(aid)) if week else new_id(), "account_id": aid, "source": JOB,
             "fact": CORRECTED_FACT, "value": value, "quote": f"{was or 'no label'} → {label.industry}",
@@ -862,8 +862,7 @@ def correct(ctx: Context, account: Mapping[str, Any], label: Industry, *, by: st
             if ctx.clients.sheets.update_cell(sheet_id, OVERRIDES_TAB, match, "value", label.industry):
                 sheet = "updated"
             else:  # never a second row for the domain: a duplicate fails the tab's validation at the next sync
-                note = f"set {who or by} at a send approval, {ctx.today_uk():%-d %b %Y}" if item_id else \
-                    f"set {who or by}, {ctx.today_uk():%-d %b %Y}"
+                note = f"set {who or by}, {ctx.today_uk():%-d %b %Y}"
                 ctx.clients.sheets.append_rows(sheet_id, OVERRIDES_TAB, [{**match, "value": label.industry,
                                                                           "note": note}])
                 sheet = "added"
@@ -999,10 +998,9 @@ def evaluate(ctx: Context, rows: Sequence[Mapping[str, Any]]) -> dict:
 
 # -- measurement: the daily post, its asks and the Monday readout (Harry, 7 Oct 2026) ---------------------------------
 
-DECIDED = ("approved", "approved_edited", "contact_rejected", "company_rejected")  # events.approval of a decided card
-TARGET_RIGHT = 0.95  # cards with the right industry; SPEC 14's 90% bar is the hand-check's, this is the labels'
-MIN_CARDS = 30  # a rate on fewer cards is "too few to read" in the readout
-ASK_CORRECTIONS, ASK_SHARE, ASK_MIN_CARDS = 3, 0.10, 10  # corrections in a day that ask for a look at the tab
+# Corrections in a day that ask for a look at the tab. (The share of send-approval cards with the right industry, "N
+# of N right", went with the cards: W2-1, 20 Oct 2026. The honest figures are the label sample's and the hand-check's.)
+ASK_CORRECTIONS = 3
 ASK_AGREEMENT, ASK_MIN_CHECKS = 0.70, 20  # rules-model agreement under which the tab's codes need a look
 ASK_NO_RULES = 0.30  # the share of checked companies the rules gave no label over which the tab's codes need adding
 GAP_CODES = 3  # NAICS codes named in that ask
@@ -1011,7 +1009,7 @@ VERIFY_JOB = "verify_accounts"
 
 @dataclass
 class Tally:
-    """The label check's numbers over a period: the model's checks, their decisions, and the cards decided."""
+    """The label check's numbers over a period: the model's checks, their decisions, and the corrections by hand."""
 
     checked: int = 0  # companies the model was asked about, each once (its latest check in the period)
     decisions: dict[str, int] = field(default_factory=dict)  # source, or held / disqualified
@@ -1020,15 +1018,10 @@ class Tally:
     disagreed_groups: dict[str, int] = field(default_factory=dict)  # the rules' group, where the model's group differed
     no_rules: dict[str, str] = field(default_factory=dict)  # account_id -> the model's label, where the rules had none
     corrections: list[tuple[str, str]] = field(default_factory=list)  # (from, to)
-    approvals: int = 0  # cards decided by a person, corrections aside
 
     @property
     def agreed(self) -> int:
         return self.decisions.get(AGREED, 0)
-
-    @property
-    def cards(self) -> int:
-        return self.approvals + len(self.corrections)
 
     def share_agreed(self) -> float | None:
         """Of the companies the rules labelled, the share the model gave the same label. A company the rules gave no
@@ -1043,16 +1036,13 @@ class Tally:
         the codes can tell (9 Oct 2026: the ask read 15% where most of the rest were such refinements)."""
         return self.same_group / self.labelled if self.labelled else None
 
-    def share_right(self) -> float | None:
-        return 1 - len(self.corrections) / self.cards if self.cards else None
-
 
 def _between(rows: Iterable[Mapping[str, Any]], key: str, start: datetime | None, end: datetime) -> list[Mapping]:
     return [r for r in rows if (start is None or utc_or_epoch(r.get(key)) >= start) and utc_or_epoch(r.get(key)) < end]
 
 
 def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
-    """The companies checked, the corrections approvers made and the cards decided in [start, end) (start None:
+    """The companies checked and the corrections made by hand in [start, end) (start None:
     ever). A company asked more than once in the period (an audit, then a second look) counts once, by its latest
     check."""
     t = Tally()
@@ -1080,8 +1070,6 @@ def tally(ctx: Context, start: datetime | None, end: datetime) -> Tally:
                 group = sv.rules_group or sv.rules
                 groups[group] = groups.get(group, 0) + 1
     t.decisions, t.disagreed_groups = decisions, groups
-    t.approvals = sum(1 for e in _between(ctx.store.select("events", {"type": "send_approval"}), "occurred_at", start,
-                                          end) if e.get("approval") in DECIDED)
     return t
 
 
@@ -1128,7 +1116,7 @@ def gap_codes(ctx: Context, no_rules: Mapping[str, str], n: int = GAP_CODES) -> 
 
 def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
     """The daily post's Labels block: the checks and their decisions in the period, the latest verify run's unchecked
-    companies (and why, when the model could not be asked), and the cards' industry corrections."""
+    companies (and why, when the model could not be asked), and the industry corrections made by hand."""
     t, run = tally(ctx, start, end), last_verify(ctx)
     d = t.decisions
     unchecked = int(run.get("unchecked") or 0)
@@ -1139,12 +1127,8 @@ def post_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
              f"disqualified {d.get('disqualified', 0)}; waiting unchecked {unchecked})."]
     if run.get("unavailable_reason"):
         lines.append(f"  The label check could not ask the model at the last verify run: {run['unavailable_reason']}.")
-    if t.cards:
-        moves = f": {_moves(t.corrections)}" if t.corrections else ""
-        lines.append(f"  Cards: {len(t.corrections)} industry correction{'' if len(t.corrections) == 1 else 's'} of "
-                     f"{t.cards} decided ({_pct(t.cards - len(t.corrections), t.cards)} right){moves}.")
-    else:
-        lines.append("  Cards: none decided.")
+    if t.corrections:
+        lines.append(f"  Corrected by hand: {len(t.corrections)} ({_moves(t.corrections)}).")
     return lines
 
 
@@ -1162,10 +1146,10 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
 
     ai = "the AI check (Claude)"
     n = len(t.corrections)
-    if n >= ASK_CORRECTIONS or (t.cards >= ASK_MIN_CARDS and n >= ASK_SHARE * t.cards and n):
+    if n >= ASK_CORRECTIONS:
         out.append((f"labels_corrections:{day}",
-                    f"{say.ACTION} *Industry labels: approvers corrected the industry on {n} of {t.cards} "
-                    "email cards since the last send day.*\n"
+                    f"{say.ACTION} *Industry labels: the industry of {n} companies was corrected by hand since the "
+                    "last send day.*\n"
                     f"Corrections: {_moves(t.corrections)}.\n"
                     f"*What to do:* check those industries' definitions on the {tab()}: a sharper line fixes the "
                     "next ones. A changed definition has every company checked again by itself; nothing to run."))
@@ -1186,25 +1170,15 @@ def asks(ctx: Context) -> list[tuple[str, str]]:
 
 
 def readout_lines(ctx: Context, start: datetime, end: datetime) -> list[str]:
-    """The Monday readout's Industry labels block, for a reader who may be new: the cards with the right industry
-    last week and so far against the 95% target (a rate from MIN_CARDS cards), last week's corrections, and last
-    week's label check (the rules and the model agreeing, the held and disqualified). Information only: the daily
-    post asks for a look when corrections pile up (asks)."""
-
-    def right(t: Tally) -> str:
-        ok = t.cards - len(t.corrections)
-        if t.cards < MIN_CARDS:
-            return f"{ok} of {t.cards} (too few to read)"
-        rate = ok / t.cards
-        return f"{ok} of {t.cards} ({rate:.0%}, {'met' if rate >= TARGET_RIGHT else 'not met'})"
-
-    week, ever = tally(ctx, start, end), tally(ctx, None, end)
-    head = (f"*Industry labels* (how often the industry on a send card was right, going by the approvers' "
-            f"corrections; target {TARGET_RIGHT:.0%})")
-    if not ever.cards and not week.checked:
-        return ["", f"{head}: no card decided and no company checked yet."]
+    """The Monday readout's Industry labels block, for a reader who may be new: last week's corrections by hand, and
+    last week's label check (the rules and the model agreeing, the held and disqualified). Information only: the
+    daily post asks for a look when corrections pile up (asks). How often a label is right is the label sample's
+    figure (ops/label_sample.py), not this block's."""
+    week = tally(ctx, start, end)
+    head = "*Industry labels* (the AI check of each new company, and the corrections made by hand)"
+    if not week.corrections and not week.checked:
+        return ["", f"{head}: no company checked or corrected last week."]
     lines = ["", head]
-    lines.append(f"  Right: last week {right(week)} · so far {right(ever)}")
     if week.corrections:
         lines.append(f"  Corrected last week: {_moves(week.corrections, 10)}")
     if week.checked:

@@ -39,7 +39,7 @@ def world(now=MON_NOON, *, live=True, url=PING, auth=True, posts=True, settings=
     ctx = make_context(settings, job="heartbeat_check", now=now, transport=t, live=live)
     ctx.clients.secrets = Secrets(ctx.guard, fetch=lambda n: url if n == "US_OUTBOUND_WATCHDOG_URL" else f"test-{n}")
     ping_url = watchdog.read(ctx.clients.secrets)[0]
-    ctx.guard.configure(bounds=boundaries_for(settings, TEST_SHEET_ID, job="heartbeat_check", watchdog_url=ping_url))
+    ctx.guard.configure(bounds=boundaries_for(settings, TEST_SHEET_ID, watchdog_url=ping_url))
     return ctx, t
 
 

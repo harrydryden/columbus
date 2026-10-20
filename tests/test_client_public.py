@@ -1,9 +1,9 @@
-"""Public sources: allowlisted GETs only; one-hop HEAD redirect resolution."""
+"""Public sources: allowlisted GETs only. (The one-hop HEAD redirect resolution, never wired in, went with W2-1.)"""
 
 import pytest
 
 from tests.fakes import FakeTransport, SentRequest
-from us_outbound.clients.guard import Boundaries, Guard, GuardViolation
+from us_outbound.clients.guard import Boundaries, Guard, GuardViolation, Op
 from us_outbound.clients.http import ApiError, Response
 from us_outbound.clients.public import Public, absolute_location, split_url
 
@@ -73,33 +73,25 @@ def test_non_http_urls_rejected(url):
     assert t.requests == []
 
 
+def test_a_head_to_follow_a_redirect_is_refused_before_any_request():
+    """resolve_redirect sent one HEAD to a prospect's own domain; nothing calls it any more, so the guard allows no
+    such call now: a HEAD to a host off the allowlist is refused like any other public read."""
+    public, t, _ = make(HeadTransport(301, {"location": "https://www.acme.example/"}))
+    assert not hasattr(public, "resolve_redirect")
+    with pytest.raises(GuardViolation):
+        public.request("HEAD", "https://acme.example", Op("resolve_redirect", target="acme.example"), raw=True)
+    assert t.requests == []
+
+
 @pytest.mark.parametrize("location, expected", [
     ("https://www.acme.example/", "https://www.acme.example/"),
     ("/us/home", "https://acme.example/us/home"),
     ("//cdn.acme.example/x", "https://cdn.acme.example/x"),
     ("welcome", "https://acme.example/path/welcome"),
 ])
-def test_resolve_redirect_one_hop_absolute(location, expected):
-    public, t, guard = make(HeadTransport(301, {"location": location}))
-    assert public.resolve_redirect("https://acme.example/path/page?x=1") == expected
-    [req] = t.requests
-    assert req.method == "HEAD"
-    [call] = guard.calls
-    assert (call.action, call.target, call.write) == ("resolve_redirect", "acme.example", False)
-
-
-@pytest.mark.parametrize("transport", [
-    HeadTransport(200),
-    HeadTransport(302, {}),  # redirect without a Location
-    HeadTransport(405),
-    HeadTransport(503),
-    HeadTransport(error=ConnectionError("refused")),
-    HeadTransport(error=TimeoutError("slow")),
-])
-def test_resolve_redirect_returns_the_url_when_there_is_no_redirect(transport):
-    public, t, _ = make(transport)
-    assert public.resolve_redirect("https://acme.example") == "https://acme.example"
-    assert len(t.requests) == 1
+def test_a_location_is_made_absolute_against_the_url_that_returned_it(location, expected):
+    """The page reader follows a redirect within the company's site with it (sources/pages.py)."""
+    assert absolute_location("https://acme.example/path/page?x=1", location) == expected
 
 
 def test_split_and_join_helpers():

@@ -1,5 +1,7 @@
 # PHASE0-CONFIRM: what the live system has confirmed, and how to settle the rest
 
+> **Removed in W2-1 (20 Oct 2026; Harry's decisions of 19 Oct).** The commands `us-outbound golive`, `approvals list | send | reject`, `phase0 check` and `clay check-email` no longer exist and do not parse; send approvals and `auto_send`, Clay and second contacts went with them (git history keeps the code). `us-outbound status` prints golive's three live checks (Copy, Campaigns, Watchdog). The Probe and Seed probe rows below name `phase0 check`: settling one now takes a hand-made read-only call, and the `CLAY-*` and `ops/golive.py` rows are moot. This page is the record of what was done then; for the system as it runs now see [daily.md](daily.md) and [roadmap.md](roadmap.md).
+
 Written 7 Oct 2026 (roadmap §4, week 1, item 1). The code marked 116 API details `PHASE0-CONFIRM`: endpoint shapes,
 field names, codes and costs taken from vendor docs that the build machine could not check against the live APIs.
 This page lists every one, with its status and the evidence for it, gates first. The ids match

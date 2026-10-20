@@ -1,11 +1,8 @@
 """verify_accounts: an account checked on its Apollo data and HubSpot becomes verified (Harry, 1 Oct 2026).
 
-SPEC 2 says every account passes through Clay before it can be emailed; verify_in_clay (SPEC 9) does
-that. The Clay functions are not built yet and Clay's REST API is unconfirmed (clients/clay.py,
-docs/phase0-facts.md), so to go live on Monday 5 Oct the General key clay_verification decides:
-  * skip (the default until the Clay functions exist): this job moves accounts from new or queued to
-    verified once the checks below pass, and the enrol job can then take them;
-  * required (SPEC 2): accounts wait for verify_in_clay; this job changes nothing and says why.
+SPEC 2 said every account passes through Clay before it can be emailed (verify_in_clay). The Clay functions were
+never built, and Clay was removed (Harry's D18; W2-1, 20 Oct 2026), so this job moves accounts from new or queued to
+verified once the checks below pass, and the enrol job can then take them.
 
 The checks, cheapest first. A failed check says why as a code (REASON_CODES, written to accounts.status_reason), and
 the code says what happens (W1-4, 19 Oct 2026; the same 6 never-pass accounts were checked every run, and one sized
@@ -29,16 +26,12 @@ a transient failure (no label call left this run, a HubSpot error) changes nothi
      leaves the account for the next run.
 Incomplete Apollo facts (Harry, 14 Oct 2026: "for any company where we have incomplete information, filter out";
 this replaces the weekly hand-check of doubtful facts, 2 Oct 2026). A company whose HQ state, size (no employee count
-and no size band) or industry is missing (MISSING), after any Overrides row and Clay's cross-check, is disqualified
+and no size band) or industry is missing (MISSING), after any Overrides row, is disqualified
 and tiered Excluded with status_reason incomplete (tier_reason "incomplete: ..."), and is not checked again. A fact that is there but
 borderline (Apollo's count within EDGE_MARGIN of a size edge, size_edges; a count and band that disagree) is taken
 as Apollo gives it, and the checks above decide on it. An Overrides row (hq_state, employees or size_band, industry)
 filled in before the run keeps a company in.
-Clay's cross-check (Harry, 6 Oct 2026; us_outbound/clay_cross_check.py), while General clay_cross_check
-is yes: before the checks, the run's accounts missing their HQ state or size go to Clay's "US Outbound – Accounts"
-function once, in one batch, within the Clay budget, and the missing fact is filled in from its answer. A company
-Clay has not answered yet (an error, or no budget today) waits for the next run (CLAY_PENDING) rather than being
-left out. With the switch off (the default), a missing fact leaves the company out straight away.
+A missing fact leaves the company out straight away.
 Overrides win over the account's columns, as in scoring. Then the score job runs (SPEC 9: score
 runs after the sources), so the new accounts and the sources' new facts have a tier and an angle
 before pick_contacts at 05:30.
@@ -61,14 +54,10 @@ General's) and whether it goes on:
   * otherwise the account goes on to HubSpot with the label the rule gives.
 The run also checks accounts already verified that have no fresh verdict, so the queue converges with no command
 run; their decisions are written the same way (a held one goes back to queued and to the hand-check). Both kinds
-share the run's share of calls (labels.MAX_LABEL_CALLS_PER_RUN, LABEL_SECONDS): accounts with a send-approval card waiting first,
-then Focus groups, then queue order; the rest wait for the next run. A send-approval card rendered before its account's label was decided, which
-no longer fits it (another label, a less specific copy level, held or disqualified), is withdrawn by the next
-poll_approvals (enrol/approvals.withdraw_unfit: this job runs dry and edits no card in Slack), so the next enrol
-proposes the company again with the right copy. A verdict is a paid read that reaches no prospect, like an Apollo
+share the run's share of calls (labels.MAX_LABEL_CALLS_PER_RUN, LABEL_SECONDS): Focus groups first, then queue
+order; the rest wait for the next run. A verdict is a paid read that reaches no prospect, like an Apollo
 search page, so it is asked in dry-run too (each call is about $0.01, within the Claude cap).
 
-An account verified here has clay_checked_at empty, which is how to find them once Clay is built.
 Weekdays at 04:30 UK, after source_universe (03:00), read_pages (03:45) and apollo_people (04:20). The paid
 enrichment comes after it, for the accounts it verified (W1-3a, 19 Oct 2026): apollo_enrich at 05:00, whose
 exact headcount is the last size check, and apollo_signals at 05:10.
@@ -99,7 +88,7 @@ from us_outbound.logs import log
 from us_outbound.scoring import tiers
 from us_outbound.scoring.score import latest_facts
 from us_outbound.settings.overrides import effective
-from us_outbound.settings.model import CLAY_REQUIRED, SIZE_BANDS, General, Settings
+from us_outbound.settings.model import SIZE_BANDS, General, Settings
 
 JOB = "verify_accounts"
 VERIFIED = "verified"
@@ -113,15 +102,12 @@ ID_CHUNK = 1000
 OPTED_OUT_REASON = "a contact at the domain opted out in HubSpot"
 BOUNCED_REASON = "a contact at the domain hard-bounced in HubSpot"
 RECHECK_DAYS = 30  # D22 (the plan's default, 19 Oct 2026): an open deal or another owner is looked up again after this
-CLAY_NOT_BUILT = ("clay_verification is required and verify_in_clay is not built yet (phase 1), so accounts "
-                  "wait in new and queued; set clay_verification to skip to verify them on Apollo data and HubSpot")
 # Doubtful Apollo facts (Harry, 2 Oct 2026): to the weekly hand-check instead of verified silently.
 DOUBT_SOURCE = JOB  # signal_events.source of the doubt facts; not a SPEC 7 source key, so no signal scores them
 DOUBT_FACT, CLEARED_FACT = "doubtful_facts", "doubt_cleared"
 ROLES_EDGE = 50  # the Roles tab's 10-49 and 50-249 orders: whom we write to changes here
 EDGE_MARGIN = 2  # Apollo's count is an estimate: this close to an edge it could be either side
 INCOMPLETE = "incomplete information: "  # tier_reason of a company left out for a missing fact (revive() reads it)
-CLAY_PENDING = "incomplete information, waiting for Clay's cross-check"
 # check() reasons a doubt can stand behind: the hand-check sees the account rather than it failing unseen.
 DOUBTABLE = frozenset({"HQ state unknown", "employee count unknown", "no Industries label"})
 NO_STATE = "Apollo gives no HQ state"
@@ -141,8 +127,7 @@ OUT_OF_QUEUE_TIERS = frozenset({tiers.EXCLUDED, tiers.HELD})
 #   parked       out of the queue while a setting keeps it out (an industry switched off), looked at again each run
 #                (redecide_parked); label_failed only after PARK_AFTER_FAILURES unusable answers under one hash
 #   recheck      disqualified, and checked again after recheck_after (an open deal or another owner may end: D22)
-#   transient    nothing changes: the next run tries again (no label call left this run, a HubSpot error, Clay's
-#                answer not in yet)
+#   transient    nothing changes: the next run tries again (no label call left this run, a HubSpot error)
 TERMINAL, PARKED, RECHECK, TRANSIENT = "terminal", "parked", "recheck", "transient"
 REASON_CODES: dict[str, str] = {
     **dict.fromkeys(("size", "state", "state_unknown", "partner", "suppressed", "public_body", "association",
@@ -150,7 +135,7 @@ REASON_CODES: dict[str, str] = {
                      "hubspot_bounced", "hand_check", "declined"), TERMINAL),
     **dict.fromkeys(("industry_off", "label_failed"), PARKED),
     **dict.fromkeys(("hubspot_open_deal", "hubspot_owner"), RECHECK),
-    **dict.fromkeys(("label_not_checked", "hubspot_check_failed", "clay_pending"), TRANSIENT),
+    **dict.fromkeys(("label_not_checked", "hubspot_check_failed"), TRANSIENT),
 }
 # The code of each HubSpot fact the rescore reads (scoring/tiers.HUBSPOT_EXCLUSIONS). A former customer is a
 # customer; a contact in another user's sequence, or another user's activity, is another owner's, which can end.
@@ -270,26 +255,6 @@ def standing(found: Iterable[str], cleared: Collection[str]) -> list[str]:
     """The doubts still open: those a hand-check has not cleared, and every missing fact (MISSING), which
     approving cannot fill in."""
     return [d for d in found if d in MISSING or d not in cleared]
-
-
-def cross_check(ctx: Context, account: Mapping[str, Any], found: Sequence[str]) -> list[str]:
-    """The doubts a second source leaves standing: Clay's cross-check of HQ state and size (clay_cross_check.settle).
-
-    With clay_cross_check = yes and Clay's answer stored, a doubt it settles is dropped and one it disagrees with
-    is restated with both values; otherwise every doubt stands.
-    """
-    from us_outbound import clay_cross_check
-
-    return clay_cross_check.settle(ctx, account, found)
-
-
-def clay_pre_pass(ctx: Context, todo: Sequence[dict], facts: Mapping[str, Mapping[str, Any]],
-                  suppressed: Collection[str], partners: Collection[str], cleared: Mapping[str, set[str]]) -> dict:
-    """Ask Clay about the run's doubtful accounts and fill their missing facts, before the checks
-    (clay_cross_check.ask); the job summary's clay_cross_check entry."""
-    from us_outbound import clay_cross_check
-
-    return clay_cross_check.ask(ctx, todo, facts, suppressed, partners, cleared)
 
 
 def doubt_history(ctx: Context, account_ids: Iterable[str] | None = None) -> tuple[dict[str, dict], dict[str, set[str]]]:
@@ -423,30 +388,22 @@ def needs_verdict(run: LabelRun, account: Mapping[str, Any], events: Sequence[Ma
     return not run.checker.fresh(stored, events) and not labels.Material.of(account, events).empty
 
 
-def carded(ctx: Context) -> set[str]:
-    """The accounts with a send-approval card waiting in Slack: the next to be emailed, so checked first."""
-    from us_outbound.enrol import approvals
-
-    return {i.account_id for i in approvals.items(ctx.store, (approvals.OPEN,))}
-
-
 def check_order(accounts: Iterable[Mapping[str, Any]], settings: Settings,
-                first: Collection[str] = (), failed: Collection[str] = ()) -> list[Mapping[str, Any]]:
-    """The label check's order: accounts with a card waiting first, then Focus groups, then queue order; an account
-    whose answer could not be used under this label list (failed: a label_failed fact) after all the others, so a
-    company that keeps failing never takes the run's share from the rest (W1-4)."""
+                failed: Collection[str] = ()) -> list[Mapping[str, Any]]:
+    """The label check's order: Focus groups first, then queue order; an account whose answer could not be used under
+    this label list (failed: a label_failed fact) after all the others, so a company that keeps failing never takes
+    the run's share from the rest (W1-4)."""
     return sorted(accounts, key=lambda a: (str(a.get("account_id")) in failed,
-                                           str(a.get("account_id")) not in first,
                                            focus.group_rank(settings.industry_group_of(a), settings),
                                            queue.order_key(a, settings)))
 
 
 def ask_first(run: LabelRun, accounts: Iterable[Mapping[str, Any]], events: Mapping[str, Sequence[Mapping[str, Any]]],
-              settings: Settings, first: Collection[str] = (), failed: Collection[str] = ()) -> None:
+              settings: Settings, failed: Collection[str] = ()) -> None:
     """Ask about the run's candidates (new and verified alike) in check_order, within the run's share; the Checker
     keeps each answer for the decisions after (labels.Checker.verdict). One company's unusable answer skips that
     company only; an outage (Checker.unavailable) or the share used ends the asking."""
-    order = check_order(accounts, settings, first, failed)
+    order = check_order(accounts, settings, failed)
     for a in order:
         if run.checker.unavailable or run.checker.budget.why_not():
             return
@@ -612,13 +569,8 @@ def _short(value: Any) -> Any:
 def run(ctx: Context) -> dict:
     """The verify_accounts job (JOB CONTRACT: run(ctx) -> summary)."""
     s = ctx.settings
-    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run, "clay_verification": s.general.clay_verification}
+    summary: dict[str, Any] = {"job": JOB, "dry_run": ctx.dry_run}
     summary["completed_by_overrides"] = revive(ctx)
-    if s.general.clay_verification == CLAY_REQUIRED:
-        waiting = ctx.store.select("accounts", {"status": list(WAITING_STATUSES)})
-        log("verify_waiting_for_clay", run_id=ctx.run_id, accounts=len(waiting), reason=CLAY_NOT_BUILT)
-        summary.update(skipped=True, reason=CLAY_NOT_BUILT, waiting=len(waiting))
-        return summary
     summary["parked"] = redecide_parked(ctx)
     waiting = ctx.store.select("accounts", {"status": list(WAITING_STATUSES)})
     today = ctx.now.date()  # recheck_after is a UTC date
@@ -666,11 +618,9 @@ def run(ctx: Context) -> dict:
         write(settled(account, code, text, today))
 
     _, cleared = doubt_history(ctx, [a["account_id"] for a in [*todo, *verified_open]])
-    summary["clay_cross_check"] = clay_pre_pass(ctx, todo, facts, suppressed, partners, cleared)
-    clay_pending: set[str] = summary["clay_cross_check"].pop("unanswered", set())
-    # The label check (labels.py): the model is asked first about the candidates, new and verified alike: those with
-    # a card waiting in Slack first, then Focus groups, then queue order, so the run's share goes where it matters;
-    # a company whose answer could not be used under this label list goes last.
+    # The label check (labels.py): the model is asked first about the candidates, new and verified alike: Focus
+    # groups first, then queue order, so the run's share goes where it matters; a company whose answer could not be
+    # used under this label list goes last.
     lab = LabelRun(labels.Checker(ctx))
     retried = {aid for aid, evs in events.items() if labels.failures(evs, lab.checker.hash)}
 
@@ -697,7 +647,7 @@ def run(ctx: Context) -> dict:
     unchecked = [a for a in verified_open
                  if cheap_ok(a) and (asks(a) or not a.get("label_source") or labels.override_moves(a, s))]
     ask_first(lab, [*(a for a in todo if required and cheap_ok(a) and asks(a)), *filter(asks, unchecked)], events, s,
-              carded(ctx) if unchecked else (), retried)
+              retried)
     doubt_rows: list[dict] = converge(ctx, lab, unchecked, events, cleared)
     for a in todo:
         acct = with_overrides(a, s)
@@ -723,14 +673,11 @@ def run(ctx: Context) -> dict:
             why = check(acct, facts.get(a["account_id"], {}), s, suppressed, partners)
         if doubtable(why, s):
             # Harry, 14 Oct 2026: "for any company where we have incomplete information, filter out". A missing fact
-            # (no HQ state, size or industry, after any Overrides row and Clay's cross-check) leaves the company out;
+            # (no HQ state, size or industry, after any Overrides row) leaves the company out;
             # a fact that is there but borderline (an estimate near a size edge, a count and band that disagree) is
             # taken as Apollo gives it, and the checks below decide on it. Nothing waits for a hand-check.
-            found = [*cross_check(ctx, acct, doubts(acct, s)), *([label_doubt] if label_doubt else [])]
+            found = [*doubts(acct, s), *([label_doubt] if label_doubt else [])]
             missing = [d for d in standing(found, cleared.get(a["account_id"], set())) if d in MISSING]
-            if missing and a["account_id"] in clay_pending:
-                count(a, "clay_pending", CLAY_PENDING)  # a Clay error or no budget today: asked again next run
-                continue
             if missing:
                 settle(a, "incomplete", "; ".join(missing))
                 incomplete.append({"account_id": a["account_id"], "domain": a.get("domain"), "missing": missing})

@@ -160,7 +160,9 @@ ENUMS: dict[tuple[str, str], set[str]] = {
     # A reply's approval, then a send approval's outcome (enrol/approvals/).
     ("events", "approval"): {"approved", "edited", "skipped", "approved_edited", "contact_rejected", "company_rejected",
                              "expired", "blocked"},
-    ("settings", "tab"): set(TABS) | {"_order"},  # settings.sync.ORDER_TAB
+    # settings.sync.ORDER_TAB; and Named accounts, a tab W2-1 stopped reading, whose old rows the column may hold
+    # (the DDL is additive only, so its comment keeps the name).
+    ("settings", "tab"): set(TABS) | {"_order", "Named accounts"},
     ("heartbeats", "status"): {"running", "ok", "error", "skipped"},
     ("credit_ledger", "system"): {"clay", "apollo", "claude"},
     ("hitl_items", "kind"): {"reply", "out_of_office", "hand_check", "manual_merge", "kill_rule", "send_approval"},

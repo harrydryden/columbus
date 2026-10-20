@@ -239,8 +239,8 @@ def test_an_unknown_key_warns_and_a_duplicate_key_still_fails_the_sync(tabs):
 
 
 def test_renamed_keys_warn_and_say_what_replaced_them(tabs):
+    # clay_weekly_credits was renamed clay_monthly_credits, and both are retired with Clay (W2-1, Harry's D18).
     for old, new, why in (("daily_enrol_cap", "weekly_enrol_cap", "Monday to Sunday"),
-                          ("clay_weekly_credits", "clay_monthly_credits", "monthly, like Clay's own"),
                           ("apollo_weekly_credits", "apollo_monthly_credits", "monthly, like Apollo's own")):
         t = copy.deepcopy(BASE)
         t["General"].append({"key": old, "value": "30", "note": ""})
@@ -285,6 +285,7 @@ LIVE_KEYS = [line.strip() for line in
              (Path(__file__).parent / "fixtures" / "general_keys_live.txt").read_text().splitlines()
              if line.strip() and not line.startswith("#")]
 # The live General values that differ from the code defaults (data-crm-settings, 19 Oct 2026); ids are stand-ins.
+# second_contact stays yes here although Harry sets it to no before W2-1 deploys (D15): either way it is retired.
 LIVE_VALUES = {"live_sending": "yes", "auto_send": "yes", "priority_threshold": "40", "approver_slack_ids": "U0LIVE01",
                "optout_tested": "yes", "hubspot_pipeline_id": "1001", "hubspot_deal_stage": "Demo requested",
                "hubspot_deal_stage_id": "2002", "hubspot_owner_id": "3003", "second_contact": "yes",
@@ -299,40 +300,76 @@ def test_every_live_general_key_is_known_retired_or_renamed():
     assert unknown == []
 
 
+# The live values of the keys W2-1 retired (no longer among the build's rows): their old build defaults, as the live
+# sheet has them (data-crm-settings: at default), and LIVE_VALUES over them.
+W21_RETIRED_LIVE = {
+    "auto_send": "no", "clay_monthly_credits": "2000", "recontact_person_months": "12", "recontact_account_months": "6",
+    "hubspot_deal_stage": "", "clay_accounts_function_id": "", "clay_contacts_function_id": "",
+    "clay_credits_per_account": "0", "clay_verification": "skip", "clay_email_fallback": "no", "clay_cross_check": "no",
+    "second_contact": "no", "second_contact_min_employees": "50", "second_contact_delay_days": "3",
+    "apollo_credits_per_account": "1", "opener_focus": "no",
+    "opener_focus_line": "I came across {company} and its work on {focus}.",
+}
+# The 17 live keys W2-1 retired, and W1-C's control_share: the live sheet's 18 warnings, in its row order.
+LIVE_RETIRED = ["auto_send", "control_share", "clay_monthly_credits", "recontact_person_months",
+                "recontact_account_months", "hubspot_deal_stage", "clay_accounts_function_id", "clay_contacts_function_id",
+                "clay_credits_per_account", "clay_verification", "clay_email_fallback", "clay_cross_check",
+                "second_contact", "second_contact_min_employees", "second_contact_delay_days",
+                "apollo_credits_per_account", "opener_focus", "opener_focus_line"]
+
+
 def _live_general() -> list[dict]:
     """The live sheet's General tab: its 66 key names (the fixture) with the 12 changed values, every other value the
-    build's default; control_share, retired by W1-C and so not among the build's rows any more, at its live 0.15."""
+    build's default; control_share (retired by W1-C) at its live 0.15 and the keys W2-1 retired at their live values."""
     build = {r["key"]: r["value"] for r in BASE["General"] if r.get("key")}
-    values = {**build, "control_share": "0.15", **LIVE_VALUES}
+    values = {**W21_RETIRED_LIVE, **build, "control_share": "0.15", **LIVE_VALUES}
     return [{"key": k, "value": values[k], "note": ""} for k in LIVE_KEYS]
 
 
+def test_the_live_general_keys_less_the_retired_are_48_and_the_build_has_them_all():
+    """W2-1's acceptance: General has at most 48 keys. 66 live keys less the 18 retired ones = 48, every one of them a
+    build key; the build's others are the ones Wave 1 added (explore_share, hand_check_sample, early_warning_pause,
+    hand_check_gate), which the sheet has no row for yet, so they take their code defaults."""
+    from us_outbound.settings.validate import RETIRED_GENERAL
+
+    build = [r["key"] for r in BASE["General"] if r.get("key")]
+    assert set(LIVE_RETIRED) <= set(RETIRED_GENERAL) and len(LIVE_RETIRED) == 18 == len(set(LIVE_RETIRED))
+    kept = [k for k in LIVE_KEYS if k not in RETIRED_GENERAL]
+    assert len(kept) == 66 - 18 == 48 and set(kept) <= set(build)
+    assert not set(build) & set(RETIRED_GENERAL)
+
+
 def test_the_live_general_rows_validate_with_no_errors(tabs):
-    """The live sheet's General tab as it is (auto_send, second_contact and control_share included), strict and
-    lenient: no errors; one warning, control_share's (retired by W1-C: the row can be deleted); the 12 changed values
-    read as the sheet has them; and the three keys W1-C adds take their code defaults, today's behaviour, since the
-    sheet has no row for them: explore_share 0 (no random arm), hand_check_sample 10, early_warning_pause no."""
+    """The live sheet's General tab as it is (auto_send = yes, second_contact, clay_verification = skip and
+    control_share included), strict and lenient: no errors; one warning for each retired key, each once (control_share
+    by W1-C; auto_send, the Clay, second-contact and never-read keys by W2-1: their rows can be deleted, and none is
+    read); the changed values read as the sheet has them; and the three keys W1-C adds take their code defaults,
+    today's behaviour, since the sheet has no row for them: explore_share 0 (no random arm), hand_check_sample 10,
+    early_warning_pause no."""
     tabs["General"] = _live_general()
+    assert {r["key"]: r["value"] for r in tabs["General"] if r["key"] in ("auto_send", "clay_verification")} == {
+        "auto_send": "yes", "clay_verification": "skip"}
     for strict in (True, False):
         settings, errors = validate_all(tabs, strict=strict)
         assert _no_errors(errors) == {}
-        assert [w.label for w in general_warnings(tabs["General"], strict=strict)] == ["control_share"]
+        warned = [w.label for w in general_warnings(tabs["General"], strict=strict)]
+        assert warned == LIVE_RETIRED  # each retired key once, in the sheet's order
         g = settings.general
-        assert (g.live_sending, g.auto_send, g.second_contact, g.max_employees, g.control_share) == (True, True, True,
-                                                                                                    350, 0.15)
+        assert not any(hasattr(g, k) for k in LIVE_RETIRED if k != "control_share")
+        assert (g.live_sending, g.max_employees, g.control_share) == (True, 350, 0.15)
         assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.0, 10, False)
 
 
 def test_the_live_general_rows_with_harry_s_new_values_validate(tabs):
     """The W1-C acceptance: the live rows plus explore_share = 0.15 (Harry's D7) and hand_check_sample = 20 (his D5)
-    validate, strict and lenient, and read as typed; control_share is still the one warning."""
+    validate, strict and lenient, and read as typed; the retired keys are still the only warnings."""
     tabs["General"] = _live_general() + [{"key": "explore_share", "value": "0.15", "note": ""},
                                          {"key": "hand_check_sample", "value": "20", "note": ""},
                                          {"key": "early_warning_pause", "value": "yes", "note": ""}]
     for strict in (True, False):
         settings, errors = validate_all(tabs, strict=strict)
         assert _no_errors(errors) == {}
-        assert [w.label for w in general_warnings(tabs["General"], strict=strict)] == ["control_share"]
+        assert [w.label for w in general_warnings(tabs["General"], strict=strict)] == LIVE_RETIRED
         g = settings.general
         assert (g.explore_share, g.hand_check_sample, g.early_warning_pause) == (0.15, 20, True)
 

@@ -12,8 +12,7 @@ Nightly at 02:00 UK and on demand:
      The tab's keys in sheet order are versioned the same way, in one row per tab with
      tab = ORDER_TAB, so the settings jobs load keep the sheet's order (roles listed first
      win a tie, the first approved copy version, and so on).
-  4. Bring the Named accounts tab in through the front door (sources/named.py), and write
-     the lookalike facts from the cells and growth counts the monthly lookalikes job stored, so an account
+  4. Write the lookalike facts from the cells and growth counts the monthly lookalikes job stored, so an account
      sourced since then is scored on them (sources/lookalikes.py; no HubSpot call).
   5. Rescore the queue with the settings now in force, so today's change shapes
      tomorrow's enrollment.
@@ -380,13 +379,6 @@ def format_errors(report: Mapping[str, list[RowError]], unusable: list[str], ctx
     return say.compose(say.URGENT if unusable else say.ACTION, head, facts, do=do)
 
 
-def _named(ctx: Context) -> dict:
-    """The Named accounts tab into accounts and facts, before the rescore scores them (sources/named.py)."""
-    from us_outbound.sources import named
-
-    return named.run(ctx)
-
-
 def _lookalikes(ctx: Context) -> dict:
     """Lookalike facts from the stored cells, before the rescore scores them (sources/lookalikes.py)."""
     from us_outbound.sources import lookalikes
@@ -475,13 +467,12 @@ def run(ctx: Context) -> dict:
     warnings = general_warnings(sheet.get("General"))
     warned = _post_warnings(ctx, warnings)
     settings, _ = load_current(ctx.store)
-    rescored, named, lookalike, fallback = False, None, None, None
+    rescored, lookalike, fallback = False, None, None
     if settings is None:
         log("settings_sync_rescore_skipped", reason="settings unusable", unusable=unusable)
         fallback = _post_fallback(ctx)
     else:
         current = dataclasses.replace(ctx, settings=settings)
-        named = _named(current)
         lookalike = _lookalikes(current)
         rescored = _rescore(current)
 
@@ -496,7 +487,6 @@ def run(ctx: Context) -> dict:
         "unusable": unusable,
         "errors": sum(len(v) for v in report.values()),
         "alerted": alerted,
-        "named_accounts": named,
         "lookalike_facts": lookalike,
         "rescored": rescored,
         "general_warnings": [str(w) for w in warnings],

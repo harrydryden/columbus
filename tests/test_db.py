@@ -288,11 +288,13 @@ def test_v_budgets_on_a_fixture(store, fixture_rows):
     # The month's pace matches budget.py on the same ledger.
     from us_outbound.settings.model import General, Settings
 
-    s = Settings(general=General(clay_monthly_credits=2000.0))
-    b = budget.monthly(store, s, "clay", now)
-    assert clay["weekdays_in_month"] == b.weekdays_in_month and clay["weekdays_through_today"] == b.weekdays_through_today
-    assert clay["expected_by_now"] == pytest.approx(b.expected_by_now) and clay["pace"] == b.pace
-    assert clay["projected"] == pytest.approx(b.projected)
+    # (The view still reads a clay row from the settings in force; Clay's budget left budget.py with W2-1.)
+    s = Settings(general=General(apollo_monthly_credits=500))
+    b = budget.monthly(store, s, "apollo", now)
+    assert apollo["weekdays_in_month"] == b.weekdays_in_month
+    assert apollo["weekdays_through_today"] == b.weekdays_through_today
+    assert apollo["expected_by_now"] == pytest.approx(b.expected_by_now) and apollo["pace"] == b.pace
+    assert apollo["projected"] == pytest.approx(b.projected)
     assert (clay["used"], clay["budget"], clay["remaining"], clay["entries"]) == (15.0, 2000.0, 1985.0, 2)
     assert clay["share_used"] == pytest.approx(0.0075)
     assert (apollo["used"], apollo["budget"], apollo["remaining"]) == (3.0, 500.0, 497.0)

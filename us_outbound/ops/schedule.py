@@ -66,10 +66,8 @@ SCHEDULE: tuple[ScheduledJob, ...] = (
     # list). After pick_contacts and before enrol, whose tiers its rescore sets; Apollo reads and database writes
     # only, so no --live (sources/site_visits.py).
     ScheduledJob("site_visits", "0 6 * * *", live=False, enabled=True, timeout_minutes=30, phase=1),
-    ScheduledJob("public_signals", "0 4 * * 1", live=False, enabled=False, timeout_minutes=60, phase=1),
-    ScheduledJob("verify_in_clay", "30 4 * * 1-5", live=False, enabled=False, timeout_minutes=60, phase=1),
     ScheduledJob("verify_accounts", "30 4 * * 1-5", live=False, enabled=True, timeout_minutes=30, phase=1),
-    # score runs inside settings_sync, verify_in_clay, verify_accounts, pick_contacts (at its start, W1-3a) and
+    # score runs inside settings_sync, verify_accounts, pick_contacts (at its start, W1-3a) and
     # site_visits (SPEC 9); by hand: `us-outbound rescore`.
     ScheduledJob("score", "", live=True, enabled=True, timeout_minutes=30, phase=1),
     # On for the pilot from Mon 5 Oct 2026, ahead of enrol at 12:00. It writes only to the database
