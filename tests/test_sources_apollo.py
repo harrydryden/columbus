@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from tests.fakes import FakeTransport, make_context
+from tests.fakes import FakeTransport, make_context, sendable_general_copy
 from us_outbound import budget, suppression
 from us_outbound.clean.people import USPS_STATES, state_code
 from us_outbound.clients.guard import APOLLO_READ_ACTIONS
@@ -23,6 +23,8 @@ from us_outbound.sources import apollo_jobs, apollo_universe as uni
 
 NOW = datetime(2026, 10, 5, 2, 0, tzinfo=UTC)  # Monday 5 Oct, 03:00 UK: the pilot's first run
 BASE, _ = validate_all(default_tabs())
+# The General Copy rows sendable, as on the live sheet: ready and findable supply are accounts enrol could email (W1-6).
+BASE = dataclasses.replace(BASE, copy=sendable_general_copy(BASE.copy))
 STATE_OF = {f"{name}, US": code for code, name in USPS_STATES.items()}
 
 

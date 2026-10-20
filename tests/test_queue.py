@@ -7,7 +7,8 @@ import random
 import uuid
 
 from us_outbound.enrol import queue
-from tests.test_render import HANNAH, HARRY_M, HARRY_T, SAM, make_settings
+from us_outbound.settings.model import Focus
+from tests.test_render import AGENCIES, HANNAH, HARRY_M, HARRY_T, SAM, TECH, make_settings
 
 S = make_settings()
 
@@ -50,16 +51,115 @@ def row(i: int, tier: str, score: int = 30, band: str = "50-99", industry: str =
             "first_seen": f"2026-10-{1 + i % 28:02d}"}
 
 
-def test_control_share_rounds_half_up():
-    assert queue.control_count(30, S, 100) == 5  # 15% of 30 is 4.5
-    assert queue.control_count(20, S, 100) == 3
-    assert queue.control_count(4, S, 100) == 1  # 0.6 rounds to 1
-    assert queue.control_count(5, S, 100) == 1
-    assert queue.control_count(3, S, 100) == 0  # 0.45 rounds to 0, and 3 is under 4
-    assert queue.control_count(30, S, 2) == 2  # never more than there are
-    assert queue.control_count(30, S, 0) == 0
-    one_pct = make_settings(control_share=0.01)
-    assert queue.control_count(10, one_pct, 5) == 1  # at least one from 4 a day
+def explore(share: float):
+    return make_settings(explore_share=share)
+
+
+def test_explore_share_0_the_default_means_no_random_arm():
+    """explore_share has default 0 (the W1-C contracts; RS P0-2: a new key, not a rename of control_share), so a sheet
+    without the row draws nobody at random, however many are wanted or waiting."""
+    assert S.general.explore_share == 0.0
+    assert queue.explore_count(25, S, 60) == 0
+    assert queue.explore_count(4, S, 60) == 0  # not even the at-least-one from 4 a day
+    assert queue.split([row(i, "Priority", 90 - i) for i in range(10)], S, "pick:2026-10-27", 0)[0] == []
+
+
+def test_explore_count_rounds_half_up_with_one_from_four_and_never_more_than_available():
+    # 0.15 × 25 = 3.75 → 4; 0.01 × 4 = 0.04 → 0, raised to 1 as n ≥ 4; 0.01 × 3 = 0.03 → 0 and 3 < 4 (probe M19);
+    # 0.15 × 25 = 3.75 → 4 but only 2 are available → 2; 0.15 × 30 = 4.5 → 5 (half up, not banker's 4).
+    assert queue.explore_count(25, explore(0.15), 5) == 4
+    assert queue.explore_count(4, explore(0.01), 5) == 1
+    assert queue.explore_count(3, explore(0.01), 5) == 0
+    assert queue.explore_count(25, explore(0.15), 2) == 2
+    assert queue.explore_count(30, explore(0.15), 100) == 5
+    assert queue.explore_count(0, explore(0.15), 100) == 0
+    assert queue.explore_count(30, explore(0.15), 0) == 0
+
+
+def test_apportion_gives_the_largest_remainders_the_places_left():
+    # k = 9 over 50/30/20: exact 4.5, 2.7, 1.8; whole parts 4, 2, 1 (7); the 2 left go to the largest fractions,
+    # Legal's 0.8 and Creative's 0.7, so 4, 3, 2 (sums to 9). (The plan's "5, 3, 1" sums to 9 but is neither
+    # rounding, 5 + 3 + 2 = 10, nor largest remainder.)
+    assert queue.apportion(9, {"Tech": 0.5, "Creative": 0.3, "Legal": 0.2}) == {"Tech": 4, "Creative": 3, "Legal": 2}
+    # k = 4 over 50/30/20: exact 2.0, 1.2, 0.8; whole 2, 1, 0; the 1 left to Legal's 0.8: 2, 1, 1.
+    assert queue.apportion(4, {"Tech": 0.5, "Creative": 0.3, "Legal": 0.2}) == {"Tech": 2, "Creative": 1, "Legal": 1}
+    # Equal fractions go to the larger share: k = 1 over 50/50 by order given, 1 over 0.6/0.4 to the 0.6.
+    assert queue.apportion(1, {"A": 0.5, "B": 0.5}) == {"A": 1, "B": 0}
+    assert queue.apportion(1, {"A": 0.4, "B": 0.6}) == {"A": 0, "B": 1}
+    assert queue.apportion(0, {"A": 1.0}) == {"A": 0}
+
+
+def p1_world(n_tech=160, n_creative=96, n_legal=64) -> tuple[list[dict], dict[str, str]]:
+    """Probe P1's world (code-contacts-enrol H2; code-scoring B1): 320 verified accounts needing a contact, the groups
+    in the Focus mix (160/96/64 = 50/30/20) and interleaved through the score order, so each group spans every rank."""
+    rows, group = [], {}
+    names = ["T"] * n_tech + ["C"] * n_creative + ["L"] * n_legal
+    order = sorted(range(len(names)), key=lambda i: (i % 5, i))  # deal the groups across the ranks
+    ind = {"T": "Fintech", "C": "Advertising agencies", "L": "Legal Teams"}
+    for rank, i in enumerate(order):
+        r = row(i, "Standard", 1000 - rank, "20-49", ind[names[i]])
+        rows.append(r)
+        group[r["account_id"]] = names[i]
+    return rows, group
+
+
+FOCUS_50_30_20 = (Focus(TECH, 0.5), Focus(AGENCIES, 0.3), Focus("Legal Teams", 0.2))
+
+
+def test_the_random_arm_is_stratified_by_focus_group_and_reaches_past_the_first_60():
+    """Probe P1: with explore_share 0.15 and a lookahead of 60, k = round(0.15 × 60 = 9.0) = 9, apportioned over Focus
+    50/30/20 to 4 Tech, 3 Creative, 2 Legal (test_apportion...). Before W1-6 pick revealed only the first 60 in order,
+    so a Control account at rank 201 was never reached; the draw is uniform within each group over all 320, so the
+    chance that all 9 land in the top 60 is about (60/320)^9 ≈ 3 × 10⁻⁷ per seed: every one of 200 seeds reaches past
+    rank 60."""
+    s = make_settings(explore_share=0.15, focus=FOCUS_50_30_20)
+    rows, group = p1_world()
+    k = queue.explore_count(60, s, len(rows))
+    assert k == 9
+    rank = {r["account_id"]: i + 1 for i, r in enumerate(sorted(rows, key=lambda r: queue.order_key(r, s)))}
+    for seed in range(200):
+        drawn, rest = queue.split(rows, s, f"pick:seed-{seed}", k)
+        assert len(drawn) == 9 and len(rest) == 311
+        assert sorted(group[r["account_id"]] for r in drawn) == ["C"] * 3 + ["L"] * 2 + ["T"] * 4
+        assert max(rank[r["account_id"]] for r in drawn) > 60
+        assert [r["account_id"] for r in rest] == [a for a in sorted(rank, key=rank.get)
+                                                   if a not in {d["account_id"] for d in drawn}]
+    # The same seed draws the same accounts (a rerun on the same day); another seed, others.
+    one = [r["account_id"] for r in queue.split(rows, s, "pick:2026-10-27", k)[0]]
+    assert one == [r["account_id"] for r in queue.split(rows, s, "pick:2026-10-27", k)[0]]
+    assert one != [r["account_id"] for r in queue.split(rows, s, "pick:2026-10-28", k)[0]]
+
+
+def test_a_group_short_of_its_places_gives_what_it_has_and_never_borrows():
+    # 9 places, 4/3/2, but only 1 Legal account: 4 Tech + 3 Creative + 1 Legal = 8 drawn; the 9th place goes to the
+    # ranked rest, not to another group, so the arm keeps the Focus mix (RT §4.1).
+    s = make_settings(explore_share=0.15, focus=FOCUS_50_30_20)
+    rows, group = p1_world(n_legal=1)
+    drawn, rest = queue.split(rows, s, "pick:x", 9)
+    assert sorted(group[r["account_id"]] for r in drawn) == ["C"] * 3 + ["L"] + ["T"] * 4
+    assert len(rest) == len(rows) - 8
+
+
+def test_without_focus_rows_the_draw_is_uniform_over_all():
+    s = make_settings(explore_share=0.15)
+    rows, _ = p1_world()
+    drawn, rest = queue.split(rows, s, "pick:x", 9)
+    assert len(drawn) == 9 and len(rest) == 311 and not {r["account_id"] for r in drawn} & {r["account_id"] for r in rest}
+
+
+def test_the_sham_arm_is_the_parity_of_its_own_hash_and_about_half_each():
+    import hashlib
+
+    for aid in ("acc-1", "acc-2", "acc-3"):
+        h = int(hashlib.sha256(f"sham:{aid}2026-10-19".encode()).hexdigest(), 16)
+        assert queue.sham_arm(aid) == ("a" if h % 2 == 0 else "b")
+    # 200 accounts: a binomial(200, 0.5) lies in 80..120 with probability above 99.5%, so a fixed draw of ids does.
+    rng = random.Random(20261019)
+    ids = [str(uuid.UUID(int=rng.getrandbits(128), version=4)) for _ in range(200)]
+    n_a = sum(queue.sham_arm(i) == "a" for i in ids)
+    assert 80 <= n_a <= 120
+    # It cuts across the copy test's split: not the same label under another name.
+    assert any(queue.sham_arm(i) != queue.test_version(i, "t1-agencies") for i in ids)
 
 
 def test_order_is_score_then_size_band_then_industry_priority():

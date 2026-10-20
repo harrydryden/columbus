@@ -26,12 +26,18 @@ was enrolled under, so the cohort report (learn/cohorts.py) can compare like wit
                      version and `cohorts changes` says so; null while none runs;
   campaign_fingerprint, step_days   the campaign constants: STEP_DAYS, CAMPAIGN_SETTINGS and the step templates
                      (tests/test_cohorts.py pins the fingerprint, so changing one fails a test by name);
-  code_sha           the deploy's git commit, RAILWAY_GIT_COMMIT_SHA (Railway sets it on every deploy from GitHub;
-                     the image holds no .git), else "dev".
-
 The id is the first 12 hex characters of the sha256 of that snapshot as canonical JSON. enrol computes it once a
 run and records it in config_versions (record; dry-run too, SPEC 0.3), and each contact carries it
-(contacts.config_version, code_sha, copy_hash; enrol._record_enrolled). log_change writes a config_log row for
+(contacts.config_version, code_sha, copy_hash; enrol._record_enrolled).
+
+The deploy's git commit (code_sha: RAILWAY_GIT_COMMIT_SHA, set by Railway on every deploy from GitHub, as the image
+holds no .git; else "dev") is kept beside the version, on each contact and in the config_versions row that first saw
+it, but is not hashed into the id (W1-6, 19 Oct 2026; code-contacts-enrol M7): with it in, every deploy started a
+new version, so cohorts split on code changes that change nothing a contact is sent (50 deploys in 12 days), and a
+copy test's arms could not be pooled across a deploy. weekly_enrol_cap and control_share left CONTENT_KEYS for the
+same reason: the first changes how many are enrolled, not what any of them gets, and the second is retired. The ids
+changed once, discontinuously, from the deploy that made these changes; `cohorts changes` reads the old rows as
+they are. log_change writes a config_log row for
 each change to what in-flight leads share.
 """
 
@@ -60,13 +66,14 @@ CAMPAIGN_CHANGE, SENDER_NAME = "campaign_change", "sender_name"  # config_log.ki
 BLACKOUT_PAUSE, BLACKOUT_RESUME = "blackout_pause", "blackout_resume"
 # The tabs render and the openers read at enrolment (besides General and Copy, which are in by value).
 CONTENT_TABS = ("Signals", "Angles", "Industries", "Roles", "Overrides")
-# The General keys that shape what a contact gets, or how and when it is sent.
+# The General keys that shape what a contact gets, or how and when it is sent. Not weekly_enrol_cap (how many, not
+# what), not control_share (retired), and not explore_share: the arm a contact is in is stamped on the contact
+# (contacts.arm), and its emails are made as any other's (W1-6).
 CONTENT_KEYS = (
     "email_format", "email1_subject", "email1_subject_share", "opener_holdout_share", "opener_generic",
     "opener_generic_people", "opener_generic_founder", "opener_generic_ops", "opener_focus", "opener_focus_line",
     "price_from", "booking_link", "booking_page", "site_url", "demo_host", "utm_links", "send_window",
-    "second_contact", "second_contact_min_employees", "second_contact_delay_days", "control_share",
-    "weekly_enrol_cap",
+    "second_contact", "second_contact_min_employees", "second_contact_delay_days",
     "label_check",  # Harry, 7 Oct 2026: required or skip decides which copy a new company's label earns (labels.py)
 )
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -149,11 +156,8 @@ def copy_test(settings: Settings) -> dict[str, Any] | None:
 @dataclass(frozen=True)
 class ConfigVersion:
     id: str
-    snapshot: Mapping[str, Any]
-
-    @property
-    def code_sha(self) -> str:
-        return str(self.snapshot.get("code_sha") or DEV)
+    snapshot: Mapping[str, Any]  # what the id hashes
+    code_sha: str = DEV  # the deploy the version was computed in: kept beside it, never hashed (module docstring)
 
 
 def snapshot(settings: Settings) -> dict[str, Any]:
@@ -169,20 +173,21 @@ def snapshot(settings: Settings) -> dict[str, Any]:
         "copy_test": copy_test(settings),
         "campaign_fingerprint": campaign_fingerprint(),
         "step_days": list(STEP_DAYS),
-        "code_sha": code_sha(),
     }
 
 
 def current(ctx: Context) -> ConfigVersion:
     snap = snapshot(ctx.settings)
-    return ConfigVersion(_hash(snap), snap)
+    return ConfigVersion(_hash(snap), snap, code_sha())
 
 
 def record(ctx: Context, cv: ConfigVersion) -> bool:
-    """Keep the version's snapshot, the first time it is seen; True when it is new. A database write, so dry-run too."""
+    """Keep the version's snapshot, the first time it is seen; True when it is new. A database write, so dry-run too.
+    The row's code_sha is the deploy that first saw the version; each contact carries its own."""
     if ctx.store.get(TABLE, config_version=cv.id) is not None:
         return False
-    ctx.store.upsert(TABLE, [{"config_version": cv.id, "first_seen": ctx.now, "run_id": ctx.run_id, **cv.snapshot}])
+    ctx.store.upsert(TABLE, [{"config_version": cv.id, "first_seen": ctx.now, "run_id": ctx.run_id, **cv.snapshot,
+                              "code_sha": cv.code_sha}])
     log("config_version_new", run_id=ctx.run_id, config_version=cv.id, code_sha=cv.code_sha)
     return True
 

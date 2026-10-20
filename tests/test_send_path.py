@@ -98,6 +98,25 @@ def test_candidates_and_the_recheck_agree_on_every_gate():
     assert approvals.eligibility(ctx, _card_for(accts[1], cons[1]), accts[1], cons[1]) == "Co dom: domain suppressed"
     assert approvals.eligibility(ctx, _card_for(accts[-1], cons[-1]), accts[-1], cons[-1]) == (
         "Jane Doe: email status invalid")
+    # pick_contacts reads the same gates (W1-6; L1): an account enrol skips for an account reason is in neither of
+    # pick's lists (no credit is spent on it, and it is not ready supply); one skipped for its contact needs one; the
+    # rest are ready. The hand-check's pulls are the one difference: the weekly draw reads the ready list, so a held
+    # account stays in it (enrol leaves it out by its pulled ids).
+    from us_outbound.contacts import pick
+
+    contact_reasons = {"email source paused by a kill rule", "contact suppressed", "email domain suppressed",
+                       "contact in CA or WA", "email status invalid"}
+    need, ready = pick._split(ctx)
+    want_ready = {a for a, why in got.items() if why == ""} | {"acc-pulled"}
+    want_need = {a for a, why in got.items() if why in contact_reasons}
+    assert {a["account_id"] for a in ready} == want_ready == {"acc-ok", "acc-expired", "acc-pulled"}
+    assert {a["account_id"] for a in need} == want_need == {
+        "acc-source", "acc-hash", "acc-flag", "acc-emaildom", "acc-ca", "acc-status"}
+    assert pick.waiting(ctx) == (need, len(ready))
+    # Neither: the account reasons.
+    neither = set(got) - want_ready - want_need
+    assert {got[a] for a in neither} == {"domain suppressed", "partner domain", "industry switched off",
+                                         "industry group stopped by a kill rule"}
 
 
 def test_the_recheck_reads_suppression_by_key_not_the_whole_table():

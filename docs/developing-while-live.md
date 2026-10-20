@@ -70,13 +70,24 @@ Each contact carries `config_version`, `code_sha` and `copy_hash` (`config_versi
 send approval's ✅). The version is a 12-character hash of: the versions in force of the Signals, Angles,
 Industries, Roles and Overrides tabs; each sendable Copy row's content hash; the General keys that shape what is
 sent (`config_version.CONTENT_KEYS`: the subject and opener keys, `price_from`, the links, `email_format`,
-`send_window`, `utm_links`, the second-contact keys, `control_share`, `weekly_enrol_cap`, `label_check`); the
-running copy test (`copy_test`: an `ab` or `variant` test's id, arms and, for a variant, its change and texts); the
-signature template;
-the campaign constants; the label check's `labels_hash` (its prompt version, label list and definitions); and
-the code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev" elsewhere). An edit to `live_sending`, the Claude cap, a draft Copy row or a mailbox's status starts no new
-version: they change nothing a contact is sent. The `config_versions` table keeps each version's snapshot, so
-`us-outbound cohorts changes` can say what differs in plain words.
+`send_window`, `utm_links`, the second-contact keys, `label_check`); the running copy test (`copy_test`: an `ab` or
+`variant` test's id, arms and, for a variant, its change and texts); the signature template; the campaign
+constants; and the label check's `labels_hash` (its prompt version, label list and definitions). An edit to
+`live_sending`, the Claude cap, `weekly_enrol_cap`, `explore_share`, a draft Copy row or a mailbox's status starts no
+new version: they change how many are enrolled, or which arm a contact is in (stamped on the contact as `arm`), not
+what a contact is sent.
+
+The code (`RAILWAY_GIT_COMMIT_SHA`, set by Railway on a deploy from GitHub; "dev" elsewhere) is not in the hash
+(W1-6, 19 Oct 2026). Each contact still carries its `code_sha`, and each `config_versions` row the deploy that first
+saw it, but a deploy alone no longer starts a version: before, all 50 deploys of the first 12 days did, which split
+every cohort and would have split a copy test's arms on code that changed nothing sent. Version ids changed once,
+discontinuously, at the deploy of W1-6 (it took `code_sha`, `weekly_enrol_cap` and the retired `control_share` out
+of the hash): `cohorts changes` across that deploy lists only the code line, and nothing a contact gets changed. The
+other side of this: a deploy that changes how emails are rendered (`enrol/render.py`, the copy rules) without
+touching a template, a tab or a General key starts no version either. Such a change is made through the steps above
+like any change to what is sent, and its cohorts are told apart by `code_sha` (and each step's `email_hashes`), not
+by `config_version`. The `config_versions` table keeps each version's snapshot, so `us-outbound cohorts changes` can
+say what differs in plain words.
 
 ## Cohorts
 

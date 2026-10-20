@@ -8,7 +8,11 @@ Runs at 05:30 UK on weekdays, before enrol at 12:00.
      suppressed or a partner, industry on), with no sendable contact; in enrol's queue order,
      and only as many as the next two send days need at the weekly target's pace
      (docs/pipeline.md change 5, approved 30 Sep 2026). An account where nobody suitable was
-     found is tried again after RETRY_DAYS.
+     found is tried again after RETRY_DAYS. "Could take" is enrol's own check (enrol.eligible: a kill rule's
+     stopped group or paused email source, and a sendable Copy row, besides the domain and industry; W1-6).
+     The random explore arm (General explore_share, 0 by default; Harry's D7) is explore_share of the accounts
+     wanted, drawn at random from the accounts due within the Focus shares (queue.split) and tried first; each
+     account whose contact is kept is stamped accounts.arm, random or ranked, which enrol reads.
   2. Budget (SPEC 1.6): before the batch, today's share of the month's Apollo budget (budget.py)
      and Apollo's own balance against apollo_floor; before each reveal, what is left of both.
      The batch stops when either runs out. And no reveal at all while a kill rule pauses the apollo
@@ -174,23 +178,29 @@ def _split(ctx: Context) -> tuple[list[dict], list[dict]]:
 
     One read of the verified queue, its contacts, the suppression list and the partners serves both lists, so
     ready_accounts() and waiting() can never disagree about which account is which.
+
+    The gates are enrol's own (enrol.eligible, W1-6): an account in an industry group a kill rule stopped is in
+    neither list, so no credit is spent on it and its accounts do not count as ready while they cannot be emailed
+    (code-contacts-enrol L1: 60 ready accounts in a stopped group read as "enough ready", and nothing was revealed
+    for the others); a contact from an email source a kill rule paused is not sendable, so its account needs one; and
+    an account no sendable Copy row could serve, for a contact of any role (enrol.copy_possible), is in neither, as
+    enrol would skip it for want of copy. The hand-check's held accounts stay in: its draw reads this list, and they
+    are emailed once judged.
     """
     s, store = ctx.settings, ctx.store
     accounts = store.select("accounts", {"status": "verified", "tier": list(queue.QUEUE_TIERS)})
-    domains, hashes = enrol.suppressed(ctx)
-    partners = {_lower(p.get("domain")) for p in store.select("partners")}
+    g = enrol.gates(ctx)
+    rows = enrol.sendable_copy(s)
     contacts: dict[str, list[dict]] = defaultdict(list)
     for chunk in _chunks([a["account_id"] for a in accounts]):
         for c in store.select("contacts", {"account_id": list(chunk)}):
             contacts[c["account_id"]].append(c)
     need, ready = [], []
     for a in accounts:
-        if enrol.account_block(a, s, domains, partners, frozenset()):
+        if enrol.account_reason(a, g) is not None or not enrol.copy_possible(a, s, rows):
             continue
-        if any(enrol.contact_block(c, domains, hashes) is None for c in contacts.get(a["account_id"], [])):
-            ready.append(a)
-        else:
-            need.append(a)
+        contact, _ = enrol.eligible(a, contacts.get(a["account_id"], []), g)
+        (need if contact is None else ready).append(a)
     need.sort(key=lambda a: queue.order_key(a, s))
     ready.sort(key=lambda a: queue.order_key(a, s))
     return need, ready
@@ -851,7 +861,15 @@ def run(ctx: Context) -> dict:
     batch.clay_off, batch.clay_left = clay_room(ctx)
     domains, hashes = enrol.suppressed(ctx)
     known = {str(c["email_sha256"]) for c in store.select("contacts") if c.get("email_sha256")}
-    for account in due:
+    # The random explore arm (Harry's D7; queue.split): explore_share of today's want drawn at random from the
+    # accounts due, within the Focus shares, and tried first; then the rest in queue order. Drawn here, before any
+    # later ordering by contactability, so the arm is a random draw from the eligible queue and not from the accounts
+    # easiest to find a contact at (RS §2 W1-6). 0 by default: no draw, every account in order, as before.
+    k = queue.explore_count(want, s, len(due))
+    drawn, rest = queue.split(due, s, f"pick:{ctx.today_uk().isoformat()}", k)
+    arms = [(a, queue.RANDOM) for a in drawn] + [(a, queue.RANKED) for a in rest]
+    picked_random = 0
+    for account, arm in arms:
         if len(batch.picked) >= want or batch.stopped:
             break
         try:
@@ -865,6 +883,11 @@ def run(ctx: Context) -> dict:
             break
         batch.tried += 1
         _record(ctx, account, out, batch)
+        if out.outcome == PICKED:  # the arm enrol reads (accounts.arm), set when the account's contact is kept
+            store.upsert("accounts", [{"account_id": account["account_id"], "arm": arm}])
+            picked_random += arm == queue.RANDOM
+    summary["explore"] = {"share": s.general.explore_share, "drawn": len(drawn), "picked": picked_random,
+                          "by_group": dict(Counter(s.industry_group_of(a) for a in drawn))}
     # Then second contacts, with what is left of the lookahead once the first contacts are counted: the first
     # contacts of new accounts come first when capacity is short (Harry, 6 Oct 2026).
     room2 = max(0, lookahead(s) - ready - len(batch.picked) - ready2)

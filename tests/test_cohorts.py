@@ -84,12 +84,24 @@ def test_config_version_changes_only_for_content_tabs(monkeypatch):
     reworded = copy_row("agencies-v1", COPY[0].industry, bodies={**{n: COPY[0].step(n).body for n in (1, 2, 3, 4)},
                                                                  2: "A new email 2 for {{first_name}}."})
     assert vid(dataclasses.replace(base, copy=(reworded, COPY[1]))) != first.id
+    # How many are enrolled, and which arm a contact is in, change nothing a contact is sent (W1-6): the same version.
+    g = base.general
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, weekly_enrol_cap=300))) == first.id
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, explore_share=0.15))) == first.id
+    assert vid(dataclasses.replace(base, general=dataclasses.replace(g, control_share=0.4))) == first.id
+    # A deploy alone starts no version (W1-6; code-contacts-enrol M7): code_sha is kept beside the id, not hashed.
+    # Before, this asserted deployed.id != first.id, so every one of 50 deploys in 12 days split the cohorts.
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "a4c5c27f00ba7e1234567890")
     deployed = config_version.current(make_context(base))
-    assert deployed.id != first.id and deployed.code_sha == "a4c5c27f00ba"
+    assert deployed.id == first.id and deployed.code_sha == "a4c5c27f00ba"
     assert first.code_sha == "dev"
+    # Differing in code_sha and weekly_enrol_cap together: still the same version.
+    capped = config_version.current(make_context(dataclasses.replace(base, general=dataclasses.replace(
+        g, weekly_enrol_cap=75))))
+    assert capped.id == first.id and capped.code_sha == "a4c5c27f00ba"
     assert set(first.snapshot) == {"settings_versions", "copy_hashes", "general", "signature_hash",
-                                   "campaign_fingerprint", "step_days", "code_sha", "labels_hash", "copy_test"}
+                                   "campaign_fingerprint", "step_days", "labels_hash", "copy_test"}
+    assert not {"weekly_enrol_cap", "control_share", "explore_share"} & set(first.snapshot["general"])
     # The label check's definitions decide which copy a new company earns (labels.py; Harry, 7 Oct 2026).
     defined = tuple(dataclasses.replace(i, definition="Payments software.") if i.industry == "Fintech" else i
                     for i in base.industries)
@@ -107,6 +119,7 @@ def test_a_version_is_recorded_once_and_dry_run_records_it_too():
     [row] = ctx.store.tables["config_versions"]
     assert row["config_version"] == cv.id and row["first_seen"] == NOW and row["copy_hashes"] == {
         c.copy_version: c.content_hash() for c in COPY}
+    assert row["code_sha"] == cv.code_sha  # still a column (W1-6): the deploy that first saw the version
 
 
 def test_a_change_is_logged_only_when_live():

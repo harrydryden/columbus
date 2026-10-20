@@ -62,6 +62,9 @@ def _prepared(ctx: Context, item: Item) -> enrol.Prepared:
         # A card posted before the stamp (8 Oct 2026) has none: the contact is left unstamped.
         config_version=_text(p.get("config_version")), code_sha=_text(p.get("code_sha")),
         copy_hash=_text(p.get("copy_hash")),
+        arm=_text(p.get("arm")),  # "" on a card posted before W1-6: the account's arm then (enrol.enrol_stamps)
+        # The copy level the card was rendered at, not the one a label check landing since would give now.
+        copy_level=_text(p.get("copy_level")),
     )
 
 

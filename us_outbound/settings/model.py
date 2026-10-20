@@ -204,7 +204,8 @@ class General:
     weekly_enrol_cap: int = 150  # (build) Harry, 30 Sep 2026: targets are weekly (Mon–Sun, UK); SPEC's 30 a day × 5
     # Retired from the sheet (RETIRED_GENERAL; the W1-C contracts commit, 19 Oct 2026; Harry's D7: rank by score plus
     # a random explore arm in place of the Control tier). A control_share row is no longer read, so this is always the
-    # code default, which is the live sheet's value: the Control share enrol keeps until the explore arm replaces it.
+    # code default, the live sheet's value. Enrol no longer reads it (W1-6: explore_share's random arm took the
+    # Control tier's place in its walk); only scoring/balance.py's thresholds do, until W2-2 retires the tiers.
     control_share: float = 0.15
     # (build) The W1-C contracts commit (19 Oct 2026): keys later Wave 1 packages read, defined once. Each default is
     # today's behaviour, so a sheet without the row, and code that does not read the key yet, change nothing.
