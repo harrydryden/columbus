@@ -7,6 +7,7 @@ verify.check, enrol.account_block and tiers.hard_exclusion said of 200 generated
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from datetime import date
@@ -18,7 +19,7 @@ from us_outbound import icp, verify
 from us_outbound.enrol import enrol, queue
 from us_outbound.scoring import tiers
 from us_outbound.settings.defaults import default_tabs
-from us_outbound.settings.model import General
+from us_outbound.settings.model import General, Override
 from us_outbound.settings.validate import validate_all
 
 S, _ = validate_all(default_tabs())
@@ -166,6 +167,13 @@ def test_never_states_and_the_retired_tier_keys_are_defined_once_or_not_at_all()
 #   a partner by NAICS or keywords on the account row (co115, co133, co156, co188): enrol's send checks looked only at
 #     the partners table; now they also match the row, a stricter send check for accounts verify and the rescore
 #     had already kept out (asserted below): 4.
+# Two more, outside the fixture (its 200 accounts have none), each with its own test below:
+#   a website visitor with a non-US state written out ("Ontario") and no US hq_country: the rescore passed it (it
+#     only asked that the state be non-empty), the gate reads no state code and gives state_unknown. verify gave
+#     state_unknown before and after, so no account in the queue moves (run on 379ba97 and on this tree);
+#   apollo_universe.take sizes an organization through the gate's size rule, which reads the domain's Overrides
+#     rows (effective()): an Overrides employees or size_band now decides whether take admits it, as it already
+#     decided verify's size check of the account take would create.
 DEAD_RULES = {"co003", "co095", "co113", "co131", "co178", "co181", "co028", "co086", "co125", "co127", "co027",
               "co141", "co159"}
 WRITTEN_OUT_STATE = {"co016", "co050", "co068", "co117", "co147", "co185"}
@@ -207,3 +215,28 @@ def test_the_gate_agrees_with_the_recorded_checks_but_for_the_reviewed_drift():
     for _, c, now in send_off:
         assert now.code == "partner" and c["account_block"] is None
         assert c["verify_check"][0] == "partner" and c["hard_exclusion"] is not None
+
+
+def test_a_visitor_with_a_state_outside_the_us_is_state_unknown_at_the_rescore_as_at_verify():
+    """Reviewed drift. Before W2-2 (379ba97, run by hand): tiers.hard_exclusion passed a visitor whose hq_state is
+    "Ontario" with no hq_country or "Canada" (the state was non-empty and visitors skip the state rule), while
+    verify.check gave ("state_unknown", "HQ state unknown") (state_code("Ontario") is None, and the country is not
+    the US). Now both stages say state_unknown. With hq_country "United States" both passed and both pass."""
+    for country in (None, "Canada"):
+        ontario = clean(source=icp.VISITOR_SOURCE, hq_state="Ontario", hq_country=country)
+        assert gate(ontario, checks=icp.VERIFY) == ("state_unknown", "HQ state unknown")
+        assert gate(ontario, checks=icp.SCORE) == ("state_unknown", "HQ state unknown")
+    in_us = clean(source=icp.VISITOR_SOURCE, hq_state="Ontario", hq_country="United States")
+    assert gate(in_us, checks=icp.VERIFY) is None and gate(in_us, checks=icp.SCORE) is None
+
+
+def test_the_source_size_check_reads_the_overrides_tab():
+    """Reviewed drift in apollo_universe.take: it asks the gate's state and size rules, and the size rule reads the
+    domain's Overrides rows. Apollo says 250 staff (outside 10 to 249); an Overrides row of 64 admits it, where
+    before W2-2 take compared Apollo's 250 alone and skipped it. And the other way: 64 overridden to 300 is out."""
+    org = {"domain": "clean.com", "hq_state": "NY", "employees": 250}
+    assert gate(org, checks={icp.STATE, icp.SIZE}).code == "size"
+    overridden = dataclasses.replace(S, overrides=(Override("clean.com", "employees", "64"),))
+    assert icp.gate(org, {}, overridden, checks={icp.STATE, icp.SIZE}) is None
+    bigger = dataclasses.replace(S, overrides=(Override("clean.com", "employees", "300"),))
+    assert icp.gate({**org, "employees": 64}, {}, bigger, checks={icp.STATE, icp.SIZE}).code == "size"

@@ -756,7 +756,7 @@ def take(ctx: Context, org: Mapping[str, Any], sl: Slice, run: _Run, depth: Coun
     state = state_code(str(org.get("state") or "")) or sl.state
     employees = parse.integer(org.get("estimated_num_employees"))
     # The ICP gate's state and size rules (icp.SOURCE), on what the search row says; a size it does not give passes,
-    # as the band searched is in the range.
+    # as the band searched is in the range. The size rule reads the domain's Overrides rows, as verify does (W2-2).
     why = icp.gate({"domain": domain, "hq_state": state, "employees": employees}, {}, s,
                    checks={icp.STATE, icp.SIZE})
     if not in_us(org) or state not in run.states or (why and why.code in ("state", "state_unknown")):

@@ -767,6 +767,18 @@ def test_a_transaction_commits_together_or_not_at_all(store, dsn):
         other.close()
 
 
+def test_query_is_refused_inside_a_transaction_and_the_transaction_still_writes(store):
+    """query()'s SET TRANSACTION READ ONLY would outlast its savepoint inside store.transaction() and fail every
+    later write there, so it is refused before any SQL; the transaction goes on and commits its writes."""
+    store.insert("accounts", [{"account_id": "x", "score": 1}])
+    with store.transaction():
+        with pytest.raises(RuntimeError, match="not run inside store.transaction"):
+            store.query(f"SELECT account_id FROM {SCHEMA}.accounts")
+        store.update("accounts", {"account_id": "x"}, {"score": 2})
+    assert store.get("accounts", account_id="x")["score"] == 2
+    assert store.query(f"SELECT account_id FROM {SCHEMA}.accounts") == [{"account_id": "x"}]
+
+
 def test_the_advisory_lock_waits_then_times_out_and_is_released_at_the_end_of_the_transaction(store, dsn):
     other = PostgresStore(Guard(), dsn)
     try:

@@ -215,6 +215,9 @@ class LockTimeout(Exception):
     """advisory_lock waited wait_seconds and another run still holds the key."""
 
 
+IN_TRANSACTION_QUERY = "Store.query is not run inside store.transaction(): read with select there"
+
+
 def _check_table(table: str) -> None:
     if table not in TABLE_KEYS:
         raise GuardViolation(f"unknown table {table!r}; add it to sql/ddl and TABLE_KEYS first")
@@ -256,7 +259,8 @@ class Store(ABC):
     @abstractmethod
     def transaction(self) -> Any:
         """A context manager: the writes inside it commit together on leaving it, or none on an exception. One
-        inside another is a savepoint of it."""
+        inside another is a savepoint of it. query() is refused inside it: on Postgres its SET TRANSACTION READ ONLY
+        would outlast its savepoint and fail every later write in the transaction."""
 
     @abstractmethod
     def advisory_lock(self, key: int, *, wait_seconds: float = 60.0) -> None:
@@ -454,6 +458,8 @@ class MemoryStore(Store):
         return n
 
     def query(self, sql, params=None):
+        if self._state().saved:
+            raise RuntimeError(IN_TRANSACTION_QUERY)
         for name, handler in self.query_handlers.items():
             if name in sql:
                 return handler(self, params or {})
@@ -675,6 +681,8 @@ class PostgresStore(Store):
             raise GuardViolation("Store.query is read only; use insert/upsert/update/delete")
         self.guard.authorize("db", Op("query", target=f"{self.schema}.query", write=False))
         conn = self._connection()
+        if conn.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS:
+            raise RuntimeError(IN_TRANSACTION_QUERY)
         try:
             with conn.transaction():
                 conn.execute("SET TRANSACTION READ ONLY")

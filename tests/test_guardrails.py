@@ -264,8 +264,9 @@ class FakePostgres:
         self.autocommit = False
         self.row_factory = None
         self.rowcount = 0
-        # Inside a transaction, as store.transaction() leaves it (W2-2: advisory_lock is taken only in one).
-        self.info = SimpleNamespace(transaction_status=psycopg.pq.TransactionStatus.INTRANS)
+        # Idle in autocommit, and inside a transaction within transaction() (W2-2: advisory_lock is taken only in
+        # one, and query never is).
+        self.info = SimpleNamespace(transaction_status=psycopg.pq.TransactionStatus.IDLE)
 
     def connect(self) -> FakePostgres:
         self.connects += 1
@@ -291,8 +292,14 @@ class FakePostgres:
     def cursor(self):
         return contextlib.nullcontext(self)
 
+    @contextlib.contextmanager
     def transaction(self):
-        return contextlib.nullcontext()
+        before = self.info.transaction_status
+        self.info.transaction_status = psycopg.pq.TransactionStatus.INTRANS
+        try:
+            yield
+        finally:
+            self.info.transaction_status = before
 
     def fetchall(self):
         return []

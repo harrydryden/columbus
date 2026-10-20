@@ -83,6 +83,35 @@ def test_two_rescores_in_one_job_run_leave_one_row_per_signal():
     assert set(per_account(ctx.store).values()) == {1}
 
 
+def test_an_enrolled_account_keeps_its_match_rows_and_its_score_through_rescores():
+    """Enrolled and engaged accounts are rescored for exclusions only (code-scoring §6): their signal_matched rows
+    are neither written nor replaced, so v_signal_value still reads what an enrolled account without a
+    signals_at_enrol snapshot showed.
+
+    a00, a01 and a02 have 25 staff each, so Team of 10–49 (+15) fires once on each. a02 is enrolled (score 15,
+    angle General) with one match row, 'kept', from before any rescore (no run_id). First rescore: rows for a00
+    and a01 only (2), and it replaces none (no open account had rows). Second: 2 again, replacing exactly those
+    2 (a00's and a01's, not a02's 'kept'). a02's rows are ['kept'] throughout and its score and angle stand."""
+    ctx = world(3)
+    ctx.store.upsert("accounts", [{"account_id": "a02", "status": "enrolled", "score": 15, "angle": "General"}])
+    ctx.store.insert("signal_events", [
+        {"event_id": "kept", "account_id": "a02", "source": score.SCORING_SOURCE, "fact": score.MATCH_FACT,
+         "value": {"signal": "Team of 10–49", "weight": 15}, "observed_at": datetime(2026, 10, 1, tzinfo=UTC)}])
+
+    def a02_rows() -> list[str]:
+        return sorted(r["event_id"] for r in match_rows(ctx.store) if r["account_id"] == "a02")
+
+    out = score.rescore(ctx)
+    assert (out["signal_matches"], out["replaced"]) == (2, 0)
+    assert a02_rows() == ["kept"]
+    assert sorted(r["account_id"] for r in match_rows(ctx.store)) == ["a00", "a01", "a02"]
+    out2 = score.rescore(ctx)
+    assert (out2["signal_matches"], out2["replaced"]) == (2, 2)
+    assert a02_rows() == ["kept"]
+    a02 = ctx.store.get("accounts", account_id="a02")
+    assert (a02["score"], a02["angle"]) == (15, "General")
+
+
 def _pause_after_insert(store, inserted: threading.Event, go: threading.Event):
     """store.insert of signal_events signals `inserted` and waits for `go`: the rescore holding the lock stops between
     its insert and its delete, the window B4 lost rows in."""
@@ -245,6 +274,49 @@ def test_the_memory_store_rolls_a_transaction_back_and_keeps_a_committed_one():
                 store.update("accounts", {"account_id": "x"}, {"score": 4})
                 raise ValueError("inner")
     assert store.get("accounts", account_id="x")["score"] == 3
+
+
+def test_a_run_that_waited_for_the_lock_rolls_back_to_what_the_other_run_committed():
+    """B opens its transaction (its copy says score 1) and waits for the lock A holds; A writes score 2 and commits;
+    B takes the lock, so its copy is taken again (score 2), and then fails. B's rollback leaves A's 2, not the 1 it
+    first copied: a run that waited never undoes the run it waited for."""
+    store = MemoryStore(Guard())
+    store.insert("accounts", [{"account_id": "x", "score": 1}])
+    b_in_transaction = threading.Event()
+    failed: list[Exception] = []
+
+    def b():
+        try:
+            with store.transaction():
+                b_in_transaction.set()
+                store.advisory_lock(8, wait_seconds=5)
+                raise ValueError("B fails after taking the lock")
+        except ValueError as exc:
+            failed.append(exc)
+
+    with store.transaction():
+        store.advisory_lock(8)
+        tb = threading.Thread(target=b)
+        tb.start()
+        assert b_in_transaction.wait(5)
+        store.update("accounts", {"account_id": "x"}, {"score": 2})
+    tb.join(5)
+    assert not tb.is_alive() and len(failed) == 1
+    assert store.get("accounts", account_id="x")["score"] == 2
+
+
+def test_query_is_refused_inside_a_memory_store_transaction():
+    """As on Postgres (tests/test_db.py): query() inside store.transaction() raises before reading, and the
+    transaction's writes still commit."""
+    store = MemoryStore(Guard())
+    store.query_handlers["v_x"] = lambda st, params: [{"n": 1}]
+    store.insert("accounts", [{"account_id": "x", "score": 1}])
+    with store.transaction():
+        with pytest.raises(RuntimeError, match="not run inside store.transaction"):
+            store.query("SELECT * FROM v_x")
+        store.update("accounts", {"account_id": "x"}, {"score": 2})
+    assert store.get("accounts", account_id="x")["score"] == 2
+    assert store.query("SELECT * FROM v_x") == [{"n": 1}]
 
 
 def test_the_memory_store_lock_is_taken_in_a_transaction_and_released_at_its_end():
