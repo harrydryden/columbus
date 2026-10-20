@@ -7,8 +7,9 @@ the slices in the plan's order and spends it down page by page.
 It is a prior-weighted allocation with posterior noise, named as such (RT §3), not a bandit with a reward: in 2026 it
 optimises contactable yield per page (a cost), not value, since no state has a matured outcome to learn from. Per
 slice (industry group × HQ state × size band), over the last WINDOW_WEEKS weeks:
-    n  the accounts it admitted (their sourced_by facts: source_universe stamps each account it creates)
-    k  of those, the ones verified (or further on) with a contact found
+    n  the accounts it admitted (their sourced_by facts: source_universe stamps each account it creates) whose outcome
+       is known: failed the first check, or passed it and has a contact, a precheck count, or pick's finding of nobody
+    k  of those, the ones verified (or further on) with a contact, or with contactable candidates counted
     w  the state's prior weight, customers_in_state + 1 (CUSTOMERS_BY_STATE: Spill's US customers by HQ state)
     value = a draw from Beta(1 + w + k, 1 + n − k)
 A state's value is the mean of its slices' draws. The week's PAGES_PER_WEEK pages go one to each active state first
@@ -71,8 +72,20 @@ def cap_share(states: int) -> float:
 
 
 def slice_yields(ctx: Context) -> dict[tuple[str, str, str], tuple[int, int]]:
-    """(group, state, band) -> (n admitted, k verified with a contact) over WINDOW_WEEKS, from the sourced_by facts."""
-    from us_outbound.sources.apollo_universe import JOB, SOURCED_BY  # apollo_universe imports this module
+    """(group, state, band) -> (n decided, k contactable) over WINDOW_WEEKS, from the sourced_by facts.
+
+    Only an account whose outcome is known counts (the Waves 2-3 review): one that failed its first check (disqualified
+    or parked, or tiered Excluded: apollo_universe.verify_yield's rule), or one that passed it (PASSED) and is resolved:
+    it has a contact, contact_precheck counted its candidates (contactable_candidates), or pick_contacts found nobody
+    (its contact_pick outcome none). k: the passed ones with a contact, or with candidates counted above 0 and no
+    finding of nobody by pick since. An account still waiting for its first check, or verified and neither prechecked
+    nor reached by pick, is in neither: counting every admitted account in n and only those pick had reached in k
+    measured how far pick had got (it works in score order two send days ahead, so a state sourced recently and
+    heavily read low: 100 admitted last week, 10 reached, k/n 0.10, against the same true yield of 0.28)."""
+    from us_outbound.contacts import pick  # pick imports enrol, which imports apollo_universe, which imports this
+    from us_outbound.facts import load, newest
+    from us_outbound.scoring import tiers
+    from us_outbound.sources.apollo_universe import FAILED_STATUSES, JOB, SOURCED_BY
 
     since = ctx.now - timedelta(weeks=WINDOW_WEEKS)
     facts = ctx.store.select("signal_events", {"source": JOB, "fact": SOURCED_BY, "observed_at": Range(since, None)})
@@ -82,19 +95,28 @@ def slice_yields(ctx: Context) -> dict[tuple[str, str, str], tuple[int, int]]:
         if e.get("account_id") and isinstance(v, Mapping) and v.get("state"):
             where[str(e["account_id"])] = (str(v.get("group") or ""), str(v["state"]), str(v.get("band") or ""))
     ids = sorted(where)
-    status: dict[str, str] = {}
+    accounts: dict[str, Mapping[str, Any]] = {}
     with_contact: set[str] = set()
     for i in range(0, len(ids), 1000):
         chunk = ids[i : i + 1000]
-        status.update({str(a["account_id"]): str(a.get("status") or "")
-                       for a in ctx.store.select("accounts", {"account_id": chunk})})
+        accounts.update({str(a["account_id"]): a for a in ctx.store.select("accounts", {"account_id": chunk})})
         with_contact |= {str(c["account_id"]) for c in ctx.store.select("contacts", {"account_id": chunk})}
+    passed = [aid for aid in ids if str((accounts.get(aid) or {}).get("status") or "") in PASSED]
+    candidates = pick.candidate_counts(ctx.store, passed)
+    nobody = {aid for aid, rows in load(ctx.store, passed, pick.SOURCE, pick.OUTCOME_FACT).items()
+              if ((newest(rows) or {}).get("value") or {}).get("outcome") == pick.NO_CONTACT}
     out: dict[tuple[str, str, str], list[int]] = defaultdict(lambda: [0, 0])
     for aid, key in where.items():
-        if aid not in status:  # gone (retention, a merge): not counted either way
+        a = accounts.get(aid)
+        if a is None:  # gone (retention, a merge): not counted either way
             continue
-        out[key][0] += 1
-        out[key][1] += status[aid] in PASSED and aid in with_contact
+        if str(a.get("status") or "") in PASSED:
+            contactable = aid in with_contact or (candidates.get(aid, 0) > 0 and aid not in nobody)
+            if contactable or aid in candidates or aid in nobody:
+                out[key][0] += 1
+                out[key][1] += contactable
+        elif a.get("status") in FAILED_STATUSES or a.get("tier") == tiers.EXCLUDED:
+            out[key][0] += 1
     return {k: (n, k_) for k, (n, k_) in out.items()}
 
 
@@ -277,4 +299,5 @@ def readout_line(ctx: Context) -> str:
     yields = ", ".join(f"{s} {k} of {n}" for s, (k, n) in sorted(plan.yields.items()) if n)
     return (f"  Sourcing plan for {plan.week} ({NAME}): {total} pages, at least {FLOOR} a state and at most "
             f"{cap_share(len(plan.pages)):.0%} to one; {plan.describe()}."
-            + (f" Admitted accounts verified with a contact, last {WINDOW_WEEKS} weeks: {yields}." if yields else ""))
+            + (f" Admitted accounts with someone to contact, of those decided, last {WINDOW_WEEKS} weeks: {yields}."
+               if yields else ""))

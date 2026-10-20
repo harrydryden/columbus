@@ -83,26 +83,78 @@ def test_a_state_with_no_admitted_accounts_gets_its_floor_plus_its_prior_share_o
     assert al.prior("NJ") == 1 and al.prior("NY") == 17 and al.prior("WY") == 1
 
 
+def _admit(ctx, aid, state, status, *, contact=False, weeks_ago=1, tier=None, precheck=None, pick=None,
+           group="Technology & Startups"):
+    """An account source_universe admitted weeks_ago, with its status; a contact; contact_precheck's candidate count
+    (precheck); pick_contacts' outcome (pick: "picked" or "none")."""
+    from us_outbound.contacts import pick as pick_job
+
+    at = NOW - timedelta(weeks=weeks_ago)
+    ctx.store.insert("accounts", [{"account_id": aid, "domain": f"{aid}.com", "status": status, "tier": tier}])
+    events = [{"event_id": new_id(), "account_id": aid, "source": uni.JOB, "fact": uni.SOURCED_BY,
+               "value": {"slice": "k", "group": group, "state": state, "band": "50-99", "page": 1, "run_id": "r"},
+               "observed_at": at}]
+    if precheck is not None:
+        events.append({"event_id": new_id(), "account_id": aid, "source": pick_job.PRECHECK_JOB,
+                       "fact": pick_job.CANDIDATES_FACT, "value": {"count": precheck}, "observed_at": at})
+    if pick is not None:
+        events.append({"event_id": new_id(), "account_id": aid, "source": pick_job.SOURCE,
+                       "fact": pick_job.OUTCOME_FACT, "value": {"outcome": pick}, "observed_at": at + timedelta(days=1)})
+    ctx.store.insert("signal_events", events)
+    if contact:
+        ctx.store.insert("contacts", [{"contact_id": f"c-{aid}", "account_id": aid}])
+
+
 def test_the_yields_come_from_the_sourced_by_facts_of_the_last_eight_weeks():
-    """Three NY accounts admitted: one verified with a contact (k), one verified without, one enrolled with a contact
-    (k); one GA account nine weeks ago (out of the window). NY: n 3, k 2; GA: nothing."""
+    """NY, admitted in the window: a1 verified with a contact (n, k); a2 verified with no contact, not prechecked and
+    not reached by pick (waiting: neither); a3 enrolled with a contact (n, k). GA nine weeks ago: out of the window.
+    NY: n 2, k 2 (before the Waves 2-3 review a2 counted as a miss: 3, 2)."""
     ctx = ctx_at()
     sl = ("Technology & Startups", "NY", "50-99")
+    _admit(ctx, "a1", "NY", "verified", contact=True)
+    _admit(ctx, "a2", "NY", "verified")
+    _admit(ctx, "a3", "NY", "enrolled", contact=True)
+    _admit(ctx, "a4", "GA", "verified", contact=True, weeks_ago=9)
+    assert al.slice_yields(ctx) == {sl: (2, 2)}
 
-    def admitted(aid, state, status, *, contact, weeks_ago=1):
-        ctx.store.insert("accounts", [{"account_id": aid, "domain": f"{aid}.com", "status": status}])
-        ctx.store.insert("signal_events", [{
-            "event_id": new_id(), "account_id": aid, "source": uni.JOB, "fact": uni.SOURCED_BY,
-            "value": {"slice": "k", "group": sl[0], "state": state, "band": "50-99", "page": 1, "run_id": "r"},
-            "observed_at": NOW - timedelta(weeks=weeks_ago)}])
-        if contact:
-            ctx.store.insert("contacts", [{"contact_id": f"c-{aid}", "account_id": aid}])
 
-    admitted("a1", "NY", "verified", contact=True)
-    admitted("a2", "NY", "verified", contact=False)
-    admitted("a3", "NY", "enrolled", contact=True)
-    admitted("a4", "GA", "verified", contact=True, weeks_ago=9)
-    assert al.slice_yields(ctx) == {sl: (3, 2)}
+def test_only_decided_accounts_count_and_a_precheck_or_pick_resolves_a_verified_one():
+    """IL: b1 disqualified and b2 parked (failed: n); b3 new, tiered Excluded (failed: n); b4 new and b5 queued
+    (waiting for the first check: neither); b6 verified, precheck 0 (n); b7 verified, precheck 3 (n, k); b8 verified,
+    precheck 3, then pick found nobody (n); b9 verified, pick found nobody, no precheck (n). n 7, k 1."""
+    ctx = ctx_at()
+    for aid, status, kw in (("b1", "disqualified", {}), ("b2", "parked", {}), ("b3", "new", {"tier": "Excluded"}),
+                            ("b4", "new", {}), ("b5", "queued", {}), ("b6", "verified", {"precheck": 0}),
+                            ("b7", "verified", {"precheck": 3}), ("b8", "verified", {"precheck": 3, "pick": "none"}),
+                            ("b9", "verified", {"pick": "none"})):
+        _admit(ctx, aid, "IL", status, **kw)
+    assert al.slice_yields(ctx) == {("Technology & Startups", "IL", "50-99"): (7, 1)}
+
+
+def test_a_state_sourced_recently_reads_the_same_yield_as_one_sourced_long_ago():
+    """The review's probe (probe_alloc.py): TX and GA with the same true yield, 60% pass the first check and 28 of 60
+    (14 of 30) of those have someone to contact. TX: 100 admitted last week, 60 verified and prechecked (28 with
+    candidates), pick has reached 10 of them (contacts); 40 disqualified. GA: 50 admitted 6 weeks ago, 30 verified,
+    all reached by pick (14 with a contact, 16 found nobody); 20 disqualified. TX: n 100, k 28, Beta(1 + 5 + 28,
+    1 + 72), mean 34/107 = 0.318; GA: n 50, k 14, Beta(1 + 2 + 14, 1 + 36), mean 17/54 = 0.315: within 0.02. Counting
+    only pick's contacts in k (and every admitted account in n) read TX at Beta(16, 91), 0.150, against GA's 0.315."""
+    ctx = ctx_at(now=datetime(2026, 11, 2, 3, 0, tzinfo=UTC))
+    for i in range(100):
+        if i < 60:
+            _admit(ctx, f"tx{i}", "TX", "verified", contact=i < 10, precheck=2 if i < 28 else 0)
+        else:
+            _admit(ctx, f"tx{i}", "TX", "disqualified")
+    for i in range(50):
+        if i < 30:
+            _admit(ctx, f"ga{i}", "GA", "verified", contact=i < 14, pick="picked" if i < 14 else "none", weeks_ago=6)
+        else:
+            _admit(ctx, f"ga{i}", "GA", "disqualified", weeks_ago=6)
+    g = "Technology & Startups"
+    y = al.slice_yields(ctx)
+    assert y == {(g, "TX", "50-99"): (100, 28), (g, "GA", "50-99"): (50, 14)}
+    mean = {st: (1 + al.prior(st) + k) / (2 + al.prior(st) + n) for (_, st, _), (n, k) in y.items()}
+    assert mean["TX"] == pytest.approx(34 / 107) and mean["GA"] == pytest.approx(17 / 54)
+    assert abs(mean["TX"] - mean["GA"]) < 0.02
 
 
 # -- the plan in the run --------------------------------------------------------------------------------------------
